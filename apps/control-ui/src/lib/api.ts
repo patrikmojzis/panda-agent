@@ -94,6 +94,15 @@ export type SessionDetail = SessionRow & {
   }
 }
 
+export type ExecutionTarget = {
+  alias: string
+  kind: "persistent_agent_runner" | "disposable_container" | "local" | string
+  state: "provisioning" | "ready" | "failed" | "stopping" | "stopped" | string
+  label: string
+  health: "reachable" | "unreachable" | "unknown" | "not_applicable" | string
+  isDefaultBinding?: boolean
+}
+
 export type WorkFailure = {
   id: string
   kind: string
@@ -619,6 +628,18 @@ export const controlApi = {
     apiGet<PaginatedResponse<SessionRow>>(`/agents/${encodeURIComponent(agentKey)}/sessions${qs(params)}`),
   session: (agentKey: string, sessionId: string) =>
     apiGet<{ session: SessionDetail }>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}`),
+  sessionTargets: (agentKey: string, sessionId: string) =>
+    apiGet<{ targets: ExecutionTarget[] }>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/targets`),
+  bindSessionTarget: (agentKey: string, sessionId: string, body: Record<string, unknown>, csrfToken?: string | null) =>
+    apiWrite<{ target: ExecutionTarget; targets: ExecutionTarget[] }>(
+      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/targets`,
+      { body, csrfToken }
+    ),
+  deleteSessionTarget: (agentKey: string, sessionId: string, alias: string, csrfToken?: string | null) =>
+    apiWrite<{ deleted: boolean; targets: ExecutionTarget[] }>(
+      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/targets/${encodeURIComponent(alias)}`,
+      { method: "DELETE", csrfToken }
+    ),
   createSession: (agentKey: string, body: Record<string, unknown>, csrfToken?: string | null) =>
     apiWrite<{ session: SessionRow }>(`/agents/${encodeURIComponent(agentKey)}/sessions`, { body, csrfToken }),
   updateSession: (agentKey: string, sessionId: string, body: Record<string, unknown>, csrfToken?: string | null) =>

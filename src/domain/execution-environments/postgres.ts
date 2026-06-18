@@ -8,6 +8,7 @@ import {ensurePostgresExecutionEnvironmentSchema} from "./postgres-schema.js";
 import {normalizeAgentSkillOperations} from "./policy.js";
 import {buildExecutionEnvironmentTableNames, type ExecutionEnvironmentTableNames} from "./postgres-shared.js";
 import type {ExecutionEnvironmentStore} from "./store.js";
+import {normalizeExecutionEnvironmentAlias} from "./types.js";
 import type {
   BindSessionEnvironmentInput,
   CreateExecutionEnvironmentInput,
@@ -142,7 +143,7 @@ function parseBindingRow(row: Record<string, unknown>): SessionEnvironmentBindin
   return {
     sessionId: requireTrimmed("session id", row.session_id),
     environmentId: requireTrimmed("environment id", row.environment_id),
-    alias: requireTrimmed("environment alias", row.alias),
+    alias: normalizeExecutionEnvironmentAlias(requireTrimmed("environment alias", row.alias)),
     isDefault: requireBoolean(row.is_default, "environment binding is_default must be a boolean."),
     credentialPolicy: parseCredentialPolicy(row.credential_policy),
     skillPolicy: parseSkillPolicy(row.skill_policy),
@@ -213,43 +214,78 @@ export class PostgresExecutionEnvironmentStore implements ExecutionEnvironmentSt
   }
 
   async bindSession(input: BindSessionEnvironmentInput): Promise<SessionEnvironmentBindingRecord> {
+    const sessionId = requireTrimmed("session id", input.sessionId);
+    const environmentId = requireTrimmed("environment id", input.environmentId);
+    const alias = normalizeExecutionEnvironmentAlias(input.alias);
+    const isDefault = input.isDefault ?? false;
     const credentialPolicy = parseCredentialPolicy(input.credentialPolicy);
     const skillPolicy = parseSkillPolicy(input.skillPolicy);
     const toolPolicy = parseToolPolicy(input.toolPolicy);
-    const result = await this.pool.query(`
-      INSERT INTO ${this.tables.sessionEnvironmentBindings} (
-        session_id,
-        environment_id,
-        alias,
-        is_default,
-        allow_override,
-        credential_policy,
-        skill_policy,
-        tool_policy
-      ) VALUES (
-        $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb
-      )
-      ON CONFLICT (session_id, environment_id) DO UPDATE SET
-        alias = EXCLUDED.alias,
-        is_default = EXCLUDED.is_default,
-        allow_override = EXCLUDED.allow_override,
-        credential_policy = EXCLUDED.credential_policy,
-        skill_policy = EXCLUDED.skill_policy,
-        tool_policy = EXCLUDED.tool_policy,
-        updated_at = NOW()
-      RETURNING *
-    `, [
-      requireTrimmed("session id", input.sessionId),
-      requireTrimmed("environment id", input.environmentId),
-      requireTrimmed("environment alias", input.alias),
-      input.isDefault ?? false,
-      false,
-      toJson(credentialPolicy),
-      toJson(skillPolicy),
-      toJson(toolPolicy),
-    ]);
 
-    return parseBindingRow(result.rows[0] as Record<string, unknown>);
+    const upsert = async (queryable: PgPoolLike | Awaited<ReturnType<PgPoolLike["connect"]>>): Promise<SessionEnvironmentBindingRecord> => {
+      if (isDefault) {
+        await queryable.query(`
+          UPDATE ${this.tables.sessionEnvironmentBindings}
+          SET is_default = FALSE,
+              updated_at = NOW()
+          WHERE session_id = $1
+            AND is_default
+            AND environment_id <> $2
+        `, [sessionId, environmentId]);
+      }
+
+      const result = await queryable.query(`
+        INSERT INTO ${this.tables.sessionEnvironmentBindings} (
+          session_id,
+          environment_id,
+          alias,
+          is_default,
+          allow_override,
+          credential_policy,
+          skill_policy,
+          tool_policy
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb
+        )
+        ON CONFLICT (session_id, environment_id) DO UPDATE SET
+          alias = EXCLUDED.alias,
+          is_default = EXCLUDED.is_default,
+          allow_override = EXCLUDED.allow_override,
+          credential_policy = EXCLUDED.credential_policy,
+          skill_policy = EXCLUDED.skill_policy,
+          tool_policy = EXCLUDED.tool_policy,
+          updated_at = NOW()
+        RETURNING *
+      `, [
+        sessionId,
+        environmentId,
+        alias,
+        isDefault,
+        false,
+        toJson(credentialPolicy),
+        toJson(skillPolicy),
+        toJson(toolPolicy),
+      ]);
+
+      return parseBindingRow(result.rows[0] as Record<string, unknown>);
+    };
+
+    if (!isDefault) {
+      return upsert(this.pool);
+    }
+
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const binding = await upsert(client);
+      await client.query("COMMIT");
+      return binding;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async getEnvironment(environmentId: string): Promise<ExecutionEnvironmentRecord> {
@@ -274,6 +310,45 @@ export class PostgresExecutionEnvironmentStore implements ExecutionEnvironmentSt
     `, [requireTrimmed("session id", sessionId)]);
     const row = result.rows[0];
     return row ? parseBindingRow(row as Record<string, unknown>) : null;
+  }
+
+  async getBindingByAlias(sessionId: string, alias: string): Promise<SessionEnvironmentBindingRecord | null> {
+    // `IS TRUE` is equivalent to a plain equality for this NOT NULL column and avoids pg-mem
+    // incorrectly using the partial default-binding index as if it covered every session binding.
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.sessionEnvironmentBindings}
+      WHERE (session_id = $1) IS TRUE
+        AND alias = $2
+      LIMIT 1
+    `, [
+      requireTrimmed("session id", sessionId),
+      normalizeExecutionEnvironmentAlias(alias),
+    ]);
+    const row = result.rows[0];
+    return row ? parseBindingRow(row as Record<string, unknown>) : null;
+  }
+
+  async deleteBindingByAlias(sessionId: string, alias: string): Promise<boolean> {
+    const result = await this.pool.query(`
+      DELETE FROM ${this.tables.sessionEnvironmentBindings}
+      WHERE (session_id = $1) IS TRUE
+        AND alias = $2
+    `, [
+      requireTrimmed("session id", sessionId),
+      normalizeExecutionEnvironmentAlias(alias),
+    ]);
+    return (result.rowCount ?? 0) > 0;
+  }
+
+  async listBindingsForSession(sessionId: string): Promise<readonly SessionEnvironmentBindingRecord[]> {
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.sessionEnvironmentBindings}
+      WHERE (session_id = $1) IS TRUE
+      ORDER BY alias ASC, created_at ASC, environment_id ASC
+    `, [requireTrimmed("session id", sessionId)]);
+    return result.rows.map((row) => parseBindingRow(row as Record<string, unknown>));
   }
 
   async listDisposableEnvironmentsByOwner(

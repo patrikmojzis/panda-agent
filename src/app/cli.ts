@@ -1,21 +1,28 @@
 #!/usr/bin/env node
 
+import {randomBytes} from "node:crypto";
 import process from "node:process";
 import path from "node:path";
 
 import {Command} from "commander";
 import {DB_URL_OPTION_DESCRIPTION} from "./cli-shared.js";
 import {parsePortOption} from "../lib/cli.js";
+import {ensureSchemas, withPostgresPool} from "../lib/postgres-bootstrap.js";
 import {createDaemon} from "./runtime/daemon.js";
 import {registerA2ACommands} from "../domain/a2a/cli.js";
+import {PostgresAgentStore} from "../domain/agents/postgres.js";
 import {parseAgentKey, registerAgentCommands} from "../domain/agents/cli.js";
 import {registerCredentialCommands} from "../domain/credentials/cli.js";
 import {registerConnectorCommands} from "../domain/connectors/cli.js";
 import {registerControlCommands} from "../domain/control/cli.js";
+import {PostgresExecutionEnvironmentStore} from "../domain/execution-environments/postgres.js";
+import {normalizeExecutionEnvironmentAlias} from "../domain/execution-environments/types.js";
 import {registerEmailCommands} from "../domain/email/cli.js";
 import {registerGatewayCommands} from "./gateway/cli.js";
 import {parseIdentityHandle, registerIdentityCommands} from "../domain/identity/cli.js";
+import {PostgresIdentityStore} from "../domain/identity/postgres.js";
 import {registerSessionCommands} from "./sessions/cli.js";
+import {PostgresSessionStore} from "../domain/sessions/postgres.js";
 import {registerWikiCommands} from "../domain/wiki/cli.js";
 import {registerTelegramCommands} from "../integrations/channels/telegram/cli.js";
 import {registerDiscordCommands} from "../integrations/channels/discord/cli.js";
@@ -57,6 +64,17 @@ interface RunnerCliOptions {
   host?: string;
   outputDirectory?: string;
   port?: number;
+}
+
+interface RunnerAttachCliOptions {
+  agent?: string;
+  dbUrl?: string;
+  runnerUrl?: string;
+  runnerCwd?: string;
+  allowTools?: string;
+  sharedSecret?: string;
+  environmentId?: string;
+  default?: boolean;
 }
 
 interface BrowserRunnerCliOptions {
@@ -170,6 +188,92 @@ async function runRunnerCommand(options: RunnerCliOptions): Promise<void> {
     process.off("SIGTERM", handleSigterm);
     await runner.close().catch(() => {});
   }
+}
+
+function parseRunnerAttachAllowedTools(value: string | undefined): string[] {
+  const allowedTools = (value ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (allowedTools.length === 0) {
+    throw new Error("runner attach requires --allow-tools so selected targets fail closed.");
+  }
+  return [...new Set(allowedTools)];
+}
+
+function runnerAttachEnvironmentId(sessionId: string, alias: string): string {
+  return `persistent_agent_runner:${sessionId}:${alias}`;
+}
+
+function runnerAttachPort(runnerUrl: string): string {
+  try {
+    const url = new URL(runnerUrl);
+    if (url.port) return url.port;
+    return url.protocol === "https:" ? "443" : "8080";
+  } catch {
+    return "8080";
+  }
+}
+
+async function runRunnerAttachCommand(
+  sessionRef: string,
+  aliasInput: string,
+  options: RunnerAttachCliOptions,
+): Promise<void> {
+  const runnerUrl = options.runnerUrl?.trim();
+  if (!runnerUrl) {
+    throw new Error("runner attach requires --runner-url <url>.");
+  }
+  const alias = normalizeExecutionEnvironmentAlias(aliasInput);
+  const allowedTools = parseRunnerAttachAllowedTools(options.allowTools);
+  const sharedSecret = options.sharedSecret?.trim() || randomBytes(32).toString("base64url");
+
+  await withPostgresPool(options.dbUrl, async (pool) => {
+    const identityStore = new PostgresIdentityStore({pool});
+    const agentStore = new PostgresAgentStore({pool});
+    const sessionStore = new PostgresSessionStore({pool});
+    const environmentStore = new PostgresExecutionEnvironmentStore({pool});
+    await ensureSchemas([identityStore, agentStore, sessionStore, environmentStore]);
+
+    const session = await sessionStore.resolveSessionRef({
+      sessionRef,
+      agentKey: options.agent,
+    });
+    const environmentId = options.environmentId?.trim() || runnerAttachEnvironmentId(session.id, alias);
+    const environment = await environmentStore.createEnvironment({
+      id: environmentId,
+      agentKey: session.agentKey,
+      kind: "persistent_agent_runner",
+      state: "ready",
+      runnerUrl,
+      runnerCwd: options.runnerCwd?.trim() || undefined,
+    });
+    const binding = await environmentStore.bindSession({
+      sessionId: session.id,
+      environmentId: environment.id,
+      alias,
+      isDefault: options.default === true,
+      toolPolicy: {allowedTools},
+    });
+
+    const runnerCwd = environment.runnerCwd ?? options.runnerCwd?.trim() ?? "/root/.panda/agents/" + session.agentKey;
+    process.stdout.write([
+      `Attached runner target ${binding.alias} to session ${session.id}.`,
+      `environment ${binding.environmentId}`,
+      `default ${binding.isDefault ? "yes" : "no"}`,
+      `allowedTools ${allowedTools.join(",")}`,
+      "",
+      "Core env (set on panda-core before using the target):",
+      `export BASH_SERVER_SHARED_SECRET=${sharedSecret}`,
+      "",
+      "Runner env (set on the personal PC/Mac runner):",
+      `export BASH_SERVER_AGENT_KEY=${session.agentKey}`,
+      `export BASH_SERVER_PORT=${runnerAttachPort(runnerUrl)}`,
+      `export BASH_SERVER_SHARED_SECRET=${sharedSecret}`,
+      `export BASH_SERVER_ALLOWED_ROOTS=${runnerCwd}`,
+      "panda bash-server",
+    ].join("\n") + "\n");
+  });
 }
 
 async function runBrowserRunnerCommand(options: BrowserRunnerCliOptions): Promise<void> {
@@ -298,16 +402,35 @@ program
     return runRuntimeCommand(options);
   });
 
-function registerBashServerCommand(command: Command, description: string): void {
+function registerBashServerCommand(command: Command, description: string, options: {includeAttach?: boolean} = {}): void {
   command
     .description(description)
     .option("--agent <agentKey>", "Agent key this bash server serves", parseAgentKey)
     .option("--host <host>", "Host to bind the bash server")
     .option("--port <port>", "Port to bind the bash server", parsePortOption)
     .option("--output-directory <path>", "Directory used for temporary bash server output capture")
-    .action((options: RunnerCliOptions) => {
-      return runRunnerCommand(options);
+    .action((runnerOptions: RunnerCliOptions) => {
+      return runRunnerCommand(runnerOptions);
     });
+
+  if (options.includeAttach) {
+    command
+      .command("attach")
+      .description("Register and bind a personal PC/Mac runner target to a session")
+      .argument("<sessionRef>", "Session id, or alias with --agent")
+      .argument("<alias>", "Target alias, for example mac")
+      .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKey)
+      .option("--runner-url <url>", "Reachable runner base URL")
+      .option("--runner-cwd <path>", "Initial cwd inside the personal runner")
+      .option("--allow-tools <csv>", "Comma-separated tools allowed on this target")
+      .option("--shared-secret <secret>", "Shared secret for core-to-runner POST requests; generated if omitted")
+      .option("--environment-id <id>", "Existing or desired execution environment id")
+      .option("--default", "Make this binding the session default target")
+      .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+      .action((sessionRef: string, alias: string, attachOptions: RunnerAttachCliOptions) => {
+        return runRunnerAttachCommand(sessionRef, alias, attachOptions);
+      });
+  }
 }
 
 registerBashServerCommand(
@@ -318,6 +441,7 @@ registerBashServerCommand(
 registerBashServerCommand(
   program.command("runner"),
   "Compatibility alias for bash-server; run a per-agent remote bash server",
+  {includeAttach: true},
 );
 
 program

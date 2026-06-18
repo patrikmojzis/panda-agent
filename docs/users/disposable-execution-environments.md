@@ -75,6 +75,22 @@ explicitly, that image still wins for runtime. The stack helper skips building a
 explicit override by default, and force-rebuilds that explicit tag only when
 `PANDA_REFRESH_WORKSPACE=true` or `PANDA_BUILD_WORKSPACE=true` is set.
 
+## Session target bindings
+
+Operators can attach named execution targets to normal sessions and inspect them
+from CLI or Control:
+
+```bash
+panda runner attach <sessionRef> mac --agent <agentKey> --runner-url http://mac:8080 --allow-tools bash,read_file
+panda session targets bind <sessionRef> vps --agent <agentKey> --runner-url http://runner:8080 --allow-tools bash,read_file
+panda session targets list <sessionRef> --agent <agentKey>
+panda session targets detach <sessionRef> vps --agent <agentKey>
+```
+
+Use `--allow-tools` to declare what the selected target can run. Named targets
+fail closed without an allowlist; the allowlist is checked again when `bash`,
+`read_file`, `glob_files`, or `grep_files` receives a `target` argument.
+
 ## Runtime context
 
 Every durable child receives a **Subagent Runtime Context** with:

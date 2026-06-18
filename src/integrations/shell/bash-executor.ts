@@ -1,8 +1,6 @@
 import {randomUUID} from "node:crypto";
 
-import {buildEndpointUrl} from "../../lib/http.js";
 import type {JsonObject} from "../../lib/json.js";
-import {trimToNull} from "../../lib/strings.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {executeBashCommand} from "./bash-execution.js";
@@ -29,10 +27,33 @@ import type {ShellExecutionContext} from "./types.js";
 import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 import {buildShellProcessEnv, SAFE_SHELL} from "./environment.js";
 import {redactSecretsInJsonObject} from "./redaction.js";
+import {
+  buildRunnerEndpoint,
+  makeNetworkTimeoutSignal,
+  resolveBashExecutionMode,
+  resolveRemoteInitialCwd,
+  resolveRunnerCwd,
+  resolveRunnerCwdTemplate,
+  resolveRunnerSharedSecret,
+  resolveRunnerUrl,
+  resolveRunnerUrlTemplate,
+  type BashExecutionMode,
+} from "../../domain/execution-environments/runner-config.js";
+
+export {
+  buildRunnerEndpoint,
+  makeNetworkTimeoutSignal,
+  resolveBashExecutionMode,
+  resolveRemoteInitialCwd,
+  resolveRunnerCwd,
+  resolveRunnerCwdTemplate,
+  resolveRunnerSharedSecret,
+  resolveRunnerUrl,
+  resolveRunnerUrlTemplate,
+  type BashExecutionMode,
+};
 
 const DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS = 5_000;
-
-export type BashExecutionMode = "local" | "remote";
 
 export interface BashExecutorOptions {
   command: string;
@@ -102,54 +123,6 @@ function readAgentKey(context: ShellExecutionContext | undefined): string {
   return agentKey;
 }
 
-export function resolveBashExecutionMode(env: NodeJS.ProcessEnv = process.env): BashExecutionMode {
-  return trimToNull(env.BASH_EXECUTION_MODE) === "remote" ? "remote" : "local";
-}
-
-export function resolveRunnerUrlTemplate(env: NodeJS.ProcessEnv = process.env): string | null {
-  assertNoDeprecatedBashServerEnv(env, ["RUNNER_URL_TEMPLATE"]);
-  return trimToNull(env.BASH_SERVER_URL_TEMPLATE);
-}
-
-export function resolveRunnerCwdTemplate(env: NodeJS.ProcessEnv = process.env): string | null {
-  assertNoDeprecatedBashServerEnv(env, ["RUNNER_CWD_TEMPLATE"]);
-  return trimToNull(env.BASH_SERVER_CWD_TEMPLATE);
-}
-
-export function resolveRunnerSharedSecret(env: NodeJS.ProcessEnv = process.env): string | null {
-  assertNoDeprecatedBashServerEnv(env, ["RUNNER_SHARED_SECRET"]);
-  return trimToNull(env.BASH_SERVER_SHARED_SECRET);
-}
-
-function resolveAgentTemplateValue(template: string, agentKey: string): string {
-  if (!template.includes("{agentKey}")) {
-    return template;
-  }
-
-  return template.replaceAll("{agentKey}", agentKey);
-}
-
-export function resolveRunnerUrl(template: string, agentKey: string): string {
-  return resolveAgentTemplateValue(template, agentKey);
-}
-
-export function resolveRunnerCwd(template: string, agentKey: string): string {
-  return resolveAgentTemplateValue(template, agentKey);
-}
-
-export function resolveRemoteInitialCwd(agentKey: string, env: NodeJS.ProcessEnv = process.env): string | null {
-  if (resolveBashExecutionMode(env) !== "remote") {
-    return null;
-  }
-
-  const template = resolveRunnerCwdTemplate(env);
-  if (!template) {
-    return null;
-  }
-
-  return resolveRunnerCwd(template, agentKey);
-}
-
 function normalizeUrlPathname(pathname: string): string {
   const normalized = pathname.replace(/\/+$/, "");
   return normalized || "/";
@@ -187,15 +160,6 @@ export function buildRunnerRequestHeaders(
   return headers;
 }
 
-export function makeNetworkTimeoutSignal(timeoutMs: number): AbortSignal {
-  const controller = new AbortController();
-  setTimeout(() => {
-    controller.abort(new Error(`Remote bash runner did not respond within ${timeoutMs}ms.`));
-  }, timeoutMs).unref();
-  return controller.signal;
-}
-
-export const buildRunnerEndpoint = buildEndpointUrl;
 
 export async function parseRunnerResponse(response: Response): Promise<BashRunnerResponse> {
   return parseBashRunnerResponse(await response.json());

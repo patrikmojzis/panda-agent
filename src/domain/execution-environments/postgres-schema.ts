@@ -51,6 +51,10 @@ export async function ensurePostgresExecutionEnvironmentSchema(pool: PgQueryable
     ALTER COLUMN skill_policy SET DEFAULT '{"mode":"none"}'::jsonb
   `);
   await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_session_environment_alias_idx`)}
+    ON ${tables.sessionEnvironmentBindings} (session_id, alias)
+  `);
+  await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_session_environment_default_idx`)}
     ON ${tables.sessionEnvironmentBindings} (session_id)
     WHERE is_default

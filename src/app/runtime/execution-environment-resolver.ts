@@ -8,6 +8,10 @@ import type {
   ResolvedExecutionEnvironment,
   SessionEnvironmentBindingRecord,
 } from "../../domain/execution-environments/types.js";
+import {
+  DEFAULT_EXECUTION_TARGET_ALIAS,
+  normalizeExecutionTargetAlias,
+} from "../../domain/execution-environments/types.js";
 import {readSubagentSessionMetadata} from "../../domain/subagents/session-metadata.js";
 import {
   resolveBashExecutionMode,
@@ -17,7 +21,7 @@ import {
   resolveRunnerUrlTemplate,
 } from "../../integrations/shell/bash-executor.js";
 
-type ExecutionEnvironmentResolverStore = Pick<ExecutionEnvironmentStore, "getDefaultBinding" | "getEnvironment">;
+type ExecutionEnvironmentResolverStore = Pick<ExecutionEnvironmentStore, "getDefaultBinding" | "getBindingByAlias" | "getEnvironment">;
 
 type ResolverSession = Pick<SessionRecord, "id" | "agentKey" | "kind" | "metadata">;
 
@@ -89,6 +93,25 @@ export class ExecutionEnvironmentResolver {
     this.store = options.store;
     this.lifecycle = options.lifecycle;
     this.env = options.env ?? process.env;
+  }
+
+  async resolve(
+    session: ResolverSession,
+    target?: string,
+  ): Promise<ResolvedExecutionEnvironment> {
+    const normalizedTarget = target === undefined ? DEFAULT_EXECUTION_TARGET_ALIAS : normalizeExecutionTargetAlias(target);
+    if (normalizedTarget === DEFAULT_EXECUTION_TARGET_ALIAS) {
+      return this.resolveDefault(session);
+    }
+
+    if (session.kind === "worker") {
+      throw new Error(`Legacy worker session ${session.id} is not supported after the subagent hard cut.`);
+    }
+    const binding = await this.store.getBindingByAlias(session.id, normalizedTarget);
+    if (!binding) {
+      throw new Error(`Execution target ${normalizedTarget} is not bound to session ${session.id}.`);
+    }
+    return this.resolveBinding(session, binding);
   }
 
   async resolveDefault(

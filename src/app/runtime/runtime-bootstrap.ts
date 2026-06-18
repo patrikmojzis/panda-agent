@@ -554,6 +554,7 @@ export async function bootstrapRuntime(
       a2aBindings,
       agents: agentStore,
       sessions: sessionStore,
+      executionEnvironments,
       threads: store,
       identities: identityStore,
       credentials: credentialService,

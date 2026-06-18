@@ -1,5 +1,44 @@
 import type {JsonValue} from "../../lib/json.js";
 
+export const DEFAULT_EXECUTION_TARGET_ALIAS = "default";
+
+const EXECUTION_ENVIRONMENT_ALIAS_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+export function normalizeExecutionEnvironmentAlias(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Error("Execution environment alias must be a string.");
+  }
+
+  const alias = value.trim().toLowerCase();
+  if (!alias) {
+    throw new Error("Execution environment alias must not be empty.");
+  }
+  if (alias === DEFAULT_EXECUTION_TARGET_ALIAS) {
+    throw new Error("Execution environment alias 'default' is reserved.");
+  }
+  if (!EXECUTION_ENVIRONMENT_ALIAS_PATTERN.test(alias)) {
+    throw new Error("Execution environment alias must use only lowercase letters, numbers, underscores, or hyphens, and start with a letter or number.");
+  }
+
+  return alias;
+}
+
+export function normalizeExecutionTargetAlias(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Error("Execution target must be a string.");
+  }
+
+  const alias = value.trim().toLowerCase();
+  if (!alias) {
+    throw new Error("Execution target must not be empty.");
+  }
+  if (alias === DEFAULT_EXECUTION_TARGET_ALIAS) {
+    return DEFAULT_EXECUTION_TARGET_ALIAS;
+  }
+
+  return normalizeExecutionEnvironmentAlias(alias);
+}
+
 export type ExecutionEnvironmentKind =
   | "persistent_agent_runner"
   | "disposable_container"

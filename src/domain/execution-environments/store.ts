@@ -12,6 +12,9 @@ export interface ExecutionEnvironmentStore {
   bindSession(input: BindSessionEnvironmentInput): Promise<SessionEnvironmentBindingRecord>;
   getEnvironment(environmentId: string): Promise<ExecutionEnvironmentRecord>;
   getDefaultBinding(sessionId: string): Promise<SessionEnvironmentBindingRecord | null>;
+  getBindingByAlias(sessionId: string, alias: string): Promise<SessionEnvironmentBindingRecord | null>;
+  deleteBindingByAlias(sessionId: string, alias: string): Promise<boolean>;
+  listBindingsForSession(sessionId: string): Promise<readonly SessionEnvironmentBindingRecord[]>;
   listDisposableEnvironmentsByOwner(input: ListDisposableEnvironmentsByOwnerInput): Promise<readonly ExecutionEnvironmentRecord[]>;
   listBindingsForEnvironments(environmentIds: readonly string[]): Promise<readonly SessionEnvironmentBindingRecord[]>;
   listExpiredDisposableEnvironments(now: number, limit: number): Promise<readonly ExecutionEnvironmentRecord[]>;

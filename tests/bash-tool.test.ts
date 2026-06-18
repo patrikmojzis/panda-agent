@@ -19,6 +19,8 @@ import {
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import type {ThreadToolJobRecord} from "../src/domain/threads/runtime/types.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
+import type {BashExecutor, BashExecutorOptions} from "../src/integrations/shell/bash-executor.js";
+import type {BashExecutionResult} from "../src/integrations/shell/bash-protocol.js";
 
 function createAgent() {
   return new Agent({
@@ -76,6 +78,49 @@ class MemoryShellStateStore {
   read(sessionId: string, threadId: string, executionEnvironmentId = "default") {
     const session = this.sessions.get(`${sessionId}:${threadId}:${executionEnvironmentId}`);
     return session ? {cwd: session.cwd, env: {...session.env}} : undefined;
+  }
+}
+
+
+function successfulBashResult(overrides: Partial<BashExecutionResult> = {}): BashExecutionResult {
+  const stdout = overrides.stdout ?? "";
+  const stderr = overrides.stderr ?? "";
+  return {
+    shell: "/bin/bash",
+    finalCwd: overrides.finalCwd ?? "/tmp",
+    durationMs: 1,
+    timeoutMs: 15_000,
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    aborted: false,
+    abortReason: null,
+    interrupted: false,
+    success: true,
+    stdout,
+    stderr,
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    stdoutChars: stdout.length,
+    stderrChars: stderr.length,
+    stdoutPersisted: false,
+    stderrPersisted: false,
+    noOutput: stdout.length === 0 && stderr.length === 0,
+    trackedEnvKeys: [],
+    persistedEnvEntries: [],
+    ...overrides,
+  };
+}
+
+class RecordingBashExecutor implements BashExecutor {
+  readonly calls: BashExecutorOptions[] = [];
+
+  async execute(options: BashExecutorOptions): Promise<BashExecutionResult> {
+    this.calls.push(options);
+    return successfulBashResult({
+      finalCwd: options.cwd,
+      stdout: options.executionEnvironment?.alias ?? "default",
+    });
   }
 }
 
@@ -207,6 +252,234 @@ describe("BashTool", () => {
     };
 
     expect(tool.formatResult(result)).toBe("running\njob job-1");
+  });
+
+  it("routes foreground bash to an explicit session target", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-target-route-"));
+    try {
+      const executor = new RecordingBashExecutor();
+      const tool = new BashTool({executor});
+      const context: DefaultAgentSessionContext = {
+        agentKey: "panda",
+        sessionId: "session-target",
+        threadId: "thread-target",
+        cwd: workspace,
+        executionEnvironment: {
+          id: "env-default",
+          agentKey: "panda",
+          kind: "local",
+          state: "ready",
+          executionMode: "local",
+          initialCwd: workspace,
+          credentialPolicy: {mode: "all_agent"},
+          skillPolicy: {mode: "all_agent"},
+          toolPolicy: {},
+          source: "fallback",
+        },
+        resolveExecutionTarget: async (target) => {
+          if (target !== "vps") throw new Error("unknown target");
+          return {
+            id: "env-vps",
+            agentKey: "panda",
+            kind: "persistent_agent_runner",
+            state: "ready",
+            executionMode: "remote",
+            runnerUrl: "http://vps:8080",
+            initialCwd: "/srv/panda",
+            alias: "vps",
+            credentialPolicy: {mode: "none"},
+            skillPolicy: {mode: "none"},
+            toolPolicy: {allowedTools: ["bash"]},
+            source: "binding",
+          };
+        },
+      };
+
+      const result = await tool.run({command: "pwd", target: " VPS "}, createRunContext(context));
+
+      expect(asObject(result).stdout).toBe("vps");
+      expect(executor.calls).toHaveLength(1);
+      expect(executor.calls[0]?.executionEnvironment).toMatchObject({
+        id: "env-vps",
+        alias: "vps",
+        runnerUrl: "http://vps:8080",
+      });
+      expect(executor.calls[0]?.run.context?.executionEnvironment?.id).toBe("env-vps");
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
+  it("denies bash when the selected target has no allowlist", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-target-denied-"));
+    try {
+      const executor = new RecordingBashExecutor();
+      const tool = new BashTool({executor});
+      const context: DefaultAgentSessionContext = {
+        agentKey: "panda",
+        sessionId: "session-target-denied",
+        threadId: "thread-target-denied",
+        cwd: workspace,
+        executionEnvironment: {
+          id: "env-default",
+          agentKey: "panda",
+          kind: "local",
+          state: "ready",
+          executionMode: "local",
+          initialCwd: workspace,
+          credentialPolicy: {mode: "all_agent"},
+          skillPolicy: {mode: "all_agent"},
+          toolPolicy: {},
+          source: "fallback",
+        },
+        resolveExecutionTarget: async (target) => {
+          if (target !== "vps") throw new Error("unknown target");
+          return {
+            id: "env-vps",
+            agentKey: "panda",
+            kind: "persistent_agent_runner",
+            state: "ready",
+            executionMode: "remote",
+            runnerUrl: "http://vps:8080",
+            initialCwd: "/srv/panda",
+            alias: "vps",
+            credentialPolicy: {mode: "none"},
+            skillPolicy: {mode: "none"},
+            toolPolicy: {},
+            source: "binding",
+          };
+        },
+      };
+
+      await expect(tool.run({command: "pwd", target: "vps"}, createRunContext(context)))
+        .rejects.toThrow("Tool bash is not allowed in execution target vps.");
+      expect(executor.calls).toHaveLength(0);
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
+  it("keeps target shell cwd and env isolated by execution environment id", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-target-isolation-"));
+    try {
+      await mkdir(path.join(workspace, "default"));
+      await mkdir(path.join(workspace, "vps"));
+      const defaultCwd = await realpath(path.join(workspace, "default"));
+      const vpsCwd = await realpath(path.join(workspace, "vps"));
+      const tool = new BashTool({outputDirectory: path.join(workspace, "tool-results")});
+      const context: DefaultAgentSessionContext = {
+        agentKey: "panda",
+        sessionId: "session-target-isolation",
+        threadId: "thread-target-isolation",
+        cwd: workspace,
+        executionEnvironment: {
+          id: "env-default",
+          agentKey: "panda",
+          kind: "local",
+          state: "ready",
+          executionMode: "local",
+          initialCwd: workspace,
+          credentialPolicy: {mode: "all_agent"},
+          skillPolicy: {mode: "all_agent"},
+          toolPolicy: {},
+          source: "binding",
+        },
+        resolveExecutionTarget: async (target) => {
+          if (target !== "vps") throw new Error("unknown target");
+          return {
+            id: "env-vps",
+            agentKey: "panda",
+            kind: "local",
+            state: "ready",
+            executionMode: "local",
+            initialCwd: workspace,
+            alias: "vps",
+            credentialPolicy: {mode: "all_agent"},
+            skillPolicy: {mode: "all_agent"},
+            toolPolicy: {allowedTools: ["bash"]},
+            source: "binding",
+          };
+        },
+      };
+
+      await tool.run({command: 'cd default && export TARGET_MARKER="default"'}, createRunContext(context));
+      await tool.run({command: 'cd vps && export TARGET_MARKER="vps"', target: "vps"}, createRunContext(context));
+
+      const defaultResult = await tool.run({command: 'printf "%s:%s" "$PWD" "$TARGET_MARKER"'}, createRunContext(context));
+      const vpsResult = await tool.run({command: 'printf "%s:%s" "$PWD" "$TARGET_MARKER"', target: "vps"}, createRunContext(context));
+
+      expect(asObject(defaultResult).stdout).toBe(`${defaultCwd}:default`);
+      expect(asObject(vpsResult).stdout).toBe(`${vpsCwd}:vps`);
+      expect(context.shellSessions?.["env-default"]?.cwd).toBe(defaultCwd);
+      expect(context.shellSessions?.["env-vps"]?.cwd).toBe(vpsCwd);
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
+  it("starts background bash on the selected target without changing job tool schemas", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-target-background-"));
+    try {
+      const targetCwd = await realpath(workspace);
+      const {service, wait, context} = await createBackgroundHarness("/");
+      const bash = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        jobService: service,
+      });
+      context.cwd = "/";
+      context.resolveExecutionTarget = async (target) => {
+        if (target !== "vps") throw new Error("unknown target");
+        return {
+          id: "env-vps",
+          agentKey: "panda",
+          kind: "local",
+          state: "ready",
+          executionMode: "local",
+          initialCwd: targetCwd,
+          alias: "vps",
+          credentialPolicy: {mode: "all_agent"},
+          skillPolicy: {mode: "all_agent"},
+          toolPolicy: {allowedTools: ["bash"]},
+          source: "binding",
+        };
+      };
+
+      const jobResult = await bash.run(
+        {command: "pwd", background: true, target: "vps"},
+        createRunContext(context),
+      );
+      const waited = await wait.run({jobId: String(asObject(jobResult).jobId), timeoutMs: 5000}, createRunContext(context));
+
+      expect(asObject(waited).stdout).toBe(`${targetCwd}\n`);
+      expect(Object.keys(BackgroundJobStatusTool.schema.shape)).not.toContain("target");
+      expect(Object.keys(BackgroundJobWaitTool.schema.shape)).not.toContain("target");
+      expect(Object.keys(BackgroundJobCancelTool.schema.shape)).not.toContain("target");
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
+  it("fails an unknown explicit bash target before invoking an executor", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-target-missing-"));
+    try {
+      const executor = new RecordingBashExecutor();
+      const tool = new BashTool({executor});
+      const context: DefaultAgentSessionContext = {
+        agentKey: "panda",
+        sessionId: "session-target-missing",
+        threadId: "thread-target-missing",
+        cwd: workspace,
+        resolveExecutionTarget: async () => {
+          throw new Error("not bound");
+        },
+      };
+
+      await expect(tool.run({command: "pwd", target: "missing"}, createRunContext(context)))
+        .rejects.toThrow("Execution target missing is unavailable.");
+      expect(executor.calls).toHaveLength(0);
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
   });
 
   it("persists cwd changes across calls in the same shell session", async () => {

@@ -13,10 +13,10 @@
       "sha256": "6d3af80bc61daaee053839a4553e0371276a4a9efd7038d36c3470b629f1753f"
     },
     {
-      "bytes": 12989,
-      "lines": 351,
+      "bytes": 13090,
+      "lines": 352,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "47ceae8a731186baccb759bc127a2ef9cfce53323cee9b01a1b07ecd24be6b8a"
+      "sha256": "f5a4de0e7c43e6b12b812270b2508355e0b1f773c93ace96d6b7fb452b90f183"
     },
     {
       "bytes": 12121,
@@ -25,22 +25,22 @@
       "sha256": "233384ed058d6f7f0f5ac18b019b901fcc639fef7b1f2dfcf3818050efe1be22"
     },
     {
-      "bytes": 2670,
-      "lines": 79,
+      "bytes": 2853,
+      "lines": 81,
       "path": "src/app/runtime/panda-session-context.ts",
-      "sha256": "c22d384b3bebd577e78e6b95dac6e946e81f863251a4428bbb0c174320351bbf"
+      "sha256": "20f3a128cd57faeac537d395a7e9e1a121be7fc8e5eb40a3e7aa137b284d3340"
     },
     {
-      "bytes": 27008,
-      "lines": 795,
+      "bytes": 27037,
+      "lines": 796,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "9dfec87a5c0015fe6dbf82fe2eb8c94a31d9d10c3fcfbae8c3e74e8db5980318"
+      "sha256": "1d233294fab4f9f7c3d12b47a0ab288ada5236d66b960b6d0c93d0972535c1fe"
     },
     {
-      "bytes": 10835,
-      "lines": 266,
+      "bytes": 10863,
+      "lines": 264,
       "path": "src/app/runtime/thread-definition.ts",
-      "sha256": "b66e2b2a16d9cf7165350593189cb6b887415876b67fd64d9ab438dc8044a1c4"
+      "sha256": "784f43c68c0b1c17380c1213f8eb327450150dcc467a0586c83029b5b94498fb"
     },
     {
       "bytes": 1600,
@@ -67,10 +67,16 @@
       "sha256": "c9dba92c99c1b215b5d3e5545677395423b39853d8ebe04fabf857aa246ca3d8"
     },
     {
-      "bytes": 6675,
-      "lines": 175,
+      "bytes": 2844,
+      "lines": 74,
+      "path": "src/panda/contexts/bash-targets-context.ts",
+      "sha256": "3072f55b56c701de2cc2653f7f2b5437fed8ad19f49a13648cb4d0592bf7f2b8"
+    },
+    {
+      "bytes": 7176,
+      "lines": 186,
       "path": "src/panda/contexts/builder.ts",
-      "sha256": "bca277d062c4aad18550ee871fb526751cec322530ed4fe1ff9c4fbd0747f5a9"
+      "sha256": "ed0150fc93c12c147ddba3caad36cdf62991f103e321180b1c8a9efaa664b5e7"
     },
     {
       "bytes": 1541,
@@ -197,6 +203,12 @@
       "lines": 20,
       "path": "src/prompts/contexts/background-jobs.ts",
       "sha256": "96332b1cf9422f96dce73fe7eb25f6c7adc3655e52e9469c65b2ef50d64b8f99"
+    },
+    {
+      "bytes": 2232,
+      "lines": 68,
+      "path": "src/prompts/contexts/bash-targets.ts",
+      "sha256": "5d0bed3908db5049b9be92689798508a913e481a8f4028a30bb626c99c38d623"
     },
     {
       "bytes": 310,
@@ -775,6 +787,11 @@
             },
             "type": "object"
           },
+          "target": {
+            "description": "Optional registered bash target alias.",
+            "minLength": 1,
+            "type": "string"
+          },
           "timeoutMs": {
             "maximum": 300000,
             "minimum": 100,
@@ -1139,6 +1156,11 @@
             "description": "Optional directory or file path to search from.",
             "minLength": 1,
             "type": "string"
+          },
+          "target": {
+            "description": "Optional bash target alias to search.",
+            "minLength": 1,
+            "type": "string"
           }
         },
         "required": [
@@ -1180,6 +1202,11 @@
           },
           "root": {
             "description": "Optional directory or file path to search from.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "target": {
+            "description": "Optional bash target alias to search.",
             "minLength": 1,
             "type": "string"
           }
@@ -1535,6 +1562,11 @@
             "maximum": 9007199254740991,
             "minimum": 1,
             "type": "integer"
+          },
+          "target": {
+            "description": "Optional bash target alias to read from.",
+            "minLength": 1,
+            "type": "string"
           }
         },
         "required": [

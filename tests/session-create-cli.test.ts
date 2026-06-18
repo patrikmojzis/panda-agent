@@ -4,6 +4,7 @@ import {DataType, newDb} from "pg-mem";
 
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 import {ConversationRepo} from "../src/domain/sessions/conversations/repo.js";
+import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/postgres.js";
 import {registerSessionCommands} from "../src/app/sessions/cli.js";
 
 const sessionCreateCliMocks = vi.hoisted(() => {
@@ -111,6 +112,7 @@ describe("Session create CLI", () => {
     sessionCreateCliMocks.withPostgresPool.mockClear();
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
 
     while (pools.length > 0) {
       await pools.pop()?.end();
@@ -562,6 +564,99 @@ describe("Session create CLI", () => {
     expect(output).toContain("agent panda\n");
     expect(output).toContain("kind branch\n");
     expect(output).toContain("heartbeat enabled no\n");
+  }, SESSION_CREATE_TEST_TIMEOUT_MS);
+
+  it("binds, lists, statuses, and detaches execution targets", async () => {
+    const {pool, sessionStore, threadStore} = await createHarness();
+    pools.push(pool);
+    await sessionStore.createSession({
+      id: "session-targets",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-targets",
+    });
+    await threadStore.createThread({
+      id: "thread-targets",
+      sessionId: "session-targets",
+    });
+    const environments = new PostgresExecutionEnvironmentStore({pool});
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const healthFetch = vi.fn(async () => new Response(JSON.stringify({ok: true}), {status: 200}));
+    vi.stubGlobal("fetch", healthFetch);
+
+    await createProgram().parseAsync([
+      "session",
+      "targets",
+      "bind",
+      "session-targets",
+      "VPS",
+      "--agent",
+      "panda",
+      "--runner-url",
+      "http://runner.internal:8080",
+      "--runner-cwd",
+      "/srv/panda",
+      "--allow-tools",
+      "bash,read_file",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+
+    expect(collectWrites(write)).toContain("Bound execution target vps to session session-targets.\n");
+    await expect(environments.getBindingByAlias("session-targets", "vps")).resolves.toMatchObject({
+      alias: "vps",
+      isDefault: false,
+      toolPolicy: {allowedTools: ["bash", "read_file"]},
+    });
+
+    write.mockClear();
+    await createProgram().parseAsync([
+      "session",
+      "targets",
+      "status",
+      "session-targets",
+      "vps",
+      "--agent",
+      "panda",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    const statusOutput = collectWrites(write);
+    expect(statusOutput).toContain("Execution targets for session-targets.\n");
+    expect(statusOutput).toContain("vps\n");
+    expect(statusOutput).toContain("health reachable");
+    expect(statusOutput).toContain("allowedTools bash,read_file");
+
+    write.mockClear();
+    await createProgram().parseAsync([
+      "session",
+      "targets",
+      "status",
+      "session-targets",
+      "default",
+      "--agent",
+      "panda",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    const defaultStatusOutput = collectWrites(write);
+    expect(defaultStatusOutput).toContain("default\n");
+    expect(defaultStatusOutput).toContain("health not_applicable");
+
+    write.mockClear();
+    await createProgram().parseAsync([
+      "session",
+      "targets",
+      "detach",
+      "session-targets",
+      "vps",
+      "--agent",
+      "panda",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    expect(collectWrites(write)).toContain("Detached execution target vps from session session-targets.\n");
+    await expect(environments.getBindingByAlias("session-targets", "vps")).resolves.toBeNull();
   }, SESSION_CREATE_TEST_TIMEOUT_MS);
 
   it("sets, shows, reads, clears, and indicates a session briefing prompt", async () => {

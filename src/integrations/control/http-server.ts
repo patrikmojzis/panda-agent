@@ -654,6 +654,16 @@ function matchSessionActionPath(path: string, action: string): {agentKey: string
   return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
 }
 
+function matchSessionTargetPath(path: string): {agentKey: string; sessionId: string; alias: string} | null {
+  const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/targets\/([^/]+)$/.exec(path);
+  if (!match) return null;
+  return {
+    agentKey: decodeURIComponent(match[1]!),
+    sessionId: decodeURIComponent(match[2]!),
+    alias: decodeURIComponent(match[3]!),
+  };
+}
+
 function matchSessionA2ABindingPath(path: string): {agentKey: string; sessionId: string; recipientSessionId: string} | null {
   const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/a2a-bindings\/([^/]+)$/.exec(path);
   if (!match) return null;
@@ -1165,6 +1175,53 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         }
         return;
       }
+      const sessionTargetsPath = matchSessionActionPath(path, "targets");
+      if (sessionTargetsPath && request.method === "GET") {
+        try {
+          writeJsonResponse(response, 200, await options.operator.listSessionExecutionTargets(
+            session,
+            sessionTargetsPath.agentKey,
+            sessionTargetsPath.sessionId,
+          ));
+          return;
+        } catch {
+          throw new ControlHttpError(404, "Control target session was not found or is not visible.");
+        }
+      }
+      if (sessionTargetsPath && request.method === "POST") {
+        requireCsrf(request, options.auth, session);
+        try {
+          const result = await options.operator.bindSessionExecutionTarget(
+            session,
+            sessionTargetsPath.agentKey,
+            sessionTargetsPath.sessionId,
+            await readBody(request),
+          );
+          await recordOperatorAudit(options.auth, session, result.audit);
+          writeJsonResponse(response, 200, {target: result.target, targets: result.targets});
+          return;
+        } catch (error) {
+          throw new ControlHttpError(400, error instanceof Error ? error.message : "Control execution target bind failed.");
+        }
+      }
+      const sessionTargetPath = matchSessionTargetPath(path);
+      if (sessionTargetPath && request.method === "DELETE") {
+        requireCsrf(request, options.auth, session);
+        try {
+          const result = await options.operator.deleteSessionExecutionTarget(
+            session,
+            sessionTargetPath.agentKey,
+            sessionTargetPath.sessionId,
+            sessionTargetPath.alias,
+          );
+          await recordOperatorAudit(options.auth, session, result.audit);
+          writeJsonResponse(response, 200, {deleted: result.deleted, targets: result.targets});
+          return;
+        } catch (error) {
+          throw new ControlHttpError(400, error instanceof Error ? error.message : "Control execution target detach failed.");
+        }
+      }
+
       if (sessionPath && request.method === "PATCH") {
         requireCsrf(request, options.auth, session);
         try {

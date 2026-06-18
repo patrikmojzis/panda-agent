@@ -6,11 +6,14 @@ import {
   Pencil,
   Plus,
   SlidersHorizontal,
+  Trash2,
 } from "lucide-react"
 
 import { sessionTabPath } from "@/app/control-routes"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { useToastMutation } from "@/features/control/api/mutations"
+import { controlKeys } from "@/features/control/api/query-key-factory"
 import {
   useAgentBindings,
   useA2ABindings,
@@ -19,6 +22,7 @@ import {
   useRuntimeActivity,
   useScheduledTasks,
   useSessionDetail,
+  useSessionTargets,
   useScopedGatewayEvents,
   useWatches,
 } from "@/features/control/api/queries"
@@ -43,6 +47,19 @@ import {
   useHeartbeatConfigSheet,
   useRuntimeConfigSheet,
 } from "@/features/control/forms/use-control-form-sheets"
+import { controlApi } from "@/lib/api"
+import { useAuth } from "@/lib/auth"
+
+function targetHealthLabel(health: string) {
+  if (health === "not_applicable") return "Not applicable"
+  return health.replace(/[_-]+/g, " ")
+}
+
+function targetHealthVariant(health: string): "outline" | "destructive" | "secondary" {
+  if (health === "reachable") return "outline"
+  if (health === "unreachable") return "destructive"
+  return "secondary"
+}
 
 export function SessionOverviewPanel({
   agentKey,
@@ -51,6 +68,7 @@ export function SessionOverviewPanel({
   agentKey: string
   sessionId: string
 }) {
+  const auth = useAuth()
   const bindingSheet = useBindingSheet()
   const a2aBindingSheet = useA2ABindingSheet()
   const briefingSheet = useBriefingSheet()
@@ -92,6 +110,19 @@ export function SessionOverviewPanel({
     sort_by: "createdAt",
     sort_direction: "desc",
   })
+  const targets = useSessionTargets(agentKey, sessionId)
+  const bindTarget = useToastMutation({
+    mutationFn: (body: Record<string, unknown>) =>
+      controlApi.bindSessionTarget(agentKey, sessionId, body, auth.csrfToken),
+    success: "Execution target bound",
+    invalidate: controlKeys.sessions.targets(agentKey, sessionId),
+  })
+  const detachTarget = useToastMutation({
+    mutationFn: (alias: string) =>
+      controlApi.deleteSessionTarget(agentKey, sessionId, alias, auth.csrfToken),
+    success: "Execution target detached",
+    invalidate: controlKeys.sessions.targets(agentKey, sessionId),
+  })
   const detail = session.data?.session
   const briefingRecord = briefing.data?.briefing
   const presence = heartbeat.data?.heartbeat
@@ -111,6 +142,27 @@ export function SessionOverviewPanel({
   )
   if (session.error) return <TableError error={session.error} />
 
+  function openBindTarget() {
+    const alias = window.prompt("Target alias, for example vps")?.trim()
+    if (!alias) return
+    const runnerUrl = window.prompt("Runner base URL, for example http://runner:8080")?.trim()
+    if (!runnerUrl) return
+    const runnerCwd = window.prompt("Initial runner cwd (optional)")?.trim()
+    const allowTools = window.prompt("Allowed tools CSV (required, e.g. bash,read_file,glob_files,grep_files)")
+      ?.split(",")
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+    if (!allowTools?.length) return
+    const makeDefault = window.confirm("Make this the default execution target for this session?")
+    bindTarget.mutateAsync({
+      alias,
+      runnerUrl,
+      ...(runnerCwd ? { runnerCwd } : {}),
+      allowTools,
+      ...(makeDefault ? { default: true } : {}),
+    })
+  }
+
   function openBriefingSheet() {
     briefingSheet.setOpen(true, {
       context: { agentKey, sessionId },
@@ -124,7 +176,8 @@ export function SessionOverviewPanel({
   return (
     <div className="grid gap-4">
       {heartbeat.error ? <TableError error={heartbeat.error} /> : null}
-      <div className="grid gap-4 xl:grid-cols-2">
+      {targets.error ? <TableError error={targets.error} /> : null}
+      <div className="grid gap-4 xl:grid-cols-3">
         <DetailPanel
           title="Runtime Health"
           action={
@@ -259,6 +312,61 @@ export function SessionOverviewPanel({
               label="Next watch"
               value={formatDate(nextWatchPollAt(watchRows))}
             />
+          </DetailsGrid>
+        </DetailPanel>
+        <DetailPanel
+          title="Execution Targets"
+          action={
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={bindTarget.isPending}
+              onClick={openBindTarget}
+            >
+              <Plus className="size-3.5" />
+              Bind target
+            </Button>
+          }
+        >
+          <DetailsGrid placement="main" className="xl:grid-cols-1">
+            {targets.isLoading && !targets.data ? (
+              <DetailField loading label="Targets" value="" />
+            ) : null}
+            {(targets.data?.targets ?? []).map((target) => (
+              <DetailField
+                key={target.alias}
+                label={target.label}
+                value={
+                  <div className="flex flex-wrap items-center gap-1">
+                    <Badge variant="outline">{target.alias}</Badge>
+                    <StatusBadge status={target.kind} />
+                    <StatusBadge status={target.state} />
+                    <Badge variant={targetHealthVariant(target.health)}>
+                      {targetHealthLabel(target.health)}
+                    </Badge>
+                    {target.isDefaultBinding ? (
+                      <Badge variant="secondary">Default binding</Badge>
+                    ) : null}
+                    {target.alias !== "default" ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={detachTarget.isPending}
+                        onClick={() => detachTarget.mutateAsync(target.alias)}
+                      >
+                        <Trash2 className="size-3.5" />
+                        Detach
+                      </Button>
+                    ) : null}
+                  </div>
+                }
+              />
+            ))}
+            {!targets.isLoading && (targets.data?.targets ?? []).length === 0 ? (
+              <DetailField label="Targets" value="-" />
+            ) : null}
           </DetailsGrid>
         </DetailPanel>
       </div>

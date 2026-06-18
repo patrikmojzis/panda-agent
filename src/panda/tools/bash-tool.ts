@@ -5,7 +5,7 @@ import type {ToolResultMessage} from "@earendil-works/pi-ai";
 import {z} from "zod";
 
 import {joinMessageTextParts} from "../../kernel/agent/helpers/message-text.js";
-import type {RunContext} from "../../kernel/agent/run-context.js";
+import {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool, type ToolOutput} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject, JsonValue} from "../../lib/json.js";
@@ -13,6 +13,10 @@ import type {CredentialResolver} from "../../domain/credentials/resolver.js";
 import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {ensureShellSession, readBaseCwd} from "../../app/runtime/panda-path-context.js";
+import {
+  assertExecutionTargetToolAllowed,
+  resolveExecutionTargetContext,
+} from "./execution-target-context.js";
 import {
   type BashExecutor,
   createDefaultBashExecutor,
@@ -251,13 +255,6 @@ function filterCredentialEnv(
   return Object.fromEntries(Object.entries(env).filter(([key]) => allowed.has(key)));
 }
 
-function assertBashAllowed(executionEnvironment: ResolvedExecutionEnvironment | undefined): void {
-  if (executionEnvironment?.toolPolicy.bash?.allowed === false) {
-    throw new ToolError("Bash is not allowed in this execution environment.");
-  }
-}
-
-
 function sanitizeBashPayloadOutputFields(payload: JsonObject): JsonObject {
   const sanitized: JsonObject = {...payload};
   if (typeof payload.stdout === "string") {
@@ -295,6 +292,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
     timeoutMs: z.number().int().min(100).max(300_000).optional(),
     env: z.record(z.string(), z.string()).optional(),
     background: z.boolean().optional(),
+    target: z.string().trim().min(1).optional().describe("Optional registered bash target alias."),
   });
 
   name = "bash";
@@ -343,7 +341,11 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
     const cwd = typeof args.cwd === "string" && args.cwd.trim()
       ? args.cwd.trim()
       : null;
-    const scope = args.background === true ? "[background] " : "";
+    const background = args.background === true ? "[background] " : "";
+    const target = typeof args.target === "string" && args.target.trim()
+      ? `[target ${args.target.trim().toLowerCase()}] `
+      : "";
+    const scope = `${background}${target}`;
     return cwd ? `${scope}[cwd ${cwd}] ${args.command}` : `${scope}${args.command}`;
   }
 
@@ -393,22 +395,46 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
     };
   }
 
+  private createRunContextForTarget(
+    run: RunContext<TContext>,
+    context: DefaultAgentSessionContext | undefined,
+  ): RunContext<DefaultAgentSessionContext> {
+    if (context === run.context) {
+      return run as unknown as RunContext<DefaultAgentSessionContext>;
+    }
+
+    return new RunContext({
+      agent: run.agent,
+      turn: run.turn,
+      maxTurns: run.maxTurns,
+      messages: run.messages,
+      context,
+      signal: run.signal,
+      onToolProgress: (progress) => run.emitToolProgress(progress),
+    });
+  }
+
   async handle(
     args: z.output<typeof BashTool.schema>,
     run: RunContext<TContext>,
   ): Promise<ToolOutput> {
-    const context = run.context as DefaultAgentSessionContext | undefined;
-    const executionEnvironment = context?.executionEnvironment;
-    assertBashAllowed(executionEnvironment);
-    const shellSession = ensureShellSession(run.context);
-    const baseCwd = shellSession?.cwd ?? readBaseCwd(run.context);
+    const resolvedTarget = await resolveExecutionTargetContext(
+      run.context as DefaultAgentSessionContext | undefined,
+      args.target,
+    );
+    assertExecutionTargetToolAllowed(resolvedTarget, "bash");
+    const context = resolvedTarget.context;
+    const executionEnvironment = resolvedTarget.executionEnvironment;
+    const targetRun = this.createRunContextForTarget(run, context);
+    const shellSession = ensureShellSession(context);
+    const baseCwd = shellSession?.cwd ?? readBaseCwd(context);
     const cwd = resolveCommandCwd(args.cwd, baseCwd);
     const timeoutMs = args.timeoutMs ?? this.defaultTimeoutMs;
     const priorSecretSessionEnv = readSecretSessionEnv(shellSession);
     const resolvedCredentialEnv = filterCredentialEnv(this.credentialResolver
       ? await this.credentialResolver.resolveEnvironment({
-        agentKey: typeof run.context === "object" && run.context !== null && "agentKey" in run.context
-          ? (run.context as {agentKey?: string}).agentKey
+        agentKey: typeof context === "object" && context !== null && "agentKey" in context
+          ? context.agentKey
           : undefined,
       })
       : {}, executionEnvironment?.credentialPolicy);
@@ -471,7 +497,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
       resolvedEnv: resolvedCredentialEnv,
       shellEnv,
       executionEnvironment,
-      run: run as RunContext<DefaultAgentSessionContext>,
+      run: targetRun,
     });
     const appliedSessionEnvKeys = applyPersistedEnv(shellSession, result.persistedEnvEntries);
     updateSecretSessionKeys(shellSession, result.persistedEnvEntries, secretInventory.sourceSecretValues);
@@ -485,7 +511,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
     if (result.success && shellSession) {
       shellSession.cwd = result.finalCwd;
 
-      if (run.context && typeof run.context === "object" && !Array.isArray(run.context)) {
+      if (resolvedTarget.isDefaultTarget && run.context && typeof run.context === "object" && !Array.isArray(run.context)) {
         (run.context as Record<string, unknown>).cwd = result.finalCwd;
       }
 
