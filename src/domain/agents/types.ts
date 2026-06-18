@@ -48,7 +48,7 @@ export interface BootstrapAgentInput extends CreateAgentInput {
   prompts?: Partial<Record<AgentPromptSlug, string>>;
 }
 
-export const MAX_AGENT_SKILL_DESCRIPTION_CHARS = 8_000;
+export const MAX_AGENT_SKILL_DESCRIPTION_CHARS = 255;
 export const MAX_AGENT_SKILL_CONTENT_CHARS = 1_000_000;
 export const MAX_AGENT_SKILL_TAGS = 20;
 export const MAX_AGENT_SKILL_TAG_CHARS = 64;
@@ -87,6 +87,15 @@ export function normalizeAgentSkillDescription(value: string): string {
 
   if (normalized.length > MAX_AGENT_SKILL_DESCRIPTION_CHARS) {
     throw new Error(`Skill description must be at most ${MAX_AGENT_SKILL_DESCRIPTION_CHARS} characters.`);
+  }
+
+  return normalized;
+}
+
+export function normalizePersistedAgentSkillDescription(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) {
+    throw new Error("Skill description must not be empty.");
   }
 
   return normalized;

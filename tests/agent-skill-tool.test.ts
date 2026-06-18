@@ -27,7 +27,7 @@ describe("AgentSkillTool", () => {
     }
   });
 
-  async function createStore() {
+  async function createStoreWithPool() {
     const db = newDb();
     db.public.registerFunction({
       name: "pg_notify",
@@ -54,7 +54,11 @@ describe("AgentSkillTool", () => {
       prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
 
-    return store;
+    return {pool, store};
+  }
+
+  async function createStore() {
+    return (await createStoreWithPool()).store;
   }
 
   it("upserts a skill on the current session agent", async () => {
@@ -141,6 +145,31 @@ describe("AgentSkillTool", () => {
       content: "# Ops",
       loadCount: 0,
       lastLoadedAt: undefined,
+    });
+  });
+
+  it("loads legacy persisted descriptions over 255 characters", async () => {
+    const {pool, store} = await createStoreWithPool();
+    const legacyDescription = "x".repeat(300);
+    const tool = new AgentSkillTool({ store });
+
+    await pool.query(`
+      INSERT INTO runtime.agent_skills (agent_key, skill_key, description, content, tags)
+      VALUES ('panda', 'legacy', $1, '# Legacy', $2::text[])
+    `, [legacyDescription, []]);
+
+    await expect(tool.run({
+      operation: "load",
+      skillKey: "legacy",
+    }, createRunContext({
+      agentKey: "panda",
+    }))).resolves.toMatchObject({
+      operation: "load",
+      found: true,
+      skillKey: "legacy",
+      description: legacyDescription,
+      content: "# Legacy",
+      loadCount: 1,
     });
   });
 
@@ -332,18 +361,27 @@ describe("AgentSkillTool", () => {
     }))).rejects.toThrow("Skill tags must use lowercase letters, numbers, hyphens, underscores, or colons.");
   });
 
-  it("rejects oversized descriptions for set", async () => {
+  it("rejects descriptions over 255 characters for set", async () => {
     const store = await createStore();
     const tool = new AgentSkillTool({ store });
 
     await expect(tool.run({
       operation: "set",
       skillKey: "calendar",
-      description: "x".repeat(8_001),
+      description: "x".repeat(255),
       content: "# Calendar",
     }, createRunContext({
       agentKey: "panda",
-    }))).rejects.toThrow("Skill description must be at most 8000 characters.");
+    }))).resolves.toMatchObject({description: "x".repeat(255)});
+
+    await expect(tool.run({
+      operation: "set",
+      skillKey: "calendar",
+      description: "x".repeat(256),
+      content: "# Calendar",
+    }, createRunContext({
+      agentKey: "panda",
+    }))).rejects.toThrow("Skill description must be at most 255 characters.");
   });
 
 

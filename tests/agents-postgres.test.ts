@@ -321,7 +321,40 @@ describe("PostgresAgentStore", () => {
     );
   });
 
-  it("rejects blank content and oversized descriptions when storing agent skills", async () => {
+  it("keeps legacy persisted long skill descriptions readable and loadable", async () => {
+    const { pool, agentStore } = await createStores();
+    const legacyDescription = "x".repeat(300);
+
+    await agentStore.bootstrapAgent({
+      agentKey: "panda",
+      displayName: "Panda",
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
+    });
+    await pool.query(`
+      INSERT INTO runtime.agent_skills (agent_key, skill_key, description, content, tags)
+      VALUES ('panda', 'legacy', $1, '# Legacy', $2::text[])
+    `, [legacyDescription, []]);
+
+    await expect(agentStore.readAgentSkill("panda", "legacy")).resolves.toMatchObject({
+      skillKey: "legacy",
+      description: legacyDescription,
+      loadCount: 0,
+    });
+    await expect(agentStore.listAgentSkills("panda")).resolves.toEqual([
+      expect.objectContaining({
+        skillKey: "legacy",
+        description: legacyDescription,
+      }),
+    ]);
+    await expect(agentStore.loadAgentSkill("panda", "legacy")).resolves.toMatchObject({
+      skillKey: "legacy",
+      description: legacyDescription,
+      loadCount: 1,
+      lastLoadedAt: expect.any(Number),
+    });
+  });
+
+  it("rejects blank content and descriptions over 255 characters when storing agent skills", async () => {
     const { agentStore } = await createStores();
 
     await agentStore.bootstrapAgent({
@@ -347,9 +380,16 @@ describe("PostgresAgentStore", () => {
     await expect(agentStore.setAgentSkill(
       "panda",
       "calendar",
-      "x".repeat(8_001),
+      "x".repeat(255),
       "# Calendar",
-    )).rejects.toThrow("Skill description must be at most 8000 characters.");
+    )).resolves.toMatchObject({description: "x".repeat(255)});
+
+    await expect(agentStore.setAgentSkill(
+      "panda",
+      "calendar",
+      "x".repeat(256),
+      "# Calendar",
+    )).rejects.toThrow("Skill description must be at most 255 characters.");
 
     await expect(agentStore.setAgentSkill(
       "panda",

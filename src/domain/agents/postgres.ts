@@ -22,6 +22,7 @@ import {
   normalizeAgentSkillContent,
   normalizeAgentSkillDescription,
   normalizeAgentSkillTags,
+  normalizePersistedAgentSkillDescription,
   normalizeSkillKey,
 } from "./types.js";
 
@@ -96,7 +97,7 @@ function parseAgentSkillRow(row: Record<string, unknown>): AgentSkillRecord {
     skillKey: normalizeSkillKey(
       requireNonEmptyString(row.skill_key, "Agent skill row is missing skill key."),
     ),
-    description: normalizeAgentSkillDescription(
+    description: normalizePersistedAgentSkillDescription(
       requireNonEmptyString(row.description, "Agent skill row is missing description."),
     ),
     content: normalizeAgentSkillContent(
