@@ -61,6 +61,23 @@ describe("AgentSkillTool", () => {
     return (await createStoreWithPool()).store;
   }
 
+  it("describes tags as sparse discovery metadata, not a target", () => {
+    const tool = new AgentSkillTool({
+      store: {
+        deleteAgentSkill: async () => { throw new Error("not used"); },
+        loadAgentSkill: async () => { throw new Error("not used"); },
+        setAgentSkill: async () => { throw new Error("not used"); },
+      },
+    });
+
+    const parameters = tool.piTool.parameters as {properties: Record<string, {description?: string}>};
+    const tagDescription = parameters.properties.tags?.description;
+
+    expect(tagDescription).toContain("Prefer omitting tags unless they materially help discovery");
+    expect(tagDescription).toContain("0-2 broad lowercase tags");
+    expect(tagDescription).toContain("Max 20 tags is a hard cap, not a target");
+  });
+
   it("upserts a skill on the current session agent", async () => {
     const store = await createStore();
     const tool = new AgentSkillTool({ store });

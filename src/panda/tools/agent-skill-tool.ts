@@ -117,7 +117,7 @@ export class AgentSkillTool<TContext = DefaultAgentSessionContext>
       `Required for set. Full markdown skill body stored in Postgres. Max ${MAX_AGENT_SKILL_CONTENT_CHARS} characters.`,
     ),
     tags: z.array(z.string()).optional().describe(
-      `Optional for set. Lightweight lowercase discovery tags. Max ${MAX_AGENT_SKILL_TAGS} tags, ${MAX_AGENT_SKILL_TAG_CHARS} chars each. Omitted means no tags.`,
+      `Optional for set. Prefer omitting tags unless they materially help discovery; when useful, use 0-2 broad lowercase tags. Max ${MAX_AGENT_SKILL_TAGS} tags is a hard cap, not a target; ${MAX_AGENT_SKILL_TAG_CHARS} chars each.`,
     ),
   }).superRefine((value, ctx) => {
     if (value.operation === "set") {

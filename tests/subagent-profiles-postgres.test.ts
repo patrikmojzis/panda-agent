@@ -160,6 +160,17 @@ describe("PostgresSubagentProfileStore", () => {
     };
   }
 
+  it("includes sparse tag hygiene in the built-in skill maintainer prompt", () => {
+    const profile = BUILTIN_SUBAGENT_PROFILES.find((candidate) => candidate.slug === "skill_maintainer");
+    if (!profile) throw new Error("Missing built-in skill maintainer profile.");
+
+    expect(profile.prompt).toContain("Tag hygiene:");
+    expect(profile.prompt).toContain("Omit tags unless they materially help discovery");
+    expect(profile.prompt).toContain("prefer 0-2 broad, reusable, lowercase tags");
+    expect(profile.prompt).toContain("Avoid one-off/project/session/proper-noun tags and noisy tag soup");
+    expect(profile.prompt).toContain("Keep tags stable and discovery-oriented");
+  });
+
   it("seeds built-in profiles through the DB store idempotently", async () => {
     const {pool, profileStore} = await createStores();
 
