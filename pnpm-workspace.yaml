@@ -6,6 +6,7 @@ minimumReleaseAge: 1440
 
 overrides:
   '@anthropic-ai/sdk': 0.91.1
-  protobufjs: 7.5.6
+  protobufjs: 7.6.1
+  hono: 4.12.25
   basic-ftp: 5.3.1
   fast-xml-builder: 1.1.7
