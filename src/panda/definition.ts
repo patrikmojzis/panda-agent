@@ -15,6 +15,7 @@ import {
 import {CurrentDateTimeTool} from "./tools/current-datetime-tool.js";
 import {ImageGenerateTool, type ImageGenerateToolOptions} from "./tools/image-generate-tool.js";
 import {WebFetchTool} from "./tools/web-fetch-tool.js";
+import {VentTool} from "./tools/vent-tool.js";
 import {WebResearchTool, type WebResearchToolOptions} from "./tools/web-research-tool.js";
 import {hasOpenAiApiKey, WhisperTool} from "./tools/whisper-tool.js";
 import {GlobFilesTool, GrepFilesTool, ReadFileTool} from "./tools/workspace-readonly-tools.js";
@@ -43,6 +44,7 @@ export interface DefaultAgentToolRegistry {
   imageGenerate?: ImageGenerateTool;
   media: MediaTool;
   webFetch: WebFetchTool;
+  vent: VentTool;
   browser: BrowserTool;
   braveSearch?: BraveSearchTool;
   webResearch?: WebResearchTool;
@@ -84,6 +86,7 @@ export function createDefaultAgentToolRegistry(
       }
       : {}),
     webFetch: new WebFetchTool(),
+    vent: new VentTool(),
     browser: new BrowserTool(options.browser),
   };
 
@@ -137,6 +140,7 @@ export function buildDefaultAgentToolsetsFromRegistry(
       registry.media,
       registry.imageGenerate,
       registry.webFetch,
+      registry.vent,
       registry.postgresReadonlyQuery,
       registry.webResearch,
       registry.whisper,

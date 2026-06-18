@@ -50,6 +50,7 @@ describe("subagent tool groups", () => {
             "whisper",
             "view_media",
             "todo_update",
+            "vent",
           ],
         },
         "execute": {
@@ -138,6 +139,7 @@ describe("subagent tool groups", () => {
       "whisper",
       "view_media",
       "todo_update",
+      "vent",
       "postgres_readonly_query",
       "wiki",
     ]);
@@ -145,7 +147,7 @@ describe("subagent tool groups", () => {
 
   it("resolves operation-aware execution tool policies", () => {
     expect(resolveSubagentToolPolicy(["core"])).toMatchObject({
-      allowedTools: expect.arrayContaining(["agent_skill", "message_agent"]),
+      allowedTools: expect.arrayContaining(["agent_skill", "message_agent", "vent"]),
       agentSkill: {
         allowedOperations: ["load"],
       },

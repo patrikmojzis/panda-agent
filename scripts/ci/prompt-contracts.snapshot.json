@@ -49,10 +49,10 @@
       "sha256": "20d20c88a23d65e89752a5a5da5750fc418c39c0177e812cdc8d58fa828c7a84"
     },
     {
-      "bytes": 5552,
-      "lines": 167,
+      "bytes": 5566,
+      "lines": 168,
       "path": "src/domain/subagents/tool-groups.ts",
-      "sha256": "1f01b111412cf0fd29ab03d08258b9e5932784e66a1520988499b1cdc4b5f0c7"
+      "sha256": "4e45a15120d260e12c3f4b1645070816ae13a595692a18971d0ad7e10b615cb2"
     },
     {
       "bytes": 2639,
@@ -139,10 +139,10 @@
       "sha256": "274cbf284ffa7b98c2e05de5d97b9bfb07095e6bdbd9dd6def2ea9246a7dce9f"
     },
     {
-      "bytes": 6266,
-      "lines": 199,
+      "bytes": 6378,
+      "lines": 203,
       "path": "src/panda/definition.ts",
-      "sha256": "b42889f1ab4f0808fbddce53c1ad585755797f11e4c7d423897d792767e2bfd2"
+      "sha256": "b8c7532a1aeb997bf1942cecadffd56374d0483f41eec08127514d7343f26e84"
     },
     {
       "bytes": 2103,
@@ -359,7 +359,8 @@
         "image_generate",
         "whisper",
         "view_media",
-        "todo_update"
+        "todo_update",
+        "vent"
       ]
     },
     "execute": {
@@ -1917,6 +1918,26 @@
       }
     },
     {
+      "description": "Privately vent a short emotional note and continue.\nIf dedicated PANDA_TRACE_VENT_* env is configured, the note is sent to Panda Trace; otherwise it is softly acknowledged and dropped.\nThe tool result never repeats the vent text.",
+      "name": "vent",
+      "parameters": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "description": "Private free-text vent message from the agent. Max 2000 characters.",
+            "maxLength": 2000,
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      }
+    },
+    {
       "description": "Read an image or PDF file. Images are attached directly. PDFs are attached as preview images generated from the file.",
       "name": "view_media",
       "parameters": {
@@ -2337,6 +2358,7 @@
       "view_media",
       "image_generate",
       "web_fetch",
+      "vent",
       "postgres_readonly_query",
       "web_research",
       "whisper",
@@ -2376,6 +2398,7 @@
       "view_media",
       "image_generate",
       "web_fetch",
+      "vent",
       "postgres_readonly_query",
       "web_research",
       "whisper",
@@ -2412,6 +2435,7 @@
       "view_media",
       "image_generate",
       "web_fetch",
+      "vent",
       "postgres_readonly_query",
       "web_research",
       "whisper",

@@ -74,11 +74,12 @@ describe("Panda feature surface", () => {
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
       'Do not leak sensitive details through "just a summary," paraphrase, excerpt, or forwarding the emotional gist.',
     );
-    expect(tools).toHaveLength(4);
+    expect(tools).toHaveLength(5);
     expect(tools[0]).toBeInstanceOf(BashTool);
     expect(tools[1]?.name).toBe("current_datetime");
     expect(tools[2]).toBeInstanceOf(MediaTool);
     expect(tools[3]).toBeInstanceOf(WebFetchTool);
+    expect(tools[4]?.name).toBe("vent");
   });
 
   it("adds image generation only when background jobs are available", () => {
@@ -100,6 +101,7 @@ describe("Panda feature surface", () => {
       "view_media",
       "image_generate",
       "web_fetch",
+      "vent",
     ]);
     expect(tools[6]).toBeInstanceOf(ImageGenerateTool);
   });
@@ -172,8 +174,9 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "");
     const tools = buildDefaultAgentTools();
 
-    expect(tools).toHaveLength(5);
-    expect(tools[4]).toBeInstanceOf(BraveSearchTool);
+    expect(tools).toHaveLength(6);
+    expect(tools[4]?.name).toBe("vent");
+    expect(tools[5]).toBeInstanceOf(BraveSearchTool);
   });
 
   it("adds Whisper when OPENAI_API_KEY is configured", () => {
@@ -181,8 +184,9 @@ describe("Panda feature surface", () => {
     vi.stubEnv("OPENAI_API_KEY", "openai-test-key");
     const tools = buildDefaultAgentTools();
 
-    expect(tools).toHaveLength(5);
-    expect(tools[4]).toBeInstanceOf(WhisperTool);
+    expect(tools).toHaveLength(6);
+    expect(tools[4]?.name).toBe("vent");
+    expect(tools[5]).toBeInstanceOf(WhisperTool);
   });
 
   it("adds web research only when OpenAI and background jobs are available", () => {
@@ -204,8 +208,9 @@ describe("Panda feature surface", () => {
     const extraTool = new WebFetchTool();
     const tools = buildDefaultAgentTools([extraTool]);
 
-    expect(tools).toHaveLength(5);
-    expect(tools[4]).toBe(extraTool);
+    expect(tools).toHaveLength(6);
+    expect(tools[4]?.name).toBe("vent");
+    expect(tools[5]).toBe(extraTool);
   });
 
   it("builds explicit specialist toolsets and keeps workspace/browser tools off the main agent", () => {
@@ -222,6 +227,7 @@ describe("Panda feature surface", () => {
       "current_datetime",
       "view_media",
       "web_fetch",
+      "vent",
       "postgres_readonly_query",
     ]);
     expect(toolsets.main.some((tool) => tool instanceof PostgresReadonlyQueryTool)).toBe(true);
