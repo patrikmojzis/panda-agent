@@ -402,6 +402,7 @@ export interface ControlSkillRow {
   description: string;
   content?: string;
   tags: readonly string[];
+  agentEditable: boolean;
   lastLoadedAt?: string;
   loadCount: number;
   createdAt: string;
@@ -857,6 +858,7 @@ function publicSkill(skill: AgentSkillRecord, includeContent = false): ControlSk
     description: skill.description,
     ...(includeContent ? {content: skill.content} : {}),
     tags: skill.tags,
+    agentEditable: skill.agentEditable,
     ...(skill.lastLoadedAt ? {lastLoadedAt: iso(skill.lastLoadedAt)} : {}),
     loadCount: skill.loadCount,
     createdAt: iso(skill.createdAt)!,
@@ -868,6 +870,12 @@ function parseControlSkillTags(value: unknown): string[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw new Error("Skill tags must be an array of strings.");
   return normalizeAgentSkillTags(value);
+}
+
+function parseControlSkillAgentEditable(value: unknown): boolean | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "boolean") throw new Error("Skill agentEditable must be a boolean.");
+  return value;
 }
 
 function publicSubagent(profile: SubagentProfileRecord, includePrompt = false): ControlSubagentRow {
@@ -3006,13 +3014,15 @@ export class ControlOperatorService {
     description?: unknown;
     content?: unknown;
     tags?: unknown;
+    agentEditable?: unknown;
   }): Promise<{skill: ControlSkillRow; audit: Record<string, unknown>}> {
     const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
     const skillKey = requireNonEmptyString(input.skillKey, "Skill key is required.");
     const description = requireNonEmptyString(input.description, "Skill description is required.");
     const content = requireNonEmptyString(input.content, "Skill content is required.");
     const tags = parseControlSkillTags(input.tags);
-    const skill = await this.agents.setAgentSkill(normalizedAgentKey, skillKey, description, content, tags);
+    const agentEditable = parseControlSkillAgentEditable(input.agentEditable);
+    const skill = await this.agents.setAgentSkill(normalizedAgentKey, skillKey, description, content, tags, {agentEditable});
     return {
       skill: publicSkill(skill, true),
       audit: {
@@ -3021,6 +3031,7 @@ export class ControlOperatorService {
         skillKey: skill.skillKey,
         content: secretSummary(content),
         tags: skill.tags,
+        agentEditable: skill.agentEditable,
       },
     };
   }

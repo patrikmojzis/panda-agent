@@ -228,6 +228,7 @@ export function skillPayload(values: SkillFormValues) {
       .split(/[\n,]+/)
       .map((value) => value.trim())
       .filter(Boolean),
+    agentEditable: values.agentEditable,
   }
 }
 

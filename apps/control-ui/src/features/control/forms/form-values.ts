@@ -164,6 +164,7 @@ export const skillDefaults: SkillFormValues = {
   description: "",
   skillKey: "",
   tags: "",
+  agentEditable: true,
 }
 
 export const subagentDefaults: SubagentFormValues = {
@@ -301,6 +302,7 @@ export function skillToFormValues(skill: SkillRow): SkillFormValues {
     description: skill.description ?? "",
     skillKey: skill.skillKey,
     tags: skill.tags?.join(", ") ?? "",
+    agentEditable: skill.agentEditable ?? true,
   }
 }
 

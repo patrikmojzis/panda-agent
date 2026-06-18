@@ -131,6 +131,7 @@ function safeOperatorSummary(value: unknown): Record<string, unknown> {
     ...(typeof raw.loginTokenExpiresAt === "string" ? {loginTokenExpiresAt: raw.loginTokenExpiresAt} : {}),
     ...(typeof raw.envKey === "string" ? {envKey: raw.envKey} : {}),
     ...(typeof raw.skillKey === "string" ? {skillKey: raw.skillKey} : {}),
+    ...(typeof raw.agentEditable === "boolean" ? {agentEditable: raw.agentEditable} : {}),
     ...(typeof raw.slug === "string" ? {slug: raw.slug} : {}),
     ...(typeof raw.sourceId === "string" ? {sourceId: raw.sourceId} : {}),
     ...(typeof raw.deviceId === "string" ? {deviceId: raw.deviceId} : {}),

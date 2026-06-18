@@ -10,6 +10,7 @@ import {
   type DataTableState,
   useDataTableState,
 } from "@/components/common/data-table"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { useToastMutation } from "@/features/control/api/mutations"
@@ -64,6 +65,17 @@ export function SkillsPanel({ agentKey }: { agentKey: string }) {
       enableSorting: false,
       cell: ({ row }) => (
         <TokenBadges values={row.original.tags ?? []} className="max-w-64" />
+      ),
+    },
+    {
+      accessorKey: "agentEditable",
+      meta: { label: "Agent edits" },
+      header: renderColumnHeader,
+      enableSorting: true,
+      cell: ({ row }) => (
+        <Badge variant={row.original.agentEditable ? "outline" : "secondary"}>
+          {row.original.agentEditable ? "Allowed" : "Locked"}
+        </Badge>
       ),
     },
     {
@@ -127,7 +139,7 @@ export function SkillsPanel({ agentKey }: { agentKey: string }) {
       rowKey={(row) => row.skillKey}
       emptyLabel="No skills configured for this agent."
       emptyDescription="Create reusable instructions or reference material that this agent can load when needed."
-      mobileColumnVisibility={mobileHiddenColumns("description", "tags")}
+      mobileColumnVisibility={mobileHiddenColumns("description", "tags", "agentEditable")}
       toolbarActions={
         <Button
           size="sm"

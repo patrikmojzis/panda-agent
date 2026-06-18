@@ -306,6 +306,7 @@ export type SkillRow = {
   description: string
   content?: string
   tags: string[]
+  agentEditable: boolean
   loadCount: number
   createdAt: string
   updatedAt: string

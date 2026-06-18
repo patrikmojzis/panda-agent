@@ -146,6 +146,7 @@ export type SkillFormValues = {
   description: string
   tags: string
   content: string
+  agentEditable: boolean
 }
 
 export type SubagentFormValues = {

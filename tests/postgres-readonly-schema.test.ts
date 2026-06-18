@@ -580,7 +580,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
       displayName: "Ops",
       prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
-    await agentStore.setAgentSkill("panda", "calendar", "Panda calendar skill.", "# Panda", ["calendar", "repo:panda-agent"]);
+    await agentStore.setAgentSkill("panda", "calendar", "Panda calendar skill.", "# Panda", ["calendar", "repo:panda-agent"], {agentEditable: false});
     await agentStore.loadAgentSkill("panda", "calendar");
     await agentStore.setAgentSkill("ops", "calendar", "Ops calendar skill.", "# Ops");
 
@@ -592,7 +592,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     await ensureReadonlySessionQuerySchema({ queryable });
 
     const result = await pool.query(
-      "SELECT skill_key, description, tags, content_bytes, load_count, last_loaded_at IS NOT NULL AS has_last_loaded_at FROM \"session\".\"agent_skills\" ORDER BY skill_key",
+      "SELECT skill_key, description, tags, agent_editable, content_bytes, load_count, last_loaded_at IS NOT NULL AS has_last_loaded_at FROM \"session\".\"agent_skills\" ORDER BY skill_key",
     );
 
     expect(result.rows).toEqual([
@@ -600,6 +600,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
         skill_key: "calendar",
         description: "Panda calendar skill.",
         tags: ["calendar", "repo:panda-agent"],
+        agent_editable: false,
         content_bytes: 7,
         load_count: 1,
         has_last_loaded_at: true,

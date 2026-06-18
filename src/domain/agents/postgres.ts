@@ -1,3 +1,4 @@
+import {requireBoolean} from "../../lib/booleans.js";
 import {readOptionalJsonValue, stringifyOptionalJsonValue} from "../../lib/json.js";
 import {requireNonNegativeInteger} from "../../lib/numbers.js";
 import type {PgPoolLike} from "../../lib/postgres-query.js";
@@ -16,8 +17,10 @@ import type {
   AgentRecord,
   AgentSkillRecord,
   BootstrapAgentInput,
+  SetAgentSkillOptions,
 } from "./types.js";
 import {
+  AgentSkillNotEditableError,
   normalizeAgentKey,
   normalizeAgentSkillContent,
   normalizeAgentSkillDescription,
@@ -89,6 +92,14 @@ function parseAgentSkillTags(value: unknown): string[] {
   return normalizeAgentSkillTags(value);
 }
 
+function parseAgentSkillEditable(value: unknown): boolean {
+  if (value === null || value === undefined) {
+    return true;
+  }
+
+  return requireBoolean(value, "Agent skill agent_editable must be a boolean.");
+}
+
 function parseAgentSkillRow(row: Record<string, unknown>): AgentSkillRecord {
   return {
     agentKey: normalizeAgentKey(
@@ -104,6 +115,7 @@ function parseAgentSkillRow(row: Record<string, unknown>): AgentSkillRecord {
       requireNonEmptyString(row.content, "Agent skill row is missing content."),
     ),
     tags: parseAgentSkillTags(row.tags),
+    agentEditable: parseAgentSkillEditable(row.agent_editable),
     lastLoadedAt: optionalTimestampMillis(row.last_loaded_at, "Agent skill last_loaded_at must be a valid timestamp."),
     loadCount: requireNonNegativeInteger(row.load_count ?? 0, "Agent skill load count"),
     createdAt: requireTimestampMillis(row.created_at, "Agent skill created_at must be a valid timestamp."),
@@ -335,27 +347,40 @@ export class PostgresAgentStore implements AgentStore {
     return row ? parseAgentSkillRow(row as Record<string, unknown>) : null;
   }
 
-  async setAgentSkill(agentKey: string, skillKey: string, description: string, content: string, tags: readonly unknown[] = []): Promise<AgentSkillRecord> {
+  async setAgentSkill(
+    agentKey: string,
+    skillKey: string,
+    description: string,
+    content: string,
+    tags: readonly unknown[] = [],
+    options: SetAgentSkillOptions = {},
+  ): Promise<AgentSkillRecord> {
     const normalizedTags = normalizeAgentSkillTags(tags);
     const result = await this.pool.query(`
-      INSERT INTO ${this.tables.agentSkills} (
+      INSERT INTO ${this.tables.agentSkills} AS skill (
         agent_key,
         skill_key,
         description,
         content,
-        tags
+        tags,
+        agent_editable
       ) VALUES (
         $1,
         $2,
         $3,
         $4,
-        $5::text[]
+        $5::text[],
+        COALESCE($6::boolean, TRUE)
       )
       ON CONFLICT (agent_key, skill_key)
       DO UPDATE SET
         description = EXCLUDED.description,
         content = EXCLUDED.content,
         tags = EXCLUDED.tags,
+        agent_editable = CASE
+          WHEN $6::boolean IS NULL THEN skill.agent_editable
+          ELSE EXCLUDED.agent_editable
+        END,
         updated_at = NOW()
       RETURNING *
     `, [
@@ -364,9 +389,94 @@ export class PostgresAgentStore implements AgentStore {
       normalizeAgentSkillDescription(description),
       normalizeAgentSkillContent(content),
       normalizedTags,
+      options.agentEditable ?? null,
     ]);
 
     return parseAgentSkillRow(result.rows[0] as Record<string, unknown>);
+  }
+
+  async setAgentSkillAsAgent(agentKey: string, skillKey: string, description: string, content: string, tags: readonly unknown[] = []): Promise<AgentSkillRecord> {
+    const normalizedAgentKey = normalizeAgentKey(agentKey);
+    const normalizedSkillKey = normalizeSkillKey(skillKey);
+    const normalizedDescription = normalizeAgentSkillDescription(description);
+    const normalizedContent = normalizeAgentSkillContent(content);
+    const normalizedTags = normalizeAgentSkillTags(tags);
+
+    const update = async (): Promise<AgentSkillRecord | null> => {
+      const result = await this.pool.query(`
+        UPDATE ${this.tables.agentSkills}
+        SET
+          description = $3,
+          content = $4,
+          tags = $5::text[],
+          updated_at = NOW()
+        WHERE agent_key = $1
+          AND skill_key = $2
+          AND agent_editable = TRUE
+        RETURNING *
+      `, [
+        normalizedAgentKey,
+        normalizedSkillKey,
+        normalizedDescription,
+        normalizedContent,
+        normalizedTags,
+      ]);
+
+      const row = result.rows[0];
+      return row ? parseAgentSkillRow(row as Record<string, unknown>) : null;
+    };
+
+    const updated = await update();
+    if (updated) {
+      return updated;
+    }
+
+    const existing = await this.readAgentSkill(normalizedAgentKey, normalizedSkillKey);
+    if (existing && !existing.agentEditable) {
+      throw new AgentSkillNotEditableError();
+    }
+
+    const inserted = await this.pool.query(`
+      INSERT INTO ${this.tables.agentSkills} (
+        agent_key,
+        skill_key,
+        description,
+        content,
+        tags,
+        agent_editable
+      ) VALUES (
+        $1,
+        $2,
+        $3,
+        $4,
+        $5::text[],
+        TRUE
+      )
+      ON CONFLICT (agent_key, skill_key) DO NOTHING
+      RETURNING *
+    `, [
+      normalizedAgentKey,
+      normalizedSkillKey,
+      normalizedDescription,
+      normalizedContent,
+      normalizedTags,
+    ]);
+    const insertedRow = inserted.rows[0];
+    if (insertedRow) {
+      return parseAgentSkillRow(insertedRow as Record<string, unknown>);
+    }
+
+    const conflicted = await this.readAgentSkill(normalizedAgentKey, normalizedSkillKey);
+    if (conflicted && !conflicted.agentEditable) {
+      throw new AgentSkillNotEditableError();
+    }
+
+    const retried = await update();
+    if (retried) {
+      return retried;
+    }
+
+    throw new Error("Agent skill update did not return a row.");
   }
 
   async deleteAgentSkill(agentKey: string, skillKey: string): Promise<boolean> {
@@ -380,6 +490,31 @@ export class PostgresAgentStore implements AgentStore {
     ]);
 
     return (result.rowCount ?? 0) > 0;
+  }
+
+  async deleteAgentSkillAsAgent(agentKey: string, skillKey: string): Promise<boolean> {
+    const normalizedAgentKey = normalizeAgentKey(agentKey);
+    const normalizedSkillKey = normalizeSkillKey(skillKey);
+    const result = await this.pool.query(`
+      DELETE FROM ${this.tables.agentSkills}
+      WHERE agent_key = $1
+        AND skill_key = $2
+        AND agent_editable = TRUE
+    `, [
+      normalizedAgentKey,
+      normalizedSkillKey,
+    ]);
+
+    if ((result.rowCount ?? 0) > 0) {
+      return true;
+    }
+
+    const existing = await this.readAgentSkill(normalizedAgentKey, normalizedSkillKey);
+    if (existing && !existing.agentEditable) {
+      throw new AgentSkillNotEditableError();
+    }
+
+    return false;
   }
 
   async readAgentPrompt(agentKey: string, slug: AgentPromptSlug): Promise<AgentPromptRecord | null> {

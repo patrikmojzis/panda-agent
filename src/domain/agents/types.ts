@@ -38,10 +38,22 @@ export interface AgentSkillRecord {
   description: string;
   content: string;
   tags: readonly string[];
+  agentEditable: boolean;
   lastLoadedAt?: number;
   loadCount: number;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface SetAgentSkillOptions {
+  agentEditable?: boolean;
+}
+
+export class AgentSkillNotEditableError extends Error {
+  constructor() {
+    super("Skill is locked from agent edits.");
+    this.name = "AgentSkillNotEditableError";
+  }
 }
 
 export interface BootstrapAgentInput extends CreateAgentInput {

@@ -207,6 +207,7 @@ describe("PostgresAgentStore", () => {
 
     expect(created.skillKey).toBe("calendar");
     expect(created.tags).toEqual(["coding", "repo:panda-agent", "ui-ux", "project:ortoart"]);
+    expect(created.agentEditable).toBe(true);
     expect(created.loadCount).toBe(0);
     expect(created.lastLoadedAt).toBeUndefined();
     expect(updated.updatedAt).toBeGreaterThanOrEqual(created.updatedAt);
@@ -214,6 +215,7 @@ describe("PostgresAgentStore", () => {
       skillKey: "calendar",
       description: "Updated description.",
       content: "# Calendar\nUpdated skill body.",
+      agentEditable: true,
       loadCount: 0,
       lastLoadedAt: undefined,
     });
@@ -264,6 +266,80 @@ describe("PostgresAgentStore", () => {
     await expect(agentStore.readAgentSkill("ops", "calendar")).resolves.toMatchObject({
       description: "Ops-only description.",
     });
+  });
+
+  it("defaults legacy skills editable and guards agent-facing mutations when locked", async () => {
+    const { pool, agentStore } = await createStores();
+
+    await agentStore.bootstrapAgent({
+      agentKey: "panda",
+      displayName: "Panda",
+      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
+    });
+    await pool.query(`
+      INSERT INTO runtime.agent_skills (agent_key, skill_key, description, content, tags)
+      VALUES ('panda', 'legacy', 'Legacy skill.', '# Legacy', $1::text[])
+    `, [[]]);
+
+    await expect(agentStore.readAgentSkill("panda", "legacy")).resolves.toMatchObject({
+      skillKey: "legacy",
+      agentEditable: true,
+    });
+
+    const locked = await agentStore.setAgentSkill(
+      "panda",
+      "locked",
+      "Locked skill.",
+      "PRIVATE_LOCKED_CONTENT",
+      [],
+      {agentEditable: false},
+    );
+    expect(locked.agentEditable).toBe(false);
+
+    const trustedUpdate = await agentStore.setAgentSkill(
+      "panda",
+      "locked",
+      "Trusted update.",
+      "PRIVATE_LOCKED_CONTENT_UPDATED",
+    );
+    expect(trustedUpdate.agentEditable).toBe(false);
+
+    await expect(agentStore.loadAgentSkill("panda", "locked")).resolves.toMatchObject({
+      skillKey: "locked",
+      agentEditable: false,
+      loadCount: 1,
+    });
+    await expect(agentStore.setAgentSkillAsAgent(
+      "panda",
+      "locked",
+      "Agent update.",
+      "# Agent update",
+    )).rejects.toThrow("Skill is locked from agent edits.");
+    await expect(agentStore.deleteAgentSkillAsAgent("panda", "locked")).rejects.toThrow("Skill is locked from agent edits.");
+    await expect(agentStore.readAgentSkill("panda", "locked")).resolves.toMatchObject({
+      description: "Trusted update.",
+      content: "PRIVATE_LOCKED_CONTENT_UPDATED",
+      agentEditable: false,
+    });
+
+    await expect(agentStore.setAgentSkill(
+      "panda",
+      "locked",
+      "Unlocked skill.",
+      "# Unlocked",
+      [],
+      {agentEditable: true},
+    )).resolves.toMatchObject({agentEditable: true});
+    await expect(agentStore.setAgentSkillAsAgent(
+      "panda",
+      "locked",
+      "Agent update after unlock.",
+      "# Agent update after unlock",
+    )).resolves.toMatchObject({
+      description: "Agent update after unlock.",
+      agentEditable: true,
+    });
+    await expect(agentStore.deleteAgentSkillAsAgent("panda", "locked")).resolves.toBe(true);
   });
 
   it("rejects driver-shaped persisted agent skill load counts", async () => {
