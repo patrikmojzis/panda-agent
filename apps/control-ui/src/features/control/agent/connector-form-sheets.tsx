@@ -440,7 +440,7 @@ export function TelegramConnectorSheet() {
         description: "The bot token is validated with Telegram and stored write-only. Reusing an account key replaces that bot only when Replace is on.",
         confirmLabel: "Save Telegram account",
       }}
-      description="Store a Telegram bot token for this agent. Account keys are per bot: use the suggested key from the setup card (main for Clawd, luna for Luna) — not one shared main for every bot."
+      description="Store a Telegram bot token for this agent. Account keys are per bot: use the prefilled agent-specific key when available (main for Clawd, luna for Luna) — not one shared main for every bot."
       form={form}
       isOpen={isOpen}
       resetValues={resetValues}
@@ -454,7 +454,7 @@ export function TelegramConnectorSheet() {
             label="Account key"
             autoComplete="off"
             autoFocus
-            description="Per bot key. Use the setup card suggestion for this agent. Example: main for Clawd, luna for Luna. Reusing a key needs Replace."
+            description="Per bot key. Keep the prefilled suggestion for this agent unless you are adding another bot. Example: main for Clawd, luna for Luna. Reusing a key needs Replace."
             placeholder="agent-specific key"
             required
           />
