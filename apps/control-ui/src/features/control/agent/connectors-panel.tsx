@@ -12,7 +12,6 @@ import {
   useDataTableState,
 } from "@/components/common/data-table"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -31,7 +30,6 @@ import {
   useAgentEmailAllowedRecipients,
   useAgentEmailRoutes,
   useAgentSessions,
-  useTelegramSetupStatus,
 } from "@/features/control/api/queries"
 import {
   StatusBadge,
@@ -55,7 +53,6 @@ import {
   useEmailConnectorSheet,
   useTelegramConnectorSheet,
   useEmailRouteSheet,
-  useAgentPairingSheet,
 } from "@/features/control/forms/use-control-form-sheets"
 import {
   sessionPickerLabel,
@@ -99,8 +96,6 @@ const channelActorSourceFilterOptions = [
 export function ConnectorsPanel({ agentKey }: { agentKey: string }) {
   const auth = useAuth()
   const bindingSheet = useBindingSheet()
-  const agentPairingSheet = useAgentPairingSheet()
-  const channelActorPairingSheet = useChannelActorPairingSheet()
   const discordSheet = useDiscordConnectorSheet()
   const emailSheet = useEmailConnectorSheet()
   const telegramSheet = useTelegramConnectorSheet()
@@ -245,13 +240,6 @@ export function ConnectorsPanel({ agentKey }: { agentKey: string }) {
     <div className="grid min-w-0 gap-6">
       <section className="grid min-w-0 gap-3">
         <h2 className="text-sm font-semibold">Connector accounts</h2>
-        <TelegramSetupCard
-          agentKey={agentKey}
-          onOpenSetup={(accountKey) => telegramSheet.setOpen(true, { context: { agentKey }, defaultData: { accountKey, botToken: "", replace: false } })}
-          onOpenBinding={(accountKey) => bindingSheet.setOpen(true, { context: { agentKey }, defaultData: { source: "telegram", connectorKey: accountKey, externalConversationId: "", sessionId: "", displayName: "" } })}
-          onOpenIdentityPairing={() => agentPairingSheet.setOpen(true, { context: { agentKey } })}
-          onOpenActorPairing={(accountKey) => channelActorPairingSheet.setOpen(true, { context: { agentKey }, defaultData: { source: "telegram", connectorKey: accountKey, externalActorId: "", identityId: "" } })}
-        />
         <DataTableView
           columns={columns}
           response={connectors.data}
@@ -303,98 +291,6 @@ export function ConnectorsPanel({ agentKey }: { agentKey: string }) {
 
 function suggestedTelegramAccountKey(agentKey: string) {
   return agentKey === "clawd" ? "main" : agentKey
-}
-
-function actionForTelegramSetupStep(
-  key: string,
-  accountKey: string,
-  actions: {
-    onOpenSetup: (accountKey: string) => void
-    onOpenBinding: (accountKey: string) => void
-    onOpenIdentityPairing: () => void
-    onOpenActorPairing: (accountKey: string) => void
-  }
-) {
-  if (key === "account") return { label: "Store account", onClick: () => actions.onOpenSetup(accountKey) }
-  if (key === "binding") return { label: "Bind session", onClick: () => actions.onOpenBinding(accountKey) }
-  if (key === "identity") return { label: "Pair identity", onClick: actions.onOpenIdentityPairing }
-  if (key === "actor") return { label: "Pair Telegram user", onClick: () => actions.onOpenActorPairing(accountKey) }
-  return undefined
-}
-
-function TelegramSetupCard({
-  agentKey,
-  onOpenSetup,
-  onOpenBinding,
-  onOpenIdentityPairing,
-  onOpenActorPairing,
-}: {
-  agentKey: string
-  onOpenSetup: (accountKey: string) => void
-  onOpenBinding: (accountKey: string) => void
-  onOpenIdentityPairing: () => void
-  onOpenActorPairing: (accountKey: string) => void
-}) {
-  const [accountKey, setAccountKey] = React.useState(() => suggestedTelegramAccountKey(agentKey))
-  React.useEffect(() => {
-    setAccountKey(suggestedTelegramAccountKey(agentKey))
-  }, [agentKey])
-  const normalizedAccountKey = accountKey.trim() || suggestedTelegramAccountKey(agentKey)
-  const status = useTelegramSetupStatus(agentKey, normalizedAccountKey, { staleTime: 30_000 })
-  const checklist = status.data?.status.checklist ?? []
-  const ready = checklist.length > 0 && checklist.every((item) => item.status === "done" || item.status === "info")
-  return (
-    <div className="rounded-lg border bg-card p-4 text-card-foreground shadow-sm">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-        <div className="grid gap-1">
-          <h3 className="text-sm font-semibold">Telegram setup wizard</h3>
-          <p className="max-w-3xl text-sm text-muted-foreground">
-            Pick one account key per bot, store the bot token in the DB, bind a Telegram conversation to a session, pair an identity, then pair the numeric Telegram user id. Suggested key for this agent: <span className="font-mono">{suggestedTelegramAccountKey(agentKey)}</span>.
-          </p>
-        </div>
-        <div className="grid gap-2 sm:min-w-64">
-          <label className="text-xs font-medium" htmlFor={`telegram-account-key-${agentKey}`}>Account key to check</label>
-          <div className="flex gap-2">
-            <Input
-              id={`telegram-account-key-${agentKey}`}
-              value={accountKey}
-              onChange={(event) => setAccountKey(event.target.value)}
-              placeholder={suggestedTelegramAccountKey(agentKey)}
-            />
-            <Button size="sm" onClick={() => onOpenSetup(normalizedAccountKey)}>
-              <MessageCircle className="size-4" />
-              Store
-            </Button>
-          </div>
-          <p className="text-xs text-muted-foreground">Do not reuse <span className="font-mono">main</span> for another bot; use <span className="font-mono">--replace</span> only for intentional rotation.</p>
-        </div>
-      </div>
-      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-        {status.isLoading && checklist.length === 0 ? (
-          <div className="text-sm text-muted-foreground">Checking Telegram setup for <span className="font-mono">{normalizedAccountKey}</span>…</div>
-        ) : checklist.length > 0 ? (
-          checklist.map((item) => {
-            const action = item.status === "done" || item.status === "info" ? undefined : actionForTelegramSetupStep(item.key, normalizedAccountKey, { onOpenSetup, onOpenBinding, onOpenIdentityPairing, onOpenActorPairing })
-            return (
-              <div key={item.key} className="rounded-md border bg-background p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-medium">{item.label}</span>
-                  <StatusBadge status={item.status === "done" ? "enabled" : item.status} />
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">{item.detail}</p>
-                {action ? <Button className="mt-2" size="sm" variant="outline" onClick={action.onClick}>{action.label}</Button> : null}
-              </div>
-            )
-          })
-        ) : (
-          <div className="text-sm text-muted-foreground">Choose the bot account key above, then store the Telegram account.</div>
-        )}
-      </div>
-      <p className="mt-3 text-xs text-muted-foreground">
-        {ready ? "Stored account is ready. Validate it with " : "Validate stored account with "}<span className="font-mono">panda telegram account whoami {normalizedAccountKey}</span>. Production workers should run <span className="font-mono">panda telegram run --all-enabled</span>; it hot-reconciles newly enabled accounts after this release.
-      </p>
-    </div>
-  )
 }
 
 function DiscordActorPairingsPanel({ agentKey }: { agentKey: string }) {
