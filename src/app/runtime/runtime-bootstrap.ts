@@ -93,7 +93,9 @@ import {ControlScheduledTasksService} from "../../domain/control/scheduled-tasks
 import {ControlWatchesService} from "../../domain/control/watches-service.js";
 import {ControlRuntimeActivityService} from "../../domain/control/runtime-activity-service.js";
 import {ControlConnectorAccountsService} from "../../domain/control/connector-accounts-service.js";
+import {ControlModelCallTraceService} from "../../domain/control/model-call-trace-service.js";
 import {PostgresConnectorAccountStore} from "../../domain/connectors/postgres.js";
+import {PostgresModelCallTraceStore, resolveModelCallTraceRetentionDays} from "../../domain/model-call-traces/postgres.js";
 import {ConversationRepo} from "../../domain/sessions/conversations/repo.js";
 import {PostgresGatewayStore} from "../../domain/gateway/postgres.js";
 
@@ -149,6 +151,8 @@ interface RuntimeBootstrapResult {
   controlWatches: ControlWatchesService;
   controlRuntimeActivity: ControlRuntimeActivityService;
   controlConnectorAccounts: ControlConnectorAccountsService;
+  controlModelCallTraces: ControlModelCallTraceService;
+  modelCallTraces: PostgresModelCallTraceStore;
   backgroundJobService: BackgroundToolJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
@@ -512,6 +516,13 @@ export async function bootstrapRuntime(
     const controlConnectorAccounts = new ControlConnectorAccountsService({
       pool: postgresPool,
     });
+    const modelCallTraces = new PostgresModelCallTraceStore({
+      pool: postgresPool,
+      retentionDays: resolveModelCallTraceRetentionDays(process.env),
+    });
+    const controlModelCallTraces = new ControlModelCallTraceService({
+      pool: postgresPool,
+    });
 
     const credentialCrypto = resolveCredentialCrypto();
     const credentialResolver = new CredentialResolver({
@@ -586,6 +597,7 @@ export async function bootstrapRuntime(
       watches,
       wikiBindingStore,
       controlAuth,
+      modelCallTraces,
     ]);
 
     await ensureReadonlySessionQuerySchema({
@@ -743,6 +755,8 @@ export async function bootstrapRuntime(
       controlWatches,
       controlRuntimeActivity,
       controlConnectorAccounts,
+      controlModelCallTraces,
+      modelCallTraces,
       backgroundJobService,
       browserService: resolvedBrowserService,
       credentialResolver,

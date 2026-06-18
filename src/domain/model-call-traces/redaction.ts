@@ -1,0 +1,291 @@
+import {createHash} from "node:crypto";
+
+import type {ToolResultMessage} from "@earendil-works/pi-ai";
+
+import {ProviderRuntimeError} from "../../kernel/agent/exceptions.js";
+import type {Tool} from "../../kernel/agent/tool.js";
+import {normalizeToJsonValue, stableStringify, type JsonObject, type JsonValue} from "../../lib/json.js";
+import {isRecord} from "../../lib/records.js";
+import type {RecordModelCallTraceInput} from "./types.js";
+
+const SECRET_KEY_PATTERN = /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth(?:orization)?|bearer|cookie|credential|password|secret|session[_-]?token|token)/i;
+const SECRET_ASSIGNMENT_PATTERN = /\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth(?:orization)?|bearer|cookie|credential|password|secret|session[_-]?token|token)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|`[^`]*`|[^\s,;)]+)/gi;
+const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi;
+const TOKEN_PREFIX_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|dop_v1_[A-Za-z0-9_]{16,}|xox[baprs]-[A-Za-z0-9-]{12,}|pbr_[A-Za-z0-9_]{16,})\b/g;
+const JWT_PATTERN = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g;
+const COOKIE_VALUE_PATTERN = /\b(?:cookie|session|sid|csrf|auth|token)[A-Za-z0-9_-]*=[^;\s,]{8,}/gi;
+const LONG_OPAQUE_PATTERN = /\b[A-Za-z0-9+/=_-]{96,}\b/g;
+const BLOB_KEY_PATTERN = /^(?:data|image|imageData|base64|blob|bytes|buffer|payload)$/i;
+const PROMPT_CACHE_KEY_REDACTION_PATTERN = /^\[redacted:prompt-cache-key:sha256:[a-f0-9]{16}\]$/;
+const ERROR_MAX_CHARS = 500;
+
+function isJsonRecord(value: unknown): value is JsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function redactSecretFragments(value: string): string {
+  return value
+    .replace(SECRET_ASSIGNMENT_PATTERN, "[redacted]")
+    .replace(BEARER_PATTERN, "Bearer [redacted]")
+    .replace(TOKEN_PREFIX_PATTERN, "[redacted]")
+    .replace(JWT_PATTERN, "[redacted]")
+    .replace(COOKIE_VALUE_PATTERN, "[redacted]")
+    .replace(LONG_OPAQUE_PATTERN, "[redacted]");
+}
+
+function looksLikeBase64Blob(value: string): boolean {
+  const compact = value.replace(/\s+/g, "");
+  if (compact.length < 128) {
+    return false;
+  }
+  if (!/^[A-Za-z0-9+/=_-]+$/.test(compact)) {
+    return false;
+  }
+  const padding = compact.match(/=+$/)?.[0].length ?? 0;
+  return padding <= 2;
+}
+
+function blobPlaceholder(kind: string, value: string): JsonObject {
+  return {
+    redacted: true,
+    reason: "large_blob",
+    kind,
+    chars: value.length,
+  };
+}
+
+function sanitizeString(value: string, key?: string): JsonValue {
+  if (key && SECRET_KEY_PATTERN.test(key)) {
+    return "[redacted]";
+  }
+
+  if (/^data:[^,]+;base64,/i.test(value)) {
+    return blobPlaceholder("data_uri", value);
+  }
+
+  if ((key && BLOB_KEY_PATTERN.test(key) && value.length > 64) || looksLikeBase64Blob(value)) {
+    return blobPlaceholder(key ?? "base64", value);
+  }
+
+  return redactSecretFragments(value);
+}
+
+function sanitizeJsonValue(value: JsonValue, key?: string): JsonValue {
+  if (typeof value === "string") {
+    return sanitizeString(value, key);
+  }
+  if (value === null || typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeJsonValue(entry));
+  }
+
+  const sanitized: JsonObject = {};
+  for (const [entryKey, entry] of Object.entries(value)) {
+    sanitized[entryKey] = sanitizeJsonValue(entry, entryKey);
+  }
+  return sanitized;
+}
+
+export function sanitizeTraceJson(value: unknown): JsonValue {
+  return sanitizeJsonValue(normalizeToJsonValue(value));
+}
+
+export function sanitizeTraceString(value: string, key?: string): string {
+  const sanitized = sanitizeString(value, key);
+  return typeof sanitized === "string" ? sanitized : JSON.stringify(sanitized);
+}
+
+export function sanitizePromptCacheKey(value: unknown): string {
+  if (typeof value === "string" && PROMPT_CACHE_KEY_REDACTION_PATTERN.test(value)) {
+    return value;
+  }
+
+  const hashInput = typeof value === "string" ? value : stableStringify(normalizeToJsonValue(value));
+  const hash = createHash("sha256").update(hashInput).digest("hex").slice(0, 16);
+  return `[redacted:prompt-cache-key:sha256:${hash}]`;
+}
+
+function toolByName(tools: readonly Tool[], name: unknown): Tool | undefined {
+  if (typeof name !== "string") {
+    return undefined;
+  }
+  return tools.find((tool) => tool.name === name);
+}
+
+function sanitizeAssistantToolCalls(message: JsonObject, tools: readonly Tool[]): JsonObject {
+  const content = message.content;
+  if (!Array.isArray(content)) {
+    return message;
+  }
+
+  return {
+    ...message,
+    content: content.map((block) => {
+      if (!isJsonRecord(block) || block.type !== "toolCall") {
+        return block;
+      }
+
+      const args = block.arguments;
+      if (!isJsonRecord(args)) {
+        return block;
+      }
+
+      const tool = toolByName(tools, block.name);
+      if (!tool) {
+        return {
+          ...block,
+          arguments: {
+            redacted: true,
+            reason: "unknown_tool_arguments",
+          },
+        } satisfies JsonObject;
+      }
+
+      try {
+        return {
+          ...block,
+          arguments: normalizeToJsonValue(tool.redactCallArguments(args)),
+        } satisfies JsonObject;
+      } catch {
+        return {
+          ...block,
+          arguments: {
+            redacted: true,
+            reason: "tool_argument_redaction_failed",
+          },
+        } satisfies JsonObject;
+      }
+    }),
+  };
+}
+
+function sanitizeToolResultMessage(message: JsonObject, tools: readonly Tool[]): JsonObject {
+  const tool = toolByName(tools, message.toolName);
+  if (!tool) {
+    return {
+      ...message,
+      content: [{type: "text", text: "[tool result redacted: unknown tool]"}],
+      details: {redacted: true, reason: "unknown_tool_result"},
+    };
+  }
+
+  try {
+    return normalizeToJsonValue(tool.redactResultMessage(message as unknown as ToolResultMessage<JsonValue>)) as JsonObject;
+  } catch {
+    return {
+      ...message,
+      content: [{type: "text", text: "[tool result redacted: redaction failed]"}],
+      details: {redacted: true, reason: "tool_result_redaction_failed"},
+    };
+  }
+}
+
+export function sanitizeTraceMessage(message: unknown, tools: readonly Tool[]): JsonValue {
+  const normalized = normalizeToJsonValue(message);
+  if (!isJsonRecord(normalized)) {
+    return sanitizeJsonValue(normalized);
+  }
+
+  let next = normalized;
+  if (next.role === "assistant") {
+    next = sanitizeAssistantToolCalls(next, tools);
+  } else if (next.role === "toolResult") {
+    next = sanitizeToolResultMessage(next, tools);
+  }
+
+  return sanitizeJsonValue(next);
+}
+
+function sanitizeTraceMessages(messages: readonly unknown[], tools: readonly Tool[]): JsonValue[] {
+  return messages.map((message) => sanitizeTraceMessage(message, tools));
+}
+
+function normalizeErrorWhitespace(value: string): string {
+  return value
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cutStructuredErrorPayload(value: string): string {
+  const trimmed = value.trim();
+  if (/^[{[]/.test(trimmed)) {
+    return "";
+  }
+  const objectStart = trimmed.search(/[\[{]/);
+  return objectStart > 0 ? trimmed.slice(0, objectStart) : trimmed;
+}
+
+function sanitizeErrorMessage(value: string): string {
+  const sanitized = normalizeErrorWhitespace(redactSecretFragments(cutStructuredErrorPayload(value)));
+  if (!sanitized || sanitized === "[redacted]") {
+    return "Model call failed.";
+  }
+  if (sanitized.length <= ERROR_MAX_CHARS) {
+    return sanitized;
+  }
+  return `${sanitized.slice(0, ERROR_MAX_CHARS - 1).trimEnd()}…`;
+}
+
+export function sanitizeTraceError(error: unknown): JsonObject {
+  if (error instanceof ProviderRuntimeError) {
+    return {
+      category: error.failureKind ?? "provider_error",
+      message: sanitizeErrorMessage(error.providerMessage ?? error.message),
+      provider: error.providerName,
+      model: error.modelId,
+      ...(typeof error.status === "number" ? {status: error.status} : {}),
+      ...(error.requestId ? {requestId: sanitizeErrorMessage(error.requestId)} : {}),
+      ...(error.stopReason ? {stopReason: sanitizeErrorMessage(error.stopReason)} : {}),
+      retryable: error.retryable,
+      timedOut: error.timedOut,
+    };
+  }
+
+  const name = error instanceof Error && error.name ? error.name : "Error";
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    category: name,
+    message: sanitizeErrorMessage(message),
+  };
+}
+
+export function buildSanitizedModelCallTrace(input: RecordModelCallTraceInput): {
+  promptCacheKey?: string;
+  requestJson: JsonObject;
+  responseJson?: JsonValue;
+  errorJson?: JsonObject;
+  usageJson?: JsonValue;
+} {
+  const request = input.request;
+  const context = request.context;
+  const promptCacheKey = request.promptCacheKey === undefined ? undefined : sanitizePromptCacheKey(request.promptCacheKey);
+  const requestJson: JsonObject = {
+    provider: request.providerName,
+    model: request.modelId,
+    ...(promptCacheKey !== undefined ? {promptCacheKey} : {}),
+    ...(context.systemPrompt ? {systemPrompt: sanitizeTraceJson(context.systemPrompt)} : {}),
+    messages: sanitizeTraceMessages(context.messages, input.tools),
+    tools: sanitizeTraceJson(context.tools ?? []),
+    ...(request.trace?.llmContextDump ? {llmContextDump: sanitizeTraceJson(request.trace.llmContextDump)} : {}),
+    ...(request.trace?.llmContextSections?.length
+      ? {llmContextSections: sanitizeTraceJson(request.trace.llmContextSections)}
+      : {}),
+  };
+  const responseJson = input.response ? sanitizeTraceMessage(input.response, input.tools) : undefined;
+  const usageJson = input.response && isRecord(input.response.usage)
+    ? sanitizeTraceJson(input.response.usage)
+    : undefined;
+  const errorJson = input.error === undefined ? undefined : sanitizeTraceError(input.error);
+
+  return {
+    ...(promptCacheKey !== undefined ? {promptCacheKey} : {}),
+    requestJson,
+    ...(responseJson !== undefined ? {responseJson} : {}),
+    ...(errorJson !== undefined ? {errorJson} : {}),
+    ...(usageJson !== undefined ? {usageJson} : {}),
+  };
+}
