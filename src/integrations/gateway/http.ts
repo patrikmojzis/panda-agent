@@ -8,6 +8,10 @@ import {
 import {writeJsonResponse} from "../../lib/http.js";
 import {acceptGatewayAttachmentUploadRequest} from "./attachment-acceptance.js";
 import {acceptGatewayDeviceCommandRequest} from "./device-commands.js";
+import {
+  acceptGatewayHaeJsonIngestRequest,
+  GATEWAY_HAE_JSON_PATH,
+} from "./hae-json-ingest.js";
 import {GatewayHttpError} from "./http-body.js";
 import {
   DEFAULT_GATEWAY_ACCESS_TOKEN_TTL_MS,
@@ -67,6 +71,7 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
   const attachmentRetentionMs = options.attachmentRetentionMs ?? DEFAULT_GATEWAY_ATTACHMENT_RETENTION_MS;
   const deviceCommandMaxWaitMs = options.deviceCommandMaxWaitMs ?? DEFAULT_GATEWAY_DEVICE_COMMAND_MAX_WAIT_MS;
   const attachmentAllowedMimeTypes = options.attachmentAllowedMimeTypes ?? DEFAULT_GATEWAY_ATTACHMENT_ALLOWED_MIME_TYPES;
+  const haeJsonIngest = options.haeJsonIngest;
   const network = resolveGatewayNetworkControls({env, host});
 
   const server = createServer(async (request, response) => {
@@ -92,6 +97,18 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
           store: options.store,
           tokenTtlMs,
         }));
+        return;
+      }
+
+      if (request.method === "POST" && requestUrl.pathname === GATEWAY_HAE_JSON_PATH) {
+        if (!haeJsonIngest) {
+          throw new GatewayHttpError(404, "Not found.");
+        }
+        const accepted = await acceptGatewayHaeJsonIngestRequest({
+          config: haeJsonIngest,
+          request,
+        });
+        writeJsonResponse(response, accepted.status, accepted.body);
         return;
       }
 
