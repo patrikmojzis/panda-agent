@@ -1,21 +1,21 @@
-# React + TypeScript + Vite + shadcn/ui
+# Panda Control UI
 
-This is a template for a new Vite project with React, TypeScript, and shadcn/ui.
+Panda Control UI is the React/Vite operator console for Panda Agent. It provides authenticated Control screens for agents, sessions, connector accounts, credentials, skills, runtime activity, audit history, and related operator workflows.
 
-## Adding components
+The app is served by the Panda Control backend from `apps/control-ui/dist` when built locally. See `docs/control-pr1b-ui.md` for the full Control server setup and token-login flow.
 
-To add components to your app, run the following command:
+## Development
+
+From the repository root:
 
 ```bash
-npx shadcn@latest add button
+pnpm control:dev
+pnpm control:typecheck
+pnpm control:build
 ```
 
-This will place the ui components in the `src/components` directory.
+The CI gate for this package is:
 
-## Using components
-
-To use the components in your app, import them as follows:
-
-```tsx
-import { Button } from "@/components/ui/button"
+```bash
+pnpm ci:control-ui
 ```

@@ -30,7 +30,7 @@ export default defineConfig([
     },
   },
   {
-    files: ['src/components/ui/carousel.tsx', 'src/hooks/use-mobile.ts'],
+    files: ['src/hooks/use-mobile.ts'],
     rules: {
       'react-hooks/set-state-in-effect': 'off',
     },
