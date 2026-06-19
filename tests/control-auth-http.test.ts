@@ -3652,6 +3652,10 @@ describe("Control Home HTTP", () => {
       todoCounts: {pending: 0, in_progress: 1, blocked: 1, done: 1},
       lastTaskStatus: "failed",
     });
+    expect(body.home.sessions[0].links).toMatchObject({
+      todos: "/agents/panda/sessions/session-panda?tab=todos",
+      briefing: "/agents/panda/sessions/session-panda?tab=briefing",
+    });
     expect(body.home.upcomingAutomations[0]).toMatchObject({taskId: task.id, agentKey: "panda", sessionId: "session-panda", title: "Visible safe wakeup title", scheduleKind: "once"});
     expect(body.home.recentActivity.length).toBeGreaterThan(0);
     expect(JSON.stringify(body.home.recentActivity)).toContain("session_heartbeat_config_write");

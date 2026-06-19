@@ -98,6 +98,8 @@ export const controlKeys = {
       [...controlKeys.agents.session(agentKey, sessionId), "briefing"] as const,
     heartbeat: (agentKey: string, sessionId: string) =>
       [...controlKeys.agents.session(agentKey, sessionId), "heartbeat"] as const,
+    todos: (agentKey: string, sessionId: string) =>
+      [...controlKeys.agents.session(agentKey, sessionId), "todos"] as const,
     targets: (agentKey: string, sessionId: string) =>
       [...controlKeys.agents.session(agentKey, sessionId), "targets"] as const,
     runtime: (agentKey: string, sessionId: string, params: TableParams) =>

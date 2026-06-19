@@ -34,6 +34,7 @@ import { GatewayPanel } from "@/features/control/gateway/gateway-panel"
 import { RuntimePanel } from "@/features/control/runtime/runtime-panel"
 import { AutomationsPanel } from "@/features/control/session/automations-panel"
 import { BriefingPanel } from "@/features/control/session/briefing-panel"
+import { TodosPanel } from "@/features/control/session/todos-panel"
 import { WatchesPanel } from "@/features/control/session/watches-panel"
 import {
   useHeartbeat,
@@ -108,6 +109,8 @@ function sessionTabContent(agentKey: string, sessionId: string, value: string) {
   switch (value) {
     case "briefing":
       return <BriefingPanel agentKey={agentKey} sessionId={sessionId} />
+    case "todos":
+      return <TodosPanel agentKey={agentKey} sessionId={sessionId} />
     case "bindings":
       return <BindingsPanel agentKey={agentKey} sessionId={sessionId} />
     case "a2a":
