@@ -14,6 +14,7 @@ In the normal Agent Profile context, Panda gets a cheap skill index:
 
 - `skill_key`
 - `description`
+- `tags`
 
 It does **not** get every full skill body on every run.
 That would be a dumb way to burn tokens.
@@ -28,8 +29,26 @@ Panda uses the `agent_skill` tool to upsert:
 - `skillKey`
 - `description`
 - `content`
+- optional `tags`
+
+Tags are short lowercase discovery hints such as `coding`, `github`, `orchestration`, `health`, or `finance`. Keep them sparse and broad; tags are for browsing/filtering skills, not permissions or secrets.
 
 Skills are scoped to the current agent. Existing skills are agent-editable by default.
+
+## Tags
+
+Skills can have zero or more tags. Tags are normalized to lowercase, deduplicated, and kept intentionally small. Use them to group and filter skills in injected summaries, readonly views, and Control surfaces.
+
+Good tags describe when the skill is useful:
+
+- `coding`
+- `github`
+- `orchestration`
+- `monitoring`
+- `ui-ux`
+- `finance`
+
+Avoid tag stuffing. A skill with two useful tags is better than one with ten vague ones. Tags are metadata only; they do not grant access or restrict editing.
 
 ## Locked Skills
 
@@ -53,6 +72,7 @@ Useful columns:
 - `content`
 - `content_bytes`
 - `agent_editable`
+- `tags`
 - `created_at`
 - `updated_at`
 
@@ -66,7 +86,7 @@ Prefer:
 Example:
 
 ```sql
-SELECT skill_key, description, content_bytes, agent_editable
+SELECT skill_key, description, tags, content_bytes, agent_editable
 FROM session.agent_skills
 ORDER BY skill_key;
 ```
