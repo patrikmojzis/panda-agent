@@ -91,6 +91,49 @@ Event requests must use `application/json`; the gateway rejects ambiguous public
 bodies before parsing. `/v1/events` is intentionally text-only and rejects an
 `attachments` key; use `/v2/attachments` plus `/v2/events` when files are needed.
 
+### Private Health Auto Export JSON inbox
+
+Health Auto Export JSON uses a dedicated private adapter, not generic Gateway
+events. Enable it only with its own static bearer token:
+
+```http
+POST /v1/health/hae
+Authorization: Bearer <GATEWAY_HAE_JSON_TOKEN>
+Content-Type: application/json
+
+<raw Health Auto Export JSON bytes>
+```
+
+The handler authenticates before reading the body, accepts JSON only, validates
+syntax without health parsing, then writes the exact raw request bytes to the
+configured inbox using a temp file followed by rename. It does not call
+`/v1/events`, `/v2/events`, event storage, thread inputs, the Gateway worker, or
+model-facing paths. The scheduled health importer can process the inbox later.
+
+Response body is safe metadata only:
+
+```json
+{
+  "ok": true,
+  "accepted": true,
+  "id": "<generated-id>",
+  "filename": "20260616T184500Z-<generated-id>.json",
+  "byteCount": 12345,
+  "timestamp": "2026-06-16T18:45:00.000Z",
+  "source": "health-auto-export"
+}
+```
+
+Configuration:
+
+- `GATEWAY_HAE_JSON_TOKEN` enables the route and is required for every request.
+- `GATEWAY_HAE_JSON_INBOX_DIR` defaults to `/root/.panda/agents/clawd/health-auto-import-inbox`.
+- `GATEWAY_HAE_JSON_MAX_BYTES` defaults to 26214400 (25 MiB).
+- `GATEWAY_HAE_JSON_SOURCE` defaults to `health-auto-export` and is returned as metadata only.
+
+Do not send HAE payloads through generic Gateway events or attachments. Do not
+log, store, or expose raw health JSON outside the private inbox.
+
 ### Gateway device tokens and command mailbox
 
 Gateway sources may register one or more devices, each with its own bearer token
@@ -288,6 +331,7 @@ same device connector key, still `uploaded`, and unexpired; completion marks the
 - OAuth client credentials resolve to a registered gateway source.
 - Token, event, and attachment bodies must declare a supported `Content-Type`.
 - Attachment uploads use bounded raw bodies only: no multipart, resumable uploads, base64 JSON, or public download URLs.
+- Health Auto Export JSON uses only `/v1/health/hae` and a dedicated static token; it writes raw JSON bytes to the private inbox and never creates Gateway events, thread inputs, or model-facing content.
 - Uploaded bytes are stored under the target agent media root as untrusted local media descriptors.
 - Device-uploaded events and attachments remain `external_untrusted` even after device pairing.
 - Event attachment refs must belong to the same source, be unexpired, unbound, and digest-matched when a digest is supplied.
@@ -350,7 +394,7 @@ panda gateway attachment-scrub-expired --limit 100
 
 The stack runs gateway as its own process:
 
-- `panda-gateway` handles `/oauth/token`, `/v1/events`, `/v2/attachments`, `/v2/events`, and `/health`
+- `panda-gateway` handles `/oauth/token`, `/v1/events`, `/v2/attachments`, `/v2/events`, optional `/v1/health/hae`, and `/health`
 - Caddy terminates TLS on the public URL
 - `panda-gateway` and Caddy share `gateway_edge_net`
 - `panda-gateway` never joins `runner_net`
@@ -367,6 +411,11 @@ GATEWAY_HOST=0.0.0.0
 GATEWAY_PORT=8094
 GATEWAY_IP_ALLOWLIST=203.0.113.10/32
 GATEWAY_GUARD_MODEL=openai-codex/gpt-5.5
+
+# Optional private Health Auto Export JSON inbox
+GATEWAY_HAE_JSON_TOKEN=<dedicated-random-token>
+GATEWAY_HAE_JSON_INBOX_DIR=/root/.panda/agents/clawd/health-auto-import-inbox
+GATEWAY_HAE_JSON_SOURCE=health-auto-export
 ```
 
 `docker-stack.sh` sets `GATEWAY_TRUSTED_PROXY_IPS` to `PANDA_GATEWAY_EDGE_SUBNET` when it is not explicit. Keep the allowlist on the real client IPs; Caddy replaces `X-Forwarded-For` with `{remote_host}` before proxying.
