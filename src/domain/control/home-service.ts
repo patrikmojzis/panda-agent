@@ -323,7 +323,7 @@ export class ControlHomeService {
         nextTaskAt: toIso(nextTask?.next_fire_at),
         lastTaskStatus: typeof lastRun?.status === "string" ? lastRun.status : null,
         links: {
-          todos: sessionWorkspaceRoute(agentKey, sessionId),
+          todos: sessionWorkspaceRoute(agentKey, sessionId, "todos"),
           watches: sessionWorkspaceRoute(agentKey, sessionId, "watches"),
           runtimeActivity: sessionWorkspaceRoute(agentKey, sessionId, "runtime"),
           scheduledTasks: sessionWorkspaceRoute(agentKey, sessionId, "automations"),
