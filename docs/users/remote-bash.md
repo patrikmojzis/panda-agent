@@ -333,12 +333,12 @@ Disposable runner setup lives in
 
 ## Compatibility
 
-This PR keeps the old names working for one compatibility window:
+Current compatibility aliases:
 
 - `panda bash-server` is preferred
-- `panda runner` still works
+- `panda runner` still works for now
 - Docker target `bash-runner` is preferred
-- Docker target `runner`, image/service names like `panda-runner:latest` and `panda-runner-<agent>` still work
+- Docker target `runner`, image/service names like `panda-runner:latest` and `panda-runner-<agent>` still work for now
 
 ## Hard Rules
 
