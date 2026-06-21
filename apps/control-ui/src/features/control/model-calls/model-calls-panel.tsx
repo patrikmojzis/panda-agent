@@ -338,7 +338,7 @@ function TraceDetailSections({ trace }: { trace: ModelCallTraceDetail }) {
       <DetailPanel title="Sanitized Request">
         <div className="grid min-w-0 gap-4">
           <TextBlock title="System prompt" value={request.systemPrompt} emptyLabel="No system prompt captured." />
-          <JsonBlock title="LLM context sections" value={request.llmContextSections} emptyLabel="No LLM context sections captured." />
+          <LlmContextSectionsBlock value={request.llmContextSections} />
           {request.llmContextDump ? (
             <TextBlock title="LLM context dump" value={request.llmContextDump} />
           ) : null}
@@ -362,6 +362,86 @@ function ProviderModel({ trace }: { trace: ModelCallTraceSummary }) {
       <code className="break-all text-xs text-muted-foreground">{trace.model}</code>
     </div>
   )
+}
+
+function LlmContextSectionsBlock({ value }: { value: unknown }) {
+  const sections = Array.isArray(value) ? value : []
+  if (sections.length === 0) {
+    return <EmptyBlock title="LLM context sections" emptyLabel="No LLM context sections captured." />
+  }
+
+  return (
+    <section className="grid min-w-0 gap-2">
+      <h3 className="text-sm font-medium">LLM context sections</h3>
+      <div className="grid min-w-0 gap-3">
+        {sections.map((section, index) => (
+          <LlmContextSectionCard key={sectionKey(section, index)} section={section} index={index} />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function LlmContextSectionCard({
+  section,
+  index,
+}: {
+  section: unknown
+  index: number
+}) {
+  const record = asRecord(section) ?? {}
+  const name = firstString(record, ["name"]) ?? `Section ${index + 1}`
+  const label = firstString(record, ["label"])
+  const source = firstString(record, ["source"])
+  const content = firstString(record, ["content", "dump"])
+  const preview = firstString(record, ["contentPreview", "preview"]) ?? content
+  const contentChars = firstNumber(record, ["contentChars", "charCount", "chars"])
+  const estimatedTokens = firstNumber(record, ["estimatedTokens", "tokenEstimate", "tokens"])
+  const promptCacheKeyPart = firstString(record, ["promptCacheKeyPart", "promptCacheKeyFingerprint"])
+
+  return (
+    <div className="grid min-w-0 gap-2 border p-3">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <span className="min-w-0 break-words text-sm font-medium">{label ?? name}</span>
+        {label ? <Badge variant="outline">{name}</Badge> : null}
+        {source ? <Badge variant="outline">{source}</Badge> : null}
+        {contentChars !== null ? (
+          <Badge variant="secondary">{contentChars.toLocaleString()} chars</Badge>
+        ) : null}
+        {estimatedTokens !== null ? (
+          <Badge variant="secondary">~{estimatedTokens.toLocaleString()} tokens</Badge>
+        ) : null}
+      </div>
+      {promptCacheKeyPart ? (
+        <div className="min-w-0 text-xs text-muted-foreground">
+          Prompt cache part: <RedactedValue value={promptCacheKeyPart} />
+        </div>
+      ) : null}
+      {preview ? (
+        <pre className="max-h-32 max-w-full overflow-auto whitespace-pre-wrap break-words border bg-muted/30 p-3 font-mono text-xs leading-relaxed [overflow-wrap:anywhere]">
+          {preview}
+        </pre>
+      ) : (
+        <div className="text-sm text-muted-foreground">No section content captured.</div>
+      )}
+      {content && content !== preview ? (
+        <details className="grid min-w-0 gap-2" open={index === 0}>
+          <summary className="cursor-pointer select-none text-xs text-muted-foreground">
+            Expand full section content
+          </summary>
+          <pre className="max-h-80 max-w-full overflow-auto whitespace-pre-wrap break-words border bg-muted/30 p-3 font-mono text-xs leading-relaxed [overflow-wrap:anywhere]">
+            {content}
+          </pre>
+        </details>
+      ) : null}
+    </div>
+  )
+}
+
+function sectionKey(section: unknown, index: number) {
+  const record = asRecord(section)
+  const name = record ? firstString(record, ["name", "label", "source"]) : null
+  return `${name ?? "section"}:${index}`
 }
 
 function TraceContext({ trace }: { trace: ModelCallTraceSummary }) {
@@ -522,6 +602,14 @@ function usageSummary(value: unknown) {
     total !== null ? `total ${total.toLocaleString()}` : null,
   ].filter(Boolean)
   return parts.length > 0 ? parts.join(" · ") : "-"
+}
+
+function firstString(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === "string" && value.trim()) return value
+  }
+  return null
 }
 
 function firstNumber(record: Record<string, unknown>, keys: string[]) {

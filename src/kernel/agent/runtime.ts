@@ -5,8 +5,15 @@ import type {ProviderName} from "./types.js";
 
 export interface LlmRuntimeRequestTraceSection {
   name: string;
+  source?: string;
+  label?: string;
   content: string;
+  contentPreview?: string;
+  contentChars?: number;
+  estimatedTokens?: number;
   dump: string;
+  dumpChars?: number;
+  promptCacheKeyPart?: string;
 }
 
 export interface LlmRuntimeRequestTraceContext {

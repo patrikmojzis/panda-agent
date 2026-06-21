@@ -54,7 +54,15 @@ function blobPlaceholder(kind: string, value: string): JsonObject {
   };
 }
 
+function isPromptCacheKeyField(key: string | undefined): boolean {
+  return key?.replace(/[^a-z0-9]/gi, "").toLowerCase().includes("promptcachekey") ?? false;
+}
+
 function sanitizeString(value: string, key?: string): JsonValue {
+  if (isPromptCacheKeyField(key)) {
+    return sanitizePromptCacheKey(value);
+  }
+
   if (key && SECRET_KEY_PATTERN.test(key)) {
     return "[redacted]";
   }
@@ -71,6 +79,10 @@ function sanitizeString(value: string, key?: string): JsonValue {
 }
 
 function sanitizeJsonValue(value: JsonValue, key?: string): JsonValue {
+  if (isPromptCacheKeyField(key)) {
+    return sanitizePromptCacheKey(value);
+  }
+
   if (typeof value === "string") {
     return sanitizeString(value, key);
   }
@@ -90,6 +102,11 @@ function sanitizeJsonValue(value: JsonValue, key?: string): JsonValue {
 
 export function sanitizeTraceJson(value: unknown): JsonValue {
   return sanitizeJsonValue(normalizeToJsonValue(value));
+}
+
+export function sanitizeTraceRequestJson(value: JsonObject): JsonObject {
+  const sanitized = sanitizeTraceJson(value);
+  return isJsonRecord(sanitized) ? sanitized : {};
 }
 
 export function sanitizeTraceString(value: string, key?: string): string {

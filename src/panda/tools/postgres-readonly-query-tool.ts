@@ -50,6 +50,395 @@ function trimSql(value: string): string {
   return value.trim().replace(/;+$/, "").trim();
 }
 
+type SqlGuardToken =
+  | {readonly kind: "identifier"; readonly value: string}
+  | {readonly kind: "dot" | "openParen"};
+
+const DANGEROUS_READONLY_FUNCTIONS = [
+  "query_to_xml",
+  "table_to_xml",
+  "schema_to_xml",
+  "database_to_xml",
+  "cursor_to_xml",
+  "query_to_xmlschema",
+  "table_to_xmlschema",
+  "schema_to_xmlschema",
+  "database_to_xmlschema",
+  "cursor_to_xmlschema",
+  "query_to_xml_and_xmlschema",
+  "table_to_xml_and_xmlschema",
+  "schema_to_xml_and_xmlschema",
+  "database_to_xml_and_xmlschema",
+  "cursor_to_xml_and_xmlschema",
+  "dblink",
+  "dblink_exec",
+  "dblink_connect",
+  "dblink_connect_u",
+  "dblink_disconnect",
+  "dblink_open",
+  "dblink_fetch",
+  "dblink_close",
+  "dblink_send_query",
+  "dblink_get_result",
+  "lo_export",
+  "lo_import",
+  "lo_from_bytea",
+  "lo_put",
+  "lo_unlink",
+] as const;
+const DANGEROUS_READONLY_FUNCTION_NAMES: ReadonlySet<string> = new Set(DANGEROUS_READONLY_FUNCTIONS);
+
+function isIdentifierStart(char: string | undefined): boolean {
+  return char !== undefined && /^[A-Za-z_]$/.test(char);
+}
+
+function isIdentifierPart(char: string | undefined): boolean {
+  return char !== undefined && /^[A-Za-z0-9_$]$/.test(char);
+}
+
+function isWhitespace(char: string | undefined): boolean {
+  return char !== undefined && /\s/.test(char);
+}
+
+function isDollarQuoteTagPart(char: string | undefined): boolean {
+  return char !== undefined && /^[A-Za-z0-9_]$/.test(char);
+}
+
+function skipLineComment(sql: string, start: number): number {
+  let cursor = start + 2;
+  while (cursor < sql.length && sql[cursor] !== "\n" && sql[cursor] !== "\r") {
+    cursor += 1;
+  }
+  return cursor;
+}
+
+function skipBlockComment(sql: string, start: number): number {
+  let cursor = start + 2;
+  let depth = 1;
+
+  while (cursor < sql.length && depth > 0) {
+    if (sql[cursor] === "/" && sql[cursor + 1] === "*") {
+      depth += 1;
+      cursor += 2;
+      continue;
+    }
+    if (sql[cursor] === "*" && sql[cursor + 1] === "/") {
+      depth -= 1;
+      cursor += 2;
+      continue;
+    }
+    cursor += 1;
+  }
+
+  return cursor;
+}
+
+function skipWhitespaceAndComments(sql: string, start: number): number {
+  let cursor = start;
+
+  while (cursor < sql.length) {
+    if (isWhitespace(sql[cursor])) {
+      cursor += 1;
+      continue;
+    }
+    if (sql[cursor] === "-" && sql[cursor + 1] === "-") {
+      cursor = skipLineComment(sql, cursor);
+      continue;
+    }
+    if (sql[cursor] === "/" && sql[cursor + 1] === "*") {
+      cursor = skipBlockComment(sql, cursor);
+      continue;
+    }
+    break;
+  }
+
+  return cursor;
+}
+
+function skipSingleQuotedString(sql: string, start: number, supportsBackslashEscapes = false): number {
+  let cursor = start + 1;
+
+  while (cursor < sql.length) {
+    if (supportsBackslashEscapes && sql[cursor] === "\\") {
+      cursor += 2;
+      continue;
+    }
+    if (sql[cursor] === "'") {
+      if (sql[cursor + 1] === "'") {
+        cursor += 2;
+        continue;
+      }
+      return cursor + 1;
+    }
+    cursor += 1;
+  }
+
+  return sql.length;
+}
+
+function readSingleQuotedLiteral(sql: string, start: number): {readonly value: string; readonly end: number} | null {
+  if (sql[start] !== "'") {
+    return null;
+  }
+
+  let value = "";
+  let cursor = start + 1;
+  while (cursor < sql.length) {
+    const char = sql[cursor];
+    if (char === undefined) {
+      return null;
+    }
+    if (char === "'") {
+      if (sql[cursor + 1] === "'") {
+        value += "'";
+        cursor += 2;
+        continue;
+      }
+      return {value, end: cursor + 1};
+    }
+    value += char;
+    cursor += 1;
+  }
+
+  return null;
+}
+
+function readDollarQuoteTag(sql: string, start: number): string | null {
+  if (sql[start] !== "$") {
+    return null;
+  }
+
+  let cursor = start + 1;
+  if (sql[cursor] === "$") {
+    return "$$";
+  }
+  if (!isIdentifierStart(sql[cursor])) {
+    return null;
+  }
+
+  cursor += 1;
+  while (isDollarQuoteTagPart(sql[cursor])) {
+    cursor += 1;
+  }
+
+  return sql[cursor] === "$" ? sql.slice(start, cursor + 1) : null;
+}
+
+function skipDollarQuotedString(sql: string, start: number, tag: string): number {
+  const close = sql.indexOf(tag, start + tag.length);
+  return close === -1 ? sql.length : close + tag.length;
+}
+
+function readQuotedIdentifier(sql: string, start: number): {readonly value: string; readonly end: number} {
+  let value = "";
+  let cursor = start + 1;
+
+  while (cursor < sql.length) {
+    const char = sql[cursor];
+    if (char === undefined) {
+      break;
+    }
+    if (char === "\"") {
+      if (sql[cursor + 1] === "\"") {
+        value += "\"";
+        cursor += 2;
+        continue;
+      }
+      return {value, end: cursor + 1};
+    }
+    value += char;
+    cursor += 1;
+  }
+
+  return {value, end: sql.length};
+}
+
+function keywordAt(sql: string, start: number, keyword: string): boolean {
+  return sql.slice(start, start + keyword.length).toLowerCase() === keyword && !isIdentifierPart(sql[start + keyword.length]);
+}
+
+function readUnicodeEscapeClause(sql: string, start: number): {readonly escapeChar: string; readonly end: number} | null {
+  let cursor = skipWhitespaceAndComments(sql, start);
+  if (!keywordAt(sql, cursor, "uescape")) {
+    return null;
+  }
+
+  cursor = skipWhitespaceAndComments(sql, cursor + "uescape".length);
+  const literal = readSingleQuotedLiteral(sql, cursor);
+  const chars = literal ? Array.from(literal.value) : [];
+  if (!literal || chars.length !== 1) {
+    return null;
+  }
+
+  return {escapeChar: chars[0] ?? "\\", end: literal.end};
+}
+
+function codePointFromHex(hex: string): string | null {
+  const codePoint = Number.parseInt(hex, 16);
+  return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : null;
+}
+
+function decodeUnicodeEscapedIdentifier(value: string, escapeChar: string): string {
+  let decoded = "";
+  let cursor = 0;
+
+  while (cursor < value.length) {
+    const char = value[cursor];
+    if (char !== escapeChar) {
+      decoded += char ?? "";
+      cursor += 1;
+      continue;
+    }
+
+    if (value[cursor + 1] === escapeChar) {
+      decoded += escapeChar;
+      cursor += 2;
+      continue;
+    }
+
+    if (value[cursor + 1] === "+") {
+      const hex = value.slice(cursor + 2, cursor + 8);
+      const codePoint = /^[0-9A-Fa-f]{6}$/.test(hex) ? codePointFromHex(hex) : null;
+      if (codePoint !== null) {
+        decoded += codePoint;
+        cursor += 8;
+        continue;
+      }
+    }
+
+    const hex = value.slice(cursor + 1, cursor + 5);
+    const codePoint = /^[0-9A-Fa-f]{4}$/.test(hex) ? codePointFromHex(hex) : null;
+    if (codePoint !== null) {
+      decoded += codePoint;
+      cursor += 5;
+      continue;
+    }
+
+    decoded += char ?? "";
+    cursor += 1;
+  }
+
+  return decoded;
+}
+
+function normalizeIdentifier(value: string): string {
+  return value.toLowerCase();
+}
+
+function tokenizeSqlForGuard(sql: string): SqlGuardToken[] {
+  const tokens: SqlGuardToken[] = [];
+  let cursor = 0;
+
+  while (cursor < sql.length) {
+    cursor = skipWhitespaceAndComments(sql, cursor);
+    if (cursor >= sql.length) {
+      break;
+    }
+
+    const char = sql[cursor];
+    if (char === undefined) {
+      break;
+    }
+
+    if ((char === "E" || char === "e") && sql[cursor + 1] === "'") {
+      cursor = skipSingleQuotedString(sql, cursor + 1, true);
+      continue;
+    }
+
+    if ((char === "U" || char === "u") && sql[cursor + 1] === "&" && sql[cursor + 2] === "'") {
+      cursor = skipSingleQuotedString(sql, cursor + 2);
+      const escapeClause = readUnicodeEscapeClause(sql, cursor);
+      cursor = escapeClause?.end ?? cursor;
+      continue;
+    }
+
+    if ((char === "U" || char === "u") && sql[cursor + 1] === "&" && sql[cursor + 2] === "\"") {
+      const quoted = readQuotedIdentifier(sql, cursor + 2);
+      const escapeClause = readUnicodeEscapeClause(sql, quoted.end);
+      tokens.push({
+        kind: "identifier",
+        value: normalizeIdentifier(decodeUnicodeEscapedIdentifier(quoted.value, escapeClause?.escapeChar ?? "\\")),
+      });
+      cursor = escapeClause?.end ?? quoted.end;
+      continue;
+    }
+
+    const dollarTag = readDollarQuoteTag(sql, cursor);
+    if (dollarTag !== null) {
+      cursor = skipDollarQuotedString(sql, cursor, dollarTag);
+      continue;
+    }
+
+    if (char === "'") {
+      cursor = skipSingleQuotedString(sql, cursor);
+      continue;
+    }
+
+    if (char === "\"") {
+      const quoted = readQuotedIdentifier(sql, cursor);
+      tokens.push({kind: "identifier", value: normalizeIdentifier(quoted.value)});
+      cursor = quoted.end;
+      continue;
+    }
+
+    if (isIdentifierStart(char)) {
+      const start = cursor;
+      cursor += 1;
+      while (isIdentifierPart(sql[cursor])) {
+        cursor += 1;
+      }
+      tokens.push({kind: "identifier", value: normalizeIdentifier(sql.slice(start, cursor))});
+      continue;
+    }
+
+    if (char === ".") {
+      tokens.push({kind: "dot"});
+      cursor += 1;
+      continue;
+    }
+
+    if (char === "(") {
+      tokens.push({kind: "openParen"});
+      cursor += 1;
+      continue;
+    }
+
+    cursor += 1;
+  }
+
+  return tokens;
+}
+
+function tokenStartsFunctionCall(tokens: readonly SqlGuardToken[], index: number): boolean {
+  return tokens[index + 1]?.kind === "openParen";
+}
+
+function assertNoRuntimeScopeMutation(tokens: readonly SqlGuardToken[]): void {
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token?.kind === "identifier" && token.value === "set_config" && tokenStartsFunctionCall(tokens, index)) {
+      throw new ToolError("Readonly SQL cannot mutate runtime scope.");
+    }
+  }
+}
+
+function assertNoModelCallTraceTableAccess(tokens: readonly SqlGuardToken[]): void {
+  for (const token of tokens) {
+    if (token.kind === "identifier" && token.value === "model_call_traces") {
+      throw new ToolError("Model call traces are not exposed through readonly SQL. Use the admin-only Control model-call trace viewer instead.");
+    }
+  }
+}
+
+function assertNoDangerousReadonlyFunctions(tokens: readonly SqlGuardToken[]): void {
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token?.kind === "identifier" && DANGEROUS_READONLY_FUNCTION_NAMES.has(token.value) && tokenStartsFunctionCall(tokens, index)) {
+      throw new ToolError("Readonly SQL cannot use Postgres dynamic SQL, dump, dblink, or file export functions.");
+    }
+  }
+}
+
 function assertReadonlySql(sql: string): string {
   const normalized = trimSql(sql);
   if (!normalized) {
@@ -63,9 +452,10 @@ function assertReadonlySql(sql: string): string {
   if (!/^(select|with)\b/i.test(normalized)) {
     throw new ToolError("Only SELECT or WITH queries are allowed.");
   }
-  if (/\bset_config\b/i.test(normalized)) {
-    throw new ToolError("Readonly SQL cannot mutate runtime scope.");
-  }
+  const guardTokens = tokenizeSqlForGuard(normalized);
+  assertNoRuntimeScopeMutation(guardTokens);
+  assertNoDangerousReadonlyFunctions(guardTokens);
+  assertNoModelCallTraceTableAccess(guardTokens);
 
   return normalized;
 }

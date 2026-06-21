@@ -14,6 +14,8 @@ import {ensureReadonlySessionQuerySchema} from "../src/domain/threads/runtime/po
 
 const pools: Array<{end(): Promise<void>}> = [];
 const PROMPT_CACHE_KEY_REDACTION_PATTERN = /^\[redacted:prompt-cache-key:sha256:[a-f0-9]{16}\]$/;
+const TRACE_CONTEXT_CONTENT = "llm context section with trace-context-value";
+const TRACE_CONTEXT_CACHE_PART = "trace-context-cache-raw-secret";
 
 afterEach(async () => {
   while (pools.length > 0) await pools.pop()?.end();
@@ -77,16 +79,20 @@ class SecretTool extends Tool {
 
 class TraceContext extends LlmContext {
   override name = "TraceContext";
+  override source = "test-context-source";
+  override label = "Trace context label";
 
   async getSnapshot() {
     return {
-      content: "llm context section with trace-context-value",
-      promptCacheKeyPart: "trace-context-cache",
+      content: TRACE_CONTEXT_CONTENT,
+      promptCacheKeyPart: TRACE_CONTEXT_CACHE_PART,
+      label: this.label,
+      source: this.source,
     };
   }
 
   async getContent(): Promise<string> {
-    return "llm context section with trace-context-value";
+    return TRACE_CONTEXT_CONTENT;
   }
 }
 
@@ -191,8 +197,20 @@ describe("model call traces", () => {
     expect(trace.requestJson.tools).toEqual([expect.objectContaining({name: "secret_tool"})]);
     expect(trace.requestJson.llmContextDump).toEqual(expect.stringContaining("TraceContext"));
     expect(trace.requestJson.llmContextSections).toEqual([
-      expect.objectContaining({name: "TraceContext", content: expect.stringContaining("trace-context-value")}),
+      expect.objectContaining({
+        name: "TraceContext",
+        source: "test-context-source",
+        label: "Trace context label",
+        content: expect.stringContaining("trace-context-value"),
+        contentPreview: TRACE_CONTEXT_CONTENT,
+        contentChars: TRACE_CONTEXT_CONTENT.length,
+        estimatedTokens: Math.ceil(TRACE_CONTEXT_CONTENT.length / 4),
+        dump: expect.stringContaining("TraceContext"),
+        dumpChars: expect.any(Number),
+        promptCacheKeyPart: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
+      }),
     ]);
+    expect(JSON.stringify(trace.requestJson.llmContextSections)).not.toContain(TRACE_CONTEXT_CACHE_PART);
   });
 
   it("writes one failed trace with sanitized provider error details", async () => {

@@ -428,6 +428,88 @@ describe("PostgresReadonlyQueryTool", () => {
     )).rejects.toThrow("Disposable execution environments require READONLY_DATABASE_URL");
   });
 
+  it("blocks Postgres dynamic SQL and dump functions before connecting", async () => {
+    const pool = new FakeReadonlyPool([{id: "message-1"}]);
+    const tool = new PostgresReadonlyQueryTool({
+      pool,
+    });
+    const context = createRunContext({
+      sessionId: "session-main",
+      identityId: "identity-alice",
+      threadId: "thread-1",
+      agentKey: "panda",
+    });
+
+    const blockedSql = [
+      "select query_to_xml('select * from runtime.' || 'model_call_' || 'traces', true, true, '')",
+      "select '--' || query_to_xml('select * from runtime.' || 'model_call_' || 'traces', true, true, '')",
+      "select query_to_xml /* bypass */ ('select * from runtime.' || 'model_call_' || 'traces', true, true, '')",
+      `select U&"query_to\\005Fxml"('select * from session.messages', true, true, '')`,
+      `select pg_catalog.U&"table_to\\005Fxml"(to_regclass('session.messages'), true, true, '')`,
+      `select U&"query_to!005Fxml" UESCAPE '!'('select * from session.messages', true, true, '')`,
+      "select pg_catalog.table_to_xml(to_regclass('runtime.' || 'model_call_' || 'traces'), true, true, '')",
+      "select schema_to_xml('runtime', true, true, '')",
+      "select database_to_xml(true, true, '')",
+      "select cursor_to_xml('trace_cursor'::refcursor, 100, true, true, '')",
+      "select query_to_xmlschema('select * from session.messages', true, true, '')",
+      `select "table_to_xmlschema"(to_regclass('runtime.' || 'model_call_' || 'traces'), true, true, '')`,
+      "select schema_to_xmlschema('runtime', true, true, '')",
+      "select database_to_xmlschema(true, true, '')",
+      "select query_to_xml_and_xmlschema('select * from session.messages', true, true, '')",
+      "select * from dblink('dbname=panda', 'select * from runtime.' || 'model_call_' || 'traces') as t(id text)",
+      "select dblink_connect('dbname=panda')",
+      "select lo_export(123, '/tmp/model-call-traces.dump')",
+      "select lo_import('/tmp/model-call-traces.dump')",
+    ];
+
+    for (const sql of blockedSql) {
+      await expect(tool.run({sql}, context)).rejects.toThrow("Readonly SQL cannot use Postgres dynamic SQL, dump, dblink, or file export functions.");
+    }
+    expect(pool.connectCalls).toBe(0);
+  });
+
+  it("blocks direct model call trace table reads while allowing session views", async () => {
+    const pool = new FakeReadonlyPool([{id: "message-1"}]);
+    const tool = new PostgresReadonlyQueryTool({
+      pool,
+    });
+    const context = createRunContext({
+      sessionId: "session-main",
+      identityId: "identity-alice",
+      threadId: "thread-1",
+      agentKey: "panda",
+    });
+
+    const blockedSql = [
+      "select * from runtime.model_call_traces limit 1",
+      "select '--' as marker, id from runtime.model_call_traces limit 1",
+      "select $tag$--$tag$ as marker, id from runtime.model_call_traces limit 1",
+      "select * from model_call_traces limit 1",
+      'select * from "runtime"."model_call_traces" limit 1',
+      'select * from runtime.U&"model_call\\005Ftraces" limit 1',
+      'select * from U&"model_call\\005Ftraces" limit 1',
+      "select * from runtime /* bypass */ . /* bypass */ model_call_traces limit 1",
+      "with traces as (select * from runtime.model_call_traces) select * from traces",
+      'select * from (select * from "model_call_traces") traces',
+      'with "model_call_traces" as (select 1) select * from "model_call_traces"',
+    ];
+
+    for (const sql of blockedSql) {
+      await expect(tool.run({sql}, context)).rejects.toThrow("Model call traces are not exposed through readonly SQL.");
+    }
+    expect(pool.connectCalls).toBe(0);
+
+    const result = await tool.run(
+      {sql: "select '--' as marker, id from session.messages order by created_at desc limit 1"},
+      context,
+    ) as ToolResultPayload;
+
+    const parsed = parseToolResult(result);
+    expect(parsed.rows).toEqual([{id: "message-1"}]);
+    expect(pool.connectCalls).toBe(1);
+    expect(pool.client.queries.some((query) => query.text.includes("session.messages"))).toBe(true);
+  });
+
   it("blocks readonly SQL from mutating runtime scope", async () => {
     const tool = new PostgresReadonlyQueryTool({
       pool: new FakeReadonlyPool([]),

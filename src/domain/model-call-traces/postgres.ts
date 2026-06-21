@@ -5,7 +5,7 @@ import {requireTimestampMillis, toJson} from "../../lib/postgres-values.js";
 import {isJsonObject, isJsonValue, type JsonObject, type JsonValue} from "../../lib/json.js";
 import {ensurePostgresModelCallTraceSchema} from "./postgres-schema.js";
 import {buildModelCallTraceTableNames, type ModelCallTraceTableNames} from "./postgres-shared.js";
-import {buildSanitizedModelCallTrace, sanitizePromptCacheKey} from "./redaction.js";
+import {buildSanitizedModelCallTrace, sanitizePromptCacheKey, sanitizeTraceRequestJson} from "./redaction.js";
 import type {ModelCallTraceMode, ModelCallTraceRecord, ModelCallTraceRecorder, ModelCallTraceStatus, RecordModelCallTraceInput} from "./types.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -73,14 +73,13 @@ function optionalJsonValue(value: unknown, label: string): JsonValue | undefined
   return value;
 }
 
-function normalizeRequestJsonPromptCacheKey(requestJson: JsonObject): JsonObject {
-  if (!Object.hasOwn(requestJson, "promptCacheKey")) {
-    return requestJson;
-  }
-  return {
+function normalizeStoredRequestJson(requestJson: JsonObject): JsonObject {
+  return sanitizeTraceRequestJson({
     ...requestJson,
-    promptCacheKey: sanitizePromptCacheKey(requestJson.promptCacheKey),
-  };
+    ...(Object.hasOwn(requestJson, "promptCacheKey")
+      ? {promptCacheKey: sanitizePromptCacheKey(requestJson.promptCacheKey)}
+      : {}),
+  });
 }
 
 function parseTraceRow(row: Record<string, unknown>): ModelCallTraceRecord {
@@ -106,7 +105,7 @@ function parseTraceRow(row: Record<string, unknown>): ModelCallTraceRecord {
     finishedAt: requireTimestampMillis(row.finished_at, "Model call trace finished_at must be a valid timestamp."),
     durationMs: requireNonNegativeInteger(row.duration_ms, "Model call trace duration_ms"),
     ...(promptCacheKey !== undefined ? {promptCacheKey: sanitizePromptCacheKey(promptCacheKey)} : {}),
-    requestJson: normalizeRequestJsonPromptCacheKey(requestJson),
+    requestJson: normalizeStoredRequestJson(requestJson),
     ...(responseJson !== undefined ? {responseJson} : {}),
     ...(errorJson !== undefined ? {errorJson} : {}),
     ...(usageJson !== undefined ? {usageJson} : {}),
