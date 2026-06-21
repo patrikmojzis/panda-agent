@@ -3014,6 +3014,11 @@ describe("Control scheduled tasks HTTP", () => {
 
 describe("Control Model Call Traces HTTP", () => {
   const CONTROL_PROMPT_CACHE_KEY_SECRET = "controlPromptCacheKeySecret";
+  const CONTROL_CONTEXT_CACHE_PART_SECRET = "controlContextCachePartSecret";
+  const CONTROL_RESPONSE_CACHE_PART_SECRET = "controlResponseCachePartSecret";
+  const CONTROL_RESPONSE_FINGERPRINT_SECRET = "controlResponseFingerprintSecret";
+  const CONTROL_ERROR_CACHE_SECRET = "controlErrorCacheSecret";
+  const CONTROL_USAGE_CACHE_SECRET = "controlUsageCacheSecret";
   const PROMPT_CACHE_KEY_REDACTION_PATTERN = /^\[redacted:prompt-cache-key:sha256:[a-f0-9]{16}\]$/;
 
   async function login(base: string, harness: Awaited<ReturnType<typeof createHarness>>, role: "admin" | "scoped" = "admin", agentKey = "panda") {
@@ -3043,7 +3048,18 @@ describe("Control Model Call Traces HTTP", () => {
         },
         trace: {
           llmContextDump: "<context>PRIVATE_TOKEN_CONTEXT token=sk-controlTraceSecret</context>",
-          llmContextSections: [{name: "ControlTraceContext", content: "context content", dump: "dump content"}],
+          llmContextSections: [{
+            name: "ControlTraceContext",
+            source: "control-test-source",
+            label: "Control trace context",
+            content: "context content",
+            contentPreview: "context content",
+            contentChars: 15,
+            estimatedTokens: 4,
+            dump: "dump content",
+            dumpChars: 12,
+            promptCacheKeyPart: `context-cache:${CONTROL_CONTEXT_CACHE_PART_SECRET}`,
+          }],
         },
         context: {
           systemPrompt: "system prompt with Bearer controlBearerSecret",
@@ -3083,14 +3099,60 @@ describe("Control Model Call Traces HTTP", () => {
       "controlApiKeySecret",
       "sk-controlTraceSecret",
       "tool-token-secret",
+      CONTROL_CONTEXT_CACHE_PART_SECRET,
     ]) expect(persisted).not.toContain(sentinel);
     expect(persisted).toContain("unknown_tool_arguments");
 
+    const rawContextCachePart = `context-cache:${CONTROL_CONTEXT_CACHE_PART_SECRET}`;
+    const rawResponseCachePart = `response-cache:${CONTROL_RESPONSE_CACHE_PART_SECRET}`;
+    const rawResponseFingerprint = `response-fingerprint:${CONTROL_RESPONSE_FINGERPRINT_SECRET}`;
+    const rawErrorCacheKey = `error-cache:${CONTROL_ERROR_CACHE_SECRET}`;
+    const rawUsageFingerprint = `usage-fingerprint:${CONTROL_USAGE_CACHE_SECRET}`;
     await harness.pool.query(
-      `UPDATE "runtime"."model_call_traces" SET prompt_cache_key = $1, request_json = $2::jsonb WHERE id = $3`,
+      `UPDATE "runtime"."model_call_traces"
+       SET prompt_cache_key = $1,
+           request_json = $2::jsonb,
+           response_json = $3::jsonb,
+           error_json = $4::jsonb,
+           usage_json = $5::jsonb
+       WHERE id = $6`,
       [
         rawPromptCacheKey,
-        JSON.stringify({...(row.request_json as Record<string, unknown>), promptCacheKey: rawPromptCacheKey}),
+        JSON.stringify({
+          ...(row.request_json as Record<string, unknown>),
+          promptCacheKey: rawPromptCacheKey,
+          llmContextSections: [{
+            name: "ControlTraceContext",
+            source: "control-test-source",
+            label: "Control trace context",
+            content: "context content",
+            contentPreview: "context content",
+            contentChars: 15,
+            estimatedTokens: 4,
+            dump: "dump content",
+            dumpChars: 12,
+            promptCacheKeyPart: {raw: rawContextCachePart},
+          }],
+        }),
+        JSON.stringify({
+          role: "assistant",
+          content: [{type: "text", text: "ok"}],
+          metadata: {
+            promptCacheKeyPart: rawResponseCachePart,
+            nested: {promptCacheKeyFingerprint: rawResponseFingerprint},
+          },
+        }),
+        JSON.stringify({
+          category: "legacy_provider_error",
+          message: "legacy failed",
+          promptCacheKey: rawErrorCacheKey,
+        }),
+        JSON.stringify({
+          input: 10,
+          output: 4,
+          totalTokens: 17,
+          promptCacheKeyFingerprint: rawUsageFingerprint,
+        }),
         row.id,
       ],
     );
@@ -3121,8 +3183,16 @@ describe("Control Model Call Traces HTTP", () => {
       status: "completed",
       durationMs: 1250,
       promptCacheKey: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
-      usage: expect.objectContaining({input: 10, output: 4, totalTokens: 17}),
-      error: null,
+      usage: expect.objectContaining({
+        input: 10,
+        output: 4,
+        totalTokens: 17,
+        promptCacheKeyFingerprint: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
+      }),
+      error: expect.objectContaining({
+        category: "legacy_provider_error",
+        promptCacheKey: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
+      }),
     });
     expect(Object.keys(listBody.modelCallTraces.data[0]!).sort()).toEqual(["agentKey", "callIndex", "durationMs", "error", "expiresAt", "finishedAt", "id", "mode", "model", "promptCacheKey", "provider", "runId", "sessionId", "startedAt", "status", "threadId", "turn", "usage"]);
     expect(JSON.stringify(listBody)).not.toContain(CONTROL_PROMPT_CACHE_KEY_SECRET);
@@ -3139,10 +3209,32 @@ describe("Control Model Call Traces HTTP", () => {
         systemPrompt: expect.stringContaining("system prompt"),
         messages: expect.any(Array),
         tools: expect.any(Array),
-        llmContextSections: [expect.objectContaining({name: "ControlTraceContext"})],
+        llmContextSections: [expect.objectContaining({
+          name: "ControlTraceContext",
+          source: "control-test-source",
+          label: "Control trace context",
+          contentPreview: "context content",
+          contentChars: 15,
+          estimatedTokens: 4,
+          promptCacheKeyPart: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
+        })],
       }),
-      response: expect.objectContaining({role: "assistant"}),
-      usage: expect.objectContaining({totalTokens: 17}),
+      response: expect.objectContaining({
+        role: "assistant",
+        metadata: expect.objectContaining({
+          promptCacheKeyPart: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
+          nested: expect.objectContaining({
+            promptCacheKeyFingerprint: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
+          }),
+        }),
+      }),
+      usage: expect.objectContaining({
+        totalTokens: 17,
+        promptCacheKeyFingerprint: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
+      }),
+      error: expect.objectContaining({
+        promptCacheKey: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
+      }),
     });
     const apiText = JSON.stringify(detailBody);
     for (const sentinel of [
@@ -3152,6 +3244,16 @@ describe("Control Model Call Traces HTTP", () => {
       "controlApiKeySecret",
       "sk-controlTraceSecret",
       "tool-token-secret",
+      CONTROL_CONTEXT_CACHE_PART_SECRET,
+      rawContextCachePart,
+      CONTROL_RESPONSE_CACHE_PART_SECRET,
+      CONTROL_RESPONSE_FINGERPRINT_SECRET,
+      CONTROL_ERROR_CACHE_SECRET,
+      CONTROL_USAGE_CACHE_SECRET,
+      rawResponseCachePart,
+      rawResponseFingerprint,
+      rawErrorCacheKey,
+      rawUsageFingerprint,
     ]) expect(apiText).not.toContain(sentinel);
   });
 });

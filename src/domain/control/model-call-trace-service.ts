@@ -1,7 +1,7 @@
-import type {JsonObject, JsonValue} from "../../lib/json.js";
+import {isJsonObject, type JsonObject, type JsonValue} from "../../lib/json.js";
 import type {PgQueryable} from "../../lib/postgres-query.js";
 import {PostgresModelCallTraceStore, type ModelCallTraceListInput} from "../model-call-traces/postgres.js";
-import {sanitizePromptCacheKey} from "../model-call-traces/redaction.js";
+import {sanitizePromptCacheKey, sanitizeTraceJson, sanitizeTraceRequestJson} from "../model-call-traces/redaction.js";
 import type {ModelCallTraceMode, ModelCallTraceRecord, ModelCallTraceStatus} from "../model-call-traces/types.js";
 import type {ControlSessionRecord} from "./types.js";
 
@@ -55,13 +55,24 @@ function publicPromptCacheKey(value: string | undefined): string | null {
 }
 
 function publicRequestJson(trace: ModelCallTraceRecord): JsonObject {
-  if (!Object.hasOwn(trace.requestJson, "promptCacheKey")) {
-    return trace.requestJson;
-  }
-  return {
+  return sanitizeTraceRequestJson({
     ...trace.requestJson,
-    promptCacheKey: sanitizePromptCacheKey(trace.requestJson.promptCacheKey),
-  };
+    ...(Object.hasOwn(trace.requestJson, "promptCacheKey")
+      ? {promptCacheKey: sanitizePromptCacheKey(trace.requestJson.promptCacheKey)}
+      : {}),
+  });
+}
+
+function publicJsonValue(value: JsonValue | undefined): JsonValue | null {
+  return value === undefined ? null : sanitizeTraceJson(value);
+}
+
+function publicJsonObject(value: JsonObject | undefined): JsonObject | null {
+  if (value === undefined) {
+    return null;
+  }
+  const sanitized = sanitizeTraceJson(value);
+  return isJsonObject(sanitized) ? sanitized : {};
 }
 
 function publicSummary(trace: ModelCallTraceRecord): ControlModelCallTraceSummary {
@@ -81,8 +92,8 @@ function publicSummary(trace: ModelCallTraceRecord): ControlModelCallTraceSummar
     finishedAt: iso(trace.finishedAt),
     durationMs: trace.durationMs,
     promptCacheKey: publicPromptCacheKey(trace.promptCacheKey),
-    usage: trace.usageJson ?? null,
-    error: trace.errorJson ?? null,
+    usage: publicJsonValue(trace.usageJson),
+    error: publicJsonObject(trace.errorJson),
     expiresAt: iso(trace.expiresAt),
   };
 }
@@ -91,7 +102,7 @@ function publicDetail(trace: ModelCallTraceRecord): ControlModelCallTraceDetail 
   return {
     ...publicSummary(trace),
     request: publicRequestJson(trace),
-    response: trace.responseJson ?? null,
+    response: publicJsonValue(trace.responseJson),
   };
 }
 
