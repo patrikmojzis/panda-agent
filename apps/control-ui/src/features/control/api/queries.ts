@@ -373,19 +373,6 @@ export function useSessionTargets(agentKey: string, sessionId: string) {
   })
 }
 
-export function useSessionTodo(
-  agentKey: string,
-  sessionId: string,
-  options?: QueryFlags
-) {
-  return useQuery({
-    queryKey: controlKeys.sessions.todos(agentKey, sessionId),
-    queryFn: () => controlApi.sessionTodo(agentKey, sessionId),
-    enabled: options?.enabled ?? Boolean(agentKey && sessionId),
-    staleTime: options?.staleTime,
-  })
-}
-
 export function useScheduledTasks(
   agentKey: string,
   sessionId: string,

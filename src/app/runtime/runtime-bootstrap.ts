@@ -88,7 +88,6 @@ import {ControlOperatorService} from "../../domain/control/operator-service.js";
 import {createTelegramBotIdentityClient} from "../../integrations/channels/telegram/account.js";
 import {ControlBriefingService} from "../../domain/control/briefing-service.js";
 import {ControlHeartbeatService} from "../../domain/control/heartbeat-service.js";
-import {ControlTodoService} from "../../domain/control/todo-service.js";
 import {ControlScheduledTasksService} from "../../domain/control/scheduled-tasks-service.js";
 import {ControlWatchesService} from "../../domain/control/watches-service.js";
 import {ControlRuntimeActivityService} from "../../domain/control/runtime-activity-service.js";
@@ -146,7 +145,6 @@ interface RuntimeBootstrapResult {
   controlOperator: ControlOperatorService;
   controlBriefings: ControlBriefingService;
   controlHeartbeats: ControlHeartbeatService;
-  controlTodos: ControlTodoService;
   controlScheduledTasks: ControlScheduledTasksService;
   controlWatches: ControlWatchesService;
   controlRuntimeActivity: ControlRuntimeActivityService;
@@ -491,10 +489,6 @@ export async function bootstrapRuntime(
       pool: postgresPool,
       sessions: sessionStore,
     });
-    const controlTodos = new ControlTodoService({
-      pool: postgresPool,
-      sessions: sessionStore,
-    });
     const scheduledTasks = new PostgresScheduledTaskStore({
       pool: postgresPool,
     });
@@ -750,7 +744,6 @@ export async function bootstrapRuntime(
       controlOperator,
       controlBriefings,
       controlHeartbeats,
-      controlTodos,
       controlScheduledTasks,
       controlWatches,
       controlRuntimeActivity,
