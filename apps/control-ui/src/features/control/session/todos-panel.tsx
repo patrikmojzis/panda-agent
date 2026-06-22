@@ -43,6 +43,15 @@ export function TodosPanel({
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_18rem]">
       <div className="grid min-w-0 gap-4">
+        <div className="border border-dashed bg-muted/10 p-3 text-xs text-muted-foreground">
+          <div className="text-sm font-medium text-foreground">
+            Runtime Internal State
+          </div>
+          <p className="mt-1">
+            Read-only todo context maintained by the agent via todo_update.
+            It is shown for debugging, not as an operator task queue.
+          </p>
+        </div>
         <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
           <Metric
             label="Items"
@@ -59,7 +68,7 @@ export function TodosPanel({
           ))}
         </div>
         <DetailPanel
-          title="Todo Items"
+          title="Internal State: Todo Context"
           action={
             query.isFetching && todo ? (
               <Badge variant="outline">Refreshing</Badge>
@@ -69,7 +78,7 @@ export function TodosPanel({
           <TodoItemsList loading={query.isLoading && !todo} todo={todo} />
         </DetailPanel>
       </div>
-      <DetailPanel title="Todo State">
+      <DetailPanel title="Todo Context Metadata">
         <div className="grid gap-3">
           <DetailField
             loading={query.isLoading && !todo}
@@ -131,7 +140,7 @@ function TodoItemsList({
   if (items.length === 0) {
     return (
       <div className="border border-dashed bg-muted/10 p-6 text-sm text-muted-foreground">
-        No todo items are saved for this session.
+        No todo context items are saved for this session.
       </div>
     )
   }

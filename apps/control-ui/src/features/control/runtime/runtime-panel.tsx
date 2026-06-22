@@ -21,6 +21,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { useRuntimeActivity } from "@/features/control/api/queries"
+import { TodosPanel } from "@/features/control/session/todos-panel"
 import { useAuth } from "@/lib/auth"
 import {
   humanize,
@@ -205,6 +206,7 @@ export function RuntimePanel({
         fetching={runtime.isFetching}
         showModelCallLink={auth.session?.role === "admin"}
       />
+      <TodosPanel agentKey={agentKey} sessionId={sessionId} />
     </div>
   )
 }

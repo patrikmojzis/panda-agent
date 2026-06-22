@@ -34,7 +34,6 @@ import { GatewayPanel } from "@/features/control/gateway/gateway-panel"
 import { RuntimePanel } from "@/features/control/runtime/runtime-panel"
 import { AutomationsPanel } from "@/features/control/session/automations-panel"
 import { BriefingPanel } from "@/features/control/session/briefing-panel"
-import { TodosPanel } from "@/features/control/session/todos-panel"
 import { WatchesPanel } from "@/features/control/session/watches-panel"
 import {
   useHeartbeat,
@@ -50,11 +49,18 @@ import { useAuth } from "@/lib/auth"
 function SessionPage() {
   const { agentKey = "", sessionId = "" } = useParams()
   const [searchParams, setSearchParams] = useSearchParams()
-  const tab = searchParams.get("tab") ?? DEFAULT_SESSION_TAB
+  const requestedTab = searchParams.get("tab") ?? DEFAULT_SESSION_TAB
+  const tab = normalizeSessionTab(requestedTab)
   const setTab = React.useCallback(
     (value: string) => setSearchParams({ tab: value }),
     [setSearchParams]
   )
+  React.useEffect(() => {
+    if (requestedTab !== tab) {
+      setSearchParams({ tab }, { replace: true })
+    }
+  }, [requestedTab, setSearchParams, tab])
+
   const session = useSessionDetail(agentKey, sessionId)
   const sessionDetails = session.data?.session
   const pageTitle = friendlySessionLabel(sessionDetails, sessionId)
@@ -94,6 +100,13 @@ function SessionPage() {
   )
 }
 
+function normalizeSessionTab(value: string) {
+  if (value === "todos") return "runtime"
+  return SESSION_RESOURCE_TABS.some((tab) => tab.value === value)
+    ? value
+    : DEFAULT_SESSION_TAB
+}
+
 function sessionDetailTabs(
   agentKey: string,
   sessionId: string
@@ -109,8 +122,6 @@ function sessionTabContent(agentKey: string, sessionId: string, value: string) {
   switch (value) {
     case "briefing":
       return <BriefingPanel agentKey={agentKey} sessionId={sessionId} />
-    case "todos":
-      return <TodosPanel agentKey={agentKey} sessionId={sessionId} />
     case "bindings":
       return <BindingsPanel agentKey={agentKey} sessionId={sessionId} />
     case "a2a":

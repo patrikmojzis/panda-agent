@@ -1,7 +1,6 @@
 import type {PgQueryable} from "../../lib/postgres-query.js";
 import {buildAgentTableNames} from "../agents/postgres-shared.js";
 import {buildScheduledTaskTableNames} from "../scheduling/tasks/postgres-shared.js";
-import {isSessionTodoStatus, SESSION_TODO_STATUSES, type SessionTodoStatus} from "../sessions/todos.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import {buildControlTableNames} from "./postgres-shared.js";
 import type {ControlSessionRecord} from "./types.js";
@@ -16,8 +15,6 @@ const TASK_ROWS_PER_SESSION_LIMIT = ATTENTION_LIMIT + UPCOMING_LIMIT;
 type ControlHomeStatusLevel = "ok" | "attention";
 type ControlHomeAttentionSeverity = "info" | "warning" | "critical";
 type ControlHomeAttentionType = "failed_task" | "overdue_task";
-
-type ControlHomeTodoCounts = Record<SessionTodoStatus, number>;
 
 export interface ControlHomeAgentScope {
   agentKey: string;
@@ -45,10 +42,9 @@ export interface ControlHomeSessionSummary {
   label: string;
   kind: string;
   heartbeat: {enabled: boolean; everyMinutes: number; nextFireAt: string | null; lastFireAt?: string};
-  todoCounts: ControlHomeTodoCounts;
   nextTaskAt: string | null;
   lastTaskStatus: string | null;
-  links: {todos: string; watches: string; runtimeActivity: string; scheduledTasks: string; heartbeat: string; briefing: string};
+  links: {watches: string; runtimeActivity: string; scheduledTasks: string; heartbeat: string; briefing: string};
 }
 
 export interface ControlHomeUpcomingAutomation {
@@ -79,7 +75,6 @@ export interface ControlHome {
 }
 
 type VisibleSessionRow = Record<string, unknown>;
-type TodoRow = Record<string, unknown>;
 type TaskRow = Record<string, unknown>;
 type RunRow = Record<string, unknown>;
 
@@ -87,34 +82,6 @@ function toIso(value: unknown): string | null {
   if (value === null || value === undefined) return null;
   const millis = value instanceof Date ? value.getTime() : typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
   return Number.isFinite(millis) ? new Date(millis).toISOString() : null;
-}
-
-function emptyCounts(): ControlHomeTodoCounts {
-  return Object.fromEntries(SESSION_TODO_STATUSES.map((status) => [status, 0])) as ControlHomeTodoCounts;
-}
-
-function parseTodoItems(value: unknown): unknown[] {
-  if (Array.isArray(value)) return value;
-  if (typeof value === "string") {
-    try {
-      const parsed = JSON.parse(value) as unknown;
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  }
-  if (typeof value === "object" && value !== null) return Object.values(value as Record<string, unknown>);
-  return [];
-}
-
-function countTodos(value: unknown): ControlHomeTodoCounts {
-  const counts = emptyCounts();
-  for (const item of parseTodoItems(value)) {
-    if (typeof item !== "object" || item === null || Array.isArray(item)) continue;
-    const status = (item as Record<string, unknown>).status;
-    if (isSessionTodoStatus(status)) counts[status] += 1;
-  }
-  return counts;
 }
 
 function labelForSession(row: VisibleSessionRow): string {
@@ -193,18 +160,11 @@ export class ControlHomeService {
 
     const visibleRows = visibleResult.rows as VisibleSessionRow[];
     const sessionIds = visibleRows.map((row) => String(row.session_id));
-    const todoCountsBySession = new Map<string, ControlHomeTodoCounts>();
     const tasksBySession = new Map<string, TaskRow[]>();
     const runsBySession = new Map<string, RunRow[]>();
 
     if (sessionIds.length > 0) {
-      const sessionIdPlaceholders = sessionIds.map((_, index) => `$${index + 1}`).join(", ");
-      const [todoResult, taskResult, runResult] = await Promise.all([
-        this.pool.query(`
-          SELECT session_id, items
-          FROM ${this.sessions.sessionTodos}
-          WHERE session_id IN (${sessionIdPlaceholders})
-        `, sessionIds),
+      const [taskResult, runResult] = await Promise.all([
         this.pool.query(`
           SELECT id, session_id, title, schedule_kind, enabled, claimed_at, next_fire_at, completed_at, cancelled_at, created_at
           FROM ${this.scheduled.scheduledTasks}
@@ -225,9 +185,6 @@ export class ControlHomeService {
           LIMIT $2
         `, [sessionIds, sessionIds.length * (TASK_ROWS_PER_SESSION_LIMIT + 1)]),
       ]);
-      for (const row of todoResult.rows as TodoRow[]) {
-        todoCountsBySession.set(String(row.session_id), countTodos(row.items));
-      }
       for (const row of taskResult.rows as TaskRow[]) {
         const rows = tasksBySession.get(String(row.session_id)) ?? [];
         rows.push(row);
@@ -256,7 +213,6 @@ export class ControlHomeService {
       const agentKey = String(row.agent_key);
       const sessionId = String(row.session_id);
       const label = labelForSession(row);
-      const todoCounts = todoCountsBySession.get(sessionId) ?? emptyCounts();
       const taskRows = tasksBySession.get(sessionId) ?? [];
       const runRows = runsBySession.get(sessionId) ?? [];
       const nextTask = taskRows.find((task) => task.enabled === true && !task.completed_at && !task.cancelled_at && task.next_fire_at);
@@ -319,11 +275,9 @@ export class ControlHomeService {
         label,
         kind: String(row.kind),
         heartbeat,
-        todoCounts,
         nextTaskAt: toIso(nextTask?.next_fire_at),
         lastTaskStatus: typeof lastRun?.status === "string" ? lastRun.status : null,
         links: {
-          todos: sessionWorkspaceRoute(agentKey, sessionId, "todos"),
           watches: sessionWorkspaceRoute(agentKey, sessionId, "watches"),
           runtimeActivity: sessionWorkspaceRoute(agentKey, sessionId, "runtime"),
           scheduledTasks: sessionWorkspaceRoute(agentKey, sessionId, "automations"),

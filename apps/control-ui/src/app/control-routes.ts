@@ -11,7 +11,6 @@ import {
   Home,
   KeyRound,
   Link2,
-  ListTodo,
   Network,
   Plug,
   RadioTower,
@@ -112,7 +111,6 @@ export const PARENT_AGENT_SHORTCUT_TABS: ControlTabDefinition[] =
 
 export const SESSION_RESOURCE_TABS: ControlTabDefinition[] = [
   { value: "briefing", label: "Briefing", icon: FileText },
-  { value: "todos", label: "Todos", icon: ListTodo },
   { value: "watches", label: "Watches", icon: Eye },
   { value: "automations", label: "Automations", icon: CalendarClock },
   { value: "bindings", label: "Channel Bindings", icon: Network },
