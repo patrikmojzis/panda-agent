@@ -101,7 +101,6 @@ function SessionPage() {
 }
 
 function normalizeSessionTab(value: string) {
-  if (value === "todos") return "runtime"
   return SESSION_RESOURCE_TABS.some((tab) => tab.value === value)
     ? value
     : DEFAULT_SESSION_TAB

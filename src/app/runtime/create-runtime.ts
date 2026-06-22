@@ -28,7 +28,6 @@ import type {ControlHomeService} from "../../domain/control/home-service.js";
 import type {ControlOperatorService} from "../../domain/control/operator-service.js";
 import type {ControlBriefingService} from "../../domain/control/briefing-service.js";
 import type {ControlHeartbeatService} from "../../domain/control/heartbeat-service.js";
-import type {ControlTodoService} from "../../domain/control/todo-service.js";
 import type {ControlScheduledTasksService} from "../../domain/control/scheduled-tasks-service.js";
 import type {ControlWatchesService} from "../../domain/control/watches-service.js";
 import type {ControlRuntimeActivityService} from "../../domain/control/runtime-activity-service.js";
@@ -119,7 +118,6 @@ export interface RuntimeServices {
   controlOperator: ControlOperatorService;
   controlBriefings: ControlBriefingService;
   controlHeartbeats: ControlHeartbeatService;
-  controlTodos: ControlTodoService;
   controlScheduledTasks: ControlScheduledTasksService;
   controlWatches: ControlWatchesService;
   controlRuntimeActivity: ControlRuntimeActivityService;
@@ -227,7 +225,6 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     controlOperator: runtime.controlOperator,
     controlBriefings: runtime.controlBriefings,
     controlHeartbeats: runtime.controlHeartbeats,
-    controlTodos: runtime.controlTodos,
     controlScheduledTasks: runtime.controlScheduledTasks,
     controlWatches: runtime.controlWatches,
     controlRuntimeActivity: runtime.controlRuntimeActivity,

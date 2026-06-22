@@ -18,7 +18,6 @@ import {ControlHomeService} from "../src/domain/control/home-service.js";
 import {ControlOperatorService} from "../src/domain/control/operator-service.js";
 import {ControlBriefingService} from "../src/domain/control/briefing-service.js";
 import {ControlHeartbeatService} from "../src/domain/control/heartbeat-service.js";
-import {ControlTodoService} from "../src/domain/control/todo-service.js";
 import {ControlScheduledTasksService} from "../src/domain/control/scheduled-tasks-service.js";
 import {ControlWatchesService} from "../src/domain/control/watches-service.js";
 import {ControlRuntimeActivityService} from "../src/domain/control/runtime-activity-service.js";
@@ -77,7 +76,6 @@ async function createHarness(options: {
   const home = new ControlHomeService({pool, reads});
   const briefings = new ControlBriefingService({pool, sessions});
   const heartbeats = new ControlHeartbeatService({pool, sessions});
-  const todos = new ControlTodoService({pool, sessions});
   const scheduledTaskStore = new PostgresScheduledTaskStore({pool});
   const watchStore = new PostgresWatchStore({pool});
   const controlScheduledTasks = new ControlScheduledTasksService({pool, store: scheduledTaskStore});
@@ -158,11 +156,11 @@ async function createHarness(options: {
     INSERT INTO "runtime"."credentials" (id, env_key, agent_key, value_ciphertext, value_iv, value_tag, key_version)
     VALUES ('00000000-0000-0000-0000-000000000001', 'API_TOKEN', 'panda', '\\x5345435245545f53454e54494e454c', '\\x6976', '\\x746167', 1)
   `);
-  return {pool, identities, agents, sessions, executionEnvironments, a2aBindings, auth, reads, home, operator, briefings, heartbeats, todos, scheduledTaskStore, watchStore, connectorAccountStore, credentialCrypto, emailStore, wikiBindingStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts, modelCallTraces, controlModelCallTraces};
+  return {pool, identities, agents, sessions, executionEnvironments, a2aBindings, auth, reads, home, operator, briefings, heartbeats, scheduledTaskStore, watchStore, connectorAccountStore, credentialCrypto, emailStore, wikiBindingStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts, modelCallTraces, controlModelCallTraces};
 }
 
 async function startHarnessServer(harness: Awaited<ReturnType<typeof createHarness>>, options: {env?: NodeJS.ProcessEnv} = {}) {
-  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, modelCallTraces: harness.controlModelCallTraces, identityStore: harness.identities, env: options.env});
+  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, briefings: harness.briefings, heartbeats: harness.heartbeats, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, modelCallTraces: harness.controlModelCallTraces, identityStore: harness.identities, env: options.env});
   servers.push(server);
   return `http://${server.host}:${server.port}`;
 }
@@ -400,7 +398,6 @@ describe("Control auth HTTP", () => {
       } as ControlReadService,
       briefings: harness.briefings,
       heartbeats: harness.heartbeats,
-      todos: harness.todos,
       scheduledTasks: harness.controlScheduledTasks,
       watches: harness.controlWatches,
       runtimeActivity: harness.controlRuntimeActivity,
@@ -430,7 +427,7 @@ describe("Control auth HTTP", () => {
     await writeFile(join(staticDir, "index.html"), `<div id="root">Control UI shell</div>`);
     await writeFile(join(staticDir, "assets", "app.js"), "console.log('control-ui');");
     await writeFile(join(staticDir, "assets", "geist.woff2"), "font");
-    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, briefings: harness.briefings, heartbeats: harness.heartbeats, todos: harness.todos, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, modelCallTraces: harness.controlModelCallTraces, identityStore: harness.identities, uiStaticDir: staticDir});
+    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, briefings: harness.briefings, heartbeats: harness.heartbeats, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, modelCallTraces: harness.controlModelCallTraces, identityStore: harness.identities, uiStaticDir: staticDir});
     servers.push(server);
     const base = `http://${server.host}:${server.port}`;
 
@@ -457,6 +454,22 @@ describe("Control auth HTTP", () => {
     expect(nonControlApi.status).toBe(404);
     expect(nonControlApi.headers.get("content-type")).toContain("application/json");
     await expect(nonControlApi.json()).resolves.toEqual({error: "not_found"});
+  });
+
+  it("does not expose the removed session todo endpoint", async () => {
+    const harness = await createHarness();
+    await harness.sessions.replaceSessionTodo({sessionId: "session-panda", items: [
+      {status: "blocked", content: "REMOVED_CONTROL_TODO_CONTENT"},
+    ]});
+    const base = await startHarnessServer(harness);
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role: "admin"});
+    const login = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
+    expect(login.status).toBe(200);
+
+    const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/todos`, {headers: {cookie: cookieHeader(login)}});
+    expect(response.status).toBe(404);
+    const text = JSON.stringify(await response.json());
+    expect(text).not.toContain("REMOVED_CONTROL_TODO_CONTENT");
   });
 
   it("counts scoped running runs through agent_sessions instead of a nonexistent thread agent column", async () => {
@@ -2236,113 +2249,6 @@ describe("Control session heartbeat HTTP", () => {
   });
 });
 
-
-describe("Control session todos HTTP", () => {
-  async function login(base: string, harness: Awaited<ReturnType<typeof createHarness>>, role: "admin" | "scoped" = "scoped") {
-    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role, ...(role === "scoped" ? {agentKey: "panda"} : {})});
-    const response = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
-    expect(response.status).toBe(200);
-    return {cookies: cookieHeader(response)};
-  }
-
-  it("rejects unauthenticated reads", async () => {
-    const harness = await createHarness();
-    const base = await startHarnessServer(harness);
-
-    const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/todos`);
-    expect(response.status).toBe(401);
-  });
-
-  it("allows admin to read an unpaired todo while scoped still requires pairing", async () => {
-    const harness = await createHarness();
-    const base = await startHarnessServer(harness);
-    const admin = await login(base, harness, "admin");
-    const scoped = await login(base, harness, "scoped");
-
-    expect((await fetch(`${base}/api/control/agents/panda/sessions/session-panda/todos`, {headers: {cookie: admin.cookies}})).status).toBe(200);
-    expect((await fetch(`${base}/api/control/agents/panda/sessions/session-panda/todos`, {headers: {cookie: scoped.cookies}})).status).toBe(404);
-  });
-
-  it("returns authorized same-agent session todos with item order, status, content, counts, and whitelisted fields", async () => {
-    const harness = await createHarness();
-    await harness.agents.ensurePairing("panda", "identity-patrik");
-    await harness.sessions.replaceSessionTodo({sessionId: "session-panda", items: [
-      {status: "pending", content: "First private todo"},
-      {status: "blocked", content: "Second blocked todo"},
-      {status: "done", content: "Third done todo"},
-    ]});
-    const base = await startHarnessServer(harness);
-    const auth = await login(base, harness);
-
-    const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/todos`, {headers: {cookie: auth.cookies}});
-    expect(response.status).toBe(200);
-    const body = await response.json() as {todo: Record<string, unknown>};
-
-    expect(Object.keys(body.todo).sort()).toEqual(["counts", "createdAt", "items", "itemsHash", "sessionId", "updatedAt"]);
-    expect(body.todo).toMatchObject({
-      sessionId: "session-panda",
-      items: [
-        {status: "pending", content: "First private todo"},
-        {status: "blocked", content: "Second blocked todo"},
-        {status: "done", content: "Third done todo"},
-      ],
-      counts: {pending: 1, in_progress: 0, blocked: 1, done: 1},
-    });
-    expect(typeof body.todo.itemsHash).toBe("string");
-    expect(typeof body.todo.createdAt).toBe("string");
-    expect(typeof body.todo.updatedAt).toBe("string");
-    const text = JSON.stringify(body);
-    expect(text).not.toContain("agentKey");
-    expect(text).not.toContain("created_by_identity_id");
-    expect(text).not.toContain("items_hash");
-  });
-
-  it("returns a stable empty DTO when the session has no todo row", async () => {
-    const harness = await createHarness();
-    await harness.agents.ensurePairing("panda", "identity-patrik");
-    await harness.sessions.replaceSessionTodo({sessionId: "session-panda", items: []});
-    const base = await startHarnessServer(harness);
-    const auth = await login(base, harness);
-
-    const response = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/todos`, {headers: {cookie: auth.cookies}});
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({todo: {
-      sessionId: "session-panda",
-      items: [],
-      itemsHash: null,
-      createdAt: null,
-      updatedAt: null,
-      counts: {pending: 0, in_progress: 0, blocked: 0, done: 0},
-    }});
-  });
-
-  it("does not leak distinctive cross-agent todo content", async () => {
-    const harness = await createHarness();
-    await harness.agents.ensurePairing("panda", "identity-patrik");
-    await harness.agents.ensurePairing("luna", "identity-patrik");
-    await harness.sessions.replaceSessionTodo({sessionId: "session-luna", items: [{status: "pending", content: "LUNA_DISTINCTIVE_PRIVATE_TODO"}]});
-    const base = await startHarnessServer(harness);
-    const auth = await login(base, harness);
-
-    const response = await fetch(`${base}/api/control/agents/luna/sessions/session-luna/todos`, {headers: {cookie: auth.cookies}});
-    expect(response.status).toBe(404);
-    const text = JSON.stringify(await response.json());
-    expect(text).not.toContain("LUNA_DISTINCTIVE_PRIVATE_TODO");
-  });
-
-  it("checks that the target session belongs to the path agent", async () => {
-    const harness = await createHarness();
-    await harness.agents.ensurePairing("panda", "identity-patrik");
-    await harness.sessions.replaceSessionTodo({sessionId: "session-panda", items: [{status: "pending", content: "PATH_AGENT_PRIVATE_TODO"}]});
-    const base = await startHarnessServer(harness);
-    const auth = await login(base, harness);
-
-    const response = await fetch(`${base}/api/control/agents/luna/sessions/session-panda/todos`, {headers: {cookie: auth.cookies}});
-    expect(response.status).toBe(404);
-    const text = JSON.stringify(await response.json());
-    expect(text).not.toContain("PATH_AGENT_PRIVATE_TODO");
-  });
-});
 
 
 describe("Control Watches HTTP", () => {

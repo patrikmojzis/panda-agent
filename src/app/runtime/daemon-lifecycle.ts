@@ -56,7 +56,6 @@ export interface DaemonLifecycleRuntime {
   controlOperator: RuntimeServices["controlOperator"];
   controlBriefings: RuntimeServices["controlBriefings"];
   controlHeartbeats: RuntimeServices["controlHeartbeats"];
-  controlTodos: RuntimeServices["controlTodos"];
   controlScheduledTasks: RuntimeServices["controlScheduledTasks"];
   controlWatches: RuntimeServices["controlWatches"];
   controlRuntimeActivity: RuntimeServices["controlRuntimeActivity"];
@@ -392,7 +391,6 @@ export function createDaemonLifecycle(input: {
             operator: input.context.runtime.controlOperator,
             briefings: input.context.runtime.controlBriefings,
             heartbeats: input.context.runtime.controlHeartbeats,
-            todos: input.context.runtime.controlTodos,
             scheduledTasks: input.context.runtime.controlScheduledTasks,
             watches: input.context.runtime.controlWatches,
             runtimeActivity: input.context.runtime.controlRuntimeActivity,

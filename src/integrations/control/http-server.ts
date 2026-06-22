@@ -31,7 +31,6 @@ import type {
 } from "../../domain/control/operator-service.js";
 import type {ControlBriefingService} from "../../domain/control/briefing-service.js";
 import type {ControlHeartbeatService} from "../../domain/control/heartbeat-service.js";
-import type {ControlTodoService} from "../../domain/control/todo-service.js";
 import type {
     ControlScheduledTaskLifecycleStatus,
     ControlScheduledTasksService,
@@ -153,7 +152,6 @@ export interface StartControlServerOptions {
   operator: ControlOperatorService;
   briefings: ControlBriefingService;
   heartbeats: ControlHeartbeatService;
-  todos: ControlTodoService;
   scheduledTasks: ControlScheduledTasksService;
   watches: ControlWatchesService;
   runtimeActivity: ControlRuntimeActivityService;
@@ -801,12 +799,6 @@ function matchGatewayEventTypePath(path: string): {agentKey: string; sourceId: s
 
 function matchSessionHeartbeatPath(path: string): {agentKey: string; sessionId: string} | null {
   const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/heartbeat$/.exec(path);
-  if (!match) return null;
-  return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
-}
-
-function matchSessionTodoPath(path: string): {agentKey: string; sessionId: string} | null {
-  const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/todos$/.exec(path);
   if (!match) return null;
   return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
 }
@@ -1926,17 +1918,6 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         return;
       }
 
-
-      const todoPath = matchSessionTodoPath(path);
-      if (todoPath && request.method === "GET") {
-        try {
-          const todo = await options.todos.getTodo(session, todoPath.agentKey, todoPath.sessionId);
-          writeJsonResponse(response, 200, {todo});
-        } catch {
-          throw new ControlHttpError(404, "Control todo target session was not found or is not visible.");
-        }
-        return;
-      }
 
       const watchesPath = matchSessionWatchesPath(path);
       if (watchesPath && request.method === "GET") {

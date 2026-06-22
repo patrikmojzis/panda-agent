@@ -94,24 +94,6 @@ export type SessionDetail = SessionRow & {
   }
 }
 
-export type SessionTodoStatus = "pending" | "in_progress" | "blocked" | "done"
-
-export type SessionTodoItem = {
-  status: SessionTodoStatus
-  content: string
-}
-
-export type SessionTodoCounts = Record<SessionTodoStatus, number>
-
-export type SessionTodo = {
-  sessionId: string
-  items: SessionTodoItem[]
-  itemsHash: string | null
-  createdAt: string | null
-  updatedAt: string | null
-  counts: SessionTodoCounts
-}
-
 export type ExecutionTarget = {
   alias: string
   kind: "persistent_agent_runner" | "disposable_container" | "local" | string
@@ -681,8 +663,6 @@ export const controlApi = {
     apiGet<PaginatedResponse<SessionRow>>(`/agents/${encodeURIComponent(agentKey)}/sessions${qs(params)}`),
   session: (agentKey: string, sessionId: string) =>
     apiGet<{ session: SessionDetail }>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}`),
-  sessionTodo: (agentKey: string, sessionId: string) =>
-    apiGet<{ todo: SessionTodo }>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/todos`),
   sessionTargets: (agentKey: string, sessionId: string) =>
     apiGet<{ targets: ExecutionTarget[] }>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/targets`),
   bindSessionTarget: (agentKey: string, sessionId: string, body: Record<string, unknown>, csrfToken?: string | null) =>
