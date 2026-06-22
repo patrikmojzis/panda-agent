@@ -1,113 +1,821 @@
-import type * as React from "react"
+import * as React from "react"
 import { Link } from "react-router-dom"
+import {
+  ArrowLeft,
+  Clock,
+  Gauge,
+  MessageSquare,
+  RefreshCw,
+  Search,
+  Server,
+  Wrench,
+} from "lucide-react"
 
 import { sessionPath } from "@/app/control-routes"
-import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { DetailField, DetailPanel } from "@/features/control/detail-primitives"
+import { StatusBadge, humanize, short } from "@/features/control/control-display"
 import {
-  DetailField,
-  DetailPanel,
-} from "@/features/control/detail-primitives"
-import {
-  StatusBadge,
-  humanize,
-} from "@/features/control/control-display"
-import {
+  formatBytes,
   formatDate,
   formatDuration,
-  formatNumber,
 } from "@/features/control/formatting"
 import {
   friendlySessionLabel,
   shortSessionId,
 } from "@/features/control/session-labels"
+import { cn } from "@/lib/utils"
 import type {
   ModelCallTraceDetail,
   ModelCallTraceSummary,
 } from "@/lib/api"
 
+import {
+  buildModelCallTraceViewModel,
+  formatSanitizedJson,
+  previewForValue,
+  sanitizeDisplayString,
+  type ModelCallTraceViewModel,
+  type TraceSpan,
+  type TraceSpanKind,
+  type TraceSpanStatus,
+} from "./model-call-trace-view-model"
+
 const PROMPT_CACHE_REDACTION_PATTERN = /^\[redacted:([^:]+):sha256:([a-f0-9]{16})\]$/
-const PROMPT_CACHE_FIELD_PATTERN = /prompt_?cache_?key|promptCacheKey/i
+const FILTERS: Array<{ label: string; value: SpanFilter }> = [
+  { label: "All", value: "all" },
+  { label: "Tools", value: "tools" },
+  { label: "Errors", value: "errors" },
+  { label: "Messages", value: "messages" },
+  { label: "Context", value: "context" },
+]
+
+type SpanFilter = "all" | "tools" | "errors" | "messages" | "context"
 
 export function modelCallDetailPath(traceId: string) {
   return `/model-calls/${encodeURIComponent(traceId)}`
 }
 
-export function TraceOverview({
+export function ModelCallTraceDebugger({
   trace,
-  loading,
+  refreshing = false,
+  onRefresh,
 }: {
-  trace: ModelCallTraceSummary
-  loading?: boolean
+  trace: ModelCallTraceDetail
+  refreshing?: boolean
+  onRefresh?: () => void
+}) {
+  const viewModel = React.useMemo(() => buildModelCallTraceViewModel(trace), [trace])
+  const [filter, setFilter] = React.useState<SpanFilter>("all")
+  const [query, setQuery] = React.useState("")
+  const [selectedSpanId, setSelectedSpanId] = React.useState(viewModel.selectedDefaultId ?? "")
+
+  React.useEffect(() => {
+    setSelectedSpanId(viewModel.selectedDefaultId ?? "")
+  }, [trace.id, viewModel.selectedDefaultId])
+
+  const filteredSpans = React.useMemo(
+    () => viewModel.spans.filter((span) => spanMatches(span, filter, query)),
+    [filter, query, viewModel.spans]
+  )
+  const selectedSpan =
+    viewModel.spans.find((span) => span.id === selectedSpanId) ??
+    filteredSpans[0] ??
+    viewModel.spans[0] ??
+    null
+
+  return (
+    <div className="grid min-w-0 max-w-full gap-4">
+      <TraceStickyHeader trace={trace} refreshing={refreshing} onRefresh={onRefresh} />
+      <TraceSummaryCards trace={trace} viewModel={viewModel} />
+      <TriageStrip trace={trace} viewModel={viewModel} onSelectSpan={setSelectedSpanId} />
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(21rem,28rem)]">
+        <section className="grid min-w-0 gap-3" aria-label="Model call timeline">
+          <TimelineToolbar
+            filter={filter}
+            query={query}
+            spans={viewModel.spans}
+            filteredCount={filteredSpans.length}
+            onFilterChange={setFilter}
+            onQueryChange={setQuery}
+            onSelectSpan={setSelectedSpanId}
+            viewModel={viewModel}
+          />
+          <div className="grid min-w-0 gap-2">
+            {filteredSpans.length > 0 ? (
+              filteredSpans.map((span) => (
+                <TimelineSpanCard
+                  key={span.id}
+                  span={span}
+                  selected={selectedSpan?.id === span.id}
+                  onSelect={() => setSelectedSpanId(span.id)}
+                />
+              ))
+            ) : (
+              <div className="border p-6 text-sm text-muted-foreground" role="status">
+                No timeline spans match this filter/search.
+              </div>
+            )}
+          </div>
+        </section>
+        <SpanInspector span={selectedSpan} />
+      </div>
+      <RawTraceDetails trace={trace} />
+    </div>
+  )
+}
+
+function TraceStickyHeader({
+  trace,
+  refreshing,
+  onRefresh,
+}: {
+  trace: ModelCallTraceDetail
+  refreshing: boolean
+  onRefresh?: () => void
 }) {
   return (
-    <DetailPanel title="Overview">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <DetailField label="Status" value={<StatusBadge status={trace.status} />} loading={loading} />
-        <DetailField label="Mode" value={humanize(trace.mode)} loading={loading} />
-        <DetailField label="Provider" value={trace.provider} loading={loading} />
-        <DetailField label="Model" value={trace.model} loading={loading} />
-        <DetailField label="Started" value={formatDate(trace.startedAt)} loading={loading} />
-        <DetailField label="Finished" value={formatDate(trace.finishedAt)} loading={loading} />
-        <DetailField label="Duration" value={formatDuration(trace.durationMs)} loading={loading} />
-        <DetailField label="Usage" value={usageSummary(trace.usage)} loading={loading} />
-        <DetailField label="Trace id" value={<CodeValue value={trace.id} />} loading={loading} />
-        <DetailField label="Expires" value={formatDate(trace.expiresAt)} loading={loading} />
-      </div>
-    </DetailPanel>
-  )
-}
-
-export function TraceContextPanel({ trace }: { trace: ModelCallTraceSummary }) {
-  return (
-    <DetailPanel title="Trace context">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <DetailField label="Agent" value={<CodeValue value={trace.agentKey} />} />
-        <DetailField label="Session" value={<SessionReference trace={trace} />} />
-        <DetailField label="Run" value={<CodeValue value={trace.runId} />} />
-        <DetailField label="Thread" value={<CodeValue value={trace.threadId} />} />
-        <DetailField label="Turn" value={trace.turn ?? "-"} />
-        <DetailField label="Call index" value={trace.callIndex ?? "-"} />
-        <DetailField
-          label="Prompt cache key"
-          value={<RedactedValue value={trace.promptCacheKey} />}
-        />
-      </div>
-    </DetailPanel>
-  )
-}
-
-export function TraceDetailSections({ trace }: { trace: ModelCallTraceDetail }) {
-  const request = trace.request
-
-  return (
-    <>
-      <DetailPanel title="Sanitized request">
-        <div className="grid min-w-0 gap-4">
-          <TextBlock title="System prompt" value={request.systemPrompt} emptyLabel="No system prompt captured." />
-          <JsonBlock title="Tools / schema" value={request.tools} emptyLabel="No tools captured." />
+    <div className="sticky top-14 z-10 -mx-3 border-b bg-background/95 px-3 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/85 md:-mx-5 md:px-5">
+      <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="min-w-0">
+          <div className="mb-1 flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground uppercase">
+            <Link to="/model-calls" className="hover:text-foreground">
+              Model Calls
+            </Link>
+            <span>/</span>
+            <code className="truncate">{short(trace.id)}</code>
+          </div>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <StatusBadge status={trace.status} />
+            <h1 className="min-w-0 break-words text-lg font-semibold tracking-normal">
+              {trace.provider}/{trace.model}
+            </h1>
+            <Badge variant="outline">{humanize(trace.mode)}</Badge>
+          </div>
+          <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            <span>{formatDate(trace.startedAt) ?? "No start time"}</span>
+            <span>{formatDuration(trace.durationMs) ?? "No duration"}</span>
+            <span>{usageSummary(trace.usage)}</span>
+            <span className="min-w-0 break-all">Trace <code>{trace.id}</code></span>
+          </div>
         </div>
-      </DetailPanel>
-      <DetailPanel title="Projected messages">
-        <ProjectedMessagesBlock value={request.messages} />
-      </DetailPanel>
-      <DetailPanel title="LLM context sections">
-        <div className="grid min-w-0 gap-4">
-          <LlmContextSectionsBlock value={request.llmContextSections} />
-          {request.llmContextDump ? (
-            <TextBlock title="LLM context dump" value={request.llmContextDump} />
+        <div className="flex shrink-0 flex-wrap gap-2">
+          <Button variant="outline" size="sm" asChild>
+            <Link to="/model-calls">
+              <ArrowLeft className="size-4" />
+              Back
+            </Link>
+          </Button>
+          {onRefresh ? (
+            <Button variant="outline" size="sm" onClick={onRefresh} disabled={refreshing}>
+              <RefreshCw className={cn("size-4", refreshing ? "animate-spin" : null)} />
+              Refresh
+            </Button>
           ) : null}
         </div>
-      </DetailPanel>
-      <DetailPanel title="Response / Error / Usage">
-        <div className="grid min-w-0 gap-4 xl:grid-cols-3">
-          <JsonBlock title="Response" value={trace.response} emptyLabel="No response captured." />
-          <JsonBlock title="Error" value={trace.error} emptyLabel="No error captured." />
-          <UsageBlock value={trace.usage} />
+      </div>
+    </div>
+  )
+}
+
+function TraceSummaryCards({
+  trace,
+  viewModel,
+}: {
+  trace: ModelCallTraceDetail
+  viewModel: ModelCallTraceViewModel
+}) {
+  const slowest = viewModel.summary.slowestSpan
+  const failing = viewModel.summary.failingSpan
+
+  return (
+    <div className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+      <SummaryCard
+        icon={<Gauge className="size-4" />}
+        label="Outcome"
+        value={<StatusBadge status={trace.status} />}
+        detail={failing ? `${failing.title}: ${failing.preview ?? "failed"}` : "No failing span detected"}
+      />
+      <SummaryCard
+        icon={<Clock className="size-4" />}
+        label="Timing"
+        value={formatDuration(trace.durationMs) ?? "-"}
+        detail={
+          slowest
+            ? `Slowest known: ${slowest.title} (${formatDuration(slowest.durationMs) ?? "-"})`
+            : formatDuration(trace.durationMs)
+              ? `No per-step timing captured; whole-call duration is ${formatDuration(trace.durationMs)}.`
+              : "No per-step or whole-call timing captured."
+        }
+      />
+      <SummaryCard
+        icon={<Server className="size-4" />}
+        label="Model / Provider"
+        value={trace.provider}
+        detail={trace.model}
+        monoDetail
+      />
+      <SummaryCard
+        icon={<MessageSquare className="size-4" />}
+        label="Usage / Cost"
+        value={usageSummary(trace.usage)}
+        detail="Input/output/cache tokens when provider usage is captured"
+      />
+      <SummaryCard
+        icon={<Wrench className="size-4" />}
+        label="Tools"
+        value={`${viewModel.summary.toolCalls} call${viewModel.summary.toolCalls === 1 ? "" : "s"}`}
+        detail={`${viewModel.summary.toolErrors} error${viewModel.summary.toolErrors === 1 ? "" : "s"} · ${viewModel.summary.messageCount} message spans`}
+      />
+      <SummaryCard
+        className="sm:col-span-2 xl:col-span-5"
+        label="Related run context"
+        value={<TraceContext trace={trace} />}
+        detail={
+          <div className="mt-2 grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-4">
+            <SmallField label="Started" value={formatDate(trace.startedAt) ?? "-"} />
+            <SmallField label="Finished" value={formatDate(trace.finishedAt) ?? "-"} />
+            <SmallField label="Turn" value={trace.turn !== null ? String(trace.turn) : "-"} />
+            <SmallField label="Call index" value={trace.callIndex !== null ? `#${trace.callIndex}` : "-"} />
+            <SmallField label="Run" value={<CodeValue value={trace.runId} short />} />
+            <SmallField label="Thread" value={<CodeValue value={trace.threadId} short />} />
+            <SmallField label="Expires" value={formatDate(trace.expiresAt) ?? "-"} />
+            <SmallField label="Prompt cache" value={<RedactedValue value={trace.promptCacheKey} />} />
+          </div>
+        }
+      />
+    </div>
+  )
+}
+
+function TriageStrip({
+  trace,
+  viewModel,
+  onSelectSpan,
+}: {
+  trace: ModelCallTraceDetail
+  viewModel: ModelCallTraceViewModel
+  onSelectSpan: (spanId: string) => void
+}) {
+  const failing = viewModel.summary.failingSpan
+  const slowest = viewModel.summary.slowestSpan
+  return (
+    <div className="flex min-w-0 flex-col gap-2 border bg-muted/20 p-3 text-sm lg:flex-row lg:items-center lg:justify-between">
+      <div className="min-w-0 space-y-1">
+        <div className="font-medium">Operator triage</div>
+        <div className="min-w-0 text-muted-foreground">
+          {failing ? (
+            <span>Failing step: <strong className="font-medium text-foreground">{failing.title}</strong></span>
+          ) : (
+            <span>No failed step found in the sanitized trace.</span>
+          )}{" "}
+          {slowest ? (
+            <span>Slowest known step: <strong className="font-medium text-foreground">{slowest.title}</strong>.</span>
+          ) : formatDuration(trace.durationMs) ? (
+            <span>No per-step timings are captured; whole-call duration is {formatDuration(trace.durationMs)}.</span>
+          ) : (
+            <span>No per-step or whole-call timing is captured for this trace.</span>
+          )}
+        </div>
+      </div>
+      <div className="flex shrink-0 flex-wrap gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!failing}
+          onClick={() => failing && onSelectSpan(failing.id)}
+        >
+          Jump to failed
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!slowest}
+          onClick={() => slowest && onSelectSpan(slowest.id)}
+        >
+          Jump to slowest
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+function TimelineToolbar({
+  filter,
+  filteredCount,
+  query,
+  spans,
+  viewModel,
+  onFilterChange,
+  onQueryChange,
+  onSelectSpan,
+}: {
+  filter: SpanFilter
+  filteredCount: number
+  query: string
+  spans: TraceSpan[]
+  viewModel: ModelCallTraceViewModel
+  onFilterChange: (filter: SpanFilter) => void
+  onQueryChange: (query: string) => void
+  onSelectSpan: (spanId: string) => void
+}) {
+  return (
+    <DetailPanel
+      title="Trace timeline"
+      action={
+        <span className="text-xs text-muted-foreground">
+          {filteredCount}/{spans.length} spans
+        </span>
+      }
+    >
+      <div className="grid min-w-0 gap-3">
+        <div className="flex min-w-0 flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 flex-wrap gap-2">
+            {FILTERS.map((item) => (
+              <Button
+                key={item.value}
+                type="button"
+                variant={filter === item.value ? "secondary" : "outline"}
+                size="sm"
+                onClick={() => onFilterChange(item.value)}
+              >
+                {item.label}
+              </Button>
+            ))}
+          </div>
+          <div className="relative min-w-0 lg:w-72">
+            <Search className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground" />
+            <Input
+              aria-label="Search timeline"
+              value={query}
+              onChange={(event) => onQueryChange(event.target.value)}
+              placeholder="Search safe previews"
+              className="h-9 pl-8 text-sm"
+            />
+          </div>
+        </div>
+        <div className="flex min-w-0 flex-wrap gap-2 text-xs text-muted-foreground">
+          <Button
+            variant="link"
+            size="sm"
+            className="h-auto p-0 text-xs"
+            disabled={!viewModel.summary.failingSpan}
+            onClick={() => viewModel.summary.failingSpan && onSelectSpan(viewModel.summary.failingSpan.id)}
+          >
+            Failed
+          </Button>
+          <span>·</span>
+          <Button
+            variant="link"
+            size="sm"
+            className="h-auto p-0 text-xs"
+            disabled={!viewModel.summary.slowestSpan}
+            onClick={() => viewModel.summary.slowestSpan && onSelectSpan(viewModel.summary.slowestSpan.id)}
+          >
+            Slowest
+          </Button>
+          <span>· Raw JSON is below the debugger, collapsed by default.</span>
+        </div>
+      </div>
+    </DetailPanel>
+  )
+}
+
+function TimelineSpanCard({
+  span,
+  selected,
+  onSelect,
+}: {
+  span: TraceSpan
+  selected: boolean
+  onSelect: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={cn(
+        "grid min-w-0 gap-3 border p-3 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+        selected ? "border-primary bg-muted/50" : "hover:bg-muted/30"
+      )}
+      aria-pressed={selected}
+    >
+      <div className="flex min-w-0 flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <Badge variant="outline" className="tabular-nums">#{span.order}</Badge>
+            <SpanStatusBadge status={span.status} />
+            <Badge variant="secondary">{kindLabel(span.kind)}</Badge>
+            <span className="min-w-0 break-words text-sm font-medium">{span.title}</span>
+          </div>
+          {span.subtitle ? (
+            <div className="mt-1 min-w-0 break-words text-xs text-muted-foreground">
+              {span.subtitle}
+            </div>
+          ) : null}
+        </div>
+        <div className="flex shrink-0 flex-wrap justify-end gap-1">
+          {span.durationMs !== null ? <Badge variant="outline">{formatDuration(span.durationMs)}</Badge> : null}
+          {span.metrics.slice(0, 2).map((metric) => (
+            <Badge key={`${metric.label}:${metric.value}`} variant="outline">
+              {metric.value}
+            </Badge>
+          ))}
+        </div>
+      </div>
+      {span.preview ? <ReadablePreview value={span.preview} /> : null}
+      {span.tool ? <ToolPairPreview span={span} /> : null}
+      {span.badges.length > 0 ? (
+        <div className="flex min-w-0 flex-wrap gap-1">
+          {span.badges.map((badge) => (
+            <Badge key={badge} variant={badge === "Redacted" ? "secondary" : "outline"} className="max-w-full min-w-0">
+              <span className="truncate">{badge}</span>
+            </Badge>
+          ))}
+        </div>
+      ) : null}
+    </button>
+  )
+}
+
+function ToolPairPreview({ span }: { span: TraceSpan }) {
+  const tool = span.tool
+  if (!tool) return null
+  return (
+    <div className="grid min-w-0 gap-2 md:grid-cols-2">
+      <MiniPayloadPreview
+        label="Arguments"
+        value={tool.argumentsPreview ?? "No arguments captured"}
+        meta={tool.argumentsSize !== null ? formatBytes(tool.argumentsSize) : undefined}
+        mono
+      />
+      <MiniPayloadPreview
+        label={tool.isError ? "Error result" : "Result"}
+        value={tool.resultPreview ?? "No paired result in this trace"}
+        meta={tool.resultSize !== null ? formatBytes(tool.resultSize) : undefined}
+        muted={!tool.resultPreview}
+      />
+    </div>
+  )
+}
+
+function SpanInspector({ span }: { span: TraceSpan | null }) {
+  if (!span) {
+    return (
+      <aside className="min-w-0 xl:sticky xl:top-32 xl:self-start">
+        <DetailPanel title="Inspector">
+          <div className="text-sm text-muted-foreground">Select a timeline span to inspect it.</div>
+        </DetailPanel>
+      </aside>
+    )
+  }
+
+  return (
+    <aside className="min-w-0 xl:sticky xl:top-32 xl:self-start">
+      <DetailPanel title="Inspector" action={<SpanStatusBadge status={span.status} />}>
+        <div className="grid min-w-0 gap-4">
+          <div className="grid min-w-0 gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <Badge variant="outline" className="tabular-nums">#{span.order}</Badge>
+              <Badge variant="secondary">{kindLabel(span.kind)}</Badge>
+              <span className="min-w-0 break-words text-sm font-semibold">{span.title}</span>
+            </div>
+            {span.subtitle ? (
+              <div className="text-sm text-muted-foreground">{span.subtitle}</div>
+            ) : null}
+            {span.preview ? <ReadablePreview value={span.preview} className="max-h-40" /> : null}
+          </div>
+          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
+            {span.metrics.map((metric) => (
+              <DetailField key={`${metric.label}:${metric.value}`} label={metric.label} value={metric.value} />
+            ))}
+            {span.tool?.callId ? (
+              <DetailField label="Tool call id" value={<CodeValue value={span.tool.callId} />} />
+            ) : null}
+            {span.role ? <DetailField label="Role" value={humanize(span.role)} /> : null}
+            {span.source ? <DetailField label="Source" value={span.source} /> : null}
+          </div>
+          {span.tool ? <ToolInspectorSections span={span} /> : <PayloadSection title="Payload" value={span.raw} />}
+          <details className="grid min-w-0 gap-2">
+            <summary className="cursor-pointer select-none text-xs text-muted-foreground">
+              Raw selected span JSON
+            </summary>
+            <SanitizedJsonBlock value={span.raw} />
+          </details>
         </div>
       </DetailPanel>
-    </>
+    </aside>
   )
+}
+
+function ToolInspectorSections({ span }: { span: TraceSpan }) {
+  const tool = span.tool
+  if (!tool) return null
+  return (
+    <div className="grid min-w-0 gap-3">
+      <PayloadSection title="Arguments" value={tool.arguments} emptyLabel="No arguments captured." json />
+      <PayloadSection
+        title={tool.isError ? "Result error" : "Result"}
+        value={tool.result}
+        emptyLabel="No paired result is present in this trace."
+      />
+      <BashToolDetails span={span} />
+      <div className="grid min-w-0 gap-2 border bg-muted/20 p-3 text-xs text-muted-foreground">
+        <div className="font-medium text-foreground">Pairing</div>
+        <div>
+          {tool.callId ? (
+            <>Call/result were paired automatically by <code>{tool.callId}</code>.</>
+          ) : (
+            "No tool call id was available; this span was grouped by trace position."
+          )}
+        </div>
+        <div>
+          {tool.truncated ? "Trace contains truncation markers." : "No truncation marker detected."}{" "}
+          {tool.redacted ? "Redaction marker detected." : "No redaction marker detected."}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function BashToolDetails({ span }: { span: TraceSpan }) {
+  const tool = span.tool
+  const raw = asRecord(span.raw)
+  const call = asRecord(tool?.call) ?? asRecord(raw?.call)
+  const result = asRecord(raw?.result)
+  const args = asRecord(tool?.arguments) ?? asRecord(call?.arguments)
+  const details = asRecord(result?.details) ?? asRecord(tool?.result)
+  const command = firstString(args, ["command"]) ?? firstString(details, ["command"])
+  const cwd = firstString(args, ["cwd"]) ?? firstString(details, ["cwd", "initialCwd", "finalCwd"])
+  const stdout = firstString(details, ["stdout"])
+  const stderr = firstString(details, ["stderr"])
+  const exitCode = firstPrimitive(details, ["exitCode", "signal"])
+  const status = firstPrimitive(details, ["status"])
+  const timedOut = firstBoolean(details, ["timedOut", "aborted", "interrupted"])
+  const stdoutChars = firstNumber(details, ["stdoutChars"])
+  const stderrChars = firstNumber(details, ["stderrChars"])
+  const stdoutTruncated = firstBoolean(details, ["stdoutTruncated"])
+  const stderrTruncated = firstBoolean(details, ["stderrTruncated"])
+  const looksLikeBash = tool?.name === "bash" || firstString(details, ["kind"]) === "bash" || Boolean(command || stdout || stderr || exitCode !== null)
+
+  if (!looksLikeBash) return null
+
+  return (
+    <section className="grid min-w-0 gap-3 border bg-muted/20 p-3">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <h3 className="text-sm font-medium">Bash execution</h3>
+        {exitCode !== null ? <Badge variant="outline">exit {String(exitCode)}</Badge> : null}
+        {exitCode === null && status !== null ? <Badge variant="outline">{String(status)}</Badge> : null}
+        {timedOut ? <Badge variant="destructive">Interrupted</Badge> : null}
+      </div>
+      <div className="grid min-w-0 gap-2 text-xs">
+        {command ? (
+          <div className="grid min-w-0 gap-1">
+            <span className="text-muted-foreground">Command</span>
+            <code className="max-h-24 overflow-auto whitespace-pre-wrap break-words border bg-background/60 p-2 [overflow-wrap:anywhere]">
+              {sanitizeDisplayString(command)}
+            </code>
+          </div>
+        ) : null}
+        {cwd ? (
+          <div className="min-w-0">
+            <span className="text-muted-foreground">cwd </span>
+            <code className="break-all">{sanitizeDisplayString(cwd)}</code>
+          </div>
+        ) : null}
+      </div>
+      <div className="grid min-w-0 gap-2 lg:grid-cols-2">
+        <OutputPane
+          label="stdout"
+          value={stdout}
+          chars={stdoutChars}
+          truncated={stdoutTruncated}
+        />
+        <OutputPane
+          label="stderr"
+          value={stderr}
+          chars={stderrChars}
+          truncated={stderrTruncated}
+        />
+      </div>
+    </section>
+  )
+}
+
+function OutputPane({
+  chars,
+  label,
+  truncated,
+  value,
+}: {
+  chars: number | null
+  label: string
+  truncated: boolean
+  value: string | null
+}) {
+  return (
+    <div className="grid min-w-0 gap-1 border bg-background/60 p-2">
+      <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-muted-foreground">
+        <span>{label}</span>
+        <span className="flex shrink-0 items-center gap-1">
+          {chars !== null ? <span className="tabular-nums">{formatNumberCompact(chars)} chars</span> : null}
+          {truncated ? <Badge variant="secondary">Truncated</Badge> : null}
+        </span>
+      </div>
+      {value ? (
+        <pre className="max-h-48 max-w-full overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed [overflow-wrap:anywhere]">
+          {sanitizeDisplayString(value)}
+        </pre>
+      ) : (
+        <div className="text-xs text-muted-foreground">No {label} captured.</div>
+      )}
+    </div>
+  )
+}
+
+function PayloadSection({
+  title,
+  value,
+  emptyLabel = "No payload captured.",
+  json = false,
+}: {
+  title: string
+  value: unknown
+  emptyLabel?: string
+  json?: boolean
+}) {
+  const preview = previewForValue(value)
+  if (!preview) {
+    return (
+      <section className="grid min-w-0 gap-2 border bg-muted/20 p-3">
+        <h3 className="text-sm font-medium">{title}</h3>
+        <div className="text-sm text-muted-foreground">{emptyLabel}</div>
+      </section>
+    )
+  }
+
+  return (
+    <section className="grid min-w-0 gap-2 border bg-muted/20 p-3">
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <h3 className="text-sm font-medium">{title}</h3>
+        <Badge variant="outline">{formatBytes(new TextEncoder().encode(formatSanitizedJson(value)).length)}</Badge>
+      </div>
+      {json ? <SanitizedJsonBlock value={value} compact /> : <ReadablePreview value={preview} className="max-h-32" />}
+      <details className="grid min-w-0 gap-2">
+        <summary className="cursor-pointer select-none text-xs text-muted-foreground">
+          Expand full sanitized payload
+        </summary>
+        {json ? <SanitizedJsonBlock value={value} /> : <ReadableFullValue value={value} />}
+      </details>
+    </section>
+  )
+}
+
+function RawTraceDetails({ trace }: { trace: ModelCallTraceDetail }) {
+  return (
+    <details className="grid min-w-0 gap-2 border p-3">
+      <summary className="cursor-pointer select-none text-sm font-medium">
+        Sanitized raw trace JSON
+      </summary>
+      <div className="text-xs text-muted-foreground">
+        Raw trace remains available for fallback debugging, but prompt-cache fields are redacted again in the UI before rendering.
+      </div>
+      <SanitizedJsonBlock value={trace} />
+    </details>
+  )
+}
+
+function SummaryCard({
+  className,
+  detail,
+  icon,
+  label,
+  monoDetail = false,
+  value,
+}: {
+  className?: string
+  detail?: React.ReactNode
+  icon?: React.ReactNode
+  label: string
+  monoDetail?: boolean
+  value: React.ReactNode
+}) {
+  return (
+    <div className={cn("grid min-w-0 gap-2 border p-3", className)}>
+      <div className="flex min-w-0 items-center gap-2 text-xs font-medium text-muted-foreground uppercase">
+        {icon}
+        <span>{label}</span>
+      </div>
+      <div className="min-w-0 break-words text-sm font-semibold">{value}</div>
+      {detail ? (
+        <div className={cn("min-w-0 break-words text-xs text-muted-foreground", monoDetail ? "font-mono" : null)}>
+          {detail}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function SmallField({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-0.5 min-w-0 break-words text-xs font-medium">{value}</div>
+    </div>
+  )
+}
+
+function MiniPayloadPreview({
+  label,
+  meta,
+  mono = false,
+  muted = false,
+  value,
+}: {
+  label: string
+  meta?: string
+  mono?: boolean
+  muted?: boolean
+  value: string
+}) {
+  return (
+    <div className="grid min-w-0 gap-1 border bg-background/60 p-2">
+      <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-muted-foreground">
+        <span>{label}</span>
+        {meta ? <span className="tabular-nums">{meta}</span> : null}
+      </div>
+      <div className={cn(
+        "max-h-20 min-w-0 overflow-hidden break-words text-xs leading-relaxed [overflow-wrap:anywhere]",
+        mono ? "font-mono" : null,
+        muted ? "text-muted-foreground" : null,
+      )}>
+        {sanitizeDisplayString(value)}
+      </div>
+    </div>
+  )
+}
+
+function ReadablePreview({ value, className }: { value: string; className?: string }) {
+  return (
+    <div className={cn(
+      "max-w-full overflow-auto whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]",
+      className,
+    )}>
+      {sanitizeDisplayString(value)}
+    </div>
+  )
+}
+
+function ReadableFullValue({ value }: { value: unknown }) {
+  if (typeof value === "string") {
+    return (
+      <div className="max-h-80 max-w-full overflow-auto whitespace-pre-wrap break-words border bg-background/60 p-3 text-sm leading-relaxed [overflow-wrap:anywhere]">
+        {sanitizeDisplayString(value)}
+      </div>
+    )
+  }
+  return <SanitizedJsonBlock value={value} />
+}
+
+function SanitizedJsonBlock({
+  compact = false,
+  value,
+}: {
+  compact?: boolean
+  value: unknown
+}) {
+  return (
+    <pre className={cn(
+      "max-w-full overflow-auto whitespace-pre-wrap break-words border bg-background/60 p-3 font-mono text-xs leading-relaxed [overflow-wrap:anywhere]",
+      compact ? "max-h-40" : "max-h-96",
+    )}>
+      {formatSanitizedJson(value)}
+    </pre>
+  )
+}
+
+function SpanStatusBadge({ status }: { status: TraceSpanStatus }) {
+  return <Badge variant={spanStatusVariant(status)}>{spanStatusLabel(status)}</Badge>
+}
+
+function spanStatusVariant(status: TraceSpanStatus): React.ComponentProps<typeof Badge>["variant"] {
+  if (status === "failed") return "destructive"
+  if (status === "pending") return "secondary"
+  return "outline"
+}
+
+function spanStatusLabel(status: TraceSpanStatus) {
+  if (status === "ok") return "Ok"
+  if (status === "failed") return "Failed"
+  if (status === "pending") return "Pending"
+  return "Info"
+}
+
+function kindLabel(kind: TraceSpanKind) {
+  if (kind === "metadata") return "Metadata"
+  return humanize(kind)
 }
 
 export function ProviderModel({ trace }: { trace: ModelCallTraceSummary }) {
@@ -149,50 +857,17 @@ export function TraceContext({ trace }: { trace: ModelCallTraceSummary }) {
           <code className="min-w-0 truncate">{shortContextValue(item.value)}</code>
         </span>
       ))}
+      <SessionLink trace={trace} />
     </div>
   )
 }
 
-function SessionReference({ trace }: { trace: ModelCallTraceSummary }) {
-  if (!trace.sessionId) return "-"
-
-  const hasSessionMetadata = Boolean(trace.sessionKind || trace.sessionLabel || trace.sessionDisplayName || trace.sessionAlias)
-  const label = friendlySessionLabel({
-    id: trace.sessionId,
-    label: trace.sessionLabel,
-    displayName: trace.sessionDisplayName,
-    alias: trace.sessionAlias,
-    kind: trace.sessionKind,
-  })
-  const sessionCode = (
-    <code className="break-all text-xs text-muted-foreground" title={trace.sessionId}>
-      {shortSessionId(trace.sessionId)}
-    </code>
-  )
-  const content = (
-    <span className="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1.5">
-      <span className="min-w-0 break-words">{label}</span>
-      {sessionCode}
-    </span>
-  )
-
+function SessionLink({ trace }: { trace: ModelCallTraceSummary }) {
+  if (!trace.agentKey || !trace.sessionId) return null
   return (
-    <span className="grid min-w-0 gap-1">
-      {content}
-      <details className="min-w-0">
-        <summary className="cursor-pointer select-none text-xs text-muted-foreground">
-          Full session ID
-        </summary>
-        <code className="block max-w-full select-all break-all border bg-muted/30 p-2 text-xs text-muted-foreground">
-          {trace.sessionId}
-        </code>
-      </details>
-      {trace.agentKey && hasSessionMetadata ? (
-        <Button variant="link" size="sm" className="h-auto justify-start p-0 text-xs" asChild>
-          <Link to={sessionPath(trace.agentKey, trace.sessionId)}>Open session</Link>
-        </Button>
-      ) : null}
-    </span>
+    <Button variant="link" size="sm" className="h-auto p-0 text-xs" asChild>
+      <Link to={sessionPath(trace.agentKey, trace.sessionId)}>Open session</Link>
+    </Button>
   )
 }
 
@@ -208,335 +883,13 @@ function sessionContextLabel(trace: ModelCallTraceSummary) {
   return `${label} · ${shortSessionId(trace.sessionId)}`
 }
 
-function LlmContextSectionsBlock({ value }: { value: unknown }) {
-  const sections = Array.isArray(value) ? value : []
-  if (sections.length === 0) {
-    return <EmptyBlock title="Sections" emptyLabel="No LLM context sections captured." />
-  }
-
-  return (
-    <section className="grid min-w-0 gap-2">
-      <h3 className="text-sm font-medium">Sections</h3>
-      <div className="grid min-w-0 gap-3">
-        {sections.map((section, index) => (
-          <LlmContextSectionCard key={sectionKey(section, index)} section={section} index={index} />
-        ))}
-      </div>
-    </section>
-  )
-}
-
-function LlmContextSectionCard({
-  section,
-  index,
-}: {
-  section: unknown
-  index: number
-}) {
-  const record = asRecord(section) ?? {}
-  const name = firstString(record, ["name"]) ?? `Section ${index + 1}`
-  const label = firstString(record, ["label"])
-  const source = firstString(record, ["source"])
-  const content = firstString(record, ["content", "dump"])
-  const preview = firstString(record, ["contentPreview", "preview"]) ?? content
-  const contentChars = firstNumber(record, ["contentChars", "charCount", "chars"])
-  const estimatedTokens = firstNumber(record, ["estimatedTokens", "tokenEstimate", "tokens"])
-  const promptCacheKeyPart = firstString(record, ["promptCacheKeyPart", "promptCacheKeyFingerprint"])
-
-  return (
-    <div className="grid min-w-0 gap-2 border p-3">
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <span className="min-w-0 break-words text-sm font-medium">{label ?? name}</span>
-        {label ? <Badge variant="outline">{name}</Badge> : null}
-        {source ? <Badge variant="outline">{source}</Badge> : null}
-        {contentChars !== null ? (
-          <Badge variant="secondary">{contentChars.toLocaleString()} chars</Badge>
-        ) : null}
-        {estimatedTokens !== null ? (
-          <Badge variant="secondary">~{estimatedTokens.toLocaleString()} tokens</Badge>
-        ) : null}
-      </div>
-      {promptCacheKeyPart ? (
-        <div className="min-w-0 text-xs text-muted-foreground">
-          Prompt cache part: <RedactedValue value={promptCacheKeyPart} />
-        </div>
-      ) : null}
-      {preview ? (
-        <pre className="max-h-32 max-w-full overflow-auto whitespace-pre-wrap break-words border bg-muted/30 p-3 font-mono text-xs leading-relaxed [overflow-wrap:anywhere]">
-          {preview}
-        </pre>
-      ) : (
-        <div className="text-sm text-muted-foreground">No section content captured.</div>
-      )}
-      {content && content !== preview ? (
-        <details className="grid min-w-0 gap-2" open={index === 0}>
-          <summary className="cursor-pointer select-none text-xs text-muted-foreground">
-            Expand full section content
-          </summary>
-          <pre className="max-h-80 max-w-full overflow-auto whitespace-pre-wrap break-words border bg-muted/30 p-3 font-mono text-xs leading-relaxed [overflow-wrap:anywhere]">
-            {content}
-          </pre>
-        </details>
-      ) : null}
-      <JsonDetails label="Section JSON" value={section} />
-    </div>
-  )
-}
-
-function ProjectedMessagesBlock({ value }: { value: unknown }) {
-  if (!Array.isArray(value) || value.length === 0) {
-    return <div className="text-sm text-muted-foreground">No projected messages captured.</div>
-  }
-
-  return (
-    <div className="grid min-w-0 gap-3">
-      {value.map((message, index) => (
-        <ProjectedMessageCard key={messageKey(message, index)} message={message} index={index} />
-      ))}
-    </div>
-  )
-}
-
-function ProjectedMessageCard({
-  message,
-  index,
-}: {
-  message: unknown
-  index: number
-}) {
-  const record = asRecord(message)
-  const role = record ? firstString(record, ["role"]) : null
-  const name = record ? firstString(record, ["name", "toolName"]) : null
-  const content = record && Object.hasOwn(record, "content") ? record.content : message
-  const timestamp = record ? firstString(record, ["timestamp"]) : null
-
-  return (
-    <article className="grid min-w-0 gap-3 border p-3">
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <Badge variant={roleBadgeVariant(role)}>{role ? humanize(role) : `Message ${index + 1}`}</Badge>
-        {name ? <Badge variant="outline">{name}</Badge> : null}
-        {timestamp ? <Badge variant="secondary">{timestamp}</Badge> : null}
-      </div>
-      <MessageContent value={content} />
-      <JsonDetails label="Message JSON" value={message} />
-    </article>
-  )
-}
-
-function MessageContent({ value }: { value: unknown }) {
-  if (typeof value === "string") {
-    return <TextValue value={value} />
-  }
-  if (Array.isArray(value)) {
-    if (value.length === 0) {
-      return <div className="text-sm text-muted-foreground">No message content.</div>
-    }
-    return (
-      <div className="grid min-w-0 gap-2">
-        {value.map((part, index) => (
-          <MessagePart key={messageKey(part, index)} value={part} index={index} />
-        ))}
-      </div>
-    )
-  }
-  if (value === null || value === undefined || value === "") {
-    return <div className="text-sm text-muted-foreground">No message content.</div>
-  }
-  return <MessagePart value={value} index={0} />
-}
-
-function MessagePart({ value, index }: { value: unknown; index: number }) {
-  if (typeof value === "string") {
-    return <TextValue value={value} />
-  }
-  const record = asRecord(value)
-  if (!record) {
-    return <JsonDetails label={`Part ${index + 1} JSON`} value={value} open />
-  }
-
-  const type = firstString(record, ["type"]) ?? `Part ${index + 1}`
-  const text = firstString(record, ["text"])
-  const name = firstString(record, ["name", "toolName"])
-  const id = firstString(record, ["id", "toolCallId"])
-  const mimeType = firstString(record, ["mimeType", "mediaType"])
-  const argumentsValue = Object.hasOwn(record, "arguments") ? record.arguments : undefined
-
-  if (text) {
-    return (
-      <div className="grid min-w-0 gap-2 border bg-muted/20 p-2">
-        <PartHeader type={type} name={name} id={id} extra={mimeType} />
-        <TextValue value={text} />
-      </div>
-    )
-  }
-
-  return (
-    <div className="grid min-w-0 gap-2 border bg-muted/20 p-2">
-      <PartHeader type={type} name={name} id={id} extra={mimeType} />
-      {argumentsValue !== undefined ? (
-        <JsonDetails label="Arguments JSON" value={argumentsValue} open={false} />
-      ) : null}
-      <JsonDetails label="Part JSON" value={value} open={argumentsValue === undefined} />
-    </div>
-  )
-}
-
-function PartHeader({
-  type,
-  name,
-  id,
-  extra,
-}: {
-  type: string
-  name: string | null
-  id: string | null
-  extra: string | null
-}) {
-  return (
-    <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs text-muted-foreground">
-      <Badge variant="outline">{humanize(type)}</Badge>
-      {name ? <span className="min-w-0 break-words">{name}</span> : null}
-      {id ? <code className="break-all">{id}</code> : null}
-      {extra ? <span className="min-w-0 break-words">{extra}</span> : null}
-    </div>
-  )
-}
-
-function UsageBlock({ value }: { value: unknown }) {
-  const usage = asRecord(value)
-  if (!usage) return <EmptyBlock title="Usage" emptyLabel="No usage captured." />
-
-  const input = firstNumber(usage, ["input", "inputTokens", "promptTokens"])
-  const output = firstNumber(usage, ["output", "outputTokens", "completionTokens"])
-  const total = firstNumber(usage, ["totalTokens", "total", "tokens"])
-  const cacheRead = firstNumber(usage, ["cacheRead", "cachedInputTokens"])
-  const cacheWrite = firstNumber(usage, ["cacheWrite"])
-  const cost = usageCostSummary(value)
-  const costRecord = asRecord(usage.cost)
-
-  return (
-    <section className="grid min-w-0 gap-3 border p-3">
-      <h3 className="text-sm font-medium">Usage</h3>
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-        <DetailField label="Input tokens" value={formatNumber(input) ?? "-"} />
-        <DetailField label="Output tokens" value={formatNumber(output) ?? "-"} />
-        <DetailField label="Total tokens" value={formatNumber(total) ?? "-"} />
-        <DetailField label="Cache read" value={formatNumber(cacheRead) ?? "-"} />
-        <DetailField label="Cache write" value={formatNumber(cacheWrite) ?? "-"} />
-        <DetailField label="Cost" value={cost ?? "-"} />
-      </div>
-      {costRecord ? <CostComponents value={costRecord} /> : null}
-      <JsonDetails label="Usage JSON" value={value} />
-    </section>
-  )
-}
-
-function CostComponents({ value }: { value: Record<string, unknown> }) {
-  const entries = Object.entries(value)
-    .filter(([, entry]) => typeof entry === "number" && Number.isFinite(entry))
-    .map(([key, entry]) => ({ key, value: entry as number }))
-  if (entries.length === 0) return null
-
-  return (
-    <div className="grid min-w-0 gap-1 text-xs text-muted-foreground">
-      <div className="font-medium text-foreground">Cost components</div>
-      {entries.map((entry) => (
-        <div key={entry.key} className="flex min-w-0 justify-between gap-3">
-          <span className="min-w-0 break-words">{humanize(entry.key)}</span>
-          <span className="shrink-0 tabular-nums">{formatUsd(entry.value)}</span>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function TextBlock({
-  title,
-  value,
-  emptyLabel = "No content captured.",
-}: {
-  title: string
-  value: unknown
-  emptyLabel?: string
-}) {
-  if (value === null || value === undefined || value === "") {
-    return <EmptyBlock title={title} emptyLabel={emptyLabel} />
-  }
-  const rendered = typeof value === "string" ? value : formatJson(value)
-  return (
-    <section className="grid min-w-0 gap-2">
-      <h3 className="text-sm font-medium">{title}</h3>
-      <pre className="max-h-80 max-w-full overflow-auto whitespace-pre-wrap break-words border bg-muted/30 p-3 font-mono text-xs leading-relaxed [overflow-wrap:anywhere]">
-        {rendered}
-      </pre>
-    </section>
-  )
-}
-
-function TextValue({ value }: { value: string }) {
-  return (
-    <div className="max-w-full whitespace-pre-wrap break-words text-sm leading-relaxed [overflow-wrap:anywhere]">
-      {value}
-    </div>
-  )
-}
-
-function JsonBlock({
-  title,
-  value,
-  emptyLabel = "No JSON captured.",
-}: {
-  title: string
-  value: unknown
-  emptyLabel?: string
-}) {
-  if (value === null || value === undefined || value === "") {
-    return <EmptyBlock title={title} emptyLabel={emptyLabel} />
-  }
-
-  return (
-    <section className="grid min-w-0 gap-2 border p-3">
-      <h3 className="text-sm font-medium">{title}</h3>
-      <pre className="max-h-96 max-w-full overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed [overflow-wrap:anywhere]">
-        {formatJson(value)}
-      </pre>
-    </section>
-  )
-}
-
-function JsonDetails({
-  label,
-  value,
-  open = false,
-}: {
-  label: string
-  value: unknown
-  open?: boolean
-}) {
-  return (
-    <details className="grid min-w-0 gap-2" open={open}>
-      <summary className="cursor-pointer select-none text-xs text-muted-foreground">
-        {label}
-      </summary>
-      <pre className="max-h-80 max-w-full overflow-auto whitespace-pre-wrap break-words border bg-muted/30 p-3 font-mono text-xs leading-relaxed [overflow-wrap:anywhere]">
-        {formatJson(value)}
-      </pre>
-    </details>
-  )
-}
-
-function EmptyBlock({ title, emptyLabel }: { title: string; emptyLabel: string }) {
-  return (
-    <section className="grid min-w-0 gap-2 border p-3">
-      <h3 className="text-sm font-medium">{title}</h3>
-      <div className="text-sm text-muted-foreground">{emptyLabel}</div>
-    </section>
-  )
-}
-
-function CodeValue({ value }: { value?: string | null }) {
+function CodeValue({ value, short: shorten = false }: { value?: string | null; short?: boolean }) {
   if (!value) return "-"
-  return <code className="break-all text-xs">{value}</code>
+  return (
+    <code className="break-all text-xs" title={value}>
+      {shorten ? shortContextValue(value) : value}
+    </code>
+  )
 }
 
 function RedactedValue({ value }: { value?: string | null }) {
@@ -593,7 +946,42 @@ function formatUsd(value: number) {
   }).format(value)
 }
 
-function firstString(record: Record<string, unknown>, keys: string[]) {
+function spanMatches(span: TraceSpan, filter: SpanFilter, query: string) {
+  if (filter === "tools" && span.kind !== "tool") return false
+  if (filter === "errors" && span.status !== "failed") return false
+  if (filter === "messages" && span.kind !== "message" && span.kind !== "response") return false
+  if (filter === "context" && span.kind !== "context" && span.kind !== "metadata") return false
+  const normalizedQuery = query.trim().toLowerCase()
+  if (!normalizedQuery) return true
+  return spanSearchText(span).includes(normalizedQuery)
+}
+
+function spanSearchText(span: TraceSpan) {
+  return [
+    span.title,
+    span.subtitle,
+    span.preview,
+    span.kind,
+    span.status,
+    span.role,
+    span.source,
+    span.tool?.name,
+    span.tool?.callId,
+    ...span.badges,
+    ...span.metrics.flatMap((metric) => [metric.label, metric.value]),
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase()
+}
+
+function shortContextValue(value: string) {
+  if (value.startsWith("#")) return value
+  return value.length > 42 ? `${value.slice(0, 24)}…${value.slice(-10)}` : value
+}
+
+function firstString(record: Record<string, unknown> | null | undefined, keys: string[]) {
+  if (!record) return null
   for (const key of keys) {
     const value = record[key]
     if (typeof value === "string" && value.trim()) return value
@@ -602,7 +990,24 @@ function firstString(record: Record<string, unknown>, keys: string[]) {
   return null
 }
 
-function firstNumber(record: Record<string, unknown>, keys: string[]) {
+function firstPrimitive(record: Record<string, unknown> | null | undefined, keys: string[]) {
+  if (!record) return null
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === "string" && value.trim()) return value
+    if (typeof value === "number" && Number.isFinite(value)) return value
+    if (typeof value === "boolean") return value
+  }
+  return null
+}
+
+function firstBoolean(record: Record<string, unknown> | null | undefined, keys: string[]) {
+  if (!record) return false
+  return keys.some((key) => record[key] === true)
+}
+
+function firstNumber(record: Record<string, unknown> | null | undefined, keys: string[]) {
+  if (!record) return null
   for (const key of keys) {
     const value = record[key]
     if (typeof value === "number" && Number.isFinite(value)) return value
@@ -610,56 +1015,12 @@ function firstNumber(record: Record<string, unknown>, keys: string[]) {
   return null
 }
 
+function formatNumberCompact(value: number) {
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value)
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null
-}
-
-function sectionKey(section: unknown, index: number) {
-  const record = asRecord(section)
-  const name = record ? firstString(record, ["name", "label", "source"]) : null
-  return `${name ?? "section"}:${index}`
-}
-
-function messageKey(message: unknown, index: number) {
-  const record = asRecord(message)
-  const id = record ? firstString(record, ["id", "toolCallId", "role", "type"]) : null
-  return `${id ?? "message"}:${index}`
-}
-
-function shortContextValue(value: string) {
-  if (value.startsWith("#")) return value
-  return value.length > 42 ? `${value.slice(0, 24)}…${value.slice(-10)}` : value
-}
-
-function roleBadgeVariant(role: string | null): React.ComponentProps<typeof Badge>["variant"] {
-  if (role === "system") return "secondary"
-  if (role === "user") return "default"
-  if (role === "assistant") return "outline"
-  if (role === "tool" || role === "toolResult") return "secondary"
-  return "outline"
-}
-
-function formatJson(value: unknown) {
-  try {
-    return JSON.stringify(redactKnownSensitiveJson(value), null, 2)
-  } catch {
-    return String(value)
-  }
-}
-
-function redactKnownSensitiveJson(value: unknown, seen = new WeakSet<object>()): unknown {
-  if (Array.isArray(value)) return value.map((entry) => redactKnownSensitiveJson(entry, seen))
-  if (typeof value !== "object" || value === null) return value
-  if (seen.has(value)) return "[circular]"
-  seen.add(value)
-
-  const output: Record<string, unknown> = {}
-  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    output[key] = PROMPT_CACHE_FIELD_PATTERN.test(key)
-      ? "[redacted prompt-cache value]"
-      : redactKnownSensitiveJson(entry, seen)
-  }
-  return output
 }
