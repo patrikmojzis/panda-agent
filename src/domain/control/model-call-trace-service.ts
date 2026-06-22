@@ -18,6 +18,8 @@ export interface ControlModelCallSessionMetadata {
   sessionKind: string;
 }
 
+type SessionMetadataKey = string;
+
 export interface ControlModelCallTraceSummary {
   id: string;
   runId: string | null;
@@ -95,13 +97,18 @@ function sessionLabel(metadata: Pick<ControlModelCallSessionMetadata, "sessionAl
   return metadata.sessionDisplayName?.trim() || metadata.sessionAlias?.trim() || metadata.id;
 }
 
-function publicSessionMetadata(row: Record<string, unknown>): {id: string; metadata: ControlModelCallSessionMetadata} {
+function sessionMetadataKey(agentKey: string, sessionId: string): SessionMetadataKey {
+  return JSON.stringify([agentKey, sessionId]);
+}
+
+function publicSessionMetadata(row: Record<string, unknown>): {key: SessionMetadataKey; metadata: ControlModelCallSessionMetadata} {
   const id = String(row.id);
+  const agentKey = String(row.agent_key);
   const sessionDisplayName = readOptionalString(row.display_name);
   const sessionAlias = readOptionalString(row.alias);
   const sessionKind = readOptionalString(row.kind) ?? "session";
   return {
-    id,
+    key: sessionMetadataKey(agentKey, id),
     metadata: {
       sessionLabel: sessionLabel({id, sessionDisplayName, sessionAlias}),
       ...(sessionDisplayName ? {sessionDisplayName} : {}),
@@ -160,25 +167,29 @@ export class ControlModelCallTraceService {
     }
   }
 
-  private async readSessionMetadata(traces: readonly ModelCallTraceRecord[]): Promise<Map<string, ControlModelCallSessionMetadata>> {
-    const sessionIds = Array.from(new Set(
+  private async readSessionMetadata(traces: readonly ModelCallTraceRecord[]): Promise<Map<SessionMetadataKey, ControlModelCallSessionMetadata>> {
+    const pairs = Array.from(new Map(
       traces
-        .map((trace) => trace.sessionId)
-        .filter((value): value is string => typeof value === "string" && value.length > 0),
-    ));
-    if (sessionIds.length === 0) return new Map();
+        .filter((trace) => trace.sessionId && trace.agentKey)
+        .map((trace) => [
+          sessionMetadataKey(trace.agentKey!, trace.sessionId!),
+          {agentKey: trace.agentKey!, sessionId: trace.sessionId!},
+        ] as const),
+    ).values());
+    if (pairs.length === 0) return new Map();
 
-    const placeholders = sessionIds.map((_, index) => `$${index + 1}`).join(", ");
+    const predicates = pairs.map((_, index) => `(id = $${index * 2 + 1} AND agent_key = $${index * 2 + 2})`).join(" OR ");
+    const values = pairs.flatMap((pair) => [pair.sessionId, pair.agentKey]);
     const result = await this.pool.query(`
-      SELECT id, kind, alias, display_name
+      SELECT id, agent_key, kind, alias, display_name
       FROM ${this.sessionTables.sessions}
-      WHERE id IN (${placeholders})
-    `, sessionIds);
+      WHERE ${predicates}
+    `, values);
 
     return new Map(
       result.rows.map((row) => {
         const entry = publicSessionMetadata(row as Record<string, unknown>);
-        return [entry.id, entry.metadata] as const;
+        return [entry.key, entry.metadata] as const;
       }),
     );
   }
@@ -191,7 +202,7 @@ export class ControlModelCallTraceService {
     const result = await this.store.listTraces(input);
     const sessionMetadata = await this.readSessionMetadata(result.data);
     return {
-      data: result.data.map((trace) => publicSummary(trace, trace.sessionId ? sessionMetadata.get(trace.sessionId) : undefined)),
+      data: result.data.map((trace) => publicSummary(trace, trace.sessionId && trace.agentKey ? sessionMetadata.get(sessionMetadataKey(trace.agentKey, trace.sessionId)) : undefined)),
       meta: result.meta,
     };
   }
@@ -201,6 +212,6 @@ export class ControlModelCallTraceService {
     const trace = await this.store.getTrace(id);
     if (!trace) return null;
     const sessionMetadata = await this.readSessionMetadata([trace]);
-    return publicDetail(trace, trace.sessionId ? sessionMetadata.get(trace.sessionId) : undefined);
+    return publicDetail(trace, trace.sessionId && trace.agentKey ? sessionMetadata.get(sessionMetadataKey(trace.agentKey, trace.sessionId)) : undefined);
   }
 }

@@ -156,6 +156,7 @@ export function TraceContext({ trace }: { trace: ModelCallTraceSummary }) {
 function SessionReference({ trace }: { trace: ModelCallTraceSummary }) {
   if (!trace.sessionId) return "-"
 
+  const hasSessionMetadata = Boolean(trace.sessionKind || trace.sessionLabel || trace.sessionDisplayName || trace.sessionAlias)
   const label = friendlySessionLabel({
     id: trace.sessionId,
     label: trace.sessionLabel,
@@ -175,14 +176,22 @@ function SessionReference({ trace }: { trace: ModelCallTraceSummary }) {
     </span>
   )
 
-  if (!trace.agentKey) return content
-
   return (
     <span className="grid min-w-0 gap-1">
       {content}
-      <Button variant="link" size="sm" className="h-auto justify-start p-0 text-xs" asChild>
-        <Link to={sessionPath(trace.agentKey, trace.sessionId)}>Open session</Link>
-      </Button>
+      <details className="min-w-0">
+        <summary className="cursor-pointer select-none text-xs text-muted-foreground">
+          Full session ID
+        </summary>
+        <code className="block max-w-full select-all break-all border bg-muted/30 p-2 text-xs text-muted-foreground">
+          {trace.sessionId}
+        </code>
+      </details>
+      {trace.agentKey && hasSessionMetadata ? (
+        <Button variant="link" size="sm" className="h-auto justify-start p-0 text-xs" asChild>
+          <Link to={sessionPath(trace.agentKey, trace.sessionId)}>Open session</Link>
+        </Button>
+      ) : null}
     </span>
   )
 }
@@ -269,9 +278,7 @@ function LlmContextSectionCard({
           </pre>
         </details>
       ) : null}
-      {Object.keys(record).length === 0 ? (
-        <JsonDetails label="Section JSON" value={section} />
-      ) : null}
+      <JsonDetails label="Section JSON" value={section} />
     </div>
   )
 }
