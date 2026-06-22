@@ -16,6 +16,7 @@ const pools: Array<{end(): Promise<void>}> = [];
 const PROMPT_CACHE_KEY_REDACTION_PATTERN = /^\[redacted:prompt-cache-key:sha256:[a-f0-9]{16}\]$/;
 const TRACE_CONTEXT_CONTENT = "llm context section with trace-context-value";
 const TRACE_CONTEXT_CACHE_PART = "trace-context-cache-raw-secret";
+const FUTURE_CONTEXT_CONTENT = "future llm context section with auto-display-value";
 
 afterEach(async () => {
   while (pools.length > 0) await pools.pop()?.end();
@@ -96,6 +97,25 @@ class TraceContext extends LlmContext {
   }
 }
 
+
+class FutureTraceContext extends LlmContext {
+  override name = "FutureTraceContext";
+  override source = "future-context-source";
+  override label = "Future context label";
+
+  async getSnapshot() {
+    return {
+      content: FUTURE_CONTEXT_CONTENT,
+      label: this.label,
+      source: this.source,
+    };
+  }
+
+  async getContent(): Promise<string> {
+    return FUTURE_CONTEXT_CONTENT;
+  }
+}
+
 class CompleteRuntime implements LlmRuntime {
   readonly complete = vi.fn(async (_request: LlmRuntimeRequest) => assistant("done"));
   readonly stream = vi.fn(() => {
@@ -147,7 +167,7 @@ async function drainStream(thread: Thread): Promise<void> {
   }
 }
 
-function createThread(input: {runtime: LlmRuntime; store: PostgresModelCallTraceStore; messages?: LlmRuntimeRequest["context"]["messages"]; promptCacheKey?: string}) {
+function createThread(input: {runtime: LlmRuntime; store: PostgresModelCallTraceStore; messages?: LlmRuntimeRequest["context"]["messages"]; promptCacheKey?: string; llmContexts?: LlmContext[]}) {
   return new Thread({
     agent: new Agent({name: "panda", instructions: "base instructions", tools: [new SecretTool()]}),
     messages: input.messages ?? [{role: "user", content: "hello"}],
@@ -157,7 +177,7 @@ function createThread(input: {runtime: LlmRuntime; store: PostgresModelCallTrace
       sessionId: "session-panda",
       agentKey: "panda",
     },
-    llmContexts: [new TraceContext()],
+    llmContexts: input.llmContexts ?? [new TraceContext()],
     promptCacheKey: input.promptCacheKey ?? "thread:trace-test",
     model: "openai/gpt-test",
     runtime: input.runtime,
@@ -211,6 +231,30 @@ describe("model call traces", () => {
       }),
     ]);
     expect(JSON.stringify(trace.requestJson.llmContextSections)).not.toContain(TRACE_CONTEXT_CACHE_PART);
+  });
+
+  it("records future LlmContext sections through the runtime dump pipeline", async () => {
+    const {store} = await createStore();
+    const runtime = new CompleteRuntime();
+
+    await drainThread(createThread({
+      runtime,
+      store,
+      llmContexts: [new TraceContext(), new FutureTraceContext()],
+    }));
+
+    const traces = await store.listTraces();
+    const sections = traces.data[0]?.requestJson.llmContextSections;
+    expect(sections).toEqual([
+      expect.objectContaining({name: "TraceContext"}),
+      expect.objectContaining({
+        name: "FutureTraceContext",
+        source: "future-context-source",
+        label: "Future context label",
+        contentPreview: FUTURE_CONTEXT_CONTENT,
+      }),
+    ]);
+    expect(JSON.stringify(sections)).toContain("auto-display-value");
   });
 
   it("writes one failed trace with sanitized provider error details", async () => {

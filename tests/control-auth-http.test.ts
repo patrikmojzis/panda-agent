@@ -3086,6 +3086,11 @@ describe("Control Model Call Traces HTTP", () => {
 
   it("requires admin for list/detail and returns sanitized allowlisted DTOs", async () => {
     const harness = await createHarness();
+    await harness.sessions.updateSessionLabel({
+      sessionId: "session-panda",
+      alias: "discord-main",
+      displayName: "Patrik Discord main",
+    });
     const row = await seedTrace(harness);
     expect(row.prompt_cache_key).toEqual(expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN));
     expect(row.prompt_cache_key).not.toContain(CONTROL_PROMPT_CACHE_KEY_SECRET);
@@ -3175,6 +3180,10 @@ describe("Control Model Call Traces HTTP", () => {
       threadId: "thread-panda",
       sessionId: "session-panda",
       agentKey: "panda",
+      sessionLabel: "Patrik Discord main",
+      sessionDisplayName: "Patrik Discord main",
+      sessionAlias: "discord-main",
+      sessionKind: "main",
       turn: 3,
       callIndex: 3,
       provider: "openai",
@@ -3194,7 +3203,7 @@ describe("Control Model Call Traces HTTP", () => {
         promptCacheKey: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
       }),
     });
-    expect(Object.keys(listBody.modelCallTraces.data[0]!).sort()).toEqual(["agentKey", "callIndex", "durationMs", "error", "expiresAt", "finishedAt", "id", "mode", "model", "promptCacheKey", "provider", "runId", "sessionId", "startedAt", "status", "threadId", "turn", "usage"]);
+    expect(Object.keys(listBody.modelCallTraces.data[0]!).sort()).toEqual(["agentKey", "callIndex", "durationMs", "error", "expiresAt", "finishedAt", "id", "mode", "model", "promptCacheKey", "provider", "runId", "sessionAlias", "sessionDisplayName", "sessionId", "sessionKind", "sessionLabel", "startedAt", "status", "threadId", "turn", "usage"]);
     expect(JSON.stringify(listBody)).not.toContain(CONTROL_PROMPT_CACHE_KEY_SECRET);
     expect(JSON.stringify(listBody)).not.toContain(rawPromptCacheKey);
 
@@ -3203,6 +3212,10 @@ describe("Control Model Call Traces HTTP", () => {
     const detailBody = await detail.json() as {modelCallTrace: Record<string, unknown>};
     expect(detailBody.modelCallTrace).toMatchObject({
       id: row.id,
+      sessionLabel: "Patrik Discord main",
+      sessionDisplayName: "Patrik Discord main",
+      sessionAlias: "discord-main",
+      sessionKind: "main",
       promptCacheKey: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
       request: expect.objectContaining({
         promptCacheKey: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),

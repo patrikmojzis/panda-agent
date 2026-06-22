@@ -1,5 +1,5 @@
-import * as React from "react"
 import type { ColumnDef, ColumnFiltersState } from "@tanstack/react-table"
+import { useNavigate } from "react-router-dom"
 import { Eye } from "lucide-react"
 
 import {
@@ -14,17 +14,7 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet"
-import {
-  useModelCallTrace,
-  useModelCallTraces,
-} from "@/features/control/api/queries"
+import { useModelCallTraces } from "@/features/control/api/queries"
 import {
   StatusBadge,
   humanize,
@@ -32,16 +22,16 @@ import {
   short,
 } from "@/features/control/control-display"
 import {
-  DetailField,
-  DetailPanel,
-  TableError,
-} from "@/features/control/detail-primitives"
-import {
   formatDate,
   formatDuration,
 } from "@/features/control/formatting"
+import {
+  ProviderModel,
+  TraceContext,
+  modelCallDetailPath,
+  usageSummary,
+} from "@/features/control/model-calls/model-call-detail-content"
 import type {
-  ModelCallTraceDetail,
   ModelCallTraceSummary,
   TableParams,
 } from "@/lib/api"
@@ -69,13 +59,13 @@ export function ModelCallsPanel({
 }: {
   initialFilters?: InitialModelCallFilters
 }) {
+  const navigate = useNavigate()
   const table = useDataTableState(modelCallTableKey(initialFilters), {
     per_page: 25,
     columnFilters: initialColumnFilters(initialFilters),
   })
   const params = modelCallTraceParams(table.params)
   const traces = useModelCallTraces(params)
-  const [selectedTrace, setSelectedTrace] = React.useState<ModelCallTraceSummary | null>(null)
   const columns: ColumnDef<ModelCallTraceSummary>[] = [
     {
       accessorKey: "startedAt",
@@ -126,7 +116,7 @@ export function ModelCallsPanel({
     },
     {
       id: "usage",
-      meta: { label: "Tokens", wrap: true, maxWidthClassName: "max-w-[12rem]" },
+      meta: { label: "Tokens / Cost", wrap: true, maxWidthClassName: "max-w-[14rem]" },
       header: renderColumnHeader,
       enableSorting: false,
       cell: ({ row }) => <Cell>{usageSummary(row.original.usage)}</Cell>,
@@ -144,7 +134,7 @@ export function ModelCallsPanel({
             {
               label: "Inspect",
               icon: <Eye className="size-4" />,
-              onSelect: () => setSelectedTrace(row.original),
+              onSelect: () => navigate(modelCallDetailPath(row.original.id)),
             },
           ]}
         />
@@ -163,6 +153,7 @@ export function ModelCallsPanel({
         state={table}
         error={traces.error}
         filters={<ModelCallTraceFilters state={table} />}
+        getLink={(trace) => modelCallDetailPath(trace.id)}
         isFetching={traces.isFetching}
         isLoading={traces.isLoading}
         isPlaceholderData={traces.isPlaceholderData}
@@ -172,10 +163,6 @@ export function ModelCallsPanel({
         emptyLabel="No model call traces"
         emptyDescription="Traces are retained briefly and only after model calls are recorded."
         mobileColumnVisibility={mobileHiddenColumns("startedAt", "finishedAt", "durationMs", "usage")}
-      />
-      <ModelCallTraceDetailsSheet
-        trace={selectedTrace}
-        setTrace={setSelectedTrace}
       />
     </div>
   )
@@ -252,299 +239,6 @@ function TableTextFilter({
   )
 }
 
-function ModelCallTraceDetailsSheet({
-  trace,
-  setTrace,
-}: {
-  trace: ModelCallTraceSummary | null
-  setTrace: (trace: ModelCallTraceSummary | null) => void
-}) {
-  const detail = useModelCallTrace(trace?.id ?? "", { enabled: Boolean(trace?.id) })
-  const fullTrace = detail.data?.modelCallTrace
-  const visibleTrace = fullTrace ?? trace
-
-  return (
-    <Sheet open={Boolean(trace)} onOpenChange={(open) => !open && setTrace(null)}>
-      <SheetContent className="gap-0 overflow-hidden data-[side=right]:w-full data-[side=right]:sm:max-w-4xl data-[side=right]:lg:max-w-5xl">
-        <SheetHeader className="min-w-0 border-b pr-12">
-          <SheetTitle>Model Call</SheetTitle>
-          <SheetDescription className="min-w-0 break-words">
-            {visibleTrace
-              ? `${short(visibleTrace.id)} · ${visibleTrace.provider}/${visibleTrace.model} · ${humanize(visibleTrace.status)}`
-              : "Sanitized model call trace"}
-          </SheetDescription>
-        </SheetHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-          {detail.error && !fullTrace ? (
-            <TableError error={detail.error} />
-          ) : visibleTrace ? (
-            <div className="grid min-w-0 gap-4">
-              <TraceOverview trace={visibleTrace} />
-              {fullTrace ? <TraceDetailSections trace={fullTrace} /> : null}
-              {detail.isLoading ? (
-                <div className="border p-3 text-sm text-muted-foreground">
-                  Loading sanitized request and response details…
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      </SheetContent>
-    </Sheet>
-  )
-}
-
-function TraceOverview({
-  trace,
-  loading,
-}: {
-  trace: ModelCallTraceSummary
-  loading?: boolean
-}) {
-  return (
-    <DetailPanel title="Overview">
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <DetailField label="Status" value={<StatusBadge status={trace.status} />} loading={loading} />
-        <DetailField label="Mode" value={humanize(trace.mode)} loading={loading} />
-        <DetailField label="Provider" value={trace.provider} loading={loading} />
-        <DetailField label="Model" value={trace.model} loading={loading} />
-        <DetailField label="Started" value={formatDate(trace.startedAt)} loading={loading} />
-        <DetailField label="Finished" value={formatDate(trace.finishedAt)} loading={loading} />
-        <DetailField label="Duration" value={formatDuration(trace.durationMs)} loading={loading} />
-        <DetailField label="Tokens" value={usageSummary(trace.usage)} loading={loading} />
-        <DetailField label="Agent" value={<CodeValue value={trace.agentKey} />} loading={loading} />
-        <DetailField label="Session" value={<CodeValue value={trace.sessionId} />} loading={loading} />
-        <DetailField label="Run" value={<CodeValue value={trace.runId} />} loading={loading} />
-        <DetailField label="Thread" value={<CodeValue value={trace.threadId} />} loading={loading} />
-        <DetailField label="Turn" value={trace.turn ?? "-"} loading={loading} />
-        <DetailField label="Call index" value={trace.callIndex ?? "-"} loading={loading} />
-        <DetailField label="Trace id" value={<CodeValue value={trace.id} />} loading={loading} />
-        <DetailField label="Expires" value={formatDate(trace.expiresAt)} loading={loading} />
-        <DetailField
-          label="Prompt cache key"
-          value={<RedactedValue value={trace.promptCacheKey} />}
-          loading={loading}
-        />
-      </div>
-    </DetailPanel>
-  )
-}
-
-function TraceDetailSections({ trace }: { trace: ModelCallTraceDetail }) {
-  const request = trace.request
-
-  return (
-    <>
-      <DetailPanel title="Sanitized Request">
-        <div className="grid min-w-0 gap-4">
-          <TextBlock title="System prompt" value={request.systemPrompt} emptyLabel="No system prompt captured." />
-          <LlmContextSectionsBlock value={request.llmContextSections} />
-          {request.llmContextDump ? (
-            <TextBlock title="LLM context dump" value={request.llmContextDump} />
-          ) : null}
-          <JsonBlock title="Projected messages" value={request.messages} emptyLabel="No projected messages captured." />
-          <JsonBlock title="Tools / schema" value={request.tools} emptyLabel="No tools captured." />
-        </div>
-      </DetailPanel>
-      <div className="grid min-w-0 gap-4 xl:grid-cols-3">
-        <JsonBlock title="Response" value={trace.response} emptyLabel="No response captured." />
-        <JsonBlock title="Error" value={trace.error} emptyLabel="No error captured." />
-        <JsonBlock title="Usage" value={trace.usage} emptyLabel="No usage captured." />
-      </div>
-    </>
-  )
-}
-
-function ProviderModel({ trace }: { trace: ModelCallTraceSummary }) {
-  return (
-    <div className="grid min-w-0 gap-1">
-      <span className="break-words font-medium">{trace.provider}</span>
-      <code className="break-all text-xs text-muted-foreground">{trace.model}</code>
-    </div>
-  )
-}
-
-function LlmContextSectionsBlock({ value }: { value: unknown }) {
-  const sections = Array.isArray(value) ? value : []
-  if (sections.length === 0) {
-    return <EmptyBlock title="LLM context sections" emptyLabel="No LLM context sections captured." />
-  }
-
-  return (
-    <section className="grid min-w-0 gap-2">
-      <h3 className="text-sm font-medium">LLM context sections</h3>
-      <div className="grid min-w-0 gap-3">
-        {sections.map((section, index) => (
-          <LlmContextSectionCard key={sectionKey(section, index)} section={section} index={index} />
-        ))}
-      </div>
-    </section>
-  )
-}
-
-function LlmContextSectionCard({
-  section,
-  index,
-}: {
-  section: unknown
-  index: number
-}) {
-  const record = asRecord(section) ?? {}
-  const name = firstString(record, ["name"]) ?? `Section ${index + 1}`
-  const label = firstString(record, ["label"])
-  const source = firstString(record, ["source"])
-  const content = firstString(record, ["content", "dump"])
-  const preview = firstString(record, ["contentPreview", "preview"]) ?? content
-  const contentChars = firstNumber(record, ["contentChars", "charCount", "chars"])
-  const estimatedTokens = firstNumber(record, ["estimatedTokens", "tokenEstimate", "tokens"])
-  const promptCacheKeyPart = firstString(record, ["promptCacheKeyPart", "promptCacheKeyFingerprint"])
-
-  return (
-    <div className="grid min-w-0 gap-2 border p-3">
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <span className="min-w-0 break-words text-sm font-medium">{label ?? name}</span>
-        {label ? <Badge variant="outline">{name}</Badge> : null}
-        {source ? <Badge variant="outline">{source}</Badge> : null}
-        {contentChars !== null ? (
-          <Badge variant="secondary">{contentChars.toLocaleString()} chars</Badge>
-        ) : null}
-        {estimatedTokens !== null ? (
-          <Badge variant="secondary">~{estimatedTokens.toLocaleString()} tokens</Badge>
-        ) : null}
-      </div>
-      {promptCacheKeyPart ? (
-        <div className="min-w-0 text-xs text-muted-foreground">
-          Prompt cache part: <RedactedValue value={promptCacheKeyPart} />
-        </div>
-      ) : null}
-      {preview ? (
-        <pre className="max-h-32 max-w-full overflow-auto whitespace-pre-wrap break-words border bg-muted/30 p-3 font-mono text-xs leading-relaxed [overflow-wrap:anywhere]">
-          {preview}
-        </pre>
-      ) : (
-        <div className="text-sm text-muted-foreground">No section content captured.</div>
-      )}
-      {content && content !== preview ? (
-        <details className="grid min-w-0 gap-2" open={index === 0}>
-          <summary className="cursor-pointer select-none text-xs text-muted-foreground">
-            Expand full section content
-          </summary>
-          <pre className="max-h-80 max-w-full overflow-auto whitespace-pre-wrap break-words border bg-muted/30 p-3 font-mono text-xs leading-relaxed [overflow-wrap:anywhere]">
-            {content}
-          </pre>
-        </details>
-      ) : null}
-    </div>
-  )
-}
-
-function sectionKey(section: unknown, index: number) {
-  const record = asRecord(section)
-  const name = record ? firstString(record, ["name", "label", "source"]) : null
-  return `${name ?? "section"}:${index}`
-}
-
-function TraceContext({ trace }: { trace: ModelCallTraceSummary }) {
-  const items = [
-    trace.agentKey ? { label: "Agent", value: trace.agentKey } : null,
-    trace.sessionId ? { label: "Session", value: trace.sessionId } : null,
-    trace.runId ? { label: "Run", value: trace.runId } : null,
-    trace.threadId ? { label: "Thread", value: trace.threadId } : null,
-    trace.turn !== null ? { label: "Turn", value: String(trace.turn) } : null,
-    trace.callIndex !== null ? { label: "Call", value: `#${trace.callIndex}` } : null,
-  ].filter((item): item is { label: string; value: string } => Boolean(item))
-
-  if (items.length === 0) return <span className="text-muted-foreground">-</span>
-
-  return (
-    <div className="flex min-w-0 max-w-full flex-wrap gap-1">
-      {items.map((item) => (
-        <span
-          key={`${item.label}:${item.value}`}
-          className="inline-flex max-w-full min-w-0 items-center gap-1 border px-1.5 py-0.5 text-xs"
-          title={item.value}
-        >
-          <span className="shrink-0 text-muted-foreground">{item.label}</span>
-          <code className="min-w-0 truncate">{shortContextValue(item.value)}</code>
-        </span>
-      ))}
-    </div>
-  )
-}
-
-function TextBlock({
-  title,
-  value,
-  emptyLabel = "No content captured.",
-}: {
-  title: string
-  value: unknown
-  emptyLabel?: string
-}) {
-  if (value === null || value === undefined || value === "") {
-    return <EmptyBlock title={title} emptyLabel={emptyLabel} />
-  }
-  const rendered = typeof value === "string" ? value : formatJson(value)
-  return (
-    <section className="grid min-w-0 gap-2">
-      <h3 className="text-sm font-medium">{title}</h3>
-      <pre className="max-h-80 max-w-full overflow-auto whitespace-pre-wrap break-words border bg-muted/30 p-3 font-mono text-xs leading-relaxed [overflow-wrap:anywhere]">
-        {rendered}
-      </pre>
-    </section>
-  )
-}
-
-function JsonBlock({
-  title,
-  value,
-  emptyLabel = "No JSON captured.",
-}: {
-  title: string
-  value: unknown
-  emptyLabel?: string
-}) {
-  if (value === null || value === undefined || value === "") {
-    return <EmptyBlock title={title} emptyLabel={emptyLabel} />
-  }
-
-  return (
-    <section className="grid min-w-0 gap-2 border p-3">
-      <h3 className="text-sm font-medium">{title}</h3>
-      <pre className="max-h-96 max-w-full overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed [overflow-wrap:anywhere]">
-        {formatJson(value)}
-      </pre>
-    </section>
-  )
-}
-
-function EmptyBlock({ title, emptyLabel }: { title: string; emptyLabel: string }) {
-  return (
-    <section className="grid min-w-0 gap-2 border p-3">
-      <h3 className="text-sm font-medium">{title}</h3>
-      <div className="text-sm text-muted-foreground">{emptyLabel}</div>
-    </section>
-  )
-}
-
-function CodeValue({ value }: { value?: string | null }) {
-  if (!value) return "-"
-  return <code className="break-all text-xs">{value}</code>
-}
-
-function RedactedValue({ value }: { value?: string | null }) {
-  if (!value) return "-"
-  const match = /^\[redacted:([^:]+):sha256:([a-f0-9]{16})\]$/.exec(value)
-  return (
-    <span className="inline-flex max-w-full flex-wrap items-center gap-1">
-      <Badge variant="secondary">Redacted</Badge>
-      <code className="break-all text-xs text-muted-foreground">
-        {match ? `${match[1]} · sha256:${match[2]}` : "opaque value hidden"}
-      </code>
-    </span>
-  )
-}
-
 function modelCallTraceParams(params: TableParams): TableParams {
   const rest = { ...params }
   delete rest.search
@@ -588,53 +282,4 @@ function setTableFilter(state: DataTableState, id: string, value: string) {
   state.setPagination((previous) =>
     previous.pageIndex === 0 ? previous : { ...previous, pageIndex: 0 }
   )
-}
-
-function usageSummary(value: unknown) {
-  const usage = asRecord(value)
-  if (!usage) return "-"
-  const input = firstNumber(usage, ["input", "inputTokens", "promptTokens"])
-  const output = firstNumber(usage, ["output", "outputTokens", "completionTokens"])
-  const total = firstNumber(usage, ["totalTokens", "total", "tokens"])
-  const parts = [
-    input !== null ? `in ${input.toLocaleString()}` : null,
-    output !== null ? `out ${output.toLocaleString()}` : null,
-    total !== null ? `total ${total.toLocaleString()}` : null,
-  ].filter(Boolean)
-  return parts.length > 0 ? parts.join(" · ") : "-"
-}
-
-function firstString(record: Record<string, unknown>, keys: string[]) {
-  for (const key of keys) {
-    const value = record[key]
-    if (typeof value === "string" && value.trim()) return value
-  }
-  return null
-}
-
-function firstNumber(record: Record<string, unknown>, keys: string[]) {
-  for (const key of keys) {
-    const value = record[key]
-    if (typeof value === "number" && Number.isFinite(value)) return value
-  }
-  return null
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null
-}
-
-function shortContextValue(value: string) {
-  if (value.startsWith("#")) return value
-  return value.length > 18 ? `${value.slice(0, 8)}…${value.slice(-6)}` : value
-}
-
-function formatJson(value: unknown) {
-  try {
-    return JSON.stringify(value, null, 2)
-  } catch {
-    return String(value)
-  }
 }
