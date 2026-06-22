@@ -243,6 +243,7 @@ Treat these views as the public interface:
 - `session.inputs`
 - `session.runs`
 - `session.todos`
+- `session.runtime_config`
 - `session.agent_prompts`
 - `session.agent_pairings`
 - `session.agent_skills`
@@ -251,6 +252,12 @@ Treat these views as the public interface:
 - `session.watches`
 - `session.watch_runs`
 - `session.watch_events`
+- `session.email_accounts`
+- `session.email_allowed_recipients`
+- `session.email_routes`
+- `session.email_messages`
+- `session.email_message_recipients`
+- `session.email_attachments`
 
 If the agent needs more safe query surface later, add another scoped view.
 Do not solve that by handing the SQL tool raw table access.
