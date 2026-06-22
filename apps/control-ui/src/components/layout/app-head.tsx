@@ -13,6 +13,7 @@ const routeMatchers = [
   { pattern: "/", title: "Work Failures" },
   { pattern: "/agents", title: "Agents" },
   { pattern: "/model-calls", title: "Model Calls" },
+  { pattern: "/model-calls/:traceId", title: "Model Call" },
 ]
 
 export function AppHead() {

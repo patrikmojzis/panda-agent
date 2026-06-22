@@ -3086,6 +3086,11 @@ describe("Control Model Call Traces HTTP", () => {
 
   it("requires admin for list/detail and returns sanitized allowlisted DTOs", async () => {
     const harness = await createHarness();
+    await harness.sessions.updateSessionLabel({
+      sessionId: "session-panda",
+      alias: "discord-main",
+      displayName: "Patrik Discord main",
+    });
     const row = await seedTrace(harness);
     expect(row.prompt_cache_key).toEqual(expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN));
     expect(row.prompt_cache_key).not.toContain(CONTROL_PROMPT_CACHE_KEY_SECRET);
@@ -3175,6 +3180,10 @@ describe("Control Model Call Traces HTTP", () => {
       threadId: "thread-panda",
       sessionId: "session-panda",
       agentKey: "panda",
+      sessionLabel: "Patrik Discord main",
+      sessionDisplayName: "Patrik Discord main",
+      sessionAlias: "discord-main",
+      sessionKind: "main",
       turn: 3,
       callIndex: 3,
       provider: "openai",
@@ -3194,7 +3203,7 @@ describe("Control Model Call Traces HTTP", () => {
         promptCacheKey: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
       }),
     });
-    expect(Object.keys(listBody.modelCallTraces.data[0]!).sort()).toEqual(["agentKey", "callIndex", "durationMs", "error", "expiresAt", "finishedAt", "id", "mode", "model", "promptCacheKey", "provider", "runId", "sessionId", "startedAt", "status", "threadId", "turn", "usage"]);
+    expect(Object.keys(listBody.modelCallTraces.data[0]!).sort()).toEqual(["agentKey", "callIndex", "durationMs", "error", "expiresAt", "finishedAt", "id", "mode", "model", "promptCacheKey", "provider", "runId", "sessionAlias", "sessionDisplayName", "sessionId", "sessionKind", "sessionLabel", "startedAt", "status", "threadId", "turn", "usage"]);
     expect(JSON.stringify(listBody)).not.toContain(CONTROL_PROMPT_CACHE_KEY_SECRET);
     expect(JSON.stringify(listBody)).not.toContain(rawPromptCacheKey);
 
@@ -3203,6 +3212,10 @@ describe("Control Model Call Traces HTTP", () => {
     const detailBody = await detail.json() as {modelCallTrace: Record<string, unknown>};
     expect(detailBody.modelCallTrace).toMatchObject({
       id: row.id,
+      sessionLabel: "Patrik Discord main",
+      sessionDisplayName: "Patrik Discord main",
+      sessionAlias: "discord-main",
+      sessionKind: "main",
       promptCacheKey: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
       request: expect.objectContaining({
         promptCacheKey: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
@@ -3255,6 +3268,81 @@ describe("Control Model Call Traces HTTP", () => {
       rawErrorCacheKey,
       rawUsageFingerprint,
     ]) expect(apiText).not.toContain(sentinel);
+  });
+
+  it("omits session label metadata when legacy trace agent and session owner mismatch", async () => {
+    const harness = await createHarness();
+    await harness.sessions.updateSessionLabel({
+      sessionId: "session-luna",
+      alias: "luna-private",
+      displayName: "Luna private model-call session",
+    });
+    const traceId = "00000000-0000-0000-0000-000000000709";
+    await harness.pool.query(`
+      INSERT INTO "runtime"."model_call_traces" (
+        id,
+        run_id,
+        thread_id,
+        session_id,
+        agent_key,
+        turn,
+        call_index,
+        provider,
+        model,
+        mode,
+        status,
+        started_at,
+        finished_at,
+        duration_ms,
+        request_json,
+        usage_json,
+        expires_at
+      ) VALUES (
+        $1,
+        '00000000-0000-0000-0000-000000000709',
+        'thread-mismatched',
+        'session-luna',
+        'panda',
+        1,
+        1,
+        'openai',
+        'gpt-test',
+        'complete',
+        'completed',
+        '2040-02-01T10:00:00.000Z',
+        '2040-02-01T10:00:00.100Z',
+        100,
+        $2::jsonb,
+        $3::jsonb,
+        '2040-02-08T10:00:00.100Z'
+      )
+    `, [traceId, JSON.stringify({messages: []}), JSON.stringify({totalTokens: 1})]);
+
+    const base = await startHarnessServer(harness);
+    const admin = await login(base, harness, "admin");
+
+    const detail = await fetch(`${base}/api/control/model-call-traces/${traceId}`, {headers: {cookie: admin.cookies}});
+    expect(detail.status).toBe(200);
+    const detailBody = await detail.json() as {modelCallTrace: Record<string, unknown>};
+    expect(detailBody.modelCallTrace).toMatchObject({
+      id: traceId,
+      agentKey: "panda",
+      sessionId: "session-luna",
+    });
+    expect(detailBody.modelCallTrace).not.toHaveProperty("sessionLabel");
+    expect(detailBody.modelCallTrace).not.toHaveProperty("sessionDisplayName");
+    expect(detailBody.modelCallTrace).not.toHaveProperty("sessionAlias");
+    expect(detailBody.modelCallTrace).not.toHaveProperty("sessionKind");
+
+    const list = await fetch(`${base}/api/control/model-call-traces`, {headers: {cookie: admin.cookies}});
+    expect(list.status).toBe(200);
+    const listBody = await list.json() as {modelCallTraces: {data: Array<Record<string, unknown>>}};
+    expect(listBody.modelCallTraces.data[0]).toMatchObject({id: traceId, agentKey: "panda", sessionId: "session-luna"});
+    expect(listBody.modelCallTraces.data[0]).not.toHaveProperty("sessionLabel");
+
+    const text = JSON.stringify({detailBody, listBody});
+    expect(text).not.toContain("Luna private model-call session");
+    expect(text).not.toContain("luna-private");
   });
 });
 

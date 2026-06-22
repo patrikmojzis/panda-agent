@@ -460,6 +460,10 @@ export type ModelCallTraceSummary = {
   threadId: string | null
   sessionId: string | null
   agentKey: string | null
+  sessionLabel?: string | null
+  sessionDisplayName?: string | null
+  sessionAlias?: string | null
+  sessionKind?: string | null
   turn: number | null
   callIndex: number | null
   provider: string
