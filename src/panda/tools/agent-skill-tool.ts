@@ -98,7 +98,7 @@ type AgentSkillToolResult =
     tags: string[];
   }
   | {
-    operation: "update_description";
+    operation: "patch";
     agentKey: string;
     skillKey: string;
     description: string;
@@ -115,12 +115,12 @@ type AgentSkillToolResult =
 export class AgentSkillTool<TContext = DefaultAgentSessionContext>
   extends Tool<typeof AgentSkillTool.schema, TContext> {
   static schema = z.object({
-    operation: z.enum(["load", "set", "update_description", "delete"]).describe(
-      "Load a full skill body into context, create or replace a skill, update only an existing skill description, or delete it by key.",
+    operation: z.enum(["load", "set", "patch", "delete"]).describe(
+      "Load a full skill body into context, create or replace a skill, patch supported skill metadata, or delete it by key.",
     ),
     skillKey: z.string().trim().min(1).describe("Stable slug-style skill key, for example calendar or trip_planner."),
     description: z.string().optional().describe(
-      `Required for set and update_description. Short summary injected into the standard agent context. Max ${MAX_AGENT_SKILL_DESCRIPTION_CHARS} characters.`,
+      `Required for set. Short summary injected into the standard agent context. Max ${MAX_AGENT_SKILL_DESCRIPTION_CHARS} characters.`,
     ),
     content: z.string().optional().describe(
       `Required for set. Full markdown skill body stored in Postgres. Max ${MAX_AGENT_SKILL_CONTENT_CHARS} characters.`,
@@ -128,12 +128,17 @@ export class AgentSkillTool<TContext = DefaultAgentSessionContext>
     tags: z.array(z.string()).optional().describe(
       `Optional for set. Prefer omitting tags unless they materially help discovery; when useful, use 0-2 broad lowercase tags. Max ${MAX_AGENT_SKILL_TAGS} tags is a hard cap, not a target; ${MAX_AGENT_SKILL_TAG_CHARS} chars each.`,
     ),
+    patch: z.object({
+      description: z.string().optional().describe(
+        `Required for patch. Updated short summary injected into the standard agent context. Max ${MAX_AGENT_SKILL_DESCRIPTION_CHARS} characters.`,
+      ),
+    }).strict().optional().describe("Required for patch. Only description is supported; content and tags are preserved."),
   }).superRefine((value, ctx) => {
-    if (value.operation === "set" || value.operation === "update_description") {
+    if (value.operation === "set") {
       if (value.description === undefined) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: `${value.operation === "set" ? "Set" : "update_description"} requires description.`,
+          message: "Set requires description.",
         });
       } else {
         try {
@@ -141,22 +146,6 @@ export class AgentSkillTool<TContext = DefaultAgentSessionContext>
         } catch (error) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, message: issueMessage(error) });
         }
-      }
-
-      if (value.operation === "update_description") {
-        if (value.content !== undefined) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: "update_description does not take content.",
-          });
-        }
-        if (value.tags !== undefined) {
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: "update_description does not take tags.",
-          });
-        }
-        return;
       }
 
       if (value.content === undefined) {
@@ -171,6 +160,33 @@ export class AgentSkillTool<TContext = DefaultAgentSessionContext>
       if (value.tags !== undefined) {
         try {
           normalizeAgentSkillTags(value.tags);
+        } catch (error) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, message: issueMessage(error) });
+        }
+      }
+      if (value.patch !== undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Set does not take patch." });
+      }
+      return;
+    }
+
+    if (value.operation === "patch") {
+      if (value.description !== undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Patch does not take top-level description; use patch.description." });
+      }
+      if (value.content !== undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Patch does not take content." });
+      }
+      if (value.tags !== undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Patch does not take tags." });
+      }
+      if (value.patch === undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Patch requires patch." });
+      } else if (value.patch.description === undefined) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Patch requires patch.description." });
+      } else {
+        try {
+          normalizeAgentSkillDescription(value.patch.description);
         } catch (error) {
           ctx.addIssue({ code: z.ZodIssueCode.custom, message: issueMessage(error) });
         }
@@ -196,11 +212,17 @@ export class AgentSkillTool<TContext = DefaultAgentSessionContext>
         message: `${value.operation === "load" ? "Load" : "Delete"} does not take tags.`,
       });
     }
+    if (value.patch !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${value.operation === "load" ? "Load" : "Delete"} does not take patch.`,
+      });
+    }
   });
 
   name = "agent_skill";
   description =
-    "Load, create, replace, update only the description of, or delete agent-scoped skills stored in Postgres. Use load when an injected skill summary looks relevant and you need the full markdown body in context. Use update_description when only the injected short description should change without resubmitting or changing content/tags. When the user gives you a skill body to save, pass that body through unchanged unless they explicitly asked you to rewrite it; only derive the short description when needed. Normal agent runs only inject each skill's key, tags, and description. For post-run reflective learning, prefer the skill_maintainer subagent instead of writing reflective skills directly from the main agent.";
+    "Load, create, replace, patch supported metadata for, or delete agent-scoped skills stored in Postgres. Use load when an injected skill summary looks relevant and you need the full markdown body in context. Use patch with patch.description when only the injected short description should change without resubmitting or changing content/tags. When the user gives you a skill body to save, pass that body through unchanged unless they explicitly asked you to rewrite it; only derive the short description when needed. Normal agent runs only inject each skill's key, tags, and description. For post-run reflective learning, prefer the skill_maintainer subagent instead of writing reflective skills directly from the main agent.";
   schema = AgentSkillTool.schema;
 
   private readonly store: AgentSkillToolStore;
@@ -264,18 +286,18 @@ export class AgentSkillTool<TContext = DefaultAgentSessionContext>
 
     assertSkillMutationAllowed(skillPolicy);
 
-    if (args.operation === "update_description") {
+    if (args.operation === "patch") {
       const record = await this.mutateAgentSkill(() => this.store.updateAgentSkillDescriptionAsAgent(
         scope.agentKey,
         args.skillKey,
-        normalizeAgentSkillDescription(args.description ?? ""),
+        normalizeAgentSkillDescription(args.patch?.description ?? ""),
       ));
       if (!record) {
         throw new ToolError(`Skill ${args.skillKey} does not exist.`);
       }
 
       return {
-        operation: "update_description",
+        operation: "patch",
         agentKey: scope.agentKey,
         skillKey: record.skillKey,
         description: record.description,

@@ -17,7 +17,7 @@ The central registry is `src/domain/subagents/tool-groups.ts`.
 Approved V1 corrections are pinned there and covered by tests:
 
 - `core` includes safe universal basics: `current_datetime`, `message_agent`, `image_generate`, `whisper`, `view_media`, and `todo_update`.
-- `agent_skill` is not in `core` in PR1 because the raw tool currently supports `load`, `set`, `update_description`, and `delete`; adding it to universal raw membership would silently grant skill mutation. The approved long-term intent is operation-level access: load/read broadly, set/update_description/delete only for `operate` or a skill-maintainer-equivalent policy.
+- `agent_skill` is not in `core` in PR1 because the raw tool currently supports `load`, `set`, `patch`, and `delete`; adding it to universal raw membership would silently grant skill mutation. The approved long-term intent is operation-level access: load/read broadly, set/patch/delete only for `operate` or a skill-maintainer-equivalent policy.
 - `internet` includes public web/browser tools, including `web_research`.
 - `operate` includes operational mutation/control tools, including `thinking_set` and the mutating raw `agent_skill` surface.
 - The fixed group keys are `core`, `workspace_read`, `internet`, `memory`, `execute`, `operate`, and `communicate_human`.
@@ -26,6 +26,6 @@ Approved V1 corrections are pinned there and covered by tests:
 
 `runtime.subagent_profiles` stores global built-ins and future agent-scoped custom profiles. The PR1 seed keeps the current built-in role names for continuity: `workspace`, `memory`, `browser`, and `skill_maintainer`.
 
-`skill_maintainer` is seeded conservatively without broad `operate` because that group also includes env/app/watch/schedule/credential-style mutations. The next slice must either add enforceable operation-level `agent_skill(load|set|update_description|delete)` policy or introduce an explicit narrow skill-maintenance capability before using the profile for skill mutation.
+`skill_maintainer` is seeded conservatively without broad `operate` because that group also includes env/app/watch/schedule/credential-style mutations. The next slice must either add enforceable operation-level `agent_skill(load|set|patch|delete)` policy or introduce an explicit narrow skill-maintenance capability before using the profile for skill mutation.
 
 This PR deliberately stops before spawn enforcement. The next slice should use these DB-backed profiles and tool groups when implementing durable `spawn_subagent` and removing model-facing the legacy worker-spawn tool.
