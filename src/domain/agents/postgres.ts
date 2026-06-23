@@ -479,6 +479,43 @@ export class PostgresAgentStore implements AgentStore {
     throw new Error("Agent skill update did not return a row.");
   }
 
+  async updateAgentSkillDescriptionAsAgent(
+    agentKey: string,
+    skillKey: string,
+    description: string,
+  ): Promise<AgentSkillRecord | null> {
+    const normalizedAgentKey = normalizeAgentKey(agentKey);
+    const normalizedSkillKey = normalizeSkillKey(skillKey);
+    const normalizedDescription = normalizeAgentSkillDescription(description);
+
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.agentSkills}
+      SET
+        description = $3,
+        updated_at = NOW()
+      WHERE agent_key = $1
+        AND skill_key = $2
+        AND agent_editable = TRUE
+      RETURNING *
+    `, [
+      normalizedAgentKey,
+      normalizedSkillKey,
+      normalizedDescription,
+    ]);
+
+    const row = result.rows[0];
+    if (row) {
+      return parseAgentSkillRow(row as Record<string, unknown>);
+    }
+
+    const existing = await this.readAgentSkill(normalizedAgentKey, normalizedSkillKey);
+    if (existing && !existing.agentEditable) {
+      throw new AgentSkillNotEditableError();
+    }
+
+    return null;
+  }
+
   async deleteAgentSkill(agentKey: string, skillKey: string): Promise<boolean> {
     const result = await this.pool.query(`
       DELETE FROM ${this.tables.agentSkills}

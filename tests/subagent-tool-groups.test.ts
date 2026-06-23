@@ -82,6 +82,7 @@ describe("subagent tool groups", () => {
           "agentSkillOperations": [
             "load",
             "set",
+            "update_description",
             "delete",
           ],
           "toolNames": [
@@ -112,6 +113,7 @@ describe("subagent tool groups", () => {
           "agentSkillOperations": [
             "load",
             "set",
+            "update_description",
             "delete",
           ],
           "toolNames": [
@@ -154,7 +156,7 @@ describe("subagent tool groups", () => {
     });
     expect(resolveSubagentToolPolicy(["core", "skill_maintenance"])).toMatchObject({
       agentSkill: {
-        allowedOperations: ["load", "set", "delete"],
+        allowedOperations: ["load", "set", "update_description", "delete"],
       },
     });
     expect(resolveSubagentToolPolicy(["core", "memory", "execute"])).toMatchObject({
@@ -162,7 +164,7 @@ describe("subagent tool groups", () => {
       postgresReadonly: {allowed: true},
     });
     expect(resolveSubagentToolPolicy(["skill_maintenance"]).allowedTools).toEqual(["agent_skill"]);
-    expect(resolveSubagentToolPolicy(["operate"]).agentSkill?.allowedOperations).toEqual(["load", "set", "delete"]);
+    expect(resolveSubagentToolPolicy(["operate"]).agentSkill?.allowedOperations).toEqual(["load", "set", "update_description", "delete"]);
   });
 
   it("fails loudly for unknown tool groups instead of treating raw tool names as groups", () => {

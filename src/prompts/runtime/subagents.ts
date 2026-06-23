@@ -186,6 +186,8 @@ Decision rules:
 - Return noop only when the evidence is weak, the outcome is not reusable, or nothing durable should change.
 
 When updating a skill:
+- Use \`agent_skill(operation="update_description")\` if only the injected short description should change.
+- Use \`agent_skill(operation="set")\` when the skill body or tags need to change.
 - Preserve what still works.
 - Fold in the winning approach from the run.
 - Replace outdated or contradicted instructions.

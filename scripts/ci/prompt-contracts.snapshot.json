@@ -49,10 +49,10 @@
       "sha256": "20d20c88a23d65e89752a5a5da5750fc418c39c0177e812cdc8d58fa828c7a84"
     },
     {
-      "bytes": 5566,
+      "bytes": 5595,
       "lines": 168,
       "path": "src/domain/subagents/tool-groups.ts",
-      "sha256": "4e45a15120d260e12c3f4b1645070816ae13a595692a18971d0ad7e10b615cb2"
+      "sha256": "5338df72a27e7c272dc7f192b5db5f2daa24b9c76dbdcbf29d61caaee828d9e4"
     },
     {
       "bytes": 2639,
@@ -289,10 +289,10 @@
       "sha256": "cad5b2b991230740617070b6e628d49803d08242741e790ee444d5c9635c5df3"
     },
     {
-      "bytes": 13774,
+      "bytes": 13903,
       "lines": 217,
       "path": "src/prompts/runtime/default-agent.ts",
-      "sha256": "99e58c15ff069b607413c1bec7e04cdb70158070f8ef52b1e45356188a8d9551"
+      "sha256": "d9cb1ebcd534e0107573656d2f5182d694168af3da0de90fea051bf7dbefbbb1"
     },
     {
       "bytes": 1491,
@@ -319,10 +319,10 @@
       "sha256": "bde7c1c8de078e3fbc398105605e3f3cfcea4432612515bd79aadacb7602471d"
     },
     {
-      "bytes": 10851,
-      "lines": 224,
+      "bytes": 11042,
+      "lines": 226,
       "path": "src/prompts/runtime/subagents.ts",
-      "sha256": "c8b45b81fd9a22e370a6efb2f84bef897e0cca9cd27b545c1414f79559180c2b"
+      "sha256": "ca6505872b772d293eb21783b1491cf08d3f950bfafc2f116de64f460fb3a9bd"
     },
     {
       "bytes": 917,
@@ -398,6 +398,7 @@
       "agentSkillOperations": [
         "load",
         "set",
+        "update_description",
         "delete"
       ],
       "description": "Operational mutation and control surfaces.",
@@ -429,9 +430,10 @@
       "agentSkillOperations": [
         "load",
         "set",
+        "update_description",
         "delete"
       ],
-      "description": "Narrow durable skill load/create/delete access without broad operational tools.",
+      "description": "Narrow durable skill load/create/update/delete access without broad operational tools.",
       "toolNames": [
         "agent_skill"
       ]
@@ -487,7 +489,7 @@
       }
     },
     {
-      "description": "Load, create, replace, or delete agent-scoped skills stored in Postgres. Use load when an injected skill summary looks relevant and you need the full markdown body in context. When the user gives you a skill body to save, pass that body through unchanged unless they explicitly asked you to rewrite it; only derive the short description when needed. Normal agent runs only inject each skill's key, tags, and description. For post-run reflective learning, prefer the skill_maintainer subagent instead of writing reflective skills directly from the main agent.",
+      "description": "Load, create, replace, update only the description of, or delete agent-scoped skills stored in Postgres. Use load when an injected skill summary looks relevant and you need the full markdown body in context. Use update_description when only the injected short description should change without resubmitting or changing content/tags. When the user gives you a skill body to save, pass that body through unchanged unless they explicitly asked you to rewrite it; only derive the short description when needed. Normal agent runs only inject each skill's key, tags, and description. For post-run reflective learning, prefer the skill_maintainer subagent instead of writing reflective skills directly from the main agent.",
       "name": "agent_skill",
       "parameters": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -498,14 +500,15 @@
             "type": "string"
           },
           "description": {
-            "description": "Required for set. Short summary injected into the standard agent context. Max 255 characters.",
+            "description": "Required for set and update_description. Short summary injected into the standard agent context. Max 255 characters.",
             "type": "string"
           },
           "operation": {
-            "description": "Load a full skill body into context, create or replace a skill, or delete it by key.",
+            "description": "Load a full skill body into context, create or replace a skill, update only an existing skill description, or delete it by key.",
             "enum": [
               "load",
               "set",
+              "update_description",
               "delete"
             ],
             "type": "string"

@@ -206,7 +206,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
       },
       toolPolicy: {
         allowedTools: [" bash ", "message_agent", ""],
-        agentSkill: {allowedOperations: [" load ", "set", "bogus"]},
+        agentSkill: {allowedOperations: [" load ", "set", " update_description ", "bogus"]},
       },
     });
 
@@ -224,7 +224,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
       },
       toolPolicy: {
         allowedTools: ["bash", "message_agent"],
-        agentSkill: {allowedOperations: ["load", "set"]},
+        agentSkill: {allowedOperations: ["load", "set", "update_description"]},
       },
     });
   });
