@@ -3,14 +3,15 @@ import {DataType, newDb} from "pg-mem";
 
 import {
   Agent,
-  AgentPromptTool,
   type DefaultAgentSessionContext,
   RunContext,
+  SessionPromptTool,
   ToolError,
   type ToolResultPayload,
 } from "../src/index.js";
-import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore,} from "../src/domain/agents/index.js";
+import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
+import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 
 function createRunContext(context: DefaultAgentSessionContext): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
@@ -34,7 +35,7 @@ function parseToolResult(result: ToolResultPayload): Record<string, unknown> {
   return JSON.parse(textPart.text) as Record<string, unknown>;
 }
 
-describe("AgentPromptTool", () => {
+describe("SessionPromptTool", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
 
   afterEach(async () => {
@@ -57,50 +58,73 @@ describe("AgentPromptTool", () => {
 
     const identityStore = new PostgresIdentityStore({pool});
     const agentStore = new PostgresAgentStore({pool});
+    const sessionStore = new PostgresSessionStore({pool});
     await identityStore.ensureSchema();
     await agentStore.ensureSchema();
+    await sessionStore.ensureSchema();
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
     await agentStore.bootstrapAgent({
       agentKey: "ops",
       displayName: "Ops",
-      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
-    await agentStore.setAgentPrompt("ops", "agent", "Ops persona.");
+    await sessionStore.createSession({
+      id: "session-panda",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-panda",
+    });
+    await sessionStore.createSession({
+      id: "session-ops",
+      agentKey: "ops",
+      kind: "branch",
+      currentThreadId: "thread-ops",
+    });
+    await sessionStore.setSessionPrompt({
+      sessionId: "session-ops",
+      slug: "brief",
+      content: "Ops brief.",
+    });
 
-    return agentStore;
+    return sessionStore;
   }
 
-  it("reads prompts using the current session's agent scope", async () => {
+  it("reads prompts using only the current session scope", async () => {
     const store = await createStore();
-    const tool = new AgentPromptTool({store});
+    const tool = new SessionPromptTool({store});
 
     const result = await tool.run({
-      slug: "agent",
+      slug: "brief",
       operation: "read",
     }, createRunContext({
       identityId: "alice-id",
-      agentKey: "ops",
+      agentKey: "panda",
+      sessionId: "session-ops",
     })) as ToolResultPayload;
 
     expect(parseToolResult(result)).toMatchObject({
-      agentKey: "ops",
-      slug: "agent",
+      sessionId: "session-ops",
+      slug: "brief",
       operation: "read",
-      content: "Ops persona.",
+      content: "Ops brief.",
       exists: true,
     });
   });
 
   it("supports safe transforms for prompts", async () => {
     const store = await createStore();
-    const tool = new AgentPromptTool({store});
+    await store.setSessionPrompt({
+      sessionId: "session-panda",
+      slug: "heartbeat",
+      content: "Heartbeat.",
+    });
+    const tool = new SessionPromptTool({store});
     const context = createRunContext({
       identityId: "alice-id",
       agentKey: "panda",
+      sessionId: "session-panda",
     });
 
     const transformed = await tool.run({
@@ -111,33 +135,35 @@ describe("AgentPromptTool", () => {
 
     expect(parseToolResult(transformed)).toMatchObject({
       slug: "heartbeat",
-      content: `${DEFAULT_AGENT_PROMPT_TEMPLATES.heartbeat}\nSecond line.`,
+      sessionId: "session-panda",
+      content: "Heartbeat.\nSecond line.",
     });
   });
 
   it("rejects raw-sql style transforms", async () => {
     const store = await createStore();
-    const tool = new AgentPromptTool({store});
+    const tool = new SessionPromptTool({store});
 
     await expect(tool.run({
-      slug: "agent",
+      slug: "brief",
       operation: "transform",
       expression: "select * from runtime.messages",
     }, createRunContext({
       identityId: "alice-id",
       agentKey: "panda",
+      sessionId: "session-panda",
     }))).rejects.toBeInstanceOf(ToolError);
   });
 
-  it("fails fast when agentKey is missing from the runtime context", async () => {
+  it("fails fast when sessionId is missing from the runtime context", async () => {
     const store = await createStore();
-    const tool = new AgentPromptTool({store});
+    const tool = new SessionPromptTool({store});
 
     await expect(tool.run({
-      slug: "agent",
+      slug: "brief",
       operation: "read",
     }, createRunContext({
       identityId: "alice-id",
-    }))).rejects.toThrow("The agent prompt tool requires agentKey in the runtime session context.");
+    }))).rejects.toThrow("The session prompt tool requires sessionId in the runtime session context.");
   });
 });

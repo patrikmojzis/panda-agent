@@ -13,10 +13,10 @@
       "sha256": "40eda44ac6d1b5f71ac84c3f63fd70be554a99d7f13ea41f1cfdf9285e5d67e0"
     },
     {
-      "bytes": 13061,
+      "bytes": 13062,
       "lines": 351,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "ea617a526d1d8a5ee9668c23c4d3f16546fe469dae8566c36b6709a01175cb96"
+      "sha256": "1497454751cdb83fae4309e0847ae341182fb4e2e1ebc2189cbc6ce83cea012a"
     },
     {
       "bytes": 12121,
@@ -31,16 +31,16 @@
       "sha256": "066deedd62262ed35176aa67447dc18c0f660e4119c8d959909063880f693145"
     },
     {
-      "bytes": 27463,
+      "bytes": 27471,
       "lines": 803,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "9ed80359ff156ef9cdcc1adb2dd525f8fec072b4b7ad56ab9baf6db75a2eee50"
+      "sha256": "a0ae3a2589257ea0e2ccf503fcc57452241446e71f14f97a071c49cde0adfa44"
     },
     {
-      "bytes": 10922,
+      "bytes": 10937,
       "lines": 264,
       "path": "src/app/runtime/thread-definition.ts",
-      "sha256": "d0561e8f87ab00b36563013586d1bacfcc47063a76172b2c700fb889a0f372e6"
+      "sha256": "4e4544f04db3bf9320d61ad23c8943821952629c553e90f4558cdb580e457c28"
     },
     {
       "bytes": 1600,
@@ -49,16 +49,16 @@
       "sha256": "20d20c88a23d65e89752a5a5da5750fc418c39c0177e812cdc8d58fa828c7a84"
     },
     {
-      "bytes": 5595,
+      "bytes": 5597,
       "lines": 168,
       "path": "src/domain/subagents/tool-groups.ts",
-      "sha256": "5338df72a27e7c272dc7f192b5db5f2daa24b9c76dbdcbf29d61caaee828d9e4"
+      "sha256": "7ac21ee7d167782f86ef6b3ceaf2e487dda13528e95bc26d448a51754983473c"
     },
     {
-      "bytes": 2639,
-      "lines": 83,
+      "bytes": 2017,
+      "lines": 64,
       "path": "src/panda/contexts/agent-profile-context.ts",
-      "sha256": "3bacb8bb0e22aa3ae25c5f6a5a213635970e79da39ea6391411a339fbbe30498"
+      "sha256": "accb735748ad4b159fbc311edeaf9947c6b15622d1a723fc5fa1452c1058c151"
     },
     {
       "bytes": 2203,
@@ -73,10 +73,10 @@
       "sha256": "3072f55b56c701de2cc2653f7f2b5437fed8ad19f49a13648cb4d0592bf7f2b8"
     },
     {
-      "bytes": 7433,
-      "lines": 189,
+      "bytes": 7415,
+      "lines": 187,
       "path": "src/panda/contexts/builder.ts",
-      "sha256": "30234dcc6640b6ef90ffb302d606f941c38b5ca657a9192ec795e4adf6f9ab1e"
+      "sha256": "df52c20c78d5c5302f1db46933bf9559dc0e1b1ae6aea86254c5545e5ba77c99"
     },
     {
       "bytes": 1541,
@@ -97,10 +97,10 @@
       "sha256": "73e9f64e98a34cc9b9b275a00d1ea7957bfb9ff467bc615a985566fc2adfb2bf"
     },
     {
-      "bytes": 1150,
-      "lines": 30,
-      "path": "src/panda/contexts/session-briefing-context.ts",
-      "sha256": "1152531e3bd22cf5ecd78fe47ea15e9ede480272db3a06497ba6ade67c68c4e9"
+      "bytes": 1044,
+      "lines": 29,
+      "path": "src/panda/contexts/session-prompts-context.ts",
+      "sha256": "c180550a4e75e74eaad2ae2fd107c2d20df71094b6c3da3b9dc17c74828a2e01"
     },
     {
       "bytes": 1160,
@@ -193,10 +193,10 @@
       "sha256": "9c3e2345ecc03bc86b25ff3ce2f239a05efb003101412539a07726ea1ba7eb00"
     },
     {
-      "bytes": 1112,
-      "lines": 42,
+      "bytes": 840,
+      "lines": 29,
       "path": "src/prompts/contexts/agent-profile.ts",
-      "sha256": "bd05e027b4ba07f2cd6c5004d5897563521d9d6c9fcec0f5a123c50edd63dd9c"
+      "sha256": "c217f8cbf58aa867cc043864722267afe75a1248f98a81224801478eb823294c"
     },
     {
       "bytes": 530,
@@ -235,10 +235,10 @@
       "sha256": "ecd43d637f495cee2bfd5996458c66f0b1314242de77f71c60cf6f0cf43f3c41"
     },
     {
-      "bytes": 136,
-      "lines": 3,
-      "path": "src/prompts/contexts/session-briefing.ts",
-      "sha256": "ce1e613f2ffde43b9d0d698d3e9cee8f0e7440f3d49db85ec97c59d778fba2d7"
+      "bytes": 713,
+      "lines": 20,
+      "path": "src/prompts/contexts/session-prompts.ts",
+      "sha256": "c33ec304a225290351d2c7a0037ae5a26445eabfa7b9d837b08a3dff077da906"
     },
     {
       "bytes": 1653,
@@ -319,10 +319,10 @@
       "sha256": "bde7c1c8de078e3fbc398105605e3f3cfcea4432612515bd79aadacb7602471d"
     },
     {
-      "bytes": 11042,
+      "bytes": 11043,
       "lines": 226,
       "path": "src/prompts/runtime/subagents.ts",
-      "sha256": "ca6505872b772d293eb21783b1491cf08d3f950bfafc2f116de64f460fb3a9bd"
+      "sha256": "ec571ebc71463cd58427b21a1a18be83d08a8186a47384fe2c95dd7b6bacc918"
     },
     {
       "bytes": 917,
@@ -331,10 +331,10 @@
       "sha256": "911a5f980a4c6404230ff8990ecbac633bb4cbf89bded2babc911947cf8d2949"
     },
     {
-      "bytes": 582,
-      "lines": 15,
-      "path": "src/prompts/templates/agent-prompts.ts",
-      "sha256": "5ffcc1ca29d27d3ebe94e9b207b9b4df82eb6406c4a7ce46b813365505effbfa"
+      "bytes": 506,
+      "lines": 14,
+      "path": "src/prompts/templates/session-prompts.ts",
+      "sha256": "229e8d6c10db19b4ad4081db1372986c2002a282199b8bd2f0028540c5688b47"
     }
   ],
   "generatedBy": "scripts/ci/prompt-contracts.ts",
@@ -405,7 +405,7 @@
       "toolNames": [
         "thinking_set",
         "agent_skill",
-        "agent_prompt",
+        "session_prompt",
         "upsert_subagent_profile",
         "set_env_value",
         "clear_env_value",
@@ -448,46 +448,6 @@
     }
   },
   "toolCatalog": [
-    {
-      "description": "Read or update shared agent prompts.\n\nThe tool always uses the current session's agent.\n\nSafe SQL-ish text editing over content.\nAllowed functions: regexp_replace, replace, overlay, trim, ltrim, rtrim, upper, lower, left, right, substring, concat, coalesce, length.\nUseful patterns:\n- append: content || '\\n- new line'\n- prepend: 'header\\n' || content\n- delete exact text: replace(content, 'exact line\\n', '')\n- regex delete/update: regexp_replace(content, 'pattern.*\\n', '', 'g')\n- update in place: replace(content, 'old', 'new')\n- insert after anchor: replace(content, 'anchor line', 'anchor line\\nnew line')\n- trim whitespace: trim(content)\n- extract substring: substring(content from 1 for 50)",
-      "name": "agent_prompt",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "content": {
-            "description": "Required for set. Replaces the whole prompt content.",
-            "type": "string"
-          },
-          "expression": {
-            "description": "Required for transform. Uses a restricted SQL-ish expression over the current content value.\nSafe SQL-ish text editing over content.\nAllowed functions: regexp_replace, replace, overlay, trim, ltrim, rtrim, upper, lower, left, right, substring, concat, coalesce, length.\nUseful patterns:\n- append: content || '\\n- new line'\n- prepend: 'header\\n' || content\n- delete exact text: replace(content, 'exact line\\n', '')\n- regex delete/update: regexp_replace(content, 'pattern.*\\n', '', 'g')\n- update in place: replace(content, 'old', 'new')\n- insert after anchor: replace(content, 'anchor line', 'anchor line\\nnew line')\n- trim whitespace: trim(content)\n- extract substring: substring(content from 1 for 50)",
-            "type": "string"
-          },
-          "operation": {
-            "description": "Read the current content, replace it, or transform it with a safe SQL-ish text expression.",
-            "enum": [
-              "read",
-              "set",
-              "transform"
-            ],
-            "type": "string"
-          },
-          "slug": {
-            "description": "Which shared agent prompt to work with. Supported slugs are agent and heartbeat.",
-            "enum": [
-              "agent",
-              "heartbeat"
-            ],
-            "type": "string"
-          }
-        },
-        "required": [
-          "slug",
-          "operation"
-        ],
-        "type": "object"
-      }
-    },
     {
       "description": "Load, create, replace, update only the description of, or delete agent-scoped skills stored in Postgres. Use load when an injected skill summary looks relevant and you need the full markdown body in context. Use update_description when only the injected short description should change without resubmitting or changing content/tags. When the user gives you a skill body to save, pass that body through unchanged unless they explicitly asked you to rewrite it; only derive the short description when needed. Normal agent runs only inject each skill's key, tags, and description. For post-run reflective learning, prefer the skill_maintainer subagent instead of writing reflective skills directly from the main agent.",
       "name": "agent_skill",
@@ -1525,7 +1485,7 @@
       }
     },
     {
-      "description": "Run a single read-only SQL query against Postgres. Use only SELECT or WITH. A single read-only SELECT or WITH query. Prefer session.agent_sessions for the current session row. session.agent_sessions exposes current_thread_id, not thread_id. The readonly tool already scopes session.threads, session.messages, session.tool_results, session.inputs, session.runs, session.todos, session.subagent_history, session.scheduled_tasks, session.scheduled_task_runs, session.watches, session.watch_runs, and session.watch_events to the current session. The readonly tool also scopes session.agent_prompts, session.agent_pairings, and session.agent_skills to the current agent. Do not invent is_active flags or extra session_id subqueries unless you are joining raw tables outside the session.* views. Use session.agent_prompts for agent docs, session.agent_pairings for known identities, and session.agent_skills for stored skills. For exploratory reads, prefer left(...), substring(...), regex filters, full-text search, or other narrow projections instead of pulling giant content blobs blindly. For durable session todo context, query session.todos. For older subagent archaeology omitted from the default prompt, query session.subagent_history. For session automation, query session.scheduled_tasks or session.watches directly with ORDER BY/LIMIT. Prefer session.agent_skills for stored skill bodies and session.messages_raw only when you truly need raw JSONB. Large skill bodies may need substring(...) or targeted column selection. If you need schema help, query information_schema.columns. Always use LIMIT on exploratory queries.",
+      "description": "Run a single read-only SQL query against Postgres. Use only SELECT or WITH. A single read-only SELECT or WITH query. Prefer session.agent_sessions for the current session row. session.agent_sessions exposes current_thread_id, not thread_id. The readonly tool already scopes session.threads, session.messages, session.tool_results, session.inputs, session.runs, session.todos, session.subagent_history, session.scheduled_tasks, session.scheduled_task_runs, session.watches, session.watch_runs, and session.watch_events to the current session. The readonly tool also scopes session.prompts to the current session, and session.agent_pairings and session.agent_skills to the current agent. Do not invent is_active flags or extra session_id subqueries unless you are joining raw tables outside the session.* views. Use session.prompts for session prompt docs, session.agent_pairings for known identities, and session.agent_skills for stored skills. For exploratory reads, prefer left(...), substring(...), regex filters, full-text search, or other narrow projections instead of pulling giant content blobs blindly. For durable session todo context, query session.todos. For older subagent archaeology omitted from the default prompt, query session.subagent_history. For session automation, query session.scheduled_tasks or session.watches directly with ORDER BY/LIMIT. Prefer session.agent_skills for stored skill bodies and session.messages_raw only when you truly need raw JSONB. Large skill bodies may need substring(...) or targeted column selection. If you need schema help, query information_schema.columns. Always use LIMIT on exploratory queries.",
       "name": "postgres_readonly_query",
       "parameters": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1749,6 +1709,47 @@
         },
         "required": [
           "taskId"
+        ],
+        "type": "object"
+      }
+    },
+    {
+      "description": "Read or update prompts for the current session.\n\nThe tool always uses the current runtime session and never accepts a session id.\n\nSafe SQL-ish text editing over content.\nAllowed functions: regexp_replace, replace, overlay, trim, ltrim, rtrim, upper, lower, left, right, substring, concat, coalesce, length.\nUseful patterns:\n- append: content || '\\n- new line'\n- prepend: 'header\\n' || content\n- delete exact text: replace(content, 'exact line\\n', '')\n- regex delete/update: regexp_replace(content, 'pattern.*\\n', '', 'g')\n- update in place: replace(content, 'old', 'new')\n- insert after anchor: replace(content, 'anchor line', 'anchor line\\nnew line')\n- trim whitespace: trim(content)\n- extract substring: substring(content from 1 for 50)",
+      "name": "session_prompt",
+      "parameters": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "description": "Required for set. Replaces the whole prompt content.",
+            "type": "string"
+          },
+          "expression": {
+            "description": "Required for transform. Uses a restricted SQL-ish expression over the current content value.\nSafe SQL-ish text editing over content.\nAllowed functions: regexp_replace, replace, overlay, trim, ltrim, rtrim, upper, lower, left, right, substring, concat, coalesce, length.\nUseful patterns:\n- append: content || '\\n- new line'\n- prepend: 'header\\n' || content\n- delete exact text: replace(content, 'exact line\\n', '')\n- regex delete/update: regexp_replace(content, 'pattern.*\\n', '', 'g')\n- update in place: replace(content, 'old', 'new')\n- insert after anchor: replace(content, 'anchor line', 'anchor line\\nnew line')\n- trim whitespace: trim(content)\n- extract substring: substring(content from 1 for 50)",
+            "type": "string"
+          },
+          "operation": {
+            "description": "Read the current content, replace it, or transform it with a safe SQL-ish text expression.",
+            "enum": [
+              "read",
+              "set",
+              "transform"
+            ],
+            "type": "string"
+          },
+          "slug": {
+            "description": "Which session-scoped prompt to work with. Supported slugs are brief, memory, and heartbeat.",
+            "enum": [
+              "brief",
+              "memory",
+              "heartbeat"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "operation"
         ],
         "type": "object"
       }
@@ -2407,7 +2408,7 @@
       "whisper",
       "brave_search",
       "thinking_set",
-      "agent_prompt",
+      "session_prompt",
       "app_create",
       "app_list",
       "app_link_create",
@@ -2444,7 +2445,7 @@
       "whisper",
       "brave_search",
       "thinking_set",
-      "agent_prompt",
+      "session_prompt",
       "app_create",
       "app_list",
       "app_link_create",

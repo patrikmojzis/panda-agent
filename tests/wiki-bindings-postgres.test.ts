@@ -52,7 +52,6 @@ describe("PostgresWikiBindingStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: {},
     });
 
     await wikiBindingService.setBinding({
@@ -96,7 +95,6 @@ describe("PostgresWikiBindingStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: {},
     });
     await wikiBindingService.setBinding({
       agentKey: "panda",

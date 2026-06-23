@@ -69,14 +69,4 @@ export async function ensurePostgresAgentSchema(pool: PgQueryable): Promise<void
     ALTER TABLE ${tables.agentSkills}
     ADD COLUMN IF NOT EXISTS agent_editable BOOLEAN NOT NULL DEFAULT TRUE
   `);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS ${tables.agentPrompts} (
-      agent_key TEXT NOT NULL REFERENCES ${tables.agents}(agent_key) ON DELETE CASCADE,
-      slug TEXT NOT NULL,
-      content TEXT NOT NULL DEFAULT '',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (agent_key, slug)
-    )
-  `);
 }

@@ -63,7 +63,7 @@ export interface CreateThreadDefinitionOptions {
   imageGenerateToolOptions?: ImageGenerateToolOptions;
   executionEnvironment?: ResolvedExecutionEnvironment;
   tools?: readonly Tool[];
-  sessionPrompt?: SessionPromptRecord | null;
+  sessionPrompts?: readonly SessionPromptRecord[] | null;
   runtimeConfig?: SessionRuntimeConfigRecord;
   extraLlmContexts?: readonly LlmContext[];
   llmContextSections?: readonly DefaultAgentLlmContextSection[];
@@ -233,7 +233,7 @@ export function createThreadDefinition(
     threadId: options.thread.id,
     sections: resolveLlmContextSections(session, options.llmContextSections),
     skillPolicy: options.executionEnvironment?.skillPolicy,
-    sessionPrompt: options.sessionPrompt,
+    sessionPrompts: options.sessionPrompts,
     extraLlmContexts: options.extraLlmContexts,
   });
   if (storedSubagent) {
@@ -253,7 +253,7 @@ export function createThreadDefinition(
     }),
     context,
     llmContexts,
-    promptCacheKey: resolveSessionPromptCacheKey(threadPromptCacheKey, options.sessionPrompt),
+    promptCacheKey: resolveSessionPromptCacheKey(threadPromptCacheKey, options.sessionPrompts),
     model: resolveSessionModel(options.runtimeConfig, storedSubagent),
     thinking: resolveSessionThinking(session, options.runtimeConfig, storedSubagent),
     inferenceProjection: mergeInferenceProjection(

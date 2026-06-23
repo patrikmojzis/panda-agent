@@ -1,6 +1,6 @@
 # Control session briefing writes
 
-Control now exposes a narrow write-capable slice for the fixed session briefing prompt (`SESSION_BRIEFING_PROMPT_SLUG`, currently `session`). It is not an arbitrary prompt editor.
+Control exposes a narrow write-capable slice for the fixed session brief prompt (`SESSION_BRIEF_PROMPT_SLUG`, currently `brief`). The endpoint name stays `/briefing`; it is not an arbitrary prompt editor.
 
 ## API
 

@@ -41,7 +41,6 @@ describe("Env value tools", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: {},
     });
 
     const crypto = new CredentialCrypto("tool-test-master-key");

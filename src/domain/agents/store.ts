@@ -1,7 +1,5 @@
 import type {
     AgentPairingRecord,
-    AgentPromptRecord,
-    AgentPromptSlug,
     AgentRecord,
     AgentSkillRecord,
     BootstrapAgentInput,
@@ -32,7 +30,4 @@ export interface AgentStore {
   updateAgentSkillDescriptionAsAgent(agentKey: string, skillKey: string, description: string): Promise<AgentSkillRecord | null>;
   deleteAgentSkill(agentKey: string, skillKey: string): Promise<boolean>;
   deleteAgentSkillAsAgent(agentKey: string, skillKey: string): Promise<boolean>;
-  readAgentPrompt(agentKey: string, slug: AgentPromptSlug): Promise<AgentPromptRecord | null>;
-  setAgentPrompt(agentKey: string, slug: AgentPromptSlug, content: string): Promise<AgentPromptRecord>;
-  transformAgentPrompt(agentKey: string, slug: AgentPromptSlug, expression: string): Promise<AgentPromptRecord>;
 }

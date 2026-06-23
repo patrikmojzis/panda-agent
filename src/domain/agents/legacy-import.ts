@@ -14,14 +14,13 @@ import {PostgresThreadRuntimeStore} from "../threads/runtime/postgres.js";
 import type {ThreadRuntimeStore} from "../threads/runtime/store.js";
 import type {ThreadRuntimeMessagePayload} from "../threads/runtime/types.js";
 import type {AgentStore} from "./store.js";
-import {DEFAULT_AGENT_PROMPT_TEMPLATES} from "../../prompts/templates/agent-prompts.js";
-import type {AgentPromptSlug} from "./types.js";
 import {normalizeAgentKey, normalizeSkillKey} from "./types.js";
+import type {SessionPromptSlug} from "../sessions/types.js";
 
 const DEFAULT_LEGACY_MESSAGE_PAIR_LIMIT = 200;
 
-export interface LegacyAgentPromptPlan {
-  slug: AgentPromptSlug;
+export interface LegacySessionPromptPlan {
+  slug: SessionPromptSlug;
   content: string;
   sourcePath?: string;
 }
@@ -52,7 +51,7 @@ export interface LegacyAgentImportPlan {
   sourceDir: string;
   agentKey: string;
   displayName: string;
-  prompts: readonly LegacyAgentPromptPlan[];
+  prompts: readonly LegacySessionPromptPlan[];
   messages: readonly LegacyAgentTranscriptMessagePlan[];
   messageImportIncluded: boolean;
   skills: readonly LegacyAgentSkillPlan[];
@@ -105,7 +104,7 @@ function titleCaseWords(value: string): string {
     .join(" ");
 }
 
-function renderGeneratedAgentPrompt(displayName: string): string {
+function renderGeneratedBriefPrompt(displayName: string): string {
   return `
 # Agent
 
@@ -268,21 +267,21 @@ async function readUtf8IfExists(targetPath: string): Promise<string | null> {
   return readFile(targetPath, "utf8");
 }
 
-async function buildPromptPlans(sourceDir: string, displayName: string, warnings: string[]): Promise<readonly LegacyAgentPromptPlan[]> {
+async function buildPromptPlans(sourceDir: string, displayName: string, warnings: string[]): Promise<readonly LegacySessionPromptPlan[]> {
   const soulSourcePath = path.join(sourceDir, "SOUL.md");
   const soulContent = await readUtf8IfExists(soulSourcePath);
-  const agentSections = [renderGeneratedAgentPrompt(displayName)];
+  const agentSections = [renderGeneratedBriefPrompt(displayName)];
   if (soulContent !== null) {
-    // SOUL.md is legacy shape. Fold it into the durable agent prompt so Panda has one source of truth.
+    // SOUL.md is legacy shape. Fold it into the durable session brief so Panda has one source of truth.
     agentSections.push(`<!-- Imported from SOUL.md -->\n${cleanImportedBlock(soulContent)}`);
   }
 
-  const promptFiles: ReadonlyArray<{slug: AgentPromptSlug; fileName: string}> = [
+  const promptFiles: ReadonlyArray<{slug: SessionPromptSlug; fileName: string}> = [
     {slug: "heartbeat", fileName: "HEARTBEAT.md"},
   ];
 
-  const prompts: LegacyAgentPromptPlan[] = [{
-    slug: "agent",
+  const prompts: LegacySessionPromptPlan[] = [{
+    slug: "brief",
     content: joinMarkdownSections(agentSections),
     sourcePath: soulContent === null ? undefined : soulSourcePath,
   }];
@@ -291,11 +290,7 @@ async function buildPromptPlans(sourceDir: string, displayName: string, warnings
     const sourcePath = path.join(sourceDir, promptFile.fileName);
     const content = await readUtf8IfExists(sourcePath);
     if (content === null) {
-      warnings.push(`Missing ${promptFile.fileName}; kept Panda default for ${promptFile.slug}.`);
-      prompts.push({
-        slug: promptFile.slug,
-        content: DEFAULT_AGENT_PROMPT_TEMPLATES[promptFile.slug],
-      });
+      warnings.push(`Missing ${promptFile.fileName}; skipped ${promptFile.slug}.`);
       continue;
     }
 
@@ -819,7 +814,6 @@ async function ensureAgentRecord(
     await store.bootstrapAgent({
       agentKey: plan.agentKey,
       displayName: plan.displayName,
-      prompts: Object.fromEntries(plan.prompts.map((prompt) => [prompt.slug, prompt.content])) as Record<AgentPromptSlug, string>,
       metadata: {
         legacyImport: {
           sourceDir: plan.sourceDir,
@@ -995,11 +989,6 @@ export async function importLegacyAgent(
 
   const createdAgent = await ensureAgentRecord(plan, options.agentStore);
   await pairAgentIdentity(plan.agentKey, options.identityId, options.agentStore);
-  if (!createdAgent) {
-    for (const prompt of plan.prompts) {
-      await options.agentStore.setAgentPrompt(plan.agentKey, prompt.slug, prompt.content);
-    }
-  }
 
   for (const skill of plan.skills) {
     await options.agentStore.setAgentSkill(
@@ -1036,6 +1025,15 @@ export async function importLegacyAgent(
     options.sessionStore,
     options.threadStore,
   );
+  if (mainSession && options.sessionStore) {
+    for (const prompt of plan.prompts) {
+      await options.sessionStore.setSessionPrompt({
+        sessionId: mainSession.sessionId,
+        slug: prompt.slug,
+        content: prompt.content,
+      });
+    }
+  }
   const messageWarnings = [...plan.warnings];
   if (options.includeMessages && !mainSession) {
     messageWarnings.push("Skipped OpenClaw messages because Panda session storage is unavailable.");

@@ -57,4 +57,12 @@ export type {
   UpdateSessionRuntimeConfigInput,
   UpdateSessionLabelInput,
 } from "./types.js";
-export {DEFAULT_SESSION_HEARTBEAT_EVERY_MINUTES, SESSION_BRIEFING_PROMPT_SLUG, normalizeSessionAlias, normalizeSessionPromptSlug} from "./types.js";
+export {
+  DEFAULT_SESSION_HEARTBEAT_EVERY_MINUTES,
+  SESSION_BRIEF_PROMPT_SLUG,
+  SESSION_HEARTBEAT_PROMPT_SLUG,
+  SESSION_MEMORY_PROMPT_SLUG,
+  SESSION_PROMPT_SLUGS,
+  normalizeSessionAlias,
+  normalizeSessionPromptSlug,
+} from "./types.js";

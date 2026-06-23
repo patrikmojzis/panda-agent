@@ -390,7 +390,6 @@ describe("PostgresThreadRuntimeStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda-local",
       displayName: "Panda Local",
-      prompts: {},
     });
 
     await seedSession(pool, {
@@ -649,7 +648,6 @@ describe("PostgresThreadRuntimeStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda-worker",
       displayName: "Panda Worker",
-      prompts: {},
     });
     await seedSession(pool, {
       sessionId: "legacy-session",

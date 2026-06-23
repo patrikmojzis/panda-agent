@@ -19,7 +19,7 @@ export interface ReadonlySessionViewNames {
   toolResults: string;
   inputs: string;
   runs: string;
-  agentPrompts: string;
+  prompts: string;
   agentPairings: string;
   agentSkills: string;
   subagentHistory: string;
@@ -66,7 +66,7 @@ export async function ensureReadonlySessionQuerySchema(
   const watchTables = buildWatchTableNames();
   const emailTables = buildEmailTableNames();
   const environmentTables = buildExecutionEnvironmentTableNames();
-  const { agentSessions, todos, runtimeConfig, threads, messages, messagesRaw, toolResults, inputs, runs, agentPrompts, agentPairings, agentSkills, subagentHistory, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents, emailAccounts, emailAllowedRecipients, emailRoutes, emailMessages, emailMessageRecipients, emailAttachments } = buildSessionRelationNames({
+  const { agentSessions, todos, runtimeConfig, threads, messages, messagesRaw, toolResults, inputs, runs, prompts, agentPairings, agentSkills, subagentHistory, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents, emailAccounts, emailAllowedRecipients, emailRoutes, emailMessages, emailMessageRecipients, emailAttachments } = buildSessionRelationNames({
     agentSessions: "agent_sessions",
     todos: "todos",
     runtimeConfig: "runtime_config",
@@ -76,7 +76,7 @@ export async function ensureReadonlySessionQuerySchema(
     toolResults: "tool_results",
     inputs: "inputs",
     runs: "runs",
-    agentPrompts: "agent_prompts",
+    prompts: "prompts",
     agentPairings: "agent_pairings",
     agentSkills: "agent_skills",
     subagentHistory: "subagent_history",
@@ -102,7 +102,7 @@ export async function ensureReadonlySessionQuerySchema(
     toolResults,
     inputs,
     runs,
-    agentPrompts,
+    prompts,
     agentPairings,
     agentSkills,
     subagentHistory,
@@ -162,11 +162,12 @@ export async function ensureReadonlySessionQuerySchema(
     DROP VIEW IF EXISTS ${views.emailAllowedRecipients};
     DROP VIEW IF EXISTS ${views.emailAccounts};
     DROP VIEW IF EXISTS ${quoteQualifiedIdentifier(SESSION_SCHEMA, "agent_telepathy_devices")};
+    DROP VIEW IF EXISTS ${quoteQualifiedIdentifier(SESSION_SCHEMA, "agent_prompts")};
     DROP INDEX IF EXISTS ${quoteQualifiedIdentifier(RUNTIME_SCHEMA, "runtime_telepathy_devices_agent_idx")};
     DROP INDEX IF EXISTS ${quoteQualifiedIdentifier(RUNTIME_SCHEMA, "runtime_telepathy_devices_connected_idx")};
     DROP TABLE IF EXISTS ${quoteQualifiedIdentifier(RUNTIME_SCHEMA, "telepathy_devices")} CASCADE;
     DROP VIEW IF EXISTS ${views.agentPairings};
-    DROP VIEW IF EXISTS ${views.agentPrompts};
+    DROP VIEW IF EXISTS ${views.prompts};
     DROP VIEW IF EXISTS ${views.agentSkills};
     DROP VIEW IF EXISTS ${views.subagentHistory};
     DROP VIEW IF EXISTS ${views.scheduledTaskRuns};
@@ -383,18 +384,18 @@ export async function ensureReadonlySessionQuerySchema(
     INNER JOIN ${tables.threads} AS t ON t.id = r.thread_id
     WHERE ${sessionScopeSql};
 
-    CREATE VIEW ${views.agentPrompts}
+    CREATE VIEW ${views.prompts}
     WITH (security_barrier = true) AS
     SELECT
-      prompt.agent_key,
+      prompt.session_id,
       prompt.slug,
       prompt.content,
       octet_length(convert_to(prompt.content, 'utf8'))::INTEGER AS content_bytes,
       prompt.created_at,
       prompt.updated_at
-    FROM ${agentTables.agentPrompts} AS prompt
-    WHERE prompt.agent_key = current_setting('runtime.agent_key', true)
-      AND prompt.slug IN ('agent', 'heartbeat');
+    FROM ${sessionTables.sessionPrompts} AS prompt
+    INNER JOIN (${activeSessionSql}) AS active_session
+      ON active_session.id = prompt.session_id;
 
     CREATE VIEW ${views.agentPairings}
     WITH (security_barrier = true) AS
@@ -773,7 +774,7 @@ export async function ensureReadonlySessionQuerySchema(
     const readonlyRole = quoteIdentifier(options.readonlyRole);
     await options.queryable.query(`
       GRANT USAGE ON SCHEMA ${quoteIdentifier(SESSION_SCHEMA)} TO ${readonlyRole};
-      GRANT SELECT ON ${views.agentSessions}, ${views.todos}, ${views.runtimeConfig}, ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.agentPrompts}, ${views.agentPairings}, ${views.agentSkills}, ${views.subagentHistory}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents}, ${views.emailAccounts}, ${views.emailAllowedRecipients}, ${views.emailRoutes}, ${views.emailMessages}, ${views.emailMessageRecipients}, ${views.emailAttachments} TO ${readonlyRole};
+      GRANT SELECT ON ${views.agentSessions}, ${views.todos}, ${views.runtimeConfig}, ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.prompts}, ${views.agentPairings}, ${views.agentSkills}, ${views.subagentHistory}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents}, ${views.emailAccounts}, ${views.emailAllowedRecipients}, ${views.emailRoutes}, ${views.emailMessages}, ${views.emailMessageRecipients}, ${views.emailAttachments} TO ${readonlyRole};
     `);
   }
 

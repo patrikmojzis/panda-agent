@@ -1,11 +1,103 @@
-import {quoteIdentifier, CREATE_RUNTIME_SCHEMA_SQL} from "../../lib/postgres-relations.js";
+import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, quoteQualifiedIdentifier} from "../../lib/postgres-relations.js";
 
 import {buildAgentTableNames} from "../agents/postgres-shared.js";
 import {buildIdentityTableNames} from "../identity/postgres-shared.js";
 import type {PgQueryable} from "../../lib/postgres-query.js";
 import {addConstraint, assertIntegrityChecks} from "../../lib/postgres-integrity.js";
 import {buildSessionTableNames} from "./postgres-shared.js";
-import {DEFAULT_SESSION_HEARTBEAT_EVERY_MINUTES} from "./types.js";
+import {
+  DEFAULT_SESSION_HEARTBEAT_EVERY_MINUTES,
+  SESSION_BRIEF_PROMPT_SLUG,
+  SESSION_HEARTBEAT_PROMPT_SLUG,
+} from "./types.js";
+
+async function relationExists(pool: PgQueryable, schemaName: string, tableName: string): Promise<boolean> {
+  const result = await pool.query(`
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = $1
+      AND table_name = $2
+    LIMIT 1
+  `, [schemaName, tableName]);
+  if (result.rows.length > 0) {
+    return true;
+  }
+
+  try {
+    await pool.query(`SELECT 1 FROM ${quoteQualifiedIdentifier(schemaName, tableName)} LIMIT 0`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function migrateLegacyPromptStorage(pool: PgQueryable): Promise<void> {
+  const tables = buildSessionTableNames();
+  const agentTables = buildAgentTableNames();
+  const legacyAgentPromptsExist = await relationExists(pool, "runtime", "agent_prompts");
+  const legacyReadonlyAgentPromptsExist = await relationExists(pool, "session", "agent_prompts");
+
+  if (legacyAgentPromptsExist) {
+    await pool.query(`
+      INSERT INTO ${tables.sessionPrompts} (
+        session_id,
+        slug,
+        content
+      )
+      SELECT
+        session_id,
+        '${SESSION_BRIEF_PROMPT_SLUG}',
+        CASE
+          WHEN agent_content IS NOT NULL AND session_content IS NOT NULL THEN agent_content || E'\n\n' || session_content
+          ELSE COALESCE(agent_content, session_content)
+        END
+      FROM (
+        SELECT
+          session.id AS session_id,
+          NULLIF(BTRIM(agent_prompt.content), '') AS agent_content,
+          NULLIF(BTRIM(session_prompt.content), '') AS session_content
+        FROM ${tables.sessions} AS session
+        LEFT JOIN ${agentTables.agentPrompts} AS agent_prompt
+          ON agent_prompt.agent_key = session.agent_key
+         AND agent_prompt.slug = 'agent'
+        LEFT JOIN ${tables.sessionPrompts} AS session_prompt
+          ON session_prompt.session_id = session.id
+         AND session_prompt.slug = 'session'
+        WHERE session.kind IN ('main', 'branch')
+      ) AS normalized
+      WHERE COALESCE(agent_content, session_content) IS NOT NULL
+      ON CONFLICT (session_id, slug) DO NOTHING
+    `);
+
+    await pool.query(`
+      INSERT INTO ${tables.sessionPrompts} (
+        session_id,
+        slug,
+        content
+      )
+      SELECT
+        session.id,
+        '${SESSION_HEARTBEAT_PROMPT_SLUG}',
+        NULLIF(BTRIM(agent_prompt.content), '')
+      FROM ${tables.sessions} AS session
+      INNER JOIN ${agentTables.agentPrompts} AS agent_prompt
+        ON agent_prompt.agent_key = session.agent_key
+       AND agent_prompt.slug = 'heartbeat'
+      WHERE session.kind IN ('main', 'branch')
+        AND NULLIF(BTRIM(agent_prompt.content), '') IS NOT NULL
+      ON CONFLICT (session_id, slug) DO NOTHING
+    `);
+  }
+
+  await pool.query(`
+    DELETE FROM ${tables.sessionPrompts}
+    WHERE slug = 'session'
+  `);
+  if (legacyReadonlyAgentPromptsExist) {
+    await pool.query(`DROP VIEW ${quoteQualifiedIdentifier("session", "agent_prompts")}`);
+  }
+  await pool.query(`DROP TABLE IF EXISTS ${agentTables.agentPrompts}`);
+}
 
 export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<void> {
   const tables = buildSessionTableNames();
@@ -112,6 +204,7 @@ export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<vo
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_session_prompts_session_idx`)}
       ON ${tables.sessionPrompts} (session_id)
   `);
+  await migrateLegacyPromptStorage(pool);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${tables.sessionTodos} (

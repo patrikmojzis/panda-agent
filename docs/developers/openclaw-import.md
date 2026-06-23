@@ -19,10 +19,10 @@ The command accepts either:
 
 OpenClaw files map into Panda like this:
 
-- `HEARTBEAT.md` -> `agent_prompts.heartbeat`
-- `SOUL.md` -> merged into `agent_prompts.agent`
+- `HEARTBEAT.md` -> `session_prompts.heartbeat` on the imported main session
+- `SOUL.md` -> merged into `session_prompts.brief` on the imported main session
 - `IDENTITY.md` -> not migrated into prompts
-- generated `agent_prompts.agent` -> short Panda-native wrapper so the slot is not empty
+- generated `session_prompts.brief` -> short Panda-native wrapper so the slot is not empty
 - `USER.md` + `MEMORY.md` -> skipped with a warning; Panda memory now lives in the wiki
 - `memory/YYYY-MM-DD*.md` -> skipped with a warning; Panda journal now lives in the wiki
 - `skills/*/SKILL.md` -> `agent_skills`

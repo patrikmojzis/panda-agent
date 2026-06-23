@@ -121,7 +121,7 @@ describe("legacy agent import", () => {
     expect(plan.agentKey).toBe("clawd");
     expect(plan.displayName).toBe("Clawd");
     expect(plan.prompts.map((prompt) => prompt.slug)).toEqual([
-      "agent",
+      "brief",
       "heartbeat",
     ]);
     expect(plan.prompts[0]?.content).toContain("Imported from SOUL.md");
@@ -268,12 +268,6 @@ describe("legacy agent import", () => {
       }),
     ]);
 
-    await expect(harness.agentStore.readAgentPrompt("luna", "agent")).resolves.toMatchObject({
-      content: expect.stringContaining("# SOUL\nWarm but relentless."),
-    });
-    await expect(harness.agentStore.readAgentPrompt("luna", "heartbeat")).resolves.toMatchObject({
-      content: "# HEARTBEAT\nCheck in twice a day.",
-    });
     await expect(harness.agentStore.listAgentSkills("luna")).resolves.toEqual([
       expect.objectContaining({
         skillKey: "notion",
@@ -296,6 +290,12 @@ describe("legacy agent import", () => {
     }
     expect(session).toMatchObject({
       createdByIdentityId: identity.id,
+    });
+    await expect(harness.sessionStore.readSessionPrompt(session.id, "brief")).resolves.toMatchObject({
+      content: expect.stringContaining("# SOUL\nWarm but relentless."),
+    });
+    await expect(harness.sessionStore.readSessionPrompt(session.id, "heartbeat")).resolves.toMatchObject({
+      content: "# HEARTBEAT\nCheck in twice a day.",
     });
     const transcript = await harness.threadStore.loadTranscript(session.currentThreadId);
     expect(transcript).toMatchObject([

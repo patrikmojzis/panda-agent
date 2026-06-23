@@ -2,7 +2,7 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {buildDefaultAgentLlmContexts, gatherContexts,} from "../src/index.js";
-import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore,} from "../src/domain/agents/index.js";
+import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
@@ -39,7 +39,6 @@ describe("buildDefaultAgentLlmContexts", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
     await agentStore.setAgentSkill("panda", "calendar", "Use this for calendar work.", "# Calendar\nLong skill body.");
 

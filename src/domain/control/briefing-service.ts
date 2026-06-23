@@ -5,7 +5,7 @@ import {requireNonEmptyString} from "../../lib/strings.js";
 import {buildAgentTableNames} from "../agents/postgres-shared.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import type {SessionStore} from "../sessions/store.js";
-import {SESSION_BRIEFING_PROMPT_SLUG, type SessionPromptRecord} from "../sessions/types.js";
+import {SESSION_BRIEF_PROMPT_SLUG, type SessionPromptRecord} from "../sessions/types.js";
 import {buildControlTableNames} from "./postgres-shared.js";
 import type {ControlSessionRecord} from "./types.js";
 
@@ -18,7 +18,7 @@ export interface ControlBriefingContentSummary {
 export interface ControlBriefingRecord {
   agentKey: string;
   sessionId: string;
-  slug: typeof SESSION_BRIEFING_PROMPT_SLUG;
+  slug: typeof SESSION_BRIEF_PROMPT_SLUG;
   content: string;
   wasSet: boolean;
   createdAt?: string;
@@ -29,7 +29,7 @@ export interface ControlBriefingMutationAudit {
   action: "put" | "delete";
   agentKey: string;
   targetSessionId: string;
-  slug: typeof SESSION_BRIEFING_PROMPT_SLUG;
+  slug: typeof SESSION_BRIEF_PROMPT_SLUG;
   old: ControlBriefingContentSummary;
   next: ControlBriefingContentSummary;
 }
@@ -47,7 +47,7 @@ function publicBriefing(agentKey: string, sessionId: string, prompt: SessionProm
   return {
     agentKey,
     sessionId,
-    slug: SESSION_BRIEFING_PROMPT_SLUG,
+    slug: SESSION_BRIEF_PROMPT_SLUG,
     content: prompt?.content ?? "",
     wasSet: prompt !== null,
     ...(prompt ? {createdAt: new Date(prompt.createdAt).toISOString(), updatedAt: new Date(prompt.updatedAt).toISOString()} : {}),
@@ -92,7 +92,7 @@ export class ControlBriefingService {
 
   async getBriefing(session: ControlSessionRecord, agentKey: string, targetSessionId: string): Promise<ControlBriefingRecord> {
     await this.assertCanAccess(session, agentKey, targetSessionId);
-    const prompt = await this.sessions.readSessionPrompt(targetSessionId, SESSION_BRIEFING_PROMPT_SLUG);
+    const prompt = await this.sessions.readSessionPrompt(targetSessionId, SESSION_BRIEF_PROMPT_SLUG);
     return publicBriefing(agentKey, targetSessionId, prompt);
   }
 
@@ -102,15 +102,15 @@ export class ControlBriefingService {
       throw new Error("Session briefing content must not be blank. Use clear to delete the briefing.");
     }
     await this.assertCanAccess(session, agentKey, targetSessionId);
-    const oldPrompt = await this.sessions.readSessionPrompt(targetSessionId, SESSION_BRIEFING_PROMPT_SLUG);
-    const prompt = await this.sessions.setSessionPrompt({sessionId: targetSessionId, slug: SESSION_BRIEFING_PROMPT_SLUG, content: trimmed});
+    const oldPrompt = await this.sessions.readSessionPrompt(targetSessionId, SESSION_BRIEF_PROMPT_SLUG);
+    const prompt = await this.sessions.setSessionPrompt({sessionId: targetSessionId, slug: SESSION_BRIEF_PROMPT_SLUG, content: trimmed});
     return {
       briefing: publicBriefing(agentKey, targetSessionId, prompt),
       audit: {
         action: "put",
         agentKey,
         targetSessionId,
-        slug: SESSION_BRIEFING_PROMPT_SLUG,
+        slug: SESSION_BRIEF_PROMPT_SLUG,
         old: summarizePrompt(oldPrompt),
         next: summarizePrompt(prompt),
       },
@@ -119,15 +119,15 @@ export class ControlBriefingService {
 
   async deleteBriefing(session: ControlSessionRecord, agentKey: string, targetSessionId: string): Promise<{briefing: ControlBriefingRecord; audit: ControlBriefingMutationAudit}> {
     await this.assertCanAccess(session, agentKey, targetSessionId);
-    const oldPrompt = await this.sessions.readSessionPrompt(targetSessionId, SESSION_BRIEFING_PROMPT_SLUG);
-    await this.sessions.deleteSessionPrompt({sessionId: targetSessionId, slug: SESSION_BRIEFING_PROMPT_SLUG});
+    const oldPrompt = await this.sessions.readSessionPrompt(targetSessionId, SESSION_BRIEF_PROMPT_SLUG);
+    await this.sessions.deleteSessionPrompt({sessionId: targetSessionId, slug: SESSION_BRIEF_PROMPT_SLUG});
     return {
       briefing: publicBriefing(agentKey, targetSessionId, null),
       audit: {
         action: "delete",
         agentKey,
         targetSessionId,
-        slug: SESSION_BRIEFING_PROMPT_SLUG,
+        slug: SESSION_BRIEF_PROMPT_SLUG,
         old: summarizePrompt(oldPrompt),
         next: {wasSet: false, length: 0, sha256: null},
       },

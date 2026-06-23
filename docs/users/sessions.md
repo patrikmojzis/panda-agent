@@ -92,7 +92,7 @@ panda session inspect luna:ops-inbox
 panda session inspect ops-inbox --agent luna
 ```
 
-Manage the CLI-only session briefing prompt:
+Manage the CLI-only session brief prompt:
 
 ```bash
 panda session prompt show ops-inbox --agent luna
@@ -102,13 +102,14 @@ panda session prompt read ops-inbox --agent luna
 panda session prompt clear ops-inbox --agent luna
 ```
 
-The briefing prompt is inserted into that one session's model context after the shared agent profile. `show` includes metadata and content; `read` prints only the raw content for scripts. Session list and inspect show `has brief yes/no`.
+The brief prompt is inserted into that one session's model context after the shared agent profile. `show` includes metadata and content; `read` prints only the raw content for scripts. Session list and inspect show `has brief yes/no`.
 
-Briefings are session-scoped:
+Session prompts are session-scoped:
 
-- `/reset` and `panda session reset` keep the briefing because they replace the backing thread, not the session
-- `/new` and `panda session create` start with no briefing
-- subagent sessions start with no briefing and do not inherit the parent or current session's briefing
+- `/reset` and `panda session reset` keep the brief because they replace the backing thread, not the session
+- new main sessions get the default fresh-start brief
+- new branch sessions copy `brief` and `heartbeat` from the main session; `memory` starts empty
+- subagent sessions start with no session prompt bundle unless a later feature opts them in
 - there is no TUI editor yet; use `panda session prompt ...`
 
 Agents can also maintain a durable session todo context with the `todo_update` tool. It stores an ordered list of `{status, content}` items for the current session and renders them back into model context as `Todo Context`. Passing `items: []` clears it. Todo context survives `/reset`, is separate from scheduled reminders, and has no due dates or notifications in V1.

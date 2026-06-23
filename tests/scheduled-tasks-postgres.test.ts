@@ -61,7 +61,7 @@ class PgMemReadonlySchemaQueryable {
         continue;
       }
 
-      if (/^CREATE VIEW "session"."(messages_raw|tool_results|inputs|runs|agent_prompts|agent_pairings|agent_skills|agent_sessions|subagent_history)"/i.test(statement)) {
+      if (/^CREATE VIEW "session"."(messages_raw|tool_results|inputs|runs|prompts|agent_pairings|agent_skills|agent_sessions|subagent_history)"/i.test(statement)) {
         continue;
       }
 

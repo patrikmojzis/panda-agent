@@ -6,7 +6,7 @@ import path from "node:path";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore} from "../src/domain/agents/index.js";
+import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {PostgresGatewayStore} from "../src/domain/gateway/postgres.js";
 import {ensurePostgresGatewaySchema} from "../src/domain/gateway/postgres-schema.js";
 import {buildGatewayTableNames} from "../src/domain/gateway/postgres-shared.js";
@@ -58,7 +58,6 @@ describe("Panda gateway", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
     const identity = await identityStore.createIdentity({
       id: "identity-1",

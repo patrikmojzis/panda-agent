@@ -21,7 +21,7 @@ import {buildRunnerEndpoint, makeNetworkTimeoutSignal, resolveBashExecutionMode,
 import {PostgresIdentityStore} from "../identity/postgres.js";
 import {createSessionWithInitialThread} from "./lifecycle.js";
 import {PostgresSessionStore} from "./postgres.js";
-import {SESSION_BRIEFING_PROMPT_SLUG, normalizeSessionAlias, type SessionRecord} from "./types.js";
+import {SESSION_BRIEF_PROMPT_SLUG, normalizeSessionAlias, type SessionRecord} from "./types.js";
 
 export interface SessionCliOptions {
   dbUrl?: string;
@@ -486,12 +486,12 @@ async function showSessionPromptCommand(
 ): Promise<void> {
   await withSessionStores(options, async ({sessionStore}) => {
     const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
-    const prompt = await sessionStore.readSessionPrompt(session.id, SESSION_BRIEFING_PROMPT_SLUG);
+    const prompt = await sessionStore.readSessionPrompt(session.id, SESSION_BRIEF_PROMPT_SLUG);
     if (!prompt) {
       process.stdout.write(
         [
           `Session prompt for ${session.id}.`,
-          `slug ${SESSION_BRIEFING_PROMPT_SLUG}`,
+          `slug ${SESSION_BRIEF_PROMPT_SLUG}`,
           "has brief no",
         ].join("\n") + "\n",
       );
@@ -517,7 +517,7 @@ async function readSessionPromptCommand(
 ): Promise<void> {
   await withSessionStores(options, async ({sessionStore}) => {
     const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
-    const prompt = await sessionStore.readSessionPrompt(session.id, SESSION_BRIEFING_PROMPT_SLUG);
+    const prompt = await sessionStore.readSessionPrompt(session.id, SESSION_BRIEF_PROMPT_SLUG);
     if (prompt) {
       writePromptContent(prompt.content);
     }
@@ -534,7 +534,7 @@ async function setSessionPromptCommand(
     const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
     const prompt = await sessionStore.setSessionPrompt({
       sessionId: session.id,
-      slug: SESSION_BRIEFING_PROMPT_SLUG,
+      slug: SESSION_BRIEF_PROMPT_SLUG,
       content: resolvedContent,
     });
     process.stdout.write(
@@ -555,12 +555,12 @@ async function clearSessionPromptCommand(
     const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
     await sessionStore.deleteSessionPrompt({
       sessionId: session.id,
-      slug: SESSION_BRIEFING_PROMPT_SLUG,
+      slug: SESSION_BRIEF_PROMPT_SLUG,
     });
     process.stdout.write(
       [
         `Cleared session prompt for ${session.id}.`,
-        `slug ${SESSION_BRIEFING_PROMPT_SLUG}`,
+        `slug ${SESSION_BRIEF_PROMPT_SLUG}`,
         "has brief no",
       ].join("\n") + "\n",
     );
@@ -844,11 +844,11 @@ export function registerSessionManagementCommands(sessionProgram: Command): void
 
   const promptProgram = sessionProgram
     .command("prompt")
-    .description("Manage a session briefing prompt");
+    .description("Manage a session brief prompt");
 
   promptProgram
     .command("show")
-    .description("Show a session briefing prompt with metadata")
+    .description("Show a session brief prompt with metadata")
     .argument("<sessionRef>", "Session id, or alias when --agent is provided")
     .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
@@ -858,7 +858,7 @@ export function registerSessionManagementCommands(sessionProgram: Command): void
 
   promptProgram
     .command("read")
-    .description("Print the raw session briefing prompt content")
+    .description("Print the raw session brief prompt content")
     .argument("<sessionRef>", "Session id, or alias when --agent is provided")
     .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
@@ -868,7 +868,7 @@ export function registerSessionManagementCommands(sessionProgram: Command): void
 
   promptProgram
     .command("set")
-    .description("Set a session briefing prompt")
+    .description("Set a session brief prompt")
     .argument("<sessionRef>", "Session id, or alias when --agent is provided")
     .argument("[content]", "Prompt content. Prefer --stdin for multiline content.")
     .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
@@ -881,7 +881,7 @@ export function registerSessionManagementCommands(sessionProgram: Command): void
 
   promptProgram
     .command("clear")
-    .description("Clear a session briefing prompt")
+    .description("Clear a session brief prompt")
     .argument("<sessionRef>", "Session id, or alias when --agent is provided")
     .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)

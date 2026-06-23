@@ -12,7 +12,7 @@ import {BashTargetsContext} from "./bash-targets-context.js";
 import {DateTimeContext} from "./datetime-context.js";
 import {EnvironmentContext} from "./environment-context.js";
 import {ScheduledRemindersContext} from "./scheduled-reminders-context.js";
-import {SessionBriefingContext} from "./session-briefing-context.js";
+import {SessionPromptsContext} from "./session-prompts-context.js";
 import {SessionTodoContext} from "./session-todo-context.js";
 import {SubagentsContext} from "./subagents-context.js";
 import {WikiOverviewContext} from "./wiki-overview-context.js";
@@ -27,12 +27,11 @@ export type DefaultAgentLlmContextSection =
   | "wiki_overview"
   | "background_jobs"
   | "subagents"
-  | "session_briefing"
+  | "session_prompts"
   | "todo_context"
   | AgentProfileContextSection;
 
 const PROFILE_SECTIONS = new Set<AgentProfileContextSection>([
-  "prompts",
   "skills",
 ]);
 
@@ -43,16 +42,15 @@ export const DEFAULT_AGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContext
   "scheduled_reminders",
   "background_jobs",
   "subagents",
-  "prompts",
+  "session_prompts",
   "skills",
-  "session_briefing",
   "todo_context",
 ];
 
 export interface BuildDefaultAgentLlmContextsOptions {
   context?: DefaultAgentSessionContext;
   agentStore?: AgentProfileStore;
-  sessionStore?: Partial<Pick<SessionStore, "listAgentSessions" | "readSessionPrompt" | "readSessionTodo">>;
+  sessionStore?: Partial<Pick<SessionStore, "listAgentSessions" | "listSessionPrompts" | "readSessionTodo">>;
   subagentProfiles?: Pick<SubagentProfileStore, "listProfiles">;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs"> & Partial<Pick<ThreadRuntimeStore, "listThreadSummaries">>;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
@@ -62,7 +60,7 @@ export interface BuildDefaultAgentLlmContextsOptions {
   threadId?: string;
   sections?: readonly DefaultAgentLlmContextSection[];
   skillPolicy?: ExecutionSkillPolicy;
-  sessionPrompt?: SessionPromptRecord | null;
+  sessionPrompts?: readonly SessionPromptRecord[] | null;
   extraLlmContexts?: readonly LlmContext[];
 }
 
@@ -74,7 +72,7 @@ export {
 } from "./agent-profile-context.js";
 export {DateTimeContext, type DateTimeContextOptions} from "./datetime-context.js";
 export {BashTargetsContext, type BashTargetsContextOptions} from "./bash-targets-context.js";
-export {SessionBriefingContext, type SessionBriefingContextOptions} from "./session-briefing-context.js";
+export {SessionPromptsContext, type SessionPromptsContextOptions} from "./session-prompts-context.js";
 export {SessionTodoContext, type SessionTodoContextOptions} from "./session-todo-context.js";
 export {EnvironmentContext, type EnvironmentContextOptions} from "./environment-context.js";
 export {SubagentsContext, type SubagentsContextOptions} from "./subagents-context.js";
@@ -159,16 +157,16 @@ export function buildDefaultAgentLlmContexts(
     }));
   }
 
-  if (uniqueSections.has("session_briefing") && options.context?.sessionId) {
-    if (options.sessionPrompt !== undefined) {
-      llmContexts.push(new SessionBriefingContext({
+  if (uniqueSections.has("session_prompts") && options.context?.sessionId) {
+    if (options.sessionPrompts !== undefined) {
+      llmContexts.push(new SessionPromptsContext({
         sessionId: options.context.sessionId,
-        prompt: options.sessionPrompt,
+        prompts: options.sessionPrompts,
       }));
-    } else if (typeof options.sessionStore?.readSessionPrompt === "function") {
-      llmContexts.push(new SessionBriefingContext({
+    } else if (typeof options.sessionStore?.listSessionPrompts === "function") {
+      llmContexts.push(new SessionPromptsContext({
         sessionId: options.context.sessionId,
-        store: options.sessionStore as Pick<SessionStore, "readSessionPrompt">,
+        store: options.sessionStore as Pick<SessionStore, "listSessionPrompts">,
       }));
     }
   }

@@ -67,15 +67,17 @@ Aliases are a separate operator affordance:
 
 `panda session label` updates or clears `alias`/`display_name`; TUI alias editing is intentionally out of scope.
 
-Session briefing prompts are stored per session in `session_prompts` with the supported slug `session`. They are operator-managed through `panda session prompt show|set|read|clear`; the TUI does not edit them. The prompt is rendered by `SessionBriefingContext` after the shared agent profile and before the normal runtime contexts.
+Editable runtime prompts are stored per session in `session_prompts` with slugs `brief`, `memory`, and `heartbeat`. The CLI `panda session prompt show|set|read|clear` edits the session `brief`; the model-facing `session_prompt` tool can read/set/transform the current session's prompt bundle. `brief` and `memory` render through `SessionPromptsContext`; `heartbeat` is read only when building heartbeat wake guidance.
 
 Rules:
 
 - prompts are keyed by canonical `session_id`, so aliases resolve before reads/writes
 - content must be non-empty when set; `read` prints raw content, while `show` prints metadata plus content
 - prompts survive `/reset` because reset only swaps `current_thread_id`
-- new branch sessions and subagent sessions do not copy another session's prompt
-- prompt-cache affinity includes the briefing slug, update time, and a content hash so edits force a fresh prompt lane
+- new main sessions get the default fresh-start `brief`
+- new branch sessions copy `brief` and `heartbeat` from the main/source session; `memory` starts empty
+- subagent sessions do not inherit the session prompt bundle
+- prompt-cache affinity includes the ordered session prompt bundle so edits force a fresh prompt lane
 
 Session todo context is stored per session in `session_todos`. It is agent-managed through the `todo_update` tool, not a CLI/TUI editor. The tool replaces the full ordered list for the current runtime session; it never accepts a session id from the model. Items are structured `{status, content}` with `pending | in_progress | blocked | done`, and `items: []` clears the context.
 

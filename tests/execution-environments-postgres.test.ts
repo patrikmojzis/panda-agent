@@ -158,7 +158,6 @@ describe("PostgresExecutionEnvironmentStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: {},
     });
     await sessionStore.createSession({
       id: "session-main",

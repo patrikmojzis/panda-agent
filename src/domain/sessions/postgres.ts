@@ -32,7 +32,13 @@ import type {
     UpdateSessionLabelInput,
     UpdateSessionRuntimeConfigInput,
 } from "./types.js";
-import {normalizeSessionAlias, normalizeSessionPromptSlug, SESSION_BRIEFING_PROMPT_SLUG} from "./types.js";
+import {DEFAULT_SESSION_PROMPT_TEMPLATES} from "../../prompts/templates/session-prompts.js";
+import {
+  normalizeSessionAlias,
+  normalizeSessionPromptSlug,
+  SESSION_BRIEF_PROMPT_SLUG,
+  SESSION_HEARTBEAT_PROMPT_SLUG,
+} from "./types.js";
 
 export interface PostgresSessionStoreOptions {
   pool: PgPoolLike;
@@ -208,7 +214,7 @@ function parseSessionRuntimeConfigRow(row: Record<string, unknown>): SessionRunt
 }
 
 function resolveSessionPromptSlug(slug?: SessionPromptSlug): SessionPromptSlug {
-  return normalizeSessionPromptSlug(slug ?? SESSION_BRIEFING_PROMPT_SLUG);
+  return normalizeSessionPromptSlug(slug ?? SESSION_BRIEF_PROMPT_SLUG);
 }
 
 function missingSessionError(sessionId: string): Error {
@@ -333,6 +339,52 @@ export class PostgresSessionStore implements SessionStore {
       session.id,
       session.kind === "main",
     ]);
+
+    if (session.kind === "main") {
+      const brief = DEFAULT_SESSION_PROMPT_TEMPLATES.brief;
+      if (brief) {
+        await queryable.query(`
+          INSERT INTO ${this.tables.sessionPrompts} (
+            session_id,
+            slug,
+            content
+          ) VALUES (
+            $1,
+            $2,
+            $3
+          )
+          ON CONFLICT (session_id, slug) DO NOTHING
+        `, [
+          session.id,
+          SESSION_BRIEF_PROMPT_SLUG,
+          brief,
+        ]);
+      }
+    } else if (session.kind === "branch") {
+      await queryable.query(`
+        INSERT INTO ${this.tables.sessionPrompts} (
+          session_id,
+          slug,
+          content
+        )
+        SELECT
+          $1,
+          prompt.slug,
+          prompt.content
+        FROM ${this.tables.sessions} AS main_session
+        INNER JOIN ${this.tables.sessionPrompts} AS prompt
+          ON prompt.session_id = main_session.id
+        WHERE main_session.agent_key = $2
+          AND main_session.kind = 'main'
+          AND prompt.slug IN ($3, $4)
+        ON CONFLICT (session_id, slug) DO NOTHING
+      `, [
+        session.id,
+        session.agentKey,
+        SESSION_BRIEF_PROMPT_SLUG,
+        SESSION_HEARTBEAT_PROMPT_SLUG,
+      ]);
+    }
 
     return session;
   }
@@ -617,7 +669,7 @@ export class PostgresSessionStore implements SessionStore {
 
   async readSessionPrompt(
     sessionId: string,
-    slug: SessionPromptSlug = SESSION_BRIEFING_PROMPT_SLUG,
+    slug: SessionPromptSlug = SESSION_BRIEF_PROMPT_SLUG,
   ): Promise<SessionPromptRecord | null> {
     const result = await this.pool.query(`
       SELECT * FROM ${this.tables.sessionPrompts}
@@ -660,6 +712,77 @@ export class PostgresSessionStore implements SessionStore {
       normalizeSessionPromptContent(input.content),
     ]);
     return parseSessionPromptRow(result.rows[0] as Record<string, unknown>);
+  }
+
+  async transformSessionPrompt(
+    input: {sessionId: string; slug?: SessionPromptSlug; expression: string},
+  ): Promise<SessionPromptRecord | null> {
+    const sessionId = requireSessionString("id", input.sessionId);
+    const slug = resolveSessionPromptSlug(input.slug);
+    return withTransaction(this.pool, async (client) => {
+      const sessionLock = await client.query(`
+        SELECT 1
+        FROM ${this.tables.sessions}
+        WHERE id = $1
+        FOR UPDATE
+      `, [
+        sessionId,
+      ]);
+      if (sessionLock.rows.length === 0) {
+        throw missingSessionError(sessionId);
+      }
+
+      const existingResult = await client.query(`
+        SELECT content
+        FROM ${this.tables.sessionPrompts}
+        WHERE session_id = $1 AND slug = $2
+      `, [
+        sessionId,
+        slug,
+      ]);
+      const existingContent = existingResult.rows[0]
+        ? String((existingResult.rows[0] as Record<string, unknown>).content ?? "")
+        : "";
+
+      const transformedResult = await client.query(`
+        SELECT COALESCE((${input.expression})::text, '') AS content
+        FROM (SELECT $1::text AS content) AS current_prompt
+      `, [
+        existingContent,
+      ]);
+      const transformedContent = String((transformedResult.rows[0] as Record<string, unknown> | undefined)?.content ?? "");
+      if (!transformedContent.trim()) {
+        await client.query(`
+          DELETE FROM ${this.tables.sessionPrompts}
+          WHERE session_id = $1 AND slug = $2
+        `, [
+          sessionId,
+          slug,
+        ]);
+        return null;
+      }
+
+      const result = await client.query(`
+        INSERT INTO ${this.tables.sessionPrompts} (
+          session_id,
+          slug,
+          content
+        ) VALUES (
+          $1,
+          $2,
+          $3
+        )
+        ON CONFLICT (session_id, slug) DO UPDATE SET
+          content = EXCLUDED.content,
+          updated_at = NOW()
+        RETURNING *
+      `, [
+        sessionId,
+        slug,
+        transformedContent,
+      ]);
+      return parseSessionPromptRow(result.rows[0] as Record<string, unknown>);
+    });
   }
 
   async deleteSessionPrompt(input: DeleteSessionPromptInput): Promise<boolean> {

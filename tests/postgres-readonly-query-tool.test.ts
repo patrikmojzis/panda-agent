@@ -103,7 +103,8 @@ describe("PostgresReadonlyQueryTool", () => {
     });
 
     expect(tool.description).toContain("session.agent_sessions exposes current_thread_id, not thread_id.");
-    expect(tool.description).toContain("session.agent_prompts, session.agent_pairings, and session.agent_skills");
+    expect(tool.description).toContain("session.prompts to the current session");
+    expect(tool.description).toContain("session.agent_pairings and session.agent_skills to the current agent");
     expect(tool.description).toContain("left(...), substring(...), regex filters, full-text search");
     expect(tool.description).toContain("Do not invent is_active flags or extra session_id subqueries");
     expect(tool.description).toContain("query session.todos");
@@ -316,7 +317,7 @@ describe("PostgresReadonlyQueryTool", () => {
     expect(readDatabaseUsername("postgresql:///panda_dev")).toBeNull();
   });
 
-  it("supports exploratory reads against agent metadata views", async () => {
+  it("supports exploratory reads against session prompt views", async () => {
     const pool = new FakeReadonlyPool([{
       slug: "heartbeat",
       preview: "Keep it short.",
@@ -326,7 +327,7 @@ describe("PostgresReadonlyQueryTool", () => {
     });
 
     const result = await tool.run(
-      { sql: "select slug, left(content, 16) as preview from session.agent_prompts order by updated_at desc limit 5" },
+      { sql: "select slug, left(content, 16) as preview from session.prompts order by updated_at desc limit 5" },
       createRunContext({
         sessionId: "session-main",
         identityId: "identity-alice",
@@ -340,7 +341,7 @@ describe("PostgresReadonlyQueryTool", () => {
       slug: "heartbeat",
       preview: "Keep it short.",
     }]);
-    expect(pool.client.queries[8]?.text).toContain("left(content, 16) as preview from session.agent_prompts");
+    expect(pool.client.queries[8]?.text).toContain("left(content, 16) as preview from session.prompts");
   });
 
   it("sets readonly skill policy GUCs from the execution environment", async () => {

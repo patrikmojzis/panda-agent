@@ -1,4 +1,10 @@
 import {boundPromptCacheKey, hashPromptCacheParts} from "../../../kernel/agent/prompt-cache-key.js";
+import {SESSION_BRIEF_PROMPT_SLUG, SESSION_MEMORY_PROMPT_SLUG} from "../../sessions/types.js";
+
+const CACHE_AFFECTING_SESSION_PROMPT_SLUGS: ReadonlySet<string> = new Set([
+  SESSION_BRIEF_PROMPT_SLUG,
+  SESSION_MEMORY_PROMPT_SLUG,
+]);
 
 /**
  * Returns the stable cache-affinity key for one append-only thread transcript.
@@ -38,15 +44,23 @@ function buildSessionPromptCacheVersion(sessionPrompt: SessionPromptCacheVersion
 
 export function resolveSessionPromptCacheKey(
   basePromptCacheKey: string,
-  sessionPrompt?: SessionPromptCacheVersion | null,
+  sessionPrompts?: readonly SessionPromptCacheVersion[] | null,
 ): string {
-  if (!sessionPrompt) {
+  if (!sessionPrompts?.length) {
+    return boundPromptCacheKey(basePromptCacheKey);
+  }
+
+  const promptParts = [...sessionPrompts]
+    .filter((prompt) => CACHE_AFFECTING_SESSION_PROMPT_SLUGS.has(prompt.slug))
+    .sort((left, right) => left.slug.localeCompare(right.slug))
+    .map(buildSessionPromptCacheVersion);
+  if (promptParts.length === 0) {
     return boundPromptCacheKey(basePromptCacheKey);
   }
 
   return boundPromptCacheKey([
     basePromptCacheKey,
     "sp",
-    buildSessionPromptCacheVersion(sessionPrompt),
+    ...promptParts,
   ].join(":"));
 }

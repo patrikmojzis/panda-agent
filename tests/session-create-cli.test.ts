@@ -659,7 +659,7 @@ describe("Session create CLI", () => {
     await expect(environments.getBindingByAlias("session-targets", "vps")).resolves.toBeNull();
   }, SESSION_CREATE_TEST_TIMEOUT_MS);
 
-  it("sets, shows, reads, clears, and indicates a session briefing prompt", async () => {
+  it("sets, shows, reads, clears, and indicates a session brief prompt", async () => {
     const {pool, sessionStore} = await createHarness();
     pools.push(pool);
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);

@@ -2,7 +2,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentAppAuthService} from "../src/domain/apps/auth.js";
-import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore} from "../src/domain/agents/index.js";
+import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 
@@ -44,7 +44,6 @@ describe("PostgresAgentAppAuthService", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
     await sessionStore.createSessionRecord({
       id: "session-main",

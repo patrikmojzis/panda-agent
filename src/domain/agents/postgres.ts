@@ -12,8 +12,6 @@ import {
 import type {AgentStore} from "./store.js";
 import type {
   AgentPairingRecord,
-  AgentPromptRecord,
-  AgentPromptSlug,
   AgentRecord,
   AgentSkillRecord,
   BootstrapAgentInput,
@@ -41,22 +39,6 @@ function parseAgentStatus(value: unknown): AgentRecord["status"] {
   throw new Error(`Unsupported agent status ${String(value)}.`);
 }
 
-function parseAgentPromptSlug(value: unknown): AgentPromptSlug {
-  if (value === "agent" || value === "heartbeat") {
-    return value;
-  }
-
-  throw new Error(`Unsupported agent prompt slug ${String(value)}.`);
-}
-
-function parseString(value: unknown, errorMessage: string): string {
-  if (typeof value !== "string") {
-    throw new Error(errorMessage);
-  }
-
-  return value;
-}
-
 function parseAgentRow(row: Record<string, unknown>): AgentRecord {
   return {
     agentKey: normalizeAgentKey(
@@ -67,18 +49,6 @@ function parseAgentRow(row: Record<string, unknown>): AgentRecord {
     metadata: readOptionalJsonValue(row.metadata, "Agent metadata"),
     createdAt: requireTimestampMillis(row.created_at, "Agent created_at must be a valid timestamp."),
     updatedAt: requireTimestampMillis(row.updated_at, "Agent updated_at must be a valid timestamp."),
-  };
-}
-
-function parseAgentPromptRow(row: Record<string, unknown>): AgentPromptRecord {
-  return {
-    agentKey: normalizeAgentKey(
-      requireNonEmptyString(row.agent_key, "Agent prompt row is missing agent key."),
-    ),
-    slug: parseAgentPromptSlug(row.slug),
-    content: parseString(row.content, "Agent prompt row is missing content."),
-    createdAt: requireTimestampMillis(row.created_at, "Agent prompt created_at must be a valid timestamp."),
-    updatedAt: requireTimestampMillis(row.updated_at, "Agent prompt updated_at must be a valid timestamp."),
   };
 }
 
@@ -169,7 +139,6 @@ export class PostgresAgentStore implements AgentStore {
 
   async bootstrapAgent(input: BootstrapAgentInput): Promise<AgentRecord> {
     const agentKey = normalizeAgentKey(input.agentKey);
-    const prompts = input.prompts ?? {};
     const client = await this.pool.connect();
 
     try {
@@ -193,24 +162,6 @@ export class PostgresAgentStore implements AgentStore {
         parseAgentStatus(input.status ?? "active"),
         stringifyOptionalJsonValue(input.metadata, "Agent metadata"),
       ]);
-
-      for (const [slug, content] of Object.entries(prompts)) {
-        await client.query(`
-          INSERT INTO ${this.tables.agentPrompts} (
-            agent_key,
-            slug,
-            content
-          ) VALUES (
-            $1,
-            $2,
-            $3
-          )
-        `, [
-          agentKey,
-          slug,
-          content,
-        ]);
-      }
 
       await client.query("COMMIT");
       return parseAgentRow(created.rows[0] as Record<string, unknown>);
@@ -552,79 +503,5 @@ export class PostgresAgentStore implements AgentStore {
     }
 
     return false;
-  }
-
-  async readAgentPrompt(agentKey: string, slug: AgentPromptSlug): Promise<AgentPromptRecord | null> {
-    const result = await this.pool.query(`
-      SELECT *
-      FROM ${this.tables.agentPrompts}
-      WHERE agent_key = $1
-        AND slug = $2
-    `, [
-      normalizeAgentKey(agentKey),
-      slug,
-    ]);
-
-    const row = result.rows[0];
-    return row ? parseAgentPromptRow(row as Record<string, unknown>) : null;
-  }
-
-  async setAgentPrompt(agentKey: string, slug: AgentPromptSlug, content: string): Promise<AgentPromptRecord> {
-    const result = await this.pool.query(`
-      INSERT INTO ${this.tables.agentPrompts} (
-        agent_key,
-        slug,
-        content
-      ) VALUES (
-        $1,
-        $2,
-        $3
-      )
-      ON CONFLICT (agent_key, slug)
-      DO UPDATE SET
-        content = EXCLUDED.content,
-        updated_at = NOW()
-      RETURNING *
-    `, [
-      normalizeAgentKey(agentKey),
-      slug,
-      content,
-    ]);
-
-    return parseAgentPromptRow(result.rows[0] as Record<string, unknown>);
-  }
-
-  async transformAgentPrompt(agentKey: string, slug: AgentPromptSlug, expression: string): Promise<AgentPromptRecord> {
-    const normalizedAgentKey = normalizeAgentKey(agentKey);
-    await this.pool.query(`
-      INSERT INTO ${this.tables.agentPrompts} (
-        agent_key,
-        slug,
-        content
-      ) VALUES (
-        $1,
-        $2,
-        ''
-      )
-      ON CONFLICT (agent_key, slug)
-      DO NOTHING
-    `, [
-      normalizedAgentKey,
-      slug,
-    ]);
-
-    const result = await this.pool.query(`
-      UPDATE ${this.tables.agentPrompts}
-      SET content = COALESCE((${expression})::text, ''),
-          updated_at = NOW()
-      WHERE agent_key = $1
-        AND slug = $2
-      RETURNING *
-    `, [
-      normalizedAgentKey,
-      slug,
-    ]);
-
-    return parseAgentPromptRow(result.rows[0] as Record<string, unknown>);
   }
 }

@@ -4,7 +4,7 @@ import {tmpdir} from "node:os";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore} from "../src/domain/agents/index.js";
+import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/postgres.js";
@@ -148,8 +148,8 @@ async function createHarness(options: {
   await wikiBindingStore.ensureSchema();
 
   await identities.createIdentity({id: "identity-patrik", handle: "patrik", displayName: "Patrik"});
-  await agents.bootstrapAgent({agentKey: "panda", displayName: "Panda", prompts: DEFAULT_AGENT_PROMPT_TEMPLATES});
-  await agents.bootstrapAgent({agentKey: "luna", displayName: "Luna", prompts: DEFAULT_AGENT_PROMPT_TEMPLATES});
+  await agents.bootstrapAgent({agentKey: "panda", displayName: "Panda"});
+  await agents.bootstrapAgent({agentKey: "luna", displayName: "Luna"});
   await sessions.createSessionRecord({id: "session-panda", agentKey: "panda", kind: "main", currentThreadId: "thread-panda", createdByIdentityId: "identity-patrik"});
   await sessions.createSessionRecord({id: "session-luna", agentKey: "luna", kind: "main", currentThreadId: "thread-luna", createdByIdentityId: "identity-patrik"});
   await pool.query(`
@@ -1965,7 +1965,7 @@ describe("Control audit events HTTP", () => {
     const body = await response.json() as {auditEvents: Array<{eventType: string; metadata: Record<string, unknown>}>};
     expect(body.auditEvents.some((event) => event.eventType === "login")).toBe(true);
     const briefing = body.auditEvents.find((event) => event.eventType === "session_briefing_write");
-    expect(briefing?.metadata).toMatchObject({action: "put", agentKey: "panda", targetSessionId: "session-panda", slug: "session"});
+    expect(briefing?.metadata).toMatchObject({action: "put", agentKey: "panda", targetSessionId: "session-panda", slug: "brief"});
     expect(JSON.stringify(briefing)).toContain("sha256");
     expect(JSON.stringify(briefing)).toContain("length");
     expect(JSON.stringify(body)).not.toContain("private briefing body");
@@ -2035,7 +2035,7 @@ describe("Control audit events HTTP", () => {
     const harness = await createHarness();
     const base = await startHarnessServer(harness);
     const auth = await login(base, harness, "admin");
-    await harness.auth.recordAudit({identityId: "identity-patrik", eventType: "session_briefing_write", metadata: {action: "put", agentKey: "panda", targetSessionId: "session-panda", slug: "session", token: "secret-token", prompt: "private prompt", old: {wasSet: false, length: 0, sha256: null, raw: "old"}, next: {wasSet: true, length: 12, sha256: "abc", content: "next"}}});
+    await harness.auth.recordAudit({identityId: "identity-patrik", eventType: "session_briefing_write", metadata: {action: "put", agentKey: "panda", targetSessionId: "session-panda", slug: "brief", token: "secret-token", prompt: "private prompt", old: {wasSet: false, length: 0, sha256: null, raw: "old"}, next: {wasSet: true, length: 12, sha256: "abc", content: "next"}}});
     await harness.auth.recordAudit({identityId: "identity-patrik", eventType: "unknown_event", metadata: {token: "unknown-secret", arbitrary: {nested: true}}});
 
     const response = await fetch(`${base}/api/control/audit-events?limit=20`, {headers: {cookie: auth.cookies}});
@@ -2071,7 +2071,15 @@ describe("Control session briefing HTTP", () => {
 
     const empty = await fetch(path, {headers: {cookie: auth.cookies}});
     expect(empty.status).toBe(200);
-    await expect(empty.json()).resolves.toMatchObject({briefing: {agentKey: "panda", sessionId: "session-panda", slug: "session", content: "", wasSet: false}});
+    await expect(empty.json()).resolves.toMatchObject({
+      briefing: {
+        agentKey: "panda",
+        sessionId: "session-panda",
+        slug: "brief",
+        content: expect.stringContaining("Fresh Start"),
+        wasSet: true,
+      },
+    });
 
     const missingCsrf = await fetch(path, {method: "PUT", headers: {cookie: auth.cookies}, body: JSON.stringify({content: "do not save"})});
     expect(missingCsrf.status).toBe(403);
