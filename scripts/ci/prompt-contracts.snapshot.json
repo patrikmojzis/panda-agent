@@ -37,10 +37,10 @@
       "sha256": "9ed80359ff156ef9cdcc1adb2dd525f8fec072b4b7ad56ab9baf6db75a2eee50"
     },
     {
-      "bytes": 10863,
+      "bytes": 10922,
       "lines": 264,
       "path": "src/app/runtime/thread-definition.ts",
-      "sha256": "784f43c68c0b1c17380c1213f8eb327450150dcc467a0586c83029b5b94498fb"
+      "sha256": "d0561e8f87ab00b36563013586d1bacfcc47063a76172b2c700fb889a0f372e6"
     },
     {
       "bytes": 1600,
@@ -73,10 +73,10 @@
       "sha256": "3072f55b56c701de2cc2653f7f2b5437fed8ad19f49a13648cb4d0592bf7f2b8"
     },
     {
-      "bytes": 7176,
-      "lines": 186,
+      "bytes": 7433,
+      "lines": 189,
       "path": "src/panda/contexts/builder.ts",
-      "sha256": "ed0150fc93c12c147ddba3caad36cdf62991f103e321180b1c8a9efaa664b5e7"
+      "sha256": "30234dcc6640b6ef90ffb302d606f941c38b5ca657a9192ec795e4adf6f9ab1e"
     },
     {
       "bytes": 1541,
@@ -121,10 +121,10 @@
       "sha256": "86648c823a3098b9e55973b0dad0aa52be02920048a4cf959a4e04729d4785e7"
     },
     {
-      "bytes": 9822,
-      "lines": 242,
+      "bytes": 15202,
+      "lines": 397,
       "path": "src/panda/contexts/subagents-context.ts",
-      "sha256": "8bdab90ff271282f418b7c9e1b066fe9fb8587fc9cdccc5e2e9fb54d3927cf75"
+      "sha256": "6c971ad4023f778789c83423cf179f4f430e9fb8ca24db07f70794d8e439844e"
     },
     {
       "bytes": 8404,
@@ -253,10 +253,10 @@
       "sha256": "565aec3226f5cfa142801408bf6f76f0da01e6dff417212f2b0f0574580c472d"
     },
     {
-      "bytes": 4059,
-      "lines": 117,
+      "bytes": 5335,
+      "lines": 149,
       "path": "src/prompts/contexts/subagents.ts",
-      "sha256": "a69d367efd30bf7190227c2f0aad63e4d518fd43b0a63cb7c35b09e2573f2e50"
+      "sha256": "133da70324705e29c10eecc5c486b8c6ca94464afdf5748accd936548f13d848"
     },
     {
       "bytes": 1371,
@@ -289,10 +289,10 @@
       "sha256": "cad5b2b991230740617070b6e628d49803d08242741e790ee444d5c9635c5df3"
     },
     {
-      "bytes": 13674,
+      "bytes": 13774,
       "lines": 217,
       "path": "src/prompts/runtime/default-agent.ts",
-      "sha256": "b99c9fbed650bf4cbdb6100ecae430a9789afbf2640f33c770f70b2f88298e13"
+      "sha256": "99e58c15ff069b607413c1bec7e04cdb70158070f8ef52b1e45356188a8d9551"
     },
     {
       "bytes": 1491,
@@ -319,10 +319,10 @@
       "sha256": "bde7c1c8de078e3fbc398105605e3f3cfcea4432612515bd79aadacb7602471d"
     },
     {
-      "bytes": 10825,
+      "bytes": 10851,
       "lines": 224,
       "path": "src/prompts/runtime/subagents.ts",
-      "sha256": "ebd2a1304f2388424b1ac9f3b8825e892f5e25d00f426d8b15c25d28445929c3"
+      "sha256": "c8b45b81fd9a22e370a6efb2f84bef897e0cca9cd27b545c1414f79559180c2b"
     },
     {
       "bytes": 917,
@@ -1522,7 +1522,7 @@
       }
     },
     {
-      "description": "Run a single read-only SQL query against Postgres. Use only SELECT or WITH. A single read-only SELECT or WITH query. Prefer session.agent_sessions for the current session row. session.agent_sessions exposes current_thread_id, not thread_id. The readonly tool already scopes session.threads, session.messages, session.tool_results, session.inputs, session.runs, session.todos, session.scheduled_tasks, session.scheduled_task_runs, session.watches, session.watch_runs, and session.watch_events to the current session. The readonly tool also scopes session.agent_prompts, session.agent_pairings, and session.agent_skills to the current agent. Do not invent is_active flags or extra session_id subqueries unless you are joining raw tables outside the session.* views. Use session.agent_prompts for agent docs, session.agent_pairings for known identities, and session.agent_skills for stored skills. For exploratory reads, prefer left(...), substring(...), regex filters, full-text search, or other narrow projections instead of pulling giant content blobs blindly. For durable session todo context, query session.todos. For session automation, query session.scheduled_tasks or session.watches directly with ORDER BY/LIMIT. Prefer session.agent_skills for stored skill bodies and session.messages_raw only when you truly need raw JSONB. Large skill bodies may need substring(...) or targeted column selection. If you need schema help, query information_schema.columns. Always use LIMIT on exploratory queries.",
+      "description": "Run a single read-only SQL query against Postgres. Use only SELECT or WITH. A single read-only SELECT or WITH query. Prefer session.agent_sessions for the current session row. session.agent_sessions exposes current_thread_id, not thread_id. The readonly tool already scopes session.threads, session.messages, session.tool_results, session.inputs, session.runs, session.todos, session.subagent_history, session.scheduled_tasks, session.scheduled_task_runs, session.watches, session.watch_runs, and session.watch_events to the current session. The readonly tool also scopes session.agent_prompts, session.agent_pairings, and session.agent_skills to the current agent. Do not invent is_active flags or extra session_id subqueries unless you are joining raw tables outside the session.* views. Use session.agent_prompts for agent docs, session.agent_pairings for known identities, and session.agent_skills for stored skills. For exploratory reads, prefer left(...), substring(...), regex filters, full-text search, or other narrow projections instead of pulling giant content blobs blindly. For durable session todo context, query session.todos. For older subagent archaeology omitted from the default prompt, query session.subagent_history. For session automation, query session.scheduled_tasks or session.watches directly with ORDER BY/LIMIT. Prefer session.agent_skills for stored skill bodies and session.messages_raw only when you truly need raw JSONB. Large skill bodies may need substring(...) or targeted column selection. If you need schema help, query information_schema.columns. Always use LIMIT on exploratory queries.",
       "name": "postgres_readonly_query",
       "parameters": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

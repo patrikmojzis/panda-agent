@@ -54,7 +54,7 @@ export interface CreateThreadDefinitionOptions {
   agentStore?: AgentProfileStore;
   sessionStore?: Pick<SessionStore, "listAgentSessions" | "readSessionTodo">;
   subagentProfiles?: Pick<SubagentProfileStore, "listProfiles">;
-  threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
+  threadStore?: Pick<ThreadRuntimeStore, "listToolJobs"> & Partial<Pick<ThreadRuntimeStore, "listThreadSummaries">>;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
   executionEnvironments?: Pick<ExecutionEnvironmentStore, "getEnvironment" | "listBindingsForEnvironments" | "listDisposableEnvironmentsByOwner" | "listBindingsForSession">;
   wikiBindings?: Pick<WikiBindingService, "getBinding">;

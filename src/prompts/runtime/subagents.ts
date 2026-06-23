@@ -22,7 +22,7 @@ Use these Postgres surfaces when the task is about prompts, skills, pairings, re
 - session.agent_prompts: core agent docs like agent and heartbeat
 - session.agent_pairings: known paired identities and pairing metadata
 - session.agent_skills: stored skill bodies, descriptions, and tags
-- session.messages, session.tool_results, session.messages_raw, session.threads, session.agent_sessions
+- session.messages, session.tool_results, session.messages_raw, session.threads, session.agent_sessions, session.subagent_history
 
 Default search strategy:
 1. Start narrow. Use LIMIT. Do not yank giant content blobs blindly.

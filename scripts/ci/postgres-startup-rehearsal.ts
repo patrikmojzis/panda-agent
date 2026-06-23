@@ -161,6 +161,7 @@ async function assertCoreRelations(pool: ReturnType<typeof createPostgresPool>):
     "session.agent_sessions",
     "session.messages",
     "session.tool_results",
+    "session.subagent_history",
   ]);
 }
 

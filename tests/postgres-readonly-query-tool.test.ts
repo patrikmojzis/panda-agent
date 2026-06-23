@@ -107,6 +107,7 @@ describe("PostgresReadonlyQueryTool", () => {
     expect(tool.description).toContain("left(...), substring(...), regex filters, full-text search");
     expect(tool.description).toContain("Do not invent is_active flags or extra session_id subqueries");
     expect(tool.description).toContain("query session.todos");
+    expect(tool.description).toContain("query session.subagent_history");
     expect(tool.description).toContain("query session.scheduled_tasks or session.watches directly");
     expect(tool.description).not.toContain("agent_telepathy_devices");
   });
