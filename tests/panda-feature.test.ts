@@ -60,7 +60,7 @@ describe("Panda feature surface", () => {
       'Use `agent_skill(operation="set")` for direct skill body edits you are intentionally making yourself.',
     );
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
-      'Use `agent_skill(operation="update_description")` when only an existing skill\'s injected short description should change.',
+      'Use `agent_skill(operation="patch", patch={"description":"..."})` when only an existing skill\'s injected short description should change.',
     );
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
       "**Foreground bash** shares one persistent shell session.",

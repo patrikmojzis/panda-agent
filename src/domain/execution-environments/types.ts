@@ -61,7 +61,7 @@ export type ExecutionSkillPolicy =
   | {mode: "none"}
   | {mode: "allowlist"; skillKeys: readonly string[]};
 
-export type AgentSkillOperation = "load" | "set" | "update_description" | "delete";
+export type AgentSkillOperation = "load" | "set" | "patch" | "delete";
 
 export interface ExecutionAgentSkillToolPolicy {
   allowedOperations?: readonly AgentSkillOperation[];

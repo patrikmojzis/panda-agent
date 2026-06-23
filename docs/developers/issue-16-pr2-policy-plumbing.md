@@ -15,7 +15,7 @@ This note records the second foundation slice for issue #16. It hardens policy a
 
 ## Operation-aware `agent_skill` policy
 
-`ExecutionToolPolicy` has a narrow `agentSkill.allowedOperations` field with `load`, `set`, `update_description`, and `delete` operations.
+`ExecutionToolPolicy` has a narrow `agentSkill.allowedOperations` field with `load`, `set`, `patch`, and `delete` operations.
 
 Enforcement rules:
 
@@ -27,7 +27,7 @@ Enforcement rules:
 Tool groups changed accordingly:
 
 - `core` may include raw `agent_skill`, but grants `load` only.
-- `skill_maintenance` grants only `agent_skill` with `load,set,update_description,delete`.
+- `skill_maintenance` grants only `agent_skill` with `load,set,patch,delete`.
 - `operate` still grants broad operational tools and full skill operations.
 - Built-in `skill_maintainer` uses `core + workspace_read + memory + skill_maintenance`, not broad `operate`.
 

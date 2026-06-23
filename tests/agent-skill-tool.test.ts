@@ -61,7 +61,7 @@ describe("AgentSkillTool", () => {
     return (await createStoreWithPool()).store;
   }
 
-  it("describes tags as sparse discovery metadata, not a target", () => {
+  it("describes the patch operation and sparse discovery tags", () => {
     const tool = new AgentSkillTool({
       store: {
         deleteAgentSkillAsAgent: async () => { throw new Error("not used"); },
@@ -71,9 +71,12 @@ describe("AgentSkillTool", () => {
       },
     });
 
-    const parameters = tool.piTool.parameters as {properties: Record<string, {description?: string}>};
+    const parameters = tool.piTool.parameters as {properties: Record<string, {description?: string; enum?: string[]}>};
     const tagDescription = parameters.properties.tags?.description;
 
+    expect(parameters.properties.operation?.enum).toEqual(["load", "set", "patch", "delete"]);
+    expect(JSON.stringify(tool.piTool.parameters)).not.toContain(["update", "description"].join("_"));
+    expect(parameters.properties.patch?.description).toContain("Only description is supported");
     expect(tagDescription).toContain("Prefer omitting tags unless they materially help discovery");
     expect(tagDescription).toContain("0-2 broad lowercase tags");
     expect(tagDescription).toContain("Max 20 tags is a hard cap, not a target");
@@ -110,7 +113,7 @@ describe("AgentSkillTool", () => {
     });
   });
 
-  it("updates only an existing skill description", async () => {
+  it("patches only an existing skill description", async () => {
     const store = await createStore();
     await store.setAgentSkill("panda", "calendar", "Old summary.", "# Calendar\nLong skill body.", ["calendar", "coding"]);
     const tool = new AgentSkillTool({ store });
@@ -123,15 +126,15 @@ describe("AgentSkillTool", () => {
     const before = await store.readAgentSkill("panda", "calendar");
 
     const result = await tool.run({
-      operation: "update_description",
+      operation: "patch",
       skillKey: "calendar",
-      description: "  New summary for injection.  ",
+      patch: {description: "  New summary for injection.  "},
     }, createRunContext({
       agentKey: "panda",
     }));
 
     expect(result).toMatchObject({
-      operation: "update_description",
+      operation: "patch",
       agentKey: "panda",
       skillKey: "calendar",
       description: "New summary for injection.",
@@ -290,9 +293,9 @@ describe("AgentSkillTool", () => {
       content: "# Updated",
     }, context)).rejects.toThrow("Skill mutation is not allowed in this execution environment.");
     await expect(tool.run({
-      operation: "update_description",
+      operation: "patch",
       skillKey: "calendar",
-      description: "Updated.",
+      patch: {description: "Updated."},
     }, context)).rejects.toThrow("Skill mutation is not allowed in this execution environment.");
     await expect(tool.run({
       operation: "delete",
@@ -300,7 +303,7 @@ describe("AgentSkillTool", () => {
     }, context)).rejects.toThrow("Skill mutation is not allowed in this execution environment.");
   });
 
-  it("loads locked skills but rejects model-facing set, update_description, and delete without leaking content", async () => {
+  it("loads locked skills but rejects model-facing set, patch, and delete without leaking content", async () => {
     const store = await createStore();
     await store.setAgentSkill(
       "panda",
@@ -326,7 +329,7 @@ describe("AgentSkillTool", () => {
 
     for (const args of [
       {operation: "set", skillKey: "locked", description: "Updated.", content: "# Updated"},
-      {operation: "update_description", skillKey: "locked", description: "Updated."},
+      {operation: "patch", skillKey: "locked", patch: {description: "Updated."}},
       {operation: "delete", skillKey: "locked"},
     ] as const) {
       let thrown: unknown;
@@ -390,14 +393,14 @@ describe("AgentSkillTool", () => {
     });
   });
 
-  it("fails clearly when update_description targets a missing skill", async () => {
+  it("fails clearly when patch targets a missing skill", async () => {
     const store = await createStore();
     const tool = new AgentSkillTool({ store });
 
     await expect(tool.run({
-      operation: "update_description",
+      operation: "patch",
       skillKey: "missing",
-      description: "Updated summary.",
+      patch: {description: "Updated summary."},
     }, createRunContext({
       agentKey: "panda",
     }))).rejects.toThrow("Skill missing does not exist.");
@@ -456,22 +459,45 @@ describe("AgentSkillTool", () => {
     }))).rejects.toThrow("Load does not take tags.");
 
     await expect(tool.run({
-      operation: "update_description",
+      operation: "patch",
       skillKey: "calendar",
       description: "Updated summary.",
+    }, createRunContext({
+      agentKey: "panda",
+    }))).rejects.toThrow("Patch does not take top-level description; use patch.description.");
+
+    await expect(tool.run({
+      operation: "patch",
+      skillKey: "calendar",
+      patch: {description: "Updated summary."},
       content: "# Calendar",
     }, createRunContext({
       agentKey: "panda",
-    }))).rejects.toThrow("update_description does not take content.");
+    }))).rejects.toThrow("Patch does not take content.");
 
     await expect(tool.run({
-      operation: "update_description",
+      operation: "patch",
       skillKey: "calendar",
-      description: "Updated summary.",
+      patch: {description: "Updated summary."},
       tags: ["coding"],
     }, createRunContext({
       agentKey: "panda",
-    }))).rejects.toThrow("update_description does not take tags.");
+    }))).rejects.toThrow("Patch does not take tags.");
+
+    await expect(tool.run({
+      operation: "patch",
+      skillKey: "calendar",
+    }, createRunContext({
+      agentKey: "panda",
+    }))).rejects.toThrow("Patch requires patch.");
+
+    await expect(tool.run({
+      operation: "patch",
+      skillKey: "calendar",
+      patch: {},
+    }, createRunContext({
+      agentKey: "panda",
+    }))).rejects.toThrow("Patch requires patch.description.");
 
     await expect(tool.run({
       operation: "delete",
@@ -530,7 +556,7 @@ describe("AgentSkillTool", () => {
     }))).rejects.toThrow("Skill tags must use lowercase letters, numbers, hyphens, underscores, or colons.");
   });
 
-  it("rejects descriptions over 255 characters for set and update_description", async () => {
+  it("rejects descriptions over 255 characters for set and patch", async () => {
     const store = await createStore();
     const tool = new AgentSkillTool({ store });
 
@@ -553,17 +579,17 @@ describe("AgentSkillTool", () => {
     }))).rejects.toThrow("Skill description must be at most 255 characters.");
 
     await expect(tool.run({
-      operation: "update_description",
+      operation: "patch",
       skillKey: "calendar",
-      description: "y".repeat(255),
+      patch: {description: "y".repeat(255)},
     }, createRunContext({
       agentKey: "panda",
     }))).resolves.toMatchObject({description: "y".repeat(255)});
 
     await expect(tool.run({
-      operation: "update_description",
+      operation: "patch",
       skillKey: "calendar",
-      description: "y".repeat(256),
+      patch: {description: "y".repeat(256)},
     }, createRunContext({
       agentKey: "panda",
     }))).rejects.toThrow("Skill description must be at most 255 characters.");
@@ -609,10 +635,10 @@ describe("AgentSkillTool", () => {
       content: "# Updated",
     }, loadOnlyContext)).rejects.toThrow("agent_skill(set) is not allowed in this execution environment.");
     await expect(tool.run({
-      operation: "update_description",
+      operation: "patch",
       skillKey: "calendar",
-      description: "Updated.",
-    }, loadOnlyContext)).rejects.toThrow("agent_skill(update_description) is not allowed in this execution environment.");
+      patch: {description: "Updated."},
+    }, loadOnlyContext)).rejects.toThrow("agent_skill(patch) is not allowed in this execution environment.");
     await expect(tool.run({
       operation: "delete",
       skillKey: "calendar",
@@ -639,7 +665,7 @@ describe("AgentSkillTool", () => {
         credentialPolicy: {mode: "allowlist", envKeys: []},
         skillPolicy: {mode: "all_agent"},
         toolPolicy: {
-          agentSkill: {allowedOperations: ["load", "set", "update_description", "delete"]},
+          agentSkill: {allowedOperations: ["load", "set", "patch", "delete"]},
         },
         source: "fallback",
       },
@@ -655,11 +681,11 @@ describe("AgentSkillTool", () => {
       skillKey: "calendar",
     });
     await expect(tool.run({
-      operation: "update_description",
+      operation: "patch",
       skillKey: "calendar",
-      description: "Updated summary.",
+      patch: {description: "Updated summary."},
     }, maintenanceContext)).resolves.toMatchObject({
-      operation: "update_description",
+      operation: "patch",
       description: "Updated summary.",
     });
     await expect(tool.run({
@@ -699,10 +725,10 @@ describe("AgentSkillTool", () => {
       content: "# Calendar",
     }, createRunContext(baseContext))).rejects.toThrow("agent_skill(set) is not allowed in this execution environment.");
     await expect(tool.run({
-      operation: "update_description",
+      operation: "patch",
       skillKey: "calendar",
-      description: "Calendar helper.",
-    }, createRunContext(baseContext))).rejects.toThrow("agent_skill(update_description) is not allowed in this execution environment.");
+      patch: {description: "Calendar helper."},
+    }, createRunContext(baseContext))).rejects.toThrow("agent_skill(patch) is not allowed in this execution environment.");
     await expect(tool.run({
       operation: "delete",
       skillKey: "calendar",

@@ -33,7 +33,7 @@ Panda uses the `agent_skill` tool to upsert:
 
 Tags are short lowercase discovery hints such as `coding`, `github`, `orchestration`, `health`, or `finance`. Keep them sparse and broad; tags are for browsing/filtering skills, not permissions or secrets.
 
-When only the injected short description needs to change, Panda can use `agent_skill(operation = "update_description")`. That path updates the description of an existing editable skill without resubmitting or changing the stored body or tags.
+When only the injected short description needs to change, Panda can use `agent_skill(operation = "patch", patch = {"description": "..."})`. That path updates the description of an existing editable skill without resubmitting or changing the stored body or tags.
 
 Skills are scoped to the current agent. Existing skills are agent-editable by default.
 
@@ -54,7 +54,7 @@ Avoid tag stuffing. A skill with two useful tags is better than one with ten vag
 
 ## Locked Skills
 
-Control can mark a skill as **Locked from agent edits** by turning off **Allow agent edits**. Locked skills still appear in the skill index and remain readable through `agent_skill(operation = "load")` and `session.agent_skills`, but Panda cannot replace, update the description of, or delete them with the model-facing `agent_skill` tool.
+Control can mark a skill as **Locked from agent edits** by turning off **Allow agent edits**. Locked skills still appear in the skill index and remain readable through `agent_skill(operation = "load")` and `session.agent_skills`, but Panda cannot replace, patch the description of, or delete them with the model-facing `agent_skill` tool.
 
 Control operators can still edit, delete, lock, or unlock locked skills. This is useful for owner-maintained runbooks that agents should read but not overwrite.
 
