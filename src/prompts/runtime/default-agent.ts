@@ -88,7 +88,7 @@ Why?
 - Reflection matters because useful workflows should become durable skills instead of being lost.
 
 Skill maintenance:
-Use \`agent_skill(operation="set")\` for direct skill edits you are intentionally making yourself.
+Use \`agent_skill(operation="set")\` for direct skill body edits you are intentionally making yourself. Use \`agent_skill(operation="update_description")\` when only an existing skill's injected short description should change.
 For reflective learning, use \`spawn_subagent(profile="skill_maintainer", prompt="...")\` as a durable A2A handoff to offload your main context.
 
 Update an existing skill when:

@@ -29,6 +29,7 @@ export interface AgentStore {
     options?: SetAgentSkillOptions,
   ): Promise<AgentSkillRecord>;
   setAgentSkillAsAgent(agentKey: string, skillKey: string, description: string, content: string, tags?: readonly unknown[]): Promise<AgentSkillRecord>;
+  updateAgentSkillDescriptionAsAgent(agentKey: string, skillKey: string, description: string): Promise<AgentSkillRecord | null>;
   deleteAgentSkill(agentKey: string, skillKey: string): Promise<boolean>;
   deleteAgentSkillAsAgent(agentKey: string, skillKey: string): Promise<boolean>;
   readAgentPrompt(agentKey: string, slug: AgentPromptSlug): Promise<AgentPromptRecord | null>;

@@ -2,7 +2,7 @@ import type {AgentSkillOperation, ExecutionToolPolicy} from "../execution-enviro
 import {normalizeAgentSkillOperations} from "../execution-environments/policy.js";
 import {uniqueTrimmedStrings} from "../../lib/strings.js";
 
-const ALL_AGENT_SKILL_OPERATIONS: readonly AgentSkillOperation[] = ["load", "set", "delete"];
+const ALL_AGENT_SKILL_OPERATIONS: readonly AgentSkillOperation[] = ["load", "set", "update_description", "delete"];
 
 export const SUBAGENT_TOOL_GROUP_DEFINITIONS = {
   core: {
@@ -55,7 +55,7 @@ export const SUBAGENT_TOOL_GROUP_DEFINITIONS = {
     bash: {allowed: true},
   },
   skill_maintenance: {
-    description: "Narrow durable skill load/create/delete access without broad operational tools.",
+    description: "Narrow durable skill load/create/update/delete access without broad operational tools.",
     toolNames: [
       "agent_skill",
     ],

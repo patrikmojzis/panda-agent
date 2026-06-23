@@ -3,7 +3,7 @@ import {isRecord} from "../../lib/records.js";
 import {uniqueTrimmedStrings} from "../../lib/strings.js";
 import type {AgentSkillOperation, ExecutionSkillPolicy, ExecutionToolPolicy} from "./types.js";
 
-const AGENT_SKILL_OPERATIONS: readonly AgentSkillOperation[] = ["load", "set", "delete"];
+const AGENT_SKILL_OPERATIONS: readonly AgentSkillOperation[] = ["load", "set", "update_description", "delete"];
 const AGENT_SKILL_OPERATION_SET = new Set<string>(AGENT_SKILL_OPERATIONS);
 
 export function normalizeAgentSkillOperations(values: readonly unknown[]): AgentSkillOperation[] {
