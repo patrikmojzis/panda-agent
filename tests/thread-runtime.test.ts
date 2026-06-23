@@ -1635,6 +1635,227 @@ describe("ThreadRuntimeCoordinator", () => {
     });
   });
 
+  it("routes background continuation outbound through the latest routed input", async () => {
+    const runtime = createMockRuntime(
+      message("handled initial telegram"),
+      message("Nothing else to do."),
+      createAssistantMessage([{
+        type: "toolCall",
+        id: "call_outbound",
+        name: "outbound",
+        arguments: {
+          items: [{ type: "text", text: "background result" }],
+        },
+      }]),
+      message("queued background result"),
+      message("Nothing else to do."),
+    );
+    const enqueueDelivery = vi.fn(async (input) => ({
+      id: "delivery-1",
+      ...input,
+      status: "pending" as const,
+      attemptCount: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }));
+    const getLastRoute = vi.fn(async () => ({
+      source: "telegram",
+      connectorKey: "bot-stale",
+      externalConversationId: "chat-stale",
+      externalActorId: "user-stale",
+      capturedAt: 123,
+    }));
+    const saveLastRoute = vi.fn(async () => {});
+
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("background-outbound-agent", {
+      agent: new Agent({
+        name: "background-outbound-agent",
+        instructions: "Send the background result.",
+        tools: [new OutboundTool()],
+      }),
+      runtime,
+      context: {
+        threadId: "thread-background-outbound",
+        outboundQueue: {
+          enqueueDelivery,
+        },
+        routeMemory: {
+          getLastRoute,
+          saveLastRoute,
+        },
+      },
+    });
+
+    await createRuntimeThread(store, {
+      id: "thread-background-outbound",
+      agentKey: "background-outbound-agent",
+    });
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-background-outbound", {
+      message: stringToUserMessage("run a background job"),
+      source: "telegram",
+      channelId: "chat-99",
+      externalMessageId: "msg-1",
+      actorId: "user-99",
+      identityId: "identity-patrik",
+      metadata: {
+        route: {
+          source: "telegram",
+          connectorKey: "bot-main",
+          externalConversationId: "chat-99",
+          externalActorId: "user-99",
+        },
+      },
+    });
+    await coordinator.waitForIdle("thread-background-outbound");
+
+    await coordinator.submitInput("thread-background-outbound", buildBackgroundToolThreadInput({
+      id: "job-background-outbound",
+      threadId: "thread-background-outbound",
+      kind: "bash",
+      status: "completed",
+      summary: "printf done",
+      startedAt: Date.now() - 50,
+      finishedAt: Date.now(),
+      durationMs: 50,
+    }));
+    await coordinator.waitForIdle("thread-background-outbound");
+
+    expect(getLastRoute).not.toHaveBeenCalled();
+    expect(enqueueDelivery).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread-background-outbound",
+      channel: "telegram",
+      target: {
+        source: "telegram",
+        connectorKey: "bot-main",
+        externalConversationId: "chat-99",
+        externalActorId: "user-99",
+      },
+      items: [{ type: "text", text: "background result" }],
+    }));
+    expect(saveLastRoute).toHaveBeenCalledWith(expect.objectContaining({
+      source: "telegram",
+      connectorKey: "bot-main",
+      externalConversationId: "chat-99",
+      externalActorId: "user-99",
+    }), {identityId: "identity-patrik"});
+
+    const transcript = await store.loadTranscript("thread-background-outbound");
+    const outboundResult = transcript.find((entry) => entry.source === "tool:outbound")?.message;
+    expect(JSON.stringify(outboundResult)).not.toContain("bot-main");
+    expect(JSON.stringify(outboundResult)).not.toContain("chat-99");
+    expect(JSON.stringify(outboundResult)).not.toContain("user-99");
+  });
+
+  it("routes projected idle-reroll outbound through the latest routed input", async () => {
+    const runtime = createMockRuntime(
+      message("handled initial telegram"),
+      createAssistantMessage([{
+        type: "toolCall",
+        id: "call_outbound_projected",
+        name: "outbound",
+        arguments: {
+          items: [{ type: "text", text: "projected idle reroll result" }],
+        },
+      }]),
+      message("queued projected idle reroll result"),
+    );
+    const enqueueDelivery = vi.fn(async (input) => ({
+      id: "delivery-projected",
+      ...input,
+      status: "pending" as const,
+      attemptCount: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }));
+    const getLastRoute = vi.fn(async () => ({
+      source: "telegram",
+      connectorKey: "bot-stale",
+      externalConversationId: "chat-stale",
+      externalActorId: "user-stale",
+      capturedAt: 123,
+    }));
+    const saveLastRoute = vi.fn(async () => {});
+
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("projected-idle-outbound-agent", {
+      agent: new Agent({
+        name: "projected-idle-outbound-agent",
+        instructions: "Send the idle reroll result.",
+        tools: [new OutboundTool()],
+      }),
+      runtime,
+      inferenceProjection: {
+        dropMessages: {
+          preserveTailMessages: 1,
+        },
+      },
+      context: {
+        threadId: "thread-projected-idle-outbound",
+        outboundQueue: {
+          enqueueDelivery,
+        },
+        routeMemory: {
+          getLastRoute,
+          saveLastRoute,
+        },
+      },
+    });
+
+    await createRuntimeThread(store, {
+      id: "thread-projected-idle-outbound",
+      agentKey: "projected-idle-outbound-agent",
+    });
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-projected-idle-outbound", {
+      message: stringToUserMessage("use the idle reroll to reply"),
+      source: "telegram",
+      channelId: "chat-99",
+      externalMessageId: "msg-1",
+      actorId: "user-99",
+      identityId: "identity-patrik",
+      metadata: {
+        route: {
+          source: "telegram",
+          connectorKey: "bot-main",
+          externalConversationId: "chat-99",
+          externalActorId: "user-99",
+        },
+      },
+    });
+    await coordinator.waitForIdle("thread-projected-idle-outbound");
+
+    expect(getLastRoute).not.toHaveBeenCalled();
+    expect(enqueueDelivery).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread-projected-idle-outbound",
+      channel: "telegram",
+      target: {
+        source: "telegram",
+        connectorKey: "bot-main",
+        externalConversationId: "chat-99",
+        externalActorId: "user-99",
+      },
+      items: [{ type: "text", text: "projected idle reroll result" }],
+    }));
+    expect(saveLastRoute).toHaveBeenCalledWith(expect.objectContaining({
+      source: "telegram",
+      connectorKey: "bot-main",
+      externalConversationId: "chat-99",
+      externalActorId: "user-99",
+    }), {identityId: "identity-patrik"});
+  });
+
   it("surfaces A2A wake inputs between turns without cancelling the current plan", async () => {
     const started = createDeferred<void>();
     const release = createDeferred<{ done: string }>();

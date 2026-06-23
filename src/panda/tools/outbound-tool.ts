@@ -64,6 +64,16 @@ interface ResolvedOutboundTarget {
   identityHandle?: string;
 }
 
+interface ResolvedCurrentConversationTarget {
+  resolvedRoute: ResolvedOutboundTarget;
+  routeMemoryIdentityId?: string;
+}
+
+const INTERNAL_NO_ROUTE_CONTINUATION_SOURCES = new Set([
+  "background_tool",
+  "runtime",
+  "scheduled_task",
+]);
 
 function shouldRememberDeliveryContext(source: string): boolean {
   return source !== "discord";
@@ -184,6 +194,77 @@ async function resolveDestinationTarget(
   };
 }
 
+function resolveCurrentInputRoute(
+  input: DefaultAgentSessionContext["currentInput"],
+): ResolvedOutboundTarget | null {
+  const route = resolveChannelRouteTarget(input);
+  return route
+    ? {
+      channel: route.channel,
+      target: route.target,
+    }
+    : null;
+}
+
+function shouldUseCurrentRouteInputFallback(
+  input: DefaultAgentSessionContext["currentInput"],
+): boolean {
+  return input !== undefined
+    && !resolveChannelRouteTarget(input)
+    && INTERNAL_NO_ROUTE_CONTINUATION_SOURCES.has(input.source);
+}
+
+async function resolveCurrentConversationTarget(
+  context: DefaultAgentSessionContext | undefined,
+): Promise<ResolvedCurrentConversationTarget | null> {
+  const currentRoute = resolveCurrentInputRoute(context?.currentInput);
+  if (currentRoute) {
+    return {
+      resolvedRoute: currentRoute,
+      routeMemoryIdentityId: context?.currentInput?.identityId,
+    };
+  }
+
+  const currentIdentityId = context?.currentInput?.identityId;
+  if (currentIdentityId) {
+    const remembered = await readRememberedTarget(context, currentIdentityId);
+    if (remembered) {
+      return {
+        resolvedRoute: remembered,
+        routeMemoryIdentityId: currentIdentityId,
+      };
+    }
+  }
+
+  const routeInput = context?.currentRouteInput;
+  const routeInputRoute = resolveCurrentInputRoute(routeInput);
+
+  if (!context?.currentInput) {
+    return routeInputRoute
+      ? {
+        resolvedRoute: routeInputRoute,
+        routeMemoryIdentityId: routeInput?.identityId,
+      }
+      : null;
+  }
+
+  if (shouldUseCurrentRouteInputFallback(context.currentInput)) {
+    if (routeInputRoute) {
+      return {
+        resolvedRoute: routeInputRoute,
+        routeMemoryIdentityId: routeInput?.identityId,
+      };
+    }
+
+    return null;
+  }
+
+  const remembered = await readRememberedTarget(context);
+  return remembered
+    ? {resolvedRoute: remembered}
+    : null;
+}
+
 function rememberRouteFromTarget(target: OutboundTarget): RememberedRoute {
   return {
     source: target.source,
@@ -299,17 +380,12 @@ export class OutboundTool<TContext = DefaultAgentSessionContext> extends Tool<ty
   ): Promise<JsonObject> {
     const sessionContext = run.context as DefaultAgentSessionContext | undefined;
     const queue = ensureOutboundQueue(sessionContext);
-    const currentRoute = resolveChannelRouteTarget(sessionContext?.currentInput);
-    const currentIdentityId = sessionContext?.currentInput?.identityId;
-
+    const currentConversationTarget = args.to
+      ? null
+      : await resolveCurrentConversationTarget(sessionContext);
     const resolvedRoute: ResolvedOutboundTarget | null = args.to
       ? await resolveDestinationTarget(sessionContext, args.to)
-      : currentRoute
-        ? {
-          channel: currentRoute.channel,
-          target: currentRoute.target,
-        }
-        : await readRememberedTarget(sessionContext, currentIdentityId);
+      : currentConversationTarget?.resolvedRoute ?? null;
 
     const channel = resolvedRoute?.channel;
     if (!channel) {
@@ -338,9 +414,11 @@ export class OutboundTool<TContext = DefaultAgentSessionContext> extends Tool<ty
         : {}),
     });
     if (!args.to) {
-      await sessionContext?.routeMemory?.saveLastRoute(rememberRouteFromTarget(target), {
-        identityId: currentIdentityId,
-      });
+      const routeMemoryIdentityId = currentConversationTarget?.routeMemoryIdentityId;
+      await sessionContext?.routeMemory?.saveLastRoute(
+        rememberRouteFromTarget(target),
+        routeMemoryIdentityId ? {identityId: routeMemoryIdentityId} : undefined,
+      );
     }
 
     return serializeQueuedDelivery({

@@ -137,9 +137,7 @@ function grantsIdleReroll(input: Pick<ThreadMessageRecord, "source">): boolean {
   return !IDLE_REROLL_SUPPRESSED_INPUT_SOURCES.has(input.source);
 }
 
-function buildCurrentInputContext(
-  messages: readonly ThreadMessageRecord[],
-): {
+interface RunInputContext {
   messageId: string;
   source: string;
   channelId?: string;
@@ -147,21 +145,47 @@ function buildCurrentInputContext(
   actorId?: string;
   identityId?: string;
   metadata?: ThreadMessageRecord["metadata"];
-} | undefined {
+}
+
+function buildInputContext(entry: ThreadMessageRecord): RunInputContext {
+  return {
+    messageId: entry.id,
+    source: entry.source,
+    channelId: entry.channelId,
+    externalMessageId: entry.externalMessageId,
+    actorId: entry.actorId,
+    identityId: entry.identityId,
+    metadata: entry.metadata,
+  };
+}
+
+function hasRouteMetadata(entry: ThreadMessageRecord): boolean {
+  return isRecord(entry.metadata) && isRecord(entry.metadata.route);
+}
+
+function buildCurrentInputContext(
+  messages: readonly ThreadMessageRecord[],
+): RunInputContext | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const entry = messages[index];
     if (!entry || entry.origin !== "input") {
       continue;
     }
-    return {
-      messageId: entry.id,
-      source: entry.source,
-      channelId: entry.channelId,
-      externalMessageId: entry.externalMessageId,
-      actorId: entry.actorId,
-      identityId: entry.identityId,
-      metadata: entry.metadata,
-    };
+    return buildInputContext(entry);
+  }
+
+  return undefined;
+}
+
+function buildCurrentRouteInputContext(
+  messages: readonly ThreadMessageRecord[],
+): RunInputContext | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const entry = messages[index];
+    if (!entry || entry.origin !== "input" || !hasRouteMetadata(entry)) {
+      continue;
+    }
+    return buildInputContext(entry);
   }
 
   return undefined;
@@ -171,15 +195,18 @@ function buildRunContextValue(
   baseContext: unknown,
   messages: readonly ThreadMessageRecord[],
   runId?: string,
+  routeMessages: readonly ThreadMessageRecord[] = messages,
 ): unknown {
   const currentInput = buildCurrentInputContext(messages);
-  if (!currentInput && runId === undefined) {
+  const currentRouteInput = buildCurrentRouteInputContext(routeMessages);
+  if (!currentInput && !currentRouteInput && runId === undefined) {
     return baseContext;
   }
 
   if (!isRecord(baseContext)) {
     return {
       ...(currentInput ? { currentInput } : {}),
+      ...(currentRouteInput ? { currentRouteInput } : {}),
       ...(runId ? { runId } : {}),
     };
   }
@@ -193,6 +220,7 @@ function buildRunContextValue(
   return {
     ...sanitizedBaseContext,
     ...(currentInput ? { currentInput } : {}),
+    ...(currentRouteInput ? { currentRouteInput } : {}),
     ...(runId ? { runId } : {}),
   };
 }
@@ -513,6 +541,7 @@ export class ThreadRuntimeCoordinator {
     messages: readonly ThreadMessageRecord[],
     signal?: AbortSignal,
     resumeState?: ThreadResumeState,
+    routeMessages?: readonly ThreadMessageRecord[],
   ): ConstructorParameters<typeof Thread>[0] {
     const modelConfig = this.resolveModelConfig(definition);
 
@@ -521,7 +550,7 @@ export class ThreadRuntimeCoordinator {
       messages: messages.map((entry) => entry.message),
       systemPrompt: definition.systemPrompt,
       maxTurns: definition.maxTurns,
-      context: buildRunContextValue(definition.context, messages, run.id),
+      context: buildRunContextValue(definition.context, messages, run.id, routeMessages),
       llmContexts: definition.llmContexts,
       hooks: definition.hooks,
       promptCacheKey: definition.promptCacheKey,
@@ -783,6 +812,7 @@ export class ThreadRuntimeCoordinator {
             finalTranscript,
             controller.signal,
             resumeState,
+            transcript,
           ),
         );
 

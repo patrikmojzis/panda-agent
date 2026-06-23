@@ -251,6 +251,37 @@ describe("ScheduledTaskRunner", () => {
     expect(runs.rows).toEqual([{status: "succeeded"}]);
   });
 
+  it("uses the session creator identity when a scheduled task has no creator identity", async () => {
+    const harness = await createHarness({
+      responseText: "Fallback identity used.",
+    });
+    pools.push(harness.pool);
+
+    const task = await harness.scheduledTasks.createTask({
+      sessionId: "session-main",
+      title: "Fallback identity",
+      instruction: "Use the session creator identity.",
+      schedule: {
+        kind: "once",
+        runAt: new Date(Date.now() - 60_000).toISOString(),
+      },
+    });
+
+    await harness.runner.start();
+    await harness.runner.triggerDrain();
+    await harness.runner.stop();
+
+    const transcript = await harness.threadStore.loadTranscript("session-thread");
+    const input = transcript.find((entry) => entry.origin === "input" && entry.source === "scheduled_task");
+    expect(input?.identityId).toBe(harness.alice.id);
+
+    const runs = await harness.pool.query(
+      `SELECT status FROM "runtime"."scheduled_task_runs" WHERE task_id = $1`,
+      [task.id],
+    );
+    expect(runs.rows).toEqual([{status: "succeeded"}]);
+  });
+
   it("resolves the session current thread when the task fires", async () => {
     const harness = await createHarness({
       responseText: "Handled after reset.",
@@ -351,6 +382,7 @@ describe("ScheduledTaskRunner", () => {
           agentKey: "panda",
           kind: "main",
           currentThreadId,
+          createdByIdentityId: "session-creator-id",
           createdAt: Date.now(),
           updatedAt: Date.now(),
         })),
@@ -366,8 +398,9 @@ describe("ScheduledTaskRunner", () => {
           expect(threadId).toBe("thread-before-wait");
           currentThreadId = "thread-after-wait";
         }),
-        submitInput: vi.fn(async (threadId: string) => {
+        submitInput: vi.fn(async (threadId: string, payload: {identityId?: string}) => {
           expect(threadId).toBe("thread-after-wait");
+          expect(payload.identityId).toBe("alice-id");
           submitted = true;
         }),
         waitForIdle: vi.fn(async (threadId: string) => {

@@ -155,6 +155,14 @@ That means:
 - autonomous runs may have no active identity
 - tools that need identity-scoped access must ask for it explicitly
 
+Route context is separate from provenance. `currentInput` remains the latest
+input, even for internal continuations such as background-tool, runtime
+idle-reroll, or scheduled-task wakes. The runtime also exposes
+`currentRouteInput` as the latest input with `metadata.route` so no-`to`
+outbound replies can recover the previous routed
+channel for internal or no-input continuations; identity-scoped route memory
+is preferred, and generic/null route memory is only a last resort.
+
 ## Automation
 
 Long-lived automation follows the session:

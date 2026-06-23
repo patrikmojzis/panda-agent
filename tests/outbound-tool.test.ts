@@ -556,6 +556,314 @@ describe("OutboundTool", () => {
     }]);
   });
 
+  it("uses the latest routed input for background continuations before global route memory", async () => {
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
+    const context = createContext({
+      currentInput: {
+        source: "background_tool",
+        metadata: {
+          kind: "background_tool_job_update",
+          jobId: "job-1",
+        },
+      },
+      currentRouteInput: {
+        source: "telegram",
+        channelId: "chat-right",
+        externalMessageId: "msg-right",
+        actorId: "actor-right",
+        identityId: "identity-patrik",
+        metadata: {
+          route: {
+            source: "telegram",
+            connectorKey: "bot-right",
+            externalConversationId: "chat-right",
+            externalActorId: "actor-right",
+          },
+        },
+      },
+      routeMemory: {
+        getLastRoute: async (lookup) => {
+          context.routeLookups.push(lookup);
+          return {
+            source: "telegram",
+            connectorKey: "bot-stale",
+            externalConversationId: "chat-stale",
+            externalActorId: "actor-stale",
+            capturedAt: 123,
+          };
+        },
+        saveLastRoute: async (route, options) => {
+          context.rememberedRoutes.push(route);
+          context.rememberedRouteOptions.push(options);
+        },
+      },
+    });
+
+    const result = await tool.run({
+      items: [{ type: "text", text: "background result" }],
+    }, createRunContext(context));
+
+    expect(context.routeLookups).toEqual([]);
+    expect(context.queued).toEqual([{
+      threadId: "thread-1",
+      channel: "telegram",
+      target: {
+        source: "telegram",
+        connectorKey: "bot-right",
+        externalConversationId: "chat-right",
+        externalActorId: "actor-right",
+      },
+      items: [{ type: "text", text: "background result" }],
+    }]);
+    expect(context.rememberedRouteOptions).toEqual([{identityId: "identity-patrik"}]);
+    expect(JSON.stringify(result)).not.toContain("bot-right");
+    expect(JSON.stringify(result)).not.toContain("chat-right");
+    expect(JSON.stringify(result)).not.toContain("actor-right");
+  });
+
+  it("uses the latest routed input for runtime idle-reroll continuations before global route memory", async () => {
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
+    const context = createContext({
+      currentInput: {
+        source: "runtime",
+        metadata: {
+          autonomy: {
+            kind: "idle_reroll",
+          },
+        },
+      },
+      currentRouteInput: {
+        source: "telegram",
+        channelId: "chat-right",
+        identityId: "identity-patrik",
+        metadata: {
+          route: {
+            source: "telegram",
+            connectorKey: "bot-right",
+            externalConversationId: "chat-right",
+            externalActorId: "actor-right",
+          },
+        },
+      },
+      routeMemory: {
+        getLastRoute: async (lookup) => {
+          context.routeLookups.push(lookup);
+          return {
+            source: "telegram",
+            connectorKey: "bot-stale",
+            externalConversationId: "chat-stale",
+            externalActorId: "actor-stale",
+            capturedAt: 123,
+          };
+        },
+        saveLastRoute: async (route, options) => {
+          context.rememberedRoutes.push(route);
+          context.rememberedRouteOptions.push(options);
+        },
+      },
+    });
+
+    await tool.run({
+      items: [{ type: "text", text: "idle reroll result" }],
+    }, createRunContext(context));
+
+    expect(context.routeLookups).toEqual([]);
+    expect(context.queued).toEqual([{
+      threadId: "thread-1",
+      channel: "telegram",
+      target: {
+        source: "telegram",
+        connectorKey: "bot-right",
+        externalConversationId: "chat-right",
+        externalActorId: "actor-right",
+      },
+      items: [{ type: "text", text: "idle reroll result" }],
+    }]);
+    expect(context.rememberedRouteOptions).toEqual([{identityId: "identity-patrik"}]);
+  });
+
+  it("uses the latest routed input when current input is absent before global route memory", async () => {
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
+    const context = createContext({
+      currentRouteInput: {
+        source: "telegram",
+        channelId: "chat-right",
+        identityId: "identity-patrik",
+        metadata: {
+          route: {
+            source: "telegram",
+            connectorKey: "bot-right",
+            externalConversationId: "chat-right",
+            externalActorId: "actor-right",
+          },
+        },
+      },
+      routeMemory: {
+        getLastRoute: async (lookup) => {
+          context.routeLookups.push(lookup);
+          return {
+            source: "telegram",
+            connectorKey: "bot-stale",
+            externalConversationId: "chat-stale",
+            externalActorId: "actor-stale",
+            capturedAt: 123,
+          };
+        },
+        saveLastRoute: async (route, options) => {
+          context.rememberedRoutes.push(route);
+          context.rememberedRouteOptions.push(options);
+        },
+      },
+    });
+
+    await tool.run({
+      items: [{ type: "text", text: "projected continuation result" }],
+    }, createRunContext(context));
+
+    expect(context.routeLookups).toEqual([]);
+    expect(context.queued).toEqual([{
+      threadId: "thread-1",
+      channel: "telegram",
+      target: {
+        source: "telegram",
+        connectorKey: "bot-right",
+        externalConversationId: "chat-right",
+        externalActorId: "actor-right",
+      },
+      items: [{ type: "text", text: "projected continuation result" }],
+    }]);
+    expect(context.rememberedRouteOptions).toEqual([{identityId: "identity-patrik"}]);
+  });
+
+  it("fails closed for internal no-route inputs when no routed input is available", async () => {
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
+    const context = createContext({
+      currentInput: {
+        source: "runtime",
+        metadata: {
+          autonomy: {
+            kind: "idle_reroll",
+          },
+        },
+      },
+      routeMemory: {
+        getLastRoute: async (lookup) => {
+          context.routeLookups.push(lookup);
+          return {
+            source: "telegram",
+            connectorKey: "bot-stale",
+            externalConversationId: "chat-stale",
+            externalActorId: "actor-stale",
+            capturedAt: 123,
+          };
+        },
+        saveLastRoute: async (route, options) => {
+          context.rememberedRoutes.push(route);
+          context.rememberedRouteOptions.push(options);
+        },
+      },
+    });
+
+    await expect(tool.run({
+      items: [{ type: "text", text: "do not send to stale chat" }],
+    }, createRunContext(context))).rejects.toThrow(
+      "No outbound channel was provided and no current inbound route is available.",
+    );
+
+    expect(context.routeLookups).toEqual([]);
+    expect(context.queued).toEqual([]);
+    expect(context.rememberedRoutes).toEqual([]);
+  });
+
+  it("fails closed when current and routed inputs are both absent", async () => {
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
+    const context = createContext({
+      routeMemory: {
+        getLastRoute: async (lookup) => {
+          context.routeLookups.push(lookup);
+          return {
+            source: "telegram",
+            connectorKey: "bot-stale",
+            externalConversationId: "chat-stale",
+            externalActorId: "actor-stale",
+            capturedAt: 123,
+          };
+        },
+        saveLastRoute: async (route, options) => {
+          context.rememberedRoutes.push(route);
+          context.rememberedRouteOptions.push(options);
+        },
+      },
+    });
+
+    await expect(tool.run({
+      items: [{ type: "text", text: "do not send without context" }],
+    }, createRunContext(context))).rejects.toThrow(
+      "No outbound channel was provided and no current inbound route is available.",
+    );
+
+    expect(context.routeLookups).toEqual([]);
+    expect(context.queued).toEqual([]);
+    expect(context.rememberedRoutes).toEqual([]);
+  });
+
+  it("uses generic route memory for normal no-route inputs without borrowing the latest routed input", async () => {
+    const tool = new OutboundTool<DefaultAgentSessionContext>();
+    const context = createContext({
+      currentInput: {
+        source: "tui",
+      },
+      currentRouteInput: {
+        source: "telegram",
+        identityId: "identity-patrik",
+        metadata: {
+          route: {
+            source: "telegram",
+            connectorKey: "bot-old",
+            externalConversationId: "chat-old",
+            externalActorId: "actor-old",
+          },
+        },
+      },
+      routeMemory: {
+        getLastRoute: async (lookup) => {
+          context.routeLookups.push(lookup);
+          return lookup === undefined
+            ? {
+              source: "telegram",
+              connectorKey: "bot-generic",
+              externalConversationId: "chat-generic",
+              externalActorId: "actor-generic",
+              capturedAt: 123,
+            }
+            : null;
+        },
+        saveLastRoute: async (route, options) => {
+          context.rememberedRoutes.push(route);
+          context.rememberedRouteOptions.push(options);
+        },
+      },
+    });
+
+    await tool.run({
+      items: [{ type: "text", text: "generic hello" }],
+    }, createRunContext(context));
+
+    expect(context.routeLookups).toEqual([undefined]);
+    expect(context.queued).toEqual([{
+      threadId: "thread-1",
+      channel: "telegram",
+      target: {
+        source: "telegram",
+        connectorKey: "bot-generic",
+        externalConversationId: "chat-generic",
+        externalActorId: "actor-generic",
+      },
+      items: [{ type: "text", text: "generic hello" }],
+    }]);
+    expect(context.rememberedRouteOptions).toEqual([undefined]);
+  });
+
   it("rejects raw transport routing keys", async () => {
     const tool = new OutboundTool<DefaultAgentSessionContext>();
     const context = createContext();
