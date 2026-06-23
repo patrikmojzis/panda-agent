@@ -73,7 +73,7 @@ A live conversation does not force you to halt after each \`outbound\` call. If 
 **Previous Chat History**
 Sometimes when chatting with multiple entities, you may not remember prior context.
 When you need prior chat history or tool output history, you may use \`postgres_readonly_query\` directly.
-Relevant views: \`session.agent_sessions\`, \`session.threads\`, \`session.messages\`, \`session.tool_results\`, \`session.messages_raw\`.
+Relevant views: \`session.agent_sessions\`, \`session.threads\`, \`session.messages\`, \`session.tool_results\`, \`session.messages_raw\`. For older subagents omitted from the default Subagents context, query \`session.subagent_history\`.
 </channels_vs_inner_monologue>
 
 <skills>

@@ -132,6 +132,19 @@ function createEnvironment(
   };
 }
 
+function createThreadSummary(sessionId: string, updatedAt: number) {
+  return {
+    thread: {
+      id: `${sessionId}-thread`,
+      sessionId,
+      createdAt: updatedAt - 60_000,
+      updatedAt,
+    },
+    messageCount: 0,
+    pendingInputCount: 0,
+  };
+}
+
 describe("SubagentsContext", () => {
   it("renders profiles and all child subagent groups without legacy worker terminology", async () => {
     const sessions = [
@@ -171,12 +184,61 @@ describe("SubagentsContext", () => {
     expect(rendered).toContain("workspace /environments/isolated-child/workspace");
     expect(rendered).toContain("inbox /environments/isolated-child/inbox");
     expect(rendered).toContain("artifacts /environments/isolated-child/artifacts");
-    expect(rendered).toContain("Subagents with unavailable environments:");
-    expect(rendered).toContain("missing-env-child");
+    expect(rendered).not.toContain("Subagents with unavailable environments:");
+    expect(rendered).not.toContain("missing-env-child");
+    expect(rendered).toContain("Subagents omitted from default context: 1");
+    expect(rendered).toContain("- unavailable_environment: 1 | statuses missing_environment:1 | profiles workspace:1");
     expect(rendered).not.toContain("other-parent-child");
     expect(rendered).not.toContain("legacy-worker");
     expect(rendered).not.toContain("Workers");
     expect(rendered).not.toContain("workers none");
+  });
+
+  it("renders only recently active subagents and summarizes older history", async () => {
+    const old = NOW.getTime() - 3 * 24 * 60 * 60 * 1_000;
+    const recentThreadActivity = NOW.getTime() - 60 * 60 * 1_000;
+    const sessions = [
+      createSubagentSession({
+        id: "recent-by-thread",
+        parentSessionId: "parent-session",
+        execution: "agent_workspace",
+        createdAt: old,
+      }),
+      createSubagentSession({
+        id: "stale-workspace",
+        parentSessionId: "parent-session",
+        execution: "agent_workspace",
+        createdAt: old,
+      }),
+      createSubagentSession({
+        id: "stale-missing-env",
+        parentSessionId: "parent-session",
+        execution: "isolated_environment",
+        environmentId: "gone-env",
+        profileSlug: "browser",
+        createdAt: old,
+      }),
+    ];
+
+    const context = new SubagentsContext({
+      sessions: {listAgentSessions: async () => sessions},
+      threads: {listThreadSummaries: async () => [createThreadSummary("recent-by-thread", recentThreadActivity)]},
+      subagentProfiles: {listProfiles: async () => [profile("workspace"), profile("browser")]},
+      agentKey: "panda",
+      parentSessionId: "parent-session",
+      now: NOW,
+    });
+
+    const rendered = await context.getContent();
+
+    expect(rendered).toContain("recent-by-thread");
+    expect(rendered).toContain(`last activity ${new Date(recentThreadActivity).toISOString()}`);
+    expect(rendered).not.toContain("stale-workspace");
+    expect(rendered).not.toContain("stale-missing-env");
+    expect(rendered).toContain("Subagents omitted from default context: 2");
+    expect(rendered).toContain("Query session.subagent_history with postgres_readonly_query for details");
+    expect(rendered).toContain("- agent_workspace: 1 | profiles workspace:1");
+    expect(rendered).toContain("- unavailable_environment: 1 | statuses missing_environment:1 | profiles browser:1");
   });
 
   it("caps rendered profiles and subagents", async () => {

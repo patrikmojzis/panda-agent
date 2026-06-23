@@ -12,8 +12,22 @@ export interface RenderSubagentsContextSubagent {
   profile: string;
   execution: "agent_workspace" | "isolated_environment";
   startedAt: string;
+  lastActivityAt: string;
   task: string;
   environmentId?: string;
+}
+
+export interface RenderSubagentsContextOmittedGroup {
+  category: string;
+  count: number;
+  statuses?: readonly string[];
+  profiles?: readonly string[];
+}
+
+export interface RenderSubagentsContextOmittedHistory {
+  count: number;
+  cutoff: string;
+  groups: readonly RenderSubagentsContextOmittedGroup[];
 }
 
 export interface RenderSubagentsContextEnvironment {
@@ -34,6 +48,7 @@ export interface RenderSubagentsContextInput {
   agentWorkspaceSubagents?: readonly RenderSubagentsContextSubagent[];
   environments?: readonly RenderSubagentsContextEnvironment[];
   unavailableEnvironmentSubagents?: readonly RenderSubagentsContextSubagent[];
+  omittedHistory?: RenderSubagentsContextOmittedHistory;
 }
 
 function renderProfile(profile: RenderSubagentsContextProfile): string {
@@ -52,7 +67,16 @@ function renderSubagent(subagent: RenderSubagentsContextSubagent): string {
     `execution ${subagent.execution}`,
     subagent.environmentId ? `environment ${subagent.environmentId}` : "",
     `started ${subagent.startedAt}`,
+    `last activity ${subagent.lastActivityAt}`,
     `task ${subagent.task}`,
+  ].filter(Boolean).join(" | ");
+}
+
+function renderOmittedHistoryGroup(group: RenderSubagentsContextOmittedGroup): string {
+  return [
+    `- ${group.category}: ${group.count}`,
+    group.statuses?.length ? `statuses ${group.statuses.join(", ")}` : "",
+    group.profiles?.length ? `profiles ${group.profiles.join(", ")}` : "",
   ].filter(Boolean).join(" | ");
 }
 
@@ -111,6 +135,14 @@ export function renderSubagentsContext(input: RenderSubagentsContextInput): stri
     }
     lines.push("Subagents with unavailable environments:");
     lines.push(...input.unavailableEnvironmentSubagents.map((subagent) => `- ${renderSubagent(subagent)}`));
+  }
+
+  if (input.omittedHistory && input.omittedHistory.count > 0) {
+    if (lines.length) {
+      lines.push("");
+    }
+    lines.push(`Subagents omitted from default context: ${input.omittedHistory.count}. Default lists only available subagents with last activity at or after ${input.omittedHistory.cutoff}; unavailable subagents are summarized here. Query session.subagent_history with postgres_readonly_query for details.`);
+    lines.push(...input.omittedHistory.groups.map(renderOmittedHistoryGroup));
   }
 
   return lines.join("\n");

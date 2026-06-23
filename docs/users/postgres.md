@@ -244,6 +244,7 @@ Treat these views as the public interface:
 - `session.runs`
 - `session.todos`
 - `session.runtime_config`
+- `session.subagent_history`
 - `session.agent_prompts`
 - `session.agent_pairings`
 - `session.agent_skills`
@@ -264,6 +265,8 @@ Do not solve that by handing the SQL tool raw table access.
 
 `session.agent_skills` exposes stored skill bodies.
 Use `description` or `substring(content from ... for ...)` for large skills instead of yanking the whole blob every time.
+
+`session.subagent_history` exposes current-session child subagent identifiers, bounded task previews, environment state, and last activity so older subagents can stay out of the default prompt without leaking full handoff text.
 
 ## Hard Rules
 

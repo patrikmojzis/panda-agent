@@ -5,6 +5,7 @@ import {buildScheduledTaskTableNames} from "../../scheduling/tasks/postgres-shar
 import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
 import {buildWatchTableNames} from "../../watches/postgres-shared.js";
 import {buildEmailTableNames} from "../../email/postgres-shared.js";
+import {buildExecutionEnvironmentTableNames} from "../../execution-environments/postgres-shared.js";
 import {buildSessionRelationNames, quoteIdentifier, quoteQualifiedIdentifier, RUNTIME_SCHEMA, SESSION_SCHEMA} from "../../../lib/postgres-relations.js";
 import {buildThreadRuntimeTableNames} from "./postgres-shared.js";
 
@@ -21,6 +22,7 @@ export interface ReadonlySessionViewNames {
   agentPrompts: string;
   agentPairings: string;
   agentSkills: string;
+  subagentHistory: string;
   scheduledTasks: string;
   scheduledTaskRuns: string;
   watches: string;
@@ -63,7 +65,8 @@ export async function ensureReadonlySessionQuerySchema(
   const scheduledTaskTables = buildScheduledTaskTableNames();
   const watchTables = buildWatchTableNames();
   const emailTables = buildEmailTableNames();
-  const { agentSessions, todos, runtimeConfig, threads, messages, messagesRaw, toolResults, inputs, runs, agentPrompts, agentPairings, agentSkills, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents, emailAccounts, emailAllowedRecipients, emailRoutes, emailMessages, emailMessageRecipients, emailAttachments } = buildSessionRelationNames({
+  const environmentTables = buildExecutionEnvironmentTableNames();
+  const { agentSessions, todos, runtimeConfig, threads, messages, messagesRaw, toolResults, inputs, runs, agentPrompts, agentPairings, agentSkills, subagentHistory, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents, emailAccounts, emailAllowedRecipients, emailRoutes, emailMessages, emailMessageRecipients, emailAttachments } = buildSessionRelationNames({
     agentSessions: "agent_sessions",
     todos: "todos",
     runtimeConfig: "runtime_config",
@@ -76,6 +79,7 @@ export async function ensureReadonlySessionQuerySchema(
     agentPrompts: "agent_prompts",
     agentPairings: "agent_pairings",
     agentSkills: "agent_skills",
+    subagentHistory: "subagent_history",
     scheduledTasks: "scheduled_tasks",
     scheduledTaskRuns: "scheduled_task_runs",
     watches: "watches",
@@ -101,6 +105,7 @@ export async function ensureReadonlySessionQuerySchema(
     agentPrompts,
     agentPairings,
     agentSkills,
+    subagentHistory,
     scheduledTasks,
     scheduledTaskRuns,
     watches,
@@ -163,6 +168,7 @@ export async function ensureReadonlySessionQuerySchema(
     DROP VIEW IF EXISTS ${views.agentPairings};
     DROP VIEW IF EXISTS ${views.agentPrompts};
     DROP VIEW IF EXISTS ${views.agentSkills};
+    DROP VIEW IF EXISTS ${views.subagentHistory};
     DROP VIEW IF EXISTS ${views.scheduledTaskRuns};
     DROP VIEW IF EXISTS ${views.scheduledTasks};
     DROP VIEW IF EXISTS ${views.toolResults};
@@ -426,6 +432,76 @@ export async function ensureReadonlySessionQuerySchema(
           AND STRPOS(',' || COALESCE(current_setting('runtime.skill_allowlist', true), '') || ',', ',' || skill.skill_key || ',') > 0
         )
       );
+
+    CREATE VIEW ${views.subagentHistory}
+    WITH (security_barrier = true) AS
+    SELECT
+      subagent.id AS session_id,
+      subagent.agent_key,
+      subagent.current_thread_id,
+      subagent.metadata->'subagent'->>'parentSessionId' AS parent_session_id,
+      subagent.metadata->'subagent'->'profile'->>'slug' AS profile,
+      subagent.metadata->'subagent'->>'execution' AS execution,
+      subagent.metadata->'subagent'->>'environmentId' AS environment_id,
+      environment.state AS environment_state,
+      left(COALESCE(subagent.metadata->'subagent'->>'task', ''), 240) AS task_preview,
+      subagent.created_at AS started_at,
+      subagent.updated_at AS session_updated_at,
+      thread_summary.thread_updated_at,
+      thread_summary.last_message_at,
+      GREATEST(
+        subagent.created_at,
+        subagent.updated_at,
+        COALESCE(thread_summary.thread_updated_at, subagent.updated_at),
+        COALESCE(thread_summary.last_message_at, subagent.updated_at),
+        COALESCE(environment.updated_at, subagent.updated_at),
+        COALESCE(binding.updated_at, subagent.updated_at)
+      ) AS last_activity_at,
+      COALESCE(thread_summary.message_count, 0)::INTEGER AS message_count,
+      COALESCE(thread_summary.pending_input_count, 0)::INTEGER AS pending_input_count,
+      binding.alias AS environment_alias,
+      binding.created_at AS environment_bound_at
+    FROM ${sessionTables.sessions} AS subagent
+    INNER JOIN (${activeSessionSql}) AS active_session
+      ON active_session.id = subagent.metadata->'subagent'->>'parentSessionId'
+     AND active_session.agent_key = subagent.agent_key
+    LEFT JOIN ${environmentTables.executionEnvironments} AS environment
+      ON environment.id = subagent.metadata->'subagent'->>'environmentId'
+     AND environment.agent_key = subagent.agent_key
+     AND environment.created_by_session_id = active_session.id
+    LEFT JOIN ${environmentTables.sessionEnvironmentBindings} AS binding
+      ON binding.session_id = subagent.id
+     AND binding.environment_id = environment.id
+    LEFT JOIN LATERAL (
+      SELECT
+        (
+          SELECT MAX(t.updated_at)
+          FROM ${tables.threads} AS t
+          WHERE t.session_id = subagent.id
+        ) AS thread_updated_at,
+        (
+          SELECT MAX(m.created_at)
+          FROM ${tables.messages} AS m
+          INNER JOIN ${tables.threads} AS t ON t.id = m.thread_id
+          WHERE t.session_id = subagent.id
+        ) AS last_message_at,
+        (
+          SELECT COUNT(*)::INTEGER
+          FROM ${tables.messages} AS m
+          INNER JOIN ${tables.threads} AS t ON t.id = m.thread_id
+          WHERE t.session_id = subagent.id
+        ) AS message_count,
+        (
+          SELECT COUNT(*)::INTEGER
+          FROM ${tables.inputs} AS i
+          INNER JOIN ${tables.threads} AS t ON t.id = i.thread_id
+          WHERE t.session_id = subagent.id
+            AND i.applied_at IS NULL
+        ) AS pending_input_count
+    ) AS thread_summary ON TRUE
+    WHERE subagent.kind = 'subagent'
+      AND subagent.agent_key = current_setting('runtime.agent_key', true)
+      AND subagent.metadata->'subagent'->>'parentSessionId' = current_setting('runtime.session_id', true);
 
     CREATE VIEW ${views.scheduledTasks}
     WITH (security_barrier = true) AS
@@ -697,7 +773,7 @@ export async function ensureReadonlySessionQuerySchema(
     const readonlyRole = quoteIdentifier(options.readonlyRole);
     await options.queryable.query(`
       GRANT USAGE ON SCHEMA ${quoteIdentifier(SESSION_SCHEMA)} TO ${readonlyRole};
-      GRANT SELECT ON ${views.agentSessions}, ${views.todos}, ${views.runtimeConfig}, ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.agentPrompts}, ${views.agentPairings}, ${views.agentSkills}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents}, ${views.emailAccounts}, ${views.emailAllowedRecipients}, ${views.emailRoutes}, ${views.emailMessages}, ${views.emailMessageRecipients}, ${views.emailAttachments} TO ${readonlyRole};
+      GRANT SELECT ON ${views.agentSessions}, ${views.todos}, ${views.runtimeConfig}, ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.agentPrompts}, ${views.agentPairings}, ${views.agentSkills}, ${views.subagentHistory}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents}, ${views.emailAccounts}, ${views.emailAllowedRecipients}, ${views.emailRoutes}, ${views.emailMessages}, ${views.emailMessageRecipients}, ${views.emailAttachments} TO ${readonlyRole};
     `);
   }
 

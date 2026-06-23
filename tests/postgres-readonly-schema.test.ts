@@ -77,6 +77,10 @@ class PgMemReadonlySchemaQueryable {
         continue;
       }
 
+      if (/^CREATE VIEW "session"."subagent_history"/i.test(statement)) {
+        continue;
+      }
+
       if (/^CREATE VIEW "session"."scheduled_tasks"/i.test(statement)) {
         await this.pool.query(`
           CREATE VIEW "session"."scheduled_tasks" AS
@@ -290,6 +294,15 @@ function createScopedPool() {
   };
 }
 
+function extractViewSql(sql: string, viewName: string, nextViewName: string): string {
+  const start = sql.indexOf(`CREATE VIEW "session"."${viewName}"`);
+  const end = sql.indexOf(`CREATE VIEW "session"."${nextViewName}"`, start + 1);
+  if (start < 0 || end < 0) {
+    throw new Error(`Could not extract SQL for session.${viewName}.`);
+  }
+  return sql.slice(start, end);
+}
+
 describe("ensureReadonlySessionQuerySchema", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
 
@@ -325,6 +338,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
       agentPrompts: "\"session\".\"agent_prompts\"",
       agentPairings: "\"session\".\"agent_pairings\"",
       agentSkills: "\"session\".\"agent_skills\"",
+      subagentHistory: "\"session\".\"subagent_history\"",
       scheduledTasks: "\"session\".\"scheduled_tasks\"",
       scheduledTaskRuns: "\"session\".\"scheduled_task_runs\"",
       watches: "\"session\".\"watches\"",
@@ -352,6 +366,8 @@ describe("ensureReadonlySessionQuerySchema", () => {
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_prompts\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_pairings\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_skills\"");
+    expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"subagent_history\"");
+    expect(queryable.queries[0]).toContain("subagent.metadata->'subagent'->>'parentSessionId' = current_setting('runtime.session_id', true)");
     expect(queryable.queries[0]).toContain("DROP VIEW IF EXISTS \"session\".\"agent_telepathy_devices\"");
     expect(queryable.queries[0]).toContain("DROP TABLE IF EXISTS \"runtime\".\"telepathy_devices\" CASCADE");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"scheduled_tasks\"");
@@ -372,7 +388,27 @@ describe("ensureReadonlySessionQuerySchema", () => {
     expect(queryable.queries[0]).toContain("prompt.agent_key = current_setting('runtime.agent_key', true)");
     expect(queryable.queries[0]).toContain("pairing.agent_key = current_setting('runtime.agent_key', true)");
     expect(queryable.queries[0]).toContain("skill.agent_key = current_setting('runtime.agent_key', true)");
-    expect(queryable.queries[1]).toContain("GRANT SELECT ON \"session\".\"agent_sessions\", \"session\".\"todos\", \"session\".\"runtime_config\", \"session\".\"threads\", \"session\".\"messages\", \"session\".\"messages_raw\", \"session\".\"tool_results\", \"session\".\"inputs\", \"session\".\"runs\", \"session\".\"agent_prompts\", \"session\".\"agent_pairings\", \"session\".\"agent_skills\", \"session\".\"scheduled_tasks\", \"session\".\"scheduled_task_runs\", \"session\".\"watches\", \"session\".\"watch_runs\", \"session\".\"watch_events\"");
+    expect(queryable.queries[1]).toContain("GRANT SELECT ON \"session\".\"agent_sessions\", \"session\".\"todos\", \"session\".\"runtime_config\", \"session\".\"threads\", \"session\".\"messages\", \"session\".\"messages_raw\", \"session\".\"tool_results\", \"session\".\"inputs\", \"session\".\"runs\", \"session\".\"agent_prompts\", \"session\".\"agent_pairings\", \"session\".\"agent_skills\", \"session\".\"subagent_history\", \"session\".\"scheduled_tasks\", \"session\".\"scheduled_task_runs\", \"session\".\"watches\", \"session\".\"watch_runs\", \"session\".\"watch_events\"");
+  });
+
+  it("keeps readonly subagent history scoped and bounded", async () => {
+    const queryable = new RecordingQueryable();
+
+    await ensureReadonlySessionQuerySchema({
+      queryable,
+      readonlyRole: "readonly_user",
+    });
+
+    const subagentHistorySql = extractViewSql(queryable.queries[0], "subagent_history", "scheduled_tasks");
+    expect(subagentHistorySql).toContain("subagent.kind = 'subagent'");
+    expect(subagentHistorySql).toContain("subagent.agent_key = current_setting('runtime.agent_key', true)");
+    expect(subagentHistorySql).toContain("subagent.metadata->'subagent'->>'parentSessionId' = current_setting('runtime.session_id', true)");
+    expect(subagentHistorySql).toContain("environment.created_by_session_id = active_session.id");
+    expect(subagentHistorySql).toContain("left(COALESCE(subagent.metadata->'subagent'->>'task', ''), 240) AS task_preview");
+    expect(subagentHistorySql).not.toMatch(/AS task/);
+    expect(subagentHistorySql).not.toContain("->>'context'");
+    expect(subagentHistorySql).not.toContain("->>'prompt'");
+    expect(subagentHistorySql).not.toContain("subagent.metadata,");
   });
 
   it("filters readonly threads by session when multiple identities share an agent", async () => {

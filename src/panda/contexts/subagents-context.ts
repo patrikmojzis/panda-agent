@@ -9,36 +9,49 @@ import type {ExecutionEnvironmentStore} from "../../domain/execution-environment
 import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/filesystem.js";
 import {readSubagentSessionMetadata, type SubagentExecutionMode} from "../../domain/subagents/session-metadata.js";
 import type {SubagentProfileStore} from "../../domain/subagents/store.js";
+import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
+import type {ThreadSummaryRecord} from "../../domain/threads/runtime/types.js";
 import {
   renderSubagentsContext,
   type RenderSubagentsContextEnvironment,
+  type RenderSubagentsContextOmittedGroup,
   type RenderSubagentsContextProfile,
   type RenderSubagentsContextSubagent,
 } from "../../prompts/contexts/subagents.js";
 import {resolveNow} from "./shared.js";
 
 const STOPPED_ENVIRONMENT_CONTEXT_TTL_MS = 60 * 60 * 1_000;
+const RECENT_SUBAGENT_ACTIVITY_MS = 24 * 60 * 60 * 1_000;
 const MAX_RENDERED_ENVIRONMENTS = 12;
 const MAX_RENDERED_SUBAGENTS_PER_ENVIRONMENT = 8;
 const MAX_RENDERED_PROFILES = 20;
 const MAX_TASK_PREVIEW_CHARS = 120;
+const MAX_OMITTED_HISTORY_GROUPS = 8;
+const MAX_OMITTED_HISTORY_VALUES = 4;
 const CONTEXT_STATES = new Set(["provisioning", "ready", "stopping", "failed"]);
 
 export interface SubagentsContextOptions {
   sessions: Pick<SessionStore, "listAgentSessions">;
   environments?: Pick<ExecutionEnvironmentStore, "listBindingsForEnvironments" | "listDisposableEnvironmentsByOwner">;
   subagentProfiles?: Pick<SubagentProfileStore, "listProfiles">;
+  threads?: Pick<ThreadRuntimeStore, "listThreadSummaries">;
   agentKey: string;
   parentSessionId: string;
   stoppedTtlMs?: number;
+  recentActivityMs?: number;
   maxSubagentsPerEnvironment?: number;
   maxProfiles?: number;
   now?: Date | (() => Date);
 }
 
+type OmittedSubagentCategory = "agent_workspace" | "isolated_environment" | "unavailable_environment";
+
 interface SubagentContextCandidate {
   session: SessionRecord;
   subagent: RenderSubagentsContextSubagent;
+  lastActivityAt: number;
+  category: OmittedSubagentCategory;
+  status?: string;
 }
 
 interface AttachedSubagentCandidate extends SubagentContextCandidate {
@@ -74,6 +87,11 @@ function compareAttachedSubagentCandidates(
   left: AttachedSubagentCandidate,
   right: AttachedSubagentCandidate,
 ): number {
+  const activityDelta = right.lastActivityAt - left.lastActivityAt;
+  if (activityDelta !== 0) {
+    return activityDelta;
+  }
+
   const bindingCreatedAtDelta = right.binding.createdAt - left.binding.createdAt;
   if (bindingCreatedAtDelta !== 0) {
     return bindingCreatedAtDelta;
@@ -88,6 +106,11 @@ function compareAttachedSubagentCandidates(
 }
 
 function compareSubagentCandidates(left: SubagentContextCandidate, right: SubagentContextCandidate): number {
+  const activityDelta = right.lastActivityAt - left.lastActivityAt;
+  if (activityDelta !== 0) {
+    return activityDelta;
+  }
+
   const sessionCreatedAtDelta = right.session.createdAt - left.session.createdAt;
   if (sessionCreatedAtDelta !== 0) {
     return sessionCreatedAtDelta;
@@ -132,6 +155,100 @@ function renderExecutionMode(value: SubagentExecutionMode): "agent_workspace" | 
   return value;
 }
 
+function threadSummaryActivity(summary: ThreadSummaryRecord): number {
+  return Math.max(
+    summary.thread.updatedAt,
+    summary.lastMessage?.createdAt ?? 0,
+  );
+}
+
+function buildThreadActivityBySessionId(summaries: readonly ThreadSummaryRecord[]): Map<string, number> {
+  const bySessionId = new Map<string, number>();
+  for (const summary of summaries) {
+    const activity = threadSummaryActivity(summary);
+    const previous = bySessionId.get(summary.thread.sessionId) ?? 0;
+    if (activity > previous) {
+      bySessionId.set(summary.thread.sessionId, activity);
+    }
+  }
+  return bySessionId;
+}
+
+function countBy(values: readonly string[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const value of values) {
+    counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function compactCounts(counts: Map<string, number>): readonly string[] {
+  return [...counts.entries()]
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .slice(0, MAX_OMITTED_HISTORY_VALUES)
+    .map(([value, count]) => `${value}:${count}`);
+}
+
+function summarizeOmittedHistory(
+  candidates: readonly SubagentContextCandidate[],
+  cutoff: number,
+): {count: number; cutoff: string; groups: readonly RenderSubagentsContextOmittedGroup[]} | undefined {
+  if (candidates.length === 0) {
+    return undefined;
+  }
+
+  const groupsByCategory = new Map<OmittedSubagentCategory, SubagentContextCandidate[]>();
+  for (const candidate of candidates) {
+    const group = groupsByCategory.get(candidate.category) ?? [];
+    group.push(candidate);
+    groupsByCategory.set(candidate.category, group);
+  }
+
+  const groups = [...groupsByCategory.entries()]
+    .map(([category, group]) => ({
+      category,
+      count: group.length,
+      statuses: compactCounts(countBy(group.flatMap((candidate) => candidate.status ? [candidate.status] : []))),
+      profiles: compactCounts(countBy(group.map((candidate) => candidate.subagent.profile))),
+    }))
+    .sort((left, right) => right.count - left.count || left.category.localeCompare(right.category))
+    .slice(0, MAX_OMITTED_HISTORY_GROUPS);
+
+  return {
+    count: candidates.length,
+    cutoff: formatTimestamp(cutoff),
+    groups,
+  };
+}
+
+function findBindingForSubagent(
+  bindings: readonly SessionEnvironmentBindingRecord[],
+  sessionId: string,
+  environmentId: string | undefined,
+): SessionEnvironmentBindingRecord | undefined {
+  return bindings.find((binding) => (
+    binding.sessionId === sessionId
+    && (environmentId === undefined || binding.environmentId === environmentId)
+  ));
+}
+
+function unavailableEnvironmentStatus(input: {
+  environmentId?: string;
+  environment?: ExecutionEnvironmentRecord;
+  binding?: SessionEnvironmentBindingRecord;
+}): string {
+  if (!input.environmentId) {
+    return "missing_environment_id";
+  }
+  if (!input.environment) {
+    return "missing_environment";
+  }
+  if (!input.binding) {
+    return "unbound";
+  }
+  return input.environment.state;
+}
+
 export class SubagentsContext extends LlmContext {
   override name = "Subagents";
 
@@ -145,9 +262,11 @@ export class SubagentsContext extends LlmContext {
   async getContent(): Promise<string> {
     const now = resolveNow(this.options.now).getTime();
     const stoppedTtlMs = this.options.stoppedTtlMs ?? STOPPED_ENVIRONMENT_CONTEXT_TTL_MS;
+    const recentActivityMs = this.options.recentActivityMs ?? RECENT_SUBAGENT_ACTIVITY_MS;
+    const recentCutoff = now - recentActivityMs;
     const maxSubagentsPerEnvironment = resolveMaxSubagentsPerEnvironment(this.options.maxSubagentsPerEnvironment);
     const maxProfiles = Math.max(1, Math.floor(this.options.maxProfiles ?? MAX_RENDERED_PROFILES));
-    const [sessions, environments, profiles] = await Promise.all([
+    const [sessions, environments, profiles, threadSummaries] = await Promise.all([
       this.options.sessions.listAgentSessions(this.options.agentKey),
       this.options.environments
         ? this.options.environments.listDisposableEnvironmentsByOwner({
@@ -158,20 +277,24 @@ export class SubagentsContext extends LlmContext {
       this.options.subagentProfiles
         ? this.options.subagentProfiles.listProfiles({agentKey: this.options.agentKey})
         : Promise.resolve([]),
+      this.options.threads
+        ? this.options.threads.listThreadSummaries()
+        : Promise.resolve([]),
     ]);
+    const threadActivityBySessionId = buildThreadActivityBySessionId(threadSummaries);
+    const environmentsById = new Map(environments.map((environment) => [environment.id, environment]));
     const visibleEnvironments = environments.filter((environment) => (
       shouldRenderEnvironment(environment, now, stoppedTtlMs)
     ));
+    const visibleEnvironmentIds = new Set(visibleEnvironments.map((environment) => environment.id));
     const bindings = this.options.environments
       ? await this.options.environments.listBindingsForEnvironments(
-        visibleEnvironments.map((environment) => environment.id),
+        environments.map((environment) => environment.id),
       )
       : [];
-    const visibleEnvironmentIds = new Set(visibleEnvironments.map((environment) => environment.id));
-    const boundSessionIds = new Set(bindings.map((binding) => binding.sessionId));
     const subagentsBySessionId = new Map<string, SubagentContextCandidate>();
     const agentWorkspaceSubagents: SubagentContextCandidate[] = [];
-    const unavailableEnvironmentSubagents: SubagentContextCandidate[] = [];
+    const omittedHistoryCandidates: SubagentContextCandidate[] = [];
 
     for (const session of sessions) {
       if (session.kind !== "subagent") {
@@ -181,22 +304,51 @@ export class SubagentsContext extends LlmContext {
       if (metadata?.parentSessionId !== this.options.parentSessionId) {
         continue;
       }
+
+      const environment = metadata.environmentId ? environmentsById.get(metadata.environmentId) : undefined;
+      const binding = findBindingForSubagent(bindings, session.id, metadata.environmentId);
+      const isVisibleBoundEnvironment = Boolean(
+        metadata.environmentId
+        && environment
+        && binding
+        && visibleEnvironmentIds.has(metadata.environmentId),
+      );
+      const category: OmittedSubagentCategory = metadata.execution === "agent_workspace"
+        ? "agent_workspace"
+        : isVisibleBoundEnvironment
+          ? "isolated_environment"
+          : "unavailable_environment";
+      const status = category === "agent_workspace"
+        ? undefined
+        : category === "isolated_environment"
+          ? environment?.state
+          : unavailableEnvironmentStatus({environmentId: metadata.environmentId, environment, binding});
+      const lastActivityAt = Math.max(
+        session.createdAt,
+        session.updatedAt,
+        threadActivityBySessionId.get(session.id) ?? 0,
+        binding?.updatedAt ?? 0,
+        environment?.updatedAt ?? 0,
+      );
       const rendered = {
         sessionId: session.id,
         profile: metadata.profile.slug,
         execution: renderExecutionMode(metadata.execution),
         startedAt: formatTimestamp(session.createdAt),
+        lastActivityAt: formatTimestamp(lastActivityAt),
         task: taskPreview(metadata.task),
         ...(metadata.environmentId ? {environmentId: metadata.environmentId} : {}),
       } satisfies RenderSubagentsContextSubagent;
-      const candidate = {session, subagent: rendered};
+      const candidate = {session, subagent: rendered, lastActivityAt, category, status};
+
+      if (category === "unavailable_environment" || lastActivityAt < recentCutoff) {
+        omittedHistoryCandidates.push(candidate);
+        continue;
+      }
+
       subagentsBySessionId.set(session.id, candidate);
-      if (metadata.execution === "agent_workspace") {
+      if (category === "agent_workspace") {
         agentWorkspaceSubagents.push(candidate);
-      } else if (metadata.environmentId && !visibleEnvironmentIds.has(metadata.environmentId)) {
-        unavailableEnvironmentSubagents.push(candidate);
-      } else if (!metadata.environmentId || !boundSessionIds.has(session.id)) {
-        unavailableEnvironmentSubagents.push(candidate);
       }
     }
 
@@ -208,6 +360,9 @@ export class SubagentsContext extends LlmContext {
           const subagent = subagentsBySessionId.get(binding.sessionId);
           return subagent ? [{...subagent, binding}] : [];
         });
+      if (attachedSubagents.length === 0) {
+        continue;
+      }
       renderedEnvironments.push({
         environmentId: environment.id,
         state: environment.state,
@@ -233,10 +388,10 @@ export class SubagentsContext extends LlmContext {
       agentWorkspaceSubagents: [...agentWorkspaceSubagents]
         .sort(compareSubagentCandidates)
         .map((candidate) => candidate.subagent),
-      environments: renderedEnvironments.slice(-MAX_RENDERED_ENVIRONMENTS),
-      unavailableEnvironmentSubagents: [...unavailableEnvironmentSubagents]
-        .sort(compareSubagentCandidates)
-        .map((candidate) => candidate.subagent),
+      environments: renderedEnvironments
+        .sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt))
+        .slice(0, MAX_RENDERED_ENVIRONMENTS),
+      omittedHistory: summarizeOmittedHistory(omittedHistoryCandidates, recentCutoff),
     });
   }
 }

@@ -54,7 +54,7 @@ export interface BuildDefaultAgentLlmContextsOptions {
   agentStore?: AgentProfileStore;
   sessionStore?: Partial<Pick<SessionStore, "listAgentSessions" | "readSessionPrompt" | "readSessionTodo">>;
   subagentProfiles?: Pick<SubagentProfileStore, "listProfiles">;
-  threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
+  threadStore?: Pick<ThreadRuntimeStore, "listToolJobs"> & Partial<Pick<ThreadRuntimeStore, "listThreadSummaries">>;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
   executionEnvironments?: Pick<ExecutionEnvironmentStore, "getEnvironment" | "listBindingsForEnvironments" | "listDisposableEnvironmentsByOwner" | "listBindingsForSession">;
   wikiBindings?: Pick<WikiBindingService, "getBinding">;
@@ -136,6 +136,9 @@ export function buildDefaultAgentLlmContexts(
       sessions: options.sessionStore as Pick<SessionStore, "listAgentSessions">,
       environments: options.executionEnvironments,
       subagentProfiles: options.subagentProfiles,
+      threads: typeof options.threadStore?.listThreadSummaries === "function"
+        ? {listThreadSummaries: options.threadStore.listThreadSummaries.bind(options.threadStore)}
+        : undefined,
       agentKey: options.agentKey,
       parentSessionId: options.context.sessionId,
     }));
