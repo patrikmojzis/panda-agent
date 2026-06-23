@@ -70,6 +70,15 @@ export interface DefaultAgentSessionContext extends ShellExecutionContext {
     identityId?: string;
     metadata?: JsonValue;
   };
+  currentRouteInput?: {
+    messageId?: string;
+    source: string;
+    channelId?: string;
+    externalMessageId?: string;
+    actorId?: string;
+    identityId?: string;
+    metadata?: JsonValue;
+  };
   routeMemory?: DefaultAgentRouteMemory;
   identityDirectory?: DefaultAgentIdentityDirectory;
   outboundQueue?: DefaultAgentOutboundQueue;

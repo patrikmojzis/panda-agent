@@ -102,13 +102,14 @@ async function executeScheduledTaskThreadRun(options: {
   threadId: string;
   task: ScheduledTaskRecord;
   run: ScheduledTaskRunRecord;
+  identityId?: string;
 }): Promise<ThreadRunSummary> {
   const previousRunIds = new Set((await options.threadStore.listRuns(options.threadId)).map((entry) => entry.id));
 
   await options.coordinator.submitInput(options.threadId, {
     message: stringToUserMessage(buildScheduledTaskPrompt(options.task, options.run.scheduledFor)),
     source: SCHEDULED_TASK_SOURCE,
-    identityId: options.task.createdByIdentityId,
+    identityId: options.identityId,
     metadata: buildScheduledTaskMetadata(options.task, options.run.scheduledFor),
   });
   await options.coordinator.waitForIdle(options.threadId);
@@ -220,6 +221,7 @@ export class ScheduledTaskRunner {
       threadId: deliveryThreadId,
       task: claim.task,
       run: claim.run,
+      identityId: claim.task.createdByIdentityId ?? target.session.createdByIdentityId,
     });
 
     if (threadRun.status === "failed") {
