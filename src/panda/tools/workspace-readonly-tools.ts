@@ -215,8 +215,18 @@ async function visitFiles(
   rootPath: string,
   signal: AbortSignal | undefined,
   visit: (filePath: string) => Promise<boolean>,
+  displayRootPath = rootPath,
 ): Promise<void> {
-  const rootStats = await stat(rootPath);
+  let rootStats;
+  try {
+    rootStats = await stat(rootPath);
+  } catch (error) {
+    if (isNotFoundFileSystemError(error)) {
+      throwPathDoesNotExist(displayRootPath);
+    }
+    throw error;
+  }
+
   if (rootStats.isFile()) {
     await visit(rootPath);
     return;
@@ -423,7 +433,7 @@ export class GlobFilesTool<TContext = DefaultAgentSessionContext>
         return true;
       }
       return false;
-    });
+    }, formatDisplayPath(rootPath, targetContext));
 
     const details = {
       root: formatDisplayPath(rootPath, targetContext),
@@ -561,7 +571,7 @@ export class GrepFilesTool<TContext = DefaultAgentSessionContext>
       }
 
       return false;
-    });
+    }, formatDisplayPath(rootPath, targetContext));
 
     const details = {
       root: formatDisplayPath(rootPath, targetContext),
