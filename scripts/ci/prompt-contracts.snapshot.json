@@ -25,10 +25,10 @@
       "sha256": "233384ed058d6f7f0f5ac18b019b901fcc639fef7b1f2dfcf3818050efe1be22"
     },
     {
-      "bytes": 2853,
-      "lines": 81,
+      "bytes": 3055,
+      "lines": 90,
       "path": "src/app/runtime/panda-session-context.ts",
-      "sha256": "20f3a128cd57faeac537d395a7e9e1a121be7fc8e5eb40a3e7aa137b284d3340"
+      "sha256": "066deedd62262ed35176aa67447dc18c0f660e4119c8d959909063880f693145"
     },
     {
       "bytes": 27463,
