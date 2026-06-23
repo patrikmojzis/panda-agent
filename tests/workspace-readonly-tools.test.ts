@@ -355,6 +355,40 @@ describe("workspace readonly tools", () => {
     expect(JSON.stringify(result.content)).toContain("Path does not exist: src/missing.ts");
   });
 
+  it("converts missing glob_files roots into model-visible thread tool errors", async () => {
+    const root = await createWorkspace();
+    const tool = new GlobFilesTool();
+    const agent = new Agent({
+      name: "panda",
+      instructions: "Inspect files.",
+      tools: [tool],
+    });
+    const context: DefaultAgentSessionContext = {
+      cwd: root,
+      agentKey: "panda",
+      sessionId: "session-1",
+      threadId: "thread-1",
+    };
+    const thread = new Thread<DefaultAgentSessionContext>({agent, context});
+
+    const result = await thread.callTool({
+      type: "toolCall",
+      id: "call-glob-missing-root",
+      name: "glob_files",
+      arguments: {root: "src/missing-root", pattern: "**/*.ts"},
+    }, createRunContext(tool, root));
+
+    expect(result).toMatchObject({
+      role: "toolResult",
+      toolCallId: "call-glob-missing-root",
+      toolName: "glob_files",
+      isError: true,
+      details: {path: "src/missing-root"},
+    });
+    expect(JSON.stringify(result.content)).toContain("Path does not exist: src/missing-root");
+    expect(JSON.stringify(result.content)).not.toContain("ENOENT");
+  });
+
   it("globs files relative to the workspace root", async () => {
     const root = await createWorkspace();
     const tool = new GlobFilesTool();
@@ -386,6 +420,40 @@ describe("workspace readonly tools", () => {
         skippedDirectories: expect.arrayContaining(["node_modules"]),
       },
     });
+  });
+
+  it("converts missing grep_files roots into model-visible thread tool errors", async () => {
+    const root = await createWorkspace();
+    const tool = new GrepFilesTool();
+    const agent = new Agent({
+      name: "panda",
+      instructions: "Inspect files.",
+      tools: [tool],
+    });
+    const context: DefaultAgentSessionContext = {
+      cwd: root,
+      agentKey: "panda",
+      sessionId: "session-1",
+      threadId: "thread-1",
+    };
+    const thread = new Thread<DefaultAgentSessionContext>({agent, context});
+
+    const result = await thread.callTool({
+      type: "toolCall",
+      id: "call-grep-missing-root",
+      name: "grep_files",
+      arguments: {root: "src/missing-root", pattern: "helper"},
+    }, createRunContext(tool, root));
+
+    expect(result).toMatchObject({
+      role: "toolResult",
+      toolCallId: "call-grep-missing-root",
+      toolName: "grep_files",
+      isError: true,
+      details: {path: "src/missing-root"},
+    });
+    expect(JSON.stringify(result.content)).toContain("Path does not exist: src/missing-root");
+    expect(JSON.stringify(result.content)).not.toContain("ENOENT");
   });
 
   it("greps matching lines and respects a glob filter", async () => {
