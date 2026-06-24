@@ -150,7 +150,7 @@ function safeOperatorSummary(value: unknown): Record<string, unknown> {
 
 function sanitizedAuditMetadata(eventType: string, value: unknown): Record<string, unknown> {
   const raw = asRecord(value);
-  if (eventType === "session_briefing_write") {
+  if (eventType === "session_briefing_write" || eventType === "session_prompt_write") {
     return {
       ...(raw.action === "put" || raw.action === "delete" ? {action: raw.action} : {}),
       ...(typeof raw.agentKey === "string" ? {agentKey: raw.agentKey} : {}),
@@ -317,7 +317,7 @@ export class ControlReadService {
       values.push(visibleAgentKeys);
       const agentsParam = `$${values.length}`;
       where.push(`identity_id = ${identityParam}`);
-      where.push(`((event_type IN ('login', 'logout', 'control_dev_login')) OR (event_type IN ('session_briefing_write', 'session_heartbeat_config_write', 'session_scheduled_task_write', 'session_watch_config_write', 'control_operator_write') AND metadata->>'agentKey' = ANY(${agentsParam}::text[])))`);
+      where.push(`((event_type IN ('login', 'logout', 'control_dev_login')) OR (event_type IN ('session_briefing_write', 'session_prompt_write', 'session_heartbeat_config_write', 'session_scheduled_task_write', 'session_watch_config_write', 'control_operator_write') AND metadata->>'agentKey' = ANY(${agentsParam}::text[])))`);
     }
 
     values.push(limit);

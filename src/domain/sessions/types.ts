@@ -98,9 +98,15 @@ export interface UpdateSessionHeartbeatConfigInput {
   asOf?: number;
 }
 
-
-export const SESSION_BRIEFING_PROMPT_SLUG = "session" as const;
-export type SessionPromptSlug = typeof SESSION_BRIEFING_PROMPT_SLUG;
+export const SESSION_BRIEF_PROMPT_SLUG = "brief" as const;
+export const SESSION_MEMORY_PROMPT_SLUG = "memory" as const;
+export const SESSION_HEARTBEAT_PROMPT_SLUG = "heartbeat" as const;
+export const SESSION_PROMPT_SLUGS = [
+  SESSION_BRIEF_PROMPT_SLUG,
+  SESSION_MEMORY_PROMPT_SLUG,
+  SESSION_HEARTBEAT_PROMPT_SLUG,
+] as const;
+export type SessionPromptSlug = typeof SESSION_PROMPT_SLUGS[number];
 
 export interface SessionPromptRecord {
   sessionId: string;
@@ -122,8 +128,8 @@ export interface DeleteSessionPromptInput {
 }
 
 export function normalizeSessionPromptSlug(value: string): SessionPromptSlug {
-  if (value === SESSION_BRIEFING_PROMPT_SLUG) {
-    return value;
+  if (SESSION_PROMPT_SLUGS.includes(value as SessionPromptSlug)) {
+    return value as SessionPromptSlug;
   }
 
   throw new Error(`Unsupported session prompt slug ${value}.`);

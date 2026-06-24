@@ -1,4 +1,4 @@
-import {describe, expect, it, vi} from "vitest";
+import {describe, expect, it} from "vitest";
 
 import {createThreadDefinition} from "../src/app/runtime/create-runtime.js";
 import type {ResolvedExecutionEnvironment} from "../src/domain/execution-environments/types.js";
@@ -98,9 +98,6 @@ function createEnvironment(
 
 describe("subagent thread definitions", () => {
   it("uses snapshotted profile prompt and subagent runtime context", async () => {
-    const readAgentPrompt = vi.fn(async () => {
-      throw new Error("subagent context should not read agent prompts");
-    });
     const definition = createThreadDefinition({
       thread: createThread(),
       session: {
@@ -114,7 +111,6 @@ describe("subagent thread definitions", () => {
       },
       executionEnvironment: createEnvironment(),
       agentStore: {
-        readAgentPrompt,
         listAgentSkills: async () => [
           {
             agentKey: "panda",
@@ -142,7 +138,6 @@ describe("subagent thread definitions", () => {
     expect(definition.agent.instructions).not.toBe(DEFAULT_AGENT_INSTRUCTIONS);
     expect(definition.model).toBe("openai/gpt-5.1");
     expect(definition.thinking).toBe("medium");
-    expect(readAgentPrompt).not.toHaveBeenCalled();
     expect(dump).toContain("**Subagent Runtime Context:**");
     expect(dump).toContain("role: workspace");
     expect(dump).toContain("task: Inspect files.");
@@ -151,7 +146,7 @@ describe("subagent thread definitions", () => {
     expect(dump).toContain('message_agent({ sessionId: "parent-session" })');
     expect(dump).toContain("calendar: Use for calendar work.");
     expect(dump).not.toContain("**Subagents:**");
-    expect(dump).not.toContain("[agent]");
+    expect(dump).not.toContain("**Session Prompts:**");
   });
 
   it("filters tools by subagent policy and always denies nested spawn tools", () => {

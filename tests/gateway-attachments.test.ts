@@ -6,7 +6,7 @@ import path from "node:path";
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore} from "../src/domain/agents/index.js";
+import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {
   GatewayAttachmentConflictError,
   GatewayAttachmentReferenceError,
@@ -57,7 +57,6 @@ describe("gateway attachments store", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
     const identity = await identityStore.createIdentity({
       id: "identity-1",

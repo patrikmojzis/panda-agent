@@ -851,6 +851,22 @@ function matchSessionBriefingPath(path: string): {agentKey: string; sessionId: s
   return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
 }
 
+function matchSessionPromptsPath(path: string): {agentKey: string; sessionId: string} | null {
+  const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/prompts$/.exec(path);
+  if (!match) return null;
+  return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
+}
+
+function matchSessionPromptPath(path: string): {agentKey: string; sessionId: string; slug: string} | null {
+  const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/prompts\/([^/]+)$/.exec(path);
+  if (!match) return null;
+  return {
+    agentKey: decodeURIComponent(match[1]!),
+    sessionId: decodeURIComponent(match[2]!),
+    slug: decodeURIComponent(match[3]!),
+  };
+}
+
 async function recordHeartbeatAudit(auth: PostgresControlAuthService, session: ControlSessionRecord, metadata: unknown): Promise<void> {
   await auth.recordAudit({
     identityId: session.identityId,
@@ -865,6 +881,15 @@ async function recordBriefingAudit(auth: PostgresControlAuthService, session: Co
     identityId: session.identityId,
     sessionId: session.id,
     eventType: "session_briefing_write",
+    metadata,
+  });
+}
+
+async function recordSessionPromptAudit(auth: PostgresControlAuthService, session: ControlSessionRecord, metadata: unknown): Promise<void> {
+  await auth.recordAudit({
+    identityId: session.identityId,
+    sessionId: session.id,
+    eventType: "session_prompt_write",
     metadata,
   });
 }
@@ -2141,6 +2166,64 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         }
         await recordHeartbeatAudit(options.auth, session, result.audit);
         writeJsonResponse(response, 200, {heartbeat: result.heartbeat});
+        return;
+      }
+
+      const sessionPromptsPath = matchSessionPromptsPath(path);
+      if (sessionPromptsPath && request.method === "GET") {
+        try {
+          const prompts = await options.briefings.listPrompts(session, sessionPromptsPath.agentKey, sessionPromptsPath.sessionId);
+          writeJsonResponse(response, 200, {prompts});
+        } catch {
+          throw new ControlHttpError(404, "Control session prompt target session was not found or is not visible.");
+        }
+        return;
+      }
+
+      const sessionPromptPath = matchSessionPromptPath(path);
+      if (sessionPromptPath && request.method === "GET") {
+        try {
+          const prompt = await options.briefings.getPrompt(session, sessionPromptPath.agentKey, sessionPromptPath.sessionId, sessionPromptPath.slug);
+          writeJsonResponse(response, 200, {prompt});
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Control session prompt read failed.";
+          if (message.includes("Unsupported session prompt slug")) throw new ControlHttpError(400, message);
+          throw new ControlHttpError(404, "Control session prompt target session was not found or is not visible.");
+        }
+        return;
+      }
+      if (sessionPromptPath && request.method === "PUT") {
+        requireCsrf(request, options.auth, session);
+        const body = await readBody(request);
+        const content = typeof body.content === "string" ? body.content : "";
+        let result;
+        try {
+          result = await options.briefings.setPrompt(session, sessionPromptPath.agentKey, sessionPromptPath.sessionId, sessionPromptPath.slug, content);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Control session prompt update failed.";
+          if (message.includes("Unsupported session prompt slug") || message.includes("blank")) throw new ControlHttpError(400, message);
+          throw new ControlHttpError(404, "Control session prompt target session was not found or is not visible.");
+        }
+        await recordSessionPromptAudit(options.auth, session, result.audit);
+        writeJsonResponse(response, 200, {prompt: result.prompt});
+        return;
+      }
+      if (sessionPromptPath && request.method === "DELETE") {
+        requireCsrf(request, options.auth, session);
+        const body = await readBody(request);
+        if (body.confirm !== "clear-session-prompt") {
+          throw new ControlHttpError(400, "DELETE requires confirm: \"clear-session-prompt\".");
+        }
+        let result;
+        try {
+          result = await options.briefings.deletePrompt(session, sessionPromptPath.agentKey, sessionPromptPath.sessionId, sessionPromptPath.slug);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Control session prompt delete failed.";
+          if (message.includes("Unsupported session prompt slug")) throw new ControlHttpError(400, message);
+          throw new ControlHttpError(404, "Control session prompt target session was not found or is not visible.");
+        }
+        await recordSessionPromptAudit(options.auth, session, result.audit);
+        writeJsonResponse(response, 200, {prompt: result.prompt});
         return;
       }
 

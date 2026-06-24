@@ -6,7 +6,6 @@ import type {Message} from "@earendil-works/pi-ai";
 
 import {sleep} from "../../lib/async.js";
 import {trimToUndefined} from "../../lib/strings.js";
-import {DEFAULT_AGENT_PROMPT_TEMPLATES} from "../../prompts/templates/agent-prompts.js";
 import {PostgresAgentStore} from "../../domain/agents/postgres.js";
 import {PostgresIdentityStore} from "../../domain/identity/postgres.js";
 import {type CreateIdentityInput, type IdentityRecord, normalizeIdentityHandle} from "../../domain/identity/types.js";
@@ -392,7 +391,6 @@ async function bootstrapSmokeFixtures(input: {
       await agentStore.bootstrapAgent({
         agentKey: input.agentKey,
         displayName: input.agentKey,
-        prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
       });
     }
 

@@ -48,7 +48,6 @@ describe("credentials end-to-end", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: {},
     });
 
     const crypto = new CredentialCrypto("e2e-master-key");

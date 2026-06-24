@@ -659,7 +659,7 @@ describe("Session create CLI", () => {
     await expect(environments.getBindingByAlias("session-targets", "vps")).resolves.toBeNull();
   }, SESSION_CREATE_TEST_TIMEOUT_MS);
 
-  it("sets, shows, reads, clears, and indicates a session briefing prompt", async () => {
+  it("sets, shows, reads, clears, and indicates session prompts", async () => {
     const {pool, sessionStore} = await createHarness();
     pools.push(pool);
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
@@ -711,6 +711,57 @@ describe("Session create CLI", () => {
     write.mockClear();
     await createProgram().parseAsync([
       "session",
+      "prompt",
+      "set",
+      "briefroom",
+      "--agent",
+      "panda",
+      "--slug",
+      "memory",
+      "--content",
+      "Remember the local deployment caveat.",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    expect(collectWrites(write)).toContain("slug memory\nhas memory yes\n");
+    await expect(sessionStore.readSessionPrompt(sessionId, "memory")).resolves.toMatchObject({
+      content: "Remember the local deployment caveat.",
+    });
+
+    write.mockClear();
+    await createProgram().parseAsync([
+      "session",
+      "prompt",
+      "list",
+      "briefroom",
+      "--agent",
+      "panda",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    const listOutput = collectWrites(write);
+    expect(listOutput).toContain("slug brief · has brief yes");
+    expect(listOutput).toContain("slug memory · has memory yes");
+    expect(listOutput).toContain("slug heartbeat · has heartbeat no");
+
+    write.mockClear();
+    await createProgram().parseAsync([
+      "session",
+      "prompt",
+      "read",
+      "briefroom",
+      "--agent",
+      "panda",
+      "--slug",
+      "memory",
+      "--db-url",
+      "postgres://session-create-test",
+    ], {from: "user"});
+    expect(collectWrites(write)).toBe("Remember the local deployment caveat.\n");
+
+    write.mockClear();
+    await createProgram().parseAsync([
+      "session",
       "inspect",
       "briefroom",
       "--agent",
@@ -747,6 +798,9 @@ describe("Session create CLI", () => {
     ], {from: "user"});
     expect(collectWrites(write)).toContain("has brief no\n");
     await expect(sessionStore.readSessionPrompt(sessionId)).resolves.toBeNull();
+    await expect(sessionStore.readSessionPrompt(sessionId, "memory")).resolves.toMatchObject({
+      content: "Remember the local deployment caveat.",
+    });
   }, SESSION_CREATE_TEST_TIMEOUT_MS);
 
 

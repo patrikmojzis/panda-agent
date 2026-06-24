@@ -4,7 +4,6 @@ import * as panda from "../src/index.js";
 
 const EXPECTED_RUNTIME_EXPORTS = [
   "Agent",
-  "AgentPromptTool",
   "AgentError",
   "AgentProfileContext",
   "AgentSkillTool",
@@ -51,6 +50,8 @@ const EXPECTED_RUNTIME_EXPORTS = [
   "ScheduledTaskCreateTool",
   "ScheduledTaskUpdateTool",
   "SetEnvValueTool",
+  "SessionPromptTool",
+  "SessionPromptsContext",
   "SpawnSubagentTool",
   "SubagentsContext",
   "StreamingFailedError",

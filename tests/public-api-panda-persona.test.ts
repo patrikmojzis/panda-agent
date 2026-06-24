@@ -3,7 +3,6 @@ import {describe, expect, it} from "vitest";
 import * as personaExports from "../src/panda/index.js";
 
 const EXPECTED_PERSONA_EXPORTS = [
-  "AgentPromptTool",
   "AgentProfileContext",
   "AgentSkillTool",
   "BackgroundJobCancelTool",
@@ -32,6 +31,8 @@ const EXPECTED_PERSONA_EXPORTS = [
   "ScheduledTaskCreateTool",
   "ScheduledTaskUpdateTool",
   "SetEnvValueTool",
+  "SessionPromptTool",
+  "SessionPromptsContext",
   "SpawnSubagentTool",
   "SubagentsContext",
   "ThinkingSetTool",

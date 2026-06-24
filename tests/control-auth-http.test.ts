@@ -4,7 +4,7 @@ import {tmpdir} from "node:os";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore} from "../src/domain/agents/index.js";
+import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/postgres.js";
@@ -148,8 +148,8 @@ async function createHarness(options: {
   await wikiBindingStore.ensureSchema();
 
   await identities.createIdentity({id: "identity-patrik", handle: "patrik", displayName: "Patrik"});
-  await agents.bootstrapAgent({agentKey: "panda", displayName: "Panda", prompts: DEFAULT_AGENT_PROMPT_TEMPLATES});
-  await agents.bootstrapAgent({agentKey: "luna", displayName: "Luna", prompts: DEFAULT_AGENT_PROMPT_TEMPLATES});
+  await agents.bootstrapAgent({agentKey: "panda", displayName: "Panda"});
+  await agents.bootstrapAgent({agentKey: "luna", displayName: "Luna"});
   await sessions.createSessionRecord({id: "session-panda", agentKey: "panda", kind: "main", currentThreadId: "thread-panda", createdByIdentityId: "identity-patrik"});
   await sessions.createSessionRecord({id: "session-luna", agentKey: "luna", kind: "main", currentThreadId: "thread-luna", createdByIdentityId: "identity-patrik"});
   await pool.query(`
@@ -1959,16 +1959,26 @@ describe("Control audit events HTTP", () => {
       body: JSON.stringify({content: "private briefing body must not leave audit API"}),
     });
     expect(write.status).toBe(200);
+    const promptWrite = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/prompts/memory`, {
+      method: "PUT",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({content: "private memory body must not leave audit API"}),
+    });
+    expect(promptWrite.status).toBe(200);
 
     const response = await fetch(`${base}/api/control/audit-events?limit=10`, {headers: {cookie: auth.cookies}});
     expect(response.status).toBe(200);
     const body = await response.json() as {auditEvents: Array<{eventType: string; metadata: Record<string, unknown>}>};
     expect(body.auditEvents.some((event) => event.eventType === "login")).toBe(true);
     const briefing = body.auditEvents.find((event) => event.eventType === "session_briefing_write");
-    expect(briefing?.metadata).toMatchObject({action: "put", agentKey: "panda", targetSessionId: "session-panda", slug: "session"});
+    expect(briefing?.metadata).toMatchObject({action: "put", agentKey: "panda", targetSessionId: "session-panda", slug: "brief"});
+    const prompt = body.auditEvents.find((event) => event.eventType === "session_prompt_write");
+    expect(prompt?.metadata).toMatchObject({action: "put", agentKey: "panda", targetSessionId: "session-panda", slug: "memory"});
     expect(JSON.stringify(briefing)).toContain("sha256");
-    expect(JSON.stringify(briefing)).toContain("length");
+    expect(JSON.stringify(prompt)).toContain("sha256");
+    expect(JSON.stringify(body)).toContain("length");
     expect(JSON.stringify(body)).not.toContain("private briefing body");
+    expect(JSON.stringify(body)).not.toContain("private memory body");
   });
 
   it("prevents scoped users from seeing another identity or invisible-agent audit event", async () => {
@@ -1977,7 +1987,7 @@ describe("Control audit events HTTP", () => {
     await harness.agents.ensurePairing("panda", "identity-patrik");
     await harness.agents.ensurePairing("luna", "identity-other");
     await harness.auth.recordAudit({identityId: "identity-other", eventType: "session_briefing_write", metadata: {action: "put", agentKey: "luna", targetSessionId: "session-luna", secret: "hidden-other"}});
-    await harness.auth.recordAudit({identityId: "identity-patrik", eventType: "session_briefing_write", metadata: {action: "put", agentKey: "luna", targetSessionId: "session-luna", secret: "hidden-luna"}});
+    await harness.auth.recordAudit({identityId: "identity-patrik", eventType: "session_prompt_write", metadata: {action: "put", agentKey: "luna", targetSessionId: "session-luna", secret: "hidden-luna"}});
     await harness.auth.recordAudit({identityId: "identity-patrik", eventType: "unknown_event", metadata: {agentKey: "panda", secret: "hidden-visible-agent-unknown"}});
     const base = await startHarnessServer(harness);
     const auth = await login(base, harness, "scoped", "panda");
@@ -2035,7 +2045,8 @@ describe("Control audit events HTTP", () => {
     const harness = await createHarness();
     const base = await startHarnessServer(harness);
     const auth = await login(base, harness, "admin");
-    await harness.auth.recordAudit({identityId: "identity-patrik", eventType: "session_briefing_write", metadata: {action: "put", agentKey: "panda", targetSessionId: "session-panda", slug: "session", token: "secret-token", prompt: "private prompt", old: {wasSet: false, length: 0, sha256: null, raw: "old"}, next: {wasSet: true, length: 12, sha256: "abc", content: "next"}}});
+    await harness.auth.recordAudit({identityId: "identity-patrik", eventType: "session_briefing_write", metadata: {action: "put", agentKey: "panda", targetSessionId: "session-panda", slug: "brief", token: "secret-token", prompt: "private prompt", old: {wasSet: false, length: 0, sha256: null, raw: "old"}, next: {wasSet: true, length: 12, sha256: "abc", content: "next"}}});
+    await harness.auth.recordAudit({identityId: "identity-patrik", eventType: "session_prompt_write", metadata: {action: "put", agentKey: "panda", targetSessionId: "session-panda", slug: "memory", token: "secret-token", prompt: "private memory prompt", old: {wasSet: false, length: 0, sha256: null, raw: "old"}, next: {wasSet: true, length: 12, sha256: "abc", content: "next"}}});
     await harness.auth.recordAudit({identityId: "identity-patrik", eventType: "unknown_event", metadata: {token: "unknown-secret", arbitrary: {nested: true}}});
 
     const response = await fetch(`${base}/api/control/audit-events?limit=20`, {headers: {cookie: auth.cookies}});
@@ -2071,7 +2082,15 @@ describe("Control session briefing HTTP", () => {
 
     const empty = await fetch(path, {headers: {cookie: auth.cookies}});
     expect(empty.status).toBe(200);
-    await expect(empty.json()).resolves.toMatchObject({briefing: {agentKey: "panda", sessionId: "session-panda", slug: "session", content: "", wasSet: false}});
+    await expect(empty.json()).resolves.toMatchObject({
+      briefing: {
+        agentKey: "panda",
+        sessionId: "session-panda",
+        slug: "brief",
+        content: expect.stringContaining("Fresh Start"),
+        wasSet: true,
+      },
+    });
 
     const missingCsrf = await fetch(path, {method: "PUT", headers: {cookie: auth.cookies}, body: JSON.stringify({content: "do not save"})});
     expect(missingCsrf.status).toBe(403);
@@ -2097,6 +2116,54 @@ describe("Control session briefing HTTP", () => {
     expect(auditText).toContain("sha256");
     expect(auditText).toContain("length");
     expect(auditText).not.toContain("private briefing text");
+    expect(auditText).not.toContain("do not save");
+  });
+
+  it("reads, writes, clears, and audits generic session prompts", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+    const promptsPath = `${base}/api/control/agents/panda/sessions/session-panda/prompts`;
+
+    const listed = await fetch(promptsPath, {headers: {cookie: auth.cookies}});
+    expect(listed.status).toBe(200);
+    await expect(listed.json()).resolves.toMatchObject({
+      prompts: [
+        {slug: "brief", wasSet: true},
+        {slug: "memory", content: "", wasSet: false},
+        {slug: "heartbeat", content: "", wasSet: false},
+      ],
+    });
+
+    const missingCsrf = await fetch(`${promptsPath}/memory`, {method: "PUT", headers: {cookie: auth.cookies}, body: JSON.stringify({content: "do not save"})});
+    expect(missingCsrf.status).toBe(403);
+
+    const invalidSlug = await fetch(`${promptsPath}/session`, {headers: {cookie: auth.cookies}});
+    expect(invalidSlug.status).toBe(400);
+
+    const blank = await fetch(`${promptsPath}/heartbeat`, {method: "PUT", headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken}, body: JSON.stringify({content: "   "})});
+    expect(blank.status).toBe(400);
+    await expect(blank.json()).resolves.toEqual({error: "Session prompt content must not be blank. Use clear to delete the prompt."});
+
+    const saved = await fetch(`${promptsPath}/memory`, {method: "PUT", headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken}, body: JSON.stringify({content: "  private memory text  "})});
+    expect(saved.status).toBe(200);
+    await expect(saved.json()).resolves.toMatchObject({prompt: {slug: "memory", content: "private memory text", wasSet: true}});
+
+    const deleteWithoutConfirm = await fetch(`${promptsPath}/memory`, {method: "DELETE", headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken}, body: JSON.stringify({confirm: "wrong"})});
+    expect(deleteWithoutConfirm.status).toBe(400);
+
+    const cleared = await fetch(`${promptsPath}/memory`, {method: "DELETE", headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken}, body: JSON.stringify({confirm: "clear-session-prompt"})});
+    expect(cleared.status).toBe(200);
+    await expect(cleared.json()).resolves.toMatchObject({prompt: {slug: "memory", content: "", wasSet: false}});
+
+    const audit = await harness.pool.query(`SELECT event_type, metadata::text AS metadata FROM "runtime"."control_audit_events" WHERE event_type = 'session_prompt_write' ORDER BY created_at ASC`);
+    expect(audit.rows).toHaveLength(2);
+    const auditText = JSON.stringify(audit.rows);
+    expect(auditText).toContain("memory");
+    expect(auditText).toContain("sha256");
+    expect(auditText).toContain("length");
+    expect(auditText).not.toContain("private memory text");
     expect(auditText).not.toContain("do not save");
   });
 
@@ -2990,6 +3057,43 @@ describe("Control Model Call Traces HTTP", () => {
     return result.rows[0] as {id: string; prompt_cache_key: string | null; request_json: unknown; response_json: unknown; usage_json: unknown};
   }
 
+  async function seedFailedTrace(
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    input: {
+      category: string;
+      finishedAt: string;
+      message: string;
+      runId: string;
+      startedAt: string;
+      turn: number;
+    },
+  ) {
+    const error = new Error(input.message);
+    error.name = input.category;
+    await harness.modelCallTraces.recordModelCallTrace({
+      mode: "complete",
+      tools: [],
+      startedAt: Date.parse(input.startedAt),
+      finishedAt: Date.parse(input.finishedAt),
+      error,
+      request: {
+        providerName: "openai",
+        modelId: "gpt-test",
+        metadata: {
+          runId: input.runId,
+          threadId: "thread-panda",
+          sessionId: "session-panda",
+          agentKey: "panda",
+          turn: input.turn,
+        },
+        context: {
+          messages: [],
+          tools: [],
+        },
+      },
+    });
+  }
+
   it("requires admin for list/detail and returns sanitized allowlisted DTOs", async () => {
     const harness = await createHarness();
     await harness.sessions.updateSessionLabel({
@@ -3174,6 +3278,73 @@ describe("Control Model Call Traces HTTP", () => {
       rawErrorCacheKey,
       rawUsageFingerprint,
     ]) expect(apiText).not.toContain(sentinel);
+  });
+
+  it("returns failure groups across all matching model calls, not just the current page", async () => {
+    const harness = await createHarness();
+    await seedFailedTrace(harness, {
+      category: "provider_timeout",
+      message: "timeout on request a",
+      runId: "00000000-0000-0000-0000-000000000710",
+      startedAt: "2040-02-01T10:00:00.000Z",
+      finishedAt: "2040-02-01T10:00:01.000Z",
+      turn: 10,
+    });
+    await seedFailedTrace(harness, {
+      category: "provider_timeout",
+      message: "timeout on request b",
+      runId: "00000000-0000-0000-0000-000000000710",
+      startedAt: "2040-02-01T10:01:00.000Z",
+      finishedAt: "2040-02-01T10:01:01.000Z",
+      turn: 11,
+    });
+    await seedFailedTrace(harness, {
+      category: "tool_schema",
+      message: `tool schema rejected trace-cache:${CONTROL_ERROR_CACHE_SECRET}`,
+      runId: "00000000-0000-0000-0000-000000000710",
+      startedAt: "2040-02-01T10:02:00.000Z",
+      finishedAt: "2040-02-01T10:02:01.000Z",
+      turn: 12,
+    });
+
+    await expect(harness.modelCallTraces.listFailureGroups({runId: "00000000-0000-0000-0000-000000000710"}, 3))
+      .resolves.toMatchObject([
+        {count: 2, label: "provider_timeout", summary: "timeout on request b"},
+        {count: 1, label: "tool_schema"},
+      ]);
+
+    const base = await startHarnessServer(harness);
+    const admin = await login(base, harness, "admin");
+    const list = await fetch(`${base}/api/control/model-call-traces?run_id=00000000-0000-0000-0000-000000000710&per_page=1`, {headers: {cookie: admin.cookies}});
+
+    const listText = await list.text();
+    expect(list.status, listText).toBe(200);
+    const listBody = JSON.parse(listText) as {
+      modelCallTraces: {
+        data: Array<Record<string, unknown>>;
+        failureGroups: Array<Record<string, unknown>>;
+        meta: Record<string, unknown>;
+      };
+    };
+    expect(listBody.modelCallTraces.data).toHaveLength(1);
+    expect(listBody.modelCallTraces.meta).toMatchObject({total: 3, per_page: 1});
+    expect(listBody.modelCallTraces.failureGroups).toHaveLength(2);
+    expect(listBody.modelCallTraces.failureGroups[0]).toMatchObject({
+      count: 2,
+      label: "provider_timeout",
+      summary: "timeout on request b",
+      representative: expect.objectContaining({
+        provider: "openai",
+        model: "gpt-test",
+        status: "failed",
+      }),
+    });
+    expect(listBody.modelCallTraces.failureGroups[1]).toMatchObject({
+      count: 1,
+      label: "tool_schema",
+      summary: expect.stringContaining("[redacted prompt-cache value]"),
+    });
+    expect(JSON.stringify(listBody)).not.toContain(CONTROL_ERROR_CACHE_SECRET);
   });
 
   it("omits session label metadata when legacy trace agent and session owner mismatch", async () => {

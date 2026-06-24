@@ -3,7 +3,6 @@ import {
   Activity,
   ArrowRightIcon,
   Link2,
-  Pencil,
   Plus,
   SlidersHorizontal,
   Trash2,
@@ -17,11 +16,11 @@ import { controlKeys } from "@/features/control/api/query-key-factory"
 import {
   useAgentBindings,
   useA2ABindings,
-  useBriefing,
   useHeartbeat,
   useRuntimeActivity,
   useScheduledTasks,
   useSessionDetail,
+  useSessionPrompts,
   useSessionTargets,
   useScopedGatewayEvents,
   useWatches,
@@ -35,15 +34,12 @@ import {
 } from "@/features/control/detail-primitives"
 import { formatDate } from "@/features/control/formatting"
 import {
-  briefingDefaults,
-  briefingToFormValues,
   heartbeatConfigToFormValues,
   runtimeConfigToFormValues,
 } from "@/features/control/forms/form-values"
 import {
   useBindingSheet,
   useA2ABindingSheet,
-  useBriefingSheet,
   useHeartbeatConfigSheet,
   useRuntimeConfigSheet,
 } from "@/features/control/forms/use-control-form-sheets"
@@ -71,11 +67,10 @@ export function SessionOverviewPanel({
   const auth = useAuth()
   const bindingSheet = useBindingSheet()
   const a2aBindingSheet = useA2ABindingSheet()
-  const briefingSheet = useBriefingSheet()
   const heartbeatConfigSheet = useHeartbeatConfigSheet()
   const runtimeConfigSheet = useRuntimeConfigSheet()
   const session = useSessionDetail(agentKey, sessionId)
-  const briefing = useBriefing(agentKey, sessionId)
+  const promptBundle = useSessionPrompts(agentKey, sessionId)
   const heartbeat = useHeartbeat(agentKey, sessionId)
   const runtime = useRuntimeActivity(agentKey, sessionId, {
     page: 1,
@@ -124,10 +119,10 @@ export function SessionOverviewPanel({
     invalidate: controlKeys.sessions.targets(agentKey, sessionId),
   })
   const detail = session.data?.session
-  const briefingRecord = briefing.data?.briefing
   const presence = heartbeat.data?.heartbeat
   const loading = session.isLoading || heartbeat.isLoading
-  const briefingIsSet = Boolean(briefingRecord?.wasSet || detail?.briefingSet)
+  const promptSetCount = promptBundle.data?.prompts.filter((prompt) => prompt.wasSet && prompt.content.trim()).length
+    ?? (detail?.briefingSet ? 1 : 0)
   const runtimeSummary = runtime.data?.runtimeActivity.summary
   const automationRecord = automations.data?.scheduledTasks
   const automationRows = automationRecord?.data ?? automationRecord?.tasks ?? []
@@ -160,16 +155,6 @@ export function SessionOverviewPanel({
       ...(runnerCwd ? { runnerCwd } : {}),
       allowTools,
       ...(makeDefault ? { default: true } : {}),
-    })
-  }
-
-  function openBriefingSheet() {
-    briefingSheet.setOpen(true, {
-      context: { agentKey, sessionId },
-      defaultData: briefingRecord
-        ? briefingToFormValues(briefingRecord)
-        : briefingDefaults,
-      entity: briefingRecord,
     })
   }
 
@@ -440,32 +425,22 @@ export function SessionOverviewPanel({
           title="Configuration"
           action={
             <Button
-              type="button"
+              asChild
               variant="ghost"
               size="sm"
-              disabled={briefing.isLoading}
-              onClick={openBriefingSheet}
             >
-              {briefingIsSet ? (
-                <Pencil className="size-3.5" />
-              ) : (
-                <Plus className="size-3.5" />
-              )}
-              {briefingIsSet ? "Edit" : "Add"}
+              <Link to={sessionTabPath(agentKey, sessionId, "briefing")}>
+                <ArrowRightIcon className="size-3.5" />
+                Open
+              </Link>
             </Button>
           }
         >
           <DetailsGrid placement="main" className="xl:grid-cols-3">
             <DetailField
-              loading={loading || briefing.isLoading}
-              label="Briefing"
-              value={
-                briefingIsSet ? (
-                  <StatusBadge status="set" />
-                ) : (
-                  <StatusBadge status="empty" />
-                )
-              }
+              loading={loading || promptBundle.isLoading}
+              label="Prompts"
+              value={`${promptSetCount}/3 set`}
             />
             <DetailField
               loading={loading}

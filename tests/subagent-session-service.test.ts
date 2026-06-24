@@ -69,7 +69,6 @@ describe("SubagentSessionService", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: {},
     });
     await sessionStore.createSession({
       id: "parent-session",
@@ -416,7 +415,6 @@ describe("SubagentSessionService", () => {
         await agentStore.bootstrapAgent({
           agentKey: testCase.bootstrapAgent,
           displayName: "Other",
-          prompts: {},
         });
       }
       if (testCase.bootstrapSession) {
@@ -455,7 +453,7 @@ describe("SubagentSessionService", () => {
 
   it("rejects subagent, legacy worker, and wrong-agent parent sessions before side effects", async () => {
     const {agentStore, events, pool, service, sessionStore} = await createHarness();
-    await agentStore.bootstrapAgent({agentKey: "luna", displayName: "Luna", prompts: {}});
+    await agentStore.bootstrapAgent({agentKey: "luna", displayName: "Luna"});
     await sessionStore.createSession({
       id: "subagent-parent",
       agentKey: "panda",

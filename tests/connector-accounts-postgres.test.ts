@@ -97,7 +97,6 @@ describe("PostgresConnectorAccountStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: {},
     });
 
     await expect(connectorStore.upsertAccount({

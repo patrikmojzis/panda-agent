@@ -78,7 +78,7 @@ panda agent create luna --name "Luna"
 What this does:
 
 - creates the agent row
-- seeds its default prompts
+- seeds the default main-session brief prompt
 - creates exactly one `main` session
 - creates the initial thread backing that session
 

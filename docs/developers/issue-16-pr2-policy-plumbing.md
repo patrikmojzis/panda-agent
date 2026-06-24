@@ -51,6 +51,6 @@ Subagent thread definitions:
 - Add `Subagent Runtime Context` with task/parent/message-agent guidance.
 - Filter tools by resolved `ExecutionToolPolicy`.
 - Always deny the legacy worker-spawn tool.
-- Do not include the default main prompt, legacy worker prompt/context, session briefing/transcript, or Subagents Context unless explicitly requested and tested.
+- Do not include the default main prompt, legacy worker prompt/context, session prompt bundle/transcript, or Subagents Context unless explicitly requested and tested.
 
 Worker behavior remains a separate legacy path for now.

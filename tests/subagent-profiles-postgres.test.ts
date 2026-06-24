@@ -1,7 +1,7 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore} from "../src/domain/agents/index.js";
+import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {
   BUILTIN_SUBAGENT_PROFILES,
@@ -222,7 +222,6 @@ describe("PostgresSubagentProfileStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
 
     await profileStore.seedBuiltinProfiles();
@@ -271,7 +270,6 @@ describe("PostgresSubagentProfileStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
 
     await profileStore.upsertProfile({
@@ -323,7 +321,6 @@ describe("PostgresSubagentProfileStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
     await profileStore.seedBuiltinProfiles();
 

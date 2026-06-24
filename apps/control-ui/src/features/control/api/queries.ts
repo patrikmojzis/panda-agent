@@ -357,6 +357,14 @@ export function useBriefing(agentKey: string, sessionId: string) {
   })
 }
 
+export function useSessionPrompts(agentKey: string, sessionId: string) {
+  return useQuery({
+    queryKey: controlKeys.sessions.sessionPrompts(agentKey, sessionId),
+    queryFn: () => controlApi.sessionPrompts(agentKey, sessionId),
+    enabled: Boolean(agentKey && sessionId),
+  })
+}
+
 export function useHeartbeat(agentKey: string, sessionId: string) {
   return useQuery({
     queryKey: controlKeys.sessions.heartbeat(agentKey, sessionId),

@@ -1,15 +1,13 @@
 import {z} from "zod";
 
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
-import type {AgentStore} from "../../domain/agents/store.js";
-import type {AgentPromptRecord, AgentPromptSlug} from "../../domain/agents/types.js";
+import type {SessionStore} from "../../domain/sessions/store.js";
+import {SESSION_PROMPT_SLUGS, type SessionPromptRecord, type SessionPromptSlug} from "../../domain/sessions/types.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
-import {isRecord} from "../../lib/records.js";
-import {buildJsonToolPayload} from "./shared.js";
+import {buildJsonToolPayload, readRequiredSessionToolScope} from "./shared.js";
 
-const AGENT_PROMPT_SLUGS = ["agent", "heartbeat"] as const;
 const WHITELISTED_FUNCTIONS = new Set([
   "regexp_replace",
   "replace",
@@ -34,25 +32,11 @@ const WHITELISTED_IDENTIFIERS = new Set([
   "null",
 ]);
 
-type AgentPromptToolOperation = "read" | "set" | "transform";
-
-interface AgentPromptToolScope {
-  agentKey: string;
-}
+type SessionPromptToolOperation = "read" | "set" | "transform";
 
 interface Token {
   type: "identifier" | "number" | "string" | "symbol";
   value: string;
-}
-
-function readScope(context: unknown): AgentPromptToolScope {
-  if (!isRecord(context) || typeof context.agentKey !== "string" || !context.agentKey.trim()) {
-    throw new ToolError("The agent prompt tool requires agentKey in the runtime session context.");
-  }
-
-  return {
-    agentKey: context.agentKey,
-  };
 }
 
 function tokenizeExpression(expression: string): Token[] {
@@ -190,13 +174,13 @@ function validateTransformExpression(expression: string): string {
 }
 
 function buildPromptPayload(
-  scope: AgentPromptToolScope,
-  slug: AgentPromptSlug,
-  operation: AgentPromptToolOperation,
-  record: AgentPromptRecord | null,
+  sessionId: string,
+  slug: SessionPromptSlug,
+  operation: SessionPromptToolOperation,
+  record: SessionPromptRecord | null,
 ): ReturnType<typeof buildJsonToolPayload> {
   const details = {
-    agentKey: scope.agentKey,
+    sessionId,
     slug,
     operation,
     exists: record !== null,
@@ -207,14 +191,17 @@ function buildPromptPayload(
   return buildJsonToolPayload(details);
 }
 
-export type AgentPromptToolStore = Pick<AgentStore, "readAgentPrompt" | "setAgentPrompt" | "transformAgentPrompt">;
+export type SessionPromptToolStore = Pick<
+  SessionStore,
+  "readSessionPrompt" | "setSessionPrompt" | "transformSessionPrompt"
+>;
 
-export interface AgentPromptToolOptions {
-  store: AgentPromptToolStore;
+export interface SessionPromptToolOptions {
+  store: SessionPromptToolStore;
 }
 
-export class AgentPromptTool<TContext = DefaultAgentSessionContext>
-  extends Tool<typeof AgentPromptTool.schema, TContext> {
+export class SessionPromptTool<TContext = DefaultAgentSessionContext>
+  extends Tool<typeof SessionPromptTool.schema, TContext> {
   private static readonly transformGuide = [
     "Safe SQL-ish text editing over content.",
     "Allowed functions: regexp_replace, replace, overlay, trim, ltrim, rtrim, upper, lower, left, right, substring, concat, coalesce, length.",
@@ -230,15 +217,15 @@ export class AgentPromptTool<TContext = DefaultAgentSessionContext>
   ].join("\n");
 
   static schema = z.object({
-    slug: z.enum(AGENT_PROMPT_SLUGS).describe(
-      "Which shared agent prompt to work with. Supported slugs are agent and heartbeat.",
+    slug: z.enum(SESSION_PROMPT_SLUGS).describe(
+      "Which session-scoped prompt to work with. Supported slugs are brief, memory, and heartbeat.",
     ),
     operation: z.enum(["read", "set", "transform"]).describe(
       "Read the current content, replace it, or transform it with a safe SQL-ish text expression.",
     ),
     content: z.string().optional().describe("Required for set. Replaces the whole prompt content."),
     expression: z.string().optional().describe(
-      `Required for transform. Uses a restricted SQL-ish expression over the current content value.\n${AgentPromptTool.transformGuide}`,
+      `Required for transform. Uses a restricted SQL-ish expression over the current content value.\n${SessionPromptTool.transformGuide}`,
     ),
   }).superRefine((value, ctx) => {
     if (value.operation === "read") {
@@ -265,17 +252,17 @@ export class AgentPromptTool<TContext = DefaultAgentSessionContext>
     }
   });
 
-  name = "agent_prompt";
+  name = "session_prompt";
   description = [
-    "Read or update shared agent prompts.",
-    "The tool always uses the current session's agent.",
-    AgentPromptTool.transformGuide,
+    "Read or update prompts for the current session.",
+    "The tool always uses the current runtime session and never accepts a session id.",
+    SessionPromptTool.transformGuide,
   ].join("\n\n");
-  schema = AgentPromptTool.schema;
+  schema = SessionPromptTool.schema;
 
-  private readonly store: AgentPromptToolStore;
+  private readonly store: SessionPromptToolStore;
 
-  constructor(options: AgentPromptToolOptions) {
+  constructor(options: SessionPromptToolOptions) {
     super();
     this.store = options.store;
   }
@@ -287,38 +274,45 @@ export class AgentPromptTool<TContext = DefaultAgentSessionContext>
   }
 
   async handle(
-    args: z.output<typeof AgentPromptTool.schema>,
+    args: z.output<typeof SessionPromptTool.schema>,
     run: RunContext<TContext>,
   ) {
-    const scope = readScope(run.context);
+    const scope = readRequiredSessionToolScope(
+      run.context,
+      "The session prompt tool requires sessionId in the runtime session context.",
+    );
 
     if (args.operation === "read") {
       return buildPromptPayload(
-        scope,
+        scope.sessionId,
         args.slug,
         args.operation,
-        await this.store.readAgentPrompt(scope.agentKey, args.slug),
+        await this.store.readSessionPrompt(scope.sessionId, args.slug),
       );
     }
 
     if (args.operation === "set") {
       return buildPromptPayload(
-        scope,
+        scope.sessionId,
         args.slug,
         args.operation,
-        await this.store.setAgentPrompt(scope.agentKey, args.slug, args.content ?? ""),
+        await this.store.setSessionPrompt({
+          sessionId: scope.sessionId,
+          slug: args.slug,
+          content: args.content ?? "",
+        }),
       );
     }
 
     return buildPromptPayload(
-      scope,
+      scope.sessionId,
       args.slug,
       args.operation,
-      await this.store.transformAgentPrompt(
-        scope.agentKey,
-        args.slug,
-        validateTransformExpression(args.expression ?? ""),
-      ),
+      await this.store.transformSessionPrompt({
+        sessionId: scope.sessionId,
+        slug: args.slug,
+        expression: validateTransformExpression(args.expression ?? ""),
+      }),
     );
   }
 }

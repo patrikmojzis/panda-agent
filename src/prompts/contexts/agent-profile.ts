@@ -1,8 +1,3 @@
-export interface AgentProfilePromptEntry {
-  slug: string;
-  content: string;
-}
-
 export interface AgentProfileSkillEntry {
   skillKey: string;
   description: string;
@@ -11,17 +6,9 @@ export interface AgentProfileSkillEntry {
 
 export function renderAgentProfileContext(options: {
   agentKey: string;
-  prompts?: readonly AgentProfilePromptEntry[];
   skills?: readonly AgentProfileSkillEntry[];
 }): string {
   const blocks = [`Agent key: ${options.agentKey}`];
-
-  if (options.prompts) {
-    blocks.push(...options.prompts.map((prompt) => `
-[${prompt.slug}]
-${prompt.content || "(empty)"}
-`.trim()));
-  }
 
   if (options.skills !== undefined) {
     blocks.push(`

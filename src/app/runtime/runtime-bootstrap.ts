@@ -32,7 +32,7 @@ import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {ThreadShellStateStore} from "../../domain/threads/runtime/shell-state-store.js";
 import type {Tool} from "../../kernel/agent/tool.js";
 import {buildDefaultAgentToolsetsFromRegistry, createDefaultAgentToolRegistry,} from "../../panda/definition.js";
-import {AgentPromptTool} from "../../panda/tools/agent-prompt-tool.js";
+import {SessionPromptTool} from "../../panda/tools/session-prompt-tool.js";
 import {AgentSkillTool} from "../../panda/tools/agent-skill-tool.js";
 import type {PostgresReadonlyQueryToolOptions} from "../../panda/tools/postgres-readonly-query-tool.js";
 import {BrowserRunnerClient} from "../../integrations/browser/client.js";
@@ -669,8 +669,8 @@ export async function bootstrapRuntime(
           },
         },
       }),
-      new AgentPromptTool({
-        store: agentStore,
+      new SessionPromptTool({
+        store: sessionStore,
       }),
       new UpsertSubagentProfileTool({
         store: subagentProfiles,

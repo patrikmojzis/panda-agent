@@ -245,7 +245,7 @@ Treat these views as the public interface:
 - `session.todos`
 - `session.runtime_config`
 - `session.subagent_history`
-- `session.agent_prompts`
+- `session.prompts`
 - `session.agent_pairings`
 - `session.agent_skills`
 - `session.scheduled_tasks`

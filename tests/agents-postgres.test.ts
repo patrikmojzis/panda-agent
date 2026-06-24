@@ -1,10 +1,7 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {
-  DEFAULT_AGENT_PROMPT_TEMPLATES,
-  PostgresAgentStore,
-} from "../src/domain/agents/index.js";
+import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 
 describe("PostgresAgentStore", () => {
@@ -40,13 +37,12 @@ describe("PostgresAgentStore", () => {
     };
   }
 
-  it("bootstraps agents with shared prompts and lists them", async () => {
+  it("bootstraps agents and lists them", async () => {
     const { agentStore } = await createStores();
 
     const created = await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
 
     expect(created).toMatchObject({
@@ -63,10 +59,6 @@ describe("PostgresAgentStore", () => {
         agentKey: "panda",
       }),
     ]);
-    await expect(agentStore.readAgentPrompt("panda", "agent")).resolves.toMatchObject({
-      slug: "agent",
-      content: DEFAULT_AGENT_PROMPT_TEMPLATES.agent,
-    });
   });
 
   it("rejects non-json persisted agent metadata before returning records", async () => {
@@ -132,7 +124,7 @@ describe("PostgresAgentStore", () => {
     );
   });
 
-  it("stores pairings per identity and keeps prompts scoped by agent", async () => {
+  it("stores pairings per identity", async () => {
     const { identityStore, agentStore } = await createStores();
     await identityStore.createIdentity({
       id: "alice-id",
@@ -147,28 +139,18 @@ describe("PostgresAgentStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
     await agentStore.ensurePairing("panda", "alice-id");
     await agentStore.ensurePairing("panda", "bob-id");
-    await agentStore.setAgentPrompt("panda", "heartbeat", "Panda heartbeat.");
     await agentStore.bootstrapAgent({
       agentKey: "ops",
       displayName: "Ops",
-      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
-    await agentStore.setAgentPrompt("ops", "heartbeat", "Ops heartbeat.");
 
     await expect(agentStore.listAgentPairings("panda")).resolves.toEqual([
       expect.objectContaining({identityId: "alice-id"}),
       expect.objectContaining({identityId: "bob-id"}),
     ]);
-    await expect(agentStore.readAgentPrompt("panda", "heartbeat")).resolves.toMatchObject({
-      content: "Panda heartbeat.",
-    });
-    await expect(agentStore.readAgentPrompt("ops", "heartbeat")).resolves.toMatchObject({
-      content: "Ops heartbeat.",
-    });
   });
 
   it("stores agent skills by agent key and cascades them on agent delete", async () => {
@@ -177,12 +159,10 @@ describe("PostgresAgentStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
     await agentStore.bootstrapAgent({
       agentKey: "ops",
       displayName: "Ops",
-      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
 
     const created = await agentStore.setAgentSkill(
@@ -274,7 +254,6 @@ describe("PostgresAgentStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
     await pool.query(`
       INSERT INTO runtime.agent_skills (agent_key, skill_key, description, content, tags)
@@ -404,7 +383,6 @@ describe("PostgresAgentStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
     await pool.query(`
       INSERT INTO runtime.agent_skills (agent_key, skill_key, description, content, tags)
@@ -436,7 +414,6 @@ describe("PostgresAgentStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
 
     await expect(agentStore.setAgentSkill(

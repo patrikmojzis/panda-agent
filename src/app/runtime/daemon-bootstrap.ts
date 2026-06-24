@@ -122,7 +122,7 @@ export async function bootstrapDaemonContext(
     },
     resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, credentialResolver, executionEnvironments, scheduledTasks, executionEnvironmentResolver, sessionStore, subagentProfiles, store, shellStateStore, wikiBindingService, mainTools, subagentTools}) => {
       const session = await sessionStore.getSession(thread.sessionId);
-      const sessionPrompt = await sessionStore.readSessionPrompt(session.id);
+      const sessionPrompts = await sessionStore.listSessionPrompts(session.id);
       const runtimeConfig = await sessionStore.getSessionRuntimeConfig(session.id);
       const executionEnvironment = await executionEnvironmentResolver.resolveDefault(session);
       const sessionMainTools = session.kind === "subagent"
@@ -139,7 +139,7 @@ export async function bootstrapDaemonContext(
         agentStore,
         sessionStore,
         subagentProfiles,
-        sessionPrompt,
+        sessionPrompts,
         runtimeConfig,
         threadStore: store,
         scheduledTasks,
@@ -315,7 +315,7 @@ export async function bootstrapDaemonContext(
       sessions: runtime.sessionStore,
       coordinator: runtime.coordinator,
       resolveInstructions: async (session) => {
-        const heartbeatDoc = await runtime.agentStore.readAgentPrompt(session.agentKey, "heartbeat");
+        const heartbeatDoc = await runtime.sessionStore.readSessionPrompt(session.id, "heartbeat");
         return heartbeatDoc?.content?.trim() || null;
       },
       onError: (error, sessionId) => {

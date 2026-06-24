@@ -88,7 +88,7 @@ describe("subagent tool groups", () => {
           "toolNames": [
             "thinking_set",
             "agent_skill",
-            "agent_prompt",
+            "session_prompt",
             "upsert_subagent_profile",
             "set_env_value",
             "clear_env_value",

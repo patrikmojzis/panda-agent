@@ -65,12 +65,10 @@ describe("PostgresCredentialStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: {},
     });
     await agentStore.bootstrapAgent({
       agentKey: "ops",
       displayName: "Ops",
-      prompts: {},
     });
     await credentialService.setCredential({
       envKey: "NOTION_API_KEY",
@@ -139,7 +137,6 @@ describe("PostgresCredentialStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: {},
     });
 
     await credentialService.setCredential({
@@ -260,7 +257,6 @@ describe("PostgresCredentialStore", () => {
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
-      prompts: {},
     });
     await pool.query(`
       CREATE TABLE runtime.credentials (

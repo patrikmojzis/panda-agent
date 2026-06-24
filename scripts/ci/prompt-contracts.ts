@@ -7,7 +7,7 @@ import {fileURLToPath} from "node:url";
 import type {Tool} from "../../src/kernel/agent/tool.js";
 import {createDefaultAgentToolRegistry, buildDefaultAgentToolsetsFromRegistry} from "../../src/panda/definition.js";
 import {SUBAGENT_TOOL_GROUP_DEFINITIONS} from "../../src/domain/subagents/tool-groups.js";
-import {AgentPromptTool} from "../../src/panda/tools/agent-prompt-tool.js";
+import {SessionPromptTool} from "../../src/panda/tools/session-prompt-tool.js";
 import {AgentSkillTool} from "../../src/panda/tools/agent-skill-tool.js";
 import {
   AppActionTool,
@@ -218,7 +218,7 @@ function collectTools(): {
       new ThinkingSetTool({
         persistence: service,
       }),
-      new AgentPromptTool({
+      new SessionPromptTool({
         store: service,
       }),
       new AppCreateTool(service),

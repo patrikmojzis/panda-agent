@@ -1,7 +1,6 @@
 import type {JsonValue} from "../../lib/json.js";
 
 export type AgentStatus = "active" | "deleted";
-export type AgentPromptSlug = "agent" | "heartbeat";
 
 export interface CreateAgentInput {
   agentKey: string;
@@ -12,14 +11,6 @@ export interface CreateAgentInput {
 
 export interface AgentRecord extends CreateAgentInput {
   status: AgentStatus;
-  createdAt: number;
-  updatedAt: number;
-}
-
-export interface AgentPromptRecord {
-  agentKey: string;
-  slug: AgentPromptSlug;
-  content: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -56,9 +47,7 @@ export class AgentSkillNotEditableError extends Error {
   }
 }
 
-export interface BootstrapAgentInput extends CreateAgentInput {
-  prompts?: Partial<Record<AgentPromptSlug, string>>;
-}
+export interface BootstrapAgentInput extends CreateAgentInput {}
 
 export const MAX_AGENT_SKILL_DESCRIPTION_CHARS = 255;
 export const MAX_AGENT_SKILL_CONTENT_CHARS = 1_000_000;

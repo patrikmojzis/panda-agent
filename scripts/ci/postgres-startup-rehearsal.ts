@@ -5,7 +5,7 @@ import {fileURLToPath} from "node:url";
 
 import {A2ASessionBindingRepo} from "../../src/domain/a2a/repo.js";
 import {PostgresAgentAppAuthService} from "../../src/domain/apps/auth.js";
-import {DEFAULT_AGENT_PROMPT_TEMPLATES, PostgresAgentStore} from "../../src/domain/agents/index.js";
+import {PostgresAgentStore} from "../../src/domain/agents/index.js";
 import {PostgresChannelActionStore} from "../../src/domain/channels/actions/index.js";
 import {PostgresOutboundDeliveryStore} from "../../src/domain/channels/deliveries/index.js";
 import {PostgresConnectorLeaseRepo} from "../../src/domain/connector-leases/repo.js";
@@ -77,7 +77,6 @@ async function ensureBaseFixtureSchemas(stores: ReturnType<typeof createStores>)
   await stores.agentStore.bootstrapAgent({
     agentKey: "panda",
     displayName: "Panda",
-    prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
   });
 }
 

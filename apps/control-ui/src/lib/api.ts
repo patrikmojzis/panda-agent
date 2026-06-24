@@ -378,14 +378,20 @@ export type GatewayEventRow = {
   createdAt: string
 }
 
-export type Briefing = {
+export const SESSION_PROMPT_SLUGS = ["brief", "memory", "heartbeat"] as const
+
+export type SessionPromptSlug = (typeof SESSION_PROMPT_SLUGS)[number]
+
+export type SessionPrompt = {
   sessionId: string
-  slug: string
+  slug: SessionPromptSlug
   content: string
   wasSet: boolean
   createdAt?: string
   updatedAt?: string
 }
+
+export type Briefing = SessionPrompt
 
 export type Heartbeat = {
   sessionId: string
@@ -459,6 +465,18 @@ export type ModelCallTraceSummary = {
   usage: unknown | null
   error: Record<string, unknown> | null
   expiresAt: string
+}
+
+export type ModelCallTraceFailureGroup = {
+  count: number
+  label: string
+  latestStartedAt: string
+  representative: ModelCallTraceSummary
+  summary: string
+}
+
+export type ModelCallTraceList = PaginatedResponse<ModelCallTraceSummary> & {
+  failureGroups?: ModelCallTraceFailureGroup[]
 }
 
 export type ModelCallTraceDetail = ModelCallTraceSummary & {
@@ -917,6 +935,26 @@ export const controlApi = {
       body: { confirm: "clear-session-briefing" },
       csrfToken,
     }),
+  sessionPrompts: (agentKey: string, sessionId: string) =>
+    apiGet<{ prompts: SessionPrompt[] }>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/prompts`),
+  setSessionPrompt: (agentKey: string, sessionId: string, slug: SessionPromptSlug, content: string, csrfToken?: string | null) =>
+    apiWrite<{ prompt: SessionPrompt }>(
+      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/prompts/${encodeURIComponent(slug)}`,
+      {
+        method: "PUT",
+        body: { content },
+        csrfToken,
+      }
+    ),
+  deleteSessionPrompt: (agentKey: string, sessionId: string, slug: SessionPromptSlug, csrfToken?: string | null) =>
+    apiWrite<{ prompt: SessionPrompt }>(
+      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/prompts/${encodeURIComponent(slug)}`,
+      {
+        method: "DELETE",
+        body: { confirm: "clear-session-prompt" },
+        csrfToken,
+      }
+    ),
   heartbeat: (agentKey: string, sessionId: string) =>
     apiGet<{ heartbeat: Heartbeat }>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/heartbeat`),
   updateHeartbeat: (agentKey: string, sessionId: string, body: Record<string, unknown>, csrfToken?: string | null) =>
@@ -930,7 +968,7 @@ export const controlApi = {
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/runtime-activity${qs(params)}`
     ),
   modelCallTraces: (params: TableParams = {}) =>
-    apiGet<{ modelCallTraces: PaginatedResponse<ModelCallTraceSummary> }>(
+    apiGet<{ modelCallTraces: ModelCallTraceList }>(
       `/model-call-traces${qs(params)}`
     ),
   modelCallTrace: (traceId: string) =>

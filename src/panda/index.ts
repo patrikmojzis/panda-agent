@@ -9,18 +9,20 @@ export {
   type AgentProfileContextSection,
   DateTimeContext,
   EnvironmentContext,
+  SessionPromptsContext,
   SubagentsContext,
   type BuildDefaultAgentLlmContextsOptions,
   type DateTimeContextOptions,
   type EnvironmentContextOptions,
+  type SessionPromptsContextOptions,
   type SubagentsContextOptions,
   type DefaultAgentLlmContextSection,
 } from "./contexts/builder.js";
 export {
-  AgentPromptTool,
-  type AgentPromptToolOptions,
-  type AgentPromptToolStore,
-} from "./tools/agent-prompt-tool.js";
+  SessionPromptTool,
+  type SessionPromptToolOptions,
+  type SessionPromptToolStore,
+} from "./tools/session-prompt-tool.js";
 export {
   AgentSkillTool,
   type AgentSkillToolOptions,

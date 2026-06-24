@@ -27,7 +27,6 @@ import {
     planLegacyAgentImport,
 } from "./legacy-import.js";
 import {PostgresAgentStore} from "./postgres.js";
-import {DEFAULT_AGENT_PROMPT_TEMPLATES} from "../../prompts/templates/agent-prompts.js";
 import {type AgentRecord, normalizeAgentKey} from "./types.js";
 
 interface AgentCliOptions {
@@ -198,7 +197,6 @@ export async function ensureAgent(
     agent = await stores.agentStore.bootstrapAgent({
       agentKey: normalizedAgentKey,
       displayName: options.name?.trim() || normalizedAgentKey,
-      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
     createdAgent = true;
   }
@@ -296,7 +294,6 @@ export async function createAgentCommand(agentKey: string, options: CreateAgentC
     const created = await agentStore.bootstrapAgent({
       agentKey,
       displayName: options.name?.trim() || agentKey,
-      prompts: DEFAULT_AGENT_PROMPT_TEMPLATES,
     });
     const agentHome = resolveAgentDir(created.agentKey);
     const {sessionId, threadId} = await createMainSessionThread(
