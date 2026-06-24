@@ -67,7 +67,7 @@ Aliases are a separate operator affordance:
 
 `panda session label` updates or clears `alias`/`display_name`; TUI alias editing is intentionally out of scope.
 
-Editable runtime prompts are stored per session in `session_prompts` with slugs `brief`, `memory`, and `heartbeat`. The CLI `panda session prompt show|set|read|clear` edits the session `brief`; the model-facing `session_prompt` tool can read/set/transform the current session's prompt bundle. `brief` and `memory` render through `SessionPromptsContext`; `heartbeat` is read only when building heartbeat wake guidance.
+Editable runtime prompts are stored per session in `session_prompts` with slugs `brief`, `memory`, and `heartbeat`. The CLI `panda session prompt show|set|read|clear` edits `brief` by default and accepts `--slug brief|memory|heartbeat`; Control exposes the same bundle in the session Prompts tab. The model-facing `session_prompt` tool can read/set/transform the current session's prompt bundle. `brief` and `memory` render through `SessionPromptsContext`; `heartbeat` is read only when building heartbeat wake guidance.
 
 Rules:
 
@@ -77,7 +77,7 @@ Rules:
 - new main sessions get the default fresh-start `brief`
 - new branch sessions copy `brief` and `heartbeat` from the main/source session; `memory` starts empty
 - subagent sessions do not inherit the session prompt bundle
-- prompt-cache affinity includes the ordered session prompt bundle so edits force a fresh prompt lane
+- prompt-cache affinity includes rendered session prompts (`brief` and `memory`), while `heartbeat` affects only heartbeat wake guidance
 
 Session todo context is stored per session in `session_todos`. It is agent-managed through the `todo_update` tool, not a CLI/TUI editor. The tool replaces the full ordered list for the current runtime session; it never accepts a session id from the model. Items are structured `{status, content}` with `pending | in_progress | blocked | done`, and `items: []` clears the context.
 

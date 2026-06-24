@@ -1,10 +1,11 @@
 import { create } from "zustand"
 
-import type { A2ABindingRow, BindingRow, Briefing, ConnectorRow, CredentialRow, EmailRouteRow, Heartbeat, IdentityOptionRow, ScheduledTask, SessionDetail, SessionRow, SkillRow, SubagentRow, WatchRow, WikiBinding } from "@/lib/api"
+import type { A2ABindingRow, BindingRow, Briefing, ConnectorRow, CredentialRow, EmailRouteRow, Heartbeat, IdentityOptionRow, ScheduledTask, SessionDetail, SessionPromptSlug, SessionRow, SkillRow, SubagentRow, WatchRow, WikiBinding } from "@/lib/api"
 import type { FormCreateSheetState, FormUpdateSheetState } from "@/types/entity-form-sheet-types"
 
 export type AgentSheetContext = {
   agentKey: string
+  promptSlug?: SessionPromptSlug
   sessionId?: string
   sourceId?: string
 }

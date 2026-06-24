@@ -145,6 +145,7 @@ export function AuditPanel({
 
 const auditEventTypeOptions = [
   { label: "Operator writes", value: "control_operator_write" },
+  { label: "Prompt writes", value: "session_prompt_write" },
   { label: "Briefing writes", value: "session_briefing_write" },
   { label: "Wake policy writes", value: "session_heartbeat_config_write" },
   { label: "Automation writes", value: "session_scheduled_task_write" },

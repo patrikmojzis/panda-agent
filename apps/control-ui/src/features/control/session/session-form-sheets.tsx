@@ -56,6 +56,7 @@ import {
   type WatchConfigFormValues,
 } from "@/features/control/forms/use-control-form-sheets"
 import { useSessionOptions } from "@/features/control/forms/form-options"
+import { SESSION_PROMPT_META } from "@/features/control/session/session-prompt-meta"
 import { controlApi } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
 
@@ -77,7 +78,7 @@ const runtimeConfigSchema = z.object({
 })
 
 const briefingSchema = z.object({
-  content: z.string().trim().min(1, "Briefing is required."),
+  content: z.string().trim().min(1, "Prompt is required."),
 })
 
 const heartbeatConfigSchema = z.object({
@@ -377,6 +378,8 @@ export function SessionBriefingSheet() {
   const auth = useAuth()
   const { context, defaultData, entity, isOpen, setOpen } = useBriefingSheet()
   const invalidate = useInvalidateAgent(context?.agentKey)
+  const slug = context?.promptSlug ?? entity?.slug ?? "brief"
+  const promptMeta = SESSION_PROMPT_META[slug]
   const resetValues = React.useMemo(
     () =>
       mergedValues(
@@ -389,16 +392,17 @@ export function SessionBriefingSheet() {
     mutationFn: (values: BriefingFormValues) => {
       const current = requireContext(context)
       if (!current.sessionId) throw new Error("Session is missing.")
-      return controlApi.setBriefing(
+      return controlApi.setSessionPrompt(
         current.agentKey,
         current.sessionId,
+        slug,
         briefingPayload(values),
         auth.csrfToken
       )
     },
     onError: formError,
     onSuccess: async () => {
-      toast.success("Briefing saved")
+      toast.success(`${promptMeta.label} saved`)
       setOpen(false)
       await invalidate(
         context?.agentKey && context.sessionId
@@ -418,25 +422,25 @@ export function SessionBriefingSheet() {
   return (
     <FormSheet
       confirmSubmit={{
-        title: "Update briefing",
+        title: `Update ${promptMeta.label.toLowerCase()}`,
         description: "This changes durable context for the current session.",
-        confirmLabel: "Update briefing",
+        confirmLabel: `Update ${promptMeta.label.toLowerCase()}`,
       }}
-      description="Edit the durable briefing this session carries into future work."
+      description={promptMeta.description}
       form={form}
       isOpen={isOpen}
       resetValues={resetValues}
       setIsOpen={(open) => setOpen(open)}
       submitLabel="Update"
-      title="Session Briefing"
+      title={`${promptMeta.label} Prompt`}
     >
       <form.AppField name="content">
         {(field) => (
           <field.TextareaField
-            label="Briefing"
-            description="Operator-owned context, preferences, constraints, and durable instructions for this session."
+            label={promptMeta.label}
+            description={promptMeta.description}
             className="min-h-80 font-mono text-xs leading-relaxed"
-            placeholder="Add the session context the agent should keep using."
+            placeholder={promptMeta.placeholder}
             required
           />
         )}

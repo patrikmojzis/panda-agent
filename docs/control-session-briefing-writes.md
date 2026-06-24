@@ -1,6 +1,6 @@
-# Control session briefing writes
+# Control session prompt writes
 
-Control exposes a narrow write-capable slice for the fixed session brief prompt (`SESSION_BRIEF_PROMPT_SLUG`, currently `brief`). The endpoint name stays `/briefing`; it is not an arbitrary prompt editor.
+Control exposes write-capable session prompt endpoints for `brief`, `memory`, and `heartbeat`. The old `/briefing` endpoint stays as a compatibility alias for `brief`.
 
 ## API
 
@@ -9,12 +9,16 @@ All endpoints require an authenticated Control session:
 - `GET /api/control/agents/:agentKey/sessions/:sessionId/briefing`
 - `PUT /api/control/agents/:agentKey/sessions/:sessionId/briefing` with JSON `{ "content": "..." }`
 - `DELETE /api/control/agents/:agentKey/sessions/:sessionId/briefing` with JSON `{ "confirm": "clear-session-briefing" }`
+- `GET /api/control/agents/:agentKey/sessions/:sessionId/prompts`
+- `GET /api/control/agents/:agentKey/sessions/:sessionId/prompts/:slug`
+- `PUT /api/control/agents/:agentKey/sessions/:sessionId/prompts/:slug` with JSON `{ "content": "..." }`
+- `DELETE /api/control/agents/:agentKey/sessions/:sessionId/prompts/:slug` with JSON `{ "confirm": "clear-session-prompt" }`
 
-The response shape is `{ briefing }`, where `briefing` includes `agentKey`, `sessionId`, `slug`, `content`, `wasSet`, and timestamps when a prompt exists.
+The `/briefing` response shape is `{ briefing }`; the generic single-prompt response is `{ prompt }`; the bundle response is `{ prompts }`. Prompt records include `agentKey`, `sessionId`, `slug`, `content`, `wasSet`, and timestamps when content exists.
 
 ## Authorization and safety
 
-Briefing access is fail-closed. The operator must have:
+Prompt access is fail-closed. The operator must have:
 
 1. a valid Control session;
 2. an active Control grant for the target agent (`admin` or matching `scoped` grant);
@@ -25,8 +29,8 @@ There is intentionally no per-session ACL layer in this slice.
 
 ## CSRF, validation, and audit
 
-`PUT` and `DELETE` require the existing Control CSRF header (`x-control-csrf` or `x-csrf-token`). Blank save content is rejected; clear the briefing instead. `DELETE` requires the explicit confirmation string above.
+`PUT` and `DELETE` require the existing Control CSRF header (`x-control-csrf` or `x-csrf-token`). Blank save content is rejected; clear the prompt instead. `DELETE` requires the explicit confirmation strings above.
 
-Successful `PUT` and `DELETE` write a generic Control audit event. Audit metadata is redacted: old/new `wasSet`, `length`, and SHA-256 hash only. Raw briefing text is never written to the Control audit table.
+Successful generic `PUT` and `DELETE` write `session_prompt_write`; `/briefing` writes keep using `session_briefing_write`. Audit metadata is redacted: old/new `wasSet`, `length`, and SHA-256 hash only. Raw prompt text is never written to the Control audit table.
 
-The Control UI includes a minimal Session briefing page under `/briefing`; enter an agent key and session id to open the edit/clear view.
+The Control UI session Prompts tab edits all three prompt slots.

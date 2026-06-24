@@ -21,7 +21,7 @@ import {buildRunnerEndpoint, makeNetworkTimeoutSignal, resolveBashExecutionMode,
 import {PostgresIdentityStore} from "../identity/postgres.js";
 import {createSessionWithInitialThread} from "./lifecycle.js";
 import {PostgresSessionStore} from "./postgres.js";
-import {SESSION_BRIEF_PROMPT_SLUG, normalizeSessionAlias, type SessionRecord} from "./types.js";
+import {SESSION_BRIEF_PROMPT_SLUG, normalizeSessionAlias, normalizeSessionPromptSlug, type SessionPromptSlug, type SessionRecord} from "./types.js";
 
 export interface SessionCliOptions {
   dbUrl?: string;
@@ -51,6 +51,7 @@ interface HeartbeatCliOptions extends ScopedSessionRefCliOptions {
 
 interface SessionPromptCliOptions extends ScopedSessionRefCliOptions {
   content?: string;
+  slug?: SessionPromptSlug;
   stdin?: boolean;
 }
 
@@ -164,6 +165,10 @@ function parseDisplayNameOption(value: string): string {
 
 function parseAgentKeyOption(value: string): string {
   return parseCliValue(value, normalizeAgentKey);
+}
+
+function parseSessionPromptSlugOption(value: string): SessionPromptSlug {
+  return parseCliValue(value, normalizeSessionPromptSlug);
 }
 
 function isUnknownSessionError(error: unknown, sessionId: string): boolean {
@@ -347,6 +352,14 @@ function writePromptContent(content: string): void {
   process.stdout.write(content.endsWith("\n") ? content : `${content}\n`);
 }
 
+function promptSlug(options: {slug?: SessionPromptSlug}): SessionPromptSlug {
+  return options.slug ?? SESSION_BRIEF_PROMPT_SLUG;
+}
+
+function hasPromptLabel(slug: SessionPromptSlug): string {
+  return `has ${slug}`;
+}
+
 function buildSessionCreateOutput(input: {
   agentKey: string;
   sessionRef?: string;
@@ -482,17 +495,18 @@ async function inspectSessionCommand(sessionRef: string, options: ScopedSessionR
 
 async function showSessionPromptCommand(
   sessionRef: string,
-  options: ScopedSessionRefCliOptions,
+  options: SessionPromptCliOptions,
 ): Promise<void> {
   await withSessionStores(options, async ({sessionStore}) => {
     const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
-    const prompt = await sessionStore.readSessionPrompt(session.id, SESSION_BRIEF_PROMPT_SLUG);
+    const slug = promptSlug(options);
+    const prompt = await sessionStore.readSessionPrompt(session.id, slug);
     if (!prompt) {
       process.stdout.write(
         [
           `Session prompt for ${session.id}.`,
-          `slug ${SESSION_BRIEF_PROMPT_SLUG}`,
-          "has brief no",
+          `slug ${slug}`,
+          `${hasPromptLabel(slug)} no`,
         ].join("\n") + "\n",
       );
       return;
@@ -502,7 +516,7 @@ async function showSessionPromptCommand(
       [
         `Session prompt for ${session.id}.`,
         `slug ${prompt.slug}`,
-        "has brief yes",
+        `${hasPromptLabel(prompt.slug)} yes`,
         `updated ${new Date(prompt.updatedAt).toISOString()}`,
         "",
         prompt.content,
@@ -513,11 +527,11 @@ async function showSessionPromptCommand(
 
 async function readSessionPromptCommand(
   sessionRef: string,
-  options: ScopedSessionRefCliOptions,
+  options: SessionPromptCliOptions,
 ): Promise<void> {
   await withSessionStores(options, async ({sessionStore}) => {
     const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
-    const prompt = await sessionStore.readSessionPrompt(session.id, SESSION_BRIEF_PROMPT_SLUG);
+    const prompt = await sessionStore.readSessionPrompt(session.id, promptSlug(options));
     if (prompt) {
       writePromptContent(prompt.content);
     }
@@ -532,16 +546,17 @@ async function setSessionPromptCommand(
   const resolvedContent = await resolvePromptContent(content, options);
   await withSessionStores(options, async ({sessionStore}) => {
     const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
+    const slug = promptSlug(options);
     const prompt = await sessionStore.setSessionPrompt({
       sessionId: session.id,
-      slug: SESSION_BRIEF_PROMPT_SLUG,
+      slug,
       content: resolvedContent,
     });
     process.stdout.write(
       [
         `Updated session prompt for ${session.id}.`,
         `slug ${prompt.slug}`,
-        "has brief yes",
+        `${hasPromptLabel(prompt.slug)} yes`,
       ].join("\n") + "\n",
     );
   });
@@ -549,21 +564,43 @@ async function setSessionPromptCommand(
 
 async function clearSessionPromptCommand(
   sessionRef: string,
-  options: ScopedSessionRefCliOptions,
+  options: SessionPromptCliOptions,
 ): Promise<void> {
   await withSessionStores(options, async ({sessionStore}) => {
     const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
+    const slug = promptSlug(options);
     await sessionStore.deleteSessionPrompt({
       sessionId: session.id,
-      slug: SESSION_BRIEF_PROMPT_SLUG,
+      slug,
     });
     process.stdout.write(
       [
         `Cleared session prompt for ${session.id}.`,
-        `slug ${SESSION_BRIEF_PROMPT_SLUG}`,
-        "has brief no",
+        `slug ${slug}`,
+        `${hasPromptLabel(slug)} no`,
       ].join("\n") + "\n",
     );
+  });
+}
+
+async function listSessionPromptsCommand(
+  sessionRef: string,
+  options: ScopedSessionRefCliOptions,
+): Promise<void> {
+  await withSessionStores(options, async ({sessionStore}) => {
+    const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
+    const prompts = await sessionStore.listSessionPrompts(session.id);
+    const promptsBySlug = new Map(prompts.map((prompt) => [prompt.slug, prompt]));
+    process.stdout.write(`Session prompts for ${session.id}.\n`);
+    for (const slug of ["brief", "memory", "heartbeat"] as const) {
+      const prompt = promptsBySlug.get(slug);
+      process.stdout.write([
+        `slug ${slug}`,
+        `${hasPromptLabel(slug)} ${prompt ? "yes" : "no"}`,
+        `chars ${(prompt?.content.length ?? 0).toLocaleString()}`,
+        `updated ${prompt ? new Date(prompt.updatedAt).toISOString() : "-"}`,
+      ].join(" · ") + "\n");
+    }
   });
 }
 
@@ -844,34 +881,47 @@ export function registerSessionManagementCommands(sessionProgram: Command): void
 
   const promptProgram = sessionProgram
     .command("prompt")
-    .description("Manage a session brief prompt");
+    .description("Manage session prompts");
 
   promptProgram
-    .command("show")
-    .description("Show a session brief prompt with metadata")
+    .command("list")
+    .description("List session prompt slots")
     .argument("<sessionRef>", "Session id, or alias when --agent is provided")
     .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((sessionRef: string, options: ScopedSessionRefCliOptions) => {
+      return listSessionPromptsCommand(sessionRef, options);
+    });
+
+  promptProgram
+    .command("show")
+    .description("Show a session prompt with metadata")
+    .argument("<sessionRef>", "Session id, or alias when --agent is provided")
+    .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
+    .option("--slug <slug>", "Prompt slug: brief, memory, or heartbeat", parseSessionPromptSlugOption)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((sessionRef: string, options: SessionPromptCliOptions) => {
       return showSessionPromptCommand(sessionRef, options);
     });
 
   promptProgram
     .command("read")
-    .description("Print the raw session brief prompt content")
+    .description("Print raw session prompt content")
     .argument("<sessionRef>", "Session id, or alias when --agent is provided")
     .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
+    .option("--slug <slug>", "Prompt slug: brief, memory, or heartbeat", parseSessionPromptSlugOption)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
-    .action((sessionRef: string, options: ScopedSessionRefCliOptions) => {
+    .action((sessionRef: string, options: SessionPromptCliOptions) => {
       return readSessionPromptCommand(sessionRef, options);
     });
 
   promptProgram
     .command("set")
-    .description("Set a session brief prompt")
+    .description("Set a session prompt")
     .argument("<sessionRef>", "Session id, or alias when --agent is provided")
     .argument("[content]", "Prompt content. Prefer --stdin for multiline content.")
     .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
+    .option("--slug <slug>", "Prompt slug: brief, memory, or heartbeat", parseSessionPromptSlugOption)
     .option("--content <content>", "Prompt content")
     .option("--stdin", "Read prompt content from stdin")
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
@@ -881,11 +931,12 @@ export function registerSessionManagementCommands(sessionProgram: Command): void
 
   promptProgram
     .command("clear")
-    .description("Clear a session brief prompt")
+    .description("Clear a session prompt")
     .argument("<sessionRef>", "Session id, or alias when --agent is provided")
     .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
+    .option("--slug <slug>", "Prompt slug: brief, memory, or heartbeat", parseSessionPromptSlugOption)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
-    .action((sessionRef: string, options: ScopedSessionRefCliOptions) => {
+    .action((sessionRef: string, options: SessionPromptCliOptions) => {
       return clearSessionPromptCommand(sessionRef, options);
     });
 
