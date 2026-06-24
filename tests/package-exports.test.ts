@@ -1,7 +1,6 @@
 import {readFileSync} from "node:fs";
 
 import {describe, expect, it} from "vitest";
-import * as domainAgents from "../src/domain/agents/index.js";
 import * as domainWatches from "../src/domain/watches/index.js";
 
 const architectureDoc = readFileSync(
@@ -82,10 +81,6 @@ describe("package exports", () => {
   });
 
   it("keeps domain subpath barrels slim", () => {
-    expect(domainAgents).not.toHaveProperty("discoverLegacyAgentSourceDirs");
-    expect(domainAgents).not.toHaveProperty("importLegacyAgent");
-    expect(domainAgents).not.toHaveProperty("planLegacyAgentImport");
-
     expect(domainWatches).not.toHaveProperty("defaultWatchSourceResolvers");
     expect(domainWatches).not.toHaveProperty("evaluateWatch");
     expect(domainWatches).not.toHaveProperty("validateReadOnlySqlQuery");

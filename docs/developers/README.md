@@ -26,7 +26,6 @@ Start here:
 - [DB Integrity](./db-integrity.md)
 - [Prompt Caching](./caching.md)
 - [Postgres Pool Sizing](./pg-pool-size.md)
-- [OpenClaw Import](./openclaw-import.md)
 - [Heartbeat](./heartbeat.md)
 - [Watches](./watches.md)
 - [Live Smoke](./live-smoke.md)

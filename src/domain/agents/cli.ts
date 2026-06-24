@@ -1,6 +1,5 @@
 import {randomUUID} from "node:crypto";
 import process from "node:process";
-import path from "node:path";
 import {mkdir} from "node:fs/promises";
 
 import {Command, InvalidArgumentError} from "commander";
@@ -9,23 +8,12 @@ import type {Pool} from "pg";
 import {DB_URL_OPTION_DESCRIPTION} from "../../lib/cli.js";
 import {resolveAgentDir} from "../../lib/data-dir.js";
 import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
-import {resolveCredentialCrypto} from "../credentials/crypto.js";
-import {PostgresCredentialStore} from "../credentials/postgres.js";
-import {CredentialService} from "../credentials/resolver.js";
-import {parseIdentityHandle} from "../identity/cli.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
 import {createSessionWithInitialThread, resetSessionCurrentThread} from "../sessions/lifecycle.js";
 import {PostgresSessionStore} from "../sessions/postgres.js";
 import {PostgresThreadRuntimeStore} from "../threads/runtime/postgres.js";
 import {isMissingThreadError} from "../threads/runtime/types.js";
 import {isMissingAgentError} from "./errors.js";
-import {
-    discoverLegacyAgentSourceDirs,
-    type ImportedLegacyAgentResult,
-    importLegacyAgent,
-    type LegacyAgentImportPlan,
-    planLegacyAgentImport,
-} from "./legacy-import.js";
 import {PostgresAgentStore} from "./postgres.js";
 import {type AgentRecord, normalizeAgentKey} from "./types.js";
 
@@ -38,12 +26,6 @@ interface CreateAgentCliOptions extends AgentCliOptions {
 }
 
 interface PairAgentCliOptions extends AgentCliOptions {}
-
-interface ImportLegacyAgentCliOptions extends AgentCliOptions {
-  dryRun?: boolean;
-  identity?: string;
-  includeMessages?: boolean;
-}
 
 interface AgentCliStores {
   pool: Pool;
@@ -88,41 +70,6 @@ async function withAgentStores<T>(
       stores.threadStore,
     ]);
     return fn(stores);
-  });
-}
-
-async function withLegacyImportStores<T>(
-  options: AgentCliOptions,
-  fn: (stores: {
-    agentStore: PostgresAgentStore;
-    credentialService: CredentialService | null;
-    identityStore: PostgresIdentityStore;
-    pool: Pool;
-    sessionStore: PostgresSessionStore;
-    threadStore: PostgresThreadRuntimeStore;
-  }) => Promise<T>,
-): Promise<T> {
-  return withPostgresPool(options.dbUrl, async (pool) => {
-    const stores = createAgentCliStores(pool);
-    const credentialStore = new PostgresCredentialStore({pool});
-    await ensureSchemas([
-      stores.identityStore,
-      stores.agentStore,
-      stores.sessionStore,
-      stores.threadStore,
-      credentialStore,
-    ]);
-    const crypto = resolveCredentialCrypto();
-    const credentialService = crypto
-      ? new CredentialService({
-        store: credentialStore,
-        crypto,
-      })
-      : null;
-    return fn({
-      ...stores,
-      credentialService,
-    });
   });
 }
 
@@ -384,113 +331,6 @@ async function listPairingsCommand(agentKey: string, options: PairAgentCliOption
   });
 }
 
-function renderPromptSummary(plan: LegacyAgentImportPlan): string {
-  return plan.prompts.map((prompt) => {
-    if (!prompt.sourcePath) {
-      return `${prompt.slug} (generated/default)`;
-    }
-
-    return `${prompt.slug} (${path.basename(prompt.sourcePath)})`;
-  }).join(", ");
-}
-
-function renderLegacyPlan(plan: LegacyAgentImportPlan, options: {identityHandle?: string; includeMessages?: boolean} = {}): string {
-  return [
-    `${plan.agentKey}`,
-    `  name ${plan.displayName}`,
-    `  source ${plan.sourceDir}`,
-    ...(options.identityHandle ? [`  identity ${options.identityHandle}`] : []),
-    `  prompts ${renderPromptSummary(plan)}`,
-    ...(options.includeMessages ? [`  messages ${plan.messages.length}`] : []),
-    `  skills ${plan.skills.length}`,
-    `  credentials ${plan.credentials.length}`,
-    `  legacy copy ${plan.legacyCopyDir}`,
-    ...plan.warnings.map((warning) => `  warning ${warning}`),
-  ].join("\n");
-}
-
-function renderLegacyImportResult(
-  result: ImportedLegacyAgentResult,
-  options: {identityHandle?: string; includeMessages?: boolean} = {},
-): string {
-  return [
-    `Imported ${result.agentKey}.`,
-    `name ${result.displayName}`,
-    `source ${result.sourceDir}`,
-    `home ${result.homeDir}`,
-    `legacy copy ${result.legacyCopyDir}`,
-    `agent created ${result.createdAgent ? "yes" : "no"}`,
-    `main session created ${result.createdMainSession ? "yes" : "no"}`,
-    ...(options.identityHandle ? [`identity ${options.identityHandle} (${result.identityId ?? "unresolved"})`] : []),
-    `prompts ${result.promptCount}`,
-    ...(options.includeMessages ? [`messages imported ${result.messageCount}`] : []),
-    `skills ${result.skillCount}`,
-    `credentials imported ${result.credentialCount}`,
-    `credentials skipped ${result.skippedCredentialCount}`,
-    ...result.warnings.map((warning) => `warning ${warning}`),
-  ].join("\n");
-}
-
-async function importLegacyCommand(sourcePath: string, options: ImportLegacyAgentCliOptions): Promise<void> {
-  const sourceDirs = await discoverLegacyAgentSourceDirs(sourcePath);
-  if (sourceDirs.length === 0) {
-    throw new Error(`No OpenClaw agents found under ${path.resolve(sourcePath)}.`);
-  }
-
-  const plans = await Promise.all(sourceDirs.map((dir) => {
-    return planLegacyAgentImport(dir, {
-      env: process.env,
-      includeMessages: options.includeMessages,
-    });
-  }));
-
-  if (options.dryRun) {
-    process.stdout.write(
-      [
-        `Discovered ${plans.length} OpenClaw agent${plans.length === 1 ? "" : "s"}.`,
-        "",
-        ...plans.map((plan) => renderLegacyPlan(plan, {
-          identityHandle: options.identity,
-          includeMessages: options.includeMessages,
-        })),
-        "",
-        "Dry run only. No database writes happened.",
-      ].join("\n") + "\n",
-    );
-    return;
-  }
-
-  await withLegacyImportStores(options, async ({
-    agentStore,
-    credentialService,
-    identityStore,
-    pool,
-    sessionStore,
-    threadStore,
-  }) => {
-    const identityId = options.identity
-      ? (await identityStore.getIdentityByHandle(options.identity)).id
-      : undefined;
-    const results: ImportedLegacyAgentResult[] = [];
-    for (const plan of plans) {
-      results.push(await importLegacyAgent(plan, {
-        agentStore,
-        credentialService: credentialService ?? undefined,
-        identityId,
-        includeMessages: options.includeMessages,
-        pool,
-        sessionStore,
-        threadStore,
-      }));
-    }
-
-    process.stdout.write(results.map((result) => renderLegacyImportResult(result, {
-      identityHandle: options.identity,
-      includeMessages: options.includeMessages,
-    })).join("\n\n") + "\n");
-  });
-}
-
 export function registerAgentCommands(program: Command): void {
   const agentProgram = program
     .command("agent")
@@ -551,17 +391,5 @@ export function registerAgentCommands(program: Command): void {
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((agentKey: string, options: PairAgentCliOptions) => {
       return listPairingsCommand(agentKey, options);
-    });
-
-  agentProgram
-    .command("import-openclaw")
-    .description("Import OpenClaw agents into Panda")
-    .argument("<sourcePath>", "OpenClaw agent directory or parent directory containing agent folders")
-    .option("--dry-run", "Show the migration plan without writing to Postgres")
-    .option("--identity <handle>", "Identity handle for imported user messages and agent pairing", parseIdentityHandle)
-    .option("--include-messages", "Import lossy legacy user/assistant transcript pairs into the main Panda thread")
-    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
-    .action((sourcePath: string, options: ImportLegacyAgentCliOptions) => {
-      return importLegacyCommand(sourcePath, options);
     });
 }
