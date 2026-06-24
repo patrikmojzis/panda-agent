@@ -6,9 +6,50 @@ import {
   previewForValue,
   sanitizeDisplayString,
 } from "../apps/control-ui/src/features/control/model-calls/model-call-trace-view-model.ts";
+import {
+  buildDebugReport,
+  extractBashExecutionDetails,
+  modelCallFailureGroups,
+  usageSummary,
+  usageTokenCounts,
+} from "../apps/control-ui/src/features/control/model-calls/model-call-display.ts";
+import type {ModelCallTraceDetail, ModelCallTraceSummary} from "../apps/control-ui/src/lib/api.ts";
 
 function sensitiveCacheValue(prefix = "trace-cache") {
   return `${prefix}:${["raw", "secret", "value"].join("-")}`;
+}
+
+function traceSummary(overrides: Partial<ModelCallTraceSummary>): ModelCallTraceSummary {
+  return {
+    id: "trace-default",
+    runId: "run-1",
+    threadId: "thread-1",
+    sessionId: "session-1",
+    agentKey: "panda",
+    turn: 1,
+    callIndex: 0,
+    provider: "openai",
+    model: "gpt-5",
+    mode: "complete",
+    status: "completed",
+    startedAt: "2026-06-23T10:00:00.000Z",
+    finishedAt: "2026-06-23T10:00:01.000Z",
+    durationMs: 1000,
+    promptCacheKey: null,
+    usage: null,
+    error: null,
+    expiresAt: "2026-06-24T10:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function traceDetail(overrides: Partial<ModelCallTraceDetail>): ModelCallTraceDetail {
+  return {
+    ...traceSummary(overrides),
+    request: {},
+    response: null,
+    ...overrides,
+  };
 }
 
 describe("Control model call trace view model", () => {
@@ -87,6 +128,107 @@ describe("Control model call trace view model", () => {
     expect(model.selectedDefaultId).toBe(model.summary.failingSpan?.id);
   });
 
+  it("ranks triage targets by operator pain instead of timeline order", () => {
+    const model = buildModelCallTraceViewModel({
+      id: "trace-triage-queue",
+      status: "failed",
+      request: {
+        systemPrompt: {text: "system prompt", truncated: true},
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {type: "toolCall", id: "call_failed", name: "bash", arguments: {command: "exit 1"}},
+              {type: "toolCall", id: "call_missing", name: "http_json", arguments: {url: "https://example.test"}},
+              {type: "toolCall", id: "call_slow", name: "read_file", arguments: {path: "/tmp/file"}},
+            ],
+          },
+          {role: "toolResult", toolCallId: "call_failed", toolName: "bash", content: "exit code 1", isError: true, durationMs: 20},
+          {role: "toolResult", toolCallId: "call_slow", toolName: "read_file", content: "ok", durationMs: 900},
+          {role: "toolResult", toolCallId: "call_orphan", toolName: "bash", content: "orphaned", durationMs: 15},
+        ],
+      },
+    });
+
+    expect(model.summary.triageItems.map((item) => item.label)).toEqual([
+      "Failed tool",
+      "Missing tool result",
+      "Unmatched result",
+      "Truncated payload",
+      "Slowest span",
+    ]);
+    expect(model.summary.triageItems.map((item) => item.severity)).toEqual([
+      "critical",
+      "critical",
+      "critical",
+      "warning",
+      "info",
+    ]);
+    expect(model.summary.triageItems[0]?.spanId).toContain("call_failed");
+    expect(model.summary.triageItems.at(-1)?.spanId).toContain("call_slow");
+  });
+
+  it("includes the ranked triage queue in copied debug reports", () => {
+    const rawPromptCacheKey = sensitiveCacheValue();
+    const trace = traceDetail({
+      id: "trace-report",
+      status: "failed",
+      error: {category: "provider_timeout", message: `timeout ${rawPromptCacheKey}`},
+      request: {
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {type: "toolCall", id: "call_failed", name: "bash", arguments: {command: `echo ${rawPromptCacheKey}`}},
+            ],
+          },
+          {role: "toolResult", toolCallId: "call_failed", toolName: "bash", content: `error ${rawPromptCacheKey}`, isError: true, durationMs: 12},
+        ],
+      },
+    });
+    const model = buildModelCallTraceViewModel(trace);
+
+    const report = buildDebugReport(trace, model, null);
+
+    expect(report).toContain("triage:");
+    expect(report).toContain("1. Failed tool");
+    expect(report).toContain("span 1");
+    expect(report).toContain(rawPromptCacheKey);
+    expect(report).not.toContain("[redacted prompt-cache value]");
+  });
+
+  it("summarizes capture gaps operators need for trace debugging", () => {
+    const model = buildModelCallTraceViewModel({
+      id: "trace-debug-health",
+      status: "failed",
+      request: {
+        systemPrompt: {promptCacheKey: sensitiveCacheValue()},
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {type: "toolCall", id: "call_missing_result", name: "bash", arguments: {command: "pwd"}},
+            ],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_orphan_result",
+            toolName: "bash",
+            content: "orphaned result",
+            truncated: true,
+          },
+        ],
+      },
+    });
+
+    expect(model.summary).toMatchObject({
+      pendingToolCalls: 1,
+      redactedSpans: 1,
+      truncatedSpans: 1,
+      unmatchedToolResults: 1,
+    });
+  });
+
   it("redacts prompt cache fields in previews and raw JSON fallback", () => {
     const rawPromptCacheKey = sensitiveCacheValue();
     const value = {
@@ -101,18 +243,20 @@ describe("Control model call trace view model", () => {
     expect(formatSanitizedJson(value)).toContain("[redacted prompt-cache value]");
   });
 
-  it("redacts prompt cache material embedded inside string previews", () => {
+  it("redacts prompt cache fields inside string previews without treating tokens as secrets", () => {
     const rawPromptCacheKey = sensitiveCacheValue();
     const jsonLikeString = `{"promptCacheKey":"${rawPromptCacheKey}"}`;
+    const tokenText = `opaque ${rawPromptCacheKey}`;
 
     expect(previewForValue(jsonLikeString)?.includes(rawPromptCacheKey)).toBe(false);
     expect(formatSanitizedJson(jsonLikeString).includes(rawPromptCacheKey)).toBe(false);
     expect(sanitizeDisplayString(`stdout ${jsonLikeString}`).includes(rawPromptCacheKey)).toBe(false);
-    expect(previewForValue(`opaque ${rawPromptCacheKey}`)?.includes(rawPromptCacheKey)).toBe(false);
+    expect(previewForValue(tokenText)).toContain(rawPromptCacheKey);
+    expect(formatSanitizedJson(tokenText)).toContain(rawPromptCacheKey);
   });
 
 
-  it("redacts prompt cache part and fingerprint material embedded in prose", () => {
+  it("redacts prompt cache field fragments embedded in prose but preserves cache tokens", () => {
     const rawPromptCachePart = sensitiveCacheValue("context-cache");
     const prefixedJson = `stdout before ${JSON.stringify({promptCacheKeyPart: rawPromptCachePart})}`;
     const assignment = `promptCacheKeyPart=${rawPromptCachePart}`;
@@ -124,12 +268,13 @@ describe("Control model call trace view model", () => {
       sanitizeDisplayString(prefixedJson),
       sanitizeDisplayString(assignment),
       sanitizeDisplayString(fingerprintAssignment),
-      previewForValue(tokenPreview) ?? "",
       formatSanitizedJson(nestedStdout),
     ]) {
       expect(rendered.includes(rawPromptCachePart)).toBe(false);
       expect(rendered).toContain("[redacted prompt-cache value]");
     }
+
+    expect(previewForValue(tokenPreview)).toContain(rawPromptCachePart);
   });
 
 
@@ -242,6 +387,8 @@ describe("Control model call trace view model", () => {
 
   it("does not redact ordinary thread prose as a prompt cache token", () => {
     expect(sanitizeDisplayString("See thread:discussion for context")).toContain("thread:discussion");
+    expect(sanitizeDisplayString("Use prompt-cache:visible-cache-key")).toContain("prompt-cache:visible-cache-key");
+    expect(formatSanitizedJson({stdout: "trace-cache:visible-cache-key"})).toContain("trace-cache:visible-cache-key");
   });
 
   it("redacts prompt cache material inside bash stdout-style nested strings", () => {
@@ -253,5 +400,90 @@ describe("Control model call trace view model", () => {
     expect(sanitized).toContain("stdout");
     expect(sanitized).toContain("[redacted prompt-cache value]");
     expect(sanitized.includes(rawPromptCacheKey)).toBe(false);
+  });
+
+  it("reads bash execution details from nested tool result payloads", () => {
+    const details = extractBashExecutionDetails({
+      toolName: "bash",
+      toolArguments: {command: "pnpm typecheck", cwd: "/workspace/panda-agent"},
+      result: {
+        content: {
+          details: {
+            stdout: "",
+            stderr: "Typecheck failed before provider call.",
+            exitCode: 2,
+            stderrChars: 39,
+          },
+        },
+      },
+      resultPayload: {
+        details: {
+          stdout: "",
+          stderr: "Typecheck failed before provider call.",
+          exitCode: 2,
+          stderrChars: 39,
+        },
+      },
+    });
+
+    expect(details.looksLikeBash).toBe(true);
+    expect(details.command).toBe("pnpm typecheck");
+    expect(details.cwd).toBe("/workspace/panda-agent");
+    expect(details.stderr).toBe("Typecheck failed before provider call.");
+    expect(details.exitCode).toBe(2);
+    expect(details.stderrChars).toBe(39);
+  });
+
+  it("summarizes provider-style usage token fields", () => {
+    expect(usageSummary({
+      input_tokens: 1200,
+      output_tokens: 42,
+      total_tokens: 1242,
+    })).toBe("in 1,200 · out 42 · total 1,242");
+  });
+
+  it("extracts provider-style token counts for call diffs", () => {
+    expect(usageTokenCounts({
+      input_tokens: 1200,
+      completionTokens: 42,
+      total: 1242,
+    })).toEqual({
+      input: 1200,
+      output: 42,
+      total: 1242,
+    });
+  });
+
+  it("groups repeated failed calls by provider, model, mode, and error label", () => {
+    const groups = modelCallFailureGroups([
+      traceSummary({
+        id: "trace-old-timeout",
+        status: "failed",
+        startedAt: "2026-06-23T10:00:00.000Z",
+        error: {category: "provider_timeout", message: "timeout on request a"},
+      }),
+      traceSummary({
+        id: "trace-new-timeout",
+        status: "failed",
+        startedAt: "2026-06-23T10:01:00.000Z",
+        error: {category: "provider_timeout", message: "timeout on request b"},
+      }),
+      traceSummary({
+        id: "trace-schema",
+        status: "failed",
+        startedAt: "2026-06-23T10:02:00.000Z",
+        error: {category: "tool_schema", message: "tool schema rejected"},
+      }),
+      traceSummary({id: "trace-ok", status: "completed"}),
+    ]);
+
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).toMatchObject({
+      count: 2,
+      label: "provider_timeout",
+      representative: expect.objectContaining({id: "trace-new-timeout"}),
+      summary: "timeout on request b",
+    });
+    expect(groups[1]).toMatchObject({count: 1, label: "tool_schema"});
   });
 });

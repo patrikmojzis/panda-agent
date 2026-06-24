@@ -1,6 +1,6 @@
 import {isJsonObject, type JsonObject, type JsonValue} from "../../lib/json.js";
 import type {PgQueryable} from "../../lib/postgres-query.js";
-import {PostgresModelCallTraceStore, type ModelCallTraceListInput} from "../model-call-traces/postgres.js";
+import {PostgresModelCallTraceStore, type ModelCallTraceFailureGroupRecord, type ModelCallTraceListInput} from "../model-call-traces/postgres.js";
 import {buildSessionTableNames, type SessionTableNames} from "../sessions/postgres-shared.js";
 import {sanitizePromptCacheKey, sanitizeTraceJson, sanitizeTraceRequestJson} from "../model-call-traces/redaction.js";
 import type {ModelCallTraceMode, ModelCallTraceRecord, ModelCallTraceStatus} from "../model-call-traces/types.js";
@@ -52,12 +52,21 @@ export interface ControlModelCallTraceDetail extends ControlModelCallTraceSummar
 
 export interface ControlModelCallTraceListResult {
   data: readonly ControlModelCallTraceSummary[];
+  failureGroups: readonly ControlModelCallTraceFailureGroup[];
   meta: {
     current_page: number;
     last_page: number;
     per_page: number;
     total: number;
   };
+}
+
+export interface ControlModelCallTraceFailureGroup {
+  count: number;
+  label: string;
+  latestStartedAt: string;
+  representative: ControlModelCallTraceSummary;
+  summary: string;
 }
 
 function iso(value: number): string {
@@ -91,6 +100,11 @@ function publicJsonObject(value: JsonObject | undefined): JsonObject | null {
   }
   const sanitized = sanitizeTraceJson(value);
   return isJsonObject(sanitized) ? sanitized : {};
+}
+
+function publicTraceText(value: string): string {
+  const sanitized = sanitizeTraceJson(value);
+  return typeof sanitized === "string" ? sanitized : String(sanitized);
 }
 
 function sessionLabel(metadata: Pick<ControlModelCallSessionMetadata, "sessionAlias" | "sessionDisplayName"> & {id: string}): string {
@@ -150,6 +164,19 @@ function publicDetail(trace: ModelCallTraceRecord, metadata?: ControlModelCallSe
   };
 }
 
+function publicFailureGroup(
+  group: ModelCallTraceFailureGroupRecord,
+  metadata?: ControlModelCallSessionMetadata,
+): ControlModelCallTraceFailureGroup {
+  return {
+    count: group.count,
+    label: publicTraceText(group.label),
+    latestStartedAt: iso(group.latestStartedAt),
+    representative: publicSummary(group.representative, metadata),
+    summary: publicTraceText(group.summary),
+  };
+}
+
 export class ControlModelCallTraceService {
   private readonly pool: PgQueryable;
   private readonly store: PostgresModelCallTraceStore;
@@ -200,9 +227,19 @@ export class ControlModelCallTraceService {
   ): Promise<ControlModelCallTraceListResult> {
     this.assertAdmin(session);
     const result = await this.store.listTraces(input);
-    const sessionMetadata = await this.readSessionMetadata(result.data);
+    const failureGroups = await this.store.listFailureGroups(input, 3);
+    const sessionMetadata = await this.readSessionMetadata([
+      ...result.data,
+      ...failureGroups.map((group) => group.representative),
+    ]);
     return {
       data: result.data.map((trace) => publicSummary(trace, trace.sessionId && trace.agentKey ? sessionMetadata.get(sessionMetadataKey(trace.agentKey, trace.sessionId)) : undefined)),
+      failureGroups: failureGroups.map((group) => publicFailureGroup(
+        group,
+        group.representative.sessionId && group.representative.agentKey
+          ? sessionMetadata.get(sessionMetadataKey(group.representative.agentKey, group.representative.sessionId))
+          : undefined,
+      )),
       meta: result.meta,
     };
   }

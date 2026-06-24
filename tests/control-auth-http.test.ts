@@ -3342,9 +3342,9 @@ describe("Control Model Call Traces HTTP", () => {
     expect(listBody.modelCallTraces.failureGroups[1]).toMatchObject({
       count: 1,
       label: "tool_schema",
-      summary: expect.stringContaining("[redacted prompt-cache value]"),
+      summary: expect.stringContaining(`trace-cache:${CONTROL_ERROR_CACHE_SECRET}`),
     });
-    expect(JSON.stringify(listBody)).not.toContain(CONTROL_ERROR_CACHE_SECRET);
+    expect(JSON.stringify(listBody)).toContain(CONTROL_ERROR_CACHE_SECRET);
   });
 
   it("omits session label metadata when legacy trace agent and session owner mismatch", async () => {

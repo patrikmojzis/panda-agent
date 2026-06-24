@@ -31,6 +31,14 @@ export interface ModelCallTraceListResult {
   };
 }
 
+export interface ModelCallTraceFailureGroupRecord {
+  count: number;
+  label: string;
+  latestStartedAt: number;
+  representative: ModelCallTraceRecord;
+  summary: string;
+}
+
 export interface PostgresModelCallTraceStoreOptions {
   pool: PgQueryable;
   retentionDays?: number;
@@ -161,6 +169,37 @@ function buildListWhere(input: ModelCallTraceListInput): {sql: string; values: u
   };
 }
 
+function appendWherePredicate(sql: string, predicate: string): string {
+  return sql ? `${sql} AND ${predicate}` : `WHERE ${predicate}`;
+}
+
+const FAILURE_LABEL_SQL = `
+  CASE
+    WHEN error_json->>'category' IS NOT NULL AND error_json->>'category' <> '' THEN error_json->>'category'
+    WHEN error_json->>'name' IS NOT NULL AND error_json->>'name' <> '' THEN error_json->>'name'
+    WHEN error_json->>'type' IS NOT NULL AND error_json->>'type' <> '' THEN error_json->>'type'
+    WHEN error_json->>'code' IS NOT NULL AND error_json->>'code' <> '' THEN error_json->>'code'
+    WHEN error_json->>'status' IS NOT NULL AND error_json->>'status' <> '' THEN error_json->>'status'
+    ELSE 'failed'
+  END
+`;
+
+const FAILURE_SUMMARY_SQL = `
+  CASE
+    WHEN error_json->>'message' IS NOT NULL AND error_json->>'message' <> '' THEN error_json->>'message'
+    WHEN error_json->>'summary' IS NOT NULL AND error_json->>'summary' <> '' THEN error_json->>'summary'
+    WHEN error_json->>'detail' IS NOT NULL AND error_json->>'detail' <> '' THEN error_json->>'detail'
+    WHEN error_json->>'error' IS NOT NULL AND error_json->>'error' <> '' THEN error_json->>'error'
+    WHEN error_json->>'reason' IS NOT NULL AND error_json->>'reason' <> '' THEN error_json->>'reason'
+    WHEN error_json->>'category' IS NOT NULL AND error_json->>'category' <> '' THEN error_json->>'category'
+    WHEN error_json->>'name' IS NOT NULL AND error_json->>'name' <> '' THEN error_json->>'name'
+    WHEN error_json->>'type' IS NOT NULL AND error_json->>'type' <> '' THEN error_json->>'type'
+    WHEN error_json->>'code' IS NOT NULL AND error_json->>'code' <> '' THEN error_json->>'code'
+    WHEN error_json->>'status' IS NOT NULL AND error_json->>'status' <> '' THEN error_json->>'status'
+    ELSE 'Failed without captured error summary'
+  END
+`;
+
 export class PostgresModelCallTraceStore implements ModelCallTraceRecorder {
   private readonly pool: PgQueryable;
   private readonly tables: ModelCallTraceTableNames;
@@ -290,6 +329,80 @@ export class PostgresModelCallTraceStore implements ModelCallTraceRecorder {
         total,
       },
     };
+  }
+
+  async listFailureGroups(input: ModelCallTraceListInput = {}, limit = 5): Promise<ModelCallTraceFailureGroupRecord[]> {
+    if (input.status === "completed") return [];
+    if (!Number.isInteger(limit) || limit < 1) throw new Error("Control model call trace failure group limit must be a positive integer.");
+
+    const {sql, values} = buildListWhere({...input, status: "failed"});
+    const grouped = await this.pool.query(`
+      WITH filtered AS (
+        SELECT
+          provider,
+          model,
+          mode,
+          started_at,
+          ${FAILURE_LABEL_SQL} AS failure_label
+        FROM ${this.tables.traces}
+        ${sql}
+      )
+      SELECT
+        provider,
+        model,
+        mode,
+        failure_label,
+        COUNT(*)::int AS failure_count,
+        MAX(started_at) AS latest_started_at
+      FROM filtered
+      GROUP BY provider, model, mode, failure_label
+      ORDER BY failure_count DESC, latest_started_at DESC, provider ASC, model ASC, mode ASC, failure_label ASC
+      LIMIT $${values.length + 1}
+    `, [...values, limit]);
+
+    const groups: ModelCallTraceFailureGroupRecord[] = [];
+    for (const groupRow of grouped.rows) {
+      const group = groupRow as Record<string, unknown>;
+      const label = readOptionalString(group.failure_label) ?? "failed";
+      const count = requireNonNegativeInteger(group.failure_count, "Model call trace failure group count");
+      const providerIndex = values.length + 1;
+      const modelIndex = values.length + 2;
+      const modeIndex = values.length + 3;
+      const labelIndex = values.length + 4;
+      const representativeWhere = appendWherePredicate(sql, `
+        provider = $${providerIndex}
+        AND model = $${modelIndex}
+        AND mode = $${modeIndex}
+        AND (${FAILURE_LABEL_SQL}) = $${labelIndex}
+      `);
+      const representativeResult = await this.pool.query(`
+        SELECT
+          *,
+          ${FAILURE_SUMMARY_SQL} AS failure_summary
+        FROM ${this.tables.traces}
+        ${representativeWhere}
+        ORDER BY started_at DESC, id DESC
+        LIMIT 1
+      `, [
+        ...values,
+        String(group.provider),
+        String(group.model),
+        group.mode === "stream" ? "stream" : "complete",
+        label,
+      ]);
+      const representativeRow = representativeResult.rows[0] as Record<string, unknown> | undefined;
+      if (!representativeRow) continue;
+      const representative = parseTraceRow(representativeRow);
+      groups.push({
+        count,
+        label,
+        latestStartedAt: representative.startedAt,
+        representative,
+        summary: readOptionalString(representativeRow.failure_summary) ?? "Failed without captured error summary",
+      });
+    }
+
+    return groups;
   }
 
   async getTrace(id: string): Promise<ModelCallTraceRecord | null> {

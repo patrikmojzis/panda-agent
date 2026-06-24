@@ -1,20 +1,23 @@
 import * as React from "react"
-import { Link } from "react-router-dom"
+import { Link, useSearchParams } from "react-router-dom"
 import {
+  Activity,
   ArrowLeft,
-  Clock,
-  Gauge,
-  MessageSquare,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Filter,
+  GitCompareArrows,
   RefreshCw,
   Search,
-  Server,
-  Wrench,
 } from "lucide-react"
+import { toast } from "sonner"
 
-import { sessionPath } from "@/app/control-routes"
+import { sessionTabPath } from "@/app/control-routes"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DetailField, DetailPanel } from "@/features/control/detail-primitives"
 import { StatusBadge, humanize, short } from "@/features/control/control-display"
 import {
@@ -22,16 +25,24 @@ import {
   formatDate,
   formatDuration,
 } from "@/features/control/formatting"
-import {
-  friendlySessionLabel,
-  shortSessionId,
-} from "@/features/control/session-labels"
 import { cn } from "@/lib/utils"
 import type {
   ModelCallTraceDetail,
   ModelCallTraceSummary,
 } from "@/lib/api"
 
+import { TraceContext } from "./model-call-context"
+import {
+  buildDebugReport,
+  extractBashExecutionDetails,
+  modelCallDetailPath,
+  modelCallsListPath,
+  shortModelCallContextValue,
+  traceDebugFindings,
+  traceErrorSummary,
+  usageSummary,
+  usageTokenCounts,
+} from "./model-call-display"
 import {
   buildModelCallTraceViewModel,
   formatSanitizedJson,
@@ -41,107 +52,268 @@ import {
   type TraceSpan,
   type TraceSpanKind,
   type TraceSpanStatus,
+  type TraceTriageItem,
 } from "./model-call-trace-view-model"
 
 const PROMPT_CACHE_REDACTION_PATTERN = /^\[redacted:([^:]+):sha256:([a-f0-9]{16})\]$/
 const FILTERS: Array<{ label: string; value: SpanFilter }> = [
   { label: "All", value: "all" },
+  { label: "Attention", value: "attention" },
   { label: "Tools", value: "tools" },
   { label: "Errors", value: "errors" },
   { label: "Messages", value: "messages" },
   { label: "Context", value: "context" },
 ]
 
-type SpanFilter = "all" | "tools" | "errors" | "messages" | "context"
-
-export function modelCallDetailPath(traceId: string) {
-  return `/model-calls/${encodeURIComponent(traceId)}`
+type SpanFilter = "all" | "attention" | "tools" | "errors" | "messages" | "context"
+type TraceView = "timeline" | "input" | "diff"
+type TraceNavigation = {
+  next: ModelCallTraceSummary | null
+  previous: ModelCallTraceSummary | null
 }
 
 export function ModelCallTraceDebugger({
+  compareTrace,
+  comparing = false,
+  relatedTraces = [],
   trace,
   refreshing = false,
   onRefresh,
 }: {
+  compareTrace?: ModelCallTraceDetail | null
+  comparing?: boolean
+  relatedTraces?: ModelCallTraceSummary[]
   trace: ModelCallTraceDetail
   refreshing?: boolean
   onRefresh?: () => void
 }) {
+  const [searchParams, setSearchParams] = useSearchParams()
   const viewModel = React.useMemo(() => buildModelCallTraceViewModel(trace), [trace])
-  const [filter, setFilter] = React.useState<SpanFilter>("all")
-  const [query, setQuery] = React.useState("")
-  const [selectedSpanId, setSelectedSpanId] = React.useState(viewModel.selectedDefaultId ?? "")
-
-  React.useEffect(() => {
-    setSelectedSpanId(viewModel.selectedDefaultId ?? "")
-  }, [trace.id, viewModel.selectedDefaultId])
+  const compareViewModel = React.useMemo(
+    () => compareTrace ? buildModelCallTraceViewModel(compareTrace) : null,
+    [compareTrace]
+  )
+  const filter = parseSpanFilter(searchParams.get("filter"))
+  const query = searchParams.get("q") ?? ""
+  const activeView = parseTraceView(searchParams.get("view"))
+  const selectedSpanParam = searchParams.get("span") ?? ""
+  const navigation = React.useMemo(
+    () => traceNavigation(trace, relatedTraces),
+    [relatedTraces, trace]
+  )
+  const filterCounts = React.useMemo(() => spanFilterCounts(viewModel.spans), [viewModel.spans])
+  const selectedSpanId = viewModel.spans.some((span) => span.id === selectedSpanParam)
+    ? selectedSpanParam
+    : (viewModel.selectedDefaultId ?? "")
 
   const filteredSpans = React.useMemo(
     () => viewModel.spans.filter((span) => spanMatches(span, filter, query)),
     [filter, query, viewModel.spans]
   )
+  const hasTimelineFilter = filter !== "all" || query.trim() !== ""
+
+  function updateTraceParams(
+    patches: Record<string, string | null>,
+    options: { replace?: boolean } = { replace: true }
+  ) {
+    const next = new URLSearchParams(searchParams)
+    for (const [key, value] of Object.entries(patches)) {
+      if (value === null || value === "") {
+        next.delete(key)
+      } else {
+        next.set(key, value)
+      }
+    }
+    setSearchParams(next, { replace: options.replace ?? true })
+  }
+
+  function setFilter(nextFilter: SpanFilter) {
+    const selected = viewModel.spans.find((span) => span.id === selectedSpanId)
+    updateTraceParams({
+      filter: nextFilter === "all" ? null : nextFilter,
+      span: selected && spanMatches(selected, nextFilter, query) ? selected.id : null,
+    })
+  }
+
+  function setQuery(nextQuery: string) {
+    const selected = viewModel.spans.find((span) => span.id === selectedSpanId)
+    updateTraceParams({
+      q: nextQuery.trim() ? nextQuery : null,
+      span: selected && spanMatches(selected, filter, nextQuery) ? selected.id : null,
+    })
+  }
+
+  function setView(nextView: TraceView) {
+    updateTraceParams({ view: nextView === "timeline" ? null : nextView })
+  }
+
+  function clearTimelineFilters() {
+    updateTraceParams({ filter: null, q: null, span: null })
+  }
+
+  function selectSpan(
+    spanId: string,
+    options: { filter?: SpanFilter; clearQuery?: boolean } = {}
+  ) {
+    const span = viewModel.spans.find((item) => item.id === spanId)
+    const nextFilter = options.filter ?? (
+      span && !spanMatches(span, filter, query) ? "all" : filter
+    )
+    const nextQuery = options.clearQuery ? "" : (
+      span && !spanMatches(span, nextFilter, query) ? "" : query
+    )
+    updateTraceParams({
+      filter: nextFilter === "all" ? null : nextFilter,
+      q: nextQuery.trim() ? nextQuery : null,
+      span: spanId,
+      view: null,
+    })
+  }
+
   const selectedSpan =
-    viewModel.spans.find((span) => span.id === selectedSpanId) ??
+    filteredSpans.find((span) => span.id === selectedSpanId) ??
     filteredSpans[0] ??
-    viewModel.spans[0] ??
+    (hasTimelineFilter ? null : viewModel.spans[0]) ??
     null
+  const selectedSpanPath = selectedSpan
+    ? traceDetailPathWithSearch(trace.id, searchParams, { span: selectedSpan.id, view: null })
+    : null
 
   return (
     <div className="grid min-w-0 max-w-full gap-4">
-      <TraceStickyHeader trace={trace} refreshing={refreshing} onRefresh={onRefresh} />
-      <TraceSummaryCards trace={trace} viewModel={viewModel} />
-      <TriageStrip trace={trace} viewModel={viewModel} onSelectSpan={setSelectedSpanId} />
-      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(21rem,28rem)]">
-        <section className="grid min-w-0 gap-3" aria-label="Model call timeline">
-          <TimelineToolbar
-            filter={filter}
-            query={query}
-            spans={viewModel.spans}
-            filteredCount={filteredSpans.length}
-            onFilterChange={setFilter}
-            onQueryChange={setQuery}
-            onSelectSpan={setSelectedSpanId}
-            viewModel={viewModel}
-          />
-          <div className="grid min-w-0 gap-2">
-            {filteredSpans.length > 0 ? (
-              filteredSpans.map((span) => (
-                <TimelineSpanCard
-                  key={span.id}
-                  span={span}
-                  selected={selectedSpan?.id === span.id}
-                  onSelect={() => setSelectedSpanId(span.id)}
-                />
-              ))
-            ) : (
-              <div className="border p-6 text-sm text-muted-foreground" role="status">
-                No timeline spans match this filter/search.
-              </div>
-            )}
+      <TraceStickyHeader
+        trace={trace}
+        navigation={navigation}
+        searchParams={searchParams}
+        compareTrace={compareTrace}
+        comparing={comparing}
+        refreshing={refreshing}
+        onRefresh={onRefresh}
+      />
+      <TraceDebugOverview
+        trace={trace}
+        viewModel={viewModel}
+        selectedSpan={selectedSpan}
+        onSelectSpan={selectSpan}
+      />
+      <Tabs value={activeView} onValueChange={(value) => setView(parseTraceView(value))}>
+        <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <TabsList variant="line">
+            <TabsTrigger value="timeline">Timeline</TabsTrigger>
+            <TabsTrigger value="input">Input shape</TabsTrigger>
+            <TabsTrigger value="diff">Diff</TabsTrigger>
+          </TabsList>
+          <div className="text-xs text-muted-foreground">
+            {selectedSpan ? <>Selected <code>{selectedSpan.id}</code></> : "No span selected"}
           </div>
-        </section>
-        <SpanInspector span={selectedSpan} />
-      </div>
+        </div>
+        <TabsContent value="timeline" className="mt-1">
+          <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(21rem,28rem)]">
+            <section className="grid min-w-0 gap-3" aria-label="Model call timeline">
+              <TimelineToolbar
+                filter={filter}
+                filterCounts={filterCounts}
+                query={query}
+                spans={viewModel.spans}
+                filteredCount={filteredSpans.length}
+                onFilterChange={setFilter}
+                onQueryChange={setQuery}
+                onSelectSpan={selectSpan}
+                viewModel={viewModel}
+              />
+              <div className="grid min-w-0 gap-2">
+                {filteredSpans.length > 0 ? (
+                  filteredSpans.map((span) => (
+                    <TimelineSpanCard
+                      key={span.id}
+                      span={span}
+                      selected={selectedSpan?.id === span.id}
+                      onSelect={() => selectSpan(span.id)}
+                    />
+                  ))
+                ) : (
+                  <div className="grid gap-3 border p-6 text-sm text-muted-foreground" role="status">
+                    <div>No timeline spans match this filter/search.</div>
+                    {hasTimelineFilter ? (
+                      <div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={clearTimelineFilters}
+                        >
+                          Clear timeline filters
+                        </Button>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+            </section>
+            <SpanInspector span={selectedSpan} spanPath={selectedSpanPath} />
+          </div>
+        </TabsContent>
+        <TabsContent value="input" className="mt-1">
+          <InputShapeView trace={trace} viewModel={viewModel} />
+        </TabsContent>
+        <TabsContent value="diff" className="mt-1">
+          <TraceDiffPanel
+            trace={trace}
+            viewModel={viewModel}
+            compareTrace={compareTrace}
+            compareViewModel={compareViewModel}
+            comparing={comparing}
+            navigation={navigation}
+            searchParams={searchParams}
+          />
+        </TabsContent>
+      </Tabs>
       <RawTraceDetails trace={trace} />
     </div>
   )
 }
 
 function TraceStickyHeader({
+  compareTrace,
+  comparing,
+  navigation,
+  searchParams,
   trace,
   refreshing,
   onRefresh,
 }: {
+  compareTrace?: ModelCallTraceDetail | null
+  comparing: boolean
+  navigation: TraceNavigation
+  searchParams: URLSearchParams
   trace: ModelCallTraceDetail
   refreshing: boolean
   onRefresh?: () => void
 }) {
+  const listPath = modelCallsListPath(trace)
+  const previousPath = navigation.previous
+    ? traceDetailPathWithSearch(navigation.previous.id, searchParams, { compare: null, span: null })
+    : null
+  const nextPath = navigation.next
+    ? traceDetailPathWithSearch(navigation.next.id, searchParams, { compare: null, span: null })
+    : null
+  const comparePath = navigation.previous
+    ? traceDetailPathWithSearch(trace.id, searchParams, {
+        compare: navigation.previous.id,
+        span: null,
+        view: "diff",
+      })
+    : null
+  const clearComparePath = traceDetailPathWithSearch(trace.id, searchParams, {
+    compare: null,
+    view: null,
+  })
+
   return (
     <div className="sticky top-14 z-10 -mx-3 border-b bg-background/95 px-3 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/85 md:-mx-5 md:px-5">
       <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <div className="mb-1 flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground uppercase">
-            <Link to="/model-calls" className="hover:text-foreground">
+            <Link to={listPath} className="hover:text-foreground">
               Model Calls
             </Link>
             <span>/</span>
@@ -162,12 +334,45 @@ function TraceStickyHeader({
           </div>
         </div>
         <div className="flex shrink-0 flex-wrap gap-2">
+          <TraceNavButton
+            path={previousPath}
+            label="Prev"
+            icon={<ChevronLeft className="size-4" />}
+            disabledLabel="No previous call"
+          />
+          <TraceNavButton
+            path={nextPath}
+            label="Next"
+            icon={<ChevronRight className="size-4" />}
+            disabledLabel="No next call"
+          />
+          {compareTrace ? (
+            <Button variant="outline" size="sm" asChild>
+              <Link to={clearComparePath}>
+                <GitCompareArrows className="size-4" />
+                Clear diff
+              </Link>
+            </Button>
+          ) : comparePath ? (
+            <Button variant="outline" size="sm" asChild>
+              <Link to={comparePath}>
+                <GitCompareArrows className="size-4" />
+                Diff prev
+              </Link>
+            </Button>
+          ) : (
+            <Button variant="outline" size="sm" disabled>
+              <GitCompareArrows className="size-4" />
+              {comparing ? "Loading diff" : "Diff prev"}
+            </Button>
+          )}
           <Button variant="outline" size="sm" asChild>
-            <Link to="/model-calls">
+            <Link to={listPath}>
               <ArrowLeft className="size-4" />
               Back
             </Link>
           </Button>
+          <CopyTraceIdButton traceId={trace.id} />
           {onRefresh ? (
             <Button variant="outline" size="sm" onClick={onRefresh} disabled={refreshing}>
               <RefreshCw className={cn("size-4", refreshing ? "animate-spin" : null)} />
@@ -180,123 +385,364 @@ function TraceStickyHeader({
   )
 }
 
-function TraceSummaryCards({
-  trace,
-  viewModel,
+function TraceNavButton({
+  disabledLabel,
+  icon,
+  label,
+  path,
 }: {
-  trace: ModelCallTraceDetail
-  viewModel: ModelCallTraceViewModel
+  disabledLabel: string
+  icon: React.ReactNode
+  label: string
+  path: string | null
 }) {
-  const slowest = viewModel.summary.slowestSpan
-  const failing = viewModel.summary.failingSpan
-
+  if (!path) {
+    return (
+      <Button variant="outline" size="sm" disabled title={disabledLabel}>
+        {icon}
+        {label}
+      </Button>
+    )
+  }
   return (
-    <div className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-5">
-      <SummaryCard
-        icon={<Gauge className="size-4" />}
-        label="Outcome"
-        value={<StatusBadge status={trace.status} />}
-        detail={failing ? `${failing.title}: ${failing.preview ?? "failed"}` : "No failing span detected"}
-      />
-      <SummaryCard
-        icon={<Clock className="size-4" />}
-        label="Timing"
-        value={formatDuration(trace.durationMs) ?? "-"}
-        detail={
-          slowest
-            ? `Slowest known: ${slowest.title} (${formatDuration(slowest.durationMs) ?? "-"})`
-            : formatDuration(trace.durationMs)
-              ? `No per-step timing captured; whole-call duration is ${formatDuration(trace.durationMs)}.`
-              : "No per-step or whole-call timing captured."
-        }
-      />
-      <SummaryCard
-        icon={<Server className="size-4" />}
-        label="Model / Provider"
-        value={trace.provider}
-        detail={trace.model}
-        monoDetail
-      />
-      <SummaryCard
-        icon={<MessageSquare className="size-4" />}
-        label="Usage / Cost"
-        value={usageSummary(trace.usage)}
-        detail="Input/output/cache tokens when provider usage is captured"
-      />
-      <SummaryCard
-        icon={<Wrench className="size-4" />}
-        label="Tools"
-        value={`${viewModel.summary.toolCalls} call${viewModel.summary.toolCalls === 1 ? "" : "s"}`}
-        detail={`${viewModel.summary.toolErrors} error${viewModel.summary.toolErrors === 1 ? "" : "s"} · ${viewModel.summary.messageCount} message spans`}
-      />
-      <SummaryCard
-        className="sm:col-span-2 xl:col-span-5"
-        label="Related run context"
-        value={<TraceContext trace={trace} />}
-        detail={
-          <div className="mt-2 grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-4">
-            <SmallField label="Started" value={formatDate(trace.startedAt) ?? "-"} />
-            <SmallField label="Finished" value={formatDate(trace.finishedAt) ?? "-"} />
-            <SmallField label="Turn" value={trace.turn !== null ? String(trace.turn) : "-"} />
-            <SmallField label="Call index" value={trace.callIndex !== null ? `#${trace.callIndex}` : "-"} />
-            <SmallField label="Run" value={<CodeValue value={trace.runId} short />} />
-            <SmallField label="Thread" value={<CodeValue value={trace.threadId} short />} />
-            <SmallField label="Expires" value={formatDate(trace.expiresAt) ?? "-"} />
-            <SmallField label="Prompt cache" value={<RedactedValue value={trace.promptCacheKey} />} />
-          </div>
-        }
-      />
-    </div>
+    <Button variant="outline" size="sm" asChild>
+      <Link to={path}>
+        {icon}
+        {label}
+      </Link>
+    </Button>
   )
 }
 
-function TriageStrip({
+function TraceDebugOverview({
+  selectedSpan,
   trace,
   viewModel,
   onSelectSpan,
 }: {
+  selectedSpan: TraceSpan | null
   trace: ModelCallTraceDetail
   viewModel: ModelCallTraceViewModel
-  onSelectSpan: (spanId: string) => void
+  onSelectSpan: (spanId: string, options?: { filter?: SpanFilter; clearQuery?: boolean }) => void
 }) {
-  const failing = viewModel.summary.failingSpan
   const slowest = viewModel.summary.slowestSpan
+  const failing = viewModel.summary.failingSpan
+  const fallbackError = traceErrorSummary(trace.error)
+  const focusTitle = failing
+    ? failing.title
+    : trace.status === "failed"
+      ? "Model call failed"
+      : "No failed span"
+  const focusDetail = failing?.preview ?? fallbackError ?? (
+    trace.status === "failed"
+      ? "The trace is failed, but no failing span was captured."
+      : "No failure captured in this trace."
+  )
+
   return (
-    <div className="flex min-w-0 flex-col gap-2 border bg-muted/20 p-3 text-sm lg:flex-row lg:items-center lg:justify-between">
-      <div className="min-w-0 space-y-1">
-        <div className="font-medium">Operator triage</div>
-        <div className="min-w-0 text-muted-foreground">
-          {failing ? (
-            <span>Failing step: <strong className="font-medium text-foreground">{failing.title}</strong></span>
-          ) : (
-            <span>No failed step found in the sanitized trace.</span>
-          )}{" "}
-          {slowest ? (
-            <span>Slowest known step: <strong className="font-medium text-foreground">{slowest.title}</strong>.</span>
-          ) : formatDuration(trace.durationMs) ? (
-            <span>No per-step timings are captured; whole-call duration is {formatDuration(trace.durationMs)}.</span>
-          ) : (
-            <span>No per-step or whole-call timing is captured for this trace.</span>
+    <section className="grid min-w-0 overflow-hidden border bg-background shadow-sm xl:grid-cols-[minmax(0,1.35fr)_minmax(20rem,0.65fr)]">
+      <div className="grid min-w-0 gap-4 p-4 xl:border-r xl:bg-muted/10">
+        <div
+          className={cn(
+            "grid min-w-0 gap-2 border border-l-4 bg-muted/20 p-3",
+            trace.status === "failed"
+              ? "border-l-destructive bg-destructive/5"
+              : "border-l-primary bg-primary/5"
           )}
+        >
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground uppercase">Debug focus</span>
+            <StatusBadge status={trace.status} />
+            <Badge variant="outline">{humanize(trace.mode)}</Badge>
+          </div>
+          <div className="min-w-0">
+            <h2 className="min-w-0 break-words text-lg font-semibold">{focusTitle}</h2>
+            <div className="mt-1 max-w-4xl break-words text-sm leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">
+              {focusDetail}
+            </div>
+          </div>
+        </div>
+        <TraceTriageQueue
+          items={viewModel.summary.triageItems}
+          onSelectSpan={onSelectSpan}
+        />
+        <CaptureHealth viewModel={viewModel} />
+        <div className="flex min-w-0 flex-wrap gap-2">
+          <Button
+            variant={failing ? "default" : "outline"}
+            size="sm"
+            disabled={!failing}
+            onClick={() => failing && onSelectSpan(failing.id, { filter: "attention", clearQuery: true })}
+          >
+            Jump to failed
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!slowest}
+            onClick={() => slowest && onSelectSpan(slowest.id)}
+          >
+            Jump to slowest
+          </Button>
+          <CopyDebugReportButton
+            trace={trace}
+            viewModel={viewModel}
+            selectedSpan={selectedSpan}
+          />
         </div>
       </div>
-      <div className="flex shrink-0 flex-wrap gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={!failing}
-          onClick={() => failing && onSelectSpan(failing.id)}
-        >
-          Jump to failed
+      <div className="grid min-w-0 gap-3 border-t bg-muted/10 p-4 sm:grid-cols-2 xl:border-t-0 xl:bg-background">
+        <OverviewMetric
+          label="Duration"
+          value={formatDuration(trace.durationMs) ?? "-"}
+          detail={
+            slowest
+              ? `Slowest: ${slowest.title} (${formatDuration(slowest.durationMs) ?? "-"})`
+              : "No step timing"
+          }
+        />
+        <OverviewMetric
+          label="Usage"
+          value={usageSummary(trace.usage)}
+          detail="Provider tokens/cost"
+        />
+        <OverviewMetric
+          label="Model"
+          value={trace.provider}
+          detail={trace.model}
+          monoDetail
+        />
+        <OverviewMetric
+          label="Trace shape"
+          value={`${viewModel.spans.length} span${viewModel.spans.length === 1 ? "" : "s"}`}
+          detail={`${viewModel.summary.toolCalls} tool · ${viewModel.summary.messageCount} message`}
+        />
+      </div>
+      <div className="grid min-w-0 gap-3 border-t bg-muted/10 p-4 xl:col-span-2">
+        <div className="flex min-w-0 flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+          <div className="min-w-0">
+            <div className="mb-1 text-xs font-medium text-muted-foreground uppercase">Run context</div>
+            <TraceContext trace={trace} />
+          </div>
+          <TraceShapePills viewModel={viewModel} />
+        </div>
+        <OriginActions trace={trace} />
+        <div className="grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          <SmallField label="Started" value={formatDate(trace.startedAt) ?? "-"} />
+          <SmallField label="Finished" value={formatDate(trace.finishedAt) ?? "-"} />
+          <SmallField label="Turn" value={trace.turn !== null ? String(trace.turn) : "-"} />
+          <SmallField label="Call index" value={trace.callIndex !== null ? `#${trace.callIndex}` : "-"} />
+          <SmallField label="Run" value={<CodeValue value={trace.runId} short />} />
+          <SmallField label="Thread" value={<CodeValue value={trace.threadId} short />} />
+          <SmallField label="Expires" value={formatDate(trace.expiresAt) ?? "-"} />
+          <SmallField label="Prompt cache" value={<RedactedValue value={trace.promptCacheKey} />} />
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function TraceTriageQueue({
+  items,
+  onSelectSpan,
+}: {
+  items: readonly TraceTriageItem[]
+  onSelectSpan: (spanId: string, options?: { filter?: SpanFilter; clearQuery?: boolean }) => void
+}) {
+  if (items.length === 0) {
+    return (
+      <div className="grid min-w-0 gap-2 border bg-background/70 p-3">
+        <div className="text-xs font-medium text-muted-foreground uppercase">Triage queue</div>
+        <div className="text-xs text-muted-foreground">No ranked suspects in this trace.</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="grid min-w-0 gap-2">
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <div className="text-xs font-medium text-muted-foreground uppercase">Triage queue</div>
+        <div className="text-xs text-muted-foreground">
+          {items.length} suspect{items.length === 1 ? "" : "s"}
+        </div>
+      </div>
+      <div className="grid min-w-0 gap-2 md:grid-cols-2">
+        {items.map((item, index) => (
+          <button
+            key={`${item.spanId}:${item.label}`}
+            type="button"
+            onClick={() => onSelectSpan(item.spanId, {
+              clearQuery: true,
+              filter: item.severity === "info" ? "all" : "attention",
+            })}
+            className={cn(
+              "grid min-w-0 gap-2 border border-l-4 p-3 text-left transition-colors focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none",
+              triageCardClassName(item.severity)
+            )}
+          >
+            <div className="flex min-w-0 items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <Badge variant={triageBadgeVariant(item.severity)} className="tabular-nums">
+                  #{index + 1}
+                </Badge>
+                <span className="min-w-0 truncate text-sm font-medium">{item.label}</span>
+              </div>
+              <span className="shrink-0 text-xs text-muted-foreground">span {item.spanOrder}</span>
+            </div>
+            <div className="line-clamp-2 min-w-0 break-words text-xs text-muted-foreground [overflow-wrap:anywhere]">
+              {item.detail}
+            </div>
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function triageBadgeVariant(severity: TraceTriageItem["severity"]): React.ComponentProps<typeof Badge>["variant"] {
+  if (severity === "critical") return "destructive"
+  if (severity === "warning") return "secondary"
+  return "outline"
+}
+
+function triageCardClassName(severity: TraceTriageItem["severity"]) {
+  if (severity === "critical") {
+    return "border-l-destructive bg-destructive/5 hover:bg-destructive/10"
+  }
+  if (severity === "warning") {
+    return "border-l-primary/60 bg-muted/30 hover:bg-muted/50"
+  }
+  return "border-l-border bg-background/70 hover:bg-muted/40"
+}
+
+function OriginActions({ trace }: { trace: ModelCallTraceDetail }) {
+  const runtimePath = trace.agentKey && trace.sessionId
+    ? sessionTabPath(trace.agentKey, trace.sessionId, "runtime")
+    : null
+  const listPath = modelCallsListPath(trace)
+  const listLabel = trace.runId ? "Same run calls" : trace.sessionId ? "Session calls" : "All calls"
+
+  return (
+    <div className="flex min-w-0 flex-wrap gap-2">
+      {runtimePath ? (
+        <Button variant="outline" size="sm" asChild>
+          <Link to={runtimePath}>
+            <Activity className="size-4" />
+            Session runtime
+          </Link>
         </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={!slowest}
-          onClick={() => slowest && onSelectSpan(slowest.id)}
-        >
-          Jump to slowest
+      ) : (
+        <Button variant="outline" size="sm" disabled title="No session origin was captured">
+          <Activity className="size-4" />
+          Session runtime
         </Button>
+      )}
+      <Button variant="outline" size="sm" asChild>
+        <Link to={listPath}>
+          <Filter className="size-4" />
+          {listLabel}
+        </Link>
+      </Button>
+      <CopyOriginButton trace={trace} />
+    </div>
+  )
+}
+
+function CopyOriginButton({ trace }: { trace: ModelCallTraceDetail }) {
+  async function copyOrigin() {
+    try {
+      await writeClipboardText(buildOriginSummary(trace))
+      toast.success("Origin copied")
+    } catch {
+      toast.error("Could not copy origin")
+    }
+  }
+
+  return (
+    <Button variant="outline" size="sm" onClick={() => void copyOrigin()}>
+      <Copy className="size-4" />
+      Copy origin
+    </Button>
+  )
+}
+
+function buildOriginSummary(trace: ModelCallTraceDetail) {
+  return [
+    "Panda model-call origin",
+    `trace: ${trace.id}`,
+    `agent: ${trace.agentKey ?? "-"}`,
+    `session: ${trace.sessionId ?? "-"}`,
+    `thread: ${trace.threadId ?? "-"}`,
+    `run: ${trace.runId ?? "-"}`,
+    `turn: ${trace.turn ?? "-"}`,
+    `call index: ${trace.callIndex ?? "-"}`,
+    `started: ${formatDate(trace.startedAt) ?? "-"}`,
+    `status: ${trace.status}`,
+  ].join("\n")
+}
+
+function TraceShapePills({ viewModel }: { viewModel: ModelCallTraceViewModel }) {
+  const contextSpans = viewModel.spans.filter(
+    (span) => span.kind === "context" || span.kind === "metadata"
+  ).length
+  const pills = [
+    {label: "Context", value: String(contextSpans)},
+    {label: "Messages", value: String(viewModel.summary.messageCount)},
+    {label: "Tools", value: String(viewModel.summary.toolCalls)},
+    viewModel.summary.toolErrors > 0
+      ? {label: "Tool errors", value: String(viewModel.summary.toolErrors), destructive: true}
+      : null,
+    {label: "Raw", value: formatBytes(viewModel.summary.rawPayloadBytes) ?? "-"},
+  ].filter((pill): pill is {destructive?: boolean; label: string; value: string} => Boolean(pill))
+
+  return (
+    <div className="flex min-w-0 flex-wrap gap-1 pt-1">
+      {pills.map((pill) => (
+        <Badge
+          key={`${pill.label}:${pill.value}`}
+          variant={pill.destructive ? "destructive" : "outline"}
+          className="max-w-full min-w-0"
+        >
+          <span
+            className={cn(
+              "shrink-0",
+              pill.destructive ? "text-destructive/75" : "text-muted-foreground"
+            )}
+          >
+            {pill.label}
+          </span>
+          <span className="min-w-0 truncate tabular-nums">{pill.value}</span>
+        </Badge>
+      ))}
+    </div>
+  )
+}
+
+function CaptureHealth({ viewModel }: { viewModel: ModelCallTraceViewModel }) {
+  const findings = traceDebugFindings(viewModel)
+  if (findings.length === 0) {
+    return (
+      <div className="grid min-w-0 gap-1 border bg-background/70 p-3">
+        <div className="text-xs font-medium text-muted-foreground uppercase">Capture health</div>
+        <div className="text-xs text-muted-foreground">Capture complete.</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="grid min-w-0 gap-2 border bg-background/70 p-3">
+      <div className="text-xs font-medium text-muted-foreground uppercase">Capture health</div>
+      <div className="flex min-w-0 flex-wrap gap-1 text-xs">
+        {findings.map((finding) => (
+          <Badge
+            key={finding.label}
+            variant={finding.destructive ? "destructive" : "secondary"}
+            className="max-w-full min-w-0"
+            title={finding.detail}
+          >
+            <span className="truncate">{finding.label}</span>
+          </Badge>
+        ))}
       </div>
     </div>
   )
@@ -304,6 +750,7 @@ function TriageStrip({
 
 function TimelineToolbar({
   filter,
+  filterCounts,
   filteredCount,
   query,
   spans,
@@ -313,13 +760,14 @@ function TimelineToolbar({
   onSelectSpan,
 }: {
   filter: SpanFilter
+  filterCounts: Record<SpanFilter, number>
   filteredCount: number
   query: string
   spans: TraceSpan[]
   viewModel: ModelCallTraceViewModel
   onFilterChange: (filter: SpanFilter) => void
   onQueryChange: (query: string) => void
-  onSelectSpan: (spanId: string) => void
+  onSelectSpan: (spanId: string, options?: { filter?: SpanFilter; clearQuery?: boolean }) => void
 }) {
   return (
     <DetailPanel
@@ -342,6 +790,7 @@ function TimelineToolbar({
                 onClick={() => onFilterChange(item.value)}
               >
                 {item.label}
+                <span className="tabular-nums text-muted-foreground">{filterCounts[item.value]}</span>
               </Button>
             ))}
           </div>
@@ -362,7 +811,10 @@ function TimelineToolbar({
             size="sm"
             className="h-auto p-0 text-xs"
             disabled={!viewModel.summary.failingSpan}
-            onClick={() => viewModel.summary.failingSpan && onSelectSpan(viewModel.summary.failingSpan.id)}
+            onClick={() => viewModel.summary.failingSpan && onSelectSpan(
+              viewModel.summary.failingSpan.id,
+              { filter: "attention", clearQuery: true }
+            )}
           >
             Failed
           </Button>
@@ -381,6 +833,512 @@ function TimelineToolbar({
       </div>
     </DetailPanel>
   )
+}
+
+function CopyTraceIdButton({ traceId }: { traceId: string }) {
+  async function copyTraceId() {
+    try {
+      await writeClipboardText(traceId)
+      toast.success("Trace id copied")
+    } catch {
+      toast.error("Could not copy trace id")
+    }
+  }
+
+  return (
+    <Button variant="outline" size="sm" onClick={() => void copyTraceId()}>
+      <Copy className="size-4" />
+      Copy ID
+    </Button>
+  )
+}
+
+function CopySpanLinkButton({
+  path,
+  spanId,
+}: {
+  path: string | null
+  spanId: string
+}) {
+  async function copySpanLink() {
+    if (!path) return
+    try {
+      await writeClipboardText(new URL(path, window.location.origin).toString())
+      toast.success("Span link copied")
+    } catch {
+      toast.error("Could not copy span link")
+    }
+  }
+
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      disabled={!path}
+      onClick={() => void copySpanLink()}
+      title={`Copy link to ${spanId}`}
+    >
+      <Copy className="size-4" />
+      Copy link
+    </Button>
+  )
+}
+
+function CopyDebugReportButton({
+  selectedSpan,
+  trace,
+  viewModel,
+}: {
+  selectedSpan: TraceSpan | null
+  trace: ModelCallTraceDetail
+  viewModel: ModelCallTraceViewModel
+}) {
+  async function copyReport() {
+    try {
+      await writeClipboardText(buildDebugReport(trace, viewModel, selectedSpan))
+      toast.success("Debug report copied")
+    } catch {
+      toast.error("Could not copy debug report")
+    }
+  }
+
+  return (
+    <Button variant="outline" size="sm" onClick={() => void copyReport()}>
+      <Copy className="size-4" />
+      Copy report
+    </Button>
+  )
+}
+
+function InputShapeView({
+  trace,
+  viewModel,
+}: {
+  trace: ModelCallTraceDetail
+  viewModel: ModelCallTraceViewModel
+}) {
+  const shape = traceInputShape(trace)
+
+  return (
+    <div className="grid min-w-0 gap-4">
+      <DetailPanel
+        title="Input shape"
+        action={<Badge variant="outline">{formatBytes(viewModel.summary.rawPayloadBytes) ?? "-"}</Badge>}
+      >
+        <div className="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <OverviewMetric
+            label="Context"
+            value={`${shape.contextSections.length} section${shape.contextSections.length === 1 ? "" : "s"}`}
+            detail={shape.hasSystemPrompt ? "System prompt captured" : "No system prompt"}
+          />
+          <OverviewMetric
+            label="Messages"
+            value={String(shape.messages.length)}
+            detail="Projected request messages"
+          />
+          <OverviewMetric
+            label="Tools"
+            value={String(shape.tools.length)}
+            detail="Schemas exposed to model"
+          />
+          <OverviewMetric
+            label="Raw request"
+            value={formatBytes(sanitizedPayloadSize(trace.request)) ?? "-"}
+            detail="Sanitized payload size"
+          />
+        </div>
+      </DetailPanel>
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(21rem,0.75fr)]">
+        <section className="grid min-w-0 gap-3" aria-label="Context input shape">
+          <SectionHeader title="Context sections" detail={`${shape.contextSections.length} captured`} />
+          {shape.systemPrompt !== undefined ? (
+            <PayloadSection title="System prompt" value={shape.systemPrompt} />
+          ) : null}
+          {shape.contextSections.length > 0 ? (
+            shape.contextSections.map((section, index) => (
+              <PayloadSection
+                key={`context-shape-${index}`}
+                title={sectionTitle(section, index)}
+                value={contextSectionPayload(section)}
+              />
+            ))
+          ) : shape.contextDump !== undefined ? (
+            <PayloadSection title="LLM context dump" value={shape.contextDump} />
+          ) : (
+            <EmptyShapeBlock label="No context sections captured." />
+          )}
+          <PayloadSection title="Projected messages" value={shape.messages} json />
+        </section>
+        <section className="grid min-w-0 gap-3" aria-label="Tool schema input shape">
+          <SectionHeader title="Tool schemas" detail={`${shape.tools.length} exposed`} />
+          {shape.tools.length > 0 ? (
+            shape.tools.map((tool, index) => (
+              <PayloadSection
+                key={`tool-shape-${index}`}
+                title={toolSchemaTitle(tool, index)}
+                value={toolSchemaPayload(tool)}
+                json
+              />
+            ))
+          ) : (
+            <EmptyShapeBlock label="No tool schemas exposed to this call." />
+          )}
+        </section>
+      </div>
+    </div>
+  )
+}
+
+function TraceDiffPanel({
+  compareTrace,
+  compareViewModel,
+  comparing,
+  navigation,
+  searchParams,
+  trace,
+  viewModel,
+}: {
+  compareTrace?: ModelCallTraceDetail | null
+  compareViewModel: ModelCallTraceViewModel | null
+  comparing: boolean
+  navigation: TraceNavigation
+  searchParams: URLSearchParams
+  trace: ModelCallTraceDetail
+  viewModel: ModelCallTraceViewModel
+}) {
+  const comparePath = navigation.previous
+    ? traceDetailPathWithSearch(trace.id, searchParams, {
+        compare: navigation.previous.id,
+        span: null,
+        view: "diff",
+      })
+    : null
+
+  if (comparing && !compareTrace) {
+    return (
+      <DetailPanel title="Call diff">
+        <div className="text-sm text-muted-foreground">Loading compared call…</div>
+      </DetailPanel>
+    )
+  }
+
+  if (!compareTrace || !compareViewModel) {
+    return (
+      <DetailPanel
+        title="Call diff"
+        action={comparePath ? (
+          <Button variant="outline" size="sm" asChild>
+            <Link to={comparePath}>
+              <GitCompareArrows className="size-4" />
+              Diff previous
+            </Link>
+          </Button>
+        ) : null}
+      >
+        <div className="text-sm text-muted-foreground">
+          No comparison call selected.
+        </div>
+      </DetailPanel>
+    )
+  }
+
+  const rows = traceDiffRows(trace, viewModel, compareTrace, compareViewModel)
+  const highlights = traceDiffHighlights(trace, viewModel, compareTrace, compareViewModel)
+
+  return (
+    <DetailPanel
+      title="Call diff"
+      action={
+        <Button variant="outline" size="sm" asChild>
+          <Link to={modelCallDetailPath(compareTrace.id)}>
+            <GitCompareArrows className="size-4" />
+            Open compared
+          </Link>
+        </Button>
+      }
+    >
+      <div className="grid min-w-0 gap-3">
+        <DiffHighlights highlights={highlights} />
+        <div className="grid min-w-0 gap-2 sm:grid-cols-2">
+          <CompareTraceCard label="Current" trace={trace} viewModel={viewModel} />
+          <CompareTraceCard label="Compared" trace={compareTrace} viewModel={compareViewModel} />
+        </div>
+        <div className="grid min-w-0 gap-2">
+          {rows.map((row) => (
+            <DiffRow key={row.label} row={row} />
+          ))}
+        </div>
+      </div>
+    </DetailPanel>
+  )
+}
+
+function SectionHeader({ detail, title }: { detail: string; title: string }) {
+  return (
+    <div className="flex min-w-0 items-center justify-between gap-3">
+      <h2 className="text-sm font-semibold">{title}</h2>
+      <span className="text-xs text-muted-foreground">{detail}</span>
+    </div>
+  )
+}
+
+function EmptyShapeBlock({ label }: { label: string }) {
+  return (
+    <div className="border bg-muted/20 p-4 text-sm text-muted-foreground">
+      {label}
+    </div>
+  )
+}
+
+type DiffHighlight = {
+  detail: string
+  label: string
+  value: string
+  variant?: "changed" | "destructive"
+}
+
+function DiffHighlights({ highlights }: { highlights: DiffHighlight[] }) {
+  return (
+    <div className="grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-3">
+      {highlights.map((highlight) => (
+        <div key={highlight.label} className="grid min-w-0 gap-1 border bg-muted/20 p-3">
+          <div className="flex min-w-0 items-center justify-between gap-2">
+            <span className="text-xs font-medium text-muted-foreground uppercase">{highlight.label}</span>
+            {highlight.variant ? (
+              <Badge variant={highlight.variant === "destructive" ? "destructive" : "secondary"}>
+                Changed
+              </Badge>
+            ) : null}
+          </div>
+          <div
+            className={cn(
+              "min-w-0 break-words text-sm font-semibold [overflow-wrap:anywhere]",
+              highlight.variant === "destructive" ? "text-destructive" : null
+            )}
+          >
+            {highlight.value}
+          </div>
+          <div className="min-w-0 break-words text-xs text-muted-foreground [overflow-wrap:anywhere]">
+            {highlight.detail}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function CompareTraceCard({
+  label,
+  trace,
+  viewModel,
+}: {
+  label: string
+  trace: ModelCallTraceDetail
+  viewModel: ModelCallTraceViewModel
+}) {
+  const attention = viewModel.spans.filter(spanNeedsAttention).length
+  return (
+    <div className="grid min-w-0 gap-2 border bg-muted/20 p-3">
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <span className="text-xs font-medium text-muted-foreground uppercase">{label}</span>
+        <StatusBadge status={trace.status} />
+      </div>
+      <div className="min-w-0 break-words text-sm font-semibold">
+        {trace.provider}/{trace.model}
+      </div>
+      <div className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+        <span>{formatDate(trace.startedAt) ?? "No start"} · {formatDuration(trace.durationMs) ?? "-"}</span>
+        <span>{usageSummary(trace.usage)}</span>
+        <span>{viewModel.spans.length} spans · {attention} attention</span>
+        <code className="break-all">{trace.id}</code>
+      </div>
+    </div>
+  )
+}
+
+function traceDiffHighlights(
+  trace: ModelCallTraceDetail,
+  viewModel: ModelCallTraceViewModel,
+  compareTrace: ModelCallTraceDetail,
+  compareViewModel: ModelCallTraceViewModel
+): DiffHighlight[] {
+  const shape = traceInputShape(trace)
+  const compareShape = traceInputShape(compareTrace)
+  const currentAttention = attentionCount(viewModel)
+  const previousAttention = attentionCount(compareViewModel)
+  const currentTokens = tokenTotalForDiff(trace.usage)
+  const previousTokens = tokenTotalForDiff(compareTrace.usage)
+  const promptChanged = stableComparisonValue([
+    shape.systemPrompt,
+    shape.contextDump,
+    shape.contextSections,
+  ]) !== stableComparisonValue([
+    compareShape.systemPrompt,
+    compareShape.contextDump,
+    compareShape.contextSections,
+  ])
+  const messagesChanged = stableComparisonValue(shape.messages) !== stableComparisonValue(compareShape.messages)
+  const toolsChanged = stableComparisonValue(shape.tools) !== stableComparisonValue(compareShape.tools)
+  const toolErrorDelta = viewModel.summary.toolErrors - compareViewModel.summary.toolErrors
+
+  return [
+    {
+      label: "Outcome",
+      value: humanize(trace.status),
+      detail: trace.status === compareTrace.status
+        ? "Same status as compared call"
+        : `Was ${humanize(compareTrace.status)}`,
+      variant: trace.status === "failed" ? "destructive" : trace.status !== compareTrace.status ? "changed" : undefined,
+    },
+    {
+      label: "Prompt / Context",
+      value: promptChanged ? "Changed" : "Same",
+      detail: `${shape.contextSections.length} sections now · ${compareShape.contextSections.length} before`,
+      variant: promptChanged ? "changed" : undefined,
+    },
+    {
+      label: "Messages",
+      value: signedDelta(shape.messages.length, compareShape.messages.length),
+      detail: messagesChanged ? "Projected message payload changed" : "Projected messages are unchanged",
+      variant: messagesChanged ? "changed" : undefined,
+    },
+    {
+      label: "Tools",
+      value: `${signedDelta(viewModel.summary.toolCalls, compareViewModel.summary.toolCalls)} calls`,
+      detail: `${viewModel.summary.toolErrors} errors now · ${compareViewModel.summary.toolErrors} before${toolsChanged ? " · schemas changed" : ""}`,
+      variant: toolErrorDelta > 0 ? "destructive" : toolsChanged || toolErrorDelta !== 0 ? "changed" : undefined,
+    },
+    {
+      label: "Tokens",
+      value: tokenDeltaLabel(currentTokens, previousTokens),
+      detail: `Current ${formatOptionalNumber(currentTokens)} · compared ${formatOptionalNumber(previousTokens)}`,
+      variant: currentTokens !== null && previousTokens !== null && currentTokens !== previousTokens ? "changed" : undefined,
+    },
+    {
+      label: "Attention",
+      value: signedDelta(currentAttention, previousAttention),
+      detail: `${currentAttention} spans now · ${previousAttention} before`,
+      variant: currentAttention > previousAttention ? "destructive" : currentAttention !== previousAttention ? "changed" : undefined,
+    },
+  ]
+}
+
+type DiffRowModel = {
+  current: string
+  label: string
+  previous: string
+}
+
+function DiffRow({ row }: { row: DiffRowModel }) {
+  const changed = row.current !== row.previous
+  return (
+    <div className="grid min-w-0 gap-2 border p-3 sm:grid-cols-[10rem_minmax(0,1fr)_minmax(0,1fr)]">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="text-xs font-medium text-muted-foreground uppercase">{row.label}</span>
+        {changed ? <Badge variant="secondary">Changed</Badge> : null}
+      </div>
+      <div className="min-w-0 break-words text-xs">
+        <span className="text-muted-foreground">Current </span>
+        <span>{row.current}</span>
+      </div>
+      <div className="min-w-0 break-words text-xs">
+        <span className="text-muted-foreground">Compared </span>
+        <span>{row.previous}</span>
+      </div>
+    </div>
+  )
+}
+
+function traceDiffRows(
+  trace: ModelCallTraceDetail,
+  viewModel: ModelCallTraceViewModel,
+  compareTrace: ModelCallTraceDetail,
+  compareViewModel: ModelCallTraceViewModel
+): DiffRowModel[] {
+  return [
+    {
+      label: "Status",
+      current: trace.status,
+      previous: compareTrace.status,
+    },
+    {
+      label: "Duration",
+      current: formatDuration(trace.durationMs) ?? "-",
+      previous: formatDuration(compareTrace.durationMs) ?? "-",
+    },
+    {
+      label: "Usage",
+      current: usageSummary(trace.usage),
+      previous: usageSummary(compareTrace.usage),
+    },
+    {
+      label: "Spans",
+      current: String(viewModel.spans.length),
+      previous: String(compareViewModel.spans.length),
+    },
+    {
+      label: "Tools",
+      current: `${viewModel.summary.toolCalls} calls · ${viewModel.summary.toolErrors} errors`,
+      previous: `${compareViewModel.summary.toolCalls} calls · ${compareViewModel.summary.toolErrors} errors`,
+    },
+    {
+      label: "Attention",
+      current: attentionSummary(viewModel),
+      previous: attentionSummary(compareViewModel),
+    },
+    {
+      label: "Error",
+      current: sanitizeDisplayString(traceErrorSummary(trace.error) ?? "-"),
+      previous: sanitizeDisplayString(traceErrorSummary(compareTrace.error) ?? "-"),
+    },
+    {
+      label: "Request",
+      current: formatBytes(sanitizedPayloadSize(trace.request)) ?? "-",
+      previous: formatBytes(sanitizedPayloadSize(compareTrace.request)) ?? "-",
+    },
+  ]
+}
+
+function attentionSummary(viewModel: ModelCallTraceViewModel) {
+  const attention = attentionCount(viewModel)
+  return [
+    `${attention} spans`,
+    viewModel.summary.pendingToolCalls > 0 ? `${viewModel.summary.pendingToolCalls} missing` : null,
+    viewModel.summary.unmatchedToolResults > 0 ? `${viewModel.summary.unmatchedToolResults} unmatched` : null,
+    viewModel.summary.truncatedSpans > 0 ? `${viewModel.summary.truncatedSpans} truncated` : null,
+    viewModel.summary.redactedSpans > 0 ? `${viewModel.summary.redactedSpans} redacted` : null,
+  ].filter(Boolean).join(" · ")
+}
+
+function attentionCount(viewModel: ModelCallTraceViewModel) {
+  return viewModel.spans.filter(spanNeedsAttention).length
+}
+
+function stableComparisonValue(value: unknown) {
+  return formatSanitizedJson(value)
+}
+
+function tokenTotalForDiff(value: unknown) {
+  const counts = usageTokenCounts(value)
+  if (counts.total !== null) return counts.total
+  if (counts.input !== null && counts.output !== null) return counts.input + counts.output
+  return counts.input ?? counts.output
+}
+
+function tokenDeltaLabel(current: number | null, previous: number | null) {
+  if (current === null || previous === null) return "-"
+  return signedDelta(current, previous)
+}
+
+function signedDelta(current: number, previous: number) {
+  const delta = current - previous
+  if (delta === 0) return "same"
+  const prefix = delta > 0 ? "+" : ""
+  return `${prefix}${formatNumberCompact(delta)}`
+}
+
+function formatOptionalNumber(value: number | null) {
+  return value === null ? "-" : formatNumberCompact(value)
 }
 
 function TimelineSpanCard({
@@ -461,7 +1419,13 @@ function ToolPairPreview({ span }: { span: TraceSpan }) {
   )
 }
 
-function SpanInspector({ span }: { span: TraceSpan | null }) {
+function SpanInspector({
+  span,
+  spanPath,
+}: {
+  span: TraceSpan | null
+  spanPath: string | null
+}) {
   if (!span) {
     return (
       <aside className="min-w-0 xl:sticky xl:top-32 xl:self-start">
@@ -474,7 +1438,16 @@ function SpanInspector({ span }: { span: TraceSpan | null }) {
 
   return (
     <aside className="min-w-0 xl:sticky xl:top-32 xl:self-start">
-      <DetailPanel title="Inspector" action={<SpanStatusBadge status={span.status} />}>
+      <DetailPanel
+        title="Inspector"
+        action={
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <SpanStatusBadge status={span.status} />
+            <CopySpanLinkButton path={spanPath} spanId={span.id} />
+            <CopySanitizedJsonButton label="Copy span JSON" toastLabel="Span JSON copied" value={span.raw} />
+          </div>
+        }
+      >
         <div className="grid min-w-0 gap-4">
           <div className="grid min-w-0 gap-2">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -488,6 +1461,8 @@ function SpanInspector({ span }: { span: TraceSpan | null }) {
             {span.preview ? <ReadablePreview value={span.preview} className="max-h-40" /> : null}
           </div>
           <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
+            <DetailField label="Span id" value={<CodeValue value={span.id} />} />
+            <DetailField label="Raw payload" value={formatBytes(sanitizedPayloadSize(span.raw)) ?? "-"} />
             {span.metrics.map((metric) => (
               <DetailField key={`${metric.label}:${metric.value}`} label={metric.label} value={metric.value} />
             ))}
@@ -546,58 +1521,52 @@ function BashToolDetails({ span }: { span: TraceSpan }) {
   const call = asRecord(tool?.call) ?? asRecord(raw?.call)
   const result = asRecord(raw?.result)
   const args = asRecord(tool?.arguments) ?? asRecord(call?.arguments)
-  const details = asRecord(result?.details) ?? asRecord(tool?.result)
-  const command = firstString(args, ["command"]) ?? firstString(details, ["command"])
-  const cwd = firstString(args, ["cwd"]) ?? firstString(details, ["cwd", "initialCwd", "finalCwd"])
-  const stdout = firstString(details, ["stdout"])
-  const stderr = firstString(details, ["stderr"])
-  const exitCode = firstPrimitive(details, ["exitCode", "signal"])
-  const status = firstPrimitive(details, ["status"])
-  const timedOut = firstBoolean(details, ["timedOut", "aborted", "interrupted"])
-  const stdoutChars = firstNumber(details, ["stdoutChars"])
-  const stderrChars = firstNumber(details, ["stderrChars"])
-  const stdoutTruncated = firstBoolean(details, ["stdoutTruncated"])
-  const stderrTruncated = firstBoolean(details, ["stderrTruncated"])
-  const looksLikeBash = tool?.name === "bash" || firstString(details, ["kind"]) === "bash" || Boolean(command || stdout || stderr || exitCode !== null)
+  const details = extractBashExecutionDetails({
+    call,
+    result,
+    resultPayload: tool?.result,
+    toolArguments: args,
+    toolName: tool?.name,
+  })
 
-  if (!looksLikeBash) return null
+  if (!details.looksLikeBash) return null
 
   return (
     <section className="grid min-w-0 gap-3 border bg-muted/20 p-3">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <h3 className="text-sm font-medium">Bash execution</h3>
-        {exitCode !== null ? <Badge variant="outline">exit {String(exitCode)}</Badge> : null}
-        {exitCode === null && status !== null ? <Badge variant="outline">{String(status)}</Badge> : null}
-        {timedOut ? <Badge variant="destructive">Interrupted</Badge> : null}
+        {details.exitCode !== null ? <Badge variant="outline">exit {String(details.exitCode)}</Badge> : null}
+        {details.exitCode === null && details.status !== null ? <Badge variant="outline">{String(details.status)}</Badge> : null}
+        {details.timedOut ? <Badge variant="destructive">Interrupted</Badge> : null}
       </div>
       <div className="grid min-w-0 gap-2 text-xs">
-        {command ? (
+        {details.command ? (
           <div className="grid min-w-0 gap-1">
             <span className="text-muted-foreground">Command</span>
             <code className="max-h-24 overflow-auto whitespace-pre-wrap break-words border bg-background/60 p-2 [overflow-wrap:anywhere]">
-              {sanitizeDisplayString(command)}
+              {sanitizeDisplayString(details.command)}
             </code>
           </div>
         ) : null}
-        {cwd ? (
+        {details.cwd ? (
           <div className="min-w-0">
             <span className="text-muted-foreground">cwd </span>
-            <code className="break-all">{sanitizeDisplayString(cwd)}</code>
+            <code className="break-all">{sanitizeDisplayString(details.cwd)}</code>
           </div>
         ) : null}
       </div>
       <div className="grid min-w-0 gap-2 lg:grid-cols-2">
         <OutputPane
           label="stdout"
-          value={stdout}
-          chars={stdoutChars}
-          truncated={stdoutTruncated}
+          value={details.stdout}
+          chars={details.stdoutChars}
+          truncated={details.stdoutTruncated}
         />
         <OutputPane
           label="stderr"
-          value={stderr}
-          chars={stderrChars}
-          truncated={stderrTruncated}
+          value={details.stderr}
+          chars={details.stderrChars}
+          truncated={details.stderrTruncated}
         />
       </div>
     </section>
@@ -679,36 +1648,32 @@ function RawTraceDetails({ trace }: { trace: ModelCallTraceDetail }) {
       <summary className="cursor-pointer select-none text-sm font-medium">
         Sanitized raw trace JSON
       </summary>
-      <div className="text-xs text-muted-foreground">
-        Raw trace remains available for fallback debugging, but prompt-cache fields are redacted again in the UI before rendering.
+      <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-xs text-muted-foreground">
+          Raw trace remains available for fallback debugging, but prompt-cache fields are redacted again in the UI before rendering.
+        </div>
+        <CopySanitizedJsonButton label="Copy trace JSON" toastLabel="Trace JSON copied" value={trace} />
       </div>
       <SanitizedJsonBlock value={trace} />
     </details>
   )
 }
 
-function SummaryCard({
-  className,
+function OverviewMetric({
   detail,
-  icon,
   label,
   monoDetail = false,
   value,
 }: {
-  className?: string
   detail?: React.ReactNode
-  icon?: React.ReactNode
   label: string
   monoDetail?: boolean
   value: React.ReactNode
 }) {
   return (
-    <div className={cn("grid min-w-0 gap-2 border p-3", className)}>
-      <div className="flex min-w-0 items-center gap-2 text-xs font-medium text-muted-foreground uppercase">
-        {icon}
-        <span>{label}</span>
-      </div>
-      <div className="min-w-0 break-words text-sm font-semibold">{value}</div>
+    <div className="grid min-w-0 gap-1 border bg-muted/20 p-3">
+      <div className="text-xs font-medium text-muted-foreground uppercase">{label}</div>
+      <div className="min-w-0 break-words text-base font-semibold">{value}</div>
       {detail ? (
         <div className={cn("min-w-0 break-words text-xs text-muted-foreground", monoDetail ? "font-mono" : null)}>
           {detail}
@@ -720,7 +1685,7 @@ function SummaryCard({
 
 function SmallField({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="min-w-0">
+    <div className="min-w-0 border bg-background/70 p-2">
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className="mt-0.5 min-w-0 break-words text-xs font-medium">{value}</div>
     </div>
@@ -796,6 +1761,32 @@ function SanitizedJsonBlock({
   )
 }
 
+function CopySanitizedJsonButton({
+  label,
+  toastLabel,
+  value,
+}: {
+  label: string
+  toastLabel: string
+  value: unknown
+}) {
+  async function copyJson() {
+    try {
+      await writeClipboardText(formatSanitizedJson(value))
+      toast.success(toastLabel)
+    } catch {
+      toast.error("Could not copy JSON")
+    }
+  }
+
+  return (
+    <Button variant="outline" size="sm" onClick={() => void copyJson()}>
+      <Copy className="size-4" />
+      {label}
+    </Button>
+  )
+}
+
 function SpanStatusBadge({ status }: { status: TraceSpanStatus }) {
   return <Badge variant={spanStatusVariant(status)}>{spanStatusLabel(status)}</Badge>
 }
@@ -818,76 +1809,11 @@ function kindLabel(kind: TraceSpanKind) {
   return humanize(kind)
 }
 
-export function ProviderModel({ trace }: { trace: ModelCallTraceSummary }) {
-  return (
-    <div className="grid min-w-0 gap-1">
-      <span className="break-words font-medium">{trace.provider}</span>
-      <code className="break-all text-xs text-muted-foreground">{trace.model}</code>
-    </div>
-  )
-}
-
-export function TraceContext({ trace }: { trace: ModelCallTraceSummary }) {
-  const items = [
-    trace.agentKey ? { label: "Agent", value: trace.agentKey } : null,
-    trace.sessionId
-      ? {
-          label: "Session",
-          value: sessionContextLabel(trace),
-          title: trace.sessionId,
-        }
-      : null,
-    trace.runId ? { label: "Run", value: trace.runId } : null,
-    trace.threadId ? { label: "Thread", value: trace.threadId } : null,
-    trace.turn !== null ? { label: "Turn", value: String(trace.turn) } : null,
-    trace.callIndex !== null ? { label: "Call", value: `#${trace.callIndex}` } : null,
-  ].filter((item): item is { label: string; value: string; title?: string } => Boolean(item))
-
-  if (items.length === 0) return <span className="text-muted-foreground">-</span>
-
-  return (
-    <div className="flex min-w-0 max-w-full flex-wrap gap-1">
-      {items.map((item) => (
-        <span
-          key={`${item.label}:${item.value}`}
-          className="inline-flex max-w-full min-w-0 items-center gap-1 border px-1.5 py-0.5 text-xs"
-          title={item.title ?? item.value}
-        >
-          <span className="shrink-0 text-muted-foreground">{item.label}</span>
-          <code className="min-w-0 truncate">{shortContextValue(item.value)}</code>
-        </span>
-      ))}
-      <SessionLink trace={trace} />
-    </div>
-  )
-}
-
-function SessionLink({ trace }: { trace: ModelCallTraceSummary }) {
-  if (!trace.agentKey || !trace.sessionId) return null
-  return (
-    <Button variant="link" size="sm" className="h-auto p-0 text-xs" asChild>
-      <Link to={sessionPath(trace.agentKey, trace.sessionId)}>Open session</Link>
-    </Button>
-  )
-}
-
-function sessionContextLabel(trace: ModelCallTraceSummary) {
-  if (!trace.sessionId) return ""
-  const label = friendlySessionLabel({
-    id: trace.sessionId,
-    label: trace.sessionLabel,
-    displayName: trace.sessionDisplayName,
-    alias: trace.sessionAlias,
-    kind: trace.sessionKind,
-  })
-  return `${label} · ${shortSessionId(trace.sessionId)}`
-}
-
 function CodeValue({ value, short: shorten = false }: { value?: string | null; short?: boolean }) {
   if (!value) return "-"
   return (
     <code className="break-all text-xs" title={value}>
-      {shorten ? shortContextValue(value) : value}
+      {shorten ? shortModelCallContextValue(value) : value}
     </code>
   )
 }
@@ -905,48 +1831,134 @@ function RedactedValue({ value }: { value?: string | null }) {
   )
 }
 
-export function usageSummary(value: unknown) {
-  const usage = asRecord(value)
-  if (!usage) return "-"
-  const input = firstNumber(usage, ["input", "inputTokens", "promptTokens"])
-  const output = firstNumber(usage, ["output", "outputTokens", "completionTokens"])
-  const total = firstNumber(usage, ["totalTokens", "total", "tokens"])
-  const cost = usageCostSummary(value)
-  const parts = [
-    input !== null ? `in ${input.toLocaleString()}` : null,
-    output !== null ? `out ${output.toLocaleString()}` : null,
-    total !== null ? `total ${total.toLocaleString()}` : null,
-    cost,
-  ].filter(Boolean)
-  return parts.length > 0 ? parts.join(" · ") : "-"
+function parseSpanFilter(value: string | null): SpanFilter {
+  return FILTERS.some((filter) => filter.value === value) ? (value as SpanFilter) : "all"
 }
 
-function usageCostSummary(value: unknown) {
-  const usage = asRecord(value)
-  const cost = asRecord(usage?.cost)
-  if (!cost) return null
-  const total = firstNumber(cost, ["total"])
-  if (total !== null) return formatUsd(total)
-
-  const components = ["input", "output", "cacheRead", "cacheWrite"]
-    .map((key) => firstNumber(cost, [key]))
-    .filter((entry): entry is number => entry !== null)
-  if (components.length === 0) return null
-  return formatUsd(components.reduce((sum, entry) => sum + entry, 0))
+function parseTraceView(value: string | null): TraceView {
+  return value === "input" || value === "diff" ? value : "timeline"
 }
 
-function formatUsd(value: number) {
-  const abs = Math.abs(value)
-  const maximumFractionDigits = abs > 0 && abs < 0.01 ? 6 : abs < 1 ? 4 : 2
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits,
-  }).format(value)
+function traceDetailPathWithSearch(
+  traceId: string,
+  searchParams: URLSearchParams,
+  patches: Record<string, string | null>
+) {
+  const params = new URLSearchParams(searchParams)
+  for (const [key, value] of Object.entries(patches)) {
+    if (value === null || value === "") {
+      params.delete(key)
+    } else {
+      params.set(key, value)
+    }
+  }
+  const query = params.toString()
+  return `${modelCallDetailPath(traceId)}${query ? `?${query}` : ""}`
+}
+
+function traceNavigation(
+  trace: ModelCallTraceSummary,
+  relatedTraces: ModelCallTraceSummary[]
+): TraceNavigation {
+  const byId = new Map<string, ModelCallTraceSummary>()
+  relatedTraces.forEach((item) => byId.set(item.id, item))
+  byId.set(trace.id, trace)
+  const ordered = [...byId.values()].sort(compareTraceOrder)
+  const index = ordered.findIndex((item) => item.id === trace.id)
+  return {
+    previous: index > 0 ? ordered[index - 1] : null,
+    next: index >= 0 && index < ordered.length - 1 ? ordered[index + 1] : null,
+  }
+}
+
+function compareTraceOrder(a: ModelCallTraceSummary, b: ModelCallTraceSummary) {
+  if (a.turn !== null && b.turn !== null && a.turn !== b.turn) return a.turn - b.turn
+  if (a.callIndex !== null && b.callIndex !== null && a.callIndex !== b.callIndex) {
+    return a.callIndex - b.callIndex
+  }
+  const aTime = timestampSortValue(a.startedAt)
+  const bTime = timestampSortValue(b.startedAt)
+  if (aTime !== bTime) return aTime - bTime
+  return a.id.localeCompare(b.id)
+}
+
+function timestampSortValue(value: string | null | undefined) {
+  if (!value) return 0
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+function traceInputShape(trace: ModelCallTraceDetail) {
+  const request = asRecord(trace.request) ?? {}
+  return {
+    contextDump: hasRenderableValue(request.llmContextDump) ? request.llmContextDump : undefined,
+    contextSections: Array.isArray(request.llmContextSections) ? request.llmContextSections : [],
+    hasSystemPrompt: hasRenderableValue(request.systemPrompt),
+    messages: Array.isArray(request.messages) ? request.messages : [],
+    systemPrompt: hasRenderableValue(request.systemPrompt) ? request.systemPrompt : undefined,
+    tools: Array.isArray(request.tools) ? request.tools : [],
+  }
+}
+
+function sectionTitle(section: unknown, index: number) {
+  const record = asRecord(section)
+  return firstDisplayString(record, ["label", "name", "source"]) ?? `Context section ${index + 1}`
+}
+
+function contextSectionPayload(section: unknown) {
+  const record = asRecord(section)
+  if (!record) return section
+  return firstExistingValue(record, ["content", "contentPreview", "preview", "dump"]) ?? section
+}
+
+function toolSchemaTitle(tool: unknown, index: number) {
+  const record = asRecord(tool)
+  return firstDisplayString(record, ["name", "toolName", "tool_name"]) ?? `Tool ${index + 1}`
+}
+
+function toolSchemaPayload(tool: unknown) {
+  const record = asRecord(tool)
+  if (!record) return tool
+  return firstExistingValue(record, ["inputSchema", "input_schema", "parameters", "schema"]) ?? tool
+}
+
+function firstExistingValue(record: Record<string, unknown>, keys: string[]) {
+  for (const key of keys) {
+    if (Object.hasOwn(record, key) && hasRenderableValue(record[key])) return record[key]
+  }
+  return undefined
+}
+
+function firstDisplayString(record: Record<string, unknown> | null, keys: string[]) {
+  if (!record) return null
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === "string" && value.trim()) return sanitizeDisplayString(value)
+    if (typeof value === "number" && Number.isFinite(value)) return String(value)
+  }
+  return null
+}
+
+function hasRenderableValue(value: unknown) {
+  if (value === null || value === undefined) return false
+  if (typeof value === "string") return value.trim().length > 0
+  if (Array.isArray(value)) return value.length > 0
+  return true
+}
+
+function spanFilterCounts(spans: TraceSpan[]): Record<SpanFilter, number> {
+  return {
+    all: spans.length,
+    attention: spans.filter(spanNeedsAttention).length,
+    context: spans.filter((span) => span.kind === "context" || span.kind === "metadata").length,
+    errors: spans.filter((span) => span.status === "failed").length,
+    messages: spans.filter((span) => span.kind === "message" || span.kind === "response").length,
+    tools: spans.filter((span) => span.kind === "tool").length,
+  }
 }
 
 function spanMatches(span: TraceSpan, filter: SpanFilter, query: string) {
+  if (filter === "attention" && !spanNeedsAttention(span)) return false
   if (filter === "tools" && span.kind !== "tool") return false
   if (filter === "errors" && span.status !== "failed") return false
   if (filter === "messages" && span.kind !== "message" && span.kind !== "response") return false
@@ -975,48 +1987,44 @@ function spanSearchText(span: TraceSpan) {
     .toLowerCase()
 }
 
-function shortContextValue(value: string) {
-  if (value.startsWith("#")) return value
-  return value.length > 42 ? `${value.slice(0, 24)}…${value.slice(-10)}` : value
-}
-
-function firstString(record: Record<string, unknown> | null | undefined, keys: string[]) {
-  if (!record) return null
-  for (const key of keys) {
-    const value = record[key]
-    if (typeof value === "string" && value.trim()) return value
-    if (typeof value === "number" && Number.isFinite(value)) return String(value)
-  }
-  return null
-}
-
-function firstPrimitive(record: Record<string, unknown> | null | undefined, keys: string[]) {
-  if (!record) return null
-  for (const key of keys) {
-    const value = record[key]
-    if (typeof value === "string" && value.trim()) return value
-    if (typeof value === "number" && Number.isFinite(value)) return value
-    if (typeof value === "boolean") return value
-  }
-  return null
-}
-
-function firstBoolean(record: Record<string, unknown> | null | undefined, keys: string[]) {
-  if (!record) return false
-  return keys.some((key) => record[key] === true)
-}
-
-function firstNumber(record: Record<string, unknown> | null | undefined, keys: string[]) {
-  if (!record) return null
-  for (const key of keys) {
-    const value = record[key]
-    if (typeof value === "number" && Number.isFinite(value)) return value
-  }
-  return null
+function spanNeedsAttention(span: TraceSpan) {
+  return (
+    span.status === "failed" ||
+    span.status === "pending" ||
+    span.source === "Unmatched projected tool result" ||
+    span.badges.includes("Truncated") ||
+    span.badges.includes("Redacted")
+  )
 }
 
 function formatNumberCompact(value: number) {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value)
+}
+
+function sanitizedPayloadSize(value: unknown) {
+  return new TextEncoder().encode(formatSanitizedJson(value)).length
+}
+
+async function writeClipboardText(value: string) {
+  if (copyWithTextArea(value)) return
+  if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(value)
+}
+
+function copyWithTextArea(value: string) {
+  const textarea = document.createElement("textarea")
+  textarea.value = value
+  textarea.setAttribute("readonly", "true")
+  textarea.style.position = "fixed"
+  textarea.style.top = "-1000px"
+  textarea.style.left = "-1000px"
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+  try {
+    return document.execCommand("copy")
+  } finally {
+    textarea.remove()
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {

@@ -2,7 +2,6 @@ const PROMPT_CACHE_FIELD_NAME_PATTERN = String.raw`prompt[_-]?cache[_-]?key(?:[_
 const PROMPT_CACHE_FIELD_PATTERN = new RegExp(PROMPT_CACHE_FIELD_NAME_PATTERN, "i")
 const PROMPT_CACHE_FIELD_ASSIGNMENT_TAIL_PATTERN = new RegExp(String.raw`((?:\\?["'])?${PROMPT_CACHE_FIELD_NAME_PATTERN}(?:\\?["'])?\s*[:=]\s*(?:\\?["'])?)[\s\S]*`, "gi")
 const PROMPT_CACHE_FIELD_TOKEN_TAIL_PATTERN = new RegExp(String.raw`(\b${PROMPT_CACHE_FIELD_NAME_PATTERN}\b\s+)[\s\S]*`, "gi")
-const PROMPT_CACHE_TOKEN_PATTERN = /\b(?:prompt-cache|prompt_cache|trace-cache|context-cache|context_cache):[^\s"'`,;)}\]]+/gi
 const DEFAULT_PREVIEW_CHARS = 320
 
 export type TraceSpanKind = "context" | "message" | "tool" | "response" | "error" | "metadata"
@@ -45,6 +44,17 @@ export type TraceSpan = {
   tool?: ToolSpanDetail
 }
 
+export type TraceTriageSeverity = "critical" | "warning" | "info"
+
+export type TraceTriageItem = {
+  detail: string
+  label: string
+  rank: number
+  severity: TraceTriageSeverity
+  spanId: string
+  spanOrder: number
+}
+
 export type ModelCallTraceViewModel = {
   selectedDefaultId: string | null
   spans: TraceSpan[]
@@ -53,10 +63,15 @@ export type ModelCallTraceViewModel = {
     failingSpan: TraceSpan | null
     hasStepDurations: boolean
     messageCount: number
+    pendingToolCalls: number
     rawPayloadBytes: number | null
+    redactedSpans: number
     slowestSpan: TraceSpan | null
     toolCalls: number
     toolErrors: number
+    triageItems: TraceTriageItem[]
+    truncatedSpans: number
+    unmatchedToolResults: number
   }
 }
 
@@ -308,12 +323,48 @@ export function buildModelCallTraceViewModel(trace: TraceLike): ModelCallTraceVi
       failingSpan,
       hasStepDurations: timedSpans.length > 0,
       messageCount: spans.filter((span) => span.kind === "message" || span.kind === "response").length,
+      pendingToolCalls: toolSpans.filter((span) => span.status === "pending").length,
       rawPayloadBytes: payloadSize(trace),
+      redactedSpans: spans.filter((span) => span.badges.includes("Redacted")).length,
       slowestSpan,
       toolCalls: toolSpans.length,
       toolErrors: toolSpans.filter((span) => span.status === "failed").length,
+      triageItems: buildTraceTriageItems(spans, slowestSpan),
+      truncatedSpans: spans.filter((span) => span.badges.includes("Truncated")).length,
+      unmatchedToolResults: toolSpans.filter((span) => span.source === "Unmatched projected tool result").length,
     },
   }
+}
+
+export function buildTraceTriageItems(
+  spans: readonly TraceSpan[],
+  slowestSpan?: TraceSpan | null,
+  limit = 5
+): TraceTriageItem[] {
+  const items: TraceTriageItem[] = []
+  const seen = new Set<string>()
+
+  for (const span of spans) {
+    const item = triageItemForSpan(span)
+    if (!item) continue
+    items.push(item)
+    seen.add(span.id)
+  }
+
+  if (slowestSpan && !seen.has(slowestSpan.id)) {
+    items.push({
+      detail: triageDetail(slowestSpan, slowestSpan.durationMs !== null ? `${Math.round(slowestSpan.durationMs)}ms` : "Longest captured step"),
+      label: "Slowest span",
+      rank: 60,
+      severity: "info",
+      spanId: slowestSpan.id,
+      spanOrder: slowestSpan.order,
+    })
+  }
+
+  return items
+    .sort((left, right) => left.rank - right.rank || left.spanOrder - right.spanOrder)
+    .slice(0, limit)
 }
 
 function contextSpan(input: {
@@ -335,7 +386,7 @@ function contextSpan(input: {
     raw: input.raw,
     durationMs: null,
     metrics: input.metrics ?? [],
-    badges: redactionBadges(input.raw),
+    badges: [...redactionBadges(input.raw), ...truncationBadges(input.raw)],
   }
 }
 
@@ -626,7 +677,6 @@ function redactSensitiveStringFragments(value: string): string {
   return text
     .replace(PROMPT_CACHE_FIELD_ASSIGNMENT_TAIL_PATTERN, "$1[redacted prompt-cache value]")
     .replace(PROMPT_CACHE_FIELD_TOKEN_TAIL_PATTERN, "$1[redacted prompt-cache value]")
-    .replace(PROMPT_CACHE_TOKEN_PATTERN, "[redacted prompt-cache value]")
 }
 
 function decodeJsonUnicodeEscapes(value: string): string {
@@ -693,6 +743,65 @@ function humanize(value: string): string {
 
 function shortId(value: string): string {
   return value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-4)}` : value
+}
+
+function triageItemForSpan(span: TraceSpan): TraceTriageItem | null {
+  if (span.status === "failed") {
+    return {
+      detail: triageDetail(span, "Failed payload captured"),
+      label: span.kind === "tool" ? "Failed tool" : "Failed span",
+      rank: 10,
+      severity: "critical",
+      spanId: span.id,
+      spanOrder: span.order,
+    }
+  }
+  if (span.status === "pending") {
+    return {
+      detail: triageDetail(span, "No paired result captured"),
+      label: "Missing tool result",
+      rank: 20,
+      severity: "critical",
+      spanId: span.id,
+      spanOrder: span.order,
+    }
+  }
+  if (span.source === "Unmatched projected tool result") {
+    return {
+      detail: triageDetail(span, "Result did not match a captured call id"),
+      label: "Unmatched result",
+      rank: 30,
+      severity: "critical",
+      spanId: span.id,
+      spanOrder: span.order,
+    }
+  }
+  if (span.badges.includes("Truncated")) {
+    return {
+      detail: triageDetail(span, "Payload may be incomplete"),
+      label: "Truncated payload",
+      rank: 40,
+      severity: "warning",
+      spanId: span.id,
+      spanOrder: span.order,
+    }
+  }
+  if (span.badges.includes("Redacted")) {
+    return {
+      detail: triageDetail(span, "Sensitive material was hidden"),
+      label: "Redacted payload",
+      rank: 50,
+      severity: "warning",
+      spanId: span.id,
+      spanOrder: span.order,
+    }
+  }
+  return null
+}
+
+function triageDetail(span: TraceSpan, fallback: string) {
+  const detail = span.preview ?? span.subtitle ?? fallback
+  return `${span.title}: ${detail}`
 }
 
 function formatCompactNumber(value: number): string {
