@@ -132,6 +132,7 @@ export function createDaemonRequestProcessor(
         ? {
           environment: {
             id: created.environment.id,
+            networkPolicy: created.environment.networkPolicy,
             runnerCwd: created.environment.runnerCwd,
             rootPath: created.environment.rootPath,
             metadata: created.environment.metadata,

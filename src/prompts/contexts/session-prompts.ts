@@ -1,13 +1,12 @@
-import type {SessionPromptRecord} from "../../domain/sessions/types.js";
-import {SESSION_BRIEF_PROMPT_SLUG, SESSION_MEMORY_PROMPT_SLUG} from "../../domain/sessions/types.js";
+interface RenderableSessionPromptRecord {
+  slug: string;
+  content: string;
+}
 
-const RENDERED_SESSION_PROMPT_SLUGS = [
-  SESSION_BRIEF_PROMPT_SLUG,
-  SESSION_MEMORY_PROMPT_SLUG,
-] as const;
+const RENDERED_SESSION_PROMPT_SLUGS = ["brief", "memory"] as const;
 
 export function renderSessionPromptsContext(options: {
-  prompts: readonly SessionPromptRecord[];
+  prompts: readonly RenderableSessionPromptRecord[];
 }): string {
   const promptsBySlug = new Map(options.prompts.map((prompt) => [prompt.slug, prompt]));
   return RENDERED_SESSION_PROMPT_SLUGS

@@ -37,13 +37,25 @@ the session overview. Control target health is named `reachable` because it only
 checks unauthenticated runner `/health`; authenticated command readiness is still
 validated when the tool call reaches `/exec` or `/jobs/*`.
 
+## Network policy
+
+Execution environments store a `networkPolicy` field. The default is `public`,
+which preserves the current disposable runner network behavior. `local_only` asks
+the Docker manager to place the environment on a configured internal local-only
+Docker network instead of the public disposable runner network; creation fails if
+that network is missing or not marked internal.
+
+`networkPolicy` is egress control. Tool groups are capability grants only. In
+particular, the `internet` tool group grants browser/web tools; it does not
+turn network egress on or off.
+
 ## Tool policy
 
 Subagent tool access is profile driven:
 
 - `core` grants basics plus parent A2A updates.
 - `workspace_read` grants read-only workspace inspection.
-- `internet` grants public web and browser inspection.
+- `internet` grants public web and browser inspection. It is not an egress-control mechanism; use execution-environment `networkPolicy` for that.
 - `memory` grants durable memory reads.
 - `execute` grants bash/background execution.
 - `operate` grants operational mutation surfaces.

@@ -33,6 +33,7 @@ export interface RenderSubagentsContextOmittedHistory {
 export interface RenderSubagentsContextEnvironment {
   environmentId: string;
   state: string;
+  networkPolicy?: string;
   startedAt: string;
   updatedAt: string;
   workspacePath?: string;
@@ -84,6 +85,7 @@ function renderEnvironment(environment: RenderSubagentsContextEnvironment): stri
   const parts = [
     environment.environmentId,
     `state ${environment.state}`,
+    environment.networkPolicy ? `networkPolicy ${environment.networkPolicy}` : "",
     `started ${environment.startedAt}`,
     `updated ${environment.updatedAt}`,
   ];
@@ -100,7 +102,7 @@ function renderEnvironment(environment: RenderSubagentsContextEnvironment): stri
   const subagents = renderedSubagents || omitted
     ? ` | subagents ${renderedSubagents}${omitted}`
     : " | subagents none";
-  return `- ${parts.join(" | ")}${paths.length ? ` | ${paths.join(" | ")}` : ""}${subagents}`;
+  return `- ${parts.filter(Boolean).join(" | ")}${paths.length ? ` | ${paths.join(" | ")}` : ""}${subagents}`;
 }
 
 export function renderSubagentsContext(input: RenderSubagentsContextInput): string {

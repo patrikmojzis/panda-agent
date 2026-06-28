@@ -327,6 +327,7 @@ export function SessionOverviewPanel({
                     <Badge variant="outline">{target.alias}</Badge>
                     <StatusBadge status={target.kind} />
                     <StatusBadge status={target.state} />
+                    <Badge variant="secondary">network {target.networkPolicy}</Badge>
                     <Badge variant={targetHealthVariant(target.health)}>
                       {targetHealthLabel(target.health)}
                     </Badge>

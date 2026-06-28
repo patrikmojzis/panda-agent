@@ -208,6 +208,7 @@ export interface ControlExecutionTargetRow {
   alias: string;
   kind: ExecutionEnvironmentKind;
   state: ExecutionEnvironmentState;
+  networkPolicy: "public" | "local_only";
   label: string;
   health: ControlExecutionTargetHealth;
   isDefaultBinding?: boolean;
@@ -1266,6 +1267,7 @@ export class ControlOperatorService {
     agentKey: string;
     kind: ExecutionEnvironmentKind;
     state: ExecutionEnvironmentState;
+    networkPolicy?: "public" | "local_only";
     runnerUrl?: string;
     runnerUrlTemplate?: string;
   }): Promise<ControlExecutionTargetHealth> {
@@ -1292,6 +1294,7 @@ export class ControlOperatorService {
     alias: string;
     kind: ExecutionEnvironmentKind;
     state: ExecutionEnvironmentState;
+    networkPolicy?: "public" | "local_only";
     runnerUrl?: string;
     runnerUrlTemplate?: string;
     isDefaultBinding?: boolean;
@@ -1300,6 +1303,7 @@ export class ControlOperatorService {
       alias: input.alias,
       kind: input.kind,
       state: input.state,
+      networkPolicy: input.networkPolicy ?? "public",
       label: input.alias === "default" ? "Default" : input.alias,
       health: await this.probeExecutionTargetHealth(input),
       ...(input.isDefaultBinding === true ? {isDefaultBinding: true} : {}),
@@ -1846,6 +1850,7 @@ export class ControlOperatorService {
           alias: "default",
           kind: environment.kind,
           state: environment.state,
+          networkPolicy: environment.networkPolicy,
           ...(environment.runnerUrl ? {runnerUrl: environment.runnerUrl, runnerUrlTemplate: environment.runnerUrl} : {}),
           isDefaultBinding: true,
         });
@@ -1861,6 +1866,7 @@ export class ControlOperatorService {
         alias: "default",
         kind: executionMode === "remote" ? "persistent_agent_runner" : "local",
         state: "ready",
+        networkPolicy: "public",
         ...(runnerUrl ? {runnerUrl, runnerUrlTemplate: runnerUrlTemplate ?? runnerUrl} : {}),
       });
     })();
@@ -1872,6 +1878,7 @@ export class ControlOperatorService {
         alias: binding.alias,
         kind: environment.kind,
         state: environment.state,
+        networkPolicy: environment.networkPolicy,
         ...(environment.runnerUrl ? {runnerUrl: environment.runnerUrl, runnerUrlTemplate: environment.runnerUrl} : {}),
         isDefaultBinding: binding.isDefault,
       });
@@ -1932,6 +1939,7 @@ export class ControlOperatorService {
       alias: binding.alias,
       kind: environment.kind,
       state: environment.state,
+      networkPolicy: environment.networkPolicy,
       ...(environment.runnerUrl ? {runnerUrl: environment.runnerUrl, runnerUrlTemplate: environment.runnerUrl} : {}),
       isDefaultBinding: binding.isDefault,
     });

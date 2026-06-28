@@ -10,6 +10,18 @@ model-facing worker spawn path is gone.
 - Then call `spawn_subagent(profile="workspace", prompt="...", execution="isolated_environment", environmentId="...")`.
 - Subagents communicate progress and completion through normal A2A `message_agent` calls back to the parent session.
 
+## Network policy
+
+`environment_create` accepts `networkPolicy`. Omit it for the default `public`
+network. Use `networkPolicy="local_only"` when the disposable environment should
+run on Panda's internal local-only Docker network instead of the public runner
+network. If the Docker stack is not configured with an internal local-only
+network, creation fails loudly.
+
+Subagent tool profiles are separate from network egress. For example, the
+`internet` tool group grants browser/web tools but does not override
+`networkPolicy`.
+
 ## Filesystem layout
 
 Disposable isolated environments mount:

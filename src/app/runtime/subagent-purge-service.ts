@@ -12,6 +12,7 @@ import type {
   ExecutionEnvironmentRecord,
   ExecutionEnvironmentState,
 } from "../../domain/execution-environments/types.js";
+import {normalizeExecutionEnvironmentNetworkPolicy} from "../../domain/execution-environments/types.js";
 import {buildExecutionEnvironmentTableNames} from "../../domain/execution-environments/postgres-shared.js";
 import {buildSessionTableNames} from "../../domain/sessions/postgres-shared.js";
 import {buildRuntimeRequestTableNames} from "../../domain/threads/requests/postgres-shared.js";
@@ -117,6 +118,7 @@ interface CandidateRow {
   environment_agent_key: string;
   kind: ExecutionEnvironmentRecord["kind"];
   state: ExecutionEnvironmentState;
+  network_policy: ExecutionEnvironmentRecord["networkPolicy"];
   runner_url: string | null;
   runner_cwd: string | null;
   root_path: string | null;
@@ -187,6 +189,7 @@ function parseCandidateRow(row: Record<string, unknown>): CandidateRow {
     environment_agent_key: requireTrimmed("subagent environment agent key", row.environment_agent_key),
     kind: parseEnvironmentKind(row.kind),
     state: parseEnvironmentState(row.state),
+    network_policy: normalizeExecutionEnvironmentNetworkPolicy(row.network_policy),
     runner_url: nullableString("subagent runner url", row.runner_url),
     runner_cwd: nullableString("subagent runner cwd", row.runner_cwd),
     root_path: nullableString("subagent root path", row.root_path),
@@ -205,6 +208,7 @@ function parseEnvironmentRow(row: CandidateRow): ExecutionEnvironmentRecord {
     agentKey: row.environment_agent_key,
     kind: row.kind,
     state: row.state,
+    networkPolicy: row.network_policy,
     ...(row.runner_url ? {runnerUrl: row.runner_url} : {}),
     ...(row.runner_cwd ? {runnerCwd: row.runner_cwd} : {}),
     ...(row.root_path ? {rootPath: row.root_path} : {}),
@@ -677,6 +681,7 @@ export class SubagentPurgeService {
         env.agent_key AS environment_agent_key,
         env.kind,
         env.state,
+        env.network_policy,
         env.runner_url,
         env.runner_cwd,
         env.root_path,

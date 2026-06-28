@@ -2,6 +2,7 @@ export interface BashTargetContextItem {
   alias: string;
   isDefaultBinding?: boolean;
   allowedTools?: readonly string[];
+  networkPolicy?: string;
   description?: string;
   capabilities?: readonly string[];
 }
@@ -38,6 +39,9 @@ function renderTarget(item: BashTargetContextItem): string {
   const allowedTools = safeList(item.allowedTools);
   if (allowedTools.length > 0) {
     details.push(`tools: ${allowedTools.join(", ")}`);
+  }
+  if (item.networkPolicy) {
+    details.push(`networkPolicy: ${item.networkPolicy}`);
   }
   const capabilities = safeList(item.capabilities);
   if (capabilities.length > 0) {
