@@ -366,6 +366,7 @@ export class SubagentsContext extends LlmContext {
       renderedEnvironments.push({
         environmentId: environment.id,
         state: environment.state,
+        networkPolicy: environment.networkPolicy,
         startedAt: formatTimestamp(environment.createdAt),
         updatedAt: formatTimestamp(environment.updatedAt),
         ...readPathHints(environment),

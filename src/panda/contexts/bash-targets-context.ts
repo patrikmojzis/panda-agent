@@ -65,6 +65,7 @@ export class BashTargetsContext extends LlmContext {
         alias: binding.alias,
         ...(binding.isDefault ? {isDefaultBinding: true} : {}),
         ...(binding.toolPolicy.allowedTools?.length ? {allowedTools: binding.toolPolicy.allowedTools} : {}),
+        ...(environment?.networkPolicy ? {networkPolicy: environment.networkPolicy} : {}),
         ...readTargetMetadata(environment),
       };
     }));

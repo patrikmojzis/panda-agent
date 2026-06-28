@@ -98,6 +98,7 @@ function createEnvironment(
     agentKey: "panda",
     kind: "disposable_container",
     state: "ready",
+    networkPolicy: "public",
     runnerUrl: `http://${id}:8080`,
     runnerCwd: "/workspace",
     rootPath: "/workspace",
@@ -180,6 +181,7 @@ describe("SubagentsContext", () => {
     expect(rendered).toContain("Agent workspace subagents:");
     expect(rendered).toContain("workspace-child");
     expect(rendered).toContain("Isolated environment subagents:");
+    expect(rendered).toContain("networkPolicy public");
     expect(rendered).toContain("isolated-child");
     expect(rendered).toContain("workspace /environments/isolated-child/workspace");
     expect(rendered).toContain("inbox /environments/isolated-child/inbox");

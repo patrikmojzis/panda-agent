@@ -16,6 +16,7 @@ export async function ensurePostgresExecutionEnvironmentSchema(pool: PgQueryable
       agent_key TEXT NOT NULL REFERENCES ${agentTables.agents}(agent_key) ON DELETE CASCADE,
       kind TEXT NOT NULL,
       state TEXT NOT NULL DEFAULT 'ready',
+      network_policy TEXT NOT NULL DEFAULT 'public',
       runner_url TEXT,
       runner_cwd TEXT,
       root_path TEXT,
@@ -41,6 +42,14 @@ export async function ensurePostgresExecutionEnvironmentSchema(pool: PgQueryable
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (session_id, environment_id)
     )
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.executionEnvironments}
+    ADD COLUMN IF NOT EXISTS network_policy TEXT NOT NULL DEFAULT 'public'
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.executionEnvironments}
+    ALTER COLUMN network_policy SET DEFAULT 'public'
   `);
   await pool.query(`
     ALTER TABLE ${tables.sessionEnvironmentBindings}

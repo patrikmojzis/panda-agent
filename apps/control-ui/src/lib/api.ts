@@ -98,6 +98,7 @@ export type ExecutionTarget = {
   alias: string
   kind: "persistent_agent_runner" | "disposable_container" | "local" | string
   state: "provisioning" | "ready" | "failed" | "stopping" | "stopped" | string
+  networkPolicy: "public" | "local_only" | string
   label: string
   health: "reachable" | "unreachable" | "unknown" | "not_applicable" | string
   isDefaultBinding?: boolean
