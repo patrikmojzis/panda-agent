@@ -241,7 +241,7 @@ Operational notes:
 The command mailbox is durable Postgres polling, not WebSocket/SSE. It is the
 Gateway device command path and stays separate from manual/interval pushes.
 
-Admin enqueue/list/cancel/timeout sweep stays local CLI-backed DB access:
+Admin enqueue/list/cancel/timeout sweep stays CLI-only local DB access:
 
 ```bash
 panda gateway device command enqueue work-prod macbook-pro screenshot.capture --payload-json '{"display":"main"}'
@@ -249,6 +249,45 @@ panda gateway device command list work-prod --device macbook-pro --status queued
 panda gateway device command cancel work-prod macbook-pro <commandId> --reason "obsolete"
 panda gateway device command timeout-sweep --source work-prod --stale-ms 300000 --limit 100
 ```
+
+### Control maintenance boundary
+
+Control is an authenticated operator surface for Gateway setup and inspection,
+not a raw Gateway maintenance console. The current Control route/UI set may
+expose guarded source, device, event-type, and event inspection workflows that
+are already present in `src/integrations/control/http-server.ts`,
+`src/domain/control/operator-service.ts`, `apps/control-ui/src/lib/api.ts`, and
+`apps/control-ui/src/features/control/gateway/*`:
+
+- gateway source setup/status, source secret rotation, suspend/resume, and list
+  views;
+- gateway device registration/upsert, including the one-time token returned when
+  an existing device is re-registered, plus list/status/capability inspection
+  and enable/disable;
+- allowed event-type management and Gateway event inspection, including
+  session-scoped event views;
+- account/status/diagnostic metadata where a backing source already provides a
+  safe read surface.
+
+The following Gateway maintenance operations remain CLI-only by default:
+
+- `panda gateway run` for service process lifecycle;
+- `panda gateway device command enqueue <sourceId> <deviceId> <kind>`;
+- `panda gateway device command list <sourceId>`;
+- `panda gateway device command cancel <sourceId> <deviceId> <commandId>`;
+- `panda gateway device command timeout-sweep --source <sourceId> --stale-ms <ms> [--limit <n>]`;
+- `panda gateway attachment-scrub-expired`;
+- direct DB or low-level queue, retention, cleanup, scrub, or raw maintenance
+  operations.
+
+This boundary is deliberately precise: Gateway event inspection and event-type
+setup are acceptable Control actions, and Control device re-registration can
+rotate a stored device token through the existing guarded setup path. Command
+mailbox queue mutation/listing, service lifecycle, cleanup/scrub, and raw
+maintenance are not generic Control buttons. Moving any of those into Control
+requires a focused audited operator workflow with explicit scope, confirmation,
+and sanitized metadata. Sanitized `gateway_device_command` failure summaries may
+appear in Control Home diagnostics; that is not queue listing or mutation.
 
 Device heartbeat:
 
