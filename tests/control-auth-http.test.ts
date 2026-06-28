@@ -1806,7 +1806,7 @@ describe("Control operator HTTP", () => {
     await expect(harness.emailStore.getAccount("panda", "work")).resolves.toMatchObject({enabled: true});
   });
 
-  it("creates gateway sources and returns client secrets only on write responses", async () => {
+  it("creates gateway setup records, hides secrets, and leaves maintenance routes absent", async () => {
     const harness = await createHarness();
     const base = await startHarnessServer(harness);
     const auth = await login(base, harness);
@@ -1936,6 +1936,29 @@ describe("Control operator HTTP", () => {
 
     const invalidEnabled = await fetch(`${devicesPath}?enabled=wat`, {headers: {cookie: auth.cookies}});
     expect(invalidEnabled.status).toBe(400);
+
+    // Gateway queue/lifecycle/scrub maintenance is intentionally CLI-only unless a focused audited Control workflow is designed.
+    const maintenanceRoutes: Array<{method: "GET" | "POST"; path: string}> = [
+      {method: "GET", path: `${base}/api/control/agents/panda/gateway/sources/build-alerts/commands`},
+      {method: "POST", path: `${devicesPath}/alpha-terminal/commands`},
+      {method: "POST", path: `${devicesPath}/alpha-terminal/commands/cmd-123/cancel`},
+      {method: "POST", path: `${base}/api/control/agents/panda/gateway/device-commands/timeout-sweep`},
+      {method: "POST", path: `${base}/api/control/agents/panda/gateway/attachments/scrub-expired`},
+      {method: "POST", path: `${base}/api/control/agents/panda/gateway/run`},
+    ];
+    for (const route of maintenanceRoutes) {
+      const response = await fetch(route.path, {
+        method: route.method,
+        headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+        ...(route.method === "GET" ? {} : {body: JSON.stringify({reason: "boundary-test"})}),
+      });
+      expect({method: route.method, path: route.path, status: response.status}).toMatchObject({
+        method: route.method,
+        path: route.path,
+        status: 404,
+      });
+      await expect(response.json()).resolves.toEqual({error: "not_found"});
+    }
   });
 });
 
