@@ -10,10 +10,8 @@ import type {
   DisposableEnvironmentCreateRequest,
   DisposableEnvironmentCreateResult,
   ExecutionEnvironmentManager,
-  ExecutionEnvironmentNetworkPolicy,
   ExecutionEnvironmentState,
 } from "../../domain/execution-environments/types.js";
-import {normalizeExecutionEnvironmentNetworkPolicy} from "../../domain/execution-environments/types.js";
 import {
   DEFAULT_PARENT_RUNNER_ENVIRONMENTS_ROOT,
   DEFAULT_WORKER_ARTIFACTS_PATH,
@@ -80,17 +78,9 @@ interface DockerContainerInspectResult {
       Status?: string;
     };
   };
-  HostConfig?: {
-    NetworkMode?: string;
-  };
   NetworkSettings?: {
     Ports?: Record<string, Array<{HostIp?: string; HostPort?: string}> | null>;
   };
-}
-
-export interface DockerNetworkInspectResult {
-  Name?: string;
-  Internal?: boolean;
 }
 
 export interface DockerExecCreateConfig {
@@ -142,7 +132,6 @@ export interface DockerClient {
   inspectContainer(container: string): Promise<DockerContainerInspectResult>;
   stopContainer(container: string): Promise<void>;
   removeContainer(container: string): Promise<void>;
-  inspectNetwork(network: string): Promise<DockerNetworkInspectResult>;
   createExec(container: string, config: DockerExecCreateConfig): Promise<DockerExecCreateResult>;
   startExec(execId: string, options: {Detach: false; Tty: false}): Promise<Readable>;
   inspectExec(execId: string): Promise<DockerExecInspectResult>;
@@ -217,14 +206,6 @@ class DockerEngineClient implements DockerClient {
       method: "DELETE",
       path: `/containers/${encodeURIComponent(container)}?force=1`,
       expectedStatuses: [204, 404],
-    });
-  }
-
-  async inspectNetwork(network: string): Promise<DockerNetworkInspectResult> {
-    return this.requestJson<DockerNetworkInspectResult>({
-      method: "GET",
-      path: `/networks/${encodeURIComponent(network)}`,
-      expectedStatuses: [200],
     });
   }
 
@@ -354,7 +335,6 @@ export interface DockerExecutionEnvironmentManagerOptions {
   workspaceExecSecret?: string;
   managerUrl?: string;
   network?: string;
-  localOnlyNetwork?: string;
   hostBindIp?: string;
   hostRunnerHost?: string;
   runnerPort?: number;
@@ -573,7 +553,6 @@ function buildLabels(input: DisposableEnvironmentCreateRequest, role?: "control"
     "panda.environment.id": input.environmentId,
     "panda.agent.key": input.agentKey,
     "panda.session.id": input.sessionId,
-    "panda.environment.network_policy": normalizeExecutionEnvironmentNetworkPolicy(input.networkPolicy),
     ...(role ? {"panda.environment.role": role} : {}),
     ...(input.ttlMs === undefined ? {} : {"panda.expires_at": new Date(Date.now() + input.ttlMs).toISOString()}),
     ...extra,
@@ -805,14 +784,6 @@ function createEnvironmentManagerBodyError(statusCode: number, message: string):
   return new ToolError(message, {details: {statusCode}});
 }
 
-function parseRequestNetworkPolicy(value: unknown): ExecutionEnvironmentNetworkPolicy {
-  try {
-    return normalizeExecutionEnvironmentNetworkPolicy(value);
-  } catch (error) {
-    throw new ToolError(error instanceof Error ? error.message : "Invalid execution environment networkPolicy.");
-  }
-}
-
 function validateCreateRequest(value: unknown): DisposableEnvironmentCreateRequest {
   if (!isRecord(value)) {
     throw new ToolError("Create disposable environment request must be an object.");
@@ -821,7 +792,6 @@ function validateCreateRequest(value: unknown): DisposableEnvironmentCreateReque
   const agentKey = normalizeAgentKey(trimToNull(value.agentKey) ?? "");
   const sessionId = trimToNull(value.sessionId);
   const environmentId = trimToNull(value.environmentId);
-  const networkPolicy = parseRequestNetworkPolicy(value.networkPolicy);
   const ttlMs = value.ttlMs === undefined ? undefined : Number(value.ttlMs);
   if (!sessionId) {
     throw new ToolError("sessionId must not be empty.");
@@ -837,7 +807,6 @@ function validateCreateRequest(value: unknown): DisposableEnvironmentCreateReque
     agentKey,
     sessionId,
     environmentId,
-    networkPolicy,
     ...(ttlMs === undefined ? {} : {ttlMs}),
     ...(value.metadata === undefined ? {} : {metadata: validateManagerMetadata(value.metadata)}),
   };
@@ -893,7 +862,6 @@ export function resolveDockerExecutionEnvironmentManagerOptions(
     workspaceExecSecret: trimToUndefined(env.PANDA_WORKSPACE_EXEC_SECRET),
     managerUrl: trimToUndefined(env.PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL),
     network: trimToUndefined(env.PANDA_DISPOSABLE_RUNNER_NETWORK),
-    localOnlyNetwork: trimToUndefined(env.PANDA_DISPOSABLE_LOCAL_ONLY_NETWORK),
     hostBindIp: trimToUndefined(env.PANDA_DISPOSABLE_RUNNER_HOST_BIND_IP) ?? DEFAULT_HOST_BIND_IP,
     hostRunnerHost: trimToUndefined(env.PANDA_DISPOSABLE_RUNNER_PUBLIC_HOST) ?? DEFAULT_HOST_BIND_IP,
     runnerPort: parsePort(trimToNull(env.PANDA_DISPOSABLE_RUNNER_PORT), DEFAULT_RUNNER_PORT),
@@ -1072,7 +1040,6 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
   private readonly workspaceExecSecret: string;
   private readonly managerUrl?: string;
   private readonly network?: string;
-  private readonly localOnlyNetwork?: string;
   private readonly hostBindIp: string;
   private readonly hostRunnerHost: string;
   private readonly runnerPort: number;
@@ -1097,7 +1064,6 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
     this.workspaceExecSecret = trimToUndefined(resolved.workspaceExecSecret) ?? randomBytes(32).toString("base64url");
     this.managerUrl = trimToUndefined(resolved.managerUrl);
     this.network = trimToUndefined(resolved.network);
-    this.localOnlyNetwork = trimToUndefined(resolved.localOnlyNetwork);
     this.hostBindIp = resolved.hostBindIp ?? DEFAULT_HOST_BIND_IP;
     this.hostRunnerHost = resolved.hostRunnerHost ?? DEFAULT_HOST_BIND_IP;
     this.runnerPort = resolved.runnerPort ?? DEFAULT_RUNNER_PORT;
@@ -1121,26 +1087,6 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
     this.createTimeoutMs = resolved.createTimeoutMs ?? DEFAULT_CREATE_TIMEOUT_MS;
   }
 
-  private async resolveContainerNetwork(
-    networkPolicy: ExecutionEnvironmentNetworkPolicy,
-  ): Promise<string | undefined> {
-    if (networkPolicy === "public") {
-      return this.network;
-    }
-
-    if (!this.localOnlyNetwork) {
-      throw new Error("local_only execution environments require PANDA_DISPOSABLE_LOCAL_ONLY_NETWORK.");
-    }
-    if (this.network && this.localOnlyNetwork === this.network) {
-      throw new Error("local_only execution environments require PANDA_DISPOSABLE_LOCAL_ONLY_NETWORK to differ from PANDA_DISPOSABLE_RUNNER_NETWORK.");
-    }
-    const inspect = await this.docker.inspectNetwork(this.localOnlyNetwork);
-    if (inspect.Internal !== true) {
-      throw new Error(`Docker network ${this.localOnlyNetwork} must be internal for local_only execution environments.`);
-    }
-    return this.localOnlyNetwork;
-  }
-
   async createDisposableEnvironment(
     input: DisposableEnvironmentCreateRequest,
   ): Promise<DisposableEnvironmentCreateResult> {
@@ -1149,7 +1095,6 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       agentKey: normalizeAgentKey(input.agentKey),
       environmentId: trimToNull(input.environmentId) ?? "",
       sessionId: trimToNull(input.sessionId) ?? "",
-      networkPolicy: normalizeExecutionEnvironmentNetworkPolicy(input.networkPolicy),
     };
     if (!request.environmentId || !request.sessionId) {
       throw new Error("Disposable environment requests require environmentId and sessionId.");
@@ -1166,13 +1111,12 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       parentRunnerRoot: this.parentRunnerEnvironmentsRoot,
     });
     await ensureEnvironmentFilesystem(filesystem);
-    const network = await this.resolveContainerNetwork(request.networkPolicy);
     const workspaceConfig = buildWorkspaceContainerConfig({
       request,
       image: this.workspaceImage,
       runnerCwd: this.runnerCwd,
       filesystem,
-      network,
+      network: this.network,
     });
     const workspaceExecToken = createWorkspaceExecCredential({
       environmentId: request.environmentId,
@@ -1188,7 +1132,7 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       ...(this.managerUrl ? {managerUrl: this.managerUrl} : {}),
       workspaceContainerName,
       filesystem,
-      network,
+      network: this.network,
       hostBindIp: this.hostBindIp,
     });
     const createdContainers: string[] = [];
@@ -1208,7 +1152,7 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       throw error;
     }
 
-    const runnerUrl = network
+    const runnerUrl = this.network
       ? `http://${controlContainerName}:${this.runnerPort}`
       : `http://${this.hostRunnerHost}:${readPublishedPort(inspect, this.runnerPort)}`;
     return {
@@ -1220,7 +1164,6 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
         containerId: inspect.Id || controlContainerId,
         containerName: controlContainerName,
         image: this.controlRunnerImage,
-        networkPolicy: request.networkPolicy,
         controlContainer: {
           id: inspect.Id || controlContainerId,
           name: controlContainerName,
@@ -1231,7 +1174,7 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
           name: workspaceContainerName,
           image: this.workspaceImage,
         },
-        ...(network ? {network} : {}),
+        ...(this.network ? {network: this.network} : {}),
       },
     };
   }
@@ -1458,44 +1401,6 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
     }
   }
 
-  private assertReusableContainer(
-    containerName: string,
-    inspect: DockerContainerInspectResult,
-    request: DisposableEnvironmentCreateRequest,
-    config: DockerContainerCreateConfig,
-  ): void {
-    const requestedPolicy = normalizeExecutionEnvironmentNetworkPolicy(request.networkPolicy);
-    const existingPolicyLabel = inspect.Config?.Labels?.["panda.environment.network_policy"];
-    const actualNetwork = trimToUndefined(inspect.HostConfig?.NetworkMode);
-    const expectedNetwork = trimToUndefined(config.HostConfig.NetworkMode);
-
-    if (existingPolicyLabel === undefined) {
-      if (requestedPolicy !== "public") {
-        throw new Error(`Existing disposable environment container ${containerName} is missing networkPolicy label for requested ${requestedPolicy}.`);
-      }
-      if (this.localOnlyNetwork && actualNetwork === this.localOnlyNetwork) {
-        throw new Error(`Existing disposable environment container ${containerName} is on local-only Docker network ${actualNetwork} but requested public.`);
-      }
-    } else {
-      let existingPolicy: ExecutionEnvironmentNetworkPolicy;
-      try {
-        existingPolicy = normalizeExecutionEnvironmentNetworkPolicy(existingPolicyLabel);
-      } catch {
-        throw new Error(`Existing disposable environment container ${containerName} has unsupported networkPolicy label ${existingPolicyLabel}.`);
-      }
-      if (existingPolicy !== requestedPolicy) {
-        throw new Error(`Existing disposable environment container ${containerName} networkPolicy ${existingPolicy} does not match requested ${requestedPolicy}.`);
-      }
-    }
-
-    if (!expectedNetwork && requestedPolicy === "public" && this.localOnlyNetwork && actualNetwork === this.localOnlyNetwork) {
-      throw new Error(`Existing disposable environment container ${containerName} is on local-only Docker network ${actualNetwork} but requested public.`);
-    }
-    if (expectedNetwork && actualNetwork !== expectedNetwork) {
-      throw new Error(`Existing disposable environment container ${containerName} Docker network ${actualNetwork ?? "-"} does not match requested ${expectedNetwork}.`);
-    }
-  }
-
   private async ensureContainer(
     containerName: string,
     request: DisposableEnvironmentCreateRequest,
@@ -1513,7 +1418,6 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       if (!isExpectedManagedEnvironment(existing, request)) {
         throw error;
       }
-      this.assertReusableContainer(containerName, existing, request, config);
       return existing.Id;
     }
   }

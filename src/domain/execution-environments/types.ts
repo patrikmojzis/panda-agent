@@ -51,21 +51,6 @@ export type ExecutionEnvironmentState =
   | "stopping"
   | "stopped";
 
-export type ExecutionEnvironmentNetworkPolicy = "public" | "local_only";
-
-export function normalizeExecutionEnvironmentNetworkPolicy(
-  value: unknown,
-): ExecutionEnvironmentNetworkPolicy {
-  if (value === undefined || value === null) {
-    return "public";
-  }
-  if (value === "public" || value === "local_only") {
-    return value;
-  }
-
-  throw new Error(`Unsupported execution environment networkPolicy ${String(value)}.`);
-}
-
 export type ExecutionCredentialPolicy =
   | {mode: "all_agent"}
   | {mode: "none"}
@@ -98,7 +83,6 @@ export interface ExecutionEnvironmentRecord {
   agentKey: string;
   kind: ExecutionEnvironmentKind;
   state: ExecutionEnvironmentState;
-  networkPolicy: ExecutionEnvironmentNetworkPolicy;
   runnerUrl?: string;
   runnerCwd?: string;
   rootPath?: string;
@@ -126,7 +110,6 @@ export interface CreateExecutionEnvironmentInput {
   id: string;
   agentKey: string;
   kind: ExecutionEnvironmentKind;
-  networkPolicy?: ExecutionEnvironmentNetworkPolicy;
   state?: ExecutionEnvironmentState;
   runnerUrl?: string;
   runnerCwd?: string;
@@ -157,7 +140,6 @@ export interface ResolvedExecutionEnvironment {
   agentKey: string;
   kind: ExecutionEnvironmentKind;
   state: ExecutionEnvironmentState;
-  networkPolicy?: ExecutionEnvironmentNetworkPolicy;
   executionMode: "local" | "remote";
   runnerUrl?: string;
   initialCwd?: string;
@@ -174,7 +156,6 @@ export interface DisposableEnvironmentCreateRequest {
   agentKey: string;
   sessionId: string;
   environmentId: string;
-  networkPolicy?: ExecutionEnvironmentNetworkPolicy;
   ttlMs?: number;
   metadata?: JsonValue;
 }

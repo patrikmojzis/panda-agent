@@ -190,11 +190,6 @@ describe("PostgresExecutionEnvironmentStore", () => {
       runnerCwd: "/workspace",
       createdForSessionId: "session-worker",
     });
-    await expect(environmentStore.getEnvironment("env-worker")).resolves.toMatchObject({
-      id: "env-worker",
-      networkPolicy: "public",
-    });
-
     await environmentStore.bindSession({
       sessionId: "session-worker",
       environmentId: "env-worker",
@@ -263,29 +258,6 @@ describe("PostgresExecutionEnvironmentStore", () => {
 
     await expect(environmentStore.getEnvironment("env-bad-kind"))
       .rejects.toThrow("Unsupported execution environment kind sidecar.");
-  });
-
-  it("rejects unsupported persisted environment network policies", async () => {
-    const {environmentStore, pool} = await createHarness();
-
-    await pool.query(`
-      INSERT INTO "runtime"."execution_environments" (
-        id,
-        agent_key,
-        kind,
-        state,
-        network_policy
-      ) VALUES (
-        'env-bad-network-policy',
-        'panda',
-        'disposable_container',
-        'ready',
-        'private'
-      )
-    `);
-
-    await expect(environmentStore.getEnvironment("env-bad-network-policy"))
-      .rejects.toThrow("Unsupported execution environment network_policy private.");
   });
 
   it("rejects malformed persisted environment string fields", async () => {
@@ -554,7 +526,6 @@ describe("PostgresExecutionEnvironmentStore", () => {
       id: "persistent_agent_runner:panda",
       kind: "persistent_agent_runner",
       executionMode: "remote",
-      networkPolicy: "public",
       runnerUrl: "http://runner-panda:8080",
       initialCwd: "/root/.panda/agents/panda",
       credentialPolicy: {
@@ -625,7 +596,6 @@ describe("PostgresExecutionEnvironmentStore", () => {
     await expect(resolver.resolveDefault(session)).resolves.toMatchObject({
       id: "persistent_agent_runner:panda",
       source: "fallback",
-      networkPolicy: "public",
       credentialPolicy: {mode: "allowlist", envKeys: ["NPM_TOKEN"]},
       skillPolicy: {mode: "all_agent"},
       toolPolicy: {
@@ -936,7 +906,6 @@ describe("PostgresExecutionEnvironmentStore", () => {
       agentKey: "panda",
       kind: "disposable_container",
       state: "ready",
-      networkPolicy: "local_only",
       runnerUrl: "http://old-worker:8080",
       runnerCwd: "/workspace",
       expiresAt: Date.now() - 1_000,
@@ -965,19 +934,16 @@ describe("PostgresExecutionEnvironmentStore", () => {
     await expect(resolver.resolveDefault(session)).resolves.toMatchObject({
       id: "env-worker",
       state: "ready",
-      networkPolicy: "local_only",
       runnerUrl: "http://env-worker:8080",
     });
     expect(manager.requests[0]).toMatchObject({
       agentKey: "panda",
       sessionId: "session-main",
       environmentId: "env-worker",
-      networkPolicy: "local_only",
     });
     expect(manager.requests[0]?.ttlMs).toBeGreaterThan(0);
     await expect(environmentStore.getEnvironment("env-worker")).resolves.toMatchObject({
       state: "ready",
-      networkPolicy: "local_only",
       runnerUrl: "http://env-worker:8080",
     });
     expect((await environmentStore.getEnvironment("env-worker")).expiresAt).toBeGreaterThan(Date.now());
@@ -1029,7 +995,6 @@ describe("PostgresExecutionEnvironmentStore", () => {
         agentKey: "panda",
         sessionId: "session-worker",
         environmentId: "env-worker",
-        networkPolicy: "public",
         metadata: {
           role: "research",
         },
@@ -1057,7 +1022,6 @@ describe("PostgresExecutionEnvironmentStore", () => {
     const environment = await service.createStandaloneDisposableEnvironment({
       agentKey: "panda",
       createdBySessionId: "session-main",
-      networkPolicy: "local_only",
       ttlMs: 60_000,
       metadata: {
         label: "shared env",
@@ -1068,7 +1032,6 @@ describe("PostgresExecutionEnvironmentStore", () => {
       agentKey: "panda",
       kind: "disposable_container",
       state: "ready",
-      networkPolicy: "local_only",
       createdBySessionId: "session-main",
     });
     expect(environment.createdForSessionId).toBeUndefined();
@@ -1077,7 +1040,6 @@ describe("PostgresExecutionEnvironmentStore", () => {
         agentKey: "panda",
         sessionId: "session-main",
         environmentId: environment.id,
-        networkPolicy: "local_only",
         ttlMs: 60_000,
         metadata: {
           label: "shared env",
@@ -1154,7 +1116,6 @@ describe("PostgresExecutionEnvironmentStore", () => {
         agentKey: "panda",
         sessionId: "session-main",
         environmentId: "env-setup-success",
-        networkPolicy: "public",
       },
     ]);
     expect(JSON.stringify(manager.requests)).not.toContain("setupScript");

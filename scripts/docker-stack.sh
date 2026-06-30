@@ -745,7 +745,6 @@ configure_disposable_environment_defaults() {
 
   compose_project="$(default_compose_project_name)"
   export PANDA_DISPOSABLE_RUNNER_NETWORK="${PANDA_DISPOSABLE_RUNNER_NETWORK:-${compose_project}_disposable_runner_net}"
-  export PANDA_DISPOSABLE_LOCAL_ONLY_NETWORK="${PANDA_DISPOSABLE_LOCAL_ONLY_NETWORK:-${compose_project}_disposable_local_only_net}"
   export PANDA_EXECUTION_ENVIRONMENT_MANAGER_NETWORK="${PANDA_EXECUTION_ENVIRONMENT_MANAGER_NETWORK:-${compose_project}_execution_manager_net}"
   if (( use_managed_environment_manager )); then
     export PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL="http://panda-environment-manager:${PANDA_EXECUTION_ENVIRONMENT_MANAGER_PORT:-8095}"
@@ -1025,7 +1024,6 @@ EOF
       if (( enable_disposable_environments )); then
         cat <<EOF
       - disposable_runner_net
-      - disposable_local_only_net
 EOF
       fi
     fi
@@ -1055,7 +1053,6 @@ EOF
       PANDA_DISPOSABLE_CONTROL_RUNNER_IMAGE: \${PANDA_DISPOSABLE_CONTROL_RUNNER_IMAGE:-\${PANDA_DISPOSABLE_RUNNER_IMAGE:-panda-runner:latest}}
       PANDA_DISPOSABLE_WORKSPACE_IMAGE: \${PANDA_DISPOSABLE_WORKSPACE_IMAGE:-$workspace_image_default}
       PANDA_DISPOSABLE_RUNNER_NETWORK: \${PANDA_DISPOSABLE_RUNNER_NETWORK}
-      PANDA_DISPOSABLE_LOCAL_ONLY_NETWORK: \${PANDA_DISPOSABLE_LOCAL_ONLY_NETWORK}
       PANDA_DISPOSABLE_RUNNER_PORT: \${PANDA_DISPOSABLE_RUNNER_PORT:-8080}
       PANDA_DISPOSABLE_RUNNER_CWD: \${PANDA_DISPOSABLE_RUNNER_CWD:-/workspace}
       PANDA_ENVIRONMENTS_HOST_ROOT: $PANDA_ENVIRONMENTS_HOST_ROOT
@@ -1078,7 +1075,6 @@ EOF
     networks:
       - execution_manager_net
       - disposable_runner_net
-      - disposable_local_only_net
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:\${PANDA_EXECUTION_ENVIRONMENT_MANAGER_PORT:-8095}/health"]
       interval: 10s
@@ -1205,7 +1201,6 @@ EOF
     networks:
       - runner_net
       - disposable_runner_net
-      - disposable_local_only_net
 EOF
     fi
 
@@ -1261,9 +1256,6 @@ EOF
         cat <<'EOF'
   disposable_runner_net:
     name: ${PANDA_DISPOSABLE_RUNNER_NETWORK}
-  disposable_local_only_net:
-    name: ${PANDA_DISPOSABLE_LOCAL_ONLY_NETWORK}
-    internal: true
 EOF
       fi
       if (( enable_gateway_edge )); then

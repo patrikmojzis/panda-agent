@@ -3,7 +3,6 @@ import type {
     DisposableEnvironmentCreateResult,
     ExecutionEnvironmentManager,
 } from "../../domain/execution-environments/types.js";
-import {normalizeExecutionEnvironmentNetworkPolicy} from "../../domain/execution-environments/types.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import {buildEndpointUrl} from "../../lib/http.js";
 import {isJsonValue, type JsonValue} from "../../lib/json.js";
@@ -97,7 +96,6 @@ export class HttpExecutionEnvironmentManagerClient implements ExecutionEnvironme
   ): Promise<DisposableEnvironmentCreateResult> {
     const payload = await this.post("environments/disposable", {
       ...input,
-      networkPolicy: normalizeExecutionEnvironmentNetworkPolicy(input.networkPolicy),
       ...(input.metadata === undefined ? {} : {
         metadata: parseOptionalMetadata("Execution environment manager request metadata", input.metadata),
       }),

@@ -300,13 +300,13 @@ async function probeRunnerHealth(runnerUrl: string | undefined, kind: string, st
 async function renderTargetLine(input: {
   alias: string;
   binding?: SessionEnvironmentBindingRecord;
-  environment: Pick<ExecutionEnvironmentRecord, "id" | "kind" | "state" | "networkPolicy" | "runnerUrl" | "runnerCwd">;
+  environment: Pick<ExecutionEnvironmentRecord, "id" | "kind" | "state" | "runnerUrl" | "runnerCwd">;
 }): Promise<string> {
   const health = await probeRunnerHealth(input.environment.runnerUrl, input.environment.kind, input.environment.state);
   return [
     `${input.alias}${input.binding?.isDefault ? " (default binding)" : ""}`,
     `  environment ${input.environment.id}`,
-    `  kind ${input.environment.kind} · state ${input.environment.state} · networkPolicy ${input.environment.networkPolicy} · health ${health}`,
+    `  kind ${input.environment.kind} · state ${input.environment.state} · health ${health}`,
     `  runner ${formatRunnerUrl(input.environment.runnerUrl)} · cwd ${input.environment.runnerCwd ?? "-"}`,
     `  allowedTools ${formatAllowedTools(input.binding?.toolPolicy)}`,
   ].join("\n");
@@ -681,7 +681,6 @@ async function listSessionTargetsCommand(
             id: executionMode === "remote" ? `persistent_agent_runner:${session.agentKey}` : `local:${session.agentKey}`,
             kind: executionMode === "remote" ? "persistent_agent_runner" : "local",
             state: "ready",
-            networkPolicy: "public",
             runnerUrl,
             runnerCwd: undefined,
           },
@@ -753,7 +752,6 @@ async function bindSessionTargetCommand(
       `environment ${binding.environmentId}`,
       `default ${binding.isDefault ? "yes" : "no"}`,
       `runner ${formatRunnerUrl(environment.runnerUrl)}`,
-      `networkPolicy ${environment.networkPolicy}`,
       `allowedTools ${formatAllowedTools(binding.toolPolicy)}`,
     ].join("\n") + "\n");
   });

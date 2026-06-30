@@ -65,7 +65,6 @@ function createEnvironment(overrides: Partial<ExecutionEnvironmentRecord> = {}):
     agentKey: "panda",
     kind: "disposable_container",
     state: "ready",
-    networkPolicy: "public",
     runnerUrl: "http://environment:8080",
     runnerCwd: "/workspace",
     rootPath: "/workspace",
@@ -80,8 +79,6 @@ function createEnvironment(overrides: Partial<ExecutionEnvironmentRecord> = {}):
 describe("environment control tools", () => {
   it("exposes setupScript only on environment_create, not spawn_subagent", () => {
     expect(EnvironmentCreateTool.schema.shape).toHaveProperty("setupScript");
-    expect(EnvironmentCreateTool.schema.shape).toHaveProperty("networkPolicy");
-    expect(EnvironmentCreateTool.schema.safeParse({networkPolicy: ""}).success).toBe(false);
     expect(SpawnSubagentTool.schema.shape).not.toHaveProperty("setupScript");
   });
 
@@ -156,27 +153,6 @@ describe("environment control tools", () => {
     } finally {
       await rm(tmp, {recursive: true, force: true});
     }
-  });
-
-  it("passes and returns local_only networkPolicy", async () => {
-    const environment = createEnvironment({networkPolicy: "local_only"});
-    const createStandaloneDisposableEnvironment = vi.fn(async () => environment);
-    const tool = new EnvironmentCreateTool({
-      lifecycle: {
-        createStandaloneDisposableEnvironment,
-      },
-    });
-
-    const result = await tool.run({networkPolicy: "local_only"}, createRunContext());
-
-    expect(createStandaloneDisposableEnvironment).toHaveBeenCalledWith(expect.objectContaining({
-      networkPolicy: "local_only",
-    }));
-    expect(result).toMatchObject({
-      status: "created",
-      environmentId: "environment:parent-session:abc",
-      networkPolicy: "local_only",
-    });
   });
 
   it("rejects invalid setupScript paths before lifecycle creation", async () => {
