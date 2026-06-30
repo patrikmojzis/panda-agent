@@ -3,7 +3,7 @@ import {PassThrough, Readable} from "node:stream";
 import os from "node:os";
 import path from "node:path";
 
-import {afterEach, describe, expect, it, vi} from "vitest";
+import {afterEach, describe, expect, it} from "vitest";
 
 import type {
     DisposableEnvironmentCreateRequest,
@@ -40,8 +40,6 @@ class FakeDockerClient implements DockerClient {
   readonly started: string[] = [];
   readonly stopped: string[] = [];
   readonly removed: string[] = [];
-  readonly inspectedNetworks: string[] = [];
-  readonly networks = new Map<string, {Name?: string; Internal?: boolean}>();
   readonly execs: Array<{container: string; config: import("../src/integrations/shell/docker-execution-environment-manager.js").DockerExecCreateConfig}> = [];
   execExitCode = 0;
   execInspectResults: Array<{ID?: string; Running?: boolean; ExitCode?: number | null}> = [];
@@ -49,7 +47,6 @@ class FakeDockerClient implements DockerClient {
   createError?: Error;
   startError?: Error;
   inspectLabels?: Record<string, string>;
-  inspectHostConfig?: {NetworkMode?: string};
   inspectState?: {
     Running?: boolean;
     Status?: string;
@@ -83,7 +80,6 @@ class FakeDockerClient implements DockerClient {
     return {
       Id: `container-${created?.name ?? container}`,
       Config: {Labels: labels},
-      HostConfig: this.inspectHostConfig ?? created?.config.HostConfig ?? {},
       State: this.inspectState ?? {
         Running: true,
         Health: {
@@ -120,11 +116,6 @@ class FakeDockerClient implements DockerClient {
     if (this.removeError) {
       throw this.removeError;
     }
-  }
-
-  async inspectNetwork(network: string): Promise<{Name?: string; Internal?: boolean}> {
-    this.inspectedNetworks.push(network);
-    return this.networks.get(network) ?? {Name: network, Internal: false};
   }
 
   async createExec(container: string, config: import("../src/integrations/shell/docker-execution-environment-manager.js").DockerExecCreateConfig): Promise<{Id: string}> {
@@ -360,170 +351,6 @@ describe("DockerExecutionEnvironmentManager", () => {
     expect(result.runnerUrl).toMatch(/^http:\/\/panda-env-env-worker-control-[a-f0-9]{10}:8080$/);
   });
 
-  it("uses an internal local-only Docker network for local_only environments", async () => {
-    const dockerClient = new FakeDockerClient();
-    dockerClient.networks.set("panda_local_only_net", {Name: "panda_local_only_net", Internal: true});
-    const environmentsRoot = await makeEnvironmentRoot();
-    const manager = new DockerExecutionEnvironmentManager({
-      dockerClient,
-      network: "panda_runner_net",
-      localOnlyNetwork: "panda_local_only_net",
-      hostEnvironmentsRoot: environmentsRoot,
-      managerEnvironmentsRoot: environmentsRoot,
-      createTimeoutMs: 10,
-    });
-
-    const result = await manager.createDisposableEnvironment({
-      agentKey: "panda",
-      sessionId: "session-worker",
-      environmentId: "env-worker",
-      networkPolicy: "local_only",
-    });
-
-    const created = findCreatedContainer(dockerClient, "control");
-    const workspace = findCreatedContainer(dockerClient, "workspace");
-    expect(dockerClient.inspectedNetworks).toEqual(["panda_local_only_net"]);
-    expect(created.config.HostConfig.NetworkMode).toBe("panda_local_only_net");
-    expect(workspace.config.HostConfig.NetworkMode).toBe("panda_local_only_net");
-    expect(created.config.HostConfig.NetworkMode).not.toBe("panda_runner_net");
-    expect(created.config.HostConfig.PortBindings).toBeUndefined();
-    expect(created.config.Labels["panda.environment.network_policy"]).toBe("local_only");
-    expect(workspace.config.Labels["panda.environment.network_policy"]).toBe("local_only");
-    expect(result.runnerUrl).toMatch(/^http:\/\/panda-env-env-worker-control-[a-f0-9]{10}:8080$/);
-    expect(result.metadata).toMatchObject({
-      networkPolicy: "local_only",
-      network: "panda_local_only_net",
-    });
-  });
-
-  it("fails local_only creates when the local-only Docker network is missing or not internal", async () => {
-    const missingNetworkClient = new FakeDockerClient();
-    const firstRoot = await makeEnvironmentRoot();
-    const missingNetworkManager = new DockerExecutionEnvironmentManager({
-      dockerClient: missingNetworkClient,
-      network: "panda_runner_net",
-      hostEnvironmentsRoot: firstRoot,
-      managerEnvironmentsRoot: firstRoot,
-      createTimeoutMs: 10,
-    });
-
-    await expect(missingNetworkManager.createDisposableEnvironment({
-      agentKey: "panda",
-      sessionId: "session-worker",
-      environmentId: "env-missing-network",
-      networkPolicy: "local_only",
-    })).rejects.toThrow("PANDA_DISPOSABLE_LOCAL_ONLY_NETWORK");
-    expect(missingNetworkClient.created).toHaveLength(0);
-
-    const publicNetworkClient = new FakeDockerClient();
-    publicNetworkClient.networks.set("panda_local_only_net", {Name: "panda_local_only_net", Internal: false});
-    const secondRoot = await makeEnvironmentRoot();
-    const publicNetworkManager = new DockerExecutionEnvironmentManager({
-      dockerClient: publicNetworkClient,
-      network: "panda_runner_net",
-      localOnlyNetwork: "panda_local_only_net",
-      hostEnvironmentsRoot: secondRoot,
-      managerEnvironmentsRoot: secondRoot,
-      createTimeoutMs: 10,
-    });
-
-    await expect(publicNetworkManager.createDisposableEnvironment({
-      agentKey: "panda",
-      sessionId: "session-worker",
-      environmentId: "env-public-network",
-      networkPolicy: "local_only",
-    })).rejects.toThrow("must be internal");
-    expect(publicNetworkClient.created).toHaveLength(0);
-  });
-
-  it("fails instead of reusing existing containers with mismatched networkPolicy or Docker network", async () => {
-    const publicExistingClient = new FakeDockerClient();
-    publicExistingClient.createError = new DockerApiError("Conflict. The container name is already in use.", 409);
-    publicExistingClient.inspectLabels = {
-      "panda.managed": "true",
-      "panda.environment.id": "env-worker",
-      "panda.agent.key": "panda",
-      "panda.session.id": "session-worker",
-      "panda.environment.network_policy": "public",
-    };
-    publicExistingClient.inspectHostConfig = {NetworkMode: "panda_runner_net"};
-    publicExistingClient.networks.set("panda_local_only_net", {Name: "panda_local_only_net", Internal: true});
-    const firstRoot = await makeEnvironmentRoot();
-    const localOnlyManager = new DockerExecutionEnvironmentManager({
-      dockerClient: publicExistingClient,
-      network: "panda_runner_net",
-      localOnlyNetwork: "panda_local_only_net",
-      hostEnvironmentsRoot: firstRoot,
-      managerEnvironmentsRoot: firstRoot,
-      createTimeoutMs: 10,
-    });
-
-    await expect(localOnlyManager.createDisposableEnvironment({
-      agentKey: "panda",
-      sessionId: "session-worker",
-      environmentId: "env-worker",
-      networkPolicy: "local_only",
-    })).rejects.toThrow("networkPolicy public does not match requested local_only");
-    expect(publicExistingClient.started).toHaveLength(0);
-
-    const localOnlyExistingClient = new FakeDockerClient();
-    localOnlyExistingClient.createError = new DockerApiError("Conflict. The container name is already in use.", 409);
-    localOnlyExistingClient.inspectLabels = {
-      "panda.managed": "true",
-      "panda.environment.id": "env-worker",
-      "panda.agent.key": "panda",
-      "panda.session.id": "session-worker",
-      "panda.environment.network_policy": "local_only",
-    };
-    localOnlyExistingClient.inspectHostConfig = {NetworkMode: "panda_local_only_net"};
-    const secondRoot = await makeEnvironmentRoot();
-    const publicManager = new DockerExecutionEnvironmentManager({
-      dockerClient: localOnlyExistingClient,
-      network: "panda_runner_net",
-      localOnlyNetwork: "panda_local_only_net",
-      hostEnvironmentsRoot: secondRoot,
-      managerEnvironmentsRoot: secondRoot,
-      createTimeoutMs: 10,
-    });
-
-    await expect(publicManager.createDisposableEnvironment({
-      agentKey: "panda",
-      sessionId: "session-worker",
-      environmentId: "env-worker",
-      networkPolicy: "public",
-    })).rejects.toThrow("networkPolicy local_only does not match requested public");
-    expect(localOnlyExistingClient.started).toHaveLength(0);
-
-    const wrongNetworkClient = new FakeDockerClient();
-    wrongNetworkClient.createError = new DockerApiError("Conflict. The container name is already in use.", 409);
-    wrongNetworkClient.inspectLabels = {
-      "panda.managed": "true",
-      "panda.environment.id": "env-worker",
-      "panda.agent.key": "panda",
-      "panda.session.id": "session-worker",
-      "panda.environment.network_policy": "local_only",
-    };
-    wrongNetworkClient.inspectHostConfig = {NetworkMode: "panda_runner_net"};
-    wrongNetworkClient.networks.set("panda_local_only_net", {Name: "panda_local_only_net", Internal: true});
-    const thirdRoot = await makeEnvironmentRoot();
-    const wrongNetworkManager = new DockerExecutionEnvironmentManager({
-      dockerClient: wrongNetworkClient,
-      network: "panda_runner_net",
-      localOnlyNetwork: "panda_local_only_net",
-      hostEnvironmentsRoot: thirdRoot,
-      managerEnvironmentsRoot: thirdRoot,
-      createTimeoutMs: 10,
-    });
-
-    await expect(wrongNetworkManager.createDisposableEnvironment({
-      agentKey: "panda",
-      sessionId: "session-worker",
-      environmentId: "env-worker",
-      networkPolicy: "local_only",
-    })).rejects.toThrow("Docker network panda_runner_net does not match requested panda_local_only_net");
-    expect(wrongNetworkClient.started).toHaveLength(0);
-  });
-
   it("keeps container-network runner hostnames within Docker DNS label limits", async () => {
     const dockerClient = new FakeDockerClient();
     const environmentsRoot = await makeEnvironmentRoot();
@@ -688,121 +515,11 @@ describe("execution environment manager HTTP boundary", () => {
         agentKey: "panda",
         sessionId: "session-worker",
         environmentId: "env-worker",
-        networkPolicy: "local_only",
       })).resolves.toMatchObject({
         runnerUrl: "http://worker:8080",
         runnerCwd: "/workspace",
       });
-      expect(fakeManager.created).toMatchObject([
-        {
-          agentKey: "panda",
-          sessionId: "session-worker",
-          environmentId: "env-worker",
-          networkPolicy: "local_only",
-        },
-      ]);
-    } finally {
-      await server.close();
-    }
-  });
-
-  it("rejects invalid networkPolicy values at the client and server boundary", async () => {
-    const clientFetch = vi.fn(async () => {
-      throw new Error("fetch should not run");
-    });
-    const client = new HttpExecutionEnvironmentManagerClient({
-      managerUrl: "http://manager.local",
-      fetchImpl: clientFetch as unknown as typeof fetch,
-    });
-
-    await expect(client.createDisposableEnvironment({
-      agentKey: "panda",
-      sessionId: "session-worker",
-      environmentId: "env-worker",
-      networkPolicy: "private" as never,
-    })).rejects.toThrow("Unsupported execution environment networkPolicy private");
-    await expect(client.createDisposableEnvironment({
-      agentKey: "panda",
-      sessionId: "session-worker",
-      environmentId: "env-worker",
-      networkPolicy: "" as never,
-    })).rejects.toThrow("Unsupported execution environment networkPolicy");
-    expect(clientFetch).not.toHaveBeenCalled();
-
-    const server = await startExecutionEnvironmentManager({
-      host: "127.0.0.1",
-      port: 0,
-      sharedSecret: "secret",
-      manager: new FakeManager(),
-    });
-    try {
-      const response = await fetch(`http://127.0.0.1:${server.port}/environments/disposable`, {
-        method: "POST",
-        headers: {
-          authorization: "Bearer secret",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          agentKey: "panda",
-          sessionId: "session-worker",
-          environmentId: "env-worker",
-          networkPolicy: "private",
-        }),
-      });
-
-      expect(response.status).toBe(400);
-      await expect(response.json()).resolves.toMatchObject({
-        ok: false,
-        error: "Unsupported execution environment networkPolicy private.",
-      });
-
-      const emptyResponse = await fetch(`http://127.0.0.1:${server.port}/environments/disposable`, {
-        method: "POST",
-        headers: {
-          authorization: "Bearer secret",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          agentKey: "panda",
-          sessionId: "session-worker",
-          environmentId: "env-worker",
-          networkPolicy: "",
-        }),
-      });
-      expect(emptyResponse.status).toBe(400);
-      await expect(emptyResponse.json()).resolves.toMatchObject({
-        ok: false,
-        error: "Unsupported execution environment networkPolicy .",
-      });
-    } finally {
-      await server.close();
-    }
-  });
-
-  it("defaults omitted or null networkPolicy to public at the server boundary", async () => {
-    const fakeManager = new FakeManager();
-    const server = await startExecutionEnvironmentManager({
-      host: "127.0.0.1",
-      port: 0,
-      sharedSecret: "secret",
-      manager: fakeManager,
-    });
-    try {
-      for (const body of [
-        {agentKey: "panda", sessionId: "session-worker", environmentId: "env-omitted-policy"},
-        {agentKey: "panda", sessionId: "session-worker", environmentId: "env-null-policy", networkPolicy: null},
-      ]) {
-        const response = await fetch(`http://127.0.0.1:${server.port}/environments/disposable`, {
-          method: "POST",
-          headers: {authorization: "Bearer secret", "content-type": "application/json"},
-          body: JSON.stringify(body),
-        });
-        expect(response.status).toBe(200);
-      }
-      expect(fakeManager.created).toMatchObject([
-        {environmentId: "env-omitted-policy", networkPolicy: "public"},
-        {environmentId: "env-null-policy", networkPolicy: "public"},
-      ]);
+      expect(fakeManager.created).toHaveLength(1);
     } finally {
       await server.close();
     }

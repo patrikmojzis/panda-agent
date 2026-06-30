@@ -269,10 +269,10 @@ describe("Control auth HTTP", () => {
     expect(response.status).toBe(200);
     const body = await response.json() as {targets: Array<Record<string, unknown>>};
     expect(body.targets).toEqual([
-      {alias: "default", kind: "local", state: "ready", networkPolicy: "public", label: "Default", health: "not_applicable"},
-      {alias: "vps", kind: "persistent_agent_runner", state: "ready", networkPolicy: "public", label: "vps", health: "reachable"},
+      {alias: "default", kind: "local", state: "ready", label: "Default", health: "not_applicable"},
+      {alias: "vps", kind: "persistent_agent_runner", state: "ready", label: "vps", health: "reachable"},
     ]);
-    expect(Object.keys(body.targets[1]!).sort()).toEqual(["alias", "health", "kind", "label", "networkPolicy", "state"]);
+    expect(Object.keys(body.targets[1]!).sort()).toEqual(["alias", "health", "kind", "label", "state"]);
     const serialized = JSON.stringify(body);
     expect(serialized).not.toContain("env-vps-secret");
     expect(serialized).not.toContain("runner-vps");
@@ -298,7 +298,6 @@ describe("Control auth HTTP", () => {
       alias: "do",
       kind: "persistent_agent_runner",
       state: "ready",
-      networkPolicy: "public",
       label: "do",
       health: "reachable",
     });

@@ -8,7 +8,7 @@ import type {RunContext} from "../../kernel/agent/run-context.js";
 import {Tool} from "../../kernel/agent/tool.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import {isJsonObject, type JsonObject} from "../../lib/json.js";
-import type {ExecutionEnvironmentNetworkPolicy, ExecutionEnvironmentRecord} from "../../domain/execution-environments/types.js";
+import type {ExecutionEnvironmentRecord} from "../../domain/execution-environments/types.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/filesystem.js";
 import {
@@ -21,7 +21,6 @@ import {resolveReadableContextPath} from "../../app/runtime/panda-path-context.j
 import {readRequiredAgentSessionToolScope, rethrowAsToolError} from "./shared.js";
 
 const DEFAULT_ENVIRONMENT_TTL_MS = 24 * 60 * 60 * 1_000;
-const NETWORK_POLICIES = ["public", "local_only"] as const;
 
 function compactObject<T extends Record<string, unknown>>(value: T): JsonObject {
   const compacted = Object.fromEntries(
@@ -48,7 +47,6 @@ interface ExecutionEnvironmentCreator {
   createStandaloneDisposableEnvironment(input: {
     agentKey: string;
     createdBySessionId: string;
-    networkPolicy?: ExecutionEnvironmentNetworkPolicy;
     ttlMs?: number;
     metadata?: JsonObject;
     setupScript?: ExecutionEnvironmentSetupScriptInput;
@@ -77,7 +75,6 @@ function serializeEnvironment(environment: ExecutionEnvironmentRecord): JsonObje
   return compactObject({
     environmentId: environment.id,
     environmentState: environment.state,
-    networkPolicy: environment.networkPolicy,
     runnerCwd: environment.runnerCwd,
     rootPath: environment.rootPath,
     expiresAt: environment.expiresAt,
@@ -146,14 +143,13 @@ export class EnvironmentCreateTool<TContext = DefaultAgentSessionContext>
   static schema = z.object({
     label: z.string().trim().min(1).max(80).optional(),
     ttlHours: z.number().positive().max(24 * 30).optional(),
-    networkPolicy: z.enum(NETWORK_POLICIES).optional().describe("Network egress policy for the environment. Defaults to public. Use local_only to request a Docker-internal local-only network."),
     setupScript: z.string().trim().min(1).optional().describe(
       `Path to a readable .sh script to copy into the new environment and run before it is marked ready. ${SETUP_SCRIPT_INSPECTION_NOTE}`,
     ),
   });
 
   name = "environment_create";
-  description = `Create a disposable execution environment owned by this session. Defaults to networkPolicy=public; use networkPolicy=local_only to request local-only Docker networking. Optionally run a readable .sh setupScript before the environment is marked ready. ${SETUP_SCRIPT_INSPECTION_NOTE}`;
+  description = `Create a disposable execution environment owned by this session. Optionally run a readable .sh setupScript before the environment is marked ready. ${SETUP_SCRIPT_INSPECTION_NOTE}`;
   schema = EnvironmentCreateTool.schema;
 
   private readonly lifecycle: ExecutionEnvironmentCreator;
@@ -187,7 +183,6 @@ export class EnvironmentCreateTool<TContext = DefaultAgentSessionContext>
     const environment = await this.lifecycle.createStandaloneDisposableEnvironment({
       agentKey: scope.agentKey,
       createdBySessionId: scope.sessionId,
-      ...(args.networkPolicy ? {networkPolicy: args.networkPolicy} : {}),
       ttlMs: args.ttlHours === undefined
         ? DEFAULT_ENVIRONMENT_TTL_MS
         : Math.round(args.ttlHours * 60 * 60 * 1_000),

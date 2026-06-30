@@ -67,10 +67,10 @@
       "sha256": "c9dba92c99c1b215b5d3e5545677395423b39853d8ebe04fabf857aa246ca3d8"
     },
     {
-      "bytes": 2935,
-      "lines": 75,
+      "bytes": 2844,
+      "lines": 74,
       "path": "src/panda/contexts/bash-targets-context.ts",
-      "sha256": "3fe91f6a8b322664c395b5606880cdce473b24edf7d190ca993750b4b4b7ce8b"
+      "sha256": "3072f55b56c701de2cc2653f7f2b5437fed8ad19f49a13648cb4d0592bf7f2b8"
     },
     {
       "bytes": 7415,
@@ -121,10 +121,10 @@
       "sha256": "86648c823a3098b9e55973b0dad0aa52be02920048a4cf959a4e04729d4785e7"
     },
     {
-      "bytes": 15252,
-      "lines": 398,
+      "bytes": 15202,
+      "lines": 397,
       "path": "src/panda/contexts/subagents-context.ts",
-      "sha256": "9d0640dae4ba0f8c9d25f98a5bf6484cecae28b6525576d847d06d07a3cb89cd"
+      "sha256": "6c971ad4023f778789c83423cf179f4f430e9fb8ca24db07f70794d8e439844e"
     },
     {
       "bytes": 8404,
@@ -205,10 +205,10 @@
       "sha256": "96332b1cf9422f96dce73fe7eb25f6c7adc3655e52e9469c65b2ef50d64b8f99"
     },
     {
-      "bytes": 2348,
-      "lines": 72,
+      "bytes": 2232,
+      "lines": 68,
       "path": "src/prompts/contexts/bash-targets.ts",
-      "sha256": "621b6029a283358c1890a8ca740afd6d130d6cb9d55bf8043c0579fd01bfbccf"
+      "sha256": "5d0bed3908db5049b9be92689798508a913e481a8f4028a30bb626c99c38d623"
     },
     {
       "bytes": 310,
@@ -253,10 +253,10 @@
       "sha256": "565aec3226f5cfa142801408bf6f76f0da01e6dff417212f2b0f0574580c472d"
     },
     {
-      "bytes": 5460,
-      "lines": 151,
+      "bytes": 5335,
+      "lines": 149,
       "path": "src/prompts/contexts/subagents.ts",
-      "sha256": "878cc116287f13c377d4c6f85a55928596aadf4f06b41a0e60d8a77cacef30ea"
+      "sha256": "133da70324705e29c10eecc5c486b8c6ca94464afdf5748accd936548f13d848"
     },
     {
       "bytes": 1371,
@@ -1066,7 +1066,7 @@
       }
     },
     {
-      "description": "Create a disposable execution environment owned by this session. Defaults to networkPolicy=public; use networkPolicy=local_only to request local-only Docker networking. Optionally run a readable .sh setupScript before the environment is marked ready. Copied setup.sh is intentionally inspectable under /artifacts/setup/setup.sh; do not embed secrets in setup scripts. Use harness-injected credential environment variables instead.",
+      "description": "Create a disposable execution environment owned by this session. Optionally run a readable .sh setupScript before the environment is marked ready. Copied setup.sh is intentionally inspectable under /artifacts/setup/setup.sh; do not embed secrets in setup scripts. Use harness-injected credential environment variables instead.",
       "name": "environment_create",
       "parameters": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -1075,14 +1075,6 @@
           "label": {
             "maxLength": 80,
             "minLength": 1,
-            "type": "string"
-          },
-          "networkPolicy": {
-            "description": "Network egress policy for the environment. Defaults to public. Use local_only to request a Docker-internal local-only network.",
-            "enum": [
-              "public",
-              "local_only"
-            ],
             "type": "string"
           },
           "setupScript": {

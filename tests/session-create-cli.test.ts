@@ -624,7 +624,6 @@ describe("Session create CLI", () => {
     const statusOutput = collectWrites(write);
     expect(statusOutput).toContain("Execution targets for session-targets.\n");
     expect(statusOutput).toContain("vps\n");
-    expect(statusOutput).toContain("networkPolicy public");
     expect(statusOutput).toContain("health reachable");
     expect(statusOutput).toContain("allowedTools bash,read_file");
 

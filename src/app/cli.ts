@@ -261,7 +261,6 @@ async function runRunnerAttachCommand(
       `Attached runner target ${binding.alias} to session ${session.id}.`,
       `environment ${binding.environmentId}`,
       `default ${binding.isDefault ? "yes" : "no"}`,
-      `networkPolicy ${environment.networkPolicy}`,
       `allowedTools ${allowedTools.join(",")}`,
       "",
       "Core env (set on panda-core before using the target):",

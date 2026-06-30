@@ -583,10 +583,8 @@ exit 42
     expect(managerSection).toContain("PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL}");
     expect(managerSection).toMatch(/^\s+- execution_manager_net$/m);
     expect(managerSection).toMatch(/^\s+- disposable_runner_net$/m);
-    expect(managerSection).toMatch(/^\s+- disposable_local_only_net$/m);
     expect(generatedCompose).toContain("      - execution_manager_net");
     expect(generatedCompose).toContain("      - disposable_runner_net");
-    expect(generatedCompose).toContain("      - disposable_local_only_net");
     const browserStart = generatedCompose.indexOf("  panda-browser-runner:");
     const runnerStart = generatedCompose.indexOf("  panda-runner-");
     const networksStart = generatedCompose.indexOf("\nnetworks:");
@@ -595,10 +593,8 @@ exit 42
     const browserSection = generatedCompose.slice(browserStart, browserEnd);
     expect(browserSection).toMatch(/^\s+- runner_net$/m);
     expect(browserSection).toMatch(/^\s+- disposable_runner_net$/m);
-    expect(browserSection).toMatch(/^\s+- disposable_local_only_net$/m);
     expect(generatedCompose).toContain("execution_manager_net:\n    name: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_NETWORK}\n    internal: true");
     expect(generatedCompose).toContain("disposable_runner_net:\n    name: ${PANDA_DISPOSABLE_RUNNER_NETWORK}");
-    expect(generatedCompose).toContain("disposable_local_only_net:\n    name: ${PANDA_DISPOSABLE_LOCAL_ONLY_NETWORK}\n    internal: true");
     expect(generatedCompose).not.toContain("gateway_edge_net");
     const logContents = await readFile(logPath, "utf8");
     expect(logContents.match(/build --target bash-runner --build-arg NODE_MAJOR=22 -t panda-runner:latest/g)).toHaveLength(1);
@@ -1377,15 +1373,12 @@ exit 42
     const browserSection = generatedCompose.slice(browserStart, networksStart);
     expect(gatewaySection).toContain("gateway_edge_net");
     expect(gatewaySection).not.toContain("disposable_runner_net");
-    expect(gatewaySection).not.toContain("disposable_local_only_net");
     expect(gatewaySection).not.toContain("execution_manager_net");
     expect(caddySection).toContain("gateway_edge_net");
     expect(caddySection).not.toContain("disposable_runner_net");
-    expect(caddySection).not.toContain("disposable_local_only_net");
     expect(caddySection).not.toContain("execution_manager_net");
     expect(browserSection).toMatch(/^\s+- runner_net$/m);
     expect(browserSection).toMatch(/^\s+- disposable_runner_net$/m);
-    expect(browserSection).toMatch(/^\s+- disposable_local_only_net$/m);
   });
 
   it("rejects unsafe public gateway edge settings", async () => {

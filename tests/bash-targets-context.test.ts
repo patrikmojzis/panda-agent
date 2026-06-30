@@ -38,7 +38,6 @@ describe("BashTargetsContext", () => {
             agentKey: "panda",
             kind: "persistent_agent_runner",
             state: "ready",
-            networkPolicy: "local_only",
             runnerUrl: "http://runner.internal:8080",
             metadata: {
               executionTarget: {
@@ -55,7 +54,7 @@ describe("BashTargetsContext", () => {
 
     const content = await contexts[0]!.getContent();
 
-    expect(content).toContain("Available bash targets:\n- default: default session target\n- vps: VPS shell with project checkout; tools: bash, read_file; networkPolicy: local_only; capabilities: docker, git");
+    expect(content).toContain("Available bash targets:\n- default: default session target\n- vps: VPS shell with project checkout; tools: bash, read_file; capabilities: docker, git");
     expect(content).not.toContain("env-secret-vps");
     expect(content).not.toContain("http://");
     expect(content).not.toContain("runnerUrl");

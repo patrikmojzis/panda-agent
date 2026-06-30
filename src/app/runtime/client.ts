@@ -66,7 +66,6 @@ export interface RuntimeClientSubagentSessionResult {
   environmentId?: string;
   environment?: {
     id: string;
-    networkPolicy?: "public" | "local_only";
     runnerCwd?: string;
     rootPath?: string;
     metadata?: JsonValue;

@@ -4,13 +4,11 @@ import type {
   DisposableEnvironmentCreateResult,
   ExecutionCredentialPolicy,
   ExecutionEnvironmentManager,
-  ExecutionEnvironmentNetworkPolicy,
   ExecutionEnvironmentRecord,
   ExecutionSkillPolicy,
   ExecutionToolPolicy,
   SessionEnvironmentBindingRecord,
 } from "../../domain/execution-environments/types.js";
-import {normalizeExecutionEnvironmentNetworkPolicy} from "../../domain/execution-environments/types.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import type {SessionRecord} from "../../domain/sessions/types.js";
 import type {JsonObject, JsonValue} from "../../lib/json.js";
@@ -30,7 +28,6 @@ export const DEFAULT_DISPOSABLE_ENVIRONMENT_TTL_MS = 24 * 60 * 60 * 1_000;
 export interface CreateDisposableSessionEnvironmentInput {
   session: Pick<SessionRecord, "id" | "agentKey">;
   environmentId?: string;
-  networkPolicy?: ExecutionEnvironmentNetworkPolicy;
   createdBySessionId?: string;
   alias?: string;
   isDefault?: boolean;
@@ -45,7 +42,6 @@ export interface CreateStandaloneDisposableEnvironmentInput {
   agentKey: string;
   createdBySessionId: string;
   environmentId?: string;
-  networkPolicy?: ExecutionEnvironmentNetworkPolicy;
   ttlMs?: number;
   metadata?: JsonValue;
   setupScript?: ExecutionEnvironmentSetupScriptInput;
@@ -189,7 +185,6 @@ export class ExecutionEnvironmentLifecycleService {
     }
 
     const environmentId = trimToUndefined(input.environmentId) ?? buildDisposableEnvironmentId(input.session.id);
-    const networkPolicy = normalizeExecutionEnvironmentNetworkPolicy(input.networkPolicy);
     const expiresAt = input.ttlMs === undefined ? undefined : Date.now() + input.ttlMs;
     const credentialPolicy = input.credentialPolicy ?? {mode: "allowlist" as const, envKeys: []};
     const skillPolicy = input.skillPolicy ?? {mode: "allowlist" as const, skillKeys: []};
@@ -204,9 +199,6 @@ export class ExecutionEnvironmentLifecycleService {
         throw new Error(`Execution environment binding for session ${input.session.id} already exists with different policy.`);
       }
       const existingEnvironment = await this.store.getEnvironment(environmentId);
-      if (existingEnvironment.networkPolicy !== networkPolicy) {
-        throw new Error(`Execution environment ${environmentId} already exists with networkPolicy ${existingEnvironment.networkPolicy}.`);
-      }
       if (existingEnvironment.state === "ready" && !isExpired(existingEnvironment)) {
         return {
           environment: existingEnvironment,
@@ -220,7 +212,6 @@ export class ExecutionEnvironmentLifecycleService {
       agentKey: input.session.agentKey,
       kind: "disposable_container",
       state: "provisioning",
-      networkPolicy,
       createdBySessionId: input.createdBySessionId,
       createdForSessionId: input.session.id,
       expiresAt,
@@ -233,7 +224,6 @@ export class ExecutionEnvironmentLifecycleService {
         agentKey: input.session.agentKey,
         sessionId: input.session.id,
         environmentId,
-        networkPolicy,
         ...(input.ttlMs === undefined ? {} : {ttlMs: input.ttlMs}),
         ...(input.metadata === undefined ? {} : {metadata: input.metadata}),
       });
@@ -243,7 +233,6 @@ export class ExecutionEnvironmentLifecycleService {
         agentKey: input.session.agentKey,
         kind: "disposable_container",
         state: "ready",
-        networkPolicy,
         runnerUrl: created.runnerUrl,
         runnerCwd: created.runnerCwd,
         rootPath: created.rootPath,
@@ -272,7 +261,6 @@ export class ExecutionEnvironmentLifecycleService {
         agentKey: input.session.agentKey,
         kind: "disposable_container",
         state: "failed",
-        networkPolicy,
         runnerUrl: created?.runnerUrl,
         runnerCwd: created?.runnerCwd,
         rootPath: created?.rootPath,
@@ -310,14 +298,12 @@ export class ExecutionEnvironmentLifecycleService {
     }
 
     const environmentId = trimToUndefined(input.environmentId) ?? buildStandaloneEnvironmentId(ownerSessionId);
-    const networkPolicy = normalizeExecutionEnvironmentNetworkPolicy(input.networkPolicy);
     const expiresAt = input.ttlMs === undefined ? undefined : Date.now() + input.ttlMs;
     await this.store.createEnvironment({
       id: environmentId,
       agentKey,
       kind: "disposable_container",
       state: "provisioning",
-      networkPolicy,
       createdBySessionId: ownerSessionId,
       expiresAt,
       metadata: input.metadata,
@@ -329,7 +315,6 @@ export class ExecutionEnvironmentLifecycleService {
         agentKey,
         sessionId: ownerSessionId,
         environmentId,
-        networkPolicy,
         ...(input.ttlMs === undefined ? {} : {ttlMs: input.ttlMs}),
         ...(input.metadata === undefined ? {} : {metadata: input.metadata}),
       });
@@ -355,7 +340,6 @@ export class ExecutionEnvironmentLifecycleService {
         agentKey,
         kind: "disposable_container",
         state: "ready",
-        networkPolicy,
         runnerUrl: created.runnerUrl,
         runnerCwd: created.runnerCwd,
         rootPath: created.rootPath,
@@ -372,7 +356,6 @@ export class ExecutionEnvironmentLifecycleService {
         agentKey,
         kind: "disposable_container",
         state: "failed",
-        networkPolicy,
         runnerUrl: created?.runnerUrl,
         runnerCwd: created?.runnerCwd,
         rootPath: created?.rootPath,
@@ -528,7 +511,6 @@ export class ExecutionEnvironmentLifecycleService {
         agentKey: environment.agentKey,
         sessionId: managerSessionId,
         environmentId: environment.id,
-        networkPolicy: environment.networkPolicy,
         ...(ttlMs === undefined ? {} : {ttlMs}),
         ...(environment.metadata === undefined ? {} : {metadata: environment.metadata}),
       });

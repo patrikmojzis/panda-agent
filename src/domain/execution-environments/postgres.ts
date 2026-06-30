@@ -8,13 +8,12 @@ import {ensurePostgresExecutionEnvironmentSchema} from "./postgres-schema.js";
 import {normalizeAgentSkillOperations} from "./policy.js";
 import {buildExecutionEnvironmentTableNames, type ExecutionEnvironmentTableNames} from "./postgres-shared.js";
 import type {ExecutionEnvironmentStore} from "./store.js";
-import {normalizeExecutionEnvironmentAlias, normalizeExecutionEnvironmentNetworkPolicy} from "./types.js";
+import {normalizeExecutionEnvironmentAlias} from "./types.js";
 import type {
   BindSessionEnvironmentInput,
   CreateExecutionEnvironmentInput,
   ExecutionCredentialPolicy,
   ExecutionEnvironmentKind,
-  ExecutionEnvironmentNetworkPolicy,
   ExecutionEnvironmentRecord,
   ExecutionEnvironmentState,
   ExecutionSkillPolicy,
@@ -122,21 +121,12 @@ function parseEnvironmentState(value: unknown): ExecutionEnvironmentState {
   throw new Error(`Unsupported execution environment state ${String(value)}.`);
 }
 
-function parseNetworkPolicy(value: unknown): ExecutionEnvironmentNetworkPolicy {
-  try {
-    return normalizeExecutionEnvironmentNetworkPolicy(value);
-  } catch {
-    throw new Error(`Unsupported execution environment network_policy ${String(value)}.`);
-  }
-}
-
 function parseEnvironmentRow(row: Record<string, unknown>): ExecutionEnvironmentRecord {
   return {
     id: requireTrimmed("environment id", row.id),
     agentKey: requireTrimmed("agent key", row.agent_key),
     kind: parseEnvironmentKind(row.kind),
     state: parseEnvironmentState(row.state),
-    networkPolicy: parseNetworkPolicy(row.network_policy),
     runnerUrl: optionalTrimmed("environment runner url", row.runner_url),
     runnerCwd: optionalTrimmed("environment runner cwd", row.runner_cwd),
     rootPath: optionalTrimmed("environment root path", row.root_path),
@@ -183,7 +173,6 @@ export class PostgresExecutionEnvironmentStore implements ExecutionEnvironmentSt
         agent_key,
         kind,
         state,
-        network_policy,
         runner_url,
         runner_cwd,
         root_path,
@@ -192,13 +181,12 @@ export class PostgresExecutionEnvironmentStore implements ExecutionEnvironmentSt
         expires_at,
         metadata
       ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb
       )
       ON CONFLICT (id) DO UPDATE SET
         agent_key = EXCLUDED.agent_key,
         kind = EXCLUDED.kind,
         state = EXCLUDED.state,
-        network_policy = EXCLUDED.network_policy,
         runner_url = EXCLUDED.runner_url,
         runner_cwd = EXCLUDED.runner_cwd,
         root_path = EXCLUDED.root_path,
@@ -213,7 +201,6 @@ export class PostgresExecutionEnvironmentStore implements ExecutionEnvironmentSt
       requireTrimmed("agent key", input.agentKey),
       parseEnvironmentKind(input.kind),
       parseEnvironmentState(input.state ?? "ready"),
-      normalizeExecutionEnvironmentNetworkPolicy(input.networkPolicy),
       optionalTrimmed("environment runner url", input.runnerUrl) ?? null,
       optionalTrimmed("environment runner cwd", input.runnerCwd) ?? null,
       optionalTrimmed("environment root path", input.rootPath) ?? null,
