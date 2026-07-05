@@ -241,10 +241,10 @@
       "sha256": "96332b1cf9422f96dce73fe7eb25f6c7adc3655e52e9469c65b2ef50d64b8f99"
     },
     {
-      "bytes": 2232,
+      "bytes": 2183,
       "lines": 68,
       "path": "src/prompts/contexts/bash-targets.ts",
-      "sha256": "5d0bed3908db5049b9be92689798508a913e481a8f4028a30bb626c99c38d623"
+      "sha256": "07e217dbd207459957ef0f6da2a3e15a2b3f1b56a80033271107a149f59277c2"
     },
     {
       "bytes": 2024,
