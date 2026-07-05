@@ -257,7 +257,7 @@ describe("model call traces", () => {
     expect(JSON.stringify(sections)).toContain("auto-display-value");
   });
 
-  it("writes one failed trace with sanitized provider error details", async () => {
+  it("writes one failed trace without redacting token-shaped provider error prose", async () => {
     const {store} = await createStore();
     const runtime = new FailingRuntime();
 
@@ -269,8 +269,8 @@ describe("model call traces", () => {
     expect(trace.status).toBe("failed");
     expect(trace.errorJson).toMatchObject({category: "provider_timeout", status: 504, timedOut: true});
     const text = JSON.stringify(trace);
-    expect(text).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
-    expect(text).not.toContain("abcdefghijklmnopqrstuvwxyz");
+    expect(text).toContain("token=sk-abcdefghijklmnopqrstuvwxyz");
+    expect(text).toContain("request-secret-token=abcdef1234567890");
     expect(text).not.toContain("raw provider payload");
   });
 
@@ -286,7 +286,7 @@ describe("model call traces", () => {
     expect(runtime.stream).toHaveBeenCalledTimes(1);
   });
 
-  it("redacts secrets, tool payloads, and blobs before persistence", async () => {
+  it("preserves token-shaped prose while redacting tool payloads and blobs before persistence", async () => {
     const {pool, store} = await createStore();
     const base64Blob = Buffer.from("private image bytes".repeat(20)).toString("base64");
     const toolCall = {
@@ -312,7 +312,7 @@ describe("model call traces", () => {
       runtime: new CompleteRuntime(),
       store,
       messages: [
-        {role: "user", content: `Bearer seededBearerSecret token=sk-seededOpenAiSecret cookie sessionid=seeded-cookie-value`},
+        {role: "user", content: `Bearer seededBearerSecret token=sk-seededOpenAiSecret cookie sessionid=seeded-cookie-value https://panda.patrikmojzis.com/apps/open?token=pal_launch-token`},
         toolCall,
         toolResult,
       ],
@@ -324,6 +324,9 @@ describe("model call traces", () => {
       "seededBearerSecret",
       "sk-seededOpenAiSecret",
       "seeded-cookie-value",
+      "https://panda.patrikmojzis.com/apps/open?token=pal_launch-token",
+    ]) expect(persisted).toContain(sentinel);
+    for (const sentinel of [
       "unsafe tool secret",
       base64Blob,
       "secret-key-value",

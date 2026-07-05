@@ -10,7 +10,7 @@ const baseContext: DefaultAgentSessionContext = {
 };
 
 describe("BashTargetsContext", () => {
-  it("exposes only safe session-bound aliases to the model", async () => {
+  it("exposes session-bound aliases without hiding token-shaped prose", async () => {
     const contexts = buildDefaultAgentLlmContexts({
       context: baseContext,
       sections: ["bash_targets"],
@@ -42,7 +42,7 @@ describe("BashTargetsContext", () => {
             metadata: {
               executionTarget: {
                 description: "VPS shell with project checkout",
-                capabilities: ["git", "docker", "secret token should not render"],
+                capabilities: ["git", "docker", "token-capable runner"],
               },
             },
             createdAt: 1,
@@ -54,10 +54,10 @@ describe("BashTargetsContext", () => {
 
     const content = await contexts[0]!.getContent();
 
-    expect(content).toContain("Available bash targets:\n- default: default session target\n- vps: VPS shell with project checkout; tools: bash, view_media; capabilities: docker, git");
+    expect(content).toContain("Available bash targets:\n- default: default session target\n- vps: VPS shell with project checkout; tools: bash, view_media; capabilities: docker, git, token-capable runner");
     expect(content).not.toContain("env-secret-vps");
     expect(content).not.toContain("http://");
     expect(content).not.toContain("runnerUrl");
-    expect(content).not.toContain("secret token");
+    expect(content).toContain("token-capable runner");
   });
 });

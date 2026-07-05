@@ -71,17 +71,22 @@ Remote intentionally does not inherit core host env or runner host env. If it di
 
 ## Redaction
 
-There are two redaction layers:
+There are two explicit redaction layers:
 
 1. Tool-call redaction before transcript persistence for tools that opt in.
-2. Bash result redaction for secret values carried by stored credentials or `bash.env`.
+2. Bash result redaction for known secret values carried by stored credentials or `bash.env`.
+
+Panda does not run generic token-shaped prose redaction. Strings such as
+`token=...`, `Bearer ...`, app launch URLs, or `sk-...` are not rewritten merely
+because they look secret-shaped. Privacy comes from explicit secret-entry paths,
+scoped storage, and tools that know exactly which values they are handling.
 
 Current behavior:
 
 - `panda env set` currently keeps the value argument in transcript history so the agent does not replay `[redacted]` as a credential
 - `bash` redacts `env` argument values
-- `bash` also replaces echoed secret-like credential or `bash.env` values in stdout/stderr with `[redacted]`
-- stored credential metadata such as usernames, owners, or repo names is injected but not used as a global redaction candidate unless the key or value looks secret-shaped
+- `bash` also replaces echoed known credential or `bash.env` values in stdout/stderr with `[redacted]`
+- stored credential metadata such as usernames, owners, or repo names is not a global redaction candidate
 
 Still true:
 

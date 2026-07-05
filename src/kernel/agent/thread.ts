@@ -193,16 +193,9 @@ function truncateProviderErrorDetail(value: string): string {
   return `${value.slice(0, PROVIDER_ERROR_DETAIL_MAX_CHARS)}... [truncated ${value.length - PROVIDER_ERROR_DETAIL_MAX_CHARS} chars]`;
 }
 
-function redactProviderErrorDetail(value: string): string {
-  return value
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, "Bearer [redacted]")
-    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "[redacted]")
-    .replace(/\b(x-api-key|api[_-]?key|access[_-]?token|auth(?:orization)?|token)(=|:)\s*[^\s;&,]+/gi, "$1$2[redacted]");
-}
-
 function sanitizeProviderErrorDetail(value: string, stopReason?: string): string {
   const normalized = value.replace(/\s+/g, " ").trim() || fallbackProviderFailureMessage(stopReason);
-  return truncateProviderErrorDetail(redactProviderErrorDetail(normalized));
+  return truncateProviderErrorDetail(normalized);
 }
 
 const PROVIDER_SERVER_ERROR_STATUSES = new Set([500, 501, 502, 503, 504]);

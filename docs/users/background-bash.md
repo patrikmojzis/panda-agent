@@ -126,7 +126,7 @@ Image generation jobs return generated image paths and artifact metadata without
 
 ## Secret And Output Rules
 
-- secret values are redacted from previews
+- known credential or `bash.env` values are redacted from previews
 - large stdout/stderr files are only persisted when the call is not secret-bearing
 
 ## Scope

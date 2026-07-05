@@ -358,15 +358,14 @@ describe("Thread", () => {
     expect(error.failureKind).toBe("provider_server_error");
     expect(error.retryable).toBe(true);
     expect(error.requestId).toBe("req_payload_123");
-    expect(error.providerMessage).toContain("apiKey=[redacted]");
-    expect(error.providerMessage).not.toContain("sk-abcdefghijklmnopqrstuvwxyz987654321");
+    expect(error.providerMessage).toContain("apiKey=sk-abcdefghijklmnopqrstuvwxyz987654321");
     expect(error.message).toContain("retryable=true");
     expect(error.message).toContain("requestId=req_payload_123");
     expect(error.message).not.toContain("NEVER_PERSIST_THIS_PROMPT");
     expect(error.message).not.toContain('"debug"');
   });
 
-  it("redacts and caps provider failure details", async () => {
+  it("caps provider failure details without redacting token-shaped prose", async () => {
     const runtime = createMockRuntime(createAssistantMessage([], {
       stopReason: "error",
       errorMessage: `fetch failed Bearer abcdefghijklmnopqrstuvwxyz987654321 apiKey=sk-abcdefghijklmnopqrstuvwxyz987654321 ${"x".repeat(1_000)}`,
@@ -394,10 +393,9 @@ describe("Thread", () => {
     expect(caught).toBeInstanceOf(ProviderRuntimeError);
     const error = caught as ProviderRuntimeError;
     expect(error.failureKind).toBe("provider_transport_network");
-    expect(error.providerMessage).toContain("Bearer [redacted]");
-    expect(error.providerMessage).toContain("apiKey=[redacted]");
+    expect(error.providerMessage).toContain("Bearer abcdefghijklmnopqrstuvwxyz987654321");
+    expect(error.providerMessage).toContain("apiKey=sk-abcdefghijklmnopqrstuvwxyz987654321");
     expect(error.providerMessage).toContain("[truncated");
-    expect(error.providerMessage).not.toContain("abcdefghijklmnopqrstuvwxyz987654321");
     expect(error.message.length).toBeLessThan(1_100);
   });
 

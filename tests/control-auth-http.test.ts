@@ -888,13 +888,13 @@ describe("Control operator HTTP", () => {
       INSERT INTO "runtime"."threads" (id, session_id)
       VALUES ('thread-panda', 'session-panda'), ('thread-luna', 'session-luna')
     `);
-    const visibleRuntimeError = `Provider runtime failed: Unknown model "claude-fable-5". detail=Bad request {"messages":[{"content":"lowercase patient diagnosis should not leak"}],"stdout":"lowercase shell output"} failureKind=provider_error token=sk-1234567890abcdef PRIVATE_RUNTIME_ERROR_MUST_NOT_LEAK`;
+    const visibleRuntimeError = `Provider runtime failed: Unknown model "claude-fable-5". token=sk-1234567890abcdef detail=Bad request {"messages":[{"content":"lowercase patient diagnosis should not leak"}],"stdout":"lowercase shell output"} failureKind=provider_error PRIVATE_RUNTIME_ERROR_MUST_NOT_LEAK`;
     const shortPrefixRuntimeError = `Bad request {"id":"lowercase short prefix diagnosis should not leak","messages":[{"content":"short prefix secret"}]}`;
     await harness.pool.query(`
       INSERT INTO "runtime"."runs" (id, thread_id, status, started_at, finished_at, error) VALUES
         ('00000000-0000-0000-0000-000000000901', 'thread-panda', 'failed', '2040-01-01T00:00:00.000Z', '2040-01-01T00:00:01.000Z', $1),
         ('00000000-0000-0000-0000-000000000904', 'thread-panda', 'failed', '2040-01-01T00:00:02.000Z', '2040-01-01T00:00:03.000Z', $2),
-        ('00000000-0000-0000-0000-000000000903', 'thread-luna', 'failed', '2040-01-03T00:00:00.000Z', '2040-01-03T00:00:01.000Z', 'LUNA_PRIVATE_WORK_FAILURE_ERROR_MUST_NOT_LEAK')
+        ('00000000-0000-0000-0000-000000000903', 'thread-luna', 'failed', '2040-01-03T00:00:00.000Z', '2040-01-03T00:00:01.000Z', 'Luna runtime failed')
     `, [visibleRuntimeError, shortPrefixRuntimeError]);
     const task = await harness.scheduledTaskStore.createTask({
       sessionId: "session-panda",
@@ -916,8 +916,8 @@ describe("Control operator HTTP", () => {
       kind: "runtime_run",
       severity: "critical",
       sessionId: "session-panda",
-      summary: `Provider runtime failed: Unknown model "claude-fable-5". detail=Bad request`,
-      detail: `Sanitized runtime error: Provider runtime failed: Unknown model "claude-fable-5". detail=Bad request`,
+      summary: `Provider runtime failed: Unknown model "claude-fable-5". token=sk-1234567890abcdef detail=Bad request`,
+      detail: `Sanitized runtime error: Provider runtime failed: Unknown model "claude-fable-5". token=sk-1234567890abcdef detail=Bad request`,
     }));
     expect(criticalBody.data).toContainEqual(expect.objectContaining({
       kind: "runtime_run",
@@ -937,6 +937,7 @@ describe("Control operator HTTP", () => {
     ]) expect(shortPrefixFailureText).not.toContain(sentinel);
     const criticalText = JSON.stringify(criticalBody);
     expect(criticalText).toContain("Provider runtime failed: Unknown model");
+    expect(criticalText).toContain("token=sk-1234567890abcdef");
     for (const sentinel of [
       "PRIVATE_RUNTIME_ERROR_MUST_NOT_LEAK",
       "PRIVATE_PROMPT_BODY_MUST_NOT_LEAK",
@@ -946,7 +947,6 @@ describe("Control operator HTTP", () => {
       "lowercase short prefix diagnosis should not leak",
       "short prefix secret",
       "LUNA_PRIVATE_WORK_FAILURE_ERROR_MUST_NOT_LEAK",
-      "sk-1234567890abcdef",
       "response body",
       "stdout",
       "/workspace/private.ts",
@@ -1066,7 +1066,7 @@ describe("Control operator HTTP", () => {
     `);
     await harness.pool.query(`
       INSERT INTO "runtime"."runs" (id, thread_id, status, started_at, finished_at, error)
-      VALUES ('00000000-0000-0000-0000-000000000903', 'thread-panda-search', 'failed', '2040-01-03T00:00:00.000Z', '2040-01-03T00:00:01.000Z', 'PRIVATE_RUNTIME_ERROR_MUST_NOT_LEAK')
+      VALUES ('00000000-0000-0000-0000-000000000903', 'thread-panda-search', 'failed', '2040-01-03T00:00:00.000Z', '2040-01-03T00:00:01.000Z', '{"private":"PRIVATE_RUNTIME_ERROR_MUST_NOT_LEAK"}')
     `);
     await expect(fetch(`${base}/api/control/agents/panda/connectors`, {
       method: "POST",
@@ -3043,7 +3043,7 @@ describe("Control Model Call Traces HTTP", () => {
           turn: 3,
         },
         trace: {
-          llmContextDump: "<context>PRIVATE_TOKEN_CONTEXT token=sk-controlTraceSecret</context>",
+          llmContextDump: "<context>PRIVATE_TOKEN_CONTEXT token=sk-controlTraceSecret https://panda.patrikmojzis.com/apps/open?token=pal_launch-token</context>",
           llmContextSections: [{
             name: "ControlTraceContext",
             source: "control-test-source",
@@ -3133,12 +3133,15 @@ describe("Control Model Call Traces HTTP", () => {
     for (const sentinel of [
       CONTROL_PROMPT_CACHE_KEY_SECRET,
       rawPromptCacheKey,
-      "controlBearerSecret",
-      "controlApiKeySecret",
-      "sk-controlTraceSecret",
       "tool-token-secret",
       CONTROL_CONTEXT_CACHE_PART_SECRET,
     ]) expect(persisted).not.toContain(sentinel);
+    for (const sentinel of [
+      "controlBearerSecret",
+      "controlApiKeySecret",
+      "sk-controlTraceSecret",
+      "https://panda.patrikmojzis.com/apps/open?token=pal_launch-token",
+    ]) expect(persisted).toContain(sentinel);
     expect(persisted).toContain("unknown_tool_arguments");
 
     const rawContextCachePart = `context-cache:${CONTROL_CONTEXT_CACHE_PART_SECRET}`;
@@ -3286,9 +3289,6 @@ describe("Control Model Call Traces HTTP", () => {
     for (const sentinel of [
       CONTROL_PROMPT_CACHE_KEY_SECRET,
       rawPromptCacheKey,
-      "controlBearerSecret",
-      "controlApiKeySecret",
-      "sk-controlTraceSecret",
       "tool-token-secret",
       CONTROL_CONTEXT_CACHE_PART_SECRET,
       rawContextCachePart,
@@ -3301,6 +3301,12 @@ describe("Control Model Call Traces HTTP", () => {
       rawErrorCacheKey,
       rawUsageFingerprint,
     ]) expect(apiText).not.toContain(sentinel);
+    for (const sentinel of [
+      "controlBearerSecret",
+      "controlApiKeySecret",
+      "sk-controlTraceSecret",
+      "https://panda.patrikmojzis.com/apps/open?token=pal_launch-token",
+    ]) expect(apiText).toContain(sentinel);
   });
 
   it("returns failure groups across all matching model calls, not just the current page", async () => {
@@ -3547,7 +3553,7 @@ describe("Control Runtime Activity HTTP", () => {
     const harness = await createHarness();
     await seedThreads(harness);
     await harness.agents.ensurePairing("panda", "identity-patrik");
-    const failedRuntimeError = `Command web.fetch is not allowed by the current session command lease. detail=Bad request {"messages":[{"content":"lowercase patient diagnosis should not leak"}],"stdout":"lowercase shell output"} failureKind=provider_timeout token=sk-abcdefghijklmnopqrstuvwxyz PRIVATE_RAW_RUN_ERROR_MUST_NOT_LEAK`;
+    const failedRuntimeError = `Command web.fetch is not allowed by the current session command lease. token=sk-abcdefghijklmnopqrstuvwxyz detail=Bad request {"messages":[{"content":"lowercase patient diagnosis should not leak"}],"stdout":"lowercase shell output"} failureKind=provider_timeout PRIVATE_RAW_RUN_ERROR_MUST_NOT_LEAK`;
     await harness.pool.query(`
       INSERT INTO "runtime"."runs" (id, thread_id, status, started_at, finished_at, abort_requested_at, abort_reason, error) VALUES
         ('00000000-0000-0000-0000-000000000401', 'thread-panda', 'failed', '2040-01-02T10:00:00.000Z', '2040-01-02T10:00:05.000Z', '2040-01-02T10:00:02.000Z', 'PRIVATE_ABORT_REASON_MUST_NOT_LEAK', $1),
@@ -3602,7 +3608,7 @@ describe("Control Runtime Activity HTTP", () => {
       failureCategory: "provider_timeout",
       errorSummary: expect.stringContaining("Command web.fetch is not allowed by the current session command lease"),
     });
-    expect(body.runtimeActivity.data[1]!.errorSummary).toContain("detail=Bad request");
+    expect(body.runtimeActivity.data[1]!.errorSummary).toContain("token=sk-abcdefghijklmnopqrstuvwxyz detail=Bad request");
     expect(String(body.runtimeActivity.data[1]!.errorSummary).length).toBeLessThanOrEqual(260);
     expect(Object.keys(body.runtimeActivity.data[1]!).sort()).toEqual(["abortRequestedAt", "durationMs", "errorSummary", "failureCategory", "finishedAt", "id", "startedAt", "status"]);
     const text = JSON.stringify(body);
@@ -3615,7 +3621,6 @@ describe("Control Runtime Activity HTTP", () => {
       "lowercase shell output",
       "PRIVATE_RUNNING_ERROR_MUST_NOT_LEAK",
       "LUNA_PRIVATE_RAW_RUN_ERROR",
-      "sk-abcdefghijklmnopqrstuvwxyz",
       "/workspace/private-runtime.ts",
       "PRIVATE_TRANSCRIPT_MESSAGE_MUST_NOT_LEAK",
       "PRIVATE_MESSAGE_METADATA_MUST_NOT_LEAK",

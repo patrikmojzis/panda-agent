@@ -16,7 +16,7 @@ function safeText(value: string): string | null {
   if (!normalized || normalized.length > 160) {
     return null;
   }
-  if (/https?:\/\/|\b(secret|token|password|authorization|bearer)\b/i.test(normalized)) {
+  if (/https?:\/\//i.test(normalized)) {
     return null;
   }
   return normalized;

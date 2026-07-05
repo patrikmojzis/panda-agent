@@ -8,29 +8,12 @@ import {normalizeToJsonValue, stableStringify, type JsonObject, type JsonValue} 
 import {isRecord} from "../../lib/records.js";
 import type {RecordModelCallTraceInput} from "./types.js";
 
-const SECRET_KEY_PATTERN = /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth(?:orization)?|bearer|cookie|credential|password|secret|session[_-]?token|token)/i;
-const SECRET_ASSIGNMENT_PATTERN = /\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth(?:orization)?|bearer|cookie|credential|password|secret|session[_-]?token|token)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|`[^`]*`|[^\s,;)]+)/gi;
-const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi;
-const TOKEN_PREFIX_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|dop_v1_[A-Za-z0-9_]{16,}|xox[baprs]-[A-Za-z0-9-]{12,}|pbr_[A-Za-z0-9_]{16,})\b/g;
-const JWT_PATTERN = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g;
-const COOKIE_VALUE_PATTERN = /\b(?:cookie|session|sid|csrf|auth|token)[A-Za-z0-9_-]*=[^;\s,]{8,}/gi;
-const LONG_OPAQUE_PATTERN = /\b[A-Za-z0-9+/=_-]{96,}\b/g;
 const BLOB_KEY_PATTERN = /^(?:data|image|imageData|base64|blob|bytes|buffer|payload)$/i;
 const PROMPT_CACHE_KEY_REDACTION_PATTERN = /^\[redacted:prompt-cache-key:sha256:[a-f0-9]{16}\]$/;
 const ERROR_MAX_CHARS = 500;
 
 function isJsonRecord(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function redactSecretFragments(value: string): string {
-  return value
-    .replace(SECRET_ASSIGNMENT_PATTERN, "[redacted]")
-    .replace(BEARER_PATTERN, "Bearer [redacted]")
-    .replace(TOKEN_PREFIX_PATTERN, "[redacted]")
-    .replace(JWT_PATTERN, "[redacted]")
-    .replace(COOKIE_VALUE_PATTERN, "[redacted]")
-    .replace(LONG_OPAQUE_PATTERN, "[redacted]");
 }
 
 function looksLikeBase64Blob(value: string): boolean {
@@ -63,10 +46,6 @@ function sanitizeString(value: string, key?: string): JsonValue {
     return sanitizePromptCacheKey(value);
   }
 
-  if (key && SECRET_KEY_PATTERN.test(key)) {
-    return "[redacted]";
-  }
-
   if (/^data:[^,]+;base64,/i.test(value)) {
     return blobPlaceholder("data_uri", value);
   }
@@ -75,7 +54,7 @@ function sanitizeString(value: string, key?: string): JsonValue {
     return blobPlaceholder(key ?? "base64", value);
   }
 
-  return redactSecretFragments(value);
+  return value;
 }
 
 function sanitizeJsonValue(value: JsonValue, key?: string): JsonValue {
@@ -237,8 +216,8 @@ function cutStructuredErrorPayload(value: string): string {
 }
 
 function sanitizeErrorMessage(value: string): string {
-  const sanitized = normalizeErrorWhitespace(redactSecretFragments(cutStructuredErrorPayload(value)));
-  if (!sanitized || sanitized === "[redacted]") {
+  const sanitized = normalizeErrorWhitespace(cutStructuredErrorPayload(value));
+  if (!sanitized) {
     return "Model call failed.";
   }
   if (sanitized.length <= ERROR_MAX_CHARS) {

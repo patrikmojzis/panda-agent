@@ -237,7 +237,7 @@ Review for:
 - Body admission is strict and size bounded.
 - Trusted proxy and IP allowlist behavior is explicit.
 - App links expose launch tokens, not raw identity/session ids.
-- Public error responses do not echo tokens, local paths, identity ids, or session ids.
+- Public error responses avoid raw structured payloads; do not rely on lexical token redaction for privacy.
 
 Keep out:
 

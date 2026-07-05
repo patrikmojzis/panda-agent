@@ -1,13 +1,6 @@
 const DEFAULT_RUNTIME_ERROR_SUMMARY_MAX_CHARS = 260;
 
-const SECRET_ASSIGNMENT_PATTERN = /\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth(?:orization)?|bearer|cookie|credential|password|secret|session[_-]?token|token)\b\s*[:=]\s*(?:"[^"]*"|'[^']*'|`[^`]*`|[^\s,;)]+)/gi;
-const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/gi;
-const TOKEN_PREFIX_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|dop_v1_[A-Za-z0-9_]{16,}|xox[baprs]-[A-Za-z0-9-]{12,}|pbr_[A-Za-z0-9_]{16,})\b/g;
-const JWT_PATTERN = /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g;
-const LONG_OPAQUE_PATTERN = /\b[A-Za-z0-9+/=_-]{48,}\b/g;
-const PRIVATE_SENTINEL_PATTERN = /\b[A-Z0-9_]*(?:PRIVATE|SECRET|TOKEN|PASSWORD|CREDENTIAL)[A-Z0-9_]{4,}\b/g;
 const FAILURE_KIND_PATTERN = /\s*\bfailureKind=[a-z_]+\b\s*/gi;
-const LOCATION_PATTERN = /\b(?:file:\/\/)?(?:\.?\.?\/|\/)[^\s:]+:\d+:\d+\b/g;
 
 const UNSAFE_MARKERS = [
   /\b(?:request|response)\s+bod(?:y|ies)\s*[:=]/i,
@@ -84,28 +77,12 @@ function truncateAtUnsafeMarker(value: string): string {
   return value.slice(0, end);
 }
 
-function redactRuntimeErrorSecrets(value: string): string {
-  return value
-    .replace(SECRET_ASSIGNMENT_PATTERN, "[redacted]")
-    .replace(BEARER_PATTERN, "Bearer [redacted]")
-    .replace(TOKEN_PREFIX_PATTERN, "[redacted]")
-    .replace(JWT_PATTERN, "[redacted]")
-    .replace(LONG_OPAQUE_PATTERN, "[redacted]")
-    .replace(PRIVATE_SENTINEL_PATTERN, "[redacted]")
-    .replace(LOCATION_PATTERN, "[redacted location]");
-}
-
 function normalizeWhitespace(value: string): string {
   return value
-    .replace(/(?:\s*(?:[,;]?\s*)?\[redacted(?: location)?\])+$/gi, "")
     .replace(/[=:\s]*[{[]\s*$/g, "")
     .replace(/\s+/g, " ")
     .replace(/\s+([,.;:!?])/g, "$1")
     .trim();
-}
-
-function onlyRedactions(value: string): boolean {
-  return normalizeWhitespace(value.replace(/\[redacted(?: location)?\]/gi, "").replace(/[.,;:!?()\-–—]/g, "")).length === 0;
 }
 
 function truncateSummary(value: string, maxChars: number): string {
@@ -119,11 +96,11 @@ export function summarizeRuntimeError(error: unknown, options: {maxChars?: numbe
   if (!message?.trim()) return null;
 
   const maxChars = Math.max(40, Math.min(1_000, options.maxChars ?? DEFAULT_RUNTIME_ERROR_SUMMARY_MAX_CHARS));
-  const summary = truncateSummary(normalizeWhitespace(redactRuntimeErrorSecrets(
+  const summary = truncateSummary(normalizeWhitespace(
     truncateAtUnsafeMarker(leadingSafeText(message))
       .replace(FAILURE_KIND_PATTERN, " ")
-  )), maxChars);
+  ), maxChars);
 
-  if (!summary || onlyRedactions(summary)) return null;
+  if (!summary) return null;
   return summary;
 }
