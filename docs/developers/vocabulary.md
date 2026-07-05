@@ -82,13 +82,13 @@ See [Execution Environments](./execution-environments.md).
 ## Worker vs subagent
 
 A **subagent** is the product/delegation noun for scoped delegated agent work.
-Model-facing `spawn_subagent` now creates a durable `agent_sessions.kind =
-"subagent"` session and uses A2A `message_agent` for progress/completion.
+`panda subagent spawn` creates a durable `agent_sessions.kind = "subagent"`
+session and uses `panda a2a send` for progress/completion.
 
 Use **worker** for historical/internal implementation mechanics only:
 `agent_sessions.kind = "worker"`, legacy worker metadata, and persisted
-legacy create-worker runtime requests that must fail closed. The V2 model-facing
-spawn surface is `spawn_subagent(profile=..., prompt=...)`.
+legacy create-worker runtime requests that must fail closed. The command-facing
+spawn surface is `panda subagent spawn <task> --profile <slug>`.
 See [Issue #16 PR3](./issue-16-pr3-hard-cut.md),
 [Execution Environments](./execution-environments.md), and
 [Sessions](./sessions.md).

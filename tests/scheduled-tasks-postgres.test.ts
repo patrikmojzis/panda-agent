@@ -601,6 +601,21 @@ describe("PostgresScheduledTaskStore", () => {
       threadRunId: threadRun.id,
     });
 
+    const runHistory = await scheduledTasks.listTaskRuns({
+      taskId: aliceTask.id,
+      sessionId: "session-alice",
+      limit: 10,
+    });
+    expect(runHistory).toHaveLength(1);
+    expect(runHistory[0]).toMatchObject({
+      id: claim!.run.id,
+      taskId: aliceTask.id,
+      sessionId: "session-alice",
+      status: "succeeded",
+      resolvedThreadId: "home-a",
+      threadRunId: threadRun.id,
+    });
+
     setScope({
       sessionId: "session-alice",
       agentKey: "panda",

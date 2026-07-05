@@ -25,7 +25,7 @@ describe("BashTargetsContext", () => {
               isDefault: false,
               credentialPolicy: {mode: "none"},
               skillPolicy: {mode: "none"},
-              toolPolicy: {allowedTools: ["bash", "read_file"]},
+              toolPolicy: {allowedTools: ["bash", "view_media"]},
               createdAt: 1,
               updatedAt: 1,
             },
@@ -54,7 +54,7 @@ describe("BashTargetsContext", () => {
 
     const content = await contexts[0]!.getContent();
 
-    expect(content).toContain("Available bash targets:\n- default: default session target\n- vps: VPS shell with project checkout; tools: bash, read_file; capabilities: docker, git");
+    expect(content).toContain("Available bash targets:\n- default: default session target\n- vps: VPS shell with project checkout; tools: bash, view_media; capabilities: docker, git");
     expect(content).not.toContain("env-secret-vps");
     expect(content).not.toContain("http://");
     expect(content).not.toContain("runnerUrl");

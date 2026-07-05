@@ -150,6 +150,7 @@ Keep Wiki.js semantics in the Wiki integration:
   normalization, and Wiki.js response parsing.
 - `src/integrations/wiki/page-move.ts` owns live page moves plus affected internal-link rewrites.
 - `src/integrations/wiki/page-write.ts` owns create/update behavior and optimistic conflict checks.
-- `src/panda/tools/wiki-tool.ts` should stay the model-facing tool surface plus orchestration.
+- `src/domain/wiki/commands.ts` owns the command-facing Wiki surface.
+- `src/integrations/wiki/command-service.ts` owns command orchestration over the Wiki integration.
 
-Do not move raw Wiki.js path or output policy back into `src/panda/tools`.
+Do not move raw Wiki.js path or output policy back into command handlers.

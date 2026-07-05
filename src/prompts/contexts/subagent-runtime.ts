@@ -19,7 +19,7 @@ export function renderSubagentRuntimeContext(input: SubagentRuntimeContextInput)
     ...(input.parentSessionId
       ? [
         `parentSessionId: ${input.parentSessionId}`,
-        `message parent with: message_agent({ sessionId: ${JSON.stringify(input.parentSessionId)} })`,
+        `message parent with: panda a2a send --to-session ${JSON.stringify(input.parentSessionId)} --text <message>`,
       ]
       : []),
     `execution: ${input.execution ?? "agent_workspace"}`,
@@ -28,7 +28,7 @@ export function renderSubagentRuntimeContext(input: SubagentRuntimeContextInput)
     `inbox: ${input.inboxPath ?? "/inbox"}`,
     `artifacts: ${input.artifactsPath ?? "/artifacts"}`,
     ...(input.parentVisibleRoot ? [`parent-visible root: ${input.parentVisibleRoot}`] : []),
-    "Before starting substantive work, load every allowed skill with agent_skill(operation=\"load\") so you understand what is expected from you.",
+    "Before starting substantive work, load every allowed skill with panda skill load <skill-key> so you understand what is expected from you.",
   ];
 
   return lines.join("\n");

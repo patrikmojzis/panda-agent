@@ -26,7 +26,7 @@ Detectors:
 
 V1 behaves like this:
 
-- `watch_create` and `watch_update` run a real preflight probe before saving
+- `panda watch create` and `panda watch update` run a real preflight probe before saving
 - negative array indices like `data[-1].score` are rejected; sort/filter upstream and use `[0]`
 - enabled creates and enabled source/detector resets bootstrap state immediately on save
 - the first successful runner poll still uses `ignore_existing` when a watch has no seeded state yet
@@ -61,7 +61,7 @@ V1 does not do:
 - browser-backed scraping
 - Stripe-specific or YouTube-specific adapters
 - digest batching
-- a `watch_list` tool inside model context
+- an always-in-context watch admin dump
 
 If you need those, you're ahead of the product. Congratulations.
 
@@ -69,10 +69,11 @@ If you need those, you're ahead of the product. Congratulations.
 
 Today the normal path is: tell Panda what you want to watch, and Panda should use:
 
-- `watch_schema_get` when it needs the exact branch fields for a chosen source or detector kind
-- `watch_create`
-- `watch_update`
-- `watch_disable`
+- `panda watch create --help --json` or `panda watch update --help --json` when it needs exact branch fields
+- `panda watch create`
+- `panda watch update`
+- `panda watch disable`
+- `panda watch list`, `panda watch show`, and `panda watch runs` for inspection
 
 The watch is created on the current session automatically.
 There is no user-facing `targetThreadId` knob in v1.
@@ -80,8 +81,9 @@ There is no user-facing `targetThreadId` knob in v1.
 In practice the flow is:
 
 1. choose `source.kind` and `detector.kind`
-2. call `watch_schema_get` if Panda needs the exact branch fields
-3. call `watch_create` or `watch_update` with the real nested config
+2. run `panda watch create --help --json` if Panda needs the exact branch fields
+3. for a simple HTTP JSON scalar threshold, use `--url <url> --value-path <path> --percent-change <n>` with `panda watch create` or `panda watch update`
+4. otherwise, run `panda watch create` or `panda watch update` with the real nested config
 
 Examples of plain-English asks:
 
@@ -92,16 +94,18 @@ Examples of plain-English asks:
 
 ## How To Inspect It
 
-There is no `watch_list` tool in v1.
-
 Inspection is intentionally out of the model's default context.
-Use Postgres instead:
+Use the CLI when you need it:
 
-- `session.watches`
-- `session.watch_runs`
-- `session.watch_events`
+```bash
+panda watch list --status all
+panda watch show <watch-id>
+panda watch runs <watch-id> --limit 10
+```
 
-That keeps watch config visible to operators without stuffing admin state into every normal conversation.
+Operators can also inspect the scoped Postgres views `session.watches`,
+`session.watch_runs`, and `session.watch_events`.
+This keeps watch config visible without stuffing admin state into every normal conversation.
 
 ## Practical Notes
 

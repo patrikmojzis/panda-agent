@@ -4,6 +4,7 @@ import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
 import type {PgPoolLike} from "../../../lib/postgres-query.js";
 import {
   CREATE_RUNTIME_SCHEMA_SQL,
+  postgresRelationExists,
   quoteIdentifier,
   quoteQualifiedIdentifier,
   RUNTIME_SCHEMA,
@@ -196,11 +197,8 @@ async function ensureThreadsTable(
   pool: PgPoolLike,
   tables: ThreadRuntimeTableNames,
 ): Promise<void> {
-  try {
-    await pool.query(`SELECT 1 FROM ${tables.threads} LIMIT 0`);
+  if (await postgresRelationExists(pool, RUNTIME_SCHEMA, "threads")) {
     return;
-  } catch {
-    // Missing table: create it below.
   }
 
   await pool.query(`

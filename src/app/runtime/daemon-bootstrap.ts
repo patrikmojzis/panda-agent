@@ -5,6 +5,7 @@ import {PostgresChannelActionStore} from "../../domain/channels/actions/postgres
 import {PostgresOutboundDeliveryStore} from "../../domain/channels/deliveries/postgres.js";
 import {ChannelOutboundDeliveryWorker} from "../../domain/channels/deliveries/worker.js";
 import {PostgresConnectorLeaseRepo} from "../../domain/connector-leases/repo.js";
+import {PostgresConnectorAccountStore} from "../../domain/connectors/postgres.js";
 import {HeartbeatRunner} from "../../domain/scheduling/heartbeats/runner.js";
 import {ScheduledTaskRunner} from "../../domain/scheduling/tasks/runner.js";
 import {ConversationRepo} from "../../domain/sessions/conversations/repo.js";
@@ -14,7 +15,14 @@ import {DEFAULT_RUNTIME_REQUEST_CLAIM_TIMEOUT_MS, RuntimeRequestRepo,} from "../
 import {createChannelTypingEventHandler} from "../../domain/threads/runtime/channel-typing.js";
 import {A2AMessagingService} from "../../domain/a2a/service.js";
 import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
+import {createCommandCatalog, type CommandCatalog} from "../../domain/commands/modules.js";
+import type {CommandCatalogModule} from "../../domain/commands/types.js";
 import {createRuntime, createThreadDefinition, type RuntimeServices,} from "./create-runtime.js";
+import {
+  buildDaemonA2ACommandDependencies,
+  buildDaemonChannelCommandDependencies,
+} from "./command-dependencies.js";
+import {resolveVisibleCommandDescriptors} from "./command-visibility.js";
 import {ensureSchemas} from "./postgres-bootstrap.js";
 import {DaemonStateRepo} from "./state/repo.js";
 import type {DaemonOptions} from "./daemon-shared.js";
@@ -26,13 +34,10 @@ import {EMAIL_CONNECTOR_KEY} from "../../domain/email/shared.js";
 import {createEmailOutboundAdapter} from "../../integrations/channels/email/outbound.js";
 import {EmailSyncRunner} from "../../integrations/channels/email/sync-runner.js";
 import {TELEGRAM_SOURCE,} from "../../integrations/channels/telegram/config.js";
-import {TelegramReactTool} from "../../integrations/channels/telegram/telegram-react-tool.js";
 import {WHATSAPP_SOURCE} from "../../integrations/channels/whatsapp/config.js";
 import {resolveAgentMediaDir} from "./data-dir.js";
-import {EmailSendTool} from "../../panda/tools/email-send-tool.js";
-import {OutboundTool} from "../../panda/tools/outbound-tool.js";
-import {MessageAgentTool} from "../../panda/tools/message-agent-tool.js";
 import {readPositiveIntegerEnv} from "./database.js";
+import {trimToNull} from "../../lib/strings.js";
 
 interface DaemonContext {
   fallbackContext: {cwd: string};
@@ -52,6 +57,22 @@ interface DaemonContext {
   scheduledTaskRunner: ScheduledTaskRunner;
   watchRunner: WatchRunner;
   sessionHeartbeatRunner: HeartbeatRunner;
+}
+
+function resolveDaemonCommandCatalog(
+  options: Pick<DaemonOptions, "commandCatalog" | "commandModules">,
+): CommandCatalog<any, CommandCatalogModule<any>> | undefined {
+  if (options.commandCatalog && options.commandModules) {
+    throw new Error("Pass either commandCatalog or commandModules, not both.");
+  }
+  if (options.commandCatalog) {
+    return options.commandCatalog;
+  }
+  if (options.commandModules) {
+    return createCommandCatalog(options.commandModules);
+  }
+
+  return undefined;
 }
 
 export async function bootstrapDaemonContext(
@@ -96,11 +117,16 @@ export async function bootstrapDaemonContext(
     },
   ]);
 
+  const commandCatalog = resolveDaemonCommandCatalog(options);
+  const readonlyPostgresCommandAllowed = Boolean(
+    trimToNull(options.readOnlyDbUrl) ?? trimToNull(process.env.READONLY_DATABASE_URL),
+  );
   const runtime = await createRuntime({
     dbUrl: options.dbUrl,
     readOnlyDbUrl: options.readOnlyDbUrl,
     cwd: options.cwd,
     maxSubagentDepth: options.maxSubagentDepth,
+    ...(commandCatalog ? {commandCatalog} : {}),
     onEvent: createChannelTypingEventHandler(typingDispatcher),
     onStoreNotification: (notification) => {
       const runtime = runtimeForNotifications;
@@ -120,11 +146,18 @@ export async function bootstrapDaemonContext(
           notificationPokesInFlight.delete(notification.threadId);
         });
     },
-    resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, credentialResolver, executionEnvironments, scheduledTasks, executionEnvironmentResolver, sessionStore, subagentProfiles, store, shellStateStore, wikiBindingService, mainTools, subagentTools}) => {
+    resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, credentialResolver, executionEnvironments, scheduledTasks, executionEnvironmentResolver, identityStore, sessionStore, subagentProfiles, store, shellStateStore, wikiBindingService, commandCatalog, mainTools, subagentTools}) => {
       const session = await sessionStore.getSession(thread.sessionId);
       const sessionPrompts = await sessionStore.listSessionPrompts(session.id);
       const runtimeConfig = await sessionStore.getSessionRuntimeConfig(session.id);
       const executionEnvironment = await executionEnvironmentResolver.resolveDefault(session);
+      const commandDescriptors = await resolveVisibleCommandDescriptors({
+        commandCatalog,
+        commandExecutor: runtime.commandExecutor,
+        session,
+        executionEnvironment,
+        readonlyPostgresCommandAllowed,
+      });
       const sessionMainTools = session.kind === "subagent"
         ? subagentTools
         : mainTools;
@@ -137,7 +170,9 @@ export async function bootstrapDaemonContext(
         fallbackContext,
         executionEnvironment,
         agentStore,
+        identityStore,
         sessionStore,
+        sessionRoutes,
         subagentProfiles,
         sessionPrompts,
         runtimeConfig,
@@ -145,27 +180,29 @@ export async function bootstrapDaemonContext(
         scheduledTasks,
         executionEnvironments,
         wikiBindings: wikiBindingService ?? undefined,
+        commandDescriptors,
         bashToolOptions: {
           jobService: backgroundJobService,
           credentialResolver,
           shellStateStore,
-        },
-        imageGenerateToolOptions: {
-          jobService: backgroundJobService,
         },
         browserToolOptions: {
           service: browserService,
         },
         tools: [
           ...sessionMainTools,
-          new EmailSendTool({store: runtime.email}),
-          new OutboundTool(),
-          new MessageAgentTool(),
-          new TelegramReactTool(),
         ],
         extraContext: {
           ...(Object.keys(shellSessions).length > 0 ? {shellSessions} : {}),
           resolveExecutionTarget: (target) => executionEnvironmentResolver.resolve(session, target),
+          refreshCommandAccess: async ({executionEnvironment, currentInput}) => {
+            return runtime.executionEnvironmentService.refreshSessionCommandAccess({
+              session,
+              executionEnvironment,
+              ...(currentInput?.identityId ? {identityId: currentInput.identityId} : {}),
+              ...(currentInput?.messageId ? {inputMessageId: currentInput.messageId} : {}),
+            });
+          },
           routeMemory: {
             getLastRoute: (lookup) => sessionRoutes.getLastRoute({
               sessionId: thread.sessionId,
@@ -179,9 +216,6 @@ export async function bootstrapDaemonContext(
                 route,
               });
             },
-          },
-          identityDirectory: {
-            getIdentityByHandle: (handle) => runtime.identityStore.getIdentityByHandle(handle),
           },
           outboundQueue: {
             enqueueDelivery: (input) => outboundDeliveries.enqueueDelivery(input),
@@ -203,6 +237,9 @@ export async function bootstrapDaemonContext(
     const conversationBindings = new ConversationRepo({
       pool: runtime.pool,
     });
+    const connectorAccounts = new PostgresConnectorAccountStore({
+      pool: runtime.pool,
+    });
 
     sessionRoutes = new SessionRouteRepo({
       pool: runtime.pool,
@@ -217,6 +254,18 @@ export async function bootstrapDaemonContext(
       pool: runtime.pool,
       notificationPool: runtime.notificationPool,
     });
+    runtime.commandExecutor.registerCommands(runtime.commandCatalog.createCommands(
+      buildDaemonChannelCommandDependencies({
+        commandFileResolver: runtime.commandFileResolver,
+        connectorAccounts,
+        conversations: conversationBindings,
+        channelMessages: runtime.store,
+        outboundDeliveries,
+        channelActions,
+        email: runtime.email,
+      }),
+      {registrationPhase: "daemon.channel", requireAll: true},
+    ));
 
     connectorLeases = new PostgresConnectorLeaseRepo({
       pool: runtime.pool,
@@ -251,6 +300,14 @@ export async function bootstrapDaemonContext(
       sessions: runtime.sessionStore,
       maxMessagesPerHour: resolveA2AMaxMessagesPerHour(process.env),
     });
+    runtime.commandExecutor.registerCommands(runtime.commandCatalog.createCommands(
+      buildDaemonA2ACommandDependencies({
+        commandFileResolver: runtime.commandFileResolver,
+        a2aMessaging: a2aMessagingService,
+        a2aDeliveries: a2aBindings,
+      }),
+      {registrationPhase: "daemon.a2a", requireAll: true},
+    ));
 
     const a2aOutboundWorker = new ChannelOutboundDeliveryWorker({
       store: outboundDeliveries,

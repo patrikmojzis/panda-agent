@@ -141,7 +141,7 @@ function buildBlankReadme(input: {
     ? `${input.description.trim()}\n\n`
     : "";
   const identityLine = input.identityScoped
-    ? "- This app is identity-scoped. Local/dev browser links can use `?identityHandle=<handle>`; public links should come from `app_link_create`, which uses the current input identity.\n"
+    ? "- This app is identity-scoped. Local/dev browser links can use `?identityHandle=<handle>`; public links should come from `panda micro-app link create`, which uses the current input identity.\n"
     : "- This app is not identity-scoped.\n";
   const schemaLine = input.schemaApplied
     ? "- `schema.sql` was applied to `data/app.sqlite` during scaffold creation.\n"
@@ -182,8 +182,8 @@ function buildBlankReadme(input: {
     "1. Define and apply the schema.",
     "2. Add views and actions.",
     "3. Replace the placeholder UI.",
-    "4. Run `app_check`.",
-    "5. Use `app_link_create` for human-facing public access.",
+    "4. Run `panda micro-app check <app-slug>`.",
+    "5. Use `panda micro-app link create <app-slug>` for human-facing public access.",
     "",
   ].join("\n");
 }

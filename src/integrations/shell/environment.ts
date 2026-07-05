@@ -1,3 +1,5 @@
+import path from "node:path";
+
 import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 
 export const SAFE_SYSTEM_PATH_ENTRIES = [
@@ -36,10 +38,15 @@ function splitPathEntries(value: string | undefined): string[] {
     .filter(Boolean);
 }
 
+function safeRuntimePathEntries(): string[] {
+  const nodeBinDirectory = path.dirname(process.execPath);
+  return path.isAbsolute(nodeBinDirectory) ? [nodeBinDirectory] : [];
+}
+
 export function appendMissingSafePathEntries(value: string | undefined): string {
   const entries = splitPathEntries(value);
   const seen = new Set(entries);
-  for (const safeEntry of SAFE_SYSTEM_PATH_ENTRIES) {
+  for (const safeEntry of [...SAFE_SYSTEM_PATH_ENTRIES, ...safeRuntimePathEntries()]) {
     if (!seen.has(safeEntry)) {
       entries.push(safeEntry);
       seen.add(safeEntry);

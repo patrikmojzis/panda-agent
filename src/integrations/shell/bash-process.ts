@@ -68,7 +68,7 @@ export async function runWrappedBashCommand(options: {
     signal: NodeJS.Signals | null;
     spawnError?: Error;
   }>((resolve) => {
-    const child = spawn(options.shell, ["-lc", options.wrappedCommand], {
+    const child = spawn(options.shell, ["-c", options.wrappedCommand], {
       cwd: options.cwd,
       env: options.childEnv,
       stdio: ["ignore", "pipe", "pipe"],

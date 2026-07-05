@@ -19,7 +19,7 @@ import type {
 const messageOrigins = ["input", "runtime"] as const satisfies readonly ThreadMessageOrigin[];
 const inputDeliveryModes = ["wake", "queue"] as const satisfies readonly ThreadInputDeliveryMode[];
 const runStatuses = ["running", "completed", "failed"] as const satisfies readonly ThreadRunStatus[];
-const toolJobKinds = ["bash", "image_generate", "spawn_subagent", "web_research"] as const satisfies readonly ThreadToolJobKind[];
+const toolJobKinds = ["bash", "command", "image_generate", "spawn_subagent", "web_research"] as const satisfies readonly ThreadToolJobKind[];
 const toolJobStatuses = ["running", "completed", "failed", "cancelled", "lost"] as const satisfies readonly ThreadToolJobStatus[];
 
 export interface RunningToolJobLossRow {

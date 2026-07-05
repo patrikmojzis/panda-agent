@@ -279,6 +279,25 @@ describe("PostgresWatchStore", () => {
     const latestRun = await watches.getLatestWatchRun(created.id);
     expect(latestRun?.status).toBe("changed");
 
+    const history = await watches.listWatchRuns({
+      watchId: created.id,
+      sessionId: "session-main",
+      limit: 10,
+    });
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({
+      id: claim!.run.id,
+      watchId: created.id,
+      status: "changed",
+      event: {
+        id: firstEvent.event.id,
+        eventKind: "new_items",
+        summary: "Detected 2 new items.",
+        dedupeKey: "same-event",
+      },
+    });
+    expect(history[0]?.event).not.toHaveProperty("payload");
+
     const reloaded = await watches.getWatch(created.id);
     expect(reloaded.state).toMatchObject({
       kind: "new_items",

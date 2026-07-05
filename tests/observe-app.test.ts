@@ -2,7 +2,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {stringToUserMessage} from "../src/kernel/agent/index.js";
 import type {SessionRecord, SessionRuntimeConfigRecord} from "../src/domain/sessions/index.js";
-import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord,} from "../src/domain/threads/runtime/index.js";
+import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord, ThreadToolJobRecord,} from "../src/domain/threads/runtime/index.js";
 import {ObserveApp, type ObserveServices,} from "../src/ui/observe/app.js";
 
 interface TestOutput {
@@ -88,12 +88,46 @@ function createMessageRecord(input: {
   };
 }
 
+function createCommandJob(input: {
+  id: string;
+  threadId: string;
+  status: ThreadToolJobRecord["status"];
+  command: string;
+  summary?: string;
+  error?: string;
+  startedAt?: number;
+  finishedAt?: number;
+}): ThreadToolJobRecord {
+  return {
+    id: input.id,
+    threadId: input.threadId,
+    kind: "command",
+    status: input.status,
+    summary: input.command,
+    startedAt: input.startedAt ?? 1,
+    finishedAt: input.finishedAt,
+    result: input.status === "failed"
+      ? {
+        command: input.command,
+        ok: false,
+        code: "command_failed",
+      }
+      : {
+        command: input.command,
+        ok: true,
+        ...(input.summary ? {summary: input.summary} : {}),
+      },
+    error: input.error,
+  };
+}
+
 function createServices(input: {
   getMainSession?: () => Promise<SessionRecord | null>;
   getSession?: () => Promise<SessionRecord>;
   getThread: (threadId: string) => Promise<ThreadRecord>;
   loadTranscript: (threadId: string) => Promise<readonly ThreadMessageRecord[]>;
   listRuns?: (threadId: string) => Promise<readonly ThreadRunRecord[]>;
+  listToolJobs?: (threadId: string) => Promise<readonly ThreadToolJobRecord[]>;
   getSessionRuntimeConfig?: (sessionId: string) => Promise<SessionRuntimeConfigRecord>;
 }): ObserveServices {
   return {
@@ -106,6 +140,7 @@ function createServices(input: {
       getThread: input.getThread,
       loadTranscript: input.loadTranscript,
       listRuns: input.listRuns ?? (async () => []),
+      listToolJobs: input.listToolJobs ?? (async () => []),
     },
     subscribe: async () => async () => {},
     close: async () => {},
@@ -216,6 +251,67 @@ describe("ObserveApp", () => {
     expect(output.buffer).toContain("last 2 stored messages on initial snapshot");
   });
 
+  it("interleaves recent command jobs with the initial transcript tail", async () => {
+    const output = createOutput();
+    const app = new ObserveApp({
+      target: {kind: "thread", threadId: "thread-1"},
+      tail: 2,
+    }, {
+      output,
+    }) as ObserveApp & { services: ObserveServices | null };
+
+    app.services = createServices({
+      getThread: async (threadId) => createThread(threadId),
+      loadTranscript: async () => [
+        createMessageRecord({id: "message-1", threadId: "thread-1", sequence: 1, text: "oldest"}),
+        createMessageRecord({id: "message-2", threadId: "thread-1", sequence: 10, text: "middle"}),
+        createMessageRecord({id: "message-3", threadId: "thread-1", sequence: 20, text: "latest"}),
+      ],
+      listToolJobs: async () => [
+        createCommandJob({
+          id: "command-job-old",
+          threadId: "thread-1",
+          status: "completed",
+          command: "web.fetch",
+          summary: "old command",
+          startedAt: 2,
+          finishedAt: 3,
+        }),
+        createCommandJob({
+          id: "command-job-recent",
+          threadId: "thread-1",
+          status: "completed",
+          command: "watch.create",
+          summary: "recent command",
+          startedAt: 12,
+          finishedAt: 15,
+        }),
+        createCommandJob({
+          id: "command-job-after",
+          threadId: "thread-1",
+          status: "completed",
+          command: "todo.add",
+          summary: "after command",
+          startedAt: 22,
+          finishedAt: 25,
+        }),
+      ],
+    });
+
+    await app.syncStoredState(true);
+
+    expect(output.buffer).not.toContain("oldest");
+    expect(output.buffer).not.toContain("command-job-old");
+    const middleIndex = output.buffer.indexOf("middle");
+    const recentJobIndex = output.buffer.indexOf("command-job-recent");
+    const latestIndex = output.buffer.indexOf("latest");
+    const afterJobIndex = output.buffer.indexOf("command-job-after");
+    expect(middleIndex).toBeGreaterThanOrEqual(0);
+    expect(recentJobIndex).toBeGreaterThan(middleIndex);
+    expect(latestIndex).toBeGreaterThan(recentJobIndex);
+    expect(afterJobIndex).toBeGreaterThan(latestIndex);
+  });
+
   it("prints only new transcript entries after the initial snapshot", async () => {
     const output = createOutput();
     let transcript: readonly ThreadMessageRecord[] = [
@@ -241,6 +337,52 @@ describe("ObserveApp", () => {
 
     expect(output.buffer.split("first").length - 1).toBe(1);
     expect(output.buffer.split("second").length - 1).toBe(1);
+  });
+
+  it("prints command tool-job status changes without raw payload details", async () => {
+    const output = createOutput({isTTY: false});
+    let toolJobs: readonly ThreadToolJobRecord[] = [];
+    const app = new ObserveApp({
+      target: {kind: "thread", threadId: "thread-1"},
+    }, {
+      output,
+    }) as ObserveApp & { services: ObserveServices | null };
+
+    app.services = createServices({
+      getThread: async (threadId) => createThread(threadId),
+      loadTranscript: async () => [],
+      listToolJobs: async () => toolJobs,
+    });
+
+    await app.syncStoredState(true);
+    toolJobs = [{
+      ...createCommandJob({
+        id: "command-job-1",
+        threadId: "thread-1",
+        status: "running",
+        command: "watch.create",
+      }),
+      progress: {
+        command: "watch.create",
+        rawPayload: "secret payload should stay hidden",
+      },
+    }];
+    await app.syncStoredState(true);
+    toolJobs = [
+      createCommandJob({
+        id: "command-job-1",
+        threadId: "thread-1",
+        status: "completed",
+        command: "watch.create",
+        summary: "Created watch watch-1.",
+        finishedAt: 2,
+      }),
+    ];
+    await app.syncStoredState(true);
+
+    expect(output.buffer).toContain("command-job-1 | running | watch.create");
+    expect(output.buffer).toContain("command-job-1 | completed | watch.create | Created watch watch-1.");
+    expect(output.buffer).not.toContain("secret payload");
   });
 
   it("debounces follow-up refreshes into one sync", async () => {

@@ -5,11 +5,13 @@ import type {Pool} from "pg";
 
 import {DB_URL_OPTION_DESCRIPTION, parseSessionIdOption} from "../../lib/cli.js";
 import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
+import {writeCommandDescriptorHelp} from "../commands/cli.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
 import {parseAgentKey} from "../agents/cli.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
 import {PostgresSessionStore} from "../sessions/postgres.js";
 import {A2ASessionBindingRepo} from "./repo.js";
+import {a2aHistoryCommandDescriptor, a2aInspectCommandDescriptor, a2aSendCommandDescriptor} from "./commands.js";
 
 interface A2ACliOptions {
   dbUrl?: string;
@@ -26,6 +28,29 @@ interface ListA2ACliOptions extends A2ACliOptions {
   fromSession?: string;
   toAgent?: string;
   toSession?: string;
+}
+
+interface SendA2ACliOptions {
+  file?: string[];
+  help?: boolean;
+  json?: boolean | string;
+  stdin?: boolean;
+  text?: string;
+  toAgent?: string;
+  toSession?: string;
+}
+
+interface InspectA2ACliOptions {
+  help?: boolean;
+  json?: boolean | string;
+}
+
+interface HistoryA2ACliOptions {
+  direction?: string;
+  help?: boolean;
+  json?: boolean | string;
+  limit?: string;
+  peerSession?: string;
 }
 
 interface A2AStores {
@@ -210,10 +235,80 @@ async function listCommand(options: ListA2ACliOptions): Promise<void> {
   });
 }
 
+function collectRepeatedOption(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
+}
+
 export function registerA2ACommands(program: Command): void {
   const a2aProgram = program
     .command("a2a")
     .description("Manage Panda A2A session bindings");
+
+  a2aProgram
+    .command("send")
+    .description(a2aSendCommandDescriptor.summary)
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .option("--to-session <sessionId>", "Target Panda session id", parseSessionIdOption)
+    .option("--to-agent <agentKey>", "Target agent key", parseAgentKey)
+    .option("--text <text>", "Text message body")
+    .option("--stdin", "Read text message body from stdin")
+    .option("--file <path>", "Attach a file; repeat for multiple files", collectRepeatedOption, [])
+    .action((options: SendA2ACliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(a2aSendCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda a2a send execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
+
+  a2aProgram
+    .command("inspect")
+    .description(a2aInspectCommandDescriptor.summary)
+    .argument("[deliveryId]", "A2A delivery id")
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .action((_deliveryId: string | undefined, options: InspectA2ACliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(a2aInspectCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda a2a inspect execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
+
+  a2aProgram
+    .command("history")
+    .description(a2aHistoryCommandDescriptor.summary)
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .option("--peer-session <sessionId>", "Filter by counterpart session id", parseSessionIdOption)
+    .option("--direction <direction>", "Filter by direction: inbound, outbound, all")
+    .option("--limit <n>", "Maximum deliveries to return")
+    .action((options: HistoryA2ACliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(a2aHistoryCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda a2a history execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
 
   a2aProgram
     .command("bind")

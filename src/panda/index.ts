@@ -2,6 +2,22 @@ export {DEFAULT_AGENT_INSTRUCTIONS} from "../prompts/runtime/default-agent.js";
 export {buildDefaultAgentTools} from "./definition.js";
 export {resolveDefaultAgentModelSelector} from "./defaults.js";
 export {
+  buildDefaultAgentCommandModules,
+  createDefaultAgentCommandCatalog,
+  DEFAULT_AGENT_COMMAND_CATALOG,
+  DEFAULT_AGENT_COMMAND_MODULES,
+  type AgentCommandModule,
+  type AgentCommandModuleDependencies,
+  type BuildDefaultAgentCommandModulesOptions,
+  type CreateDefaultAgentCommandCatalogOptions,
+} from "./commands/agent-command-modules.js";
+export {
+  agentCommandPolicy,
+  type AgentCommandPolicy,
+  type AgentCommandPolicyInput,
+  type AgentCommandToolGroup,
+} from "./commands/agent-command-policy.js";
+export {
   AgentProfileContext,
   type AgentProfileContextOptions,
   buildDefaultAgentLlmContexts,
@@ -9,25 +25,19 @@ export {
   type AgentProfileContextSection,
   DateTimeContext,
   EnvironmentContext,
+  CommandCatalogContext,
+  PairedIdentitiesContext,
   SessionPromptsContext,
   SubagentsContext,
   type BuildDefaultAgentLlmContextsOptions,
   type DateTimeContextOptions,
   type EnvironmentContextOptions,
+  type CommandCatalogContextOptions,
+  type PairedIdentitiesContextOptions,
   type SessionPromptsContextOptions,
   type SubagentsContextOptions,
   type DefaultAgentLlmContextSection,
 } from "./contexts/builder.js";
-export {
-  SessionPromptTool,
-  type SessionPromptToolOptions,
-  type SessionPromptToolStore,
-} from "./tools/session-prompt-tool.js";
-export {
-  AgentSkillTool,
-  type AgentSkillToolOptions,
-  type AgentSkillToolStore,
-} from "./tools/agent-skill-tool.js";
 export {BashTool, type BashToolOptions} from "./tools/bash-tool.js";
 export {
   BackgroundJobCancelTool,
@@ -37,10 +47,6 @@ export {
   buildBackgroundJobPayload,
   type BackgroundJobToolOptions,
 } from "./tools/background-job-tools.js";
-export {
-  BraveSearchTool,
-  type BraveSearchToolOptions,
-} from "./tools/brave-search-tool.js";
 export {
   BrowserTool,
   type BrowserToolOptions,
@@ -53,81 +59,14 @@ export type {
   BrowserSnapshotElement,
   BrowserSnapshotMode,
 } from "../integrations/browser/action-types.js";
-export {
-  ClearEnvValueTool,
-  SetEnvValueTool,
-  type EnvValueToolOptions,
-} from "./tools/env-value-tools.js";
-export {
-  ImageGenerateTool,
-  type ImageGenerateToolOptions,
-} from "./tools/image-generate-tool.js";
 export {MediaTool, type MediaToolOptions} from "./tools/media-tool.js";
-export {MessageAgentTool} from "./tools/message-agent-tool.js";
-export {EmailSendTool, type EmailSendToolOptions} from "./tools/email-send-tool.js";
-export {OutboundTool} from "./tools/outbound-tool.js";
-export {
-  PostgresReadonlyQueryTool,
-  type PostgresReadonlyQueryToolOptions,
-} from "./tools/postgres-readonly-query-tool.js";
-export {
-  GlobFilesTool,
-  GrepFilesTool,
-  ReadFileTool,
-} from "./tools/workspace-readonly-tools.js";
-export {
-  ScheduledTaskCancelTool,
-  ScheduledTaskCreateTool,
-  ScheduledTaskUpdateTool,
-  type ScheduledTaskToolStore,
-  type ScheduledTaskToolOptions,
-} from "./tools/scheduled-task-tools.js";
-export {
-  WatchCreateTool,
-  WatchDisableTool,
-  WatchSchemaGetTool,
-  WatchUpdateTool,
-  type WatchToolOptions,
-} from "./tools/watch-tools.js";
-export {
-  EnvironmentCreateTool,
-  EnvironmentStopTool,
-  type EnvironmentCreateToolOptions,
-  type EnvironmentStopToolOptions,
-} from "./tools/environment-tools.js";
-export {
-  SpawnSubagentTool,
-  type SpawnSubagentToolOptions,
-} from "./tools/spawn-subagent-tool.js";
-export {
-  UpsertSubagentProfileTool,
-  type UpsertSubagentProfileToolOptions,
-  type UpsertSubagentProfileToolStore,
-} from "./tools/upsert-subagent-profile-tool.js";
 export {
   ThinkingSetTool,
   type ThinkingSetPersistence,
   type ThinkingSetToolOptions,
 } from "./tools/thinking-set-tool.js";
-export {
-  WhisperTool,
-  type WhisperToolOptions,
-} from "./tools/whisper-tool.js";
-export {
-  WebFetchTool,
-  type WebFetchToolOptions,
-} from "./tools/web-fetch-tool.js";
-export {
-  WebResearchTool,
-  type WebResearchToolOptions,
-} from "./tools/web-research-tool.js";
-export {
-  WikiTool,
-  type WikiToolOptions,
-} from "./tools/wiki-tool.js";
 export type {
   DefaultAgentChannelActionQueue,
-  DefaultAgentIdentityDirectory,
   DefaultAgentMessageAgentService,
   DefaultAgentOutboundQueue,
   DefaultAgentRouteMemory,

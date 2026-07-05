@@ -42,17 +42,15 @@ validated when the tool call reaches `/exec` or `/jobs/*`.
 Subagent tool access is profile driven:
 
 - `core` grants basics plus parent A2A updates.
-- `workspace_read` grants read-only workspace inspection.
 - `internet` grants public web and browser inspection.
 - `memory` grants durable memory reads.
 - `execute` grants bash/background execution.
 - `operate` grants operational mutation surfaces.
 
-`workspace_read` and `execute` are mutually exclusive. Use `workspace_read` for
-read-only wrapper tools, or `execute` for shell/background execution. `execute`
-can read workspace files through shell commands, so do not combine them.
+Workspace inspection uses standard shell commands through the granted runtime
+tools. Add `execute` when the subagent needs shell/background execution.
 
-Nested `spawn_subagent` is denied for subagent sessions. Environment tools are
+Nested `panda subagent spawn` is denied for subagent sessions. Environment tools are
 normal operational tools, not a delegation API.
 
 ## Paths

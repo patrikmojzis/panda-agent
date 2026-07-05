@@ -173,6 +173,94 @@ describe("PostgresOutboundDeliveryStore", () => {
     });
   });
 
+  it("lists target deliveries scoped to one session", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const {agentStore, sessionStore, threadStore} = await createRuntimeStores(pool);
+    const store = new PostgresOutboundDeliveryStore({ pool });
+    await store.ensureSchema();
+    await agentStore.bootstrapAgent({
+      agentKey: "other-agent",
+      displayName: "Other Agent",
+    });
+    await sessionStore.createSession({
+      id: "session-1",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "thread-1",
+    });
+    await sessionStore.createSession({
+      id: "session-2",
+      agentKey: "other-agent",
+      kind: "main",
+      currentThreadId: "thread-2",
+    });
+    await threadStore.createThread({
+      id: "thread-1",
+      sessionId: "session-1",
+    });
+    await threadStore.createThread({
+      id: "thread-2",
+      sessionId: "session-2",
+    });
+
+    const visible = await store.enqueueDelivery({
+      threadId: "thread-1",
+      channel: "telegram",
+      target: {
+        source: "telegram",
+        connectorKey: "bot-1",
+        externalConversationId: "chat-1",
+      },
+      items: [{ type: "text", text: "visible" }],
+    });
+    await store.enqueueDelivery({
+      threadId: "thread-2",
+      channel: "telegram",
+      target: {
+        source: "telegram",
+        connectorKey: "bot-1",
+        externalConversationId: "chat-1",
+      },
+      items: [{ type: "text", text: "other session" }],
+    });
+    await store.enqueueDelivery({
+      threadId: "thread-1",
+      channel: "telegram",
+      target: {
+        source: "telegram",
+        connectorKey: "bot-1",
+        externalConversationId: "chat-2",
+      },
+      items: [{ type: "text", text: "other chat" }],
+    });
+
+    await expect(store.listDeliveriesForTarget({
+      sessionId: "session-1",
+      channel: "telegram",
+      connectorKey: "bot-1",
+      externalConversationId: "chat-1",
+      limit: 10,
+    })).resolves.toEqual([
+      expect.objectContaining({
+        id: visible.id,
+        threadId: "thread-1",
+        target: expect.objectContaining({
+          externalConversationId: "chat-1",
+        }),
+      }),
+    ]);
+  });
+
   it("round-trips target delivery context through reserved metadata", async () => {
     const db = newDb();
     db.public.registerFunction({

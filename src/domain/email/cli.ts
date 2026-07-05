@@ -4,12 +4,21 @@ import {Command} from "commander";
 
 import {DB_URL_OPTION_DESCRIPTION} from "../../lib/cli.js";
 import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
+import {writeCommandDescriptorHelp} from "../commands/cli.js";
 import {parseAgentKey} from "../agents/cli.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
 import {PostgresSessionStore} from "../sessions/postgres.js";
 import {parseLabeledPortOption} from "../../lib/cli.js";
 import {DEFAULT_EMAIL_MAILBOXES, normalizeEmailAddress, normalizeEmailMailbox} from "./shared.js";
+import {
+  emailAccountListCommandDescriptor,
+  emailAttachmentsFetchCommandDescriptor,
+  emailListCommandDescriptor,
+  emailReadCommandDescriptor,
+  emailSearchCommandDescriptor,
+  emailSendCommandDescriptor,
+} from "./commands.js";
 import {PostgresEmailStore} from "./postgres.js";
 import type {EmailEndpointConfig} from "./types.js";
 
@@ -49,6 +58,20 @@ interface EmailRouteSetOptions extends EmailAccountLookupOptions {
 
 interface EmailRouteLookupOptions extends EmailAccountLookupOptions {
   mailbox?: string;
+}
+
+interface EmailSendCliOptions {
+  help?: boolean;
+  json?: boolean | string;
+}
+
+interface EmailDescriptorCliOptions {
+  help?: boolean;
+  json?: boolean | string;
+}
+
+interface EmailAccountListCliOptions extends EmailDescriptorCliOptions {
+  sendableOnly?: boolean;
 }
 
 function collectMailbox(value: string, previous: string[] = []): string[] {
@@ -228,9 +251,126 @@ export function registerEmailCommands(program: Command): void {
     .command("email")
     .description("Configure Panda email accounts");
 
+  emailProgram
+    .command("list")
+    .description(emailListCommandDescriptor.summary)
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .action((options: EmailDescriptorCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(emailListCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda email list execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
+
+  emailProgram
+    .command("read")
+    .description(emailReadCommandDescriptor.summary)
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .action((options: EmailDescriptorCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(emailReadCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda email read execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
+
+  emailProgram
+    .command("search")
+    .description(emailSearchCommandDescriptor.summary)
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .action((options: EmailDescriptorCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(emailSearchCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda email search execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
+
+  emailProgram
+    .command("attachments")
+    .description("Fetch session-visible email attachments")
+    .command("fetch")
+    .description(emailAttachmentsFetchCommandDescriptor.summary)
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .action((options: EmailDescriptorCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(emailAttachmentsFetchCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda email attachments fetch execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
+
+  emailProgram
+    .command("send")
+    .description(emailSendCommandDescriptor.summary)
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .action((options: EmailSendCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(emailSendCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda email send execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
+
   const accountProgram = emailProgram
     .command("account")
     .description("Manage email sender/reader accounts");
+
+  accountProgram
+    .command("list")
+    .description(emailAccountListCommandDescriptor.summary)
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .option("--sendable-only", "Only include accounts the current session can send from")
+    .action((options: EmailAccountListCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(emailAccountListCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda email account list execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
 
   accountProgram
     .command("set")

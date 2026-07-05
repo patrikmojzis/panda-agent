@@ -1,3 +1,5 @@
+import type {CommandCatalog} from "../../domain/commands/modules.js";
+import type {CommandCatalogModule} from "../../domain/commands/types.js";
 import {trimToUndefined} from "../../lib/strings.js";
 
 export const DEFAULT_DAEMON_KEY = "primary";
@@ -10,6 +12,9 @@ export interface DaemonOptions {
   dbUrl?: string;
   readOnlyDbUrl?: string;
   maxSubagentDepth?: number;
+  commandCatalog?: CommandCatalog<any, CommandCatalogModule<any>>;
+  /** @deprecated Prefer commandCatalog. */
+  commandModules?: readonly CommandCatalogModule<any>[];
 }
 
 export interface DaemonServices {

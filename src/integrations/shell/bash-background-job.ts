@@ -97,7 +97,7 @@ export class ManagedBashJob {
   }
 
   private async spawn(wrappedCommand: string): Promise<void> {
-    const child = spawn(this.options.shell, ["-lc", wrappedCommand], {
+    const child = spawn(this.options.shell, ["-c", wrappedCommand], {
       cwd: this.options.cwd,
       env: this.options.childEnv,
       stdio: ["ignore", "pipe", "pipe"],

@@ -16,11 +16,11 @@ The central registry is `src/domain/subagents/tool-groups.ts`.
 
 Approved V1 corrections are pinned there and covered by tests:
 
-- `core` includes safe universal basics: `current_datetime`, `message_agent`, `image_generate`, `whisper`, `view_media`, and `todo_update`.
+- `core` includes safe universal basics through command-native policy names such as `time.now`, A2A commands, `image.generate`, `whisper.transcribe`, `whisper.translate`, `view_media`, and `todo` commands.
 - `agent_skill` is not in `core` in PR1 because the raw tool currently supports `load`, `set`, `patch`, and `delete`; adding it to universal raw membership would silently grant skill mutation. The approved long-term intent is operation-level access: load/read broadly, set/patch/delete only for `operate` or a skill-maintainer-equivalent policy.
-- `internet` includes public web/browser tools, including `web_research`.
+- `internet` includes public web/browser commands, including `web.fetch`, `brave.*`, and `openai.web_research`.
 - `operate` includes operational mutation/control tools, including `thinking_set` and the mutating raw `agent_skill` surface.
-- The fixed group keys are `core`, `workspace_read`, `internet`, `memory`, `execute`, `operate`, and `communicate_human`.
+- The fixed group keys are `core`, `internet`, `memory`, `execute`, `operate`, and `communicate_human`.
 
 ## Profile foundation
 

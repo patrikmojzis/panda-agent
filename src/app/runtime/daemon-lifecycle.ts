@@ -18,6 +18,11 @@ import {
 } from "../../integrations/apps/http-config.js";
 import {resolveOptionalControlServerBinding} from "../../integrations/control/config.js";
 import {type ControlHttpServer, startControlServer} from "../../integrations/control/http-server.js";
+import {resolveOptionalCommandServerBinding} from "../../integrations/commands/config.js";
+import {
+    type CommandHttpServer,
+    startCommandHttpServer,
+} from "../../integrations/commands/http-server.js";
 import {runCleanupSteps} from "../../lib/cleanup.js";
 import type {PostgresListenSnapshot} from "../../lib/postgres-listen.js";
 import {readPositiveIntegerEnv} from "./database.js";
@@ -61,6 +66,8 @@ export interface DaemonLifecycleRuntime {
   controlRuntimeActivity: RuntimeServices["controlRuntimeActivity"];
   controlConnectorAccounts: RuntimeServices["controlConnectorAccounts"];
   controlModelCallTraces: RuntimeServices["controlModelCallTraces"];
+  commandExecutor: RuntimeServices["commandExecutor"];
+  commandLeases: RuntimeServices["commandLeases"];
   coordinator: Pick<RuntimeServices["coordinator"], "recoverOrphanedRuns" | "submitInput">;
   executionEnvironmentService?: Pick<RuntimeServices["executionEnvironmentService"], "sweepExpiredEnvironments">;
   pool: Pick<RuntimeServices["pool"], "waitingCount">;
@@ -91,6 +98,7 @@ export function createDaemonLifecycle(input: {
   let healthServer: HealthServer | null = null;
   let appServer: AgentAppServer | null = null;
   let controlServer: ControlHttpServer | null = null;
+  let commandServer: CommandHttpServer | null = null;
   let lease: ManagedConnectorLease | null = null;
   let lastHeartbeatAt = 0;
   let running = false;
@@ -155,6 +163,8 @@ export function createDaemonLifecycle(input: {
       appServer = null;
       const resolvedControlServer = controlServer;
       controlServer = null;
+      const resolvedCommandServer = commandServer;
+      commandServer = null;
 
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer);
@@ -236,6 +246,12 @@ export function createDaemonLifecycle(input: {
           label: "control-server",
           run: async () => {
             await resolvedControlServer?.close();
+          },
+        },
+        {
+          label: "command-server",
+          run: async () => {
+            await resolvedCommandServer?.close();
           },
         },
       ], (step, error) => {
@@ -399,6 +415,20 @@ export function createDaemonLifecycle(input: {
             identityStore: input.context.runtime.identityStore,
             env: process.env,
             uiStaticDir: binding.uiStaticDir,
+          });
+        })();
+        commandServer = await (async () => {
+          const binding = resolveOptionalCommandServerBinding(process.env);
+          if (!binding) {
+            return null;
+          }
+
+          return startCommandHttpServer({
+            host: binding.host,
+            port: binding.port,
+            socketPath: binding.socketPath,
+            executor: input.context.runtime.commandExecutor,
+            leaseVerifier: input.context.runtime.commandLeases,
           });
         })();
         await heartbeat();

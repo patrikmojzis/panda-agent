@@ -1,6 +1,9 @@
 import type {
     CreateThreadInput,
     CreateThreadToolJobInput,
+    ThreadChannelMediaFilter,
+    ThreadChannelMediaRecord,
+    ThreadChannelMessageFilter,
     ThreadInputDeliveryMode,
     ThreadInputPayload,
     ThreadInputRecord,
@@ -27,6 +30,8 @@ export interface ThreadRuntimeStore {
   listThreadSummaries(limit?: number, sessionId?: string): Promise<readonly ThreadSummaryRecord[]>;
   updateThread(threadId: string, update: ThreadUpdate): Promise<ThreadRecord>;
   loadTranscript(threadId: string): Promise<readonly ThreadMessageRecord[]>;
+  listChannelMessages(filter: ThreadChannelMessageFilter): Promise<readonly ThreadMessageRecord[]>;
+  findChannelMedia(filter: ThreadChannelMediaFilter): Promise<ThreadChannelMediaRecord | null>;
   enqueueInput(
     threadId: string,
     payload: ThreadInputPayload,

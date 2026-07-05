@@ -5,61 +5,10 @@ import {
   DEFAULT_AGENT_SUBAGENT_ROLES,
   getDefaultAgentSubagentRolePolicy,
 } from "../src/panda/subagents/policy.js";
-import {Tool, z} from "../src/index.js";
-
-class FakeReadonlyPool {
-  async connect(): Promise<never> {
-    throw new Error("not used in subagent policy tests");
-  }
-}
-
-class FakeAgentSkillTool extends Tool<typeof FakeAgentSkillTool.schema> {
-  static schema = z.object({
-    skillKey: z.string(),
-  });
-
-  name = "agent_skill";
-  description = "Allowed in skill maintainer";
-  schema = FakeAgentSkillTool.schema;
-
-  async handle(): Promise<{ ok: true }> {
-    return { ok: true };
-  }
-}
-
-class FakeWikiTool extends Tool<typeof FakeWikiTool.schema> {
-  static schema = z.object({
-    operation: z.string(),
-  });
-
-  name = "wiki";
-  description = "Allowed for memory specialists";
-  schema = FakeWikiTool.schema;
-
-  async handle(): Promise<{ ok: true }> {
-    return { ok: true };
-  }
-}
 
 describe("default agent subagent policy", () => {
-  function createToolsetsWithExtras(options: {
-    memoryExtras?: readonly Tool[];
-    skillMaintainerExtras?: readonly Tool[];
-  } = {}) {
-    return buildDefaultAgentToolsetsFromRegistry(
-      createDefaultAgentToolRegistry({
-        postgresReadonly: {
-          pool: new FakeReadonlyPool(),
-        },
-      }),
-      [],
-      options.memoryExtras ?? [],
-      options.skillMaintainerExtras ?? [],
-    );
-  }
-
   function createBaseToolsets() {
-    return createToolsetsWithExtras();
+    return buildDefaultAgentToolsetsFromRegistry(createDefaultAgentToolRegistry());
   }
 
   it("maps roles to explicit specialist toolsets", () => {
@@ -87,65 +36,34 @@ describe("default agent subagent policy", () => {
     }
   });
 
-  it("builds the workspace toolset with readonly workspace tools plus media only", () => {
+  it("builds the workspace toolset with media only", () => {
     const toolsets = createBaseToolsets();
 
     expect(toolsets.workspace.map((tool) => tool.name)).toEqual([
-      "current_datetime",
-      "read_file",
-      "glob_files",
-      "grep_files",
       "view_media",
     ]);
   });
 
-  it("keeps the memory subagent minimal without wiki extras", () => {
+  it("keeps command-backed memory out of the native memory toolset", () => {
     const toolsets = createBaseToolsets();
 
-    expect(toolsets.memory.map((tool) => tool.name)).toEqual([
-      "current_datetime",
-      "postgres_readonly_query",
-    ]);
+    expect(toolsets.memory.map((tool) => tool.name)).toEqual([]);
   });
 
-  it("lets the memory subagent receive wiki when memory extras are configured", () => {
-    const toolsets = createToolsetsWithExtras({
-      memoryExtras: [new FakeWikiTool()],
-    });
-
-    expect(toolsets.memory.map((tool) => tool.name)).toEqual([
-      "current_datetime",
-      "postgres_readonly_query",
-      "wiki",
-    ]);
-  });
-
-  it("gives the browser subagent browser plus readonly artifact inspection tools", () => {
+  it("gives the browser subagent browser plus media artifact inspection", () => {
     const toolsets = createBaseToolsets();
 
     expect(toolsets.browser.map((tool) => tool.name)).toEqual([
-      "current_datetime",
-      "read_file",
-      "glob_files",
-      "grep_files",
       "view_media",
       "browser",
     ]);
   });
 
-  it("gives the skill maintainer Postgres, skill editing, and readonly workspace inspection", () => {
-    const toolsets = createToolsetsWithExtras({
-      skillMaintainerExtras: [new FakeAgentSkillTool()],
-    });
+  it("gives the skill maintainer media artifact inspection natively", () => {
+    const toolsets = createBaseToolsets();
 
     expect(toolsets.skill_maintainer.map((tool) => tool.name)).toEqual([
-      "current_datetime",
-      "postgres_readonly_query",
-      "read_file",
-      "glob_files",
-      "grep_files",
       "view_media",
-      "agent_skill",
     ]);
   });
 });

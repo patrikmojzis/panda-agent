@@ -1,5 +1,5 @@
 import {createHash, createHmac, randomBytes, timingSafeEqual} from "node:crypto";
-import {mkdir} from "node:fs/promises";
+import {mkdir, rm, writeFile} from "node:fs/promises";
 import http, {createServer, type IncomingMessage, type Server} from "node:http";
 import type {Readable} from "node:stream";
 import os from "node:os";
@@ -9,7 +9,12 @@ import {normalizeAgentKey} from "../../domain/agents/types.js";
 import type {
   DisposableEnvironmentCreateRequest,
   DisposableEnvironmentCreateResult,
+  DisposableEnvironmentCommandAccessRefreshRequest,
+  DisposableEnvironmentLogEntry,
+  DisposableEnvironmentLogsRequest,
+  DisposableEnvironmentLogsResult,
   ExecutionEnvironmentManager,
+  ExecutionEnvironmentLogRole,
   ExecutionEnvironmentState,
 } from "../../domain/execution-environments/types.js";
 import {
@@ -44,6 +49,10 @@ const DEFAULT_CONTAINER_NAME_PREFIX = "panda-env";
 const DEFAULT_CREATE_TIMEOUT_MS = 300_000;
 const DEFAULT_DOCKER_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CORE_ENVIRONMENTS_ROOT = "/root/.panda/environments";
+const DEFAULT_WORKER_COMMAND_ACCESS_FILE = path.posix.join(DEFAULT_WORKER_WORKSPACE_PATH, ".panda", "command-access.env");
+const DEFAULT_WORKER_COMMAND_SOCKET_DIR = "/run/panda-command";
+const DEFAULT_ENVIRONMENT_LOG_TAIL_LINES = 200;
+const MAX_ENVIRONMENT_LOG_TAIL_LINES = 1_000;
 const DOCKER_DNS_LABEL_MAX_LENGTH = 63;
 const MAX_ENVIRONMENT_MANAGER_JSON_BODY_BYTES = 8 * 1024 * 1024;
 const DOCKER_EXEC_COMPLETION_WAIT_MS = 2_000;
@@ -132,6 +141,7 @@ export interface DockerClient {
   inspectContainer(container: string): Promise<DockerContainerInspectResult>;
   stopContainer(container: string): Promise<void>;
   removeContainer(container: string): Promise<void>;
+  logsContainer(container: string, options: {tail: number}): Promise<{stdout: string; stderr: string}>;
   createExec(container: string, config: DockerExecCreateConfig): Promise<DockerExecCreateResult>;
   startExec(execId: string, options: {Detach: false; Tty: false}): Promise<Readable>;
   inspectExec(execId: string): Promise<DockerExecInspectResult>;
@@ -207,6 +217,25 @@ class DockerEngineClient implements DockerClient {
       path: `/containers/${encodeURIComponent(container)}?force=1`,
       expectedStatuses: [204, 404],
     });
+  }
+
+  async logsContainer(container: string, options: {tail: number}): Promise<{stdout: string; stderr: string}> {
+    const stream = await this.requestStream({
+      method: "GET",
+      path: `/containers/${encodeURIComponent(container)}/logs?stdout=1&stderr=1&tail=${encodeURIComponent(String(options.tail))}`,
+      expectedStatuses: [200],
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    await demuxDockerStdCopyStream(
+      stream,
+      (chunk) => stdout.push(chunk),
+      (chunk) => stderr.push(chunk),
+    );
+    return {
+      stdout: Buffer.concat(stdout).toString("utf8"),
+      stderr: Buffer.concat(stderr).toString("utf8"),
+    };
   }
 
   async createExec(container: string, config: DockerExecCreateConfig): Promise<DockerExecCreateResult> {
@@ -344,6 +373,7 @@ export interface DockerExecutionEnvironmentManagerOptions {
   managerEnvironmentsRoot?: string;
   coreEnvironmentsRoot?: string;
   parentRunnerEnvironmentsRoot?: string;
+  commandSocketHostDir?: string;
   containerNamePrefix?: string;
   createTimeoutMs?: number;
   env?: NodeJS.ProcessEnv;
@@ -635,9 +665,20 @@ function buildWorkspaceContainerConfig(input: {
   image: string;
   runnerCwd: string;
   filesystem: ExecutionEnvironmentFilesystemMetadata;
+  commandAccess: DisposableEnvironmentCreateRequest["commandAccess"] | undefined;
+  commandSocketBind: string | undefined;
   network?: string;
 }): DockerContainerCreateConfig {
   const safeEnv = buildSafeCommandBaseEnv({TZ: process.env.TZ ?? "UTC"});
+  const commandAccessEnv = input.commandAccess
+    ? [
+      `PANDA_COMMAND_ACCESS_FILE=${DEFAULT_WORKER_COMMAND_ACCESS_FILE}`,
+      ...(input.commandAccess.url ? [`PANDA_COMMAND_URL=${input.commandAccess.url}`] : []),
+      ...(input.commandAccess.socketPath ? [`PANDA_COMMAND_SOCKET=${input.commandAccess.socketPath}`] : []),
+      `PANDA_COMMAND_TOKEN=${input.commandAccess.token}`,
+    ]
+    : [];
+  const commandSocketBinds = input.commandSocketBind ? [input.commandSocketBind] : [];
   return {
     Image: input.image,
     Cmd: ["sleep", "infinity"],
@@ -648,6 +689,7 @@ function buildWorkspaceContainerConfig(input: {
       `TMPDIR=${safeEnv.TMPDIR ?? ""}`,
       `LANG=${safeEnv.LANG ?? ""}`,
       `TZ=${safeEnv.TZ ?? "UTC"}`,
+      ...commandAccessEnv,
     ],
     WorkingDir: input.runnerCwd,
     Labels: buildLabels(input.request, "workspace"),
@@ -658,10 +700,75 @@ function buildWorkspaceContainerConfig(input: {
         `${input.filesystem.workspace.hostPath}:${input.filesystem.workspace.workerPath}`,
         `${input.filesystem.inbox.hostPath}:${input.filesystem.inbox.workerPath}`,
         `${input.filesystem.artifacts.hostPath}:${input.filesystem.artifacts.workerPath}`,
+        ...commandSocketBinds,
       ],
       ...(input.network ? {NetworkMode: input.network} : {}),
     },
   };
+}
+
+function resolveContainerCommandAccess(
+  commandAccess: DisposableEnvironmentCreateRequest["commandAccess"] | undefined,
+  commandSocketHostDir: string | undefined,
+): {
+  commandAccess: DisposableEnvironmentCreateRequest["commandAccess"] | undefined;
+  commandSocketBind: string | undefined;
+} {
+  if (!commandAccess?.socketPath) {
+    return {commandAccess, commandSocketBind: undefined};
+  }
+
+  if (!commandSocketHostDir) {
+    throw new Error("PANDA_COMMAND_SOCKET_HOST_DIR is required when command access uses a Unix socket.");
+  }
+
+  const workerSocketPath = path.posix.join(DEFAULT_WORKER_COMMAND_SOCKET_DIR, path.basename(commandAccess.socketPath));
+  return {
+    commandAccess: {
+      ...commandAccess,
+      socketPath: workerSocketPath,
+    },
+    commandSocketBind: `${commandSocketHostDir}:${DEFAULT_WORKER_COMMAND_SOCKET_DIR}:ro`,
+  };
+}
+
+function resolveCommandAccessFilePath(filesystem: ExecutionEnvironmentFilesystemMetadata): string {
+  const workspacePath = filesystem.workspace.managerPath ?? filesystem.workspace.hostPath ?? filesystem.workspace.corePath;
+  return path.join(workspacePath, ".panda", "command-access.env");
+}
+
+function assertCommandAccessLineValue(label: string, value: string): string {
+  if (/[\r\n]/.test(value)) {
+    throw new Error(`${label} must not contain newlines.`);
+  }
+  return value;
+}
+
+async function writeCommandAccessFile(
+  filesystem: ExecutionEnvironmentFilesystemMetadata,
+  commandAccess: DisposableEnvironmentCreateRequest["commandAccess"] | undefined,
+): Promise<void> {
+  const filePath = resolveCommandAccessFilePath(filesystem);
+  if (!commandAccess) {
+    await rm(filePath, {force: true});
+    return;
+  }
+
+  await mkdir(path.dirname(filePath), {recursive: true});
+  await writeFile(
+    filePath,
+    [
+      ...(commandAccess.url
+        ? [`PANDA_COMMAND_URL=${assertCommandAccessLineValue("PANDA_COMMAND_URL", commandAccess.url)}`]
+        : []),
+      ...(commandAccess.socketPath
+        ? [`PANDA_COMMAND_SOCKET=${assertCommandAccessLineValue("PANDA_COMMAND_SOCKET", commandAccess.socketPath)}`]
+        : []),
+      `PANDA_COMMAND_TOKEN=${assertCommandAccessLineValue("PANDA_COMMAND_TOKEN", commandAccess.token)}`,
+      "",
+    ].join("\n"),
+    {mode: 0o600},
+  );
 }
 
 function buildFilesystemMetadata(input: {
@@ -809,7 +916,99 @@ function validateCreateRequest(value: unknown): DisposableEnvironmentCreateReque
     environmentId,
     ...(ttlMs === undefined ? {} : {ttlMs}),
     ...(value.metadata === undefined ? {} : {metadata: validateManagerMetadata(value.metadata)}),
+    ...(isRecord(value.commandAccess) ? {commandAccess: validateCommandAccess(value.commandAccess)} : {}),
   };
+}
+
+function validateCommandAccess(value: unknown): DisposableEnvironmentCommandAccessRefreshRequest["commandAccess"] {
+  if (!isRecord(value)) {
+    throw new ToolError("commandAccess must be an object.");
+  }
+  const url = readOptionalCommandAccessString(value.url, "commandAccess.url");
+  const socketPath = readOptionalCommandAccessString(value.socketPath, "commandAccess.socketPath");
+  if (!url && !socketPath) {
+    throw new ToolError("commandAccess requires url or socketPath.");
+  }
+  return {
+    ...(url ? {url} : {}),
+    ...(socketPath ? {socketPath} : {}),
+    token: readCommandAccessString(value.token, "commandAccess.token"),
+  };
+}
+
+function validateCommandAccessRefreshRequest(value: unknown): DisposableEnvironmentCommandAccessRefreshRequest {
+  const parsed = validateEnvironmentIdRequest(value);
+  if (!isRecord(value)) {
+    throw new ToolError("Refresh command access request must be an object.");
+  }
+  return {
+    environmentId: parsed.environmentId,
+    ...(value.commandAccess === undefined ? {} : {commandAccess: validateCommandAccess(value.commandAccess)}),
+  };
+}
+
+function readOptionalLogRole(value: unknown): DisposableEnvironmentLogsRequest["role"] | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (value === "control" || value === "workspace" || value === "all") {
+    return value;
+  }
+  throw new ToolError("environment logs role must be control, workspace, or all.");
+}
+
+function readOptionalLogTail(value: unknown): number | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > MAX_ENVIRONMENT_LOG_TAIL_LINES) {
+    throw new ToolError(`environment logs tail must be an integer between 1 and ${MAX_ENVIRONMENT_LOG_TAIL_LINES}.`);
+  }
+  return value;
+}
+
+function validateEnvironmentLogsRequest(value: unknown): DisposableEnvironmentLogsRequest {
+  const parsed = validateEnvironmentIdRequest(value);
+  if (!isRecord(value)) {
+    throw new ToolError("Environment logs request body must be an object.");
+  }
+  const role = readOptionalLogRole(value.role);
+  const tail = readOptionalLogTail(value.tail);
+
+  return {
+    environmentId: parsed.environmentId,
+    ...(role ? {role} : {}),
+    ...(tail === undefined ? {} : {tail}),
+  };
+}
+
+function validateEnvironmentLogsResult(result: DisposableEnvironmentLogsResult): DisposableEnvironmentLogsResult {
+  const entries = result.entries.map((entry, index): DisposableEnvironmentLogEntry => {
+    if ((entry.role !== "control" && entry.role !== "workspace") || typeof entry.stdout !== "string" || typeof entry.stderr !== "string") {
+      throw new ToolError(`Execution environment manager logs response entries[${index}] is invalid.`);
+    }
+    return {
+      role: entry.role,
+      stdout: entry.stdout,
+      stderr: entry.stderr,
+    };
+  });
+  return {entries};
+}
+
+function readCommandAccessString(value: unknown, label: string): string {
+  const text = trimToNull(value);
+  if (!text) {
+    throw new ToolError(`${label} must not be empty.`);
+  }
+  return text;
+}
+
+function readOptionalCommandAccessString(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  return readCommandAccessString(value, label);
 }
 
 function validateManagerMetadata(value: unknown): JsonValue {
@@ -881,6 +1080,7 @@ export function resolveDockerExecutionEnvironmentManagerOptions(
     ),
     parentRunnerEnvironmentsRoot: trimToUndefined(env.PANDA_RUNNER_ENVIRONMENTS_ROOT)
       ?? DEFAULT_PARENT_RUNNER_ENVIRONMENTS_ROOT,
+    commandSocketHostDir: trimToUndefined(env.PANDA_COMMAND_SOCKET_HOST_DIR),
     containerNamePrefix: trimToUndefined(env.PANDA_DISPOSABLE_CONTAINER_PREFIX) ?? DEFAULT_CONTAINER_NAME_PREFIX,
     createTimeoutMs: parsePositiveInt(
       trimToNull(env.PANDA_DISPOSABLE_CREATE_TIMEOUT_MS),
@@ -1049,6 +1249,7 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
   private readonly managerEnvironmentsRoot: string;
   private readonly coreEnvironmentsRoot: string;
   private readonly parentRunnerEnvironmentsRoot: string;
+  private readonly commandSocketHostDir?: string;
   private readonly containerNamePrefix: string;
   private readonly createTimeoutMs: number;
   private readonly workspaceProcesses = new Map<string, WorkspaceProcessRecord>();
@@ -1058,6 +1259,7 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       ...resolveDockerExecutionEnvironmentManagerOptions(options.env),
       ...options,
     };
+    const commandSocketHostDir = trimToUndefined(resolved.commandSocketHostDir);
     this.docker = resolved.dockerClient ?? new DockerEngineClient(resolved.dockerHost);
     this.controlRunnerImage = resolved.controlRunnerImage ?? resolved.image ?? DEFAULT_CONTROL_RUNNER_IMAGE;
     this.workspaceImage = resolved.workspaceImage ?? DEFAULT_WORKSPACE_IMAGE;
@@ -1083,6 +1285,9 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
     );
     this.parentRunnerEnvironmentsRoot = trimToUndefined(resolved.parentRunnerEnvironmentsRoot)
       ?? DEFAULT_PARENT_RUNNER_ENVIRONMENTS_ROOT;
+    this.commandSocketHostDir = commandSocketHostDir
+      ? resolveEnvironmentRootPath(commandSocketHostDir, commandSocketHostDir)
+      : undefined;
     this.containerNamePrefix = resolved.containerNamePrefix ?? DEFAULT_CONTAINER_NAME_PREFIX;
     this.createTimeoutMs = resolved.createTimeoutMs ?? DEFAULT_CREATE_TIMEOUT_MS;
   }
@@ -1111,11 +1316,15 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       parentRunnerRoot: this.parentRunnerEnvironmentsRoot,
     });
     await ensureEnvironmentFilesystem(filesystem);
+    const containerCommandAccess = resolveContainerCommandAccess(request.commandAccess, this.commandSocketHostDir);
+    await writeCommandAccessFile(filesystem, containerCommandAccess.commandAccess);
     const workspaceConfig = buildWorkspaceContainerConfig({
       request,
       image: this.workspaceImage,
       runnerCwd: this.runnerCwd,
       filesystem,
+      commandAccess: containerCommandAccess.commandAccess,
+      commandSocketBind: containerCommandAccess.commandSocketBind,
       network: this.network,
     });
     const workspaceExecToken = createWorkspaceExecCredential({
@@ -1221,6 +1430,62 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
         `Failed to fully stop disposable environment ${environmentId}: ${errors.map((error) => error.message).join("; ")}`,
       );
     }
+  }
+
+  async refreshCommandAccess(input: DisposableEnvironmentCommandAccessRefreshRequest): Promise<void> {
+    const environmentId = trimToNull(input.environmentId) ?? "";
+    if (!environmentId) {
+      throw new Error("Command access refresh requires environmentId.");
+    }
+    const containerName = buildContainerName(this.containerNamePrefix, environmentId, "workspace");
+    const inspect = await this.inspectManagedWorkspaceContainer(containerName, environmentId);
+    if (!inspect?.State?.Running) {
+      throw new ToolError("Workspace container is not running.", {details: {statusCode: 409}});
+    }
+    const agentKey = trimToNull(inspect.Config?.Labels?.["panda.agent.key"]) ?? "";
+    if (!agentKey) {
+      throw new Error(`Workspace container ${containerName} is missing agent label.`);
+    }
+    const filesystem = buildFilesystemMetadata({
+      agentKey,
+      environmentId,
+      hostRoot: this.hostEnvironmentsRoot,
+      managerRoot: this.managerEnvironmentsRoot,
+      coreRoot: this.coreEnvironmentsRoot,
+      parentRunnerRoot: this.parentRunnerEnvironmentsRoot,
+    });
+    await ensureEnvironmentFilesystem(filesystem);
+    await writeCommandAccessFile(
+      filesystem,
+      resolveContainerCommandAccess(input.commandAccess, this.commandSocketHostDir).commandAccess,
+    );
+  }
+
+  async readEnvironmentLogs(input: DisposableEnvironmentLogsRequest): Promise<DisposableEnvironmentLogsResult> {
+    const environmentId = trimToNull(input.environmentId) ?? "";
+    if (!environmentId) {
+      throw new Error("Environment logs require environmentId.");
+    }
+    const role = input.role ?? "all";
+    const tail = input.tail ?? DEFAULT_ENVIRONMENT_LOG_TAIL_LINES;
+    const roles: ExecutionEnvironmentLogRole[] = role === "all" ? ["control", "workspace"] : [role];
+    const entries: DisposableEnvironmentLogEntry[] = [];
+
+    for (const entryRole of roles) {
+      const containerName = buildContainerName(this.containerNamePrefix, environmentId, entryRole);
+      const inspect = await this.inspectManagedContainer(containerName, environmentId);
+      if (!inspect) {
+        throw new ToolError(`Disposable environment ${entryRole} container is not available.`, {details: {statusCode: 404}});
+      }
+      const logs = await this.docker.logsContainer(containerName, {tail});
+      entries.push({
+        role: entryRole,
+        stdout: logs.stdout,
+        stderr: logs.stderr,
+      });
+    }
+
+    return {entries};
   }
 
   validateWorkspaceExecCredential(environmentId: string, credential: string): boolean {
@@ -1532,6 +1797,27 @@ export async function startExecutionEnvironmentManager(
         const parsed = validateEnvironmentIdRequest(body);
         await manager.stopEnvironment(parsed.environmentId);
         writeJsonResponse(response, 200, {ok: true});
+        return;
+      }
+
+      if (requestUrl.pathname === "/environments/command-access") {
+        if (typeof manager.refreshCommandAccess !== "function") {
+          throw new ToolError("Command access refresh is not supported by this environment manager.", {details: {statusCode: 501}});
+        }
+        await manager.refreshCommandAccess(validateCommandAccessRefreshRequest(body));
+        writeJsonResponse(response, 200, {ok: true});
+        return;
+      }
+
+      if (requestUrl.pathname === "/environments/logs") {
+        if (typeof manager.readEnvironmentLogs !== "function") {
+          throw new ToolError("Environment logs are not supported by this environment manager.", {details: {statusCode: 501}});
+        }
+        const result = validateEnvironmentLogsResult(await manager.readEnvironmentLogs(validateEnvironmentLogsRequest(body)));
+        writeJsonResponse(response, 200, {
+          ok: true,
+          ...result,
+        });
         return;
       }
 

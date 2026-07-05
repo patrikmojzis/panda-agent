@@ -27,9 +27,11 @@ import type {
     EmailAuthVerdict,
     EmailEndpointConfig,
     EmailMessageDirection,
+    EmailMessageListInput,
     EmailMessageOwnershipInput,
     EmailMessageRecipientRecord,
     EmailMessageRecord,
+    EmailMessageSearchInput,
     EmailRecipientRole,
     EmailRecipientInput,
     EmailRouteLookupInput,
@@ -44,6 +46,9 @@ import type {
 export interface PostgresEmailStoreOptions {
   pool: PgPoolLike;
 }
+
+const DEFAULT_EMAIL_MESSAGE_LIMIT = 20;
+const MAX_EMAIL_MESSAGE_LIMIT = 50;
 
 function requireTrimmed(field: string, value: unknown): string {
   return requireTrimmedString(value, `Email ${field} must be a string.`, `Email ${field} must not be empty.`);
@@ -277,6 +282,21 @@ function parseMessageRecipientRow(row: Record<string, unknown>): EmailMessageRec
 function normalizeOptionalRouteMailbox(mailbox: string | undefined): string | null {
   const normalized = trimToUndefined(mailbox);
   return normalized ? normalizeEmailMailbox(normalized) : null;
+}
+
+function normalizeEmailMessageLimit(limit: number | undefined): number {
+  if (limit === undefined) {
+    return DEFAULT_EMAIL_MESSAGE_LIMIT;
+  }
+  if (!Number.isInteger(limit) || limit < 1) {
+    throw new Error("Email message limit must be a positive integer.");
+  }
+
+  return Math.min(limit, MAX_EMAIL_MESSAGE_LIMIT);
+}
+
+function toEmailSearchPattern(query: string): string {
+  return `%${query}%`;
 }
 
 function parseAttachmentRow(row: Record<string, unknown>): EmailAttachmentRecord {
@@ -934,6 +954,69 @@ export class PostgresEmailStore implements EmailStore {
     return parseMessageRow(row as Record<string, unknown>);
   }
 
+  async listMessagesForSession(input: EmailMessageListInput): Promise<readonly EmailMessageRecord[]> {
+    return this.findMessagesForSession(input);
+  }
+
+  async searchMessagesForSession(input: EmailMessageSearchInput): Promise<readonly EmailMessageRecord[]> {
+    const query = requireTrimmed("message search query", input.query);
+    return this.findMessagesForSession(input, query);
+  }
+
+  private async findMessagesForSession(
+    input: EmailMessageListInput,
+    query?: string,
+  ): Promise<readonly EmailMessageRecord[]> {
+    const agentKey = requireTrimmed("message list agent key", input.agentKey);
+    const session = await this.readSessionSummary(requireTrimmed("message list session id", input.sessionId));
+    if (session.agentKey !== agentKey) {
+      throw new Error(`Session ${session.id} belongs to agent ${session.agentKey}, not ${agentKey}.`);
+    }
+
+    const values: unknown[] = [agentKey, session.id];
+    const clauses = [
+      "agent_key = $1",
+      session.kind === "main"
+        ? "(session_id = $2 OR session_id IS NULL)"
+        : "session_id = $2",
+    ];
+
+    if (input.accountKey !== undefined) {
+      values.push(normalizeEmailAccountKey(input.accountKey));
+      clauses.push(`account_key = $${values.length}`);
+    }
+    const mailbox = normalizeOptionalRouteMailbox(input.mailbox);
+    if (mailbox !== null) {
+      values.push(mailbox);
+      clauses.push(`mailbox = $${values.length}`);
+    }
+    if (input.direction !== undefined) {
+      values.push(input.direction);
+      clauses.push(`direction = $${values.length}`);
+    }
+    if (query !== undefined) {
+      values.push(toEmailSearchPattern(query));
+      const placeholder = `$${values.length}`;
+      clauses.push(`(
+        subject ILIKE ${placeholder}
+        OR from_address ILIKE ${placeholder}
+        OR from_name ILIKE ${placeholder}
+        OR body_excerpt ILIKE ${placeholder}
+        OR body_text ILIKE ${placeholder}
+      )`);
+    }
+
+    values.push(normalizeEmailMessageLimit(input.limit));
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.emailMessages}
+      WHERE ${clauses.join("\n        AND ")}
+      ORDER BY COALESCE(received_at, sent_at, created_at) DESC, created_at DESC
+      LIMIT $${values.length}
+    `, values);
+    return result.rows.map((row) => parseMessageRow(row as Record<string, unknown>));
+  }
+
   async listMessageRecipients(messageId: string): Promise<readonly EmailMessageRecipientRecord[]> {
     const result = await this.pool.query(`
       SELECT *
@@ -942,6 +1025,21 @@ export class PostgresEmailStore implements EmailStore {
       ORDER BY created_at ASC, role ASC
     `, [requireTrimmed("message id", messageId)]);
     return result.rows.map((row) => parseMessageRecipientRow(row as Record<string, unknown>));
+  }
+
+  async getMessageAttachment(attachmentId: string): Promise<EmailAttachmentRecord> {
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.emailAttachments}
+      WHERE id = $1
+      LIMIT 1
+    `, [requireTrimmed("attachment id", attachmentId)]);
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error(`Unknown email attachment ${attachmentId}`);
+    }
+
+    return parseAttachmentRow(row as Record<string, unknown>);
   }
 
   async listMessageAttachments(messageId: string): Promise<readonly EmailAttachmentRecord[]> {

@@ -98,7 +98,7 @@ That is a separate access-control feature for later.
 
 ## `views.json`
 
-Views are readonly SQL queries the runtime exposes through `app_view` and the local HTTP API.
+Views are readonly SQL queries the runtime exposes through `panda micro-app view` and the local HTTP API.
 Panda opens the app database in SQLite readonly mode for views, so row-returning writes like `insert ... returning` are rejected.
 
 Example:
@@ -312,8 +312,8 @@ For non-identity-scoped apps, do not bother passing `identityHandle` unless the 
 
 ### URL Hints
 
-`app_create` returns UI URLs when `hasUi` is true.
-`app_list` keeps its default output compact; use `app_list({"appSlug": "...", "detail": "full"})` when you need raw UI URLs:
+`panda micro-app create` returns UI URLs when `hasUi` is true.
+`panda micro-app list` keeps its default output compact; use `panda micro-app list <app-slug> --full` when you need raw UI URLs:
 
 - `appUrl`: best current URL for Panda to use
 - `localAppUrl`: local default, usually `127.0.0.1`
@@ -352,7 +352,7 @@ When using `scripts/docker-stack.sh`, `PANDA_APPS_PUBLIC_HOST` must match the ho
 
 The secure open flow is:
 
-1. The agent calls `app_link_create`.
+1. The agent calls `panda micro-app link create <app-slug>`.
 2. Panda returns a one-time `openUrl` for the current input identity.
 3. The browser opens `/apps/open?token=...` and sees a tiny Continue page.
 4. The Continue submit consumes the token, sets app-scoped cookies, and redirects to `/<agent>/apps/<app>/`.
@@ -391,7 +391,7 @@ Security notes:
 - app sessions are scoped to one `agentKey + appSlug + identityId`
 - app API calls require an app-scoped CSRF token, so one app UI cannot use another app's session
 - app rate limiting keys on the direct TCP peer; keep `8092` private so the only public peer is Caddy
-- `app_link_create`, `app_view`, and `app_action` use the current input identity only
+- `panda micro-app link create`, `panda micro-app view`, and `panda micro-app action` use the current input identity only
 - views are enforced readonly at SQLite level
 - app SQL cannot attach, detach, export other database files, or load native SQLite extensions
 - static app serving rejects symlink and hardlink escapes
@@ -400,23 +400,23 @@ Security notes:
 - the default CSP blocks third-party scripts and network calls from app UIs
 - path-based app URLs are not a hostile third-party JavaScript sandbox; do not install untrusted app UI code as if it were isolated
 
-## Agent Tools
+## Agent Commands
 
 Panda can inspect and use installed apps through:
 
-- `app_create`
-- `app_list`
-- `app_link_create`
-- `app_check`
-- `app_view`
-- `app_action`
+- `panda micro-app create <slug> --name <text|@file|@-> [--description <text|@file|@->] [--identity-scoped] [--schema <sql|@file|@->]`
+- `panda micro-app list [app-slug] [--full]`
+- `panda micro-app link create <app-slug> [--expires <minutes|Nm|Nh>]`
+- `panda micro-app check [app-slug]`
+- `panda micro-app view <app-slug> <view-name> [--param key=value] [--params <json|@file|@->] [--page-size <n>] [--offset <n>]`
+- `panda micro-app action <app-slug> <action-name> [--input <json|@file|@->]`
 
-Use `app_create` to scaffold a blank app.
-Use `app_list` when you need to discover installed app, view, or action names.
+Use `panda micro-app create` to scaffold a blank app.
+Use `panda micro-app list` when you need to discover installed app, view, or action names.
 By default it returns a compact index without action schemas.
-Use `app_list({"appSlug": "...", "detail": "full"})` when you need action descriptions, `inputSchema`, effective `requiredInputKeys`, or raw UI URLs for one app.
-Use `app_link_create` when a human asks to open an app UI.
-Use `app_check` when Panda says an app is invalid or the UI/tool contract feels weird.
+Use `panda micro-app list <app-slug> --full` when you need action descriptions, `inputSchema`, effective `requiredInputKeys`, or raw UI URLs for one app.
+Use `panda micro-app link create` when a human asks to open an app UI.
+Use `panda micro-app check` when Panda says an app is invalid or the UI/tool contract feels weird.
 
 ## Example Apps
 

@@ -289,7 +289,7 @@ describe("Control auth HTTP", () => {
         alias: "do",
         runnerUrl: "http://runner-do.internal:8080",
         runnerCwd: "/workspace",
-        allowTools: ["bash", "read_file"],
+        allowTools: ["bash", "view_media"],
       }),
     });
     expect(bind.status).toBe(200);
@@ -303,7 +303,7 @@ describe("Control auth HTTP", () => {
     });
     expect(JSON.stringify(bindBody)).not.toContain("runner-do");
     await expect(harness.executionEnvironments.getBindingByAlias("session-panda", "do")).resolves.toMatchObject({
-      toolPolicy: {allowedTools: ["bash", "read_file"]},
+      toolPolicy: {allowedTools: ["bash", "view_media"]},
     });
 
     const detach = await fetch(`${base}/api/control/agents/panda/sessions/session-panda/targets/do`, {
@@ -3547,7 +3547,7 @@ describe("Control Runtime Activity HTTP", () => {
     const harness = await createHarness();
     await seedThreads(harness);
     await harness.agents.ensurePairing("panda", "identity-patrik");
-    const failedRuntimeError = `Subagent tool groups workspace_read and execute are mutually exclusive. Choose workspace_read for read-only workspace wrapper tools, or execute for shell/background execution. detail=Bad request {"messages":[{"content":"lowercase patient diagnosis should not leak"}],"stdout":"lowercase shell output"} failureKind=provider_timeout token=sk-abcdefghijklmnopqrstuvwxyz PRIVATE_RAW_RUN_ERROR_MUST_NOT_LEAK`;
+    const failedRuntimeError = `Command web.fetch is not allowed by the current session command lease. detail=Bad request {"messages":[{"content":"lowercase patient diagnosis should not leak"}],"stdout":"lowercase shell output"} failureKind=provider_timeout token=sk-abcdefghijklmnopqrstuvwxyz PRIVATE_RAW_RUN_ERROR_MUST_NOT_LEAK`;
     await harness.pool.query(`
       INSERT INTO "runtime"."runs" (id, thread_id, status, started_at, finished_at, abort_requested_at, abort_reason, error) VALUES
         ('00000000-0000-0000-0000-000000000401', 'thread-panda', 'failed', '2040-01-02T10:00:00.000Z', '2040-01-02T10:00:05.000Z', '2040-01-02T10:00:02.000Z', 'PRIVATE_ABORT_REASON_MUST_NOT_LEAK', $1),
@@ -3600,7 +3600,7 @@ describe("Control Runtime Activity HTTP", () => {
       durationMs: 5000,
       abortRequestedAt: "2040-01-02T10:00:02.000Z",
       failureCategory: "provider_timeout",
-      errorSummary: expect.stringContaining("Subagent tool groups workspace_read and execute are mutually exclusive"),
+      errorSummary: expect.stringContaining("Command web.fetch is not allowed by the current session command lease"),
     });
     expect(body.runtimeActivity.data[1]!.errorSummary).toContain("detail=Bad request");
     expect(String(body.runtimeActivity.data[1]!.errorSummary).length).toBeLessThanOrEqual(260);
@@ -3635,7 +3635,6 @@ describe("Control Runtime Activity HTTP", () => {
       "metadata",
       "stdout",
       "stderr",
-      "command",
       "result",
       "progress",
     ]) expect(text).not.toContain(sentinel);

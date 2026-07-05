@@ -115,7 +115,7 @@ Session prompts are session-scoped:
 - subagent sessions start with no session prompt bundle unless a later feature opts them in
 - the Control session Prompts tab can edit the bundle; the TUI still has no prompt editor
 
-Agents can also maintain a durable session todo context with the `todo_update` tool. It stores an ordered list of `{status, content}` items for the current session and renders them back into model context as `Todo Context`. Passing `items: []` clears it. Todo context survives `/reset`, is separate from scheduled reminders, and has no due dates or notifications in V1.
+Agents can also maintain a durable session todo context with `panda todo add`, `panda todo done`, `panda todo block`, and `panda todo clear`. It stores an ordered list of `{status, content}` items for the current session and renders them back into model context as `Todo Context`. Todo context survives `/reset`, is separate from scheduled reminders, and has no due dates or notifications in V1.
 
 Reset one session through the daemon:
 

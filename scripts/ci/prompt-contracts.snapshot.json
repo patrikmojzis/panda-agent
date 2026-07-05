@@ -1,22 +1,28 @@
 {
   "files": [
     {
+      "bytes": 99207,
+      "lines": 3303,
+      "path": "scripts/agent-command-shim/routes.generated.sh",
+      "sha256": "90107dbeab413bda073ca918275da907f80e0d208093de43f9730d23834e2bb0"
+    },
+    {
       "bytes": 1166,
       "lines": 31,
       "path": "src/app/runtime/background-tool-thread-input.ts",
       "sha256": "5bdd27237cdbea0029962f848523647def7fb81053ec670d6d708d4eb51a8c10"
     },
     {
-      "bytes": 10927,
-      "lines": 257,
+      "bytes": 12197,
+      "lines": 275,
       "path": "src/app/runtime/create-runtime.ts",
-      "sha256": "40eda44ac6d1b5f71ac84c3f63fd70be554a99d7f13ea41f1cfdf9285e5d67e0"
+      "sha256": "f970488dc7bcdb4bfa1e9565358b5f50131c54a8f30617d63f8757bdad2a467c"
     },
     {
-      "bytes": 13062,
-      "lines": 351,
+      "bytes": 15318,
+      "lines": 408,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "1497454751cdb83fae4309e0847ae341182fb4e2e1ebc2189cbc6ce83cea012a"
+      "sha256": "65a7c045cf45c87fac506278cbec0b4a01927d9c0588fb3adb85c945d5ce5655"
     },
     {
       "bytes": 12121,
@@ -25,34 +31,52 @@
       "sha256": "233384ed058d6f7f0f5ac18b019b901fcc639fef7b1f2dfcf3818050efe1be22"
     },
     {
-      "bytes": 3055,
+      "bytes": 3046,
       "lines": 90,
       "path": "src/app/runtime/panda-session-context.ts",
-      "sha256": "066deedd62262ed35176aa67447dc18c0f660e4119c8d959909063880f693145"
+      "sha256": "fa9eff3c7501170c201b9b636d3ec5a26258b6dfbe7662530c32452198534f85"
     },
     {
-      "bytes": 27471,
-      "lines": 803,
+      "bytes": 28183,
+      "lines": 793,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "a0ae3a2589257ea0e2ccf503fcc57452241446e71f14f97a071c49cde0adfa44"
+      "sha256": "b0a6bade040cffe3cc416fe374a29e6ced876492c2b9cf9d9da29b037c071099"
     },
     {
-      "bytes": 10937,
-      "lines": 264,
+      "bytes": 11246,
+      "lines": 276,
       "path": "src/app/runtime/thread-definition.ts",
-      "sha256": "4e4544f04db3bf9320d61ad23c8943821952629c553e90f4558cdb580e457c28"
+      "sha256": "d97408f2062a6fa8b2723f6d5d63df3f5d3621e0de3eb249f5d48f3a58bdc7af"
     },
     {
-      "bytes": 1600,
+      "bytes": 1490,
       "lines": 50,
       "path": "src/domain/subagents/builtins.ts",
-      "sha256": "20d20c88a23d65e89752a5a5da5750fc418c39c0177e812cdc8d58fa828c7a84"
+      "sha256": "5d0e246a9d83fbfbc7dd073b6422cf7351c6c2742fecd2a9298b28afdfe51002"
     },
     {
-      "bytes": 5583,
-      "lines": 168,
+      "bytes": 6543,
+      "lines": 169,
       "path": "src/domain/subagents/tool-groups.ts",
-      "sha256": "fb9a64148e347854d7fb1a84918168695531ad4c08b865e3cea3dfc36d527d5d"
+      "sha256": "27028d7c695dd5a9f767747ac3b8a6b8a74c34ab61f02744473cdd598d1d08ab"
+    },
+    {
+      "bytes": 433,
+      "lines": 9,
+      "path": "src/panda/commands/agent-command-descriptors.ts",
+      "sha256": "c6d98f315f2cfc237bbf5fdd6eb957112e92238bedd6e16956056d0a7939fb56"
+    },
+    {
+      "bytes": 48123,
+      "lines": 1398,
+      "path": "src/panda/commands/agent-command-modules.ts",
+      "sha256": "a04538f10f1ce8a744860537241b57da0c733b9b4e641cacca8c0e57dc4318fa"
+    },
+    {
+      "bytes": 572,
+      "lines": 15,
+      "path": "src/panda/commands/agent-command-shim-routes.ts",
+      "sha256": "12089c35bc75af32f13b52f96887ead9379961375564f7f739b1c2e640d5dcf9"
     },
     {
       "bytes": 2017,
@@ -73,10 +97,16 @@
       "sha256": "3072f55b56c701de2cc2653f7f2b5437fed8ad19f49a13648cb4d0592bf7f2b8"
     },
     {
-      "bytes": 7415,
-      "lines": 187,
+      "bytes": 9037,
+      "lines": 233,
       "path": "src/panda/contexts/builder.ts",
-      "sha256": "df52c20c78d5c5302f1db46933bf9559dc0e1b1ae6aea86254c5545e5ba77c99"
+      "sha256": "6288bacdee7e20ef8efeb9c019c96a4873dca771147dc1ab49de746faf3a2988"
+    },
+    {
+      "bytes": 958,
+      "lines": 27,
+      "path": "src/panda/contexts/command-catalog-context.ts",
+      "sha256": "98fb2ddf0ebdba55bc2c2867a1a6ff9755d46bbd957d717a3b2272dfe87b8c67"
     },
     {
       "bytes": 1541,
@@ -89,6 +119,12 @@
       "lines": 113,
       "path": "src/panda/contexts/environment-context.ts",
       "sha256": "c94434f30b6e087cbb99e1f011209b6f17875b97fb62d7eb27a50954a85ab9e0"
+    },
+    {
+      "bytes": 4080,
+      "lines": 111,
+      "path": "src/panda/contexts/paired-identities-context.ts",
+      "sha256": "56b1dc2c05d2964f74984e2d6ad0d43f190df471f1799aa6b99abf0276f7673d"
     },
     {
       "bytes": 2687,
@@ -139,10 +175,10 @@
       "sha256": "274cbf284ffa7b98c2e05de5d97b9bfb07095e6bdbd9dd6def2ea9246a7dce9f"
     },
     {
-      "bytes": 6378,
-      "lines": 203,
+      "bytes": 3907,
+      "lines": 130,
       "path": "src/panda/definition.ts",
-      "sha256": "b8c7532a1aeb997bf1942cecadffd56374d0483f41eec08127514d7343f26e84"
+      "sha256": "9df8c043d3725e63f4ecf58860659b23744bf7066119935cc14f7793b10711a4"
     },
     {
       "bytes": 2103,
@@ -211,6 +247,12 @@
       "sha256": "5d0bed3908db5049b9be92689798508a913e481a8f4028a30bb626c99c38d623"
     },
     {
+      "bytes": 2024,
+      "lines": 49,
+      "path": "src/prompts/contexts/command-catalog.ts",
+      "sha256": "6b23c3c1773f1ee8978440fafbc2448263935ad0858747dfb711445b7f53fceb"
+    },
+    {
       "bytes": 310,
       "lines": 13,
       "path": "src/prompts/contexts/datetime.ts",
@@ -229,16 +271,22 @@
       "sha256": "0e7bf6b0d7bd311b1b5bc1452c6ae00a9a8f900792d0639ec2fe19299f83198c"
     },
     {
+      "bytes": 2051,
+      "lines": 63,
+      "path": "src/prompts/contexts/paired-identities.ts",
+      "sha256": "039e5b3cf1902c2ccac0efce41bd40460d2e6494eab13ae1de8ce55847f9ba9b"
+    },
+    {
       "bytes": 1212,
       "lines": 34,
       "path": "src/prompts/contexts/scheduled-reminders.ts",
       "sha256": "ecd43d637f495cee2bfd5996458c66f0b1314242de77f71c60cf6f0cf43f3c41"
     },
     {
-      "bytes": 584,
+      "bytes": 579,
       "lines": 19,
       "path": "src/prompts/contexts/session-prompts.ts",
-      "sha256": "3053f77e339742917f7e6f422607b782354e78808b6a4a53fbc03a0e14ef876c"
+      "sha256": "402d6f6eb95b224e7c00b8f9c0644fcbded251971b0df823fc41b46471c997e9"
     },
     {
       "bytes": 1653,
@@ -247,16 +295,16 @@
       "sha256": "5d8f837c7391c253665f98c26d2ae41bca38d593854b29b030cb6c995a2a61e8"
     },
     {
-      "bytes": 1372,
+      "bytes": 1384,
       "lines": 35,
       "path": "src/prompts/contexts/subagent-runtime.ts",
-      "sha256": "565aec3226f5cfa142801408bf6f76f0da01e6dff417212f2b0f0574580c472d"
+      "sha256": "e89a7e60fc38cb7440b60356526a5551ea9debaaac190f9f1062f36f37c84fde"
     },
     {
-      "bytes": 5335,
+      "bytes": 5345,
       "lines": 149,
       "path": "src/prompts/contexts/subagents.ts",
-      "sha256": "133da70324705e29c10eecc5c486b8c6ca94464afdf5748accd936548f13d848"
+      "sha256": "29d343f0850716f9ddfa69d936c1774e263f97cecf22e264bcc2c4b634ecf1ac"
     },
     {
       "bytes": 1371,
@@ -289,16 +337,16 @@
       "sha256": "cad5b2b991230740617070b6e628d49803d08242741e790ee444d5c9635c5df3"
     },
     {
-      "bytes": 13919,
-      "lines": 217,
+      "bytes": 14262,
+      "lines": 218,
       "path": "src/prompts/runtime/default-agent.ts",
-      "sha256": "7bec96666708227cb5d93ff049cb5eaa18f76fbfd3f2868f1b04b7d386420202"
+      "sha256": "52daa74658104afb903ec99c19e6c82275927febe8393c2dd2c800fd4c1c3c8f"
     },
     {
-      "bytes": 1491,
+      "bytes": 1652,
       "lines": 38,
       "path": "src/prompts/runtime/email-events.ts",
-      "sha256": "3b446effc5dddf57f4956bad7855f79d4abe96d86d287d77966f4fac0d4b58c4"
+      "sha256": "ac1d9090f3ec3d7c6c28716e72ff5e199a2f84e6ae765ba10776174024ec549b"
     },
     {
       "bytes": 673,
@@ -319,16 +367,16 @@
       "sha256": "bde7c1c8de078e3fbc398105605e3f3cfcea4432612515bd79aadacb7602471d"
     },
     {
-      "bytes": 11059,
+      "bytes": 11228,
       "lines": 226,
       "path": "src/prompts/runtime/subagents.ts",
-      "sha256": "591889c9953f3a41fec6fba034d3e296f25eb9682d1d21243ab36f6fd0831413"
+      "sha256": "9b62845b9e4b1f934a95556c259af3c86bc6444a74fc32ee3a5a5642a79448ee"
     },
     {
-      "bytes": 917,
+      "bytes": 909,
       "lines": 26,
       "path": "src/prompts/runtime/watch-events.ts",
-      "sha256": "911a5f980a4c6404230ff8990ecbac633bb4cbf89bded2babc911947cf8d2949"
+      "sha256": "d5c0da9f045dd71e82715a179d216aac09e49c4270c0128c763bb12965f23ad2"
     },
     {
       "bytes": 506,
@@ -342,25 +390,58 @@
     "communicate_human": {
       "description": "Human/channel outbound communication surfaces.",
       "toolNames": [
-        "outbound",
-        "email_send",
-        "telegram_react"
+        "email.account.list",
+        "email.list",
+        "email.read",
+        "email.search",
+        "email.attachments.fetch",
+        "email.send",
+        "telegram.chat.list",
+        "telegram.chat.info",
+        "telegram.history",
+        "telegram.media.fetch",
+        "telegram.send",
+        "telegram.react",
+        "telegram.edit",
+        "telegram.delete",
+        "telegram.pin",
+        "telegram.unpin",
+        "telegram.sticker.send",
+        "discord.channel.list",
+        "discord.history",
+        "discord.send",
+        "whatsapp.chat.list",
+        "whatsapp.history",
+        "whatsapp.send"
       ]
     },
     "core": {
       "agentSkillOperations": [
         "load"
       ],
-      "description": "Safe universal basics for ordinary delegated work and parent A2A updates.",
+      "description": "Universal command transport, local artifact preview, and parent A2A updates.",
       "toolNames": [
-        "current_datetime",
-        "message_agent",
-        "agent_skill",
-        "image_generate",
-        "whisper",
+        "bash",
+        "background_job_status",
+        "background_job_wait",
+        "background_job_cancel",
         "view_media",
-        "todo_update",
-        "vent"
+        "skill.list",
+        "skill.show",
+        "skill.load",
+        "todo.add",
+        "todo.list",
+        "todo.show",
+        "todo.done",
+        "todo.block",
+        "todo.clear",
+        "a2a.send",
+        "a2a.inspect",
+        "a2a.history",
+        "vent.send",
+        "image.generate",
+        "whisper.transcribe",
+        "whisper.translate"
       ]
     },
     "execute": {
@@ -378,20 +459,38 @@
     "internet": {
       "description": "Public web lookup, research, and browser inspection.",
       "toolNames": [
-        "web_fetch",
-        "brave_search",
         "browser",
-        "web_research"
+        "web.fetch",
+        "brave.web.search",
+        "brave.news.search",
+        "brave.video.search",
+        "brave.image.search",
+        "brave.llm.context",
+        "brave.place.search",
+        "brave.place.poi",
+        "brave.place.description",
+        "openai.web_research"
       ]
     },
     "memory": {
-      "description": "Read/query durable Panda memory surfaces.",
+      "description": "Durable Panda memory and wiki operations.",
       "postgresReadonly": {
         "allowed": true
       },
       "toolNames": [
-        "postgres_readonly_query",
-        "wiki"
+        "postgres.readonly.query",
+        "wiki.read",
+        "wiki.search",
+        "wiki.list",
+        "wiki.diff",
+        "wiki.write",
+        "wiki.write.section",
+        "wiki.move",
+        "wiki.archive",
+        "wiki.restore",
+        "wiki.attach.image",
+        "wiki.fetch.asset",
+        "wiki.delete.asset"
       ]
     },
     "operate": {
@@ -404,26 +503,46 @@
       "description": "Operational mutation and control surfaces.",
       "toolNames": [
         "thinking_set",
-        "agent_skill",
-        "session_prompt",
-        "upsert_subagent_profile",
-        "set_env_value",
-        "clear_env_value",
-        "app_create",
-        "app_list",
-        "app_link_create",
-        "app_check",
-        "app_view",
-        "app_action",
-        "scheduled_task_create",
-        "scheduled_task_update",
-        "scheduled_task_cancel",
-        "watch_schema_get",
-        "watch_create",
-        "watch_update",
-        "watch_disable",
-        "environment_create",
-        "environment_stop"
+        "watch.list",
+        "watch.show",
+        "watch.runs",
+        "watch.create",
+        "watch.update",
+        "watch.disable",
+        "schedule.list",
+        "schedule.show",
+        "schedule.runs",
+        "schedule.create",
+        "schedule.update",
+        "schedule.cancel",
+        "micro-app.check",
+        "micro-app.create",
+        "micro-app.link.create",
+        "micro-app.list",
+        "micro-app.view",
+        "micro-app.action",
+        "environment.create",
+        "environment.list",
+        "environment.show",
+        "environment.stop",
+        "environment.logs",
+        "skill.list",
+        "skill.show",
+        "skill.load",
+        "skill.set",
+        "skill.patch",
+        "skill.delete",
+        "session.prompt.read",
+        "session.prompt.set",
+        "session.prompt.transform",
+        "subagent.profile.list",
+        "subagent.profile.show",
+        "subagent.profile.upsert",
+        "subagent.profile.enable",
+        "subagent.profile.disable",
+        "env.list",
+        "env.set",
+        "env.clear"
       ]
     },
     "skill_maintenance": {
@@ -435,247 +554,16 @@
       ],
       "description": "Narrow durable skill load/create/patch/delete access without broad operational tools.",
       "toolNames": [
-        "agent_skill"
-      ]
-    },
-    "workspace_read": {
-      "description": "Read-only workspace and artifact inspection.",
-      "toolNames": [
-        "read_file",
-        "glob_files",
-        "grep_files"
+        "skill.list",
+        "skill.show",
+        "skill.load",
+        "skill.set",
+        "skill.patch",
+        "skill.delete"
       ]
     }
   },
   "toolCatalog": [
-    {
-      "description": "Load, create, replace, patch supported metadata for, or delete agent-scoped skills stored in Postgres. Use load when an injected skill summary looks relevant and you need the full markdown body in context. Use patch with patch.description when only the injected short description should change without resubmitting or changing content/tags. When the user gives you a skill body to save, pass that body through unchanged unless they explicitly asked you to rewrite it; only derive the short description when needed. Normal agent runs only inject each skill's key, tags, and description. For post-run reflective learning, prefer the skill_maintainer subagent instead of writing reflective skills directly from the main agent.",
-      "name": "agent_skill",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "content": {
-            "description": "Required for set. Full markdown skill body stored in Postgres. Max 1000000 characters.",
-            "type": "string"
-          },
-          "description": {
-            "description": "Required for set. Short summary injected into the standard agent context. Max 255 characters.",
-            "type": "string"
-          },
-          "operation": {
-            "description": "Load a full skill body into context, create or replace a skill, patch supported skill metadata, or delete it by key.",
-            "enum": [
-              "load",
-              "set",
-              "patch",
-              "delete"
-            ],
-            "type": "string"
-          },
-          "patch": {
-            "additionalProperties": false,
-            "description": "Required for patch. Only description is supported; content and tags are preserved.",
-            "properties": {
-              "description": {
-                "description": "Required for patch. Updated short summary injected into the standard agent context. Max 255 characters.",
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
-          "skillKey": {
-            "description": "Stable slug-style skill key, for example calendar or trip_planner.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "tags": {
-            "description": "Optional for set. Prefer omitting tags unless they materially help discovery; when useful, use 0-2 broad lowercase tags. Max 20 tags is a hard cap, not a target; 64 chars each.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "operation",
-          "skillKey"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Run one declared micro-app action for the current input identity. If you do not know the app or action name, call app_list first for the compact discovery index. Use app_list with appSlug and detail=\"full\" only when you need inputSchema details. If the action needs values, pass them through the input object. This is for fixed app actions, not arbitrary SQL.",
-      "name": "app_action",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "actionName": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "appSlug": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "input": {
-            "additionalProperties": {},
-            "propertyNames": {
-              "type": "string"
-            },
-            "type": "object"
-          }
-        },
-        "required": [
-          "appSlug",
-          "actionName"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Check whether one micro-app, or all micro-apps for the current agent, can be loaded cleanly by Panda. Returns exact file/path/message diagnostics and lightweight SQL prepare checks. Use this when app_list or the UI feels confused.",
-      "name": "app_check",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "appSlug": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "type": "object"
-      }
-    },
-    {
-      "description": "Create a blank filesystem-backed micro-app scaffold for the current agent. This writes manifest.json, views.json, actions.json, schema.sql, a basic public UI, README.md, and data/app.sqlite. Use it to start a new app, then edit the generated files. It does not generate a finished product for you.",
-      "name": "app_create",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "description": {
-            "description": "Short description for the app manifest and README.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "identityScoped": {
-            "description": "Set true when views and actions should require identityId.",
-            "type": "boolean"
-          },
-          "name": {
-            "description": "Human-friendly app name.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "schemaSql": {
-            "description": "Optional bootstrap SQL to apply immediately to data/app.sqlite.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "slug": {
-            "description": "Stable app slug, for example period-tracker.",
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "slug",
-          "name"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Create a short-lived one-time browser launch link for a micro-app UI. Use this when the current human asks to open an app. The link signs the browser into that one app as the current input identity.",
-      "name": "app_link_create",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "appSlug": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "expiresInMinutes": {
-            "description": "Launch link lifetime. Defaults to 10 minutes and is capped at 60.",
-            "exclusiveMinimum": 0,
-            "maximum": 60,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "appSlug"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "List filesystem-backed micro-apps installed for the current agent. Defaults to a compact discovery index with app/view/action names. Pass appSlug plus detail=\"full\" only when you need one app's action inputSchema metadata or raw UI URLs.",
-      "name": "app_list",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "appSlug": {
-            "description": "Optional app slug to filter to one installed micro-app.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "detail": {
-            "description": "Defaults to summary. Use full only for one app when you need action inputSchema metadata or raw UI URLs.",
-            "enum": [
-              "summary",
-              "full"
-            ],
-            "type": "string"
-          }
-        },
-        "type": "object"
-      }
-    },
-    {
-      "description": "Run one readonly view from an installed micro-app for the current input identity. If you do not know the app or view name, call app_list first for the compact discovery index. Pass params when the app view expects them.",
-      "name": "app_view",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "appSlug": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "offset": {
-            "maximum": 9007199254740991,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "pageSize": {
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "type": "integer"
-          },
-          "params": {
-            "additionalProperties": {},
-            "propertyNames": {
-              "type": "string"
-            },
-            "type": "object"
-          },
-          "viewName": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "appSlug",
-          "viewName"
-        ],
-        "type": "object"
-      }
-    },
     {
       "description": "Request cancellation of a background tool job from the current session thread and return its updated state.",
       "name": "background_job_cancel",
@@ -775,46 +663,6 @@
         },
         "required": [
           "command"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Search the web with Brave Search. Supports current web lookups plus optional country and search language filters.",
-      "name": "brave_search",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "count": {
-            "maximum": 10,
-            "minimum": 1,
-            "type": "integer"
-          },
-          "country": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "freshness": {
-            "enum": [
-              "day",
-              "week",
-              "month",
-              "year"
-            ],
-            "type": "string"
-          },
-          "query": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "search_lang": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "query"
         ],
         "type": "object"
       }
@@ -926,980 +774,6 @@
       }
     },
     {
-      "description": "Delete a stored secret env value.\nStored values belong to the current agent.",
-      "name": "clear_env_value",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "key": {
-            "description": "Shell env key to clear.",
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "key"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Read the host's current local date and time. Use this when exact now matters instead of relying on stale prompt context.",
-      "name": "current_datetime",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {},
-        "type": "object"
-      }
-    },
-    {
-      "description": "Send a fresh email or reply from a configured Panda email account.\nRecipients must be exact allowlist matches.\nFor replies, pass replyToEmailId and let Panda derive recipients, subject, and thread headers.\nPass decoded human-readable strings for subject, text, and html. Use real newlines and Unicode characters; do not double-escape JSON values as literal \\n, \\u00ed, or \\ud83d\\udc3c.",
-      "name": "email_send",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "accountKey": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "attachments": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "filename": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "mimeType": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "path": {
-                  "minLength": 1,
-                  "type": "string"
-                }
-              },
-              "required": [
-                "path"
-              ],
-              "type": "object"
-            },
-            "maxItems": 10,
-            "type": "array"
-          },
-          "cc": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "address": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "name": {
-                  "minLength": 1,
-                  "type": "string"
-                }
-              },
-              "required": [
-                "address"
-              ],
-              "type": "object"
-            },
-            "maxItems": 20,
-            "type": "array"
-          },
-          "html": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "replyMode": {
-            "enum": [
-              "sender",
-              "all"
-            ],
-            "type": "string"
-          },
-          "replyToEmailId": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "subject": {
-            "maxLength": 200,
-            "minLength": 1,
-            "type": "string"
-          },
-          "text": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "to": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "address": {
-                  "minLength": 1,
-                  "type": "string"
-                },
-                "name": {
-                  "minLength": 1,
-                  "type": "string"
-                }
-              },
-              "required": [
-                "address"
-              ],
-              "type": "object"
-            },
-            "maxItems": 20,
-            "minItems": 1,
-            "type": "array"
-          }
-        },
-        "required": [
-          "accountKey",
-          "text"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Create a disposable execution environment owned by this session. Optionally run a readable .sh setupScript before the environment is marked ready. Copied setup.sh is intentionally inspectable under /artifacts/setup/setup.sh; do not embed secrets in setup scripts. Use harness-injected credential environment variables instead.",
-      "name": "environment_create",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "label": {
-            "maxLength": 80,
-            "minLength": 1,
-            "type": "string"
-          },
-          "setupScript": {
-            "description": "Path to a readable .sh script to copy into the new environment and run before it is marked ready. Copied setup.sh is intentionally inspectable under /artifacts/setup/setup.sh; do not embed secrets in setup scripts. Use harness-injected credential environment variables instead.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "ttlHours": {
-            "exclusiveMinimum": 0,
-            "maximum": 720,
-            "type": "number"
-          }
-        },
-        "type": "object"
-      }
-    },
-    {
-      "description": "Stop a disposable execution environment owned by this session. Files and DB records are preserved.",
-      "name": "environment_stop",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "environmentId": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "environmentId"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Find local files by glob pattern without shell access. Patterns may be workspace-relative or relative to root. Returns workspace-relative paths.",
-      "name": "glob_files",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "limit": {
-            "description": "Maximum number of matches to return.",
-            "maximum": 500,
-            "minimum": 1,
-            "type": "integer"
-          },
-          "pattern": {
-            "description": "Glob pattern like src/**/*.ts or **/*.md.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "root": {
-            "description": "Optional directory or file path to search from.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "target": {
-            "description": "Optional bash target alias to search.",
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "pattern"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Search local UTF-8 text files with regex or literal matching. The optional glob may be workspace-relative or relative to root. Returns matching lines with file paths and line numbers.",
-      "name": "grep_files",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "caseSensitive": {
-            "description": "Match with case sensitivity.",
-            "type": "boolean"
-          },
-          "glob": {
-            "description": "Optional glob filter for candidate files.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "limit": {
-            "description": "Maximum number of matches to return.",
-            "maximum": 500,
-            "minimum": 1,
-            "type": "integer"
-          },
-          "literal": {
-            "description": "Treat pattern as literal text instead of regex.",
-            "type": "boolean"
-          },
-          "pattern": {
-            "description": "Regex pattern to search for.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "root": {
-            "description": "Optional directory or file path to search from.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "target": {
-            "description": "Optional bash target alias to search.",
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "pattern"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Start a background OpenAI gpt-image-2 image generation job and return its job id. The prompt is the source of truth. Accepts local reference image paths. When iterating on a previous image, pass that image path in images.",
-      "name": "image_generate",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "background": {
-            "description": "Output background behavior.",
-            "enum": [
-              "transparent",
-              "opaque",
-              "auto"
-            ],
-            "type": "string"
-          },
-          "count": {
-            "description": "Number of images to generate.",
-            "maximum": 4,
-            "minimum": 1,
-            "type": "integer"
-          },
-          "images": {
-            "description": "Local reference image paths or Panda artifact paths. Supports png, jpg, jpeg, and webp.",
-            "items": {
-              "minLength": 1,
-              "type": "string"
-            },
-            "maxItems": 5,
-            "type": "array"
-          },
-          "model": {
-            "description": "Image model. Defaults to gpt-image-2.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "moderation": {
-            "description": "Moderation strictness.",
-            "enum": [
-              "low",
-              "auto"
-            ],
-            "type": "string"
-          },
-          "outputCompression": {
-            "description": "Compression for jpeg or webp output.",
-            "maximum": 100,
-            "minimum": 0,
-            "type": "integer"
-          },
-          "outputFormat": {
-            "description": "Output image format.",
-            "enum": [
-              "png",
-              "jpeg",
-              "webp"
-            ],
-            "type": "string"
-          },
-          "prompt": {
-            "description": "The current image request.",
-            "maxLength": 32000,
-            "minLength": 1,
-            "type": "string"
-          },
-          "quality": {
-            "description": "Image quality.",
-            "enum": [
-              "low",
-              "medium",
-              "high",
-              "auto"
-            ],
-            "type": "string"
-          },
-          "size": {
-            "description": "Output size, for example auto, 1024x1024, 1536x1024, or 1024x1536.",
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "prompt"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Send a fire-and-forget message, image, or file to another Panda session.",
-      "name": "message_agent",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "agentKey": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "items": {
-            "items": {
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "text": {
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "type": {
-                      "const": "text",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "text"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "caption": {
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "path": {
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "type": {
-                      "const": "image",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "path"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "caption": {
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "filename": {
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "mimeType": {
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "path": {
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "type": {
-                      "const": "file",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "path"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "maxItems": 10,
-            "minItems": 1,
-            "type": "array"
-          },
-          "sessionId": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Always use this tool to message a human. Omit `to` to reply on the current conversation. Use `to.identityHandle` for a person; add `to.channel` only when choosing a specific channel.",
-      "name": "outbound",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "items": {
-            "items": {
-              "oneOf": [
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "text": {
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "type": {
-                      "const": "text",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "text"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "caption": {
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "path": {
-                      "description": "Absolute path or path relative to the current working directory. In remote bash mode, agent-home runner paths are translated automatically.",
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "type": {
-                      "const": "image",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "path"
-                  ],
-                  "type": "object"
-                },
-                {
-                  "additionalProperties": false,
-                  "properties": {
-                    "caption": {
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "filename": {
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "mimeType": {
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "path": {
-                      "description": "Absolute path or path relative to the current working directory. In remote bash mode, agent-home runner paths are translated automatically.",
-                      "minLength": 1,
-                      "type": "string"
-                    },
-                    "type": {
-                      "const": "file",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "type",
-                    "path"
-                  ],
-                  "type": "object"
-                }
-              ]
-            },
-            "maxItems": 10,
-            "minItems": 1,
-            "type": "array"
-          },
-          "to": {
-            "additionalProperties": false,
-            "description": "Optional person/channel destination. Omit to reply on the current inbound conversation.",
-            "properties": {
-              "channel": {
-                "description": "Optional channel override, for example telegram or whatsapp. Omit to use this person's latest active route.",
-                "minLength": 1,
-                "type": "string"
-              },
-              "identityHandle": {
-                "description": "Identity handle of the person to message, for example patrik_mojzis.",
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "identityHandle"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "items"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Run a single read-only SQL query against Postgres. Use only SELECT or WITH. A single read-only SELECT or WITH query. Prefer session.agent_sessions for the current session row. session.agent_sessions exposes current_thread_id, not thread_id. The readonly tool already scopes session.threads, session.messages, session.tool_results, session.inputs, session.runs, session.todos, session.subagent_history, session.scheduled_tasks, session.scheduled_task_runs, session.watches, session.watch_runs, and session.watch_events to the current session. The readonly tool also scopes session.prompts to the current session, and session.agent_pairings and session.agent_skills to the current agent. Do not invent is_active flags or extra session_id subqueries unless you are joining raw tables outside the session.* views. Use session.prompts for session prompt docs, session.agent_pairings for known identities, and session.agent_skills for stored skills. For exploratory reads, prefer left(...), substring(...), regex filters, full-text search, or other narrow projections instead of pulling giant content blobs blindly. For durable session todo context, query session.todos. For older subagent archaeology omitted from the default prompt, query session.subagent_history. For session automation, query session.scheduled_tasks or session.watches directly with ORDER BY/LIMIT. Prefer session.agent_skills for stored skill bodies and session.messages_raw only when you truly need raw JSONB. Large skill bodies may need substring(...) or targeted column selection. If you need schema help, query information_schema.columns. Always use LIMIT on exploratory queries.",
-      "name": "postgres_readonly_query",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "sql": {
-            "description": "Single read-only SELECT or WITH query.",
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "sql"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Read a local UTF-8 text file with line numbers. Use this instead of bash cat/head/tail for workspace inspection.",
-      "name": "read_file",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "maxLines": {
-            "description": "Maximum number of lines to return.",
-            "maximum": 500,
-            "minimum": 1,
-            "type": "integer"
-          },
-          "path": {
-            "description": "Path to the text file to inspect.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "startLine": {
-            "description": "1-based line number to start from.",
-            "maximum": 9007199254740991,
-            "minimum": 1,
-            "type": "integer"
-          },
-          "target": {
-            "description": "Optional bash target alias to read from.",
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "path"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Cancel a scheduled task without deleting its history.",
-      "name": "scheduled_task_cancel",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "reason": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "taskId": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "taskId"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Create a one-off or recurring scheduled task for the current session. Use absolute ISO timestamps with timezone offsets for once tasks.",
-      "name": "scheduled_task_create",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "enabled": {
-            "type": "boolean"
-          },
-          "instruction": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "schedule": {
-            "oneOf": [
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "kind": {
-                    "const": "once",
-                    "type": "string"
-                  },
-                  "runAt": {
-                    "description": "Absolute ISO timestamp with timezone, for example 2026-04-11T03:00:00+02:00.",
-                    "minLength": 1,
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "kind",
-                  "runAt"
-                ],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "cron": {
-                    "description": "Five-field cron expression such as 0 8 * * *.",
-                    "minLength": 1,
-                    "type": "string"
-                  },
-                  "kind": {
-                    "const": "recurring",
-                    "type": "string"
-                  },
-                  "timezone": {
-                    "description": "IANA timezone such as Europe/Bratislava.",
-                    "minLength": 1,
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "kind",
-                  "cron",
-                  "timezone"
-                ],
-                "type": "object"
-              }
-            ]
-          },
-          "title": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "title",
-          "instruction",
-          "schedule"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Update an existing scheduled task in the current session.",
-      "name": "scheduled_task_update",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "enabled": {
-            "type": "boolean"
-          },
-          "instruction": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "schedule": {
-            "oneOf": [
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "kind": {
-                    "const": "once",
-                    "type": "string"
-                  },
-                  "runAt": {
-                    "description": "Absolute ISO timestamp with timezone, for example 2026-04-11T03:00:00+02:00.",
-                    "minLength": 1,
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "kind",
-                  "runAt"
-                ],
-                "type": "object"
-              },
-              {
-                "additionalProperties": false,
-                "properties": {
-                  "cron": {
-                    "description": "Five-field cron expression such as 0 8 * * *.",
-                    "minLength": 1,
-                    "type": "string"
-                  },
-                  "kind": {
-                    "const": "recurring",
-                    "type": "string"
-                  },
-                  "timezone": {
-                    "description": "IANA timezone such as Europe/Bratislava.",
-                    "minLength": 1,
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "kind",
-                  "cron",
-                  "timezone"
-                ],
-                "type": "object"
-              }
-            ]
-          },
-          "taskId": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "title": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "taskId"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Read or update prompts for the current session.\n\nThe tool always uses the current runtime session and never accepts a session id.\n\nSafe SQL-ish text editing over content.\nAllowed functions: regexp_replace, replace, overlay, trim, ltrim, rtrim, upper, lower, left, right, substring, concat, coalesce, length.\nUseful patterns:\n- append: content || '\\n- new line'\n- prepend: 'header\\n' || content\n- delete exact text: replace(content, 'exact line\\n', '')\n- regex delete/update: regexp_replace(content, 'pattern.*\\n', '', 'g')\n- update in place: replace(content, 'old', 'new')\n- insert after anchor: replace(content, 'anchor line', 'anchor line\\nnew line')\n- trim whitespace: trim(content)\n- extract substring: substring(content from 1 for 50)",
-      "name": "session_prompt",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "content": {
-            "description": "Required for set. Replaces the whole prompt content.",
-            "type": "string"
-          },
-          "expression": {
-            "description": "Required for transform. Uses a restricted SQL-ish expression over the current content value.\nSafe SQL-ish text editing over content.\nAllowed functions: regexp_replace, replace, overlay, trim, ltrim, rtrim, upper, lower, left, right, substring, concat, coalesce, length.\nUseful patterns:\n- append: content || '\\n- new line'\n- prepend: 'header\\n' || content\n- delete exact text: replace(content, 'exact line\\n', '')\n- regex delete/update: regexp_replace(content, 'pattern.*\\n', '', 'g')\n- update in place: replace(content, 'old', 'new')\n- insert after anchor: replace(content, 'anchor line', 'anchor line\\nnew line')\n- trim whitespace: trim(content)\n- extract substring: substring(content from 1 for 50)",
-            "type": "string"
-          },
-          "operation": {
-            "description": "Read the current content, replace it, or transform it with a safe SQL-ish text expression.",
-            "enum": [
-              "read",
-              "set",
-              "transform"
-            ],
-            "type": "string"
-          },
-          "slug": {
-            "description": "Which session-scoped prompt to work with. Supported slugs are brief, memory, and heartbeat.",
-            "enum": [
-              "brief",
-              "memory",
-              "heartbeat"
-            ],
-            "type": "string"
-          }
-        },
-        "required": [
-          "slug",
-          "operation"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Persist a secret env value for future bash calls.\nStored values belong to the current agent.",
-      "name": "set_env_value",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "key": {
-            "description": "Shell env key to store.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "value": {
-            "description": "Secret value to persist.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "key",
-          "value"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Create a durable subagent session and hand off work immediately.\nSubagents do not inherit the parent transcript; include all necessary task context in prompt/context.\nProgress and completion come back through A2A message_agent from the subagent, not background-job polling.\nUse environment_create first if isolated_environment needs a disposable environment; spawn_subagent only attaches to an existing ready environment owned by this parent session.",
-      "name": "spawn_subagent",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "context": {
-            "description": "Optional extra context for the subagent.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "credentialAllowlist": {
-            "description": "Explicit credential env keys the subagent may receive. Defaults to none.",
-            "items": {
-              "minLength": 1,
-              "type": "string"
-            },
-            "maxItems": 50,
-            "type": "array"
-          },
-          "environmentId": {
-            "description": "Existing ready parent-owned disposable environment id for isolated_environment only.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "execution": {
-            "description": "Execution mode. Defaults to agent_workspace. isolated_environment requires environmentId.",
-            "enum": [
-              "agent_workspace",
-              "isolated_environment"
-            ],
-            "type": "string"
-          },
-          "profile": {
-            "description": "Optional subagent profile slug. Omit when using ad-hoc toolGroups.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "prompt": {
-            "description": "The concrete handoff prompt for the durable subagent session.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "toolGroups": {
-            "description": "Ad-hoc tool groups to use when profile is omitted.",
-            "items": {
-              "enum": [
-                "core",
-                "workspace_read",
-                "internet",
-                "memory",
-                "execute",
-                "skill_maintenance",
-                "operate",
-                "communicate_human"
-              ],
-              "type": "string"
-            },
-            "maxItems": 20,
-            "minItems": 1,
-            "type": "array"
-          }
-        },
-        "required": [
-          "prompt"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Add or remove a reaction on a Telegram message. Defaults to the current Telegram conversation and message when possible.",
-      "name": "telegram_react",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "emoji": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "messageId": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "remove": {
-            "type": "boolean"
-          },
-          "target": {
-            "additionalProperties": false,
-            "properties": {
-              "connectorKey": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "conversationId": {
-                "minLength": 1,
-                "type": "string"
-              }
-            },
-            "required": [
-              "connectorKey",
-              "conversationId"
-            ],
-            "type": "object"
-          }
-        },
-        "type": "object"
-      }
-    },
-    {
       "description": "Adjust the current run's thinking effort for the next model turn.\nUse persist=true to also update the current session's stored default.",
       "name": "thinking_set",
       "parameters": {
@@ -1933,26 +807,6 @@
       }
     },
     {
-      "description": "Privately vent a short emotional note and continue.\nIf dedicated PANDA_TRACE_VENT_* env is configured, the note is sent to Panda Trace; otherwise it is softly acknowledged and dropped.\nThe tool result never repeats the vent text.",
-      "name": "vent",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "message": {
-            "description": "Private free-text vent message from the agent. Max 2000 characters.",
-            "maxLength": 2000,
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "message"
-        ],
-        "type": "object"
-      }
-    },
-    {
       "description": "Read an image or PDF file. Images are attached directly. PDFs are attached as preview images generated from the file.",
       "name": "view_media",
       "parameters": {
@@ -1970,397 +824,10 @@
         ],
         "type": "object"
       }
-    },
-    {
-      "description": "Create a deterministic watch that polls a source, compares results in code, and wakes the agent only when a real change event exists. Before calling this tool, choose source.kind and detector.kind, call watch_schema_get for those kinds, and use the returned branch schema. Do not guess nested source or detector fields.",
-      "name": "watch_create",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "detector": {
-            "additionalProperties": {},
-            "properties": {
-              "kind": {
-                "enum": [
-                  "new_items",
-                  "snapshot_changed",
-                  "percent_change"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "kind"
-            ],
-            "type": "object"
-          },
-          "enabled": {
-            "type": "boolean"
-          },
-          "intervalMinutes": {
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "type": "integer"
-          },
-          "source": {
-            "additionalProperties": {},
-            "properties": {
-              "kind": {
-                "enum": [
-                  "mongodb_query",
-                  "sql_query",
-                  "http_json",
-                  "http_html",
-                  "imap_mailbox"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "kind"
-            ],
-            "type": "object"
-          },
-          "title": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "title",
-          "intervalMinutes",
-          "source",
-          "detector"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Disable a watch without deleting its event history.",
-      "name": "watch_disable",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "reason": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "watchId": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "watchId"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Return the exact detailed schema, one example, and short notes for a specific watch source kind, detector kind, or both. Call this before watch_create or watch_update once you know the chosen kinds.",
-      "name": "watch_schema_get",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "detectorKind": {
-            "enum": [
-              "new_items",
-              "snapshot_changed",
-              "percent_change"
-            ],
-            "type": "string"
-          },
-          "sourceKind": {
-            "enum": [
-              "mongodb_query",
-              "sql_query",
-              "http_json",
-              "http_html",
-              "imap_mailbox"
-            ],
-            "type": "string"
-          }
-        },
-        "type": "object"
-      }
-    },
-    {
-      "description": "Update an existing watch in the current session. Before changing source or detector, choose the kind, call watch_schema_get for that kind, and use the returned branch schema. Do not guess nested source or detector fields.",
-      "name": "watch_update",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "detector": {
-            "additionalProperties": {},
-            "properties": {
-              "kind": {
-                "enum": [
-                  "new_items",
-                  "snapshot_changed",
-                  "percent_change"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "kind"
-            ],
-            "type": "object"
-          },
-          "enabled": {
-            "type": "boolean"
-          },
-          "intervalMinutes": {
-            "exclusiveMinimum": 0,
-            "maximum": 9007199254740991,
-            "type": "integer"
-          },
-          "source": {
-            "additionalProperties": {},
-            "properties": {
-              "kind": {
-                "enum": [
-                  "mongodb_query",
-                  "sql_query",
-                  "http_json",
-                  "http_html",
-                  "imap_mailbox"
-                ],
-                "type": "string"
-              }
-            },
-            "required": [
-              "kind"
-            ],
-            "type": "object"
-          },
-          "title": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "watchId": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "watchId"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Fetch a public HTML page and return readable markdown-ish content plus follow-up links. No browser, no JavaScript, no PDFs.",
-      "name": "web_fetch",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "url": {
-            "format": "uri",
-            "type": "string"
-          }
-        },
-        "required": [
-          "url"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Start a background public web research job with OpenAI hosted web search and return its job id. Use background_job_wait only when the current response needs the cited answer now.",
-      "name": "web_research",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "query": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "query"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Transcribe a local audio file to text with OpenAI whisper-1.",
-      "name": "whisper",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "properties": {
-          "language": {
-            "description": "Optional ISO language code like 'en' or 'sk'.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "path": {
-            "description": "Absolute path or path relative to the current working directory. In remote bash mode, agent-home runner paths are translated automatically.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "prompt": {
-            "description": "Optional prompt to bias tricky names, slang, or jargon.",
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": [
-          "path"
-        ],
-        "type": "object"
-      }
-    },
-    {
-      "description": "Read, list, search, write, move, and archive agent-owned Wiki.js pages, plus attach and fetch namespace-scoped assets.\nEvery path is hard-scoped to the current agent namespace. Do not read or write outside it.\nlist returns pages under a subtree and hides archived pages unless you explicitly include them.\nWrite replaces the full page body; there is no line-level patching here.\nwrite_section replaces or appends one ## markdown section so agents do not have to hand-edit whole pages.\nattach_image uploads a local image into the page's managed _assets subtree and inserts or replaces one slot-managed markdown image block inside a section.\nmove is for restructuring live pages and can rewrite inbound links plus relative links inside the moved page.\narchive moves a page under the namespace _archive tree instead of deleting it.\nfetch_asset downloads one stored asset into Panda media storage so you can inspect it with view_media.\nFor safe updates, read first and pass baseUpdatedAt back into write or attach_image.",
-      "name": "wiki",
-      "parameters": {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "additionalProperties": false,
-        "description": "Read, list, search, write, move, archive, attach images, and fetch namespace-scoped assets for agent-owned Wiki.js pages.",
-        "properties": {
-          "alt": {
-            "description": "Markdown alt text for the inserted image.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "assetPath": {
-            "description": "Stored wiki asset path without locale, for example agents/panda/_assets/profile/photo.png.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "baseUpdatedAt": {
-            "description": "Optional updatedAt from an earlier read. When provided, write or attach_image aborts on concurrent edits.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "caption": {
-            "description": "Optional caption rendered under the image.",
-            "type": "string"
-          },
-          "content": {
-            "description": "Write replaces the full page body. write_section stores this as the section body under ## <section>.",
-            "type": "string"
-          },
-          "createIfMissing": {
-            "description": "Defaults to true when creating pages through write, write_section, or attach_image.",
-            "type": "boolean"
-          },
-          "description": {
-            "description": "Optional page description. When omitted on update, the current description is preserved.",
-            "type": "string"
-          },
-          "destinationPath": {
-            "description": "Only for move. Destination wiki path without locale. It must stay inside the current agent namespace and outside _archive.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "includeArchived": {
-            "description": "Only for list. Include archived pages under _archive. Defaults to false unless the path itself is inside _archive.",
-            "type": "boolean"
-          },
-          "isPrivate": {
-            "description": "Optional privacy flag. Defaults to false for new pages; preserved on update.",
-            "type": "boolean"
-          },
-          "isPublished": {
-            "description": "Optional publish flag. Defaults to true for new pages; preserved on update.",
-            "type": "boolean"
-          },
-          "limit": {
-            "description": "Only for list. Maximum pages to return. Defaults to 100.",
-            "exclusiveMinimum": 0,
-            "maximum": 500,
-            "type": "integer"
-          },
-          "locale": {
-            "description": "Wiki locale. Defaults to en.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "operation": {
-            "description": "Wiki operation. Required fields by operation: read(path), list(path optional), search(query), write(path+content), write_section(path+section+content), move(path+destinationPath), archive(path), attach_image(path+section+slot+sourcePath+alt), fetch_asset(assetPath).",
-            "enum": [
-              "read",
-              "list",
-              "search",
-              "write",
-              "write_section",
-              "move",
-              "archive",
-              "attach_image",
-              "fetch_asset"
-            ],
-            "type": "string"
-          },
-          "path": {
-            "description": "Wiki path without locale. It must stay inside the current agent namespace, for example agents/panda/profile. Leading slash is okay; it will be stripped.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "query": {
-            "description": "Search query for operation=search.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "rewriteLinks": {
-            "description": "Only for move. Defaults to true. When enabled, Panda rewrites inbound links from other active pages and adjusts relative links inside the moved page itself.",
-            "type": "boolean"
-          },
-          "section": {
-            "description": "Exact markdown heading title to replace or append under a ## section.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "slot": {
-            "description": "Stable per-page image slot so Panda can replace the same managed image later instead of piling on duplicates.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "sourcePath": {
-            "description": "Local image file path to upload into Wiki.js.",
-            "minLength": 1,
-            "type": "string"
-          },
-          "tags": {
-            "description": "Optional tag list. When omitted on update, current tags are preserved.",
-            "items": {
-              "minLength": 1,
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "title": {
-            "description": "Used when creating a missing page. Optional and ignored on existing-page updates.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "operation"
-        ],
-        "type": "object"
-      }
     }
   ],
   "toolsets": {
-    "daemonChannelExtras": [
-      "email_send",
-      "outbound",
-      "message_agent",
-      "telegram_react"
-    ],
     "defaultBrowser": [
-      "current_datetime",
-      "read_file",
-      "glob_files",
-      "grep_files",
       "view_media",
       "browser"
     ],
@@ -2369,114 +836,31 @@
       "background_job_status",
       "background_job_wait",
       "background_job_cancel",
-      "current_datetime",
       "view_media",
-      "image_generate",
-      "web_fetch",
-      "vent",
-      "postgres_readonly_query",
-      "web_research",
-      "whisper",
-      "brave_search"
+      "thinking_set"
     ],
-    "defaultMemory": [
-      "current_datetime",
-      "postgres_readonly_query",
-      "wiki"
-    ],
+    "defaultMemory": [],
     "defaultSkillMaintainer": [
-      "current_datetime",
-      "postgres_readonly_query",
-      "read_file",
-      "glob_files",
-      "grep_files",
-      "view_media",
-      "agent_skill"
-    ],
-    "defaultWorkspace": [
-      "current_datetime",
-      "read_file",
-      "glob_files",
-      "grep_files",
       "view_media"
     ],
-    "environmentControl": [
-      "environment_create",
-      "environment_stop"
+    "defaultWorkspace": [
+      "view_media"
     ],
     "runtimeMain": [
       "bash",
       "background_job_status",
       "background_job_wait",
       "background_job_cancel",
-      "current_datetime",
       "view_media",
-      "image_generate",
-      "web_fetch",
-      "vent",
-      "postgres_readonly_query",
-      "web_research",
-      "whisper",
-      "brave_search",
-      "thinking_set",
-      "session_prompt",
-      "app_create",
-      "app_list",
-      "app_link_create",
-      "app_check",
-      "app_view",
-      "app_action",
-      "wiki",
-      "agent_skill",
-      "set_env_value",
-      "clear_env_value",
-      "scheduled_task_create",
-      "scheduled_task_update",
-      "scheduled_task_cancel",
-      "watch_create",
-      "watch_schema_get",
-      "watch_update",
-      "watch_disable",
-      "environment_create",
-      "environment_stop",
-      "spawn_subagent"
+      "thinking_set"
     ],
     "runtimeSubagent": [
       "bash",
       "background_job_status",
       "background_job_wait",
       "background_job_cancel",
-      "current_datetime",
       "view_media",
-      "image_generate",
-      "web_fetch",
-      "vent",
-      "postgres_readonly_query",
-      "web_research",
-      "whisper",
-      "brave_search",
       "thinking_set",
-      "session_prompt",
-      "app_create",
-      "app_list",
-      "app_link_create",
-      "app_check",
-      "app_view",
-      "app_action",
-      "wiki",
-      "agent_skill",
-      "set_env_value",
-      "clear_env_value",
-      "scheduled_task_create",
-      "scheduled_task_update",
-      "scheduled_task_cancel",
-      "watch_create",
-      "watch_schema_get",
-      "watch_update",
-      "watch_disable",
-      "read_file",
-      "glob_files",
-      "grep_files",
       "browser"
     ]
   },

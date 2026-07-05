@@ -2,10 +2,12 @@ import path from "node:path";
 
 import type {
     AgentAppActionResult,
+    AgentAppActionExecutionOptions,
     AgentAppCheckResult,
     AgentAppDefinition,
     AgentAppDiagnosticIssue,
     AgentAppInspectionResult,
+    AgentAppViewExecutionOptions,
     AgentAppViewResult,
 } from "../../domain/apps/types.js";
 import {normalizeAgentAppSlug} from "../../domain/apps/types.js";
@@ -23,8 +25,6 @@ import {
 import {
     executeAgentAppAction,
     executeAgentAppView,
-    type AgentAppActionExecutionOptions,
-    type AgentAppViewExecutionOptions,
 } from "./sqlite-execution.js";
 import {
     openAppDatabase,

@@ -6,23 +6,27 @@ import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
 import type {SessionRuntimeConfigRecord} from "../../domain/sessions/types.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
-import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord} from "../../domain/threads/runtime/types.js";
+import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord, ThreadToolJobRecord} from "../../domain/threads/runtime/types.js";
 import type {ThreadRuntimeNotification} from "../../domain/threads/runtime/postgres-notifications.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
+import {isRecord} from "../../lib/records.js";
+import {truncateText} from "../../lib/strings.js";
 import {buildDefaultAgentTools} from "../../panda/definition.js";
 import {buildStoredTranscriptLines} from "../shared/transcript-lines.js";
 import {
     appendStoredTranscriptMessages,
+    createStoredTranscriptEntry,
     loadStoredThreadSnapshot,
     observeLatestStoredRun,
     resolveStoredThreadDisplayConfig,
     resolveRuntimeDisplayedCwd,
 } from "../shared/stored-thread.js";
-import {formatThinkingLevel, type TranscriptLineCacheEntry,} from "../tui/chat-shared.js";
+import {formatThinkingLevel, type TranscriptEntry, type TranscriptLineCacheEntry,} from "../tui/chat-shared.js";
 import {stripAnsi, theme} from "../tui/theme.js";
 
 const DEFAULT_TAIL_MESSAGES = 40;
 const SYNC_DEBOUNCE_MS = 150;
+const COMMAND_JOB_DETAIL_CHARS = 220;
 
 export type ObserveTarget =
   | { kind: "agent"; agentKey: string }
@@ -38,7 +42,7 @@ export interface ObserveRunOptions {
 
 export interface ObserveServices {
   sessionStore: Pick<SessionStore, "getMainSession" | "getSession" | "getSessionRuntimeConfig">;
-  store: Pick<ThreadRuntimeStore, "getThread" | "loadTranscript" | "listRuns">;
+  store: Pick<ThreadRuntimeStore, "getThread" | "loadTranscript" | "listRuns" | "listToolJobs">;
   subscribe(
     listener: (notification: ThreadRuntimeNotification) => Promise<void> | void,
   ): Promise<() => Promise<void>>;
@@ -60,6 +64,81 @@ interface ResolvedObserveTarget {
   sessionId: string;
   threadId: string;
   agentKey: string;
+}
+
+interface TimedTranscriptEntry {
+  at: number;
+  order: number;
+  entry: TranscriptEntry;
+}
+
+function commandToolJobStatusKey(job: ThreadToolJobRecord): string {
+  return `${job.id}:${job.status}:${job.finishedAt ?? ""}`;
+}
+
+function commandToolJobEventAt(job: ThreadToolJobRecord): number {
+  return job.finishedAt ?? job.startedAt;
+}
+
+function shouldRenderInitialCommandToolJob(job: ThreadToolJobRecord, earliestVisibleTranscriptAt: number | undefined): boolean {
+  if (earliestVisibleTranscriptAt === undefined || job.status === "running") {
+    return true;
+  }
+
+  return commandToolJobEventAt(job) >= earliestVisibleTranscriptAt;
+}
+
+function readStringField(value: unknown, field: string): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const entry = value[field];
+  return typeof entry === "string" && entry.trim() ? entry.trim() : undefined;
+}
+
+function renderCommandToolJobBody(job: ThreadToolJobRecord): string {
+  const result = isRecord(job.result) ? job.result : undefined;
+  const command = readStringField(result, "command") ?? job.summary;
+  const details = [
+    job.id,
+    job.status,
+    command,
+    readStringField(result, "summary"),
+    readStringField(result, "code"),
+    job.error ? `error: ${job.error}` : undefined,
+    typeof job.durationMs === "number" ? `${job.durationMs}ms` : undefined,
+  ].filter((entry): entry is string => Boolean(entry));
+
+  return truncateText(details.join(" | "), COMMAND_JOB_DETAIL_CHARS);
+}
+
+function appendCommandToolJobEntries(input: {
+  jobs: readonly ThreadToolJobRecord[];
+  seenStatusKeys: Set<string>;
+  nextEntryId: number;
+}): {entries: TranscriptEntry[]; nextEntryId: number} {
+  const entries: TranscriptEntry[] = [];
+  let nextEntryId = input.nextEntryId;
+  for (const job of input.jobs) {
+    if (job.kind !== "command") {
+      continue;
+    }
+    const statusKey = commandToolJobStatusKey(job);
+    if (input.seenStatusKeys.has(statusKey)) {
+      continue;
+    }
+    input.seenStatusKeys.add(statusKey);
+    const created = createStoredTranscriptEntry({
+      nextEntryId,
+      role: job.status === "failed" ? "error" : "tool",
+      title: "command",
+      body: renderCommandToolJobBody(job),
+    });
+    entries.push(created.entry);
+    nextEntryId = created.nextEntryId;
+  }
+
+  return {entries, nextEntryId};
 }
 
 export async function createObserveServices(dbUrl?: string): Promise<ObserveServices> {
@@ -97,6 +176,7 @@ export class ObserveApp {
   private readonly createServices: (dbUrl?: string) => Promise<ObserveServices>;
   private readonly currentTools = buildDefaultAgentTools();
   private readonly seenStoredMessageIds = new Set<string>();
+  private readonly seenToolJobStatusKeys = new Set<string>();
   private readonly transcriptLineCache = new Map<number, TranscriptLineCacheEntry>();
   private readonly fallbackCwd = process.cwd();
   private services: ObserveServices | null = null;
@@ -273,6 +353,7 @@ export class ObserveApp {
     thread: ThreadRecord;
     transcript: readonly ThreadMessageRecord[];
     runs: readonly ThreadRunRecord[];
+    toolJobs: readonly ThreadToolJobRecord[];
     runtimeConfig: SessionRuntimeConfigRecord;
   }> {
     const services = this.requireServices();
@@ -281,6 +362,7 @@ export class ObserveApp {
       loadStoredThreadSnapshot({
         store: services.store,
         threadId: resolved.threadId,
+        includeToolJobs: true,
       }),
       services.sessionStore.getSessionRuntimeConfig(resolved.sessionId),
     ]);
@@ -297,6 +379,7 @@ export class ObserveApp {
     thread: ThreadRecord;
     transcript: readonly ThreadMessageRecord[];
     runs: readonly ThreadRunRecord[];
+    toolJobs: readonly ThreadToolJobRecord[];
     runtimeConfig: SessionRuntimeConfigRecord;
   }): Promise<void> {
     const previousThreadId = this.currentThread?.id ?? "";
@@ -317,7 +400,7 @@ export class ObserveApp {
 
     if (isInitial) {
       this.renderHeader(snapshot.thread, snapshot.resolved, snapshot.runs, snapshot.runtimeConfig);
-      this.renderInitialTranscript(snapshot.transcript);
+      this.renderInitialActivity(snapshot.transcript, snapshot.toolJobs);
       this.seedRunState(snapshot.runs);
       return;
     }
@@ -334,11 +417,13 @@ export class ObserveApp {
       this.writeLines(this.renderTranscriptEntries(appended.entries));
     }
 
+    this.renderCommandToolJobs(snapshot.toolJobs);
     this.renderRunTransition(snapshot.runs);
   }
 
   private resetThreadViewState(): void {
     this.seenStoredMessageIds.clear();
+    this.seenToolJobStatusKeys.clear();
     this.transcriptLineCache.clear();
     this.nextEntryId = 1;
     this.lastObservedRunStatusKey = null;
@@ -392,36 +477,110 @@ export class ObserveApp {
     this.writeLines(lines);
   }
 
-  private renderInitialTranscript(records: readonly ThreadMessageRecord[]): void {
+  private collectInitialTranscriptEntries(records: readonly ThreadMessageRecord[]): {
+    entries: TimedTranscriptEntry[];
+    earliestVisibleTranscriptAt?: number;
+    hasTranscript: boolean;
+  } {
     if (records.length === 0) {
-      this.writeLines([
-        this.renderStatusLine("no stored transcript yet", "info"),
-      ]);
-      return;
+      return {
+        entries: [],
+        hasTranscript: false,
+      };
     }
 
+    const entries: TimedTranscriptEntry[] = [];
+    let order = 0;
     const tailCount = Math.max(1, this.tail);
     const cutoff = Math.max(0, records.length - tailCount);
     for (const record of records.slice(0, cutoff)) {
       this.seenStoredMessageIds.add(record.id);
     }
 
-    const appended = appendStoredTranscriptMessages({
-      records,
-      visibleStoredMessageIds: this.seenStoredMessageIds,
-      currentTools: this.currentTools,
-      nextEntryId: this.nextEntryId,
-    });
-    this.nextEntryId = appended.nextEntryId;
+    const visibleRecords = records.slice(cutoff);
+    for (const record of visibleRecords) {
+      const appended = appendStoredTranscriptMessages({
+        records: [record],
+        visibleStoredMessageIds: this.seenStoredMessageIds,
+        currentTools: this.currentTools,
+        nextEntryId: this.nextEntryId,
+      });
+      this.nextEntryId = appended.nextEntryId;
+      for (const entry of appended.entries) {
+        entries.push({
+          at: record.createdAt,
+          order,
+          entry,
+        });
+        order += 1;
+      }
+    }
 
-    if (appended.entries.length === 0) {
+    return {
+      entries,
+      earliestVisibleTranscriptAt: visibleRecords[0]?.createdAt,
+      hasTranscript: true,
+    };
+  }
+
+  private collectInitialCommandToolJobEntries(
+    jobs: readonly ThreadToolJobRecord[],
+    earliestVisibleTranscriptAt: number | undefined,
+    initialOrder: number,
+  ): TimedTranscriptEntry[] {
+    const entries: TimedTranscriptEntry[] = [];
+    let order = initialOrder;
+    for (const job of jobs) {
+      if (!shouldRenderInitialCommandToolJob(job, earliestVisibleTranscriptAt)) {
+        continue;
+      }
+
+      const appended = appendCommandToolJobEntries({
+        jobs: [job],
+        seenStatusKeys: this.seenToolJobStatusKeys,
+        nextEntryId: this.nextEntryId,
+      });
+      this.nextEntryId = appended.nextEntryId;
+      for (const entry of appended.entries) {
+        entries.push({
+          at: commandToolJobEventAt(job),
+          order,
+          entry,
+        });
+        order += 1;
+      }
+    }
+
+    return entries;
+  }
+
+  private renderInitialActivity(
+    records: readonly ThreadMessageRecord[],
+    jobs: readonly ThreadToolJobRecord[],
+  ): void {
+    const transcript = this.collectInitialTranscriptEntries(records);
+    const commandJobs = this.collectInitialCommandToolJobEntries(
+      jobs,
+      transcript.earliestVisibleTranscriptAt,
+      transcript.entries.length,
+    );
+    const entries = [...transcript.entries, ...commandJobs]
+      .sort((left, right) => left.at - right.at || left.order - right.order)
+      .map((entry) => entry.entry);
+
+    if (entries.length === 0) {
       this.writeLines([
-        this.renderStatusLine("no visible transcript entries in the current tail", "info"),
+        this.renderStatusLine(
+          transcript.hasTranscript
+            ? "no visible transcript entries in the current tail"
+            : "no stored transcript yet",
+          "info",
+        ),
       ]);
       return;
     }
 
-    this.writeLines(this.renderTranscriptEntries(appended.entries));
+    this.writeLines(this.renderTranscriptEntries(entries));
   }
 
   private renderTranscriptEntries(entries: Parameters<typeof buildStoredTranscriptLines>[0]["transcript"]): string[] {
@@ -430,6 +589,20 @@ export class ObserveApp {
       transcript: entries,
       transcriptLineCache: this.transcriptLineCache,
     }).map((line) => line.rendered);
+  }
+
+  private renderCommandToolJobs(jobs: readonly ThreadToolJobRecord[]): void {
+    const appended = appendCommandToolJobEntries({
+      jobs,
+      seenStatusKeys: this.seenToolJobStatusKeys,
+      nextEntryId: this.nextEntryId,
+    });
+    this.nextEntryId = appended.nextEntryId;
+    if (appended.entries.length === 0) {
+      return;
+    }
+
+    this.writeLines(this.renderTranscriptEntries(appended.entries));
   }
 
   private renderHeader(

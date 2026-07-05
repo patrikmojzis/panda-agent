@@ -1,3 +1,5 @@
+import type {PgQueryable} from "./postgres-query.js";
+
 type RelationSuffixMap = Record<string, string>;
 
 export const RUNTIME_SCHEMA = "runtime";
@@ -18,6 +20,36 @@ export function quoteIdentifier(value: string): string {
 
 export function quoteQualifiedIdentifier(schema: string, relation: string): string {
   return `${quoteIdentifier(schema)}.${quoteIdentifier(relation)}`;
+}
+
+/** Checks table/view existence without issuing a SELECT against a relation that may not exist. */
+export async function postgresRelationExists(
+  queryable: PgQueryable,
+  schemaName: string,
+  relationName: string,
+): Promise<boolean> {
+  const safeSchema = validateIdentifier(schemaName);
+  const safeRelation = validateIdentifier(relationName);
+  const informationSchemaResult = await queryable.query(`
+    SELECT table_schema
+    FROM information_schema.tables
+    WHERE table_name = $1
+  `, [safeRelation]);
+  if (informationSchemaResult.rows.some((row) => (row as {table_schema?: unknown}).table_schema === safeSchema)) {
+    return true;
+  }
+  const publicFallbackExists = informationSchemaResult.rows.some((row) => (
+    row as {table_schema?: unknown}
+  ).table_schema === "public");
+
+  try {
+    const regclassResult = await queryable.query("SELECT to_regclass($1) AS relation", [
+      `${safeSchema}.${safeRelation}`,
+    ]);
+    return regclassResult.rows.some((row) => (row as {relation?: unknown}).relation != null);
+  } catch {
+    return publicFallbackExists;
+  }
 }
 
 export function buildSchemaRelationNames<TRelations extends RelationSuffixMap>(

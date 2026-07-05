@@ -5,6 +5,8 @@ import {Command, InvalidArgumentError} from "commander";
 import type {Pool} from "pg";
 
 import {DB_URL_OPTION_DESCRIPTION, parsePositiveIntegerOption} from "../../lib/cli.js";
+import {writeCommandDescriptorHelp} from "../commands/cli.js";
+import type {CommandDescriptor} from "../commands/types.js";
 import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
 import {normalizeAgentKey} from "../agents/types.js";
@@ -22,6 +24,11 @@ import {PostgresIdentityStore} from "../identity/postgres.js";
 import {createSessionWithInitialThread} from "./lifecycle.js";
 import {PostgresSessionStore} from "./postgres.js";
 import {SESSION_BRIEF_PROMPT_SLUG, normalizeSessionAlias, normalizeSessionPromptSlug, type SessionPromptSlug, type SessionRecord} from "./types.js";
+import {
+  sessionPromptReadCommandDescriptor,
+  sessionPromptSetCommandDescriptor,
+  sessionPromptTransformCommandDescriptor,
+} from "./prompt-commands.js";
 
 export interface SessionCliOptions {
   dbUrl?: string;
@@ -53,6 +60,11 @@ interface SessionPromptCliOptions extends ScopedSessionRefCliOptions {
   content?: string;
   slug?: SessionPromptSlug;
   stdin?: boolean;
+}
+
+interface SessionPromptCommandHelpOptions {
+  help?: boolean;
+  json?: boolean | string;
 }
 
 interface SessionTargetListCliOptions extends ScopedSessionRefCliOptions {
@@ -538,6 +550,41 @@ async function readSessionPromptCommand(
   });
 }
 
+function registerCurrentSessionPromptHelpCommand(
+  promptProgram: Command,
+  subcommand: string,
+  descriptor: CommandDescriptor,
+): void {
+  promptProgram
+    .command(subcommand)
+    .description(descriptor.summary)
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show agent command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .action((options: SessionPromptCommandHelpOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(descriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        `panda session prompt current ${subcommand} execution requires the agent command shim transport; use --help for the command contract.`,
+      );
+    });
+}
+
+function registerCurrentSessionPromptHelpCommands(promptProgram: Command): void {
+  const currentProgram = promptProgram
+    .command("current")
+    .description("Use agent-facing current-session prompt commands");
+
+  registerCurrentSessionPromptHelpCommand(currentProgram, "read", sessionPromptReadCommandDescriptor);
+  registerCurrentSessionPromptHelpCommand(currentProgram, "set", sessionPromptSetCommandDescriptor);
+  registerCurrentSessionPromptHelpCommand(currentProgram, "transform", sessionPromptTransformCommandDescriptor);
+}
+
 async function setSessionPromptCommand(
   sessionRef: string,
   content: string | undefined,
@@ -882,6 +929,8 @@ export function registerSessionManagementCommands(sessionProgram: Command): void
   const promptProgram = sessionProgram
     .command("prompt")
     .description("Manage session prompts");
+
+  registerCurrentSessionPromptHelpCommands(promptProgram);
 
   promptProgram
     .command("list")

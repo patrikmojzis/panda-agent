@@ -1,4 +1,5 @@
 import {ToolError} from "../../kernel/agent/exceptions.js";
+import type {JsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToNull} from "../../lib/strings.js";
 import {readResponseError} from "../../lib/http.js";
@@ -303,6 +304,29 @@ export function renderWebResearchText(result: Pick<PerformWebResearchResult, "an
   return `${answer}\n\nSources:\n${sourceLines.join("\n")}`;
 }
 
+export function serializeWebResearchResultForBackgroundJob(result: PerformWebResearchResult): JsonObject {
+  return {
+    contentText: renderWebResearchText(result),
+    details: {
+      query: result.query,
+      provider: result.provider,
+      model: result.model,
+      responseId: result.responseId,
+      status: result.status,
+      elapsedMs: result.elapsedMs,
+      citations: result.citations.map((citation) => ({
+        index: citation.index,
+        title: citation.title,
+        url: citation.url,
+      }) satisfies JsonObject),
+      sources: result.sources.map((source) => ({
+        title: source.title,
+        url: source.url,
+      }) satisfies JsonObject),
+    },
+  };
+}
+
 function parseWebResearchPayload(
   query: string,
   payload: unknown,
@@ -428,10 +452,10 @@ export async function performWebResearch(
     return parseWebResearchPayload(query, payload, model, Date.now() - startedAt);
   } catch (error) {
     if (options.signal?.aborted) {
-      throw new ToolError("web_research was aborted.");
+      throw new ToolError("openai.web_research was aborted.");
     }
     if (timeoutSignal.aborted) {
-      throw new ToolError(`web_research timed out after ${timeoutMs}ms.`);
+      throw new ToolError(`openai.web_research timed out after ${timeoutMs}ms.`);
     }
     if (error instanceof ToolError) {
       throw error;

@@ -9,9 +9,49 @@ export interface TelegramReactionActionPayload {
   remove?: boolean;
 }
 
+export interface TelegramEditActionPayload {
+  conversationId: string;
+  messageId: string;
+  text: string;
+}
+
+export interface TelegramDeleteActionPayload {
+  conversationId: string;
+  messageId: string;
+}
+
+export interface TelegramPinActionPayload {
+  conversationId: string;
+  messageId: string;
+  silent?: boolean;
+}
+
+export interface TelegramUnpinActionPayload {
+  conversationId: string;
+  messageId: string;
+}
+
+export type TelegramStickerSendActionPayload = {
+  conversationId: string;
+  sticker:
+    | {
+        type: "file";
+        path: string;
+      }
+    | {
+        type: "file_id";
+        fileId: string;
+      };
+};
+
 export interface ChannelActionPayloadByKind {
   typing: ChannelTypingRequest;
   telegram_reaction: TelegramReactionActionPayload;
+  telegram_edit: TelegramEditActionPayload;
+  telegram_delete: TelegramDeleteActionPayload;
+  telegram_pin: TelegramPinActionPayload;
+  telegram_unpin: TelegramUnpinActionPayload;
+  telegram_sticker_send: TelegramStickerSendActionPayload;
 }
 
 export type ChannelActionKind = keyof ChannelActionPayloadByKind;

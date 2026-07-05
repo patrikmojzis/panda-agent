@@ -6,6 +6,9 @@ import type {SessionStore} from "../../domain/sessions/store.js";
 import type {SubagentProfileStore} from "../../domain/subagents/store.js";
 import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
 import type {WatchStore} from "../../domain/watches/store.js";
+import type {RuntimeCommandLeaseService} from "./command-leases.js";
+import type {RuntimeCommandDispatcher} from "./command-dispatcher.js";
+import type {RuntimeCommandFileResolver} from "./command-files.js";
 import type {EmailStore} from "../../domain/email/types.js";
 import {ThreadRuntimeCoordinator, type ThreadRuntimeEvent} from "../../domain/threads/runtime/coordinator.js";
 import {PostgresThreadLeaseManager} from "../../domain/threads/runtime/postgres-lease.js";
@@ -46,8 +49,9 @@ import {
 import type {ExecutionEnvironmentResolver} from "./execution-environment-resolver.js";
 import type {ExecutionEnvironmentLifecycleService} from "./execution-environment-service.js";
 import {SubagentSessionService} from "./subagent-session-service.js";
-import {EnvironmentCreateTool, EnvironmentStopTool} from "../../panda/tools/environment-tools.js";
-import {SpawnSubagentTool} from "../../panda/tools/spawn-subagent-tool.js";
+import type {CommandCatalog} from "../../domain/commands/modules.js";
+import type {CommandCatalogModule} from "../../domain/commands/types.js";
+import {buildSubagentCommandDependencies} from "./command-dependencies.js";
 
 export {
   createPostgresPool,
@@ -91,6 +95,9 @@ export interface DefinitionResolverContext {
   scheduledTasks: ScheduledTaskStore;
   email: EmailStore;
   wikiBindingService: WikiBindingService | null;
+  commandCatalog: CommandCatalog<any, CommandCatalogModule<any>>;
+  /** @deprecated Prefer commandCatalog.modules when raw module metadata is truly needed. */
+  commandModules: readonly CommandCatalogModule<any>[];
   mainTools: readonly Tool[];
   subagentTools: readonly Tool[];
 }
@@ -100,6 +107,9 @@ export interface RuntimeOptions {
   readOnlyDbUrl?: string;
   cwd?: string;
   maxSubagentDepth?: number;
+  commandCatalog?: CommandCatalog<any, CommandCatalogModule<any>>;
+  /** @deprecated Prefer commandCatalog. */
+  commandModules?: readonly CommandCatalogModule<any>[];
   onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
   onStoreNotification?: (notification: ThreadRuntimeNotification) => Promise<void> | void;
   resolveDefinition: (
@@ -138,6 +148,12 @@ export interface RuntimeServices {
   scheduledTasks: ScheduledTaskStore;
   email: EmailStore;
   watches: WatchStore;
+  commandExecutor: RuntimeCommandDispatcher;
+  commandLeases: RuntimeCommandLeaseService;
+  commandFileResolver: RuntimeCommandFileResolver;
+  commandCatalog: CommandCatalog<any, CommandCatalogModule<any>>;
+  /** @deprecated Prefer commandCatalog.modules when raw module metadata is truly needed. */
+  commandModules: readonly CommandCatalogModule<any>[];
   subagentSessions: SubagentSessionService;
   a2aBindings: A2ASessionBindingRepo;
   coordinator: ThreadRuntimeCoordinator;
@@ -171,6 +187,8 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     scheduledTasks: runtime.scheduledTasks,
     email: runtime.email,
     wikiBindingService: runtime.wikiBindingService,
+    commandCatalog: runtime.commandCatalog,
+    commandModules: runtime.commandModules,
     mainTools: runtime.mainTools,
     subagentTools: runtime.subagentTools,
   };
@@ -189,21 +207,16 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     profiles: runtime.subagentProfiles,
     environments: runtime.executionEnvironmentService,
     a2aBindings: runtime.a2aBindings,
+    commandCatalog: runtime.commandCatalog,
     coordinator,
   });
-  const mainTools: readonly Tool[] = [
-    ...runtime.mainTools,
-    new EnvironmentCreateTool({
-      lifecycle: runtime.executionEnvironmentService,
-    }),
-    new EnvironmentStopTool({
-      environments: runtime.executionEnvironments,
-      lifecycle: runtime.executionEnvironmentService,
-    }),
-    new SpawnSubagentTool({
-      subagentSessions,
-    }),
-  ];
+  runtime.commandExecutor.registerCommands([
+    ...runtime.commandCatalog.createCommands(
+      buildSubagentCommandDependencies(subagentSessions),
+      {registrationPhase: "runtime.subagent", requireAll: true},
+    ),
+  ]);
+  const mainTools: readonly Tool[] = runtime.mainTools;
   const subagentTools: readonly Tool[] = mergeToolsByName([
     mainTools,
     runtime.subagentTools,
@@ -245,6 +258,11 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     scheduledTasks: runtime.scheduledTasks,
     email: runtime.email,
     watches: runtime.watches,
+    commandExecutor: runtime.commandExecutor,
+    commandLeases: runtime.commandLeases,
+    commandFileResolver: runtime.commandFileResolver,
+    commandCatalog: runtime.commandCatalog,
+    commandModules: runtime.commandModules,
     subagentSessions,
     a2aBindings: runtime.a2aBindings,
     coordinator,

@@ -14,9 +14,8 @@ Core files:
 - `src/domain/watches/postgres.ts`
 - `src/domain/watches/postgres-schema.ts`
 - `src/domain/watches/evaluator.ts`
-- `src/integrations/watches/evaluator.ts`
 - `src/domain/watches/runner.ts`
-- `src/panda/tools/watch-tools.ts`
+- `src/domain/watches/commands.ts`
 - `src/prompts/runtime/watch-events.ts`
 
 ## Runtime Flow
@@ -26,7 +25,7 @@ The hot path is:
 1. `WatchRunner` lists due watches
 2. store claims one watch and creates a `watch_runs` row in `claimed`
 3. runner resolves the watch session and reads `session.current_thread_id` for evaluator/run context
-4. the integrations evaluator resolves the source and normalizes it into one of:
+4. the evaluator resolves the source and normalizes it into one of:
    - `collection`
    - `snapshot`
    - `scalar`
@@ -99,20 +98,23 @@ Defaults:
 - enabled creates and enabled source/detector resets can seed state at write time
 - first successful runner poll ignores existing state when no seed is present
 - delivery is wake-only
-- watch tools create watches for the current session automatically
+- watch commands create watches for the current session automatically
 - changed-event delivery resolves the current thread dynamically from the session after evaluation
 
-## Temporary Schema Escape Hatch
+## Schema Discovery
 
-`watch_create` and `watch_update` intentionally expose compact provider-visible schemas.
-Detailed branch schemas now live behind `watch_schema_get`.
-Those compact tool schemas still need to enforce the same invalid-config rules
-as the persisted domain parser in `src/domain/watches/config.ts`; otherwise bad
+`panda watch create --help --json` and `panda watch update --help --json` expose
+the detailed source and detector schema catalog. The old model-facing
+`watch_schema_get` escape hatch is gone.
+
+The command validators still need to enforce the same invalid-config rules as
+the persisted domain parser in `src/domain/watches/config.ts`; otherwise bad
 watch config can be written and only fail later when Postgres rows are read.
 
-This is tactical, not architecture:
+This is a command-help contract, not a second schema source:
 
-- it exists because the current tool transport injects full JSON Schema into prompt context
+- help exists because agents need discoverable branch schemas without dumping
+  every watch schema into prompt context
 - watches are unusually expensive because source and detector branches are large unions
 - the real long-term fix is transport-level discovery or CLI-style help, not a family of `*_schema_get` tools
 

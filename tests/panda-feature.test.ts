@@ -3,18 +3,14 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {
     Agent,
     BashTool,
-    BraveSearchTool,
     BrowserTool,
     DateTimeContext,
     DEFAULT_AGENT_INSTRUCTIONS,
     EnvironmentContext,
-    ImageGenerateTool,
     MediaTool,
-    PostgresReadonlyQueryTool,
     RunContext,
-    WebFetchTool,
-    WebResearchTool,
-    WhisperTool,
+    Tool,
+    z,
 } from "../src/index.js";
 import {
     buildDefaultAgentTools,
@@ -26,16 +22,21 @@ import {resolveStoredContext} from "../src/app/runtime/create-runtime.js";
 import {resolveRemoteInitialCwd} from "../src/integrations/shell/bash-executor.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
-class FakeReadonlyPool {
-  async connect(): Promise<never> {
-    throw new Error("not used in toolset tests");
-  }
-}
-
 function createBackgroundJobService(): BackgroundToolJobService {
   return new BackgroundToolJobService({
     store: new TestThreadRuntimeStore(),
   });
+}
+
+class ExtraTool extends Tool<typeof ExtraTool.schema> {
+  static schema = z.object({});
+  name = "extra";
+  description = "Extra test tool.";
+  schema = ExtraTool.schema;
+
+  async handle() {
+    return {content: [{type: "text" as const, text: "ok"}]};
+  }
 }
 
 describe("Panda feature surface", () => {
@@ -49,48 +50,48 @@ describe("Panda feature surface", () => {
     const tools = buildDefaultAgentTools();
 
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("<channels_vs_inner_monologue>");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("no outbound call = no message delivered.");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("spawn_subagent(profile=\"workspace\", prompt=\"...\")");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Run `panda commands --json`");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("No send command means no message is delivered.");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("`panda subagent spawn <task|@file|@-> [--profile <slug>] [--context @-]`");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("`profile=\"browser\"` for browser automation and website inspection.");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("`profile=\"skill_maintainer\"` to distill reusable learning");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("you may use `postgres_readonly_query` directly.");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain('Load it with `agent_skill(operation="load")`.');
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("use `panda postgres readonly query`");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Load it with `panda skill load`.");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("a reusable artifact was produced");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
-      'Use `agent_skill(operation="set")` for direct skill body edits you are intentionally making yourself.',
+      "Use `panda skill set` for direct skill body edits you are intentionally making yourself.",
     );
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
-      'Use `agent_skill(operation="patch", patch={"description":"..."})` when only an existing skill\'s injected short description should change.',
+      "Use `panda skill patch` when only an existing skill's injected short description should change.",
     );
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
       "**Foreground bash** shares one persistent shell session.",
     );
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
-      "Values stored via `set_env_value` are injected into bash as normal env vars",
+      "Values stored via `panda env set` are injected into bash as normal env vars",
     );
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
       "use `$API_KEY`, `$BASE_URL`, etc.",
     );
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("**Background bash** is isolated.");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("the runtime may inject a machine-generated event on the next cycle");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("If the current instruction says to run exact commands and stop, run only those commands and stop.");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Ask first before sending private material anywhere new");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
       'Do not leak sensitive details through "just a summary," paraphrase, excerpt, or forwarding the emotional gist.',
     );
-    expect(tools).toHaveLength(5);
+    expect(tools).toHaveLength(3);
     expect(tools[0]).toBeInstanceOf(BashTool);
-    expect(tools[1]?.name).toBe("current_datetime");
-    expect(tools[2]).toBeInstanceOf(MediaTool);
-    expect(tools[3]).toBeInstanceOf(WebFetchTool);
-    expect(tools[4]?.name).toBe("vent");
+    expect(tools[1]).toBeInstanceOf(MediaTool);
+    expect(tools[2]?.name).toBe("thinking_set");
   });
 
-  it("adds image generation only when background jobs are available", () => {
+  it("exposes only core background controls on the native surface", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
     const jobService = createBackgroundJobService();
     const tools = buildDefaultAgentTools([], {
-      imageGenerate: {
+      bash: {
         jobService,
       },
     });
@@ -100,16 +101,12 @@ describe("Panda feature surface", () => {
       "background_job_status",
       "background_job_wait",
       "background_job_cancel",
-      "current_datetime",
       "view_media",
-      "image_generate",
-      "web_fetch",
-      "vent",
+      "thinking_set",
     ]);
-    expect(tools[6]).toBeInstanceOf(ImageGenerateTool);
   });
 
-  it("reuses the bash background job service for image generation", () => {
+  it("does not expose optional command-backed tools on the main native surface", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
     const tools = buildDefaultAgentTools([], {
@@ -118,10 +115,17 @@ describe("Panda feature surface", () => {
       },
     });
 
-    expect(tools.map((tool) => tool.name)).toContain("image_generate");
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "bash",
+      "background_job_status",
+      "background_job_wait",
+      "background_job_cancel",
+      "view_media",
+      "thinking_set",
+    ]);
   });
 
-  it("reuses the image generation background job service for background bash", async () => {
+  it("uses the configured background job service for background bash", async () => {
     vi.stubEnv("BRAVE_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
     const store = new TestThreadRuntimeStore();
@@ -131,7 +135,7 @@ describe("Panda feature surface", () => {
     });
     const jobService = new BackgroundToolJobService({store});
     const tools = buildDefaultAgentTools([], {
-      imageGenerate: {
+      bash: {
         jobService,
       },
     });
@@ -172,27 +176,23 @@ describe("Panda feature surface", () => {
     });
   });
 
-  it("adds Brave search when BRAVE_API_KEY is configured", () => {
+  it("keeps Brave search behind the CLI even when BRAVE_API_KEY is configured", () => {
     vi.stubEnv("BRAVE_API_KEY", "BSA-test-key");
     vi.stubEnv("OPENAI_API_KEY", "");
     const tools = buildDefaultAgentTools();
 
-    expect(tools).toHaveLength(6);
-    expect(tools[4]?.name).toBe("vent");
-    expect(tools[5]).toBeInstanceOf(BraveSearchTool);
+    expect(tools.map((tool) => tool.name)).toEqual(["bash", "view_media", "thinking_set"]);
   });
 
-  it("adds Whisper when OPENAI_API_KEY is configured", () => {
+  it("keeps Whisper behind the CLI even when OPENAI_API_KEY is configured", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "openai-test-key");
     const tools = buildDefaultAgentTools();
 
-    expect(tools).toHaveLength(6);
-    expect(tools[4]?.name).toBe("vent");
-    expect(tools[5]).toBeInstanceOf(WhisperTool);
+    expect(tools.map((tool) => tool.name)).toEqual(["bash", "view_media", "thinking_set"]);
   });
 
-  it("adds web research only when OpenAI and background jobs are available", () => {
+  it("keeps web research behind the CLI even when OpenAI and background jobs are available", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "openai-test-key");
     const tools = buildDefaultAgentTools([], {
@@ -201,72 +201,52 @@ describe("Panda feature surface", () => {
       },
     });
 
-    expect(tools.map((tool) => tool.name)).toContain("web_research");
-    expect(tools.find((tool) => tool.name === "web_research")).toBeInstanceOf(WebResearchTool);
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "bash",
+      "background_job_status",
+      "background_job_wait",
+      "background_job_cancel",
+      "view_media",
+      "thinking_set",
+    ]);
   });
 
   it("appends extra tools without adding hidden defaults", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
-    const extraTool = new WebFetchTool();
+    const extraTool = new ExtraTool();
     const tools = buildDefaultAgentTools([extraTool]);
 
-    expect(tools).toHaveLength(6);
-    expect(tools[4]?.name).toBe("vent");
-    expect(tools[5]).toBe(extraTool);
+    expect(tools).toHaveLength(4);
+    expect(tools[3]).toBe(extraTool);
   });
 
   it("builds explicit specialist toolsets and keeps workspace/browser tools off the main agent", () => {
     vi.stubEnv("BRAVE_API_KEY", "");
     vi.stubEnv("OPENAI_API_KEY", "");
-    const toolsets = buildDefaultAgentToolsetsFromRegistry(createDefaultAgentToolRegistry({
-      postgresReadonly: {
-        pool: new FakeReadonlyPool(),
-      },
-    }));
+    const toolsets = buildDefaultAgentToolsetsFromRegistry(createDefaultAgentToolRegistry());
 
     expect(toolsets.main.map((tool) => tool.name)).toEqual([
       "bash",
-      "current_datetime",
       "view_media",
-      "web_fetch",
-      "vent",
-      "postgres_readonly_query",
+      "thinking_set",
     ]);
-    expect(toolsets.main.some((tool) => tool instanceof PostgresReadonlyQueryTool)).toBe(true);
     expect(toolsets.main.some((tool) => tool instanceof BrowserTool)).toBe(false);
     expect(toolsets.workspace.map((tool) => tool.name)).toEqual([
-      "current_datetime",
-      "read_file",
-      "glob_files",
-      "grep_files",
       "view_media",
     ]);
-    expect(toolsets.memory.map((tool) => tool.name)).toEqual([
-      "current_datetime",
-      "postgres_readonly_query",
-    ]);
+    expect(toolsets.memory.map((tool) => tool.name)).toEqual([]);
     expect(toolsets.browser.map((tool) => tool.name)).toEqual([
-      "current_datetime",
-      "read_file",
-      "glob_files",
-      "grep_files",
       "view_media",
       "browser",
     ]);
     expect(toolsets.worker.map((tool) => tool.name)).toEqual([
       "bash",
-      "current_datetime",
       "view_media",
-      "web_fetch",
       "browser",
+      "thinking_set",
     ]);
     expect(toolsets.skill_maintainer.map((tool) => tool.name)).toEqual([
-      "current_datetime",
-      "postgres_readonly_query",
-      "read_file",
-      "glob_files",
-      "grep_files",
       "view_media",
     ]);
   });

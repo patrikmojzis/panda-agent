@@ -20,6 +20,8 @@ import type {
     FailScheduledTaskRunInput,
     ListActiveScheduledTasksInput,
     ListDueScheduledTasksInput,
+    ListScheduledTaskRunsInput,
+    ListScheduledTasksInput,
     ScheduledTaskRecord,
     ScheduledTaskRunRecord,
     StartScheduledTaskRunInput,
@@ -350,6 +352,57 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
     }
 
     return parseTaskRow(row as Record<string, unknown>);
+  }
+
+  async listTasks(input: ListScheduledTasksInput): Promise<readonly ScheduledTaskRecord[]> {
+    const status = input.status ?? "active";
+    const limit = Math.max(1, input.limit ?? 25);
+    const statusFilter = status === "active"
+      ? "AND enabled = TRUE AND cancelled_at IS NULL AND completed_at IS NULL"
+      : status === "disabled"
+        ? "AND enabled = FALSE AND cancelled_at IS NULL AND completed_at IS NULL"
+        : status === "completed"
+          ? "AND completed_at IS NOT NULL"
+          : status === "cancelled"
+            ? "AND cancelled_at IS NOT NULL"
+            : "";
+    const result = await this.pool.query(
+      `
+        SELECT *
+        FROM ${this.tables.scheduledTasks}
+        WHERE session_id = $1
+          ${statusFilter}
+        ORDER BY next_fire_at ASC NULLS LAST, updated_at DESC, id ASC
+        LIMIT $2
+      `,
+      [
+        requireScheduledTaskString("session id", input.sessionId),
+        limit,
+      ],
+    );
+
+    return result.rows.map((row) => parseTaskRow(row as Record<string, unknown>));
+  }
+
+  async listTaskRuns(input: ListScheduledTaskRunsInput): Promise<readonly ScheduledTaskRunRecord[]> {
+    const limit = Math.max(1, input.limit ?? 25);
+    const result = await this.pool.query(
+      `
+        SELECT *
+        FROM ${this.tables.scheduledTaskRuns}
+        WHERE task_id = $1
+          AND session_id = $2
+        ORDER BY created_at DESC, id ASC
+        LIMIT $3
+      `,
+      [
+        requireScheduledTaskString("task id", input.taskId),
+        requireScheduledTaskString("session id", input.sessionId),
+        limit,
+      ],
+    );
+
+    return result.rows.map((row) => parseTaskRunRow(row as Record<string, unknown>));
   }
 
   async listActiveTasks(input: ListActiveScheduledTasksInput): Promise<readonly ScheduledTaskRecord[]> {

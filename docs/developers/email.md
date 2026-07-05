@@ -3,7 +3,7 @@
 Panda email is a first-class channel:
 
 - receive through the built-in IMAP sync runner
-- send through `email_send`
+- send through `panda email send`
 - read history from Postgres session views
 
 Runtime config lives in `runtime.email_accounts`.
@@ -16,7 +16,7 @@ V1 does not do live DNS verification or trusted-auth-server matching itself; it 
 
 Outbound mail goes through `runtime.outbound_deliveries` with `channel = "email"` and connector key `smtp`.
 The email adapter verifies the configured from address, enforces recipient allowlists and attachment limits again before SMTP send, and records successful outbound mail into email history.
-Queued `email_send` metadata must pass the `EmailSendPayload` contract in `src/domain/email/send-payload.ts`; do not cast outbound metadata directly inside the send tool or adapter.
+Queued email metadata uses the internal `email_send` payload kind and must pass the `EmailSendPayload` contract in `src/domain/email/send-payload.ts`; do not cast outbound metadata directly inside the adapter.
 
 Configure:
 
@@ -72,7 +72,7 @@ Resolution rules:
 - routes target durable sessions, so `/reset` moves future email wakes to the new current thread automatically
 
 Inbound messages store `session_id` and, when applicable, `route_id`.
-Outbound `email_send` also records `session_id`.
+Outbound email also records `session_id`.
 Fresh sends are allowed from the main session when the account has no account route, or from the routed account session when it does. Mailbox-only routes do not move fresh-send ownership. Replies must reference a message visible to the current session.
 
 Readonly email views are session-scoped:

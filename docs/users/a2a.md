@@ -111,11 +111,10 @@ panda a2a list --to-session <sessionId>
 
 ## What The Agents Can Send
 
-Once a binding exists, Panda can use `message_agent` to send:
+Once a binding exists, Panda can use `panda a2a send` to send:
 
 - text
-- images
-- arbitrary files
+- file attachments, including images
 
 Delivery is:
 
@@ -131,7 +130,7 @@ It is not request/response RPC.
 - same-session send is blocked
 - allowlist is checked on send and on receive
 - default rate limit is `300` messages per hour per session pair
-- files and images are allowed, but size caps still apply
+- attachments are allowed, including images; size caps still apply
 - agent flags resolve only main sessions
 
 ## Typical Patterns

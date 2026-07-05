@@ -2,7 +2,7 @@
 
 Panda email is configured per agent account.
 
-Agents read email history through session-scoped Postgres views and send with the `email_send` tool. Operators configure accounts, allowlists, and session routes from the CLI.
+Agents read email history with `panda email list/read/search`, fetch attachments with `panda email attachments fetch`, and send with `panda email send`. Operators configure accounts, allowlists, and session routes from the CLI.
 
 ## Configure An Account
 

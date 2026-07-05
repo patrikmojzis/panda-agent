@@ -10,7 +10,7 @@ Best practice for the Panda runtime is:
 - one shared Postgres database
 - one normal app role
 - one restricted read-only role
-- scoped `session.*` views as the only SQL tool surface
+- scoped `session.*` views as the only SQL command surface
 
 That is the clean setup. Everything else is half-security cosplay.
 
@@ -37,17 +37,17 @@ Do not debug the read-only role before the main app role works.
 
 ## Why
 
-The `postgres_readonly_query` tool is read-only.
+The `panda postgres readonly query` command is read-only.
 It is not view-only by itself.
 
 Privacy does not come from the prompt or from the tool description.
-Privacy comes from the database role you give that tool.
+Privacy comes from the database role you give that command.
 
 The right shape is:
 
-- `postgres_readonly_query` reads only `session.*` views
+- `panda postgres readonly query` reads only `session.*` views
 - the views are filtered by the current `sessionId` and `agentKey`
-- the SQL tool cannot read base tables directly
+- the SQL command cannot read base tables directly
 
 ## Panda Env
 
@@ -56,12 +56,12 @@ Panda reads the main database URL from:
 - `DATABASE_URL`
 - `--db-url`
 
-Panda reads the SQL tool database URL from:
+Panda reads the readonly SQL command database URL from:
 
 - `READONLY_DATABASE_URL`
 - `--read-only-db-url`
 
-If `READONLY_DATABASE_URL` is set, Panda uses that role for the SQL tool and grants it access to the scoped `session.*` views during startup.
+If `READONLY_DATABASE_URL` is set, Panda uses that role for `panda postgres readonly query` and grants it access to the scoped `session.*` views during startup.
 
 If it is not set, Panda currently falls back to the main app pool.
 That fallback is convenient, but it weakens the privacy story.
@@ -261,7 +261,7 @@ Treat these views as the public interface:
 - `session.email_attachments`
 
 If the agent needs more safe query surface later, add another scoped view.
-Do not solve that by handing the SQL tool raw table access.
+Do not solve that by handing the SQL command raw table access.
 
 `session.agent_skills` exposes stored skill bodies.
 Use `description` or `substring(content from ... for ...)` for large skills instead of yanking the whole blob every time.
@@ -275,4 +275,4 @@ Use `description` or `substring(content from ... for ...)` for large skills inst
 - do not rely on prompt instructions for privacy
 - prefer adding a new scoped view over exposing a raw table
 
-Long term, Panda should disable `postgres_readonly_query` entirely when no restricted read-only URL is configured.
+Long term, Panda should disable `panda postgres readonly query` entirely when no restricted read-only URL is configured.

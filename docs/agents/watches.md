@@ -4,21 +4,23 @@ This is the practical guide.
 
 If a user asks Panda to set up a watch, the agent should build a deterministic watch config and reference stored credentials by key name.
 
-Do not put raw secrets into `watch_create` or `watch_update`.
+Do not put raw secrets into `panda watch create` or `panda watch update` payloads.
 
 ## Schema Discovery
 
-`watch_create` and `watch_update` now expose compact top-level schemas on purpose.
+`panda watch create --help --json` and `panda watch update --help --json`
+expose compact top-level command contracts plus the detailed watch schema catalog.
 
 Normal flow:
 
 1. decide the `source.kind`
 2. decide the `detector.kind`
-3. call `watch_schema_get` if you need the exact branch fields, example payload, or notes
-4. call `watch_create` or `watch_update` with the full nested config
+3. run `panda watch create --help --json` or `panda watch update --help --json` if you need exact branch fields, examples, or notes
+4. for a simple HTTP JSON scalar threshold, use `--url <url> --value-path <path> --percent-change <n>` with `panda watch create` or `panda watch update`
+5. otherwise, run `panda watch create` or `panda watch update` with the nested source/detector JSON
 
 Do not guess branch fields when the exact shape matters.
-Ask the tool.
+Ask command help.
 
 ## The Rule
 
@@ -37,7 +39,7 @@ For example:
 ## Credential Rules
 
 - Prefer the CLI for human-entered secrets.
-- Use `set_env_value` only when the agent already has the secret value in context.
+- Use `panda env set <key> --stdin` or `panda env set <key> --from-file <path>` only when the agent already has the secret value.
 - Stored env credentials belong to the current agent.
 
 Examples:
@@ -49,11 +51,13 @@ Examples:
 }
 ```
 
-Tool:
+Agent CLI:
 
-- `set_env_value`
+```bash
+printf '%s' "$DATABASE_URL" | panda env set DATABASE_URL --stdin
+```
 
-Or via CLI:
+Or via operator CLI:
 
 ```bash
 panda credentials set DATABASE_URL --agent panda
@@ -78,9 +82,11 @@ Store credential:
 }
 ```
 
-Tool:
+Agent CLI:
 
-- `set_env_value`
+```bash
+printf '%s' "$MONGO_URI" | panda env set MONGO_URI --stdin
+```
 
 Create watch:
 
@@ -114,9 +120,11 @@ Create watch:
 }
 ```
 
-Tool:
+Agent command:
 
-- `watch_create`
+```bash
+panda watch create --json @watch.json
+```
 
 ## SQL Example
 
@@ -129,9 +137,11 @@ Store credential:
 }
 ```
 
-Tool:
+Agent CLI:
 
-- `set_env_value`
+```bash
+printf '%s' "$DATABASE_URL" | panda env set DATABASE_URL --stdin
+```
 
 Create watch:
 
@@ -159,9 +169,11 @@ Create watch:
 }
 ```
 
-Tool:
+Agent command:
 
-- `watch_create`
+```bash
+panda watch create --json @watch.json
+```
 
 Notes:
 
@@ -180,9 +192,11 @@ Store credential:
 }
 ```
 
-Tool:
+Agent CLI:
 
-- `set_env_value`
+```bash
+printf '%s' "$COINAPI_TOKEN" | panda env set COINAPI_TOKEN --stdin
+```
 
 Create watch:
 
@@ -211,9 +225,11 @@ Create watch:
 }
 ```
 
-Tool:
+Agent command:
 
-- `watch_create`
+```bash
+panda watch create --json @watch.json
+```
 
 If the API uses a custom header instead of bearer auth:
 
@@ -252,9 +268,11 @@ Store credential if needed:
 }
 ```
 
-Tool:
+Agent CLI:
 
-- `set_env_value`
+```bash
+printf '%s' "$LISTINGS_COOKIE" | panda env set LISTINGS_COOKIE --stdin
+```
 
 Create watch for new listings:
 
@@ -301,9 +319,11 @@ Create watch for new listings:
 }
 ```
 
-Tool:
+Agent command:
 
-- `watch_create`
+```bash
+panda watch create --json @watch.json
+```
 
 Create watch for a page-content change instead:
 
@@ -337,9 +357,11 @@ Store credentials:
 }
 ```
 
-Tool:
+Agent CLI:
 
-- `set_env_value`
+```bash
+printf '%s' "$IMAP_USERNAME" | panda env set IMAP_USERNAME --stdin
+```
 
 ```json
 {
@@ -348,9 +370,11 @@ Tool:
 }
 ```
 
-Tool:
+Agent CLI:
 
-- `set_env_value`
+```bash
+printf '%s' "$IMAP_PASSWORD" | panda env set IMAP_PASSWORD --stdin
+```
 
 Create watch:
 
@@ -374,9 +398,11 @@ Create watch:
 }
 ```
 
-Tool:
+Agent command:
 
-- `watch_create`
+```bash
+panda watch create --json @watch.json
+```
 
 You can inline the username and keep only the password secret:
 
@@ -407,12 +433,14 @@ Changing the interval:
 }
 ```
 
-Tool:
+Agent command:
 
-- `watch_update`
+```bash
+panda watch update 93c34fb6-cf45-4fba-b243-0b116f7c9b3d --every 1
+```
 
 Changing the source or detector resets watch state and reboots the watch from fresh state.
-Panda should expect `watch_create` and `watch_update` to preflight the source immediately, so bad paths or broken probes fail at save time instead of on the first poll.
+Panda should expect `panda watch create` and `panda watch update` to preflight the source immediately, so bad paths or broken probes fail at save time instead of on the first poll.
 
 ## Disable Example
 
@@ -422,9 +450,11 @@ Panda should expect `watch_create` and `watch_update` to preflight the source im
 }
 ```
 
-Tool:
+Agent command:
 
-- `watch_disable`
+```bash
+panda watch disable 93c34fb6-cf45-4fba-b243-0b116f7c9b3d
+```
 
 ## Agent Checklist
 
@@ -435,5 +465,5 @@ Tool:
 - Do not use negative array indices like `[-1]` in watch paths. Sort/filter upstream and use `[0]`.
 - Store secrets in credentials and reference them by key.
 - Do not invent a custom probe in v1.
-- Do not claim there is a `watch_list` tool. There is not.
-- If inspection is needed, use Postgres views like `session.watches`, `session.watch_runs`, and `session.watch_events`.
+- For inspection, use `panda watch list`, `panda watch show`, and `panda watch runs`.
+- Operators can still use Postgres views like `session.watches`, `session.watch_runs`, and `session.watch_events`.

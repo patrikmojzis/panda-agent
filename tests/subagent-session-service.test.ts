@@ -14,6 +14,16 @@ import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/postgres
 import {buildThreadRuntimeTableNames} from "../src/domain/threads/runtime/postgres-shared.js";
 import {SubagentSessionService} from "../src/app/runtime/subagent-session-service.js";
 import {ExecutionEnvironmentLifecycleService} from "../src/app/runtime/execution-environment-service.js";
+import {
+  createCommandCatalog,
+  type CommandCatalog,
+  type CommandCatalogModule,
+  type CommandPolicyModule,
+} from "../src/domain/commands/index.js";
+import {
+  createDefaultAgentCommandCatalog,
+  DEFAULT_AGENT_COMMAND_MODULES,
+} from "../src/panda/commands/agent-command-modules.js";
 
 describe("SubagentSessionService", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
@@ -24,7 +34,10 @@ describe("SubagentSessionService", () => {
     }
   });
 
-  async function createHarness() {
+  async function createHarness(options: {
+    commandCatalog?: Pick<CommandCatalog, "namesForToolGroups">;
+    commandModules?: readonly CommandPolicyModule[];
+  } = {}) {
     const db = newDb();
     db.public.registerFunction({
       name: "pg_notify",
@@ -94,7 +107,7 @@ describe("SubagentSessionService", () => {
         NULL,
         'Workspace reader.',
         'Workspace profile prompt.',
-        '["core","workspace_read"]'::jsonb,
+        '["core"]'::jsonb,
         'openai/gpt-5.1',
         'medium',
         'none',
@@ -119,6 +132,9 @@ describe("SubagentSessionService", () => {
       store: environmentStore,
       manager: null,
     });
+    const commandCatalog = options.commandCatalog ?? (
+      options.commandModules ? undefined : createDefaultAgentCommandCatalog()
+    );
     const service = new SubagentSessionService({
       pool,
       sessions: sessionStore,
@@ -126,6 +142,8 @@ describe("SubagentSessionService", () => {
       profiles: profileStore,
       environments,
       a2aBindings: a2a,
+      commandCatalog,
+      ...(!commandCatalog ? {commandModules: options.commandModules ?? DEFAULT_AGENT_COMMAND_MODULES} : {}),
     });
 
     return {
@@ -173,7 +191,7 @@ describe("SubagentSessionService", () => {
           profile: {
             slug: "workspace",
             prompt: "Workspace profile prompt.",
-            toolGroups: ["core", "workspace_read"],
+            toolGroups: ["core"],
           },
           resolved: {
             model: "openai/gpt-5.1",
@@ -181,7 +199,7 @@ describe("SubagentSessionService", () => {
             credentialPolicy: {mode: "allowlist", envKeys: ["NPM_TOKEN"]},
             skillPolicy: {mode: "all_agent"},
             toolPolicy: {
-              allowedTools: expect.arrayContaining(["message_agent", "agent_skill", "read_file"]),
+              allowedTools: expect.arrayContaining(["bash", "a2a.send", "skill.load"]),
               agentSkill: {allowedOperations: ["load"]},
             },
           },
@@ -202,6 +220,83 @@ describe("SubagentSessionService", () => {
     expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM ${envTables} WHERE session_id = 'subagent-session'`)).toBe(0);
     const threadTables = buildThreadRuntimeTableNames();
     expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM ${threadTables.inputs} WHERE thread_id = 'subagent-thread' AND source = 'subagent'`)).toBe(1);
+  });
+
+  it("resolves subagent tool policy from the supplied command module catalog", async () => {
+    const customModule: CommandPolicyModule = {
+      descriptor: {name: "custom.inspect"},
+      policy: {
+        capability: "custom.inspect",
+        toolGroups: ["core"],
+      },
+    };
+    const {service} = await createHarness({
+      commandModules: [...DEFAULT_AGENT_COMMAND_MODULES, customModule],
+    });
+
+    const result = await service.createSubagentSession({
+      agentKey: "panda",
+      parentSessionId: "parent-session",
+      profile: "workspace",
+      task: "Use custom command.",
+      sessionId: "custom-command-subagent",
+      threadId: "custom-command-thread",
+    });
+
+    expect(result.session.metadata).toMatchObject({
+      subagent: {
+        resolved: {
+          toolPolicy: {
+            allowedTools: expect.arrayContaining(["custom.inspect"]),
+          },
+        },
+      },
+    });
+  });
+
+  it("resolves subagent tool policy from the supplied command catalog", async () => {
+    const customModule: CommandCatalogModule = {
+      descriptor: {
+        name: "custom.inspect",
+        summary: "Inspect custom data.",
+        description: "Inspect custom data.",
+        usage: "panda custom inspect",
+        inputModes: ["json"],
+        outputModes: ["json"],
+        arguments: [],
+        examples: [],
+      },
+      route: {
+        helpArgv: ["custom", "inspect"],
+        jsonArgv: ["custom", "inspect", "--json", "@payload.json"],
+      },
+      policy: {
+        capability: "custom.inspect",
+        toolGroups: ["core"],
+      },
+    };
+    const {service} = await createHarness({
+      commandCatalog: createCommandCatalog([...DEFAULT_AGENT_COMMAND_MODULES, customModule]),
+    });
+
+    const result = await service.createSubagentSession({
+      agentKey: "panda",
+      parentSessionId: "parent-session",
+      profile: "workspace",
+      task: "Use custom command.",
+      sessionId: "custom-catalog-subagent",
+      threadId: "custom-catalog-thread",
+    });
+
+    expect(result.session.metadata).toMatchObject({
+      subagent: {
+        resolved: {
+          toolPolicy: {
+            allowedTools: expect.arrayContaining(["custom.inspect"]),
+          },
+        },
+      },
+    });
   });
 
   it("accepts ad-hoc tool groups without storing a profile", async () => {

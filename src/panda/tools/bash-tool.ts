@@ -61,6 +61,22 @@ function isReservedRuntimeEnvKey(key: string): boolean {
     || normalized === "PANDA_WORKSPACE_COMMAND";
 }
 
+function buildCommandAccessEnv(commandAccess: {
+  url?: string;
+  socketPath?: string;
+  token: string;
+} | undefined): Record<string, string> | undefined {
+  if (!commandAccess) {
+    return undefined;
+  }
+
+  return {
+    ...(commandAccess.url ? {PANDA_COMMAND_URL: commandAccess.url} : {}),
+    ...(commandAccess.socketPath ? {PANDA_COMMAND_SOCKET: commandAccess.socketPath} : {}),
+    PANDA_COMMAND_TOKEN: commandAccess.token,
+  };
+}
+
 function buildDurableShellSession(input: {
   shellSession: ShellSession;
   resolvedCredentialEnv: Record<string, string>;
@@ -425,6 +441,14 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
     assertExecutionTargetToolAllowed(resolvedTarget, "bash");
     const context = resolvedTarget.context;
     const executionEnvironment = resolvedTarget.executionEnvironment;
+    let commandAccessEnv: Record<string, string> | undefined;
+    if (context?.refreshCommandAccess && executionEnvironment) {
+      const refreshed = await context.refreshCommandAccess({
+        executionEnvironment,
+        currentInput: context.currentInput,
+      });
+      commandAccessEnv = buildCommandAccessEnv(refreshed.commandAccess);
+    }
     const targetRun = this.createRunContextForTarget(run, context);
     const shellSession = ensureShellSession(context);
     const baseCwd = shellSession?.cwd ?? readBaseCwd(context);
@@ -441,7 +465,10 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
     const shellEnv = shellSession?.env ?? {};
     const secretInventory = buildBashSecretInventory({
       resolvedCredentialEnv,
-      callEnv: args.env,
+      callEnv: {
+        ...(args.env ?? {}),
+        ...(commandAccessEnv ?? {}),
+      },
       priorSecretSessionEnv,
     });
     const trackedEnvKeys = collectTrackedEnvKeys(args.command);
@@ -466,7 +493,10 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
           maxOutputChars: this.maxOutputChars,
           persistOutputThresholdChars: this.persistOutputThresholdChars,
           outputDirectory: this.outputDirectory,
-          env: args.env,
+          env: {
+            ...(args.env ?? {}),
+            ...(commandAccessEnv ?? {}),
+          },
           resolvedEnv: resolvedCredentialEnv,
           shellEnv,
           executionEnvironment,
@@ -493,7 +523,10 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
       persistOutputFiles,
       redactionValues: secretInventory.redactionValues,
       outputDirectory: this.outputDirectory,
-      env: args.env,
+      env: {
+        ...(args.env ?? {}),
+        ...(commandAccessEnv ?? {}),
+      },
       resolvedEnv: resolvedCredentialEnv,
       shellEnv,
       executionEnvironment,
@@ -503,7 +536,10 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
     updateSecretSessionKeys(shellSession, result.persistedEnvEntries, secretInventory.sourceSecretValues);
     const resultSecretInventory = buildBashSecretInventory({
       resolvedCredentialEnv,
-      callEnv: args.env,
+      callEnv: {
+        ...(args.env ?? {}),
+        ...(commandAccessEnv ?? {}),
+      },
       priorSecretSessionEnv,
       currentSecretSessionEnv: readSecretSessionEnv(shellSession),
     });
@@ -523,7 +559,10 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
           shellSession: buildDurableShellSession({
             shellSession,
             resolvedCredentialEnv,
-            callEnv: args.env,
+            callEnv: {
+              ...(args.env ?? {}),
+              ...(commandAccessEnv ?? {}),
+            },
           }),
         });
       }

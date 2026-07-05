@@ -1,4 +1,5 @@
 import type {LlmContext} from "../../kernel/agent/llm-context.js";
+import type {CommandDescriptor} from "../../domain/commands/types.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import type {ExecutionSkillPolicy} from "../../domain/execution-environments/types.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
@@ -9,8 +10,16 @@ import type {WikiBindingService} from "../../domain/wiki/service.js";
 import {AgentProfileContext, type AgentProfileContextSection, type AgentProfileStore} from "./agent-profile-context.js";
 import {BackgroundJobsContext} from "./background-jobs-context.js";
 import {BashTargetsContext} from "./bash-targets-context.js";
+import {CommandCatalogContext} from "./command-catalog-context.js";
 import {DateTimeContext} from "./datetime-context.js";
 import {EnvironmentContext} from "./environment-context.js";
+import {
+  PairedIdentitiesContext,
+  type PairedIdentitiesAgentStore,
+  type PairedIdentitiesContextOptions,
+  type PairedIdentitiesIdentityStore,
+  type PairedIdentitiesRouteStore,
+} from "./paired-identities-context.js";
 import {ScheduledRemindersContext} from "./scheduled-reminders-context.js";
 import {SessionPromptsContext} from "./session-prompts-context.js";
 import {SessionTodoContext} from "./session-todo-context.js";
@@ -23,6 +32,8 @@ export type DefaultAgentLlmContextSection =
   | "datetime"
   | "environment"
   | "bash_targets"
+  | "paired_identities"
+  | "command_catalog"
   | "scheduled_reminders"
   | "wiki_overview"
   | "background_jobs"
@@ -38,6 +49,8 @@ const PROFILE_SECTIONS = new Set<AgentProfileContextSection>([
 export const DEFAULT_AGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = [
   "environment",
   "bash_targets",
+  "paired_identities",
+  "command_catalog",
   "wiki_overview",
   "scheduled_reminders",
   "background_jobs",
@@ -49,8 +62,10 @@ export const DEFAULT_AGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContext
 
 export interface BuildDefaultAgentLlmContextsOptions {
   context?: DefaultAgentSessionContext;
-  agentStore?: AgentProfileStore;
+  agentStore?: AgentProfileStore & Partial<PairedIdentitiesAgentStore>;
+  identityStore?: PairedIdentitiesIdentityStore;
   sessionStore?: Partial<Pick<SessionStore, "listAgentSessions" | "listSessionPrompts" | "readSessionTodo">>;
+  sessionRoutes?: PairedIdentitiesRouteStore;
   subagentProfiles?: Pick<SubagentProfileStore, "listProfiles">;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs"> & Partial<Pick<ThreadRuntimeStore, "listThreadSummaries">>;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
@@ -61,6 +76,7 @@ export interface BuildDefaultAgentLlmContextsOptions {
   sections?: readonly DefaultAgentLlmContextSection[];
   skillPolicy?: ExecutionSkillPolicy;
   sessionPrompts?: readonly SessionPromptRecord[] | null;
+  commandDescriptors?: readonly CommandDescriptor[];
   extraLlmContexts?: readonly LlmContext[];
 }
 
@@ -72,10 +88,18 @@ export {
 } from "./agent-profile-context.js";
 export {DateTimeContext, type DateTimeContextOptions} from "./datetime-context.js";
 export {BashTargetsContext, type BashTargetsContextOptions} from "./bash-targets-context.js";
+export {CommandCatalogContext, type CommandCatalogContextOptions} from "./command-catalog-context.js";
 export {SessionPromptsContext, type SessionPromptsContextOptions} from "./session-prompts-context.js";
 export {SessionTodoContext, type SessionTodoContextOptions} from "./session-todo-context.js";
 export {EnvironmentContext, type EnvironmentContextOptions} from "./environment-context.js";
 export {SubagentsContext, type SubagentsContextOptions} from "./subagents-context.js";
+export {
+  PairedIdentitiesContext,
+  type PairedIdentitiesAgentStore,
+  type PairedIdentitiesContextOptions,
+  type PairedIdentitiesIdentityStore,
+  type PairedIdentitiesRouteStore,
+};
 
 export function buildDefaultAgentLlmContexts(
   options: BuildDefaultAgentLlmContextsOptions,
@@ -100,6 +124,28 @@ export function buildDefaultAgentLlmContexts(
     llmContexts.push(new BashTargetsContext({
       environments: options.executionEnvironments,
       sessionId: options.context.sessionId,
+    }));
+  }
+
+  if (
+    uniqueSections.has("paired_identities")
+    && options.agentKey
+    && options.context?.sessionId
+    && typeof options.agentStore?.listAgentPairings === "function"
+    && options.identityStore
+  ) {
+    llmContexts.push(new PairedIdentitiesContext({
+      agentKey: options.agentKey,
+      sessionId: options.context.sessionId,
+      agentStore: {listAgentPairings: options.agentStore.listAgentPairings.bind(options.agentStore)},
+      identityStore: options.identityStore,
+      routes: options.sessionRoutes,
+    }));
+  }
+
+  if (uniqueSections.has("command_catalog")) {
+    llmContexts.push(new CommandCatalogContext({
+      descriptors: options.commandDescriptors,
     }));
   }
 

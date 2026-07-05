@@ -158,6 +158,38 @@ export interface DisposableEnvironmentCreateRequest {
   environmentId: string;
   ttlMs?: number;
   metadata?: JsonValue;
+  commandAccess?: {
+    url?: string;
+    socketPath?: string;
+    token: string;
+  };
+}
+
+export interface DisposableEnvironmentCommandAccessRefreshRequest {
+  environmentId: string;
+  commandAccess?: {
+    url?: string;
+    socketPath?: string;
+    token: string;
+  };
+}
+
+export type ExecutionEnvironmentLogRole = "control" | "workspace";
+
+export interface DisposableEnvironmentLogsRequest {
+  environmentId: string;
+  role?: ExecutionEnvironmentLogRole | "all";
+  tail?: number;
+}
+
+export interface DisposableEnvironmentLogEntry {
+  role: ExecutionEnvironmentLogRole;
+  stdout: string;
+  stderr: string;
+}
+
+export interface DisposableEnvironmentLogsResult {
+  entries: readonly DisposableEnvironmentLogEntry[];
 }
 
 export interface DisposableEnvironmentCreateResult {
@@ -170,4 +202,6 @@ export interface DisposableEnvironmentCreateResult {
 export interface ExecutionEnvironmentManager {
   createDisposableEnvironment(input: DisposableEnvironmentCreateRequest): Promise<DisposableEnvironmentCreateResult>;
   stopEnvironment(environmentId: string): Promise<void>;
+  refreshCommandAccess?(input: DisposableEnvironmentCommandAccessRefreshRequest): Promise<void>;
+  readEnvironmentLogs?(input: DisposableEnvironmentLogsRequest): Promise<DisposableEnvironmentLogsResult>;
 }

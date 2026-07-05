@@ -1,0 +1,58 @@
+export {
+  commandDescriptorToJson,
+  formatCommandHelp,
+} from "./help.js";
+export {
+  commandDescriptorsFromModules,
+  commandNamesForRegistrationPhase,
+  commandNamesForToolGroups,
+  commandRegistrationPhase,
+  commandRoutesFromModules,
+  combineCommandModules,
+  createCommandCatalog,
+  createCommandsFromModules,
+  defineCommandCatalogModule,
+  defineCommandModule,
+  DEFAULT_COMMAND_REGISTRATION_PHASE,
+  type CommandCatalog,
+  type CommandDescriptorModule,
+  type DefineCommandCatalogModuleOptions,
+  type CommandModuleIdentity,
+  type CommandRouteModule,
+  type CommandRouteProjection,
+} from "./modules.js";
+export {
+  createStaticCommandRegistry,
+  isCommandAllowed,
+  type CommandRegistry,
+} from "./registry.js";
+export {
+  buildCommandRouteTree,
+  type CommandRouteTree,
+  type CommandRouteTreeGroup,
+  type CommandRouteTreeLeaf,
+} from "./route-tree.js";
+export type {
+  CommandArtifactDescriptor,
+  CommandArgumentDescriptor,
+  CommandDescriptor,
+  CommandError,
+  CommandExample,
+  CommandExecutor,
+  CommandFailure,
+  CommandInputMode,
+  CommandCatalogModule,
+  CommandName,
+  CommandOutputMode,
+  CommandPolicyModule,
+  CommandModule,
+  CommandPolicyDescriptor,
+  CommandRegistrationDescriptor,
+  CommandRegistrationPhase,
+  CommandRequest,
+  CommandResult,
+  CommandRouteDescriptor,
+  CommandScope,
+  CommandSuccess,
+  RegisteredCommand,
+} from "./types.js";

@@ -10,6 +10,7 @@ export interface AgentSessionToolScope {
   agentKey: string;
   sessionId: string;
   identityId?: string;
+  messageId?: string;
 }
 
 export interface SessionToolScope {
@@ -48,10 +49,12 @@ export function readRequiredAgentSessionToolScope(context: unknown, message: str
   }
 
   const identityId = readCurrentInputIdentityId(context);
+  const messageId = readCurrentInputMessageId(context);
   return {
     agentKey,
     sessionId,
     ...(identityId ? {identityId} : {}),
+    ...(messageId ? {messageId} : {}),
   };
 }
 

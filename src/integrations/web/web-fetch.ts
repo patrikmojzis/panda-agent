@@ -145,7 +145,7 @@ function assertRedirectKeepsCallerStatePrivate(input: {
   }
 
   throw new ToolError(
-    "web_fetch blocked a cross-origin redirect for a request with custom headers, method, or body.",
+    "web.fetch blocked a cross-origin redirect for a request with custom headers, method, or body.",
   );
 }
 
@@ -263,7 +263,7 @@ export async function fetchWithPinnedLookup(
       if (Number.isFinite(contentLength) && contentLength > params.maxBytes) {
         response.resume();
         fail(new ToolError(
-          `web_fetch response exceeded the ${params.maxBytes} byte limit before reading the body.`,
+          `web.fetch response exceeded the ${params.maxBytes} byte limit before reading the body.`,
         ));
         return;
       }
@@ -275,7 +275,7 @@ export async function fetchWithPinnedLookup(
         const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         totalBytes += buffer.byteLength;
         if (totalBytes > params.maxBytes) {
-          response.destroy(new ToolError(`web_fetch response exceeded the ${params.maxBytes} byte limit.`));
+          response.destroy(new ToolError(`web.fetch response exceeded the ${params.maxBytes} byte limit.`));
           return;
         }
         chunks.push(buffer);
@@ -307,7 +307,7 @@ async function readResponseText(
   const contentLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(contentLength) && contentLength > maxBytes) {
     throw new ToolError(
-      `web_fetch response exceeded the ${maxBytes} byte limit before reading the body.`,
+      `web.fetch response exceeded the ${maxBytes} byte limit before reading the body.`,
     );
   }
 
@@ -331,7 +331,7 @@ async function readResponseText(
     totalBytes += value.byteLength;
     if (totalBytes > maxBytes) {
       await reader.cancel().catch(() => undefined);
-      throw new ToolError(`web_fetch response exceeded the ${maxBytes} byte limit.`);
+      throw new ToolError(`web.fetch response exceeded the ${maxBytes} byte limit.`);
     }
     chunks.push(value);
   }
@@ -347,7 +347,7 @@ async function readResponseText(
 }
 
 function formatHttpError(status: number, statusText: string, detail: string): string {
-  const prefix = `web_fetch failed with HTTP ${status}${statusText ? ` ${statusText}` : ""}`;
+  const prefix = `web.fetch failed with HTTP ${status}${statusText ? ` ${statusText}` : ""}`;
   return detail ? `${prefix}: ${detail}` : prefix;
 }
 
@@ -375,7 +375,7 @@ export async function fetchSafeHttpResource(
   try {
     currentUrl = new URL(url);
   } catch {
-    throw new ToolError("web_fetch requires a valid URL.");
+    throw new ToolError("web.fetch requires a valid URL.");
   }
 
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
@@ -392,7 +392,7 @@ export async function fetchSafeHttpResource(
     let response: FetchedResponse | null = null;
 
     while (true) {
-      const safeTarget = await resolveSafeHttpTarget(currentUrl, lookupHostname, "web_fetch");
+      const safeTarget = await resolveSafeHttpTarget(currentUrl, lookupHostname, "web.fetch");
       response = options.fetchImpl
         ? await fetchWithCustomImpl(currentUrl, {
             fetchImpl: options.fetchImpl,
@@ -417,11 +417,11 @@ export async function fetchSafeHttpResource(
 
       const location = trimToUndefined(response.headers.get("location"));
       if (!location) {
-        throw new ToolError(`web_fetch received redirect ${response.status} without a Location header.`);
+        throw new ToolError(`web.fetch received redirect ${response.status} without a Location header.`);
       }
 
       if (redirectCount >= maxRedirects) {
-        throw new ToolError(`web_fetch exceeded the redirect limit of ${maxRedirects}.`);
+        throw new ToolError(`web.fetch exceeded the redirect limit of ${maxRedirects}.`);
       }
 
       const nextUrl = new URL(location, currentUrl);
@@ -436,7 +436,7 @@ export async function fetchSafeHttpResource(
     }
 
     if (!response) {
-      throw new ToolError("web_fetch did not receive a response.");
+      throw new ToolError("web.fetch did not receive a response.");
     }
 
     return {
@@ -450,21 +450,21 @@ export async function fetchSafeHttpResource(
     };
   } catch (error) {
     if (options.signal?.aborted) {
-      throw new ToolError("web_fetch was aborted.");
+      throw new ToolError("web.fetch was aborted.");
     }
     if (timeoutSignal.aborted) {
-      throw new ToolError(`web_fetch timed out after ${timeoutMs}ms.`);
+      throw new ToolError(`web.fetch timed out after ${timeoutMs}ms.`);
     }
     if (error instanceof ToolError) {
       throw error;
     }
 
     const message = error instanceof Error ? error.message : String(error);
-    throw new ToolError(`web_fetch failed: ${message}`);
+    throw new ToolError(`web.fetch failed: ${message}`);
   }
 }
 
-/** Fetches a public HTML page and returns the readable page payload used by web_fetch and watch probes. */
+/** Fetches a public HTML page and returns the readable page payload used by web.fetch and watch probes. */
 export async function fetchReadableWebPage(
   url: string,
   options: FetchReadableWebPageOptions = {},
@@ -486,7 +486,7 @@ export async function fetchReadableWebPage(
   try {
     currentUrl = new URL(url);
   } catch {
-    throw new ToolError("web_fetch requires a valid URL.");
+    throw new ToolError("web.fetch requires a valid URL.");
   }
 
   options.onProgress?.({
@@ -521,7 +521,7 @@ export async function fetchReadableWebPage(
     const contentType = parseBaseContentType(response.contentType);
     if (contentType !== "text/html" && !looksLikeHtml(body)) {
       throw new ToolError(
-        `web_fetch only supports HTML pages right now (got ${contentType ?? "unknown"}).`,
+        `web.fetch only supports HTML pages right now (got ${contentType ?? "unknown"}).`,
       );
     }
 
@@ -555,7 +555,7 @@ export async function fetchReadableWebPage(
     }
 
     const message = error instanceof Error ? error.message : String(error);
-    throw new ToolError(`web_fetch failed: ${message}`);
+    throw new ToolError(`web.fetch failed: ${message}`);
   }
 }
 

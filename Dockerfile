@@ -115,8 +115,12 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY --from=prod-deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 
-RUN ln -sf /app/dist/app/cli.js /usr/local/bin/panda \
+RUN ln -sf /app/dist/app/cli.js /usr/local/bin/panda-app \
   && chmod +x /app/dist/app/cli.js
+RUN mkdir -p /usr/local/lib/panda-agent-command-shim
+COPY scripts/agent-command-shim/routes.generated.sh /usr/local/lib/panda-agent-command-shim/routes.generated.sh
+COPY scripts/agent-command-shim/panda /usr/local/bin/panda
+RUN chmod +x /usr/local/bin/panda
 
 RUN --mount=type=cache,id=panda-apt-cache,target=/var/cache/apt,sharing=locked \
   --mount=type=cache,id=panda-apt-lists,target=/var/lib/apt/lists,sharing=locked \
@@ -166,7 +170,7 @@ RUN --mount=type=cache,id=panda-apt-cache,target=/var/cache/apt,sharing=locked \
 
 EXPOSE 8080
 
-ENTRYPOINT ["panda"]
+ENTRYPOINT ["panda-app"]
 CMD ["bash-server"]
 
 FROM ubuntu:24.04 AS workspace-runner
@@ -234,6 +238,11 @@ RUN --mount=type=cache,id=panda-apt-cache,target=/var/cache/apt,sharing=locked \
     > /etc/apt/sources.list.d/mongodb-org-8.0.list; \
   apt_retry apt-get update; \
   apt_retry apt-get install -y --no-install-recommends mongodb-mongosh
+
+RUN mkdir -p /usr/local/lib/panda-agent-command-shim
+COPY scripts/agent-command-shim/routes.generated.sh /usr/local/lib/panda-agent-command-shim/routes.generated.sh
+COPY scripts/agent-command-shim/panda /usr/local/bin/panda
+RUN chmod +x /usr/local/bin/panda
 
 CMD ["sleep", "infinity"]
 

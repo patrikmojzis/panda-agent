@@ -28,7 +28,6 @@ export {
 } from "./create-runtime.js";
 export type {
   DefaultAgentChannelActionQueue,
-  DefaultAgentIdentityDirectory,
   DefaultAgentMessageAgentService,
   DefaultAgentOutboundQueue,
   DefaultAgentRouteMemory,

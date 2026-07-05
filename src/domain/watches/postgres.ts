@@ -19,11 +19,14 @@ import type {
     DisableWatchInput,
     FailWatchRunInput,
     ListDueWatchesInput,
+    ListWatchRunsInput,
+    ListWatchesInput,
     RecordWatchEventInput,
     StartWatchRunInput,
     UpdateWatchInput,
     WatchEventRecord,
     WatchRecord,
+    WatchRunHistoryRecord,
     WatchRunRecord,
     WatchSpec,
 } from "./types.js";
@@ -150,6 +153,25 @@ function parseWatchEventRow(row: Record<string, unknown>): WatchEventRecord {
     dedupeKey: requireWatchString("dedupe key", row.dedupe_key),
     payload: readOptionalJsonObject(row.payload, "event payload"),
     createdAt: requireTimestampMillis(row.created_at, "Watch created_at must be a valid timestamp."),
+  };
+}
+
+function parseWatchRunHistoryRow(row: Record<string, unknown>): WatchRunHistoryRecord {
+  const run = parseWatchRunRow(row);
+  const eventId = optionalWatchString("event id", row.event_id);
+  if (!eventId) {
+    return run;
+  }
+
+  return {
+    ...run,
+    event: {
+      id: eventId,
+      eventKind: parseWatchEventKind(row.event_kind),
+      summary: requireWatchString("event summary", row.event_summary),
+      dedupeKey: requireWatchString("event dedupe key", row.event_dedupe_key),
+      createdAt: requireTimestampMillis(row.event_created_at, "Watch event_created_at must be a valid timestamp."),
+    },
   };
 }
 
@@ -399,6 +421,32 @@ export class PostgresWatchStore implements WatchStore {
     }
 
     return parseWatchRow(row as Record<string, unknown>);
+  }
+
+  async listWatches(input: ListWatchesInput): Promise<readonly WatchRecord[]> {
+    const status = input.status ?? "enabled";
+    const limit = Math.max(1, input.limit ?? 25);
+    const statusFilter = status === "enabled"
+      ? "AND enabled = TRUE AND disabled_at IS NULL"
+      : status === "disabled"
+        ? "AND (enabled = FALSE OR disabled_at IS NOT NULL)"
+        : "";
+    const result = await this.pool.query(
+      `
+        SELECT *
+        FROM ${this.tables.watches}
+        WHERE session_id = $1
+          ${statusFilter}
+        ORDER BY enabled DESC, next_poll_at ASC NULLS LAST, created_at DESC, id ASC
+        LIMIT $2
+      `,
+      [
+        requireWatchString("session id", input.sessionId),
+        limit,
+      ],
+    );
+
+    return result.rows.map((row) => parseWatchRow(row as Record<string, unknown>));
   }
 
   async listDueWatches(input: ListDueWatchesInput = {}): Promise<readonly WatchRecord[]> {
@@ -784,5 +832,35 @@ export class PostgresWatchStore implements WatchStore {
     );
     const row = result.rows[0];
     return row ? parseWatchRunRow(row as Record<string, unknown>) : null;
+  }
+
+  async listWatchRuns(input: ListWatchRunsInput): Promise<readonly WatchRunHistoryRecord[]> {
+    const limit = Math.max(1, input.limit ?? 25);
+    const result = await this.pool.query(
+      `
+        SELECT
+          run.*,
+          event.id AS event_id,
+          event.event_kind AS event_kind,
+          event.summary AS event_summary,
+          event.dedupe_key AS event_dedupe_key,
+          event.created_at AS event_created_at
+        FROM ${this.tables.watchRuns} AS run
+        LEFT JOIN ${this.tables.watchEvents} AS event
+          ON event.watch_id = run.watch_id
+          AND event.id = run.emitted_event_id
+        WHERE run.watch_id = $1
+          AND run.session_id = $2
+        ORDER BY run.created_at DESC, run.id ASC
+        LIMIT $3
+      `,
+      [
+        requireWatchString("id", input.watchId),
+        requireWatchString("session id", input.sessionId),
+        limit,
+      ],
+    );
+
+    return result.rows.map((row) => parseWatchRunHistoryRow(row as Record<string, unknown>));
   }
 }

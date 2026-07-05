@@ -596,8 +596,8 @@ describe("Session create CLI", () => {
       "http://runner.internal:8080",
       "--runner-cwd",
       "/srv/panda",
-      "--allow-tools",
-      "bash,read_file",
+	      "--allow-tools",
+	      "bash,view_media",
       "--db-url",
       "postgres://session-create-test",
     ], {from: "user"});
@@ -606,7 +606,7 @@ describe("Session create CLI", () => {
     await expect(environments.getBindingByAlias("session-targets", "vps")).resolves.toMatchObject({
       alias: "vps",
       isDefault: false,
-      toolPolicy: {allowedTools: ["bash", "read_file"]},
+	      toolPolicy: {allowedTools: ["bash", "view_media"]},
     });
 
     write.mockClear();
@@ -625,7 +625,7 @@ describe("Session create CLI", () => {
     expect(statusOutput).toContain("Execution targets for session-targets.\n");
     expect(statusOutput).toContain("vps\n");
     expect(statusOutput).toContain("health reachable");
-    expect(statusOutput).toContain("allowedTools bash,read_file");
+	    expect(statusOutput).toContain("allowedTools bash,view_media");
 
     write.mockClear();
     await createProgram().parseAsync([

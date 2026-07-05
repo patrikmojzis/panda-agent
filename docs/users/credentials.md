@@ -75,11 +75,15 @@ After a clear:
 - if no stored credential has that key, local bash may still fall back to Panda process env
 - remote bash does not fall back to runner host env
 
-## Agent Tools
+## Agent CLI
 
-Panda also gets two tools:
+Inside an agent session, use the command shim:
 
-- `set_env_value(key, value)`
-- `clear_env_value(key)`
+```bash
+panda env list
+printf '%s' "$SECRET_VALUE" | panda env set API_KEY --stdin
+panda env set API_KEY --from-file ./api-key.secret
+panda env clear API_KEY
+```
 
-The model should use these only for values it already has. Humans should still prefer the CLI.
+The model should use these only for values it already has. Humans should still prefer the operator credentials CLI for manual secret entry.

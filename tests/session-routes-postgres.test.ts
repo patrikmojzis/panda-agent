@@ -141,6 +141,112 @@ describe("SessionRouteRepo", () => {
     });
   });
 
+  it("lists the latest identity route per identity in a session", async () => {
+    const pool = createPool();
+    pools.push(pool);
+
+    const {identityStore, sessionStore} = await createRuntimeStores(pool);
+    const store = new SessionRouteRepo({pool});
+    await store.ensureSchema();
+    const alice = await identityStore.createIdentity({
+      id: "alice-id",
+      handle: "alice",
+      displayName: "Alice",
+    });
+    const bob = await identityStore.createIdentity({
+      id: "bob-id",
+      handle: "bob",
+      displayName: "Bob",
+    });
+    await sessionStore.createSession({
+      id: "session-a",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "thread-a",
+    });
+    await sessionStore.createSession({
+      id: "session-b",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-b",
+    });
+
+    await store.saveLastRoute({
+      sessionId: "session-a",
+      route: {
+        source: "telegram",
+        connectorKey: "bot-global",
+        externalConversationId: "global-chat",
+        capturedAt: 300,
+      },
+    });
+    await store.saveLastRoute({
+      sessionId: "session-a",
+      identityId: alice.id,
+      route: {
+        source: "telegram",
+        connectorKey: "bot-main",
+        externalConversationId: "alice-old",
+        externalActorId: "alice-actor",
+        capturedAt: 100,
+      },
+    });
+    await store.saveLastRoute({
+      sessionId: "session-a",
+      identityId: alice.id,
+      route: {
+        source: "whatsapp",
+        connectorKey: "wa-main",
+        externalConversationId: "alice-new",
+        externalActorId: "alice-phone",
+        capturedAt: 200,
+      },
+    });
+    await store.saveLastRoute({
+      sessionId: "session-a",
+      identityId: bob.id,
+      route: {
+        source: "discord",
+        connectorKey: "discord-main",
+        externalConversationId: "bob-channel",
+        externalActorId: "bob-user",
+        capturedAt: 150,
+      },
+    });
+    await store.saveLastRoute({
+      sessionId: "session-b",
+      identityId: alice.id,
+      route: {
+        source: "telegram",
+        connectorKey: "bot-other-session",
+        externalConversationId: "other-session",
+        capturedAt: 500,
+      },
+    });
+
+    await expect(store.listLatestIdentityRoutes({
+      sessionId: "session-a",
+      identityIds: [alice.id, bob.id, alice.id, "missing-id"],
+    })).resolves.toEqual([
+      expect.objectContaining({
+        identityId: alice.id,
+        channel: "whatsapp",
+        route: expect.objectContaining({
+          source: "whatsapp",
+          externalConversationId: "alice-new",
+        }),
+      }),
+      expect.objectContaining({
+        identityId: bob.id,
+        channel: "discord",
+        route: expect.objectContaining({
+          source: "discord",
+          externalConversationId: "bob-channel",
+        }),
+      }),
+    ]);
+  });
+
   it("round-trips delivery context for global and identity-scoped routes and replaces stale generic context", async () => {
     const pool = createPool();
     pools.push(pool);

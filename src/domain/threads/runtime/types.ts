@@ -13,6 +13,7 @@ import type {
   ThreadMessageRecord,
   ThreadRuntimeState,
 } from "../../../kernel/transcript/types.js";
+import type {MediaDescriptor} from "../../channels/types.js";
 
 export type {
   AutoCompactionRuntimeState,
@@ -102,6 +103,27 @@ export interface ThreadInputPayload extends ThreadMessageMetadata {
   metadata?: JsonValue;
 }
 
+export interface ThreadChannelMessageFilter {
+  sessionId: string;
+  source: string;
+  connectorKey: string;
+  channelId: string;
+  limit?: number;
+}
+
+export interface ThreadChannelMediaFilter {
+  sessionId: string;
+  source: string;
+  connectorKey: string;
+  channelId: string;
+  mediaId: string;
+}
+
+export interface ThreadChannelMediaRecord {
+  message: ThreadMessageRecord;
+  media: MediaDescriptor;
+}
+
 export type ThreadRunStatus = "running" | "completed" | "failed";
 
 export interface ThreadRunRecord {
@@ -115,7 +137,7 @@ export interface ThreadRunRecord {
   abortReason?: string;
 }
 
-export type ThreadToolJobKind = "bash" | "image_generate" | "spawn_subagent" | "web_research";
+export type ThreadToolJobKind = "bash" | "command" | "image_generate" | "spawn_subagent" | "web_research";
 export type ThreadToolJobStatus = "running" | "completed" | "failed" | "cancelled" | "lost";
 
 export interface ThreadToolJobRecord {

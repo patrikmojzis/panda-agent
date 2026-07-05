@@ -283,7 +283,7 @@ Review for:
 - Worker lifecycle is wake/drain driven, not a hot loop.
 - Telegram and WhatsApp keep protocol details in their own adapters.
 - Shared channel helpers do not become a generic connector framework.
-- A2A still uses `message_agent`; human/channel outbound still uses `outbound`.
+- A2A uses `a2a.send`; human/channel outbound uses provider-specific send commands.
 
 Keep out:
 
@@ -320,7 +320,7 @@ Primary files:
 - `src/prompts/channels/*`
 - `src/prompts/runtime/*`
 - deleted tool/browser leftovers: `src/panda/prompt.ts`, `src/panda/tools/browser-output.ts`, `src/panda/tools/browser-schema.ts`, `src/panda/tools/browser-service.ts`, `src/panda/tools/browser-snapshot.ts`, `src/panda/tools/browser-types.ts`, `src/panda/tools/http.ts`, `src/panda/tools/safe-web-target.ts`, `src/panda/tools/web-fetch.ts`, `src/panda/tools/web-research.ts`, `src/domain/subagents/tool-groups.ts`, `src/kernel/agent/abort.ts`, `src/kernel/transcript/message-preview.ts`
-- tests: `tests/thread.test.ts`, `tests/thread-runtime.test.ts`, `tests/provider-runtime.test.ts`, `tests/browser-tool.test.ts`, `tests/browser-runner.test.ts`, `tests/browser-protocol.test.ts`, `tests/web-fetch-tool.test.ts`, `tests/wiki-tool.test.ts`, `tests/tool-format.test.ts`, `tests/tool-shared.test.ts`, `tests/spawn-subagent-tool.test.ts`, `tests/spawn-subagent-tool.test.ts`, `tests/media-tool.test.ts`, `tests/workspace-readonly-tools.test.ts`
+- tests: `tests/thread.test.ts`, `tests/thread-runtime.test.ts`, `tests/provider-runtime.test.ts`, `tests/browser-tool.test.ts`, `tests/browser-runner.test.ts`, `tests/browser-protocol.test.ts`, `tests/web-fetch-command.test.ts`, `tests/web-research-command.test.ts`, `tests/wiki-command-service.test.ts`, `tests/tool-format.test.ts`, `tests/tool-shared.test.ts`, `tests/subagent-spawn-command.test.ts`, `tests/media-tool.test.ts`, `tests/command-modules.test.ts`, `tests/command-dispatcher.test.ts`
 
 Review for:
 
@@ -337,7 +337,7 @@ Keep out:
 Checks:
 
 ```sh
-pnpm vitest run tests/thread.test.ts tests/thread-runtime.test.ts tests/provider-runtime.test.ts tests/browser-tool.test.ts tests/browser-runner.test.ts tests/browser-protocol.test.ts tests/web-fetch-tool.test.ts tests/wiki-tool.test.ts tests/tool-format.test.ts tests/tool-shared.test.ts tests/spawn-subagent-tool.test.ts tests/spawn-subagent-tool.test.ts tests/media-tool.test.ts tests/workspace-readonly-tools.test.ts
+pnpm vitest run tests/thread.test.ts tests/thread-runtime.test.ts tests/provider-runtime.test.ts tests/browser-tool.test.ts tests/browser-runner.test.ts tests/browser-protocol.test.ts tests/web-fetch-command.test.ts tests/web-research-command.test.ts tests/wiki-command-service.test.ts tests/tool-format.test.ts tests/tool-shared.test.ts tests/subagent-spawn-command.test.ts tests/media-tool.test.ts tests/command-modules.test.ts tests/command-dispatcher.test.ts
 ```
 
 ## 8. Tests, Import-Law Ratchet, And Stabilization Notes

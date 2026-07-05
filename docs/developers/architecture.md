@@ -434,6 +434,7 @@ These are the source barrels that still deserve to exist:
 - `src/kernel/agent/index.ts`
 - `src/panda/index.ts`
 - `src/domain/agents/index.ts`
+- `src/domain/commands/index.ts`
 - `src/domain/identity/index.ts`
 - `src/domain/sessions/index.ts`
 - `src/domain/channels/index.ts`
@@ -457,6 +458,7 @@ The supported package entrypoints are:
 - `panda/kernel/agent`
 - `panda/panda`
 - `panda/domain/agents`
+- `panda/domain/commands`
 - `panda/domain/identity`
 - `panda/domain/channels`
 - `panda/domain/channels/actions`

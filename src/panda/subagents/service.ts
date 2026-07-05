@@ -79,7 +79,7 @@ function hasToolJobListing(
 
 /**
  * Legacy in-process role runner retained for non-runtime policy/model tests.
- * V2 runtime delegation must go through durable `spawn_subagent` / `SubagentSessionService`;
+ * V2 runtime delegation must go through durable `panda subagent spawn` / `SubagentSessionService`;
  * do not wire this service back into active model-facing delegation.
  */
 export class DefaultAgentSubagentService {

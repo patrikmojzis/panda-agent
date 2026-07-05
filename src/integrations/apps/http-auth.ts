@@ -73,7 +73,7 @@ export async function resolveAppHttpSession(input: {
   const cookieNames = buildAgentAppCookieNames(input.agentKey, input.appSlug);
   const sessionToken = cookies[cookieNames.session];
   if (!sessionToken) {
-    throw new AgentAppRequestError(401, "Open this app from a fresh app_link_create link.");
+    throw new AgentAppRequestError(401, "Open this app from a fresh panda micro-app link create link.");
   }
 
   const session = await input.auth.getSessionByToken(sessionToken);

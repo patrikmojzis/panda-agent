@@ -1,5 +1,6 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {createRuntime} from "../src/app/runtime/create-runtime.js";
+import {createCommandCatalog, type CommandCatalogModule} from "../src/domain/commands/index.js";
 
 const runtimeMocks = vi.hoisted(() => {
   const poolInstances: Array<{
@@ -125,12 +126,38 @@ vi.mock("../src/domain/threads/runtime/postgres-notifications.js", () => ({
   parseThreadRuntimeNotification: vi.fn(() => null),
 }));
 
-vi.mock("../src/panda/tools/postgres-readonly-query-tool.js", () => ({
-  PostgresReadonlyQueryTool: class {
-    constructor(options: unknown) {
-      runtimeMocks.readonlyToolOptions.push(options);
-    }
+vi.mock("../src/integrations/postgres/readonly-query-command.js", () => ({
+  postgresReadonlyQueryCommandDescriptor: {
+    name: "postgres.readonly.query",
+    summary: "Run a scoped readonly Postgres query.",
+    description: "Run a scoped readonly Postgres query.",
+    usage: "panda postgres readonly query --sql @query.sql",
+    inputModes: ["flags", "json", "stdin", "file"],
+    outputModes: ["json"],
+    arguments: [],
+    examples: [],
   },
+  createPostgresReadonlyQueryCommand: vi.fn((options: unknown) => {
+    runtimeMocks.readonlyToolOptions.push(options);
+    return {
+      descriptor: {
+        name: "postgres.readonly.query",
+        summary: "Run a scoped readonly Postgres query.",
+        description: "Run a scoped readonly Postgres query.",
+        usage: "panda postgres readonly query --sql @query.sql",
+        inputModes: ["flags", "json", "stdin", "file"],
+        outputModes: ["json"],
+        arguments: [],
+        examples: [],
+      },
+      execute: vi.fn(async () => ({
+        ok: true,
+        command: "postgres.readonly.query",
+        output: {},
+        summary: "ok",
+      })),
+    };
+  }),
 }));
 
 vi.mock("../src/integrations/browser/client.js", () => ({
@@ -239,5 +266,117 @@ describe("createRuntime", () => {
     expect(runtimeMocks.leaseManagerPools).toEqual([runtimeMocks.poolInstances[2]]);
 
     await runtime.close();
+  });
+
+  it("registers supplied command modules with the runtime dispatcher", async () => {
+    const descriptor = {
+      name: "custom.echo",
+      summary: "Echo a custom message.",
+      description: "Echo a custom message.",
+      usage: "panda custom echo <message>",
+      inputModes: ["flags", "json"],
+      outputModes: ["json"],
+      arguments: [],
+      examples: [],
+    } as const;
+    const customModule: CommandCatalogModule = {
+      descriptor,
+      route: {
+        helpArgv: ["custom", "echo"],
+        jsonArgv: ["custom", "echo", "--json", "@payload.json"],
+      },
+      policy: {
+        capability: "custom.echo",
+        toolGroups: ["core"],
+      },
+      createCommand: () => ({
+        descriptor,
+        async execute(request) {
+          return {
+            ok: true,
+            command: "custom.echo",
+            output: request.input,
+          };
+        },
+      }),
+    };
+
+    const commandCatalog = createCommandCatalog([customModule]);
+    const runtime = await createRuntime({
+      dbUrl: "postgres://panda:test@localhost:5432/panda",
+      commandCatalog,
+      resolveDefinition: vi.fn(),
+    });
+
+    expect(runtime.commandCatalog).toBe(commandCatalog);
+    expect(runtime.commandModules).toEqual([customModule]);
+    await expect(runtime.commandExecutor.getCommand("custom.echo")).resolves.toEqual(descriptor);
+    await expect(runtime.commandExecutor.listCommands()).resolves.toEqual([descriptor]);
+    await expect(runtime.commandExecutor.listCommands({
+      agentKey: "panda",
+      sessionId: "session-main",
+      allowedCommands: ["custom.echo"],
+    })).resolves.toEqual([descriptor]);
+
+    await runtime.close();
+  });
+
+  it("rejects mixed command catalog and command module options", async () => {
+    const descriptor = {
+      name: "custom.echo",
+      summary: "Echo a custom message.",
+      description: "Echo a custom message.",
+      usage: "panda custom echo <message>",
+      inputModes: ["flags", "json"],
+      outputModes: ["json"],
+      arguments: [],
+      examples: [],
+    } as const;
+    const customModule: CommandCatalogModule = {
+      descriptor,
+      route: {
+        helpArgv: ["custom", "echo"],
+        jsonArgv: ["custom", "echo", "--json", "@payload.json"],
+      },
+      policy: {
+        capability: "custom.echo",
+      },
+    };
+
+    await expect(createRuntime({
+      dbUrl: "postgres://panda:test@localhost:5432/panda",
+      commandCatalog: createCommandCatalog([customModule]),
+      commandModules: [customModule],
+      resolveDefinition: vi.fn(),
+    })).rejects.toThrow("Pass either commandCatalog or commandModules, not both.");
+  });
+
+  it("rejects duplicate supplied command modules during bootstrap", async () => {
+    const descriptor = {
+      name: "custom.echo",
+      summary: "Echo a custom message.",
+      description: "Echo a custom message.",
+      usage: "panda custom echo <message>",
+      inputModes: ["flags", "json"],
+      outputModes: ["json"],
+      arguments: [],
+      examples: [],
+    } as const;
+    const customModule: CommandCatalogModule = {
+      descriptor,
+      route: {
+        helpArgv: ["custom", "echo"],
+        jsonArgv: ["custom", "echo", "--json", "@payload.json"],
+      },
+      policy: {
+        capability: "custom.echo",
+      },
+    };
+
+    await expect(createRuntime({
+      dbUrl: "postgres://panda:test@localhost:5432/panda",
+      commandModules: [customModule, customModule],
+      resolveDefinition: vi.fn(),
+    })).rejects.toThrow("Duplicate Panda command module custom.echo.");
   });
 });

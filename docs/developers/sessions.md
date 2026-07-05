@@ -29,7 +29,7 @@ The current shape is:
 Every agent has exactly one `main` session.
 Agents may also have `branch` sessions.
 Subagent runs use `subagent` sessions: constrained durable child lanes owned by the same
-agent. They are created by `spawn_subagent(profile=..., prompt=...)` and may use explicit allowlists.
+agent. They are created by `panda subagent spawn <task> --profile <slug>` and may use explicit allowlists.
 
 ## Lifecycle
 
@@ -67,7 +67,7 @@ Aliases are a separate operator affordance:
 
 `panda session label` updates or clears `alias`/`display_name`; TUI alias editing is intentionally out of scope.
 
-Editable runtime prompts are stored per session in `session_prompts` with slugs `brief`, `memory`, and `heartbeat`. The CLI `panda session prompt show|set|read|clear` edits `brief` by default and accepts `--slug brief|memory|heartbeat`; Control exposes the same bundle in the session Prompts tab. The model-facing `session_prompt` tool can read/set/transform the current session's prompt bundle. `brief` and `memory` render through `SessionPromptsContext`; `heartbeat` is read only when building heartbeat wake guidance.
+Editable runtime prompts are stored per session in `session_prompts` with slugs `brief`, `memory`, and `heartbeat`. The CLI `panda session prompt show|set|read|clear` edits `brief` by default and accepts `--slug brief|memory|heartbeat`; Control exposes the same bundle in the session Prompts tab. Agents use `panda session prompt read|set|transform` to read, set, or transform the current session's prompt bundle. `brief` and `memory` render through `SessionPromptsContext`; `heartbeat` is read only when building heartbeat wake guidance.
 
 Rules:
 
@@ -79,14 +79,14 @@ Rules:
 - subagent sessions do not inherit the session prompt bundle
 - prompt-cache affinity includes rendered session prompts (`brief` and `memory`), while `heartbeat` affects only heartbeat wake guidance
 
-Session todo context is stored per session in `session_todos`. It is agent-managed through the `todo_update` tool, not a CLI/TUI editor. The tool replaces the full ordered list for the current runtime session; it never accepts a session id from the model. Items are structured `{status, content}` with `pending | in_progress | blocked | done`, and `items: []` clears the context.
+Session todo context is stored per session in `session_todos`. It is agent-managed through `panda todo add`, `panda todo done`, `panda todo block`, and `panda todo clear`, not a TUI editor. The commands mutate the current runtime session and never accept a session id from the model. Items are structured `{status, content}` with `pending | in_progress | blocked | done`.
 
 Rules:
 
 - todos are keyed by canonical `session_id` and survive `/reset` because reset only swaps `current_thread_id`
 - todo state is structured JSONB, not markdown parsed from transcript history
 - `Todo Context` is rendered through the default LLM context lane, including subagent sessions by default
-- prompt-cache affinity includes the todo hash/update version so `todo_update` is visible on the next model request
+- prompt-cache affinity includes the todo hash/update version so command changes are visible on the next model request
 - rendering caps completed-heavy lists; done items are not auto-deleted
 - no due dates, reminders, priorities, owners, global/project todos, or auto-spawn behavior in V1
 
@@ -187,7 +187,7 @@ So:
 - pairing is global per `identity <-> agent`
 - there are no per-session ACLs
 - branch sessions are visible to all identities paired to that agent
-- subagents are durable `agent_sessions.kind = "subagent"` sessions created by `spawn_subagent`
+- subagents are durable `agent_sessions.kind = "subagent"` sessions created by `panda subagent spawn`
 - there is no session-scoped memory table
 
 ## Code Map

@@ -2,11 +2,14 @@ import {randomUUID} from "node:crypto";
 
 import type {
   DisposableEnvironmentCreateResult,
+  DisposableEnvironmentLogsRequest,
+  DisposableEnvironmentLogsResult,
   ExecutionCredentialPolicy,
   ExecutionEnvironmentManager,
   ExecutionEnvironmentRecord,
   ExecutionSkillPolicy,
   ExecutionToolPolicy,
+  ResolvedExecutionEnvironment,
   SessionEnvironmentBindingRecord,
 } from "../../domain/execution-environments/types.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
@@ -21,6 +24,7 @@ import {
 import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/filesystem.js";
 import type {ExecutionEnvironmentSetupRunner} from "./execution-environment-setup-runner.js";
 import {readExecutionEnvironmentSetupErrorMetadata} from "./execution-environment-setup-runner.js";
+import type {CommandLeaseIssuer} from "./command-leases.js";
 
 const DEFAULT_DISPOSABLE_ALIAS = "self";
 export const DEFAULT_DISPOSABLE_ENVIRONMENT_TTL_MS = 24 * 60 * 60 * 1_000;
@@ -75,6 +79,27 @@ export interface EnsureBoundSessionEnvironmentReadyInput {
   ttlMs?: number;
 }
 
+export interface RefreshSessionCommandAccessInput {
+  session: Pick<SessionRecord, "id" | "agentKey">;
+  executionEnvironment: Pick<
+    ResolvedExecutionEnvironment,
+    "id" | "kind" | "skillPolicy" | "source" | "toolPolicy"
+  >;
+  identityId?: string;
+  inputMessageId?: string;
+  ttlMs?: number;
+}
+
+export interface RefreshSessionCommandAccessResult {
+  refreshed: boolean;
+  reason?: "unsupported_environment" | "unsupported_manager" | "command_server_disabled" | "no_allowed_commands";
+  commandAccess?: {
+    url?: string;
+    socketPath?: string;
+    token: string;
+  };
+}
+
 export interface CreateDisposableSessionEnvironmentResult {
   environment: ExecutionEnvironmentRecord;
   binding: SessionEnvironmentBindingRecord;
@@ -90,6 +115,8 @@ export interface ExecutionEnvironmentLifecycleServiceOptions {
   store: ExecutionEnvironmentLifecycleStore;
   manager?: ExecutionEnvironmentManager | null;
   setupRunner?: ExecutionEnvironmentSetupRunner | null;
+  commandLeases?: CommandLeaseIssuer | null;
+  fallbackRunnerCommandSocketAccess?: boolean;
 }
 
 export type ExecutionEnvironmentStopStore = Pick<
@@ -145,6 +172,20 @@ function remainingTtlMs(environment: Pick<ExecutionEnvironmentRecord, "expiresAt
     : Math.max(1, environment.expiresAt - Date.now());
 }
 
+function commandSocketAccessAllowed(
+  environment: Pick<ResolvedExecutionEnvironment, "kind" | "source">,
+  fallbackRunnerCommandSocketAccess: boolean,
+): boolean {
+  if (environment.kind === "local") {
+    return true;
+  }
+  if (environment.kind === "disposable_container") {
+    return true;
+  }
+
+  return environment.source === "fallback" && fallbackRunnerCommandSocketAccess;
+}
+
 function sameJson(left: JsonValue, right: JsonValue): boolean {
   return stableStringify(left) === stableStringify(right);
 }
@@ -170,11 +211,97 @@ export class ExecutionEnvironmentLifecycleService {
   private readonly store: ExecutionEnvironmentLifecycleStore;
   private readonly manager: ExecutionEnvironmentManager | null;
   private readonly setupRunner: ExecutionEnvironmentSetupRunner | null;
+  private readonly commandLeases: CommandLeaseIssuer | null;
+  private readonly fallbackRunnerCommandSocketAccess: boolean;
 
   constructor(options: ExecutionEnvironmentLifecycleServiceOptions) {
     this.store = options.store;
     this.manager = options.manager ?? null;
     this.setupRunner = options.setupRunner ?? null;
+    this.commandLeases = options.commandLeases ?? null;
+    this.fallbackRunnerCommandSocketAccess = options.fallbackRunnerCommandSocketAccess === true;
+  }
+
+  async refreshSessionCommandAccess(
+    input: RefreshSessionCommandAccessInput,
+  ): Promise<RefreshSessionCommandAccessResult> {
+    if (!this.commandLeases) {
+      return {refreshed: false, reason: "command_server_disabled"};
+    }
+
+    const socketAccessAllowed = commandSocketAccessAllowed(
+      input.executionEnvironment,
+      this.fallbackRunnerCommandSocketAccess,
+    );
+    if (
+      this.commandLeases.hasUsableTransport
+      && !this.commandLeases.hasUsableTransport({socketAccessAllowed})
+    ) {
+      throw new Error(
+        `Panda command socket transport is not mounted in execution environment ${input.executionEnvironment.id}. `
+        + "Use PANDA_COMMAND_TRANSPORT=http for remote runners, or mount the command socket into that runner.",
+      );
+    }
+
+    const commandLease = this.commandLeases.issueCommandLease({
+      agentKey: input.session.agentKey,
+      sessionId: input.session.id,
+      ...(input.executionEnvironment.source === "binding" ? {environmentId: input.executionEnvironment.id} : {}),
+      toolPolicy: input.executionEnvironment.toolPolicy,
+      skillPolicy: input.executionEnvironment.skillPolicy,
+      credentialMutationAllowed: input.executionEnvironment.source === "fallback",
+      ...(input.identityId ? {identityId: input.identityId} : {}),
+      ...(input.inputMessageId ? {inputMessageId: input.inputMessageId} : {}),
+      socketAccessAllowed,
+      ...(input.ttlMs === undefined ? {} : {ttlMs: input.ttlMs}),
+    });
+    if (!commandLease) {
+      if (
+        input.executionEnvironment.kind === "disposable_container"
+        && input.executionEnvironment.source === "binding"
+      ) {
+        if (!this.manager?.refreshCommandAccess) {
+          return {refreshed: false, reason: "unsupported_manager"};
+        }
+
+        await this.manager.refreshCommandAccess({
+          environmentId: input.executionEnvironment.id,
+        });
+      }
+      return {refreshed: false, reason: "no_allowed_commands"};
+    }
+
+    const commandAccess = {
+      ...(commandLease.url ? {url: commandLease.url} : {}),
+      ...(commandLease.socketPath ? {socketPath: commandLease.socketPath} : {}),
+      token: commandLease.token,
+    };
+
+    if (
+      input.executionEnvironment.kind === "disposable_container"
+      && input.executionEnvironment.source === "binding"
+    ) {
+      if (!this.manager?.refreshCommandAccess) {
+        return {refreshed: false, reason: "unsupported_manager"};
+      }
+
+      await this.manager.refreshCommandAccess({
+        environmentId: input.executionEnvironment.id,
+        commandAccess,
+      });
+    }
+
+    return {
+      refreshed: true,
+      commandAccess,
+    };
+  }
+
+  async readEnvironmentLogs(input: DisposableEnvironmentLogsRequest): Promise<DisposableEnvironmentLogsResult> {
+    if (!this.manager?.readEnvironmentLogs) {
+      throw new Error("Execution environment manager does not support logs.");
+    }
+    return this.manager.readEnvironmentLogs(input);
   }
 
   async createDisposableForSession(
@@ -220,12 +347,31 @@ export class ExecutionEnvironmentLifecycleService {
 
     let created: DisposableEnvironmentCreateResult | null = null;
     try {
+      const commandLease = this.commandLeases?.issueCommandLease({
+        agentKey: input.session.agentKey,
+        sessionId: input.session.id,
+        environmentId,
+        toolPolicy,
+        skillPolicy,
+        credentialMutationAllowed: false,
+        socketAccessAllowed: true,
+        ...(input.ttlMs === undefined ? {} : {ttlMs: input.ttlMs}),
+      });
       created = await this.manager.createDisposableEnvironment({
         agentKey: input.session.agentKey,
         sessionId: input.session.id,
         environmentId,
         ...(input.ttlMs === undefined ? {} : {ttlMs: input.ttlMs}),
         ...(input.metadata === undefined ? {} : {metadata: input.metadata}),
+        ...(commandLease
+          ? {
+            commandAccess: {
+              ...(commandLease.url ? {url: commandLease.url} : {}),
+              ...(commandLease.socketPath ? {socketPath: commandLease.socketPath} : {}),
+              token: commandLease.token,
+            },
+          }
+          : {}),
       });
 
       const environment = await this.store.createEnvironment({

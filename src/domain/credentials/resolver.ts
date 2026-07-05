@@ -2,6 +2,7 @@ import {CredentialCrypto} from "./crypto.js";
 import type {
   CredentialListEntry,
   CredentialListFilter,
+  CredentialMetadataEntry,
   CredentialRecord,
   CredentialResolutionContext,
   DecryptedCredentialRecord,
@@ -131,6 +132,19 @@ export class CredentialService {
         valuePreview: maskCredentialValue(decrypted.value),
       } satisfies CredentialListEntry;
     });
+  }
+
+  async listCredentialMetadata(filter: CredentialListFilter = {}): Promise<readonly CredentialMetadataEntry[]> {
+    const records = await this.store.listCredentials(filter);
+
+    return records.map((record) => ({
+      id: record.id,
+      agentKey: record.agentKey,
+      envKey: record.envKey,
+      keyVersion: record.keyVersion,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+    }));
   }
 
   async resolveCredential(

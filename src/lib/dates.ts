@@ -22,10 +22,13 @@ export interface LocalDateTimeInfo extends JsonObject {
 /**
  * Resolves the host's current locale/timezone view for a specific moment.
  */
-export function resolveLocalDateTimeInfo(date = new Date()): LocalDateTimeInfo {
+export function resolveLocalDateTimeInfo(
+  date = new Date(),
+  options: {timeZone?: string} = {},
+): LocalDateTimeInfo {
   const resolved = Intl.DateTimeFormat().resolvedOptions();
   const locale = resolved.locale;
-  const timeZone = resolved.timeZone ?? "UTC";
+  const timeZone = options.timeZone ?? resolved.timeZone ?? "UTC";
 
   return {
     isoTimestamp: date.toISOString(),

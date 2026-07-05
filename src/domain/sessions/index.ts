@@ -22,6 +22,7 @@ export type {
   ConversationLookup,
 } from "./conversations/types.js";
 export type {
+  SessionIdentityRoutesLookup,
   SessionRouteInput,
   SessionRouteLookup,
   SessionRouteRecord,

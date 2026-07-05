@@ -5,6 +5,7 @@ import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import type {
     DisposableEnvironmentCreateRequest,
     DisposableEnvironmentCreateResult,
+    DisposableEnvironmentCommandAccessRefreshRequest,
     ExecutionEnvironmentManager,
 } from "../src/domain/execution-environments/types.js";
 import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/postgres.js";
@@ -12,6 +13,8 @@ import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {ExecutionEnvironmentResolver} from "../src/app/runtime/execution-environment-resolver.js";
 import {ExecutionEnvironmentLifecycleService} from "../src/app/runtime/execution-environment-service.js";
+import {RuntimeCommandLeaseService} from "../src/app/runtime/command-leases.js";
+import {DEFAULT_AGENT_COMMAND_CATALOG} from "../src/panda/commands/agent-command-modules.js";
 import type {
   ExecutionEnvironmentSetupRunner,
   ExecutionEnvironmentSetupRunnerInput,
@@ -50,6 +53,7 @@ function createFilesystemMetadata(envDir = "env-worker"): JsonObject {
 class FakeEnvironmentManager implements ExecutionEnvironmentManager {
   readonly requests: DisposableEnvironmentCreateRequest[] = [];
   readonly stopped: string[] = [];
+  readonly commandAccessRefreshes: DisposableEnvironmentCommandAccessRefreshRequest[] = [];
 
   constructor(private readonly metadataFactory?: (input: DisposableEnvironmentCreateRequest) => JsonValue | undefined) {}
 
@@ -69,6 +73,10 @@ class FakeEnvironmentManager implements ExecutionEnvironmentManager {
 
   async stopEnvironment(environmentId: string): Promise<void> {
     this.stopped.push(environmentId);
+  }
+
+  async refreshCommandAccess(input: DisposableEnvironmentCommandAccessRefreshRequest): Promise<void> {
+    this.commandAccessRefreshes.push(input);
   }
 }
 
@@ -204,7 +212,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
         skillKeys: [" calendar ", ""],
       },
       toolPolicy: {
-        allowedTools: [" bash ", "message_agent", ""],
+        allowedTools: [" bash ", "a2a.send", ""],
         agentSkill: {allowedOperations: [" load ", "set", " patch ", "bogus"]},
       },
     });
@@ -222,7 +230,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
         skillKeys: ["calendar"],
       },
       toolPolicy: {
-        allowedTools: ["bash", "message_agent"],
+        allowedTools: ["bash", "a2a.send"],
         agentSkill: {allowedOperations: ["load", "set", "patch"]},
       },
     });
@@ -531,6 +539,12 @@ describe("PostgresExecutionEnvironmentStore", () => {
       credentialPolicy: {
         mode: "all_agent",
       },
+      toolPolicy: {
+        allowedTools: expect.arrayContaining(["bash", "view_media"]),
+        bash: {
+          allowed: true,
+        },
+      },
     });
   });
 
@@ -564,14 +578,14 @@ describe("PostgresExecutionEnvironmentStore", () => {
         source: "builtin",
         description: "Workspace reader.",
         prompt: "Use workspace tools.",
-        toolGroups: ["core", "workspace_read"],
+        toolGroups: ["core"],
         transcriptMode: "none",
       },
       resolved: {
         credentialPolicy: {mode: "allowlist", envKeys: ["NPM_TOKEN"]},
         skillPolicy: {mode: "all_agent"},
         toolPolicy: {
-          allowedTools: ["message_agent", "agent_skill"],
+          allowedTools: ["a2a.send", "a2a.inspect", "a2a.history", "skill.load"],
           agentSkill: {allowedOperations: ["load"]},
         },
       },
@@ -599,7 +613,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
       credentialPolicy: {mode: "allowlist", envKeys: ["NPM_TOKEN"]},
       skillPolicy: {mode: "all_agent"},
       toolPolicy: {
-        allowedTools: ["message_agent", "agent_skill"],
+        allowedTools: ["a2a.send", "a2a.inspect", "a2a.history", "skill.load"],
         agentSkill: {allowedOperations: ["load"]},
       },
     });
@@ -618,14 +632,14 @@ describe("PostgresExecutionEnvironmentStore", () => {
         source: "builtin",
         description: "Workspace reader.",
         prompt: "Use workspace tools.",
-        toolGroups: ["core", "workspace_read"],
+        toolGroups: ["core"],
         transcriptMode: "none",
       },
       resolved: {
         credentialPolicy: {mode: "allowlist", envKeys: []},
         skillPolicy: {mode: "all_agent"},
         toolPolicy: {
-          allowedTools: ["message_agent", "agent_skill"],
+          allowedTools: ["a2a.send", "a2a.inspect", "a2a.history", "skill.load"],
           agentSkill: {allowedOperations: ["load"]},
         },
       },
@@ -654,7 +668,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
       credentialPolicy: {mode: "allowlist", envKeys: []},
       skillPolicy: {mode: "all_agent"},
       toolPolicy: {
-        allowedTools: ["message_agent", "agent_skill"],
+        allowedTools: ["a2a.send", "a2a.inspect", "a2a.history", "skill.load"],
         agentSkill: {allowedOperations: ["load"]},
       },
     });
@@ -705,14 +719,14 @@ describe("PostgresExecutionEnvironmentStore", () => {
           source: "builtin",
           description: "Workspace reader.",
           prompt: "Use workspace tools.",
-          toolGroups: ["core", "workspace_read"],
+          toolGroups: ["core"],
           transcriptMode: "none",
         },
         resolved: {
           credentialPolicy: {mode: "allowlist", envKeys: []},
           skillPolicy: {mode: "all_agent"},
           toolPolicy: {
-            allowedTools: ["message_agent", "agent_skill"],
+            allowedTools: ["a2a.send", "a2a.inspect", "a2a.history", "skill.load"],
             agentSkill: {allowedOperations: ["load"]},
           },
         },
@@ -741,7 +755,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
         credentialPolicy: {mode: "allowlist", envKeys: []},
         skillPolicy: {mode: "all_agent"},
         toolPolicy: {
-          allowedTools: ["message_agent", "agent_skill"],
+          allowedTools: ["a2a.send", "a2a.inspect", "a2a.history", "skill.load"],
           agentSkill: {allowedOperations: ["load"]},
         },
       });
@@ -770,14 +784,14 @@ describe("PostgresExecutionEnvironmentStore", () => {
         source: "builtin",
         description: "Workspace reader.",
         prompt: "Use workspace tools.",
-        toolGroups: ["core", "workspace_read"],
+        toolGroups: ["core"],
         transcriptMode: "none",
       },
       resolved: {
         credentialPolicy: {mode: "allowlist", envKeys: []},
         skillPolicy: {mode: "all_agent"},
         toolPolicy: {
-          allowedTools: ["message_agent", "agent_skill"],
+          allowedTools: ["a2a.send", "a2a.inspect", "a2a.history", "skill.load"],
           agentSkill: {allowedOperations: ["load"]},
         },
       },
@@ -806,7 +820,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
       credentialPolicy: {mode: "allowlist", envKeys: []},
       skillPolicy: {mode: "all_agent"},
       toolPolicy: {
-        allowedTools: ["message_agent", "agent_skill"],
+        allowedTools: ["a2a.send", "a2a.inspect", "a2a.history", "skill.load"],
         agentSkill: {allowedOperations: ["load"]},
       },
     });
@@ -1009,6 +1023,237 @@ describe("PostgresExecutionEnvironmentStore", () => {
         envKeys: ["DIFFERENT_TOKEN"],
       },
     })).rejects.toThrow("already exists with different policy");
+  });
+
+  it("refreshes disposable command access with current input identity scope", async () => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const session = await sessionStore.getSession("session-worker");
+    const manager = new FakeEnvironmentManager();
+    const commandLeases = new RuntimeCommandLeaseService({
+      baseUrl: "http://panda-core:8096",
+      commandCatalog: DEFAULT_AGENT_COMMAND_CATALOG,
+    });
+    const service = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+      commandLeases,
+    });
+
+    const refresh = await service.refreshSessionCommandAccess({
+      session,
+      executionEnvironment: {
+        id: "env-worker",
+        kind: "disposable_container",
+        source: "binding",
+        skillPolicy: {mode: "all_agent"},
+        toolPolicy: {allowedTools: ["micro-app.link.create", "micro-app.view"]},
+      },
+      identityId: "identity-current",
+      inputMessageId: "message-current",
+    });
+
+    expect(refresh).toMatchObject({
+      refreshed: true,
+      commandAccess: {
+        url: "http://panda-core:8096",
+      },
+    });
+
+    expect(manager.commandAccessRefreshes).toHaveLength(1);
+    expect(manager.commandAccessRefreshes[0]).toMatchObject({
+      environmentId: "env-worker",
+      commandAccess: {
+        url: "http://panda-core:8096",
+      },
+    });
+    const token = manager.commandAccessRefreshes[0]?.commandAccess?.token;
+    expect(token).toBeTruthy();
+    await expect(commandLeases.verify(token!)).resolves.toMatchObject({
+      agentKey: "panda",
+      sessionId: "session-worker",
+      environmentId: "env-worker",
+      identityId: "identity-current",
+      inputMessageId: "message-current",
+      allowedCommands: ["micro-app.link.create", "micro-app.view"],
+    });
+  });
+
+  it("clears disposable command access when no commands are allowed", async () => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const session = await sessionStore.getSession("session-worker");
+    const manager = new FakeEnvironmentManager();
+    const commandLeases = new RuntimeCommandLeaseService({
+      baseUrl: "http://panda-core:8096",
+      commandCatalog: DEFAULT_AGENT_COMMAND_CATALOG,
+    });
+    const service = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+      commandLeases,
+    });
+
+    const refresh = await service.refreshSessionCommandAccess({
+      session,
+      executionEnvironment: {
+        id: "env-worker",
+        kind: "disposable_container",
+        source: "binding",
+        skillPolicy: {mode: "none"},
+        toolPolicy: {},
+      },
+    });
+
+    expect(refresh).toEqual({
+      refreshed: false,
+      reason: "no_allowed_commands",
+    });
+    expect(manager.commandAccessRefreshes).toEqual([
+      {
+        environmentId: "env-worker",
+      },
+    ]);
+  });
+
+  it("issues fallback runner command access without disposable manager refresh", async () => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const session = await sessionStore.getSession("session-main");
+    const manager = new FakeEnvironmentManager();
+    const commandLeases = new RuntimeCommandLeaseService({
+      baseUrl: "http://panda-core:8096",
+      commandCatalog: DEFAULT_AGENT_COMMAND_CATALOG,
+    });
+    const service = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+      commandLeases,
+    });
+
+    const refresh = await service.refreshSessionCommandAccess({
+      session,
+      executionEnvironment: {
+        id: "persistent_agent_runner:panda",
+        kind: "persistent_agent_runner",
+        source: "fallback",
+        skillPolicy: {mode: "all_agent"},
+        toolPolicy: {
+          allowedTools: [
+            "env.list",
+            "env.set",
+            "env.clear",
+            "telegram.chat.list",
+            "telegram.chat.info",
+            "telegram.history",
+            "telegram.media.fetch",
+            "telegram.send",
+            "telegram.edit",
+            "telegram.delete",
+            "telegram.pin",
+            "telegram.unpin",
+            "telegram.sticker.send",
+            "discord.channel.list",
+            "discord.history",
+            "discord.send",
+            "whatsapp.chat.list",
+            "whatsapp.history",
+            "whatsapp.send",
+          ],
+        },
+      },
+    });
+
+    expect(refresh).toMatchObject({
+      refreshed: true,
+      commandAccess: {
+        url: "http://panda-core:8096",
+      },
+    });
+    expect(manager.commandAccessRefreshes).toEqual([]);
+    await expect(commandLeases.verify(refresh.commandAccess!.token)).resolves.toMatchObject({
+      agentKey: "panda",
+      sessionId: "session-main",
+      allowedCommands: [
+        "telegram.chat.list",
+        "telegram.chat.info",
+        "telegram.history",
+        "telegram.media.fetch",
+        "telegram.send",
+        "telegram.edit",
+        "telegram.delete",
+        "telegram.pin",
+        "telegram.unpin",
+        "telegram.sticker.send",
+        "discord.channel.list",
+        "discord.history",
+        "discord.send",
+        "whatsapp.chat.list",
+        "whatsapp.history",
+        "whatsapp.send",
+        "env.list",
+        "env.set",
+        "env.clear",
+      ],
+      credentialMutationAllowed: true,
+    });
+  });
+
+  it("issues socket access to fallback runners only when their socket mount is declared", async () => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const session = await sessionStore.getSession("session-main");
+    const commandLeases = new RuntimeCommandLeaseService({
+      socketPath: "/run/panda-command/command.sock",
+      commandCatalog: DEFAULT_AGENT_COMMAND_CATALOG,
+    });
+    const service = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      commandLeases,
+      fallbackRunnerCommandSocketAccess: true,
+    });
+
+    const refresh = await service.refreshSessionCommandAccess({
+      session,
+      executionEnvironment: {
+        id: "persistent_agent_runner:panda",
+        kind: "persistent_agent_runner",
+        source: "fallback",
+        skillPolicy: {mode: "all_agent"},
+        toolPolicy: {allowedTools: ["time.now"]},
+      },
+    });
+
+    expect(refresh).toMatchObject({
+      refreshed: true,
+      commandAccess: {
+        socketPath: "/run/panda-command/command.sock",
+      },
+    });
+    expect(refresh.commandAccess?.url).toBeUndefined();
+  });
+
+  it("rejects socket-only command access for bound persistent runners", async () => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const session = await sessionStore.getSession("session-main");
+    const commandLeases = new RuntimeCommandLeaseService({
+      socketPath: "/run/panda-command/command.sock",
+      commandCatalog: DEFAULT_AGENT_COMMAND_CATALOG,
+    });
+    const service = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      commandLeases,
+      fallbackRunnerCommandSocketAccess: true,
+    });
+
+    await expect(service.refreshSessionCommandAccess({
+      session,
+      executionEnvironment: {
+        id: "env-vps",
+        kind: "persistent_agent_runner",
+        source: "binding",
+        skillPolicy: {mode: "all_agent"},
+        toolPolicy: {allowedTools: ["time.now"]},
+      },
+    })).rejects.toThrow(
+      "Panda command socket transport is not mounted in execution environment env-vps.",
+    );
   });
 
   it("creates standalone parent-owned disposable environments", async () => {

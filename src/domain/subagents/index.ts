@@ -7,12 +7,15 @@ export {
 } from "./postgres.js";
 export type {SubagentProfileStore} from "./store.js";
 export {
+  describeSubagentToolGroups,
   expandSubagentToolGroups,
   isSubagentToolGroup,
+  normalizePersistedSubagentToolGroups,
   normalizeSubagentToolGroups,
   resolveSubagentToolPolicy,
   SUBAGENT_TOOL_GROUP_DEFINITIONS,
   SUBAGENT_TOOL_GROUP_KEYS,
+  type ExpandSubagentToolGroupsOptions,
   type SubagentToolGroup,
 } from "./tool-groups.js";
 export {

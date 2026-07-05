@@ -2,9 +2,21 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {buildDefaultAgentLlmContexts, gatherContexts,} from "../src/index.js";
+import type {CommandDescriptor} from "../src/domain/commands/index.js";
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
+
+const customCommandDescriptor: CommandDescriptor = {
+  name: "custom.echo",
+  summary: "Echo a custom message.",
+  description: "Echo a custom message.",
+  usage: "panda custom echo <message>",
+  inputModes: ["flags", "json"],
+  outputModes: ["json"],
+  arguments: [],
+  examples: [],
+};
 
 describe("buildDefaultAgentLlmContexts", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
@@ -60,6 +72,98 @@ describe("buildDefaultAgentLlmContexts", () => {
     }));
 
     expect(dump).toContain("**Environment Overview:**");
+    expect(dump).toContain("**Panda CLI Catalog:**");
+    expect(dump).toContain("panda commands --json");
+    expect(dump).toContain("returns dotted command ids for machines; invoke commands with the spaced CLI paths shown below");
+    expect(dump).toContain("`panda watch list [--status enabled|disabled|all] [--limit <n>]`");
+    expect(dump).toContain("`panda watch show <watch-id>`");
+    expect(dump).toContain("`panda watch create --title <text|@file|@-> --every <minutes> (--url <url> --value-path <path> --percent-change <n> [--label <text|@file|@->]|--source-json <json|@file|@-> --detector-json <json|@file|@-> [--source-kind <kind>] [--detector-kind <kind>]) [--disabled]`");
+    expect(dump).toContain("`panda watch update <watch-id> [--title <text|@file|@->] [--every <minutes>] [--url <url> --value-path <path> [--label <text|@file|@->]] [--percent-change <n>] [--source-json <json|@file|@->] [--detector-json <json|@file|@->] [--source-kind <kind>] [--detector-kind <kind>] [--enable|--disable]`");
+    expect(dump).toContain("`panda schedule create <title> (--at <iso>|--cron <expr> --timezone <tz>) --instruction <text|@file|@-> [--disabled]`");
+    expect(dump).toContain("`panda schedule list [--status active|disabled|completed|cancelled|all] [--limit <n>]`");
+    expect(dump).toContain("`panda schedule show <task-id>`");
+    expect(dump).toContain("`panda micro-app create <slug> --name <text|@file|@-> [--description <text|@file|@->] [--identity-scoped] [--schema <sql|@file|@->]`");
+    expect(dump).toContain("`panda micro-app link create <app-slug> [--expires <minutes|Nm|Nh>]`");
+    expect(dump).toContain("`panda micro-app view <app-slug> <view-name> [--param key=value] [--params <json|@file|@->] [--page-size <n>] [--offset <n>]`");
+    expect(dump).toContain("`panda environment list [--state <state>]`");
+    expect(dump).toContain("`panda environment show <environment-id>`");
+    expect(dump).toContain("`panda environment stop <environment-id>`");
+    expect(dump).toContain("`panda skill list [--tag <tag>...]`");
+    expect(dump).toContain("`panda skill show <skill-key>`");
+    expect(dump).toContain("`panda skill load <skill-key>`");
+    expect(dump).toContain("`panda skill set <skill-key> --description <text|@file|@-> --content <text|@file|@-> [--tag <tag>...]`");
+    expect(dump).toContain("`panda skill patch <skill-key> --description <text|@file|@->`");
+    expect(dump).toContain("`panda postgres readonly query (--sql <text|@file|@-> [--max-rows <n>]|--schema-help)`");
+    expect(dump).toContain("`panda wiki read <path> [--locale <locale>] [--format json|markdown]`");
+    expect(dump).toContain("`panda wiki search <query> [--path <path>] [--locale <locale>] [--limit <n>]`");
+    expect(dump).toContain("`panda wiki list [path] [--limit <n>] [--include-archived] [--locale <locale>]`");
+    expect(dump).toContain("`panda wiki diff <left-path> <right-path> [--locale <locale>] [--context <n>]`");
+    expect(dump).toContain("`panda wiki write page <path> --content <text|@file|@-> [--title <text|@file|@->] [--description <text|@file|@->] [--tag <tag>...] [--published|--draft] [--private|--public] [--create|--no-create] [--locale <locale>] [--base-updated-at <timestamp>]`");
+    expect(dump).toContain("`panda wiki write section <path> <section> --content <text|@file|@-> [--title <text|@file|@->] [--create|--no-create] [--locale <locale>] [--base-updated-at <timestamp>]`");
+    expect(dump).toContain("`panda wiki attach image <path> <section> --slot <slot> --source <image-path> --alt <text|@file|@-> [--caption <text|@file|@->] [--title <text|@file|@->] [--create|--no-create] [--locale <locale>] [--base-updated-at <timestamp>]`");
+    expect(dump).toContain("`panda wiki move <path> <destination-path> [--rewrite-links] [--locale <locale>] [--base-updated-at <timestamp>]`");
+    expect(dump).toContain("`panda wiki archive <path> [--locale <locale>] [--base-updated-at <timestamp>]`");
+    expect(dump).toContain("`panda wiki restore <archived-path> <destination-path> [--locale <locale>] [--base-updated-at <timestamp>]`");
+    expect(dump).toContain("`panda wiki delete asset <asset-path> --yes`");
+    expect(dump).toContain("`panda session prompt current read <brief|memory|heartbeat> [--raw]`");
+    expect(dump).toContain("`panda session prompt current set <brief|memory|heartbeat> --content <text|@file|@->`");
+    expect(dump).toContain("`panda session prompt current transform <brief|memory|heartbeat> (--append <text|@file|@->|--prepend <text|@file|@->|--replace <pattern> --with <text|@file|@->|--expression <expr|@file|@->)`");
+    expect(dump).toContain("`panda todo add <text|@file|@-> [--status pending|in_progress|blocked]`");
+    expect(dump).toContain("`panda todo list [--status all|open|pending|in_progress|blocked|done]`");
+    expect(dump).toContain("`panda todo show <index>`");
+    expect(dump).toContain("`panda todo done <index>`");
+    expect(dump).toContain("`panda todo block <index>`");
+    expect(dump).toContain("`panda todo clear`");
+    expect(dump).toContain("`panda subagent spawn (<task|@file|@->|--prompt <text|@file|@->) [--profile <slug>|--tool-group <group>...] [--context <text|@file|@->] [(--environment <environment-id> [--isolated]|--agent-workspace)] [--credential <env-key>...]`");
+    expect(dump).toContain("`panda subagent profile list [--include-disabled]`");
+    expect(dump).toContain("`panda subagent profile show <slug> [--include-disabled]`");
+    expect(dump).toContain("`panda subagent profile upsert <slug> --description <text|@file|@-> --prompt <text|@file|@-> --tool-group <group>... [--model <model>] [--thinking low|medium|high|xhigh] [--enabled|--disabled]`");
+    expect(dump).toContain("`panda subagent profile enable <slug>`");
+    expect(dump).toContain("`panda subagent profile disable <slug>`");
+    expect(dump).toContain("`panda env set <key> (--stdin|--from-file <path>)`");
+    expect(dump).toContain("`panda vent (--message <text|@file|@->|--stdin)`");
+    expect(dump).toContain("`panda a2a send (--to-session <session-id>|--to-agent <agent-key>) (--text <text|@file|@->|--stdin|--file <path>)...`");
+    expect(dump).toContain("`panda a2a inspect <delivery-id>`");
+    expect(dump).toContain("`panda a2a history [--peer-session <session-id>] [--direction inbound|outbound|all] [--limit <n>]`");
+    expect(dump).toContain("`panda web fetch <url> [--max-chars <n>] [--format markdown|text] [--save <path>] [--include-links|--no-links]`");
+    expect(dump).toContain("`panda brave web search <query> [-n|--count <n>] [--offset <n>] [--freshness pd|pw|pm|py|YYYY-MM-DDtoYYYY-MM-DD] [--country <code>] [--lang <code>] [--safe off|moderate|strict] [--extra-snippets] [--goggles <url-or-inline>]`");
+    expect(dump).toContain("`panda brave news search <query> [-n|--count <n>] [--offset <n>] [--freshness pd|pw|pm|py|YYYY-MM-DDtoYYYY-MM-DD] [--country <code>] [--lang <code>] [--safe off|moderate|strict] [--extra-snippets] [--goggles <url-or-inline>]`");
+    expect(dump).toContain("`panda brave video search <query> [-n|--count <n>] [--offset <n>] [--freshness pd|pw|pm|py|YYYY-MM-DDtoYYYY-MM-DD] [--country <code>] [--lang <code>] [--safe off|moderate|strict] [--no-spellcheck]`");
+    expect(dump).toContain("`panda brave image search <query> [-n|--count <n>] [--country <code>] [--lang <code>] [--safe strict|off] [--no-spellcheck]`");
+    expect(dump).toContain("`panda brave llm context <query> [-n|--count <n>] [--max-tokens <n>] [--max-urls <n>] [--threshold strict|balanced|lenient|disabled] [--local] [--freshness pd|pw|pm|py|YYYY-MM-DDtoYYYY-MM-DD] [--country <code>] [--lang <code>] [--goggles <url-or-inline>]`");
+    expect(dump).toContain("`panda brave place search [query] [--location <location>|--lat <number> --lon <number>] [-n|--count <n>] [--radius <meters>] [--country <code>] [--lang <code>] [--units metric|imperial] [--safe off|moderate|strict] [--no-spellcheck]`");
+    expect(dump).toContain("`panda brave place poi <id> [id...]`");
+    expect(dump).toContain("`panda brave place description <id> [id...]`");
+    expect(dump).toContain("`panda openai web-research <query|@file|@-> [--model <model>] [--effort low|medium|high]`");
+    expect(dump).toContain("`panda image generate --prompt <text|@file|@-> [--image <path>...] [--model <model>] [--size <size>] [--quality low|medium|high|auto] [--format png|jpeg|webp] [--compression <0-100>] [--background transparent|opaque|auto] [--moderation low|auto] [--count <n>]`");
+    expect(dump).toContain("`panda whisper transcribe <path> [--language <code>] [--prompt <text|@file|@->]`");
+    expect(dump).toContain("`panda whisper translate <path> [--prompt <text|@file|@->]`");
+    expect(dump).toContain("`panda email account list [--sendable-only]`");
+    expect(dump).toContain("`panda email send --account <key> (--to <address>... --subject <text|@file|@->|--reply-to-email-id <email-id> [--reply-mode sender|all]) --text <text|@file|@-> [--html <text|@file|@->] [--cc <address>...] [--file <path>...]`");
+    expect(dump).toContain("`panda telegram chat list [--connector <key>]`");
+    expect(dump).toContain("`panda telegram chat info <conversation-id> [--connector <key>]`");
+    expect(dump).toContain("`panda telegram send --chat <conversation-id> --connector <key> (--text <text|@file|@->|--stdin|--image <path>|--file <path>)... [--reply-to-message-id <message-id>]`");
+    expect(dump).toContain("`panda telegram sticker send --chat <conversation-id> --connector <key> (--file <path>|--file-id <id>)`");
+    expect(dump).toContain("`panda telegram edit <message-id> (--text <text|@file|@->|--stdin) --chat <conversation-id> --connector <key>`");
+    expect(dump).toContain("`panda telegram delete <message-id> --chat <conversation-id> --connector <key>`");
+    expect(dump).toContain("`panda telegram pin <message-id> --chat <conversation-id> --connector <key> [--silent]`");
+    expect(dump).toContain("`panda telegram unpin <message-id> --chat <conversation-id> --connector <key>`");
+    expect(dump).toContain("`panda discord channel list [--connector <key>]`");
+    expect(dump).toContain("`panda discord send --channel <channel-id> --connector <key> [--thread <thread-id>] [--guild <guild-id>] (--text <text|@file|@->|--stdin|--image <path>|--file <path>)... [--reply-to-message-id <message-id>]`");
+    expect(dump).toContain("`panda whatsapp chat list [--connector <key>]`");
+    expect(dump).toContain("`panda whatsapp send --chat <jid-or-phone> --connector <key> (--text <text|@file|@->|--stdin|--image <path>|--file <path>)...`");
+    expect(dump).toContain("Direct native tools remain: bash, background_job_status, background_job_wait, background_job_cancel, view_media, thinking_set.");
+    expect(dump).not.toContain("panda session prompt.set");
+    expect(dump).not.toContain("panda watch schema");
+    expect(dump).not.toContain("panda agent skill");
+    expect(dump).not.toContain("panda todo update");
+    expect(dump).not.toContain("panda message agent send");
+    expect(dump).not.toContain("panda outbound send");
+    expect(dump).not.toContain("panda agent vent");
+    expect(dump).not.toContain("panda web search");
+    expect(dump).not.toContain("panda web research");
+    expect(dump).not.toContain("panda audio transcribe");
+    expect(dump).not.toContain("browser,");
     expect(dump).toContain("**Agent Profile:**");
     expect(dump).toContain("Summaries only. Query `session.agent_skills` for full skill bodies when you need the exact content.");
     expect(dump).toContain("calendar: Use this for calendar work.");
@@ -81,6 +185,133 @@ describe("buildDefaultAgentLlmContexts", () => {
     expect(dump).toContain("**Current DateTime:**");
     expect(dump).toContain("**Environment Overview:**");
     expect(dump).not.toContain("**Agent Profile:**");
+  });
+
+  it("renders caller-supplied command descriptors in the CLI catalog", async () => {
+    const dump = await gatherContexts(buildDefaultAgentLlmContexts({
+      context: {
+        cwd: "/workspace/panda",
+      },
+      sections: ["command_catalog"],
+      commandDescriptors: [customCommandDescriptor],
+    }));
+
+    expect(dump).toContain("**Panda CLI Catalog:**");
+    expect(dump).toContain("`panda custom echo <message>`: Echo a custom message.");
+    expect(dump).not.toContain("`panda watch list");
+  });
+
+  it("shows paired identities with recent route and channel hints", async () => {
+    const dump = await gatherContexts(buildDefaultAgentLlmContexts({
+      context: {
+        agentKey: "panda",
+        cwd: "/workspace/panda",
+        sessionId: "session-panda",
+        threadId: "thread-panda",
+      },
+      agentKey: "panda",
+      sections: ["paired_identities"],
+      agentStore: {
+        listAgentSkills: async () => [],
+        listAgentPairings: async () => [
+          {
+            agentKey: "panda",
+            identityId: "alice-id",
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          {
+            agentKey: "panda",
+            identityId: "bob-id",
+            createdAt: 2,
+            updatedAt: 2,
+          },
+        ],
+      },
+      identityStore: {
+        getIdentity: async (identityId) => {
+          if (identityId === "alice-id") {
+            return {
+              id: "alice-id",
+              handle: "alice",
+              displayName: "Alice A.",
+              status: "active" as const,
+              createdAt: 1,
+              updatedAt: 1,
+            };
+          }
+          return {
+            id: "bob-id",
+            handle: "bob",
+            displayName: "Bob B.",
+            status: "active" as const,
+            createdAt: 2,
+            updatedAt: 2,
+          };
+        },
+        listIdentityBindings: async (identityId) => identityId === "alice-id"
+          ? [
+            {
+              id: "00000000-0000-0000-0000-000000000001",
+              identityId,
+              source: "telegram",
+              connectorKey: "bot-main",
+              externalActorId: "user-1",
+              createdAt: 1,
+              updatedAt: 1,
+            },
+            {
+              id: "00000000-0000-0000-0000-000000000002",
+              identityId,
+              source: "whatsapp",
+              connectorKey: "wa-main",
+              externalActorId: "+421900000000",
+              createdAt: 2,
+              updatedAt: 2,
+            },
+          ]
+          : [
+            {
+              id: "00000000-0000-0000-0000-000000000003",
+              identityId,
+              source: "discord",
+              connectorKey: "discord-main",
+              externalActorId: "bob-user",
+              createdAt: 3,
+              updatedAt: 3,
+            },
+          ],
+      },
+      sessionRoutes: {
+        listLatestIdentityRoutes: async (lookup) => {
+          expect(lookup).toEqual({
+            sessionId: "session-panda",
+            identityIds: ["alice-id", "bob-id"],
+          });
+          return [
+            {
+              sessionId: "session-panda",
+              identityId: "alice-id",
+              channel: "telegram",
+              route: {
+                source: "telegram",
+                connectorKey: "bot-main",
+                externalConversationId: "chat-1",
+                externalActorId: "user-1",
+                capturedAt: 100,
+              },
+              createdAt: 1,
+              updatedAt: 1,
+            },
+          ];
+        },
+      },
+    }));
+
+    expect(dump).toContain("**Paired Identities:**");
+    expect(dump).toContain("These identities are paired with this agent.");
+    expect(dump).toContain("- alice (Alice A.): recent telegram/bot-main, conversation chat-1, actor user-1; whatsapp/wa-main actor +421900000000");
+    expect(dump).toContain("- bob (Bob B.): discord/discord-main actor bob-user");
   });
 
   it("instantiates the wiki overview context when bindings are configured", async () => {

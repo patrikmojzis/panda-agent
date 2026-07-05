@@ -214,6 +214,86 @@ describe("PostgresChannelActionStore", () => {
     });
   });
 
+  it.each<ChannelActionInput>([
+    {
+      channel: "telegram",
+      connectorKey: "bot-1",
+      kind: "telegram_edit",
+      payload: {
+        conversationId: "chat-1",
+        messageId: "message-1",
+        text: "updated",
+      },
+    },
+    {
+      channel: "telegram",
+      connectorKey: "bot-1",
+      kind: "telegram_delete",
+      payload: {
+        conversationId: "chat-1",
+        messageId: "message-1",
+      },
+    },
+    {
+      channel: "telegram",
+      connectorKey: "bot-1",
+      kind: "telegram_pin",
+      payload: {
+        conversationId: "chat-1",
+        messageId: "message-1",
+        silent: true,
+      },
+    },
+    {
+      channel: "telegram",
+      connectorKey: "bot-1",
+      kind: "telegram_unpin",
+      payload: {
+        conversationId: "chat-1",
+        messageId: "message-1",
+      },
+    },
+    {
+      channel: "telegram",
+      connectorKey: "bot-1",
+      kind: "telegram_sticker_send",
+      payload: {
+        conversationId: "chat-1",
+        sticker: {
+          type: "file_id",
+          fileId: "sticker-file-id",
+        },
+      },
+    },
+  ])("round-trips $kind payloads through persisted actions", async (input) => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const store = new PostgresChannelActionStore({pool});
+    await store.ensureSchema();
+
+    const action = await store.enqueueAction(input);
+    const claimed = await store.claimNextPendingAction({
+      channel: input.channel,
+      connectorKey: input.connectorKey,
+    });
+
+    expect(claimed).toMatchObject({
+      id: action.id,
+      kind: input.kind,
+      status: "sending",
+      payload: input.payload,
+    });
+  });
+
   it("rejects malformed persisted action payloads before claiming them", async () => {
     const db = newDb();
     db.public.registerFunction({

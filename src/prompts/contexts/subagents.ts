@@ -141,7 +141,7 @@ export function renderSubagentsContext(input: RenderSubagentsContextInput): stri
     if (lines.length) {
       lines.push("");
     }
-    lines.push(`Subagents omitted from default context: ${input.omittedHistory.count}. Default lists only available subagents with last activity at or after ${input.omittedHistory.cutoff}; unavailable subagents are summarized here. Query session.subagent_history with postgres_readonly_query for details.`);
+    lines.push(`Subagents omitted from default context: ${input.omittedHistory.count}. Default lists only available subagents with last activity at or after ${input.omittedHistory.cutoff}; unavailable subagents are summarized here. Query session.subagent_history with \`panda postgres readonly query\` for details.`);
     lines.push(...input.omittedHistory.groups.map(renderOmittedHistoryGroup));
   }
 

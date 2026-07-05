@@ -15,10 +15,10 @@ the legacy worker-spawn tool is no longer model-facing. Historical worker sessio
 purge support, and internal runtime-client paths remain for compatibility, but
 new model delegation should use durable subagents.
 
-Environment lifecycle stays separate: `environment_create` and
-`environment_stop` remain model-facing, while `spawn_subagent` never creates,
-restarts, or stops environments. `isolated_environment` requires an existing
-ready same-agent disposable environment owned by the parent session.
+Environment lifecycle stays separate: `panda environment ...` commands remain
+command-facing, while `spawn_subagent` never creates, restarts, or stops
+environments. `isolated_environment` requires an existing ready same-agent
+disposable environment owned by the parent session.
 
 Nested durable subagents are denied in PR3, even when a subagent profile requests
 `operate`. Recursion needs a later explicit depth/policy design.

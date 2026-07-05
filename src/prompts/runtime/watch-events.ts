@@ -17,7 +17,7 @@ export function renderWatchEventPrompt(options: {
 This is a machine-generated watch event from the runtime, not a live human message.
 The event has already been detected programmatically.
 Decide whether a concrete action or user-facing notification is useful.
-If this session is connected to an external channel, use outbound only when you intentionally want to notify the user now.
+If this session is connected to an external channel, send only when you intentionally want to notify the user now.
 
 Event kind: ${options.eventKind}
 Observed at: ${options.occurredIso}

@@ -16,7 +16,7 @@ function profile(slug = "workspace"): SubagentProfileRecord {
     slug,
     description: `${slug} profile`,
     prompt: `${slug} prompt body must not render`,
-    toolGroups: ["core", "workspace_read"],
+    toolGroups: ["core"],
     transcriptMode: "none",
     source: "builtin",
     enabled: true,
@@ -50,7 +50,7 @@ function createSubagentSession(input: {
       resolved: {
         credentialPolicy: {mode: "allowlist", envKeys: []},
         skillPolicy: {mode: "all_agent"},
-        toolPolicy: {allowedTools: ["current_datetime"]},
+        toolPolicy: {allowedTools: ["time.now"]},
       },
     }),
     createdAt: input.createdAt ?? NOW.getTime() - 15 * 60 * 1_000,
@@ -236,7 +236,7 @@ describe("SubagentsContext", () => {
     expect(rendered).not.toContain("stale-workspace");
     expect(rendered).not.toContain("stale-missing-env");
     expect(rendered).toContain("Subagents omitted from default context: 2");
-    expect(rendered).toContain("Query session.subagent_history with postgres_readonly_query for details");
+    expect(rendered).toContain("Query session.subagent_history with `panda postgres readonly query` for details");
     expect(rendered).toContain("- agent_workspace: 1 | profiles workspace:1");
     expect(rendered).toContain("- unavailable_environment: 1 | statuses missing_environment:1 | profiles browser:1");
   });

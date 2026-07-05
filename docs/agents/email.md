@@ -1,8 +1,17 @@
 # Email
 
-Use `email_send` for email. Do not use `outbound` with `channel: "email"`.
+Use `panda email send` for email. Do not use outbound channel commands for email.
 
-Read email history through readonly Postgres views:
+Read email history with:
+
+```bash
+panda email list --account <key>
+panda email read <email-id>
+panda email search "invoice"
+panda email attachments fetch <attachment-id> --save ./attachment.pdf
+```
+
+The backing readonly views are:
 
 - `session.email_accounts`
 - `session.email_allowed_recipients`
@@ -17,23 +26,14 @@ These views are scoped to your current session. If an account or mailbox is rout
 
 Fresh email:
 
-```json
-{
-  "accountKey": "work",
-  "to": [{"address": "alice@example.com"}],
-  "subject": "Quick update",
-  "text": "I checked it. The deploy step is failing."
-}
+```bash
+panda email send --account work --to alice@example.com --subject "Quick update" --text "I checked it. The deploy step is failing."
 ```
 
 Reply:
 
-```json
-{
-  "accountKey": "work",
-  "replyToEmailId": "email-message-id",
-  "text": "Yep, I can handle that today."
-}
+```bash
+panda email send --account work --reply-to-email-id email-message-id --text "Yep, I can handle that today."
 ```
 
 Rules:

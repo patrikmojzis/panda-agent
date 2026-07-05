@@ -123,8 +123,9 @@ describe("remote bash runner", () => {
 
   async function createWorkspace(prefix: string): Promise<string> {
     const directory = await mkdtemp(path.join(tmpdir(), prefix));
-    directories.push(directory);
-    return directory;
+    const resolved = await realpath(directory);
+    directories.push(resolved);
+    return resolved;
   }
 
   async function createDbPool() {
@@ -401,7 +402,7 @@ describe("remote bash runner", () => {
           'test "${RUNNER_MARKER:-missing}" = "missing"',
           'test "$SHELL" = "/bin/bash"',
           `test "$HOME" = ${JSON.stringify(agentHome)}`,
-          'case "$(readlink /proc/$$/exe)" in */bash) ;; *) exit 31 ;; esac',
+          'test -n "${BASH_VERSION:-}"',
           'test "${PATH#*/runner-only-bin}" = "$PATH"',
           "command -v sed >/dev/null",
           "command -v dirname >/dev/null",
@@ -455,7 +456,7 @@ describe("remote bash runner", () => {
           'test "${RUNNER_MARKER:-missing}" = "missing"',
           'test "$SHELL" = "/bin/bash"',
           `test "$HOME" = ${JSON.stringify(agentHome)}`,
-          'case "$(readlink /proc/$$/exe)" in */bash) ;; *) exit 31 ;; esac',
+          'test -n "${BASH_VERSION:-}"',
           'test "${PATH#*/runner-only-bin}" = "$PATH"',
           "command -v sed >/dev/null",
           "printf background-ok",

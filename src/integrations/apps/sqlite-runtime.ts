@@ -177,7 +177,7 @@ function stripSqlTextLiteralsAndComments(sql: string): string {
 /** Blocks SQLite statements that can escape the app-owned database file. */
 export function assertSqlStaysInAppDatabase(sql: string): void {
   const normalized = stripSqlTextLiteralsAndComments(sql).toLowerCase();
-  if (/\battach\b|\bdetach\b|\bvacuum\s+into\b|\bload_extension\s*\(/.test(normalized)) {
+  if (/\battach\b|\bdetach\b|\bvacuum\b(?:\s+\S+)?\s+\binto\b|\bload_extension\s*\(/.test(normalized)) {
     throw new Error("App SQL must not use ATTACH, DETACH, VACUUM INTO, or load_extension().");
   }
 }

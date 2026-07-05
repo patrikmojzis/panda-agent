@@ -2,7 +2,7 @@ import {Pool} from "pg";
 
 import {PostgresAgentStore} from "../../domain/agents/postgres.js";
 import type {AgentStore} from "../../domain/agents/store.js";
-import {CredentialResolver, CredentialService,} from "../../domain/credentials/resolver.js";
+import {CredentialResolver, CredentialService} from "../../domain/credentials/resolver.js";
 import {PostgresCredentialStore} from "../../domain/credentials/postgres.js";
 import {resolveCredentialCrypto} from "../../domain/credentials/crypto.js";
 import {PostgresExecutionEnvironmentStore} from "../../domain/execution-environments/postgres.js";
@@ -15,6 +15,7 @@ import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
 import {PostgresSubagentProfileStore} from "../../domain/subagents/postgres.js";
 import type {SubagentProfileStore} from "../../domain/subagents/store.js";
+import {createCommandCatalog, type CommandCatalog} from "../../domain/commands/modules.js";
 import {PostgresEmailStore} from "../../domain/email/postgres.js";
 import type {EmailStore} from "../../domain/email/types.js";
 import {WatchMutationService} from "../../domain/watches/mutation-service.js";
@@ -31,37 +32,20 @@ import {
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {ThreadShellStateStore} from "../../domain/threads/runtime/shell-state-store.js";
 import type {Tool} from "../../kernel/agent/tool.js";
-import {buildDefaultAgentToolsetsFromRegistry, createDefaultAgentToolRegistry,} from "../../panda/definition.js";
-import {SessionPromptTool} from "../../panda/tools/session-prompt-tool.js";
-import {AgentSkillTool} from "../../panda/tools/agent-skill-tool.js";
-import type {PostgresReadonlyQueryToolOptions} from "../../panda/tools/postgres-readonly-query-tool.js";
+import {
+    buildCoreAgentToolsFromRegistry,
+    buildDefaultAgentToolsetsFromRegistry,
+    createDefaultAgentToolRegistry,
+} from "../../panda/definition.js";
+import {
+  DEFAULT_AGENT_COMMAND_CATALOG,
+} from "../../panda/commands/agent-command-modules.js";
+import type {CommandCatalogModule} from "../../domain/commands/types.js";
+import type {PostgresReadonlyQueryCommandOptions} from "../../integrations/postgres/readonly-query-command.js";
 import {BrowserRunnerClient} from "../../integrations/browser/client.js";
 import {AgentAppService} from "../../integrations/apps/sqlite-service.js";
+import {WikiRuntimeCommandService} from "../../integrations/wiki/command-service.js";
 import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
-import {ClearEnvValueTool, SetEnvValueTool} from "../../panda/tools/env-value-tools.js";
-import {
-    AppActionTool,
-    AppCheckTool,
-    AppCreateTool,
-    AppLinkCreateTool,
-    AppListTool,
-    AppViewTool,
-} from "../../panda/tools/app-tools.js";
-import {WikiTool} from "../../panda/tools/wiki-tool.js";
-import {
-    ScheduledTaskCancelTool,
-    ScheduledTaskCreateTool,
-    ScheduledTaskUpdateTool,
-} from "../../panda/tools/scheduled-task-tools.js";
-import {
-    WatchCreateTool,
-    WatchDisableTool,
-    WatchSchemaGetTool,
-    WatchUpdateTool,
-} from "../../panda/tools/watch-tools.js";
-import {ThinkingSetTool} from "../../panda/tools/thinking-set-tool.js";
-import {TodoUpdateTool} from "../../panda/tools/todo-update-tool.js";
-import {UpsertSubagentProfileTool} from "../../panda/tools/upsert-subagent-profile-tool.js";
 import {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import {
     buildObservedPoolConfig,
@@ -72,6 +56,12 @@ import {
 import {runCleanupSteps} from "../../lib/cleanup.js";
 import {trimToNull} from "../../lib/strings.js";
 import {ensureSchemas} from "./postgres-bootstrap.js";
+import {RuntimeCommandDispatcher} from "./command-dispatcher.js";
+import {RuntimeCommandFileResolver} from "./command-files.js";
+import {RuntimeCommandLeaseService} from "./command-leases.js";
+import {resolveRuntimeCommandScope} from "./command-scope.js";
+import {buildCommandServerBaseUrl, resolveOptionalCommandServerBinding} from "../../integrations/commands/config.js";
+import {buildRuntimeCommandDependencies} from "./command-dependencies.js";
 import type {RuntimeOptions} from "./create-runtime.js";
 import {ExecutionEnvironmentResolver} from "./execution-environment-resolver.js";
 import {ExecutionEnvironmentLifecycleService} from "./execution-environment-service.js";
@@ -165,9 +155,14 @@ interface RuntimeBootstrapResult {
   scheduledTasks: ScheduledTaskStore;
   email: EmailStore;
   watches: WatchStore;
+  commandExecutor: RuntimeCommandDispatcher;
+  commandLeases: RuntimeCommandLeaseService;
+  commandFileResolver: RuntimeCommandFileResolver;
+  commandCatalog: CommandCatalog<any, CommandCatalogModule<any>>;
+  commandModules: readonly CommandCatalogModule<any>[];
   wikiBindingService: WikiBindingService | null;
   a2aBindings: A2ASessionBindingRepo;
-  postgresReadonly: PostgresReadonlyQueryToolOptions;
+  postgresReadonly: PostgresReadonlyQueryCommandOptions;
   mainTools: readonly Tool[];
   subagentTools: readonly Tool[];
   pool: Pool;
@@ -180,6 +175,22 @@ interface ObservedPoolState {
   pool: Pool | null;
   observer: PostgresPoolObserver | null;
   initializing: Promise<Pool> | null;
+}
+
+function resolveRuntimeCommandCatalog(
+  options: Pick<RuntimeOptions, "commandCatalog" | "commandModules">,
+): CommandCatalog<any, CommandCatalogModule<any>> {
+  if (options.commandCatalog && options.commandModules) {
+    throw new Error("Pass either commandCatalog or commandModules, not both.");
+  }
+  if (options.commandCatalog) {
+    return options.commandCatalog;
+  }
+  if (options.commandModules) {
+    return createCommandCatalog(options.commandModules);
+  }
+
+  return DEFAULT_AGENT_COMMAND_CATALOG;
 }
 
 interface ObservedPoolHandle {
@@ -528,10 +539,23 @@ export async function bootstrapRuntime(
       credentialResolver,
       env: process.env,
     });
+    const commandCatalog = resolveRuntimeCommandCatalog(options);
+    const commandModules = commandCatalog.modules;
+    const commandServerBinding = resolveOptionalCommandServerBinding(process.env);
+    const commandLeases = new RuntimeCommandLeaseService({
+      baseUrl: commandServerBinding && !(commandServerBinding.socketPath && !commandServerBinding.publicUrl)
+        ? buildCommandServerBaseUrl(commandServerBinding)
+        : undefined,
+      socketPath: commandServerBinding?.socketPath,
+      readonlyPostgresCommandAllowed: Boolean(readOnlyDbUrl),
+      commandCatalog,
+    });
     const executionEnvironmentService = new ExecutionEnvironmentLifecycleService({
       store: executionEnvironments,
       manager: executionEnvironmentManager,
       setupRunner: executionEnvironmentSetupRunner,
+      commandLeases,
+      fallbackRunnerCommandSocketAccess: trimToNull(process.env.PANDA_COMMAND_SOCKET_MOUNTED_RUNNERS)?.toLowerCase() === "true",
     });
     const executionEnvironmentResolver = new ExecutionEnvironmentResolver({
       store: executionEnvironments,
@@ -582,6 +606,51 @@ export async function bootstrapRuntime(
         credentialResolver,
       }),
     });
+    const wikiCommandService = wikiBindingService
+      ? new WikiRuntimeCommandService({
+        env: process.env,
+        bindings: wikiBindingService,
+      })
+      : null;
+    const postgresReadonlyCommandOptions: PostgresReadonlyQueryCommandOptions = readOnlyDbUrl
+      ? {
+        getPool: getReadonlyPool,
+      }
+      : {
+        pool: postgresPool,
+    };
+    const commandFileResolver = new RuntimeCommandFileResolver(process.env);
+    const commandDependencies = buildRuntimeCommandDependencies({
+      env: process.env,
+      backgroundJobService,
+      commandFileResolver,
+      watchStore: watches,
+      watchMutations,
+      scheduledTasks,
+      apps,
+      appAuth,
+      agentSkills: agentStore,
+      sessionPrompts: sessionStore,
+      sessionTodos: sessionStore,
+      subagentProfiles,
+      credentials: credentialService ?? undefined,
+      postgresReadonly: postgresReadonlyCommandOptions,
+      executionEnvironments,
+      environmentLifecycle: executionEnvironmentService,
+      wiki: wikiCommandService ?? undefined,
+    });
+    const moduleCommands = commandCatalog.createCommands(
+      commandDependencies,
+      {registrationPhase: "runtime"},
+    );
+    const commandDispatcher = new RuntimeCommandDispatcher({
+      commands: moduleCommands,
+      auditStore: store,
+      resolveScope: (scope) => resolveRuntimeCommandScope(scope, {
+        sessions: sessionStore,
+        executionEnvironments,
+      }),
+    });
     await ensureSchemas([
       credentialStore,
       connectorAccountStore,
@@ -599,38 +668,29 @@ export async function bootstrapRuntime(
       readonlyRole: readOnlyDbUrl ? readDatabaseUsername(readOnlyDbUrl) : null,
     });
 
-    const postgresReadonlyToolOptions: PostgresReadonlyQueryToolOptions = readOnlyDbUrl
-      ? {
-        getPool: getReadonlyPool,
-        usesReadonlyRole: true,
-      }
-      : {
-        pool: postgresPool,
-        usesReadonlyRole: false,
-      };
     const toolRegistry = createDefaultAgentToolRegistry({
       bash: {
         jobService: backgroundJobService,
         credentialResolver,
         shellStateStore: store,
       },
-      imageGenerate: {
-        jobService: backgroundJobService,
-      },
       browser: {
         service: resolvedBrowserService,
       },
-      postgresReadonly: postgresReadonlyToolOptions,
+      thinking: {
+        persistence: {
+          updateSessionThinkingForThread: async (threadId, thinking) => {
+            const thread = await store.getThread(threadId);
+            const runtimeConfig = await sessionStore.updateSessionRuntimeConfig({
+              sessionId: thread.sessionId,
+              thinking,
+              thinkingConfigured: true,
+            });
+            return {thinking: runtimeConfig.thinking};
+          },
+        },
+      },
     });
-    const agentSkillTool = new AgentSkillTool({
-      store: agentStore,
-    });
-    const appCreateTool = new AppCreateTool(apps);
-    const appListTool = new AppListTool(apps);
-    const appLinkCreateTool = new AppLinkCreateTool(apps, appAuth);
-    const appCheckTool = new AppCheckTool(apps);
-    const appViewTool = new AppViewTool(apps);
-    const appActionTool = new AppActionTool(apps);
     const wikiEnabled = Boolean(
       trimToNull(process.env.WIKI_DB_URL)
       || trimToNull(process.env.WIKI_URL),
@@ -638,87 +698,12 @@ export async function bootstrapRuntime(
     if (wikiEnabled && !wikiBindingService) {
       throw new Error("Wiki bindings require CREDENTIALS_MASTER_KEY when WIKI_URL or WIKI_DB_URL is set.");
     }
-    const wikiTool = wikiEnabled && wikiBindingService
-      ? new WikiTool({
-        env: process.env,
-        bindings: wikiBindingService,
-      })
-      : null;
     const defaultToolsets = buildDefaultAgentToolsetsFromRegistry(
       toolRegistry,
       [],
-      wikiTool ? [wikiTool] : [],
-      [agentSkillTool],
-      [agentSkillTool],
     );
 
-    let mainTools: readonly Tool[] = [];
-
-    mainTools = buildDefaultAgentToolsetsFromRegistry(toolRegistry, [
-      new ThinkingSetTool({
-        persistence: {
-          updateSessionThinkingForThread: async (threadId, thinking) => {
-            const thread = await store.getThread(threadId);
-            const runtimeConfig = await sessionStore.updateSessionRuntimeConfig({
-              sessionId: thread.sessionId,
-              thinking,
-            });
-            return {
-              thinking: runtimeConfig.thinking,
-            };
-          },
-        },
-      }),
-      new SessionPromptTool({
-        store: sessionStore,
-      }),
-      new UpsertSubagentProfileTool({
-        store: subagentProfiles,
-      }),
-      appCreateTool,
-      appListTool,
-      appLinkCreateTool,
-      appCheckTool,
-      appViewTool,
-      appActionTool,
-      ...(wikiTool ? [wikiTool] : []),
-      agentSkillTool,
-      ...(credentialService
-        ? [
-          new SetEnvValueTool({
-            service: credentialService,
-          }),
-          new ClearEnvValueTool({
-            service: credentialService,
-          }),
-        ]
-        : []),
-      new ScheduledTaskCreateTool({
-        store: scheduledTasks,
-      }),
-      new ScheduledTaskUpdateTool({
-        store: scheduledTasks,
-      }),
-      new ScheduledTaskCancelTool({
-        store: scheduledTasks,
-      }),
-      new TodoUpdateTool({
-        store: sessionStore,
-      }),
-      new WatchCreateTool({
-        mutations: watchMutations,
-        store: watches,
-      }),
-      new WatchSchemaGetTool(),
-      new WatchUpdateTool({
-        mutations: watchMutations,
-        store: watches,
-      }),
-      new WatchDisableTool({
-        mutations: watchMutations,
-        store: watches,
-      }),
-    ]).main;
+    const mainTools = buildCoreAgentToolsFromRegistry(toolRegistry);
     const subagentTools = mergeToolsByName([
       mainTools,
       defaultToolsets.workspace,
@@ -764,9 +749,14 @@ export async function bootstrapRuntime(
       scheduledTasks,
       email,
       watches,
+      commandExecutor: commandDispatcher,
+      commandLeases,
+      commandFileResolver,
+      commandCatalog,
+      commandModules,
       wikiBindingService,
       a2aBindings,
-      postgresReadonly: postgresReadonlyToolOptions,
+      postgresReadonly: postgresReadonlyCommandOptions,
       mainTools,
       subagentTools,
       pool: postgresPool,

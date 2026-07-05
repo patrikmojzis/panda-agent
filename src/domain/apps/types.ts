@@ -134,12 +134,27 @@ export interface AgentAppViewResult {
   page?: AgentAppViewPage;
 }
 
+export interface AgentAppViewExecutionOptions {
+  identityId?: string;
+  params?: Record<string, unknown>;
+  pageSize?: number;
+  offset?: number;
+  sessionId?: string;
+}
+
 export interface AgentAppActionResult {
   mode: AgentAppActionMode;
   changes: number;
   lastInsertRowid?: number | string;
   rows?: Record<string, unknown>[];
   wakeRequested: boolean;
+}
+
+export interface AgentAppActionExecutionOptions {
+  identityId?: string;
+  input?: Record<string, unknown>;
+  sessionId?: string;
+  wake?: ((message: string) => Promise<void>) | undefined;
 }
 
 const APP_SEGMENT_PATTERN = /^[a-z0-9][a-z0-9_-]*$/;

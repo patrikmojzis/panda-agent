@@ -10,7 +10,6 @@ import {
     BackgroundJobWaitTool,
     BashTool,
     type LlmRuntime,
-    OutboundTool,
     PiAiRuntime,
     RunContext,
     stringToUserMessage,
@@ -32,6 +31,8 @@ import {
 } from "../src/domain/threads/runtime/index.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
+import type {DefaultAgentSessionContext} from "../src/app/runtime/panda-session-context.js";
+import {isRecord} from "../src/lib/records.js";
 
 const TEST_MODELS = vi.hoisted(() => ({
   window350: "openai/panda-test-window-350",
@@ -304,6 +305,55 @@ class SelectiveLeaseManager {
     return {
       threadId,
       release: async () => {},
+    };
+  }
+}
+
+class OutboundTestTool extends Tool<typeof OutboundTestTool.schema, DefaultAgentSessionContext> {
+  static schema = z.object({
+    items: z.array(z.object({
+      type: z.literal("text"),
+      text: z.string(),
+    })),
+  });
+
+  name = "outbound";
+  description = "Test outbound queue tool.";
+  schema = OutboundTestTool.schema;
+
+  async handle(args: z.output<typeof OutboundTestTool.schema>, run: RunContext<DefaultAgentSessionContext>) {
+    const route = isRecord(run.context.currentRouteInput?.metadata)
+      && isRecord(run.context.currentRouteInput.metadata.route)
+      ? run.context.currentRouteInput.metadata.route
+      : null;
+    if (!route) {
+      throw new Error("Missing route metadata.");
+    }
+    const target = {
+      source: String(route.source),
+      connectorKey: String(route.connectorKey),
+      externalConversationId: String(route.externalConversationId),
+      ...(typeof route.externalActorId === "string" ? {externalActorId: route.externalActorId} : {}),
+    };
+    const delivery = await run.context.outboundQueue?.enqueueDelivery({
+      threadId: run.context.threadId,
+      channel: target.source,
+      target,
+      items: args.items,
+    });
+    await run.context.routeMemory?.saveLastRoute({
+      ...target,
+      capturedAt: Date.now(),
+    }, {
+      ...(run.context.currentRouteInput?.identityId ? {identityId: run.context.currentRouteInput.identityId} : {}),
+    });
+    return {
+      content: [{type: "text" as const, text: "queued"}],
+      details: {
+        ok: true,
+        status: "queued",
+        deliveryId: delivery?.id,
+      },
     };
   }
 }
@@ -1529,10 +1579,12 @@ describe("ThreadRuntimeCoordinator", () => {
       agent: new Agent({
         name: "outbound-agent",
         instructions: "Reply on telegram.",
-        tools: [new OutboundTool()],
+        tools: [new OutboundTestTool()],
       }),
       runtime,
       context: {
+        agentKey: "outbound-agent",
+        sessionId: "thread-outbound-drain-session",
         threadId: "thread-outbound-drain",
         outboundQueue: {
           enqueueDelivery,
@@ -1543,7 +1595,10 @@ describe("ThreadRuntimeCoordinator", () => {
     await createRuntimeThread(store, {
       id: "thread-outbound-drain",
       agentKey: "outbound-agent",
+      sessionId: "thread-outbound-drain-session",
       context: {
+        agentKey: "outbound-agent",
+        sessionId: "thread-outbound-drain-session",
         threadId: "thread-outbound-drain",
       },
     });
@@ -1672,10 +1727,12 @@ describe("ThreadRuntimeCoordinator", () => {
       agent: new Agent({
         name: "background-outbound-agent",
         instructions: "Send the background result.",
-        tools: [new OutboundTool()],
+        tools: [new OutboundTestTool()],
       }),
       runtime,
       context: {
+        agentKey: "background-outbound-agent",
+        sessionId: "thread-background-outbound-session",
         threadId: "thread-background-outbound",
         outboundQueue: {
           enqueueDelivery,
@@ -1690,6 +1747,7 @@ describe("ThreadRuntimeCoordinator", () => {
     await createRuntimeThread(store, {
       id: "thread-background-outbound",
       agentKey: "background-outbound-agent",
+      sessionId: "thread-background-outbound-session",
     });
     const coordinator = new ThreadRuntimeCoordinator({
       store,
@@ -1788,7 +1846,7 @@ describe("ThreadRuntimeCoordinator", () => {
       agent: new Agent({
         name: "projected-idle-outbound-agent",
         instructions: "Send the idle reroll result.",
-        tools: [new OutboundTool()],
+        tools: [new OutboundTestTool()],
       }),
       runtime,
       inferenceProjection: {
@@ -1797,6 +1855,8 @@ describe("ThreadRuntimeCoordinator", () => {
         },
       },
       context: {
+        agentKey: "projected-idle-outbound-agent",
+        sessionId: "thread-projected-idle-outbound-session",
         threadId: "thread-projected-idle-outbound",
         outboundQueue: {
           enqueueDelivery,
@@ -1811,6 +1871,7 @@ describe("ThreadRuntimeCoordinator", () => {
     await createRuntimeThread(store, {
       id: "thread-projected-idle-outbound",
       agentKey: "projected-idle-outbound-agent",
+      sessionId: "thread-projected-idle-outbound-session",
     });
     const coordinator = new ThreadRuntimeCoordinator({
       store,

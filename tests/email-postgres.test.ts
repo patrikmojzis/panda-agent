@@ -224,6 +224,18 @@ describe("PostgresEmailStore", () => {
       expect.objectContaining({role: "from", address: "alice@example.com"}),
       expect.objectContaining({role: "to", address: "panda@example.com"}),
     ]);
+    const storedAttachments = await email.listMessageAttachments(inbound.message.id);
+    expect(storedAttachments).toEqual([
+      expect.objectContaining({
+        filename: "brief.txt",
+        localPath: "/tmp/brief.txt",
+      }),
+    ]);
+    await expect(email.getMessageAttachment(storedAttachments[0]!.id)).resolves.toMatchObject({
+      id: storedAttachments[0]!.id,
+      messageId: inbound.message.id,
+      filename: "brief.txt",
+    });
     await expect(email.assertMessageOwnedBySession({
       messageId: inbound.message.id,
       sessionId: "panda-main",
@@ -257,6 +269,32 @@ describe("PostgresEmailStore", () => {
       messageId: routedInbound.message.id,
       sessionId: "panda-main",
     })).rejects.toThrow("not visible");
+    await expect(email.listMessagesForSession({
+      agentKey: "panda",
+      sessionId: "panda-main",
+    })).resolves.toEqual([
+      expect.objectContaining({id: inbound.message.id, subject: "Hello"}),
+    ]);
+    await expect(email.listMessagesForSession({
+      agentKey: "panda",
+      sessionId: "panda-branch",
+    })).resolves.toEqual([
+      expect.objectContaining({id: routedInbound.message.id, subject: "Routed"}),
+    ]);
+    await expect(email.searchMessagesForSession({
+      agentKey: "panda",
+      sessionId: "panda-main",
+      query: "Hello Panda",
+    })).resolves.toEqual([
+      expect.objectContaining({id: inbound.message.id, subject: "Hello"}),
+    ]);
+    await expect(email.searchMessagesForSession({
+      agentKey: "panda",
+      sessionId: "panda-branch",
+      query: "Routed",
+    })).resolves.toEqual([
+      expect.objectContaining({id: routedInbound.message.id, subject: "Routed"}),
+    ]);
 
     const hostile = await email.recordMessage({
       agentKey: "panda",

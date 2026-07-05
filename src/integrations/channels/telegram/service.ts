@@ -1,10 +1,18 @@
 import {AbortController} from "abort-controller";
-import {Bot, type Context} from "grammy";
+import path from "node:path";
+import {Bot, InputFile, type Context} from "grammy";
 import type {Pool} from "pg";
 
 import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../../../lib/health-server.js";
 import {ChannelActionWorker} from "../../../domain/channels/actions/worker.js";
-import type {TelegramReactionActionPayload} from "../../../domain/channels/actions/types.js";
+import type {
+  TelegramDeleteActionPayload,
+  TelegramEditActionPayload,
+  TelegramPinActionPayload,
+  TelegramReactionActionPayload,
+  TelegramStickerSendActionPayload,
+  TelegramUnpinActionPayload,
+} from "../../../domain/channels/actions/types.js";
 import {ChannelCursorRepo} from "../../../domain/channels/cursors/repo.js";
 import {
   acquireManagedConnectorLease,
@@ -275,6 +283,21 @@ export class TelegramService {
             return;
           case "telegram_reaction":
             await this.sendReactionAction(action.payload);
+            return;
+          case "telegram_edit":
+            await this.sendEditAction(action.payload);
+            return;
+          case "telegram_delete":
+            await this.sendDeleteAction(action.payload);
+            return;
+          case "telegram_pin":
+            await this.sendPinAction(action.payload);
+            return;
+          case "telegram_unpin":
+            await this.sendUnpinAction(action.payload);
+            return;
+          case "telegram_sticker_send":
+            await this.sendStickerAction(action.payload);
             return;
           default:
             rejectUnsupportedTelegramAction(action);
@@ -633,6 +656,52 @@ export class TelegramService {
       route.chatId,
       parseTelegramReactionMessageId(payload.messageId),
       reactions,
+    );
+  }
+
+  private async sendEditAction(payload: TelegramEditActionPayload): Promise<void> {
+    const route = parseTelegramConversationId(payload.conversationId);
+    await this.bot.api.editMessageText(
+      route.chatId,
+      parseTelegramReactionMessageId(payload.messageId),
+      payload.text,
+    );
+  }
+
+  private async sendDeleteAction(payload: TelegramDeleteActionPayload): Promise<void> {
+    const route = parseTelegramConversationId(payload.conversationId);
+    await this.bot.api.deleteMessage(
+      route.chatId,
+      parseTelegramReactionMessageId(payload.messageId),
+    );
+  }
+
+  private async sendPinAction(payload: TelegramPinActionPayload): Promise<void> {
+    const route = parseTelegramConversationId(payload.conversationId);
+    await this.bot.api.pinChatMessage(
+      route.chatId,
+      parseTelegramReactionMessageId(payload.messageId),
+      payload.silent ? {disable_notification: true} : undefined,
+    );
+  }
+
+  private async sendUnpinAction(payload: TelegramUnpinActionPayload): Promise<void> {
+    const route = parseTelegramConversationId(payload.conversationId);
+    await this.bot.api.unpinChatMessage(
+      route.chatId,
+      parseTelegramReactionMessageId(payload.messageId),
+    );
+  }
+
+  private async sendStickerAction(payload: TelegramStickerSendActionPayload): Promise<void> {
+    const route = parseTelegramConversationId(payload.conversationId);
+    const sticker = payload.sticker.type === "file"
+      ? new InputFile(payload.sticker.path, path.basename(payload.sticker.path))
+      : payload.sticker.fileId;
+    await this.bot.api.sendSticker(
+      route.chatId,
+      sticker,
+      route.messageThreadId === undefined ? undefined : {message_thread_id: route.messageThreadId},
     );
   }
 

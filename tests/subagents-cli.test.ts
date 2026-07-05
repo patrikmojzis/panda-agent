@@ -219,7 +219,7 @@ describe("subagents profiles CLI", () => {
       "--description",
       "Review code changes.",
       "--tool-groups",
-      "core,workspace_read",
+      "core",
       "--prompt",
       "Review the assigned patch.",
       "--thinking",
@@ -234,7 +234,7 @@ describe("subagents profiles CLI", () => {
       source: "custom",
       agentKey: "panda",
       description: "Review code changes.",
-      toolGroups: ["core", "workspace_read"],
+      toolGroups: ["core"],
       thinking: "high",
       enabled: true,
     });

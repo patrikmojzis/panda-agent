@@ -55,7 +55,7 @@ Blocked names include runtime-owned or dangerous keys such as:
 - ensures the credentials schema
 - builds a `CredentialResolver` for bash and credential-using adapters
 - builds a `CredentialService` only when `CREDENTIALS_MASTER_KEY` exists
-- registers `set_env_value` and `clear_env_value` only when decryption is actually possible
+- grants `panda env set` and `panda env clear` only when decryption is actually possible
 
 `BashTool` resolves credentials on every execution using the thread `agentKey`.
 
@@ -78,7 +78,7 @@ There are two redaction layers:
 
 Current behavior:
 
-- `set_env_value` currently keeps the `value` argument in transcript history so the agent does not replay `[redacted]` as a credential
+- `panda env set` currently keeps the value argument in transcript history so the agent does not replay `[redacted]` as a credential
 - `bash` redacts `env` argument values
 - `bash` also replaces echoed secret-like credential or `bash.env` values in stdout/stderr with `[redacted]`
 - stored credential metadata such as usernames, owners, or repo names is injected but not used as a global redaction candidate unless the key or value looks secret-shaped

@@ -21,7 +21,12 @@ import type {
     ChannelActionKind,
     ChannelActionRecord,
     ChannelActionStatus,
+    TelegramDeleteActionPayload,
+    TelegramEditActionPayload,
+    TelegramPinActionPayload,
     TelegramReactionActionPayload,
+    TelegramStickerSendActionPayload,
+    TelegramUnpinActionPayload,
 } from "./types.js";
 
 export interface PostgresChannelActionStoreOptions {
@@ -32,7 +37,15 @@ export interface PostgresChannelActionStoreOptions {
 export const parseActionNotification: (payload: string) => ActionNotification | null = parseChannelNotification;
 
 function parseKind(value: unknown): ChannelActionKind {
-  if (value === "typing" || value === "telegram_reaction") {
+  if (
+    value === "typing"
+    || value === "telegram_reaction"
+    || value === "telegram_edit"
+    || value === "telegram_delete"
+    || value === "telegram_pin"
+    || value === "telegram_unpin"
+    || value === "telegram_sticker_send"
+  ) {
     return value;
   }
 
@@ -138,6 +151,76 @@ function parseTelegramReactionPayload(value: unknown): TelegramReactionActionPay
   };
 }
 
+function parseTelegramEditPayload(value: unknown): TelegramEditActionPayload {
+  const kind = "telegram_edit";
+  const payload = readPayloadRecord(kind, value);
+  return {
+    conversationId: readRequiredPayloadString(kind, payload.conversationId, "conversation id"),
+    messageId: readRequiredPayloadString(kind, payload.messageId, "message id"),
+    text: readRequiredPayloadString(kind, payload.text, "text"),
+  };
+}
+
+function parseTelegramDeletePayload(value: unknown): TelegramDeleteActionPayload {
+  const kind = "telegram_delete";
+  const payload = readPayloadRecord(kind, value);
+  return {
+    conversationId: readRequiredPayloadString(kind, payload.conversationId, "conversation id"),
+    messageId: readRequiredPayloadString(kind, payload.messageId, "message id"),
+  };
+}
+
+function parseTelegramPinPayload(value: unknown): TelegramPinActionPayload {
+  const kind = "telegram_pin";
+  const payload = readPayloadRecord(kind, value);
+  const silent = readOptionalPayloadBoolean(kind, payload.silent, "silent");
+  return {
+    conversationId: readRequiredPayloadString(kind, payload.conversationId, "conversation id"),
+    messageId: readRequiredPayloadString(kind, payload.messageId, "message id"),
+    ...(silent !== undefined ? {silent} : {}),
+  };
+}
+
+function parseTelegramUnpinPayload(value: unknown): TelegramUnpinActionPayload {
+  const kind = "telegram_unpin";
+  const payload = readPayloadRecord(kind, value);
+  return {
+    conversationId: readRequiredPayloadString(kind, payload.conversationId, "conversation id"),
+    messageId: readRequiredPayloadString(kind, payload.messageId, "message id"),
+  };
+}
+
+function parseTelegramStickerSendPayload(value: unknown): TelegramStickerSendActionPayload {
+  const kind = "telegram_sticker_send";
+  const payload = readPayloadRecord(kind, value);
+  const sticker = payload.sticker;
+  if (!isRecord(sticker)) {
+    throw new Error("Channel action telegram_sticker_send payload sticker must be a JSON object.");
+  }
+
+  if (sticker.type === "file") {
+    return {
+      conversationId: readRequiredPayloadString(kind, payload.conversationId, "conversation id"),
+      sticker: {
+        type: "file",
+        path: readRequiredPayloadString(kind, sticker.path, "sticker path"),
+      },
+    };
+  }
+
+  if (sticker.type === "file_id") {
+    return {
+      conversationId: readRequiredPayloadString(kind, payload.conversationId, "conversation id"),
+      sticker: {
+        type: "file_id",
+        fileId: readRequiredPayloadString(kind, sticker.fileId, "sticker file id"),
+      },
+    };
+  }
+
+  throw new Error(`Channel action telegram_sticker_send payload sticker type is invalid: ${String(sticker.type)}.`);
+}
+
 function requireRecordKind<K extends ChannelActionKind>(
   record: ChannelActionRecord,
   kind: K,
@@ -168,6 +251,46 @@ function parseRecord(row: Record<string, unknown>): ChannelActionRecord {
       ...common,
       kind,
       payload: parseTypingPayload(row.payload),
+    };
+  }
+
+  if (kind === "telegram_edit") {
+    return {
+      ...common,
+      kind,
+      payload: parseTelegramEditPayload(row.payload),
+    };
+  }
+
+  if (kind === "telegram_delete") {
+    return {
+      ...common,
+      kind,
+      payload: parseTelegramDeletePayload(row.payload),
+    };
+  }
+
+  if (kind === "telegram_pin") {
+    return {
+      ...common,
+      kind,
+      payload: parseTelegramPinPayload(row.payload),
+    };
+  }
+
+  if (kind === "telegram_unpin") {
+    return {
+      ...common,
+      kind,
+      payload: parseTelegramUnpinPayload(row.payload),
+    };
+  }
+
+  if (kind === "telegram_sticker_send") {
+    return {
+      ...common,
+      kind,
+      payload: parseTelegramStickerSendPayload(row.payload),
     };
   }
 

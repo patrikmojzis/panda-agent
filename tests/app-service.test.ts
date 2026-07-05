@@ -210,6 +210,10 @@ describe("agent app service", () => {
           mode: "native",
           sql: "vacuum into '/tmp/app-copy.sqlite'",
         },
+        export_main_db: {
+          mode: "native",
+          sql: "vacuum main into '/tmp/app-copy.sqlite'",
+        },
         load_native_extension: {
           mode: "native",
           sql: "select load_extension('/tmp/nope')",
@@ -234,6 +238,9 @@ describe("agent app service", () => {
       service.executeAction(fixture.agentKey, fixture.appSlug, "export_db"),
     ).rejects.toThrow("App SQL must not use ATTACH");
     await expect(
+      service.executeAction(fixture.agentKey, fixture.appSlug, "export_main_db"),
+    ).rejects.toThrow("App SQL must not use ATTACH");
+    await expect(
       service.executeAction(fixture.agentKey, fixture.appSlug, "load_native_extension"),
     ).rejects.toThrow("App SQL must not use ATTACH");
     await expect(
@@ -253,6 +260,10 @@ describe("agent app service", () => {
       }),
       expect.objectContaining({
         path: "export_db.sql",
+        message: "App SQL must not use ATTACH, DETACH, VACUUM INTO, or load_extension().",
+      }),
+      expect.objectContaining({
+        path: "export_main_db.sql",
         message: "App SQL must not use ATTACH, DETACH, VACUUM INTO, or load_extension().",
       }),
       expect.objectContaining({
@@ -326,7 +337,7 @@ describe("agent app service", () => {
     }
   });
 
-  it("blocks app_create schema SQL from using SQLite file escape hatches", async () => {
+  it("blocks micro-app create schema SQL from using SQLite file escape hatches", async () => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "panda-app-schema-guard-"));
     tempDirs.push(dataDir);
 

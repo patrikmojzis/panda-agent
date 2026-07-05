@@ -6,7 +6,7 @@ Panda-to-Panda messaging is implemented as session-to-session delivery with agen
 
 ## Core Surface
 
-- tool: `message_agent`
+- command: `a2a.send`
 - CLI namespace: `panda a2a`
 - binding table: `runtime.a2a_session_bindings`
 - transport identity: `source = "a2a"`, `connectorKey = "local"`
@@ -30,7 +30,7 @@ That means:
 
 ## File Map
 
-- [src/panda/tools/message-agent-tool.ts](../../src/panda/tools/message-agent-tool.ts)
+- [src/domain/a2a/commands.ts](../../src/domain/a2a/commands.ts)
 - [src/domain/a2a/constants.ts](../../src/domain/a2a/constants.ts)
 - [src/domain/a2a/service.ts](../../src/domain/a2a/service.ts)
 - [src/domain/a2a/repo.ts](../../src/domain/a2a/repo.ts)
@@ -41,9 +41,26 @@ That means:
 - [src/prompts/channels/a2a.ts](../../src/prompts/channels/a2a.ts)
 - [src/app/runtime/daemon-requests.ts](../../src/app/runtime/daemon-requests.ts)
 
-## Tool Contract
+## Native CLI Contract
 
-`message_agent` accepts:
+Use `panda a2a send` for new Panda-to-Panda sends:
+
+```sh
+panda a2a send (--to-session <session-id>|--to-agent <agent-key>) (--text <text|@file|@->|--stdin|--file <path>)...
+panda a2a inspect <delivery-id>
+panda a2a history [--peer-session <session-id>] [--direction inbound|outbound|all] [--limit <n>]
+```
+
+Attachments are generic at the CLI boundary. Use `--file` for images too; A2A
+transports them the same way.
+
+`a2a.send` returns a `deliveryId`. Use `a2a.inspect` for one receipt and
+`a2a.history` for the current session's recent visible deliveries.
+
+## JSON Command Contract
+
+`panda a2a send --json` accepts the new command shape. Attachments are files;
+use `type: "file"` for images too.
 
 ```ts
 {
@@ -51,7 +68,6 @@ That means:
   sessionId?: string;
   items: Array<
     | {type: "text"; text: string}
-    | {type: "image"; path: string; caption?: string}
     | {type: "file"; path: string; filename?: string; caption?: string; mimeType?: string}
   >;
 }
@@ -102,7 +118,7 @@ Attachment transfer is receiver-side durable media ingestion:
 
 Raw sender paths do not cross the session boundary as the durable contract.
 
-For isolated subagents, `message_agent` also carries a small sender environment
+For isolated subagents, `a2a.send` also carries a small sender environment
 snapshot in delivery metadata. It includes safe parent-runner paths such as
 `/environments/<envDir>/artifacts`, plus subagent-local paths such as
 `/artifacts`. It does not include host paths or core container paths.
@@ -152,7 +168,7 @@ Notes:
 
 ## Send Path
 
-1. `message_agent` validates schema and resolves attachment paths
+1. `a2a.send` validates schema and resolves attachment paths
 2. `A2AMessagingService` resolves the target session
 3. same-session send is blocked
 4. the directional allowlist is checked
@@ -246,7 +262,7 @@ Inbound A2A does **not** fake a human:
 ## Safety Rules
 
 - `outbound` must not be used for A2A
-- `message_agent` is the only supported Panda-to-Panda send tool
+- `a2a.send` is the only supported Panda-to-Panda send command
 - same-session send is blocked
 - allowlist is enforced both on send and on receive
 - A2A is wake-only
@@ -260,8 +276,8 @@ Inbound A2A does **not** fake a human:
 Current automated coverage includes:
 
 - [tests/a2a.test.ts](../../tests/a2a.test.ts)
-- [tests/message-agent-tool.test.ts](../../tests/message-agent-tool.test.ts)
-- [tests/outbound-tool.test.ts](../../tests/outbound-tool.test.ts)
+- [tests/message-agent-command.test.ts](../../tests/message-agent-command.test.ts)
+- [tests/agent-command-shim.test.ts](../../tests/agent-command-shim.test.ts)
 
 There is not yet a dedicated live `a2a.live.test.ts`.
 The current live verification path is smoke-driven.

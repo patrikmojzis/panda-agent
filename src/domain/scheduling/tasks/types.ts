@@ -87,6 +87,25 @@ export interface ListActiveScheduledTasksInput {
   limit?: number;
 }
 
+export type ListScheduledTasksStatus =
+  | "active"
+  | "disabled"
+  | "completed"
+  | "cancelled"
+  | "all";
+
+export interface ListScheduledTasksInput {
+  sessionId: string;
+  status?: ListScheduledTasksStatus;
+  limit?: number;
+}
+
+export interface ListScheduledTaskRunsInput {
+  taskId: string;
+  sessionId: string;
+  limit?: number;
+}
+
 export interface ClaimScheduledTaskInput {
   taskId: string;
   claimedBy: string;

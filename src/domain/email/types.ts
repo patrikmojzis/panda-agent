@@ -82,6 +82,19 @@ export interface EmailMessageOwnershipInput {
   sessionId: string;
 }
 
+export interface EmailMessageListInput {
+  agentKey: string;
+  sessionId: string;
+  accountKey?: string;
+  mailbox?: string;
+  direction?: EmailMessageDirection;
+  limit?: number;
+}
+
+export interface EmailMessageSearchInput extends EmailMessageListInput {
+  query: string;
+}
+
 export type EmailMessageDirection = "inbound" | "outbound";
 export type EmailRecipientRole = "from" | "reply_to" | "to" | "cc";
 export type EmailAuthVerdict = "pass" | "fail" | "softfail" | "neutral" | "none" | "temperror" | "permerror" | "unknown";
@@ -207,5 +220,9 @@ export interface EmailStore {
   assertMessageOwnedBySession(input: EmailMessageOwnershipInput): Promise<void>;
   recordMessage(input: RecordEmailMessageInput): Promise<RecordEmailMessageResult>;
   getMessage(messageId: string): Promise<EmailMessageRecord>;
+  listMessagesForSession(input: EmailMessageListInput): Promise<readonly EmailMessageRecord[]>;
+  searchMessagesForSession(input: EmailMessageSearchInput): Promise<readonly EmailMessageRecord[]>;
+  getMessageAttachment(attachmentId: string): Promise<EmailAttachmentRecord>;
   listMessageRecipients(messageId: string): Promise<readonly EmailMessageRecipientRecord[]>;
+  listMessageAttachments(messageId: string): Promise<readonly EmailAttachmentRecord[]>;
 }

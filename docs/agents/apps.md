@@ -4,8 +4,8 @@ Use this when you need to create or edit a filesystem-backed micro-app for the c
 
 Current lane:
 
-- `app_create` makes a blank scaffold
-- `app_link_create` makes a short-lived browser launch link for the current input identity
+- `panda micro-app create` makes a blank scaffold
+- `panda micro-app link create` makes a short-lived browser launch link for the current input identity
 - the app lives under `~/.panda/agents/<agentKey>/apps/<appSlug>/`
 - app data lives in SQLite
 - UI is just static files in `public/`
@@ -17,13 +17,13 @@ If you need a concrete reference, inspect `/app/examples/apps` in Docker or `exa
 
 ## Use The Right Flow
 
-1. Call `app_create` to scaffold a blank app.
+1. Call `panda micro-app create <slug> --name <name>` to scaffold a blank app.
 2. Read the generated `README.md` inside that app folder.
 3. Edit `schema.sql`, `views.json`, `actions.json`, and `public/`.
-4. Use `app_list` to confirm Panda sees the app.
-5. If Panda seems confused, use `app_check` for exact file/path/message diagnostics.
-6. Use `app_view` and `app_action` to test the contract.
-7. If the app has a UI and a human wants to open it, use `app_link_create`.
+4. Use `panda micro-app list [app-slug] --full` to confirm Panda sees the app.
+5. If Panda seems confused, use `panda micro-app check [app-slug]` for exact file/path/message diagnostics.
+6. Use `panda micro-app view <app-slug> <view-name>` and `panda micro-app action <app-slug> <action-name>` to test the contract.
+7. If the app has a UI and a human wants to open it, use `panda micro-app link create <app-slug>`.
 
 ## Folder Shape
 
@@ -47,22 +47,22 @@ The runtime ignores it. That is fine. Humans and agents do not.
 
 ## Create A Blank App
 
-Use `app_create` with:
+Use `panda micro-app create <slug> --name <text|@file|@-> [--description <text|@file|@->] [--identity-scoped] [--schema <sql|@file|@->]` with:
 
 - `slug`
 - `name`
-- optional `description`
-- optional `identityScoped`
-- optional `schemaSql`
+- optional `--description <text|@file|@->`
+- optional `--identity-scoped`
+- optional `--schema <sql|@file|@->`
 
-If `schemaSql` is provided, Panda writes it to `schema.sql` and applies it to `data/app.sqlite` immediately.
+If `--schema` is provided, Panda writes it to `schema.sql` and applies it to `data/app.sqlite` immediately.
 If not, Panda creates an empty database and a placeholder `schema.sql`.
 
 ## Files That Matter
 
 - `manifest.json`: app metadata. Keep it small.
-- `views.json`: readonly SQL for `app_view` and the app host.
-- `actions.json`: fixed writes or reads for `app_action` and the app host.
+- `views.json`: readonly SQL for `panda micro-app view` and the app host.
+- `actions.json`: fixed writes or reads for `panda micro-app action` and the app host.
 - `schema.sql`: bootstrap SQL. Panda does not auto-run it later.
 - `public/`: the human UI. You have freedom here.
 
@@ -169,8 +169,8 @@ If the app is identity-scoped:
 
 - views and actions require `identityId`
 - local/dev browser links can use `?identityHandle=<handle>`
-- public app links should use `app_link_create`; the signed app session carries the identity
-- app tools cannot choose another identity; they always use the human currently talking
+- public app links should use `panda micro-app link create`; the signed app session carries the identity
+- micro-app commands cannot choose another identity; they always use the human currently talking
 
 Do not hardcode fake human handles as if they were identity ids.
 If the app is not identity-scoped, do not force `identityHandle` into the URL just because it exists.
@@ -252,7 +252,7 @@ Writes should happen on explicit click or submit.
 
 For humans, prefer:
 
-1. `app_link_create`
+1. `panda micro-app link create <app-slug>`
 2. give the returned `openUrl`
 3. the browser shows a tiny Continue page
 4. the Continue submit signs the browser in and redirects to the clean app URL
@@ -268,11 +268,11 @@ Those query params are a local/dev convenience, not the secure lane.
 
 Basic contract test:
 
-1. `app_create`
-2. `app_list`
-3. `app_check`
-4. `app_view`
-5. `app_action`
+1. `panda micro-app create <slug> --name <name>`
+2. `panda micro-app list <slug> --full`
+3. `panda micro-app check <slug>`
+4. `panda micro-app view <slug> <view-name>`
+5. `panda micro-app action <slug> <action-name>`
 
 UI test:
 
@@ -286,8 +286,8 @@ For local/dev identity-scoped apps:
 http://127.0.0.1:8092/<agentKey>/apps/<appSlug>/?identityHandle=smoke
 ```
 
-If you need `internalAppUrl`, use `app_list({"appSlug": "...", "detail": "full"})` and prefer that URL for browser-runner or browser subagent testing inside Docker.
-If `app_list` returns `brokenApps`, Panda could not load those apps cleanly yet. The default output is compact; use `detail: "full"` for exact diagnostics on one broken app.
+If you need `internalAppUrl`, use `panda micro-app list <app-slug> --full` and prefer that URL for browser-runner or browser subagent testing inside Docker.
+If `panda micro-app list` returns `brokenApps`, Panda could not load those apps cleanly yet. The default output is compact; use `--full` for exact diagnostics on one broken app.
 
 ## Current Limits
 

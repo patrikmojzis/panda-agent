@@ -3,11 +3,13 @@ import process from "node:process";
 import {Command, InvalidArgumentError} from "commander";
 
 import {DB_URL_OPTION_DESCRIPTION} from "../../../lib/cli.js";
+import {writeCommandDescriptorHelp} from "../../../domain/commands/cli.js";
 import {resolveMediaDir} from "../../../lib/data-dir.js";
 import {ensureSchemas, withPostgresPool} from "../../../lib/postgres-bootstrap.js";
 import {PostgresIdentityStore} from "../../../domain/identity/postgres.js";
 import {parseIdentityHandle} from "../../../domain/identity/cli.js";
 import {resolveWhatsAppConnectorKey, WHATSAPP_SOURCE} from "./config.js";
+import {whatsappChatListCommandDescriptor, whatsappHistoryCommandDescriptor, whatsappSendCommandDescriptor} from "./commands.js";
 import {WhatsAppService} from "./service.js";
 
 interface WhatsAppCliOptions {
@@ -16,6 +18,21 @@ interface WhatsAppCliOptions {
 }
 
 type WhatsAppRunCliOptions = WhatsAppCliOptions;
+
+interface WhatsAppSendCliOptions {
+  help?: boolean;
+  json?: boolean | string;
+}
+
+interface WhatsAppChatListCliOptions {
+  help?: boolean;
+  json?: boolean | string;
+}
+
+interface WhatsAppHistoryCliOptions {
+  help?: boolean;
+  json?: boolean | string;
+}
 
 interface WhatsAppLinkCliOptions extends WhatsAppCliOptions {
   phone: string;
@@ -217,6 +234,77 @@ export function registerWhatsAppCommands(program: Command): void {
   const whatsappProgram = program
     .command("whatsapp")
     .description("Run and manage the WhatsApp channel");
+
+  const chatProgram = whatsappProgram
+    .command("chat")
+    .description("Inspect WhatsApp chats");
+
+  chatProgram
+    .command("list")
+    .description(whatsappChatListCommandDescriptor.summary)
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .option("--connector <connectorKey>", "WhatsApp connector key")
+    .action((options: WhatsAppChatListCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(whatsappChatListCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda whatsapp chat list execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
+
+  whatsappProgram
+    .command("history")
+    .description(whatsappHistoryCommandDescriptor.summary)
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .option("--chat <jidOrPhone>", "WhatsApp phone number or chat JID")
+    .option("--connector <connectorKey>", "WhatsApp connector key")
+    .option("--direction <direction>", "History direction: inbound, outbound, or all")
+    .option("--limit <n>", "Maximum number of history items")
+    .action((options: WhatsAppHistoryCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(whatsappHistoryCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda whatsapp history execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
+
+  whatsappProgram
+    .command("send")
+    .description(whatsappSendCommandDescriptor.summary)
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .option("--chat <jidOrPhone>", "WhatsApp phone number or chat JID")
+    .option("--connector <connectorKey>", "WhatsApp connector key")
+    .option("--text <text>", "Text message body")
+    .option("--image <path>", "Repeatable image path")
+    .option("--file <path>", "Repeatable file path")
+    .action((options: WhatsAppSendCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(whatsappSendCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda whatsapp send execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
 
   whatsappProgram
     .command("whoami")

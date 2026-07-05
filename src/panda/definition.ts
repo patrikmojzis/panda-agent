@@ -5,27 +5,14 @@ import {
     BackgroundJobStatusTool,
     BackgroundJobWaitTool,
 } from "./tools/background-job-tools.js";
-import {BraveSearchTool, hasBraveSearchApiKey} from "./tools/brave-search-tool.js";
 import {BrowserTool, type BrowserToolOptions} from "./tools/browser-tool.js";
 import {MediaTool} from "./tools/media-tool.js";
-import {
-    PostgresReadonlyQueryTool,
-    type PostgresReadonlyQueryToolOptions,
-} from "./tools/postgres-readonly-query-tool.js";
-import {CurrentDateTimeTool} from "./tools/current-datetime-tool.js";
-import {ImageGenerateTool, type ImageGenerateToolOptions} from "./tools/image-generate-tool.js";
-import {WebFetchTool} from "./tools/web-fetch-tool.js";
-import {VentTool} from "./tools/vent-tool.js";
-import {WebResearchTool, type WebResearchToolOptions} from "./tools/web-research-tool.js";
-import {hasOpenAiApiKey, WhisperTool} from "./tools/whisper-tool.js";
-import {GlobFilesTool, GrepFilesTool, ReadFileTool} from "./tools/workspace-readonly-tools.js";
+import {ThinkingSetTool, type ThinkingSetToolOptions} from "./tools/thinking-set-tool.js";
 
 export interface BuildDefaultAgentToolsOptions {
   bash?: BashToolOptions;
   browser?: BrowserToolOptions;
-  imageGenerate?: ImageGenerateToolOptions;
-  postgresReadonly?: PostgresReadonlyQueryToolOptions;
-  webResearch?: WebResearchToolOptions;
+  thinking?: ThinkingSetToolOptions;
 }
 
 // `worker` remains only as a legacy in-process toolset key for non-runtime policy tests.
@@ -37,19 +24,9 @@ export interface DefaultAgentToolRegistry {
   backgroundJobStatus?: BackgroundJobStatusTool;
   backgroundJobWait?: BackgroundJobWaitTool;
   backgroundJobCancel?: BackgroundJobCancelTool;
-  currentDateTime: CurrentDateTimeTool;
-  readFile: ReadFileTool;
-  globFiles: GlobFilesTool;
-  grepFiles: GrepFilesTool;
-  imageGenerate?: ImageGenerateTool;
   media: MediaTool;
-  webFetch: WebFetchTool;
-  vent: VentTool;
   browser: BrowserTool;
-  braveSearch?: BraveSearchTool;
-  webResearch?: WebResearchTool;
-  whisper?: WhisperTool;
-  postgresReadonlyQuery?: PostgresReadonlyQueryTool;
+  thinking: ThinkingSetTool;
 }
 
 export interface DefaultAgentToolsets {
@@ -65,29 +42,29 @@ function compactTools(tools: ReadonlyArray<Tool | undefined>): readonly Tool[] {
   return tools.filter((tool): tool is Tool => tool !== undefined);
 }
 
+export function buildCoreAgentToolsFromRegistry(
+  registry: DefaultAgentToolRegistry,
+): readonly Tool[] {
+  return compactTools([
+    registry.bash,
+    registry.backgroundJobStatus,
+    registry.backgroundJobWait,
+    registry.backgroundJobCancel,
+    registry.media,
+    registry.thinking,
+  ]);
+}
+
 export function createDefaultAgentToolRegistry(
   options: BuildDefaultAgentToolsOptions = {},
 ): DefaultAgentToolRegistry {
-  const jobService = options.bash?.jobService ?? options.imageGenerate?.jobService ?? options.webResearch?.jobService;
+  const jobService = options.bash?.jobService;
   const bashOptions = jobService ? {...options.bash, jobService} : options.bash;
   const registry: DefaultAgentToolRegistry = {
     bash: new BashTool(bashOptions),
-    currentDateTime: new CurrentDateTimeTool(),
-    readFile: new ReadFileTool(),
-    globFiles: new GlobFilesTool(),
-    grepFiles: new GrepFilesTool(),
     media: new MediaTool(),
-    ...(jobService
-      ? {
-        imageGenerate: new ImageGenerateTool({
-          ...options.imageGenerate,
-          jobService,
-        }),
-      }
-      : {}),
-    webFetch: new WebFetchTool(),
-    vent: new VentTool(),
     browser: new BrowserTool(options.browser),
+    thinking: new ThinkingSetTool(options.thinking),
   };
 
   if (jobService) {
@@ -102,24 +79,6 @@ export function createDefaultAgentToolRegistry(
     });
   }
 
-  if (hasOpenAiApiKey()) {
-    if (jobService) {
-      registry.webResearch = new WebResearchTool({
-        ...options.webResearch,
-        jobService,
-      });
-    }
-    registry.whisper = new WhisperTool();
-  }
-
-  if (hasBraveSearchApiKey()) {
-    registry.braveSearch = new BraveSearchTool();
-  }
-
-  if (options.postgresReadonly) {
-    registry.postgresReadonlyQuery = new PostgresReadonlyQueryTool(options.postgresReadonly);
-  }
-
   return registry;
 }
 
@@ -132,38 +91,14 @@ export function buildDefaultAgentToolsetsFromRegistry(
 ): DefaultAgentToolsets {
   return {
     main: compactTools([
-      registry.bash,
-      registry.backgroundJobStatus,
-      registry.backgroundJobWait,
-      registry.backgroundJobCancel,
-      registry.currentDateTime,
-      registry.media,
-      registry.imageGenerate,
-      registry.webFetch,
-      registry.vent,
-      registry.postgresReadonlyQuery,
-      registry.webResearch,
-      registry.whisper,
-      registry.braveSearch,
+      ...buildCoreAgentToolsFromRegistry(registry),
       ...mainExtras,
     ]),
     workspace: compactTools([
-      registry.currentDateTime,
-      registry.readFile,
-      registry.globFiles,
-      registry.grepFiles,
       registry.media,
     ]),
-    memory: compactTools([
-      registry.currentDateTime,
-      registry.postgresReadonlyQuery,
-      ...memoryExtras,
-    ]),
+    memory: compactTools(memoryExtras),
     browser: compactTools([
-      registry.currentDateTime,
-      registry.readFile,
-      registry.globFiles,
-      registry.grepFiles,
       registry.media,
       registry.browser,
     ]),
@@ -172,20 +107,12 @@ export function buildDefaultAgentToolsetsFromRegistry(
       registry.backgroundJobStatus,
       registry.backgroundJobWait,
       registry.backgroundJobCancel,
-      registry.currentDateTime,
       registry.media,
-      registry.webFetch,
-      registry.braveSearch,
       registry.browser,
-      registry.imageGenerate,
+      registry.thinking,
       ...workerExtras,
     ]),
     skill_maintainer: compactTools([
-      registry.currentDateTime,
-      registry.postgresReadonlyQuery,
-      registry.readFile,
-      registry.globFiles,
-      registry.grepFiles,
       registry.media,
       ...skillMaintainerExtras,
     ]),

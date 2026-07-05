@@ -18,4 +18,5 @@ export type {
   OutboundDeliveryInput,
   OutboundDeliveryRecord,
   OutboundDeliveryStatus,
+  OutboundDeliveryTargetHistoryFilter,
 } from "./types.js";

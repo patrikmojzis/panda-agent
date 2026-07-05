@@ -160,6 +160,10 @@ function inferImageMimeType(filePath: string): string {
   return mimeType;
 }
 
+function inferFileMimeType(filePath: string): string {
+  return IMAGE_MIME_BY_EXTENSION.get(extname(filePath).toLowerCase()) ?? "application/octet-stream";
+}
+
 async function buildInboundItems(
   request: OutboundRequest,
   mediaStore: FileSystemMediaStore,
@@ -197,7 +201,7 @@ async function buildInboundItems(
           bytes,
           source: A2A_SOURCE,
           connectorKey: A2A_CONNECTOR_KEY,
-          mimeType: item.mimeType?.trim() || "application/octet-stream",
+          mimeType: item.mimeType?.trim() || inferFileMimeType(item.path),
           hintFilename: filename,
         });
         items.push({

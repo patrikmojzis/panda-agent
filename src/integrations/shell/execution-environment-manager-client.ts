@@ -1,6 +1,10 @@
 import type {
     DisposableEnvironmentCreateRequest,
     DisposableEnvironmentCreateResult,
+    DisposableEnvironmentCommandAccessRefreshRequest,
+    DisposableEnvironmentLogEntry,
+    DisposableEnvironmentLogsRequest,
+    DisposableEnvironmentLogsResult,
     ExecutionEnvironmentManager,
 } from "../../domain/execution-environments/types.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
@@ -26,6 +30,7 @@ type ManagerResponse = {
   runnerCwd?: string;
   rootPath?: string;
   metadata?: JsonValue;
+  entries?: readonly DisposableEnvironmentLogEntry[];
 };
 
 function makeNetworkTimeoutSignal(timeoutMs: number): AbortSignal {
@@ -59,7 +64,35 @@ function parseManagerResponse(payload: unknown): ManagerResponse {
     runnerCwd: trimToUndefined(payload.runnerCwd),
     rootPath: trimToUndefined(payload.rootPath),
     metadata: parseOptionalMetadata("Execution environment manager response metadata", payload.metadata),
+    entries: parseOptionalLogEntries(payload.entries),
   };
+}
+
+function parseOptionalLogEntries(value: unknown): readonly DisposableEnvironmentLogEntry[] | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new ToolError("Execution environment manager log response entries must be an array.");
+  }
+
+  return value.map((entry, index) => {
+    if (!isRecord(entry)) {
+      throw new ToolError(`Execution environment manager log response entries[${index}] must be an object.`);
+    }
+    if (entry.role !== "control" && entry.role !== "workspace") {
+      throw new ToolError(`Execution environment manager log response entries[${index}].role must be control or workspace.`);
+    }
+    if (typeof entry.stdout !== "string" || typeof entry.stderr !== "string") {
+      throw new ToolError(`Execution environment manager log response entries[${index}] stdout and stderr must be strings.`);
+    }
+
+    return {
+      role: entry.role,
+      stdout: entry.stdout,
+      stderr: entry.stderr,
+    };
+  });
 }
 
 async function readManagerError(response: Response): Promise<never> {
@@ -113,6 +146,20 @@ export class HttpExecutionEnvironmentManagerClient implements ExecutionEnvironme
 
   async stopEnvironment(environmentId: string): Promise<void> {
     await this.post("environments/stop", {environmentId});
+  }
+
+  async refreshCommandAccess(input: DisposableEnvironmentCommandAccessRefreshRequest): Promise<void> {
+    await this.post("environments/command-access", input);
+  }
+
+  async readEnvironmentLogs(input: DisposableEnvironmentLogsRequest): Promise<DisposableEnvironmentLogsResult> {
+    const payload = await this.post("environments/logs", input);
+    if (!payload.entries) {
+      throw new ToolError("Execution environment manager returned an invalid logs response.");
+    }
+    return {
+      entries: payload.entries,
+    };
   }
 
   private resolveConfig(): {managerUrl: string; sharedSecret?: string} {

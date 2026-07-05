@@ -244,7 +244,11 @@ describe("PostgresThreadRuntimeStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
 
-    const {sessionStore, threadStore: store} = await createRuntimeStores(pool);
+    const {agentStore, sessionStore, threadStore: store} = await createRuntimeStores(pool);
+    await agentStore.bootstrapAgent({
+      agentKey: "other-agent",
+      displayName: "Other Agent",
+    });
     await seedSession(pool, {
       sessionId: "session-shell-state",
       threadId: "thread-shell-state",
@@ -630,6 +634,134 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(completedAfterAbort.error).toBe("recover me");
   });
 
+
+  it("lists channel messages scoped by session and connector route metadata", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const {agentStore, sessionStore, threadStore: store} = await createRuntimeStores(pool);
+    await agentStore.bootstrapAgent({
+      agentKey: "other-agent",
+      displayName: "Other Agent",
+    });
+    await sessionStore.createSession({
+      id: "session-1",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "thread-1",
+    });
+    await sessionStore.createSession({
+      id: "session-2",
+      agentKey: "other-agent",
+      kind: "main",
+      currentThreadId: "thread-2",
+    });
+    await store.createThread({id: "thread-1", sessionId: "session-1"});
+    await store.createThread({id: "thread-2", sessionId: "session-2"});
+
+    await store.enqueueInput("thread-1", {
+      message: stringToUserMessage("visible"),
+      source: "telegram",
+      channelId: "chat-1",
+      externalMessageId: "message-1",
+      metadata: {
+        route: {
+          source: "telegram",
+          connectorKey: "bot-1",
+          externalConversationId: "chat-1",
+        },
+        telegram: {
+          media: [
+            {
+              id: "media-1",
+              source: "telegram",
+              connectorKey: "bot-1",
+              mimeType: "image/png",
+              sizeBytes: 12,
+              localPath: "/tmp/media-1.png",
+              originalFilename: "photo.png",
+              createdAt: 1_764_000_000_000,
+            },
+          ],
+        },
+      },
+    });
+    await store.enqueueInput("thread-2", {
+      message: stringToUserMessage("other session"),
+      source: "telegram",
+      channelId: "chat-1",
+      externalMessageId: "message-2",
+      metadata: {
+        route: {
+          source: "telegram",
+          connectorKey: "bot-1",
+          externalConversationId: "chat-1",
+        },
+      },
+    });
+    await store.enqueueInput("thread-1", {
+      message: stringToUserMessage("other connector"),
+      source: "telegram",
+      channelId: "chat-1",
+      externalMessageId: "message-3",
+      metadata: {
+        route: {
+          source: "telegram",
+          connectorKey: "bot-2",
+          externalConversationId: "chat-1",
+        },
+      },
+    });
+    await store.applyPendingInputs("thread-1");
+    await store.applyPendingInputs("thread-2");
+
+    await expect(store.listChannelMessages({
+      sessionId: "session-1",
+      source: "telegram",
+      connectorKey: "bot-1",
+      channelId: "chat-1",
+      limit: 10,
+    })).resolves.toEqual([
+      expect.objectContaining({
+        threadId: "thread-1",
+        source: "telegram",
+        channelId: "chat-1",
+        externalMessageId: "message-1",
+      }),
+    ]);
+
+    await expect(store.findChannelMedia({
+      sessionId: "session-1",
+      source: "telegram",
+      connectorKey: "bot-1",
+      channelId: "chat-1",
+      mediaId: "media-1",
+    })).resolves.toMatchObject({
+      message: {
+        threadId: "thread-1",
+        externalMessageId: "message-1",
+      },
+      media: {
+        id: "media-1",
+        localPath: "/tmp/media-1.png",
+      },
+    });
+    await expect(store.findChannelMedia({
+      sessionId: "session-2",
+      source: "telegram",
+      connectorKey: "bot-1",
+      channelId: "chat-1",
+      mediaId: "media-1",
+    })).resolves.toBeNull();
+  });
 
 
   it("migrates session runtime config off legacy thread columns and drops them", async () => {

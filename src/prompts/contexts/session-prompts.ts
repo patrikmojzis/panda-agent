@@ -1,12 +1,12 @@
-interface RenderableSessionPromptRecord {
+const RENDERED_SESSION_PROMPT_SLUGS = ["brief", "memory"] as const;
+
+export interface RenderableSessionPrompt {
   slug: string;
   content: string;
 }
 
-const RENDERED_SESSION_PROMPT_SLUGS = ["brief", "memory"] as const;
-
 export function renderSessionPromptsContext(options: {
-  prompts: readonly RenderableSessionPromptRecord[];
+  prompts: readonly RenderableSessionPrompt[];
 }): string {
   const promptsBySlug = new Map(options.prompts.map((prompt) => [prompt.slug, prompt]));
   return RENDERED_SESSION_PROMPT_SLUGS

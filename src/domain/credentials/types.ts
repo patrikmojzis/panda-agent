@@ -48,6 +48,15 @@ export interface CredentialListEntry extends DecryptedCredentialRecord {
   valuePreview: string;
 }
 
+export interface CredentialMetadataEntry {
+  id: string;
+  agentKey: string;
+  envKey: string;
+  keyVersion: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 const BLOCKED_ENV_KEYS = new Set([
   "BASH_ENV",
   "DYLD_INSERT_LIBRARIES",
@@ -107,6 +116,17 @@ const RESERVED_RUNTIME_ENV_KEYS = new Set([
   "PANDA_WORKSPACE_EXEC_ENVIRONMENT_ID",
   "PANDA_WORKSPACE_EXEC_TOKEN",
   "PANDA_WORKSPACE_CONTAINER_NAME",
+  "PANDA_COMMAND_TRANSPORT",
+  "PANDA_COMMAND_SOCKET_HOST_DIR",
+  "PANDA_COMMAND_URL",
+  "PANDA_COMMAND_SOCKET",
+  "PANDA_COMMAND_TOKEN",
+  "PANDA_COMMAND_SERVER_ENABLED",
+  "PANDA_COMMAND_SERVER_HOST",
+  "PANDA_COMMAND_SERVER_PORT",
+  "PANDA_COMMAND_SERVER_URL",
+  "PANDA_COMMAND_SERVER_SOCKET_PATH",
+  "PANDA_COMMAND_SOCKET_MOUNTED_RUNNERS",
   "PANDA_DISPOSABLE_RUNNER_NETWORK",
   "PANDA_DISPOSABLE_RUNNER_HOST_BIND_IP",
   "PANDA_DISPOSABLE_RUNNER_PUBLIC_HOST",

@@ -25,6 +25,9 @@ import type {DurableShellSession, ThreadShellStateKey, ThreadShellStateRecord, T
 import {
     type CreateThreadInput,
     type CreateThreadToolJobInput,
+    type ThreadChannelMediaFilter,
+    type ThreadChannelMediaRecord,
+    type ThreadChannelMessageFilter,
     missingThreadError,
     type ThreadInputDeliveryMode,
     type ThreadInputPayload,
@@ -38,6 +41,7 @@ import {
     type ThreadToolJobUpdate,
     type ThreadUpdate,
 } from "./types.js";
+import type {MediaDescriptor} from "../../channels/types.js";
 import {buildSessionTableNames, type SessionTableNames} from "../../sessions/postgres-shared.js";
 import {
   createThreadRuntimeJsonbPersistenceError,
@@ -46,6 +50,72 @@ import {
 
 interface PostgresThreadRuntimeStoreOptions {
   pool: PgPoolLike;
+}
+
+const MAX_CHANNEL_MEDIA_SCAN_ROWS = 5_000;
+
+function readMediaDescriptor(value: unknown): MediaDescriptor | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.id !== "string"
+    || !record.id.trim()
+    || typeof record.source !== "string"
+    || !record.source.trim()
+    || typeof record.connectorKey !== "string"
+    || !record.connectorKey.trim()
+    || typeof record.mimeType !== "string"
+    || !record.mimeType.trim()
+    || typeof record.sizeBytes !== "number"
+    || !Number.isFinite(record.sizeBytes)
+    || typeof record.localPath !== "string"
+    || !record.localPath.trim()
+    || typeof record.createdAt !== "number"
+    || !Number.isFinite(record.createdAt)
+  ) {
+    return null;
+  }
+
+  return {
+    id: record.id,
+    source: record.source,
+    connectorKey: record.connectorKey,
+    mimeType: record.mimeType,
+    sizeBytes: record.sizeBytes,
+    localPath: record.localPath,
+    ...(typeof record.originalFilename === "string" && record.originalFilename.trim()
+      ? {originalFilename: record.originalFilename}
+      : {}),
+    ...(typeof record.metadata === "object" && record.metadata !== null && !Array.isArray(record.metadata)
+      ? {metadata: record.metadata as MediaDescriptor["metadata"]}
+      : {}),
+    createdAt: record.createdAt,
+  };
+}
+
+function readSourceMediaFromMessage(message: ThreadMessageRecord, source: string): readonly MediaDescriptor[] {
+  const metadata = message.metadata;
+  if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) {
+    return [];
+  }
+
+  const sourceMetadata = (metadata as Record<string, unknown>)[source];
+  if (typeof sourceMetadata !== "object" || sourceMetadata === null || Array.isArray(sourceMetadata)) {
+    return [];
+  }
+
+  const media = (sourceMetadata as Record<string, unknown>).media;
+  if (!Array.isArray(media)) {
+    return [];
+  }
+
+  return media.flatMap((entry) => {
+    const descriptor = readMediaDescriptor(entry);
+    return descriptor ? [descriptor] : [];
+  });
 }
 
 function parseThreadSummaryCount(row: Record<string, unknown>, column: string): {
@@ -354,6 +424,78 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
     );
 
     return result.rows.map((row) => parseMessageRow(row as Record<string, unknown>));
+  }
+
+  async listChannelMessages(filter: ThreadChannelMessageFilter): Promise<readonly ThreadMessageRecord[]> {
+    const limit = Math.max(0, Math.min(filter.limit ?? 50, 200));
+    if (limit === 0) {
+      return [];
+    }
+
+    const result = await this.pool.query(
+      `
+        SELECT message.*
+        FROM ${this.tables.messages} AS message
+        INNER JOIN ${this.tables.threads} AS thread
+          ON thread.id = message.thread_id
+        WHERE thread.session_id = $1
+          AND message.source = $2
+          AND message.channel_id = $3
+          AND message.metadata -> 'route' ->> 'connectorKey' = $4
+        ORDER BY message.created_at DESC, message.sequence DESC
+        LIMIT $5
+      `,
+      [
+        filter.sessionId,
+        filter.source,
+        filter.channelId,
+        filter.connectorKey,
+        limit,
+      ],
+    );
+
+    return result.rows.map((row) => parseMessageRow(row as Record<string, unknown>));
+  }
+
+  async findChannelMedia(filter: ThreadChannelMediaFilter): Promise<ThreadChannelMediaRecord | null> {
+    const result = await this.pool.query(
+      `
+        SELECT message.*
+        FROM ${this.tables.messages} AS message
+        INNER JOIN ${this.tables.threads} AS thread
+          ON thread.id = message.thread_id
+        WHERE thread.session_id = $1
+          AND message.source = $2
+          AND message.channel_id = $3
+          AND message.metadata -> 'route' ->> 'connectorKey' = $4
+        ORDER BY message.created_at DESC, message.sequence DESC
+        LIMIT $5
+      `,
+      [
+        filter.sessionId,
+        filter.source,
+        filter.channelId,
+        filter.connectorKey,
+        MAX_CHANNEL_MEDIA_SCAN_ROWS,
+      ],
+    );
+
+    for (const row of result.rows) {
+      const message = parseMessageRow(row as Record<string, unknown>);
+      const media = readSourceMediaFromMessage(message, filter.source).find((descriptor) => {
+        return descriptor.id === filter.mediaId
+          && descriptor.source === filter.source
+          && descriptor.connectorKey === filter.connectorKey;
+      });
+      if (media) {
+        return {
+          message,
+          media,
+        };
+      }
+    }
+
+    return null;
   }
 
   async enqueueInput(

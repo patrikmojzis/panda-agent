@@ -6,7 +6,7 @@ import type {PgPoolLike} from "../../../lib/postgres-query.js";
 import {requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
 import {buildSessionRouteTableNames, type SessionRouteTableNames} from "./postgres-shared.js";
 import {ensurePostgresSessionRouteSchema} from "./postgres-schema.js";
-import type {SessionRouteInput, SessionRouteLookup, SessionRouteRecord} from "./types.js";
+import type {SessionIdentityRoutesLookup, SessionRouteInput, SessionRouteLookup, SessionRouteRecord} from "./types.js";
 
 export interface SessionRouteRepoOptions {
   pool: PgPoolLike;
@@ -24,6 +24,23 @@ function normalizeLookup(lookup: SessionRouteLookup): SessionRouteLookup {
   };
 }
 
+function normalizeIdentityRoutesLookup(lookup: SessionIdentityRoutesLookup): SessionIdentityRoutesLookup {
+  const seen = new Set<string>();
+  const identityIds: string[] = [];
+  for (const identityId of lookup.identityIds) {
+    const normalized = trimToUndefined(identityId);
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    identityIds.push(normalized);
+  }
+
+  return {
+    sessionId: requireSessionRouteString("session id", lookup.sessionId),
+    identityIds,
+  };
+}
 
 function readOptionalDeliveryContext(value: unknown, label: string): DeliveryContext | undefined {
   if (value === undefined || value === null) {
@@ -158,6 +175,35 @@ export class SessionRouteRepo {
     const result = await this.pool.query(sql, values);
     const row = result.rows[0];
     return row ? parseRoute(row as Record<string, unknown>) : null;
+  }
+
+  async listLatestIdentityRoutes(lookup: SessionIdentityRoutesLookup): Promise<readonly SessionRouteRecord[]> {
+    const normalized = normalizeIdentityRoutesLookup(lookup);
+    if (normalized.identityIds.length === 0) {
+      return [];
+    }
+
+    const values: unknown[] = [normalized.sessionId, ...normalized.identityIds];
+    const identityPlaceholders = normalized.identityIds.map((_, index) => `$${index + 2}`).join(", ");
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.sessionRoutes}
+      WHERE session_id = $1
+        AND identity_id IN (${identityPlaceholders})
+      ORDER BY identity_id ASC, captured_at_ms DESC, updated_at DESC
+    `, values);
+
+    const latestByIdentity = new Set<string>();
+    const records: SessionRouteRecord[] = [];
+    for (const row of result.rows) {
+      const record = parseRecord(row as Record<string, unknown>);
+      if (!record.identityId || latestByIdentity.has(record.identityId)) {
+        continue;
+      }
+      latestByIdentity.add(record.identityId);
+      records.push(record);
+    }
+    return records;
   }
 
   async saveLastRoute(input: SessionRouteInput): Promise<SessionRouteRecord> {

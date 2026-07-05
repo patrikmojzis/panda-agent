@@ -202,6 +202,10 @@ For `openai-codex`, the Docker examples mount a host Codex home read-only into `
 
 The base compose file it builds on is still [examples/docker-compose.remote-bash.external-db.yml](../../examples/docker-compose.remote-bash.external-db.yml).
 
+CLI-backed Panda tools use a private command HTTP server in this stack. `panda-core` binds it on `0.0.0.0:8096`, advertises it to runners as `http://panda-core:8096`, and does not publish that port to the host. Runners receive scoped command access per bash call, so you do not need to add `PANDA_COMMAND_SERVER_*` values to `.env` for the normal single-host Docker stack. Static command-server env tokens are not supported; Panda injects short-lived command access automatically when a shell call needs it.
+
+For same-host Docker deployments, you can opt into Unix socket transport with `PANDA_COMMAND_TRANSPORT=socket`. The wrapper mounts `${PANDA_COMMAND_SOCKET_HOST_DIR:-$HOME/.panda/run/command}` into core and runners, and runners call `/run/panda-command/command.sock` instead of `http://panda-core:8096`. Keep HTTP for remote runners. The wrapper also sets `PANDA_COMMAND_SOCKET_MOUNTED_RUNNERS=true` so fallback `panda-runner-<agent>` services can receive socket-only access; named or DB-bound persistent targets still fail closed in socket-only mode.
+
 ## External Postgres
 
 You do not need a local `db` container if you already have a real Postgres somewhere else.
@@ -263,14 +267,14 @@ panda runner attach <sessionRef> mac \
   --agent panda \
   --runner-url http://mac-mini.tailnet:8080 \
   --runner-cwd /Users/patrik/.panda/agents/panda \
-  --allow-tools bash,read_file,glob_files,grep_files
+  --allow-tools bash
 
 # Existing runner endpoint: bind it directly to one session.
 panda session targets bind <sessionRef> vps \
   --agent panda \
   --runner-url http://panda-runner-panda:8080 \
   --runner-cwd /root/.panda/agents/panda \
-  --allow-tools bash,read_file,glob_files,grep_files
+  --allow-tools bash
 
 # See default + named targets and runner reachability.
 panda session targets list <sessionRef> --agent panda
@@ -282,10 +286,9 @@ panda session targets detach <sessionRef> vps --agent panda
 ```
 
 `--allow-tools` is required for new named targets and is enforced at call time.
-If a selected target has no allowlist, or omits `bash`, `read_file`,
-`glob_files`, or `grep_files`, that tool fails before it touches the runner or
-target filesystem. Binding another target with `--default` switches the session
-default; after that, the old alias can be detached.
+If a selected target has no allowlist, or omits `bash`, the tool fails before it
+touches the runner or target filesystem. Binding another target with `--default`
+switches the session default; after that, the old alias can be detached.
 
 Control also shows session execution targets on the session overview. The health
 badge means **reachable** only: it is an unauthenticated runner `/health` probe,

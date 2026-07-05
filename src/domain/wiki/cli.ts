@@ -5,17 +5,38 @@ import {Command, InvalidArgumentError} from "commander";
 import {DB_URL_OPTION_DESCRIPTION} from "../../lib/cli.js";
 import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
 import {parseAgentKey} from "../agents/cli.js";
+import type {CommandDescriptor} from "../commands/types.js";
+import {writeCommandDescriptorHelp} from "../commands/cli.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
 import {resolveCredentialCrypto} from "../credentials/crypto.js";
 import {PostgresWikiBindingStore} from "./postgres.js";
 import {WikiBindingService} from "./service.js";
 import {normalizeWikiNamespacePath} from "./types.js";
+import {
+  wikiArchiveCommandDescriptor,
+  wikiAttachImageCommandDescriptor,
+  wikiDeleteAssetCommandDescriptor,
+  wikiDiffCommandDescriptor,
+  wikiFetchAssetCommandDescriptor,
+  wikiListCommandDescriptor,
+  wikiMoveCommandDescriptor,
+  wikiReadCommandDescriptor,
+  wikiRestoreCommandDescriptor,
+  wikiSearchCommandDescriptor,
+  wikiWriteCommandDescriptor,
+  wikiWriteSectionCommandDescriptor,
+} from "./commands.js";
 
 interface WikiCliOptions {
   dbUrl?: string;
   groupId?: number;
   namespace?: string;
   stdin?: boolean;
+}
+
+interface WikiCommandCliOptions {
+  help?: boolean;
+  json?: boolean | string;
 }
 
 function parseWikiGroupId(value: string): number {
@@ -162,10 +183,61 @@ async function clearWikiBindingCommand(agentKey: string, options: WikiCliOptions
   });
 }
 
+function registerJsonWikiCommand(
+  wikiProgram: Command,
+  subcommand: string,
+  descriptor: CommandDescriptor,
+  commandLabel = `panda wiki ${subcommand}`,
+): Command {
+  return wikiProgram
+    .command(subcommand)
+    .description(descriptor.summary)
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .action((options: WikiCommandCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(descriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        `${commandLabel} execution requires the agent command shim transport; use --help for the command contract.`,
+      );
+    });
+}
+
 export function registerWikiCommands(program: Command): void {
   const wikiProgram = program
     .command("wiki")
     .description("Manage Panda Wiki.js bindings");
+
+  registerJsonWikiCommand(wikiProgram, "read", wikiReadCommandDescriptor);
+  registerJsonWikiCommand(wikiProgram, "search", wikiSearchCommandDescriptor);
+  registerJsonWikiCommand(wikiProgram, "list", wikiListCommandDescriptor);
+  registerJsonWikiCommand(wikiProgram, "diff", wikiDiffCommandDescriptor);
+  const writeProgram = wikiProgram
+    .command("write")
+    .description("Write wiki pages and sections");
+  registerJsonWikiCommand(writeProgram, "page", wikiWriteCommandDescriptor, "panda wiki write page");
+  registerJsonWikiCommand(writeProgram, "section", wikiWriteSectionCommandDescriptor, "panda wiki write section");
+  registerJsonWikiCommand(wikiProgram, "move", wikiMoveCommandDescriptor);
+  registerJsonWikiCommand(wikiProgram, "archive", wikiArchiveCommandDescriptor);
+  registerJsonWikiCommand(wikiProgram, "restore", wikiRestoreCommandDescriptor);
+  const attachProgram = wikiProgram
+    .command("attach")
+    .description("Attach assets to wiki pages");
+  registerJsonWikiCommand(attachProgram, "image", wikiAttachImageCommandDescriptor, "panda wiki attach image");
+  const fetchProgram = wikiProgram
+    .command("fetch")
+    .description("Fetch assets from wiki pages");
+  registerJsonWikiCommand(fetchProgram, "asset", wikiFetchAssetCommandDescriptor, "panda wiki fetch asset");
+  const deleteProgram = wikiProgram
+    .command("delete")
+    .description("Delete assets from wiki pages");
+  registerJsonWikiCommand(deleteProgram, "asset", wikiDeleteAssetCommandDescriptor, "panda wiki delete asset");
 
   const bindingProgram = wikiProgram
     .command("binding")

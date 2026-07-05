@@ -235,6 +235,18 @@ export interface WatchEventRecord {
   createdAt: number;
 }
 
+export interface WatchRunEventSummary {
+  id: string;
+  eventKind: WatchEventKind;
+  summary: string;
+  dedupeKey: string;
+  createdAt: number;
+}
+
+export interface WatchRunHistoryRecord extends WatchRunRecord {
+  event?: WatchRunEventSummary;
+}
+
 export interface CreateWatchInput extends WatchSpec {
   sessionId: string;
   createdByIdentityId?: string;
@@ -263,6 +275,20 @@ export interface DisableWatchInput {
 
 export interface ListDueWatchesInput {
   asOf?: number;
+  limit?: number;
+}
+
+export type ListWatchesStatus = "enabled" | "disabled" | "all";
+
+export interface ListWatchesInput {
+  sessionId: string;
+  status?: ListWatchesStatus;
+  limit?: number;
+}
+
+export interface ListWatchRunsInput {
+  watchId: string;
+  sessionId: string;
   limit?: number;
 }
 

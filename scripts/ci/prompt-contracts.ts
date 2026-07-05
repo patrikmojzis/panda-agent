@@ -6,37 +6,8 @@ import {fileURLToPath} from "node:url";
 
 import type {Tool} from "../../src/kernel/agent/tool.js";
 import {createDefaultAgentToolRegistry, buildDefaultAgentToolsetsFromRegistry} from "../../src/panda/definition.js";
-import {SUBAGENT_TOOL_GROUP_DEFINITIONS} from "../../src/domain/subagents/tool-groups.js";
-import {SessionPromptTool} from "../../src/panda/tools/session-prompt-tool.js";
-import {AgentSkillTool} from "../../src/panda/tools/agent-skill-tool.js";
-import {
-  AppActionTool,
-  AppCheckTool,
-  AppCreateTool,
-  AppLinkCreateTool,
-  AppListTool,
-  AppViewTool,
-} from "../../src/panda/tools/app-tools.js";
-import {ClearEnvValueTool, SetEnvValueTool} from "../../src/panda/tools/env-value-tools.js";
-import {EmailSendTool} from "../../src/panda/tools/email-send-tool.js";
-import {EnvironmentCreateTool, EnvironmentStopTool} from "../../src/panda/tools/environment-tools.js";
-import {MessageAgentTool} from "../../src/panda/tools/message-agent-tool.js";
-import {OutboundTool} from "../../src/panda/tools/outbound-tool.js";
-import {
-  ScheduledTaskCancelTool,
-  ScheduledTaskCreateTool,
-  ScheduledTaskUpdateTool,
-} from "../../src/panda/tools/scheduled-task-tools.js";
-import {SpawnSubagentTool} from "../../src/panda/tools/spawn-subagent-tool.js";
-import {ThinkingSetTool} from "../../src/panda/tools/thinking-set-tool.js";
-import {
-  WatchCreateTool,
-  WatchDisableTool,
-  WatchSchemaGetTool,
-  WatchUpdateTool,
-} from "../../src/panda/tools/watch-tools.js";
-import {WikiTool} from "../../src/panda/tools/wiki-tool.js";
-import {TelegramReactTool} from "../../src/integrations/channels/telegram/telegram-react-tool.js";
+import {describeSubagentToolGroups} from "../../src/domain/subagents/tool-groups.js";
+import {DEFAULT_AGENT_COMMAND_MODULES} from "../../src/panda/commands/agent-command-modules.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const snapshotPath = path.join(repoRoot, "scripts/ci/prompt-contracts.snapshot.json");
@@ -57,8 +28,12 @@ const contractFiles = [
   "src/domain/subagents/builtins.ts",
   "src/domain/subagents/tool-groups.ts",
   "src/panda/defaults.ts",
+  "src/panda/commands/agent-command-modules.ts",
+  "src/panda/commands/agent-command-descriptors.ts",
+  "src/panda/commands/agent-command-shim-routes.ts",
   "src/panda/definition.ts",
   "src/panda/subagents/policy.ts",
+  "scripts/agent-command-shim/routes.generated.sh",
 ];
 
 interface ContractFileRecord {
@@ -80,7 +55,7 @@ interface PromptContractSnapshot {
   files: ContractFileRecord[];
   toolCatalog: ToolContractRecord[];
   toolsets: Record<string, string[]>;
-  subagentToolGroups: typeof SUBAGENT_TOOL_GROUP_DEFINITIONS;
+  subagentToolGroups: ReturnType<typeof describeSubagentToolGroups>;
 }
 
 function sha256(value: string): string {
@@ -181,7 +156,6 @@ function collectTools(): {
   try {
     const service = fakeService();
     const jobService = fakeService();
-    const postgresPool = fakeService();
     const registry = createDefaultAgentToolRegistry({
       bash: {
         jobService,
@@ -189,117 +163,25 @@ function collectTools(): {
       browser: {
         service,
       },
-      imageGenerate: {
-        env: process.env,
-        jobService,
-      },
-      postgresReadonly: {
-        pool: postgresPool,
-      },
-      webResearch: {
-        env: process.env,
-        jobService,
-      },
     });
 
-    const agentSkillTool = new AgentSkillTool({store: service});
-    const wikiTool = new WikiTool({
-      bindings: service,
-      env: process.env,
-    });
     const defaultToolsets = buildDefaultAgentToolsetsFromRegistry(
       registry,
-      [],
-      [wikiTool],
-      [agentSkillTool],
-      [agentSkillTool],
     );
-    const mainExtras: Tool[] = [
-      new ThinkingSetTool({
-        persistence: service,
-      }),
-      new SessionPromptTool({
-        store: service,
-      }),
-      new AppCreateTool(service),
-      new AppListTool(service),
-      new AppLinkCreateTool(service, service),
-      new AppCheckTool(service),
-      new AppViewTool(service),
-      new AppActionTool(service),
-      wikiTool,
-      agentSkillTool,
-      new SetEnvValueTool({
-        service,
-      }),
-      new ClearEnvValueTool({
-        service,
-      }),
-      new ScheduledTaskCreateTool({
-        store: service,
-      }),
-      new ScheduledTaskUpdateTool({
-        store: service,
-      }),
-      new ScheduledTaskCancelTool({
-        store: service,
-      }),
-      new WatchCreateTool({
-        mutations: service,
-        store: service,
-      }),
-      new WatchSchemaGetTool(),
-      new WatchUpdateTool({
-        mutations: service,
-        store: service,
-      }),
-      new WatchDisableTool({
-        mutations: service,
-        store: service,
-      }),
-    ];
-    const bootstrapMain = buildDefaultAgentToolsetsFromRegistry(registry, mainExtras).main;
     const runtimeSubagent = mergeToolsByName([
-      bootstrapMain,
+      defaultToolsets.main,
       defaultToolsets.workspace,
       defaultToolsets.memory,
       defaultToolsets.browser,
       defaultToolsets.skill_maintainer,
     ]);
-    const environmentControl = [
-      new EnvironmentCreateTool({
-        lifecycle: service,
-      }),
-      new EnvironmentStopTool({
-        environments: service,
-        lifecycle: service,
-      }),
-    ];
-    const runtimeMain = [
-      ...bootstrapMain,
-      ...environmentControl,
-      new SpawnSubagentTool({
-        subagentSessions: service,
-      }),
-    ];
-    const daemonChannelExtras = [
-      new EmailSendTool({
-        store: service,
-      }),
-      new OutboundTool(),
-      new MessageAgentTool(),
-      new TelegramReactTool(),
-    ];
     const allTools = mergeToolsByName([
       defaultToolsets.main,
       defaultToolsets.workspace,
       defaultToolsets.memory,
       defaultToolsets.browser,
       defaultToolsets.skill_maintainer,
-      runtimeMain,
       runtimeSubagent,
-      environmentControl,
-      daemonChannelExtras,
     ]);
 
     return {
@@ -310,10 +192,8 @@ function collectTools(): {
         defaultMemory: toolNames(defaultToolsets.memory),
         defaultBrowser: toolNames(defaultToolsets.browser),
         defaultSkillMaintainer: toolNames(defaultToolsets.skill_maintainer),
-        runtimeMain: toolNames(runtimeMain),
+        runtimeMain: toolNames(defaultToolsets.main),
         runtimeSubagent: toolNames(runtimeSubagent),
-        environmentControl: toolNames(environmentControl),
-        daemonChannelExtras: toolNames(daemonChannelExtras),
       },
     };
   } finally {
@@ -353,7 +233,9 @@ async function buildSnapshot(): Promise<PromptContractSnapshot> {
     generatedBy: "scripts/ci/prompt-contracts.ts",
     files,
     ...tools,
-    subagentToolGroups: SUBAGENT_TOOL_GROUP_DEFINITIONS,
+    subagentToolGroups: describeSubagentToolGroups({
+      commandModules: DEFAULT_AGENT_COMMAND_MODULES,
+    }),
   };
 }
 

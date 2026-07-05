@@ -1,5 +1,5 @@
 import {spawn} from "node:child_process";
-import {mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
+import {mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
@@ -461,6 +461,102 @@ exit 42
     expect(compose).toContain("PANDA_CONTROL_PORT: ${PANDA_CONTROL_PORT:-4767}");
     expect(compose).toContain("PANDA_CONTROL_UI_DIR: ${PANDA_CONTROL_UI_DIR:-/app/control-ui}");
     expect(compose).toContain('"${PANDA_CONTROL_PUBLISH_HOST:-127.0.0.1}:${PANDA_CONTROL_PUBLISH_PORT:-${PANDA_CONTROL_PORT:-4767}}:${PANDA_CONTROL_PORT:-4767}"');
+  });
+
+  it("enables the command server privately for Docker runner CLI tools", async () => {
+    const baseCompose = await readFile(baseComposePath, "utf8");
+    const coreStart = baseCompose.indexOf("  panda-core:");
+    const browserStart = baseCompose.indexOf("\n  panda-browser-runner:", coreStart);
+    const coreSection = baseCompose.slice(coreStart, browserStart);
+
+    expect(coreStart).toBeGreaterThanOrEqual(0);
+    expect(browserStart).toBeGreaterThan(coreStart);
+    expect(coreSection).toContain("PANDA_COMMAND_SERVER_ENABLED: ${PANDA_COMMAND_SERVER_ENABLED:-true}");
+    expect(coreSection).toContain("PANDA_COMMAND_SERVER_HOST: ${PANDA_COMMAND_SERVER_HOST:-0.0.0.0}");
+    expect(coreSection).toContain("PANDA_COMMAND_SERVER_PORT: ${PANDA_COMMAND_SERVER_PORT:-8096}");
+    expect(coreSection).toContain("PANDA_COMMAND_SERVER_URL: ${PANDA_COMMAND_SERVER_URL:-http://panda-core:${PANDA_COMMAND_SERVER_PORT:-8096}}");
+    expect(coreSection).toMatch(/^\s+- runner_net$/m);
+    expect(coreSection).not.toMatch(/8096:8096/);
+    expect(coreSection).not.toContain("${PANDA_COMMAND_SERVER_PORT:-8096}:${PANDA_COMMAND_SERVER_PORT:-8096}");
+    expect(coreSection).not.toContain("PANDA_COMMAND_SERVER_TOKEN");
+    expect(coreSection).not.toContain("PANDA_COMMAND_SERVER_ALLOW_COMMANDS");
+    expect(coreSection).not.toContain("PANDA_COMMAND_SERVER_AGENT");
+    expect(coreSection).not.toContain("PANDA_COMMAND_SERVER_SESSION");
+  });
+
+  it("renders socket command transport as an explicit same-host Docker override", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=claw",
+      "PANDA_COMMAND_TRANSPORT=socket",
+    ].join("\n"));
+    const homeDir = await makeTempDir("panda-home-");
+    const socketHostDir = path.join(homeDir, ".panda", "run", "command");
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect((await stat(socketHostDir)).isDirectory()).toBe(true);
+    const compose = await readFile(generatedComposePath, "utf8");
+    const coreStart = compose.indexOf("  panda-core:");
+    const runnerStart = compose.indexOf("  panda-runner-claw:");
+    const coreSection = compose.slice(coreStart, runnerStart);
+    const runnerSection = compose.slice(runnerStart, compose.indexOf("\nnetworks:"));
+
+    expect(coreSection).toContain('PANDA_COMMAND_SERVER_ENABLED: "true"');
+    expect(coreSection).toContain("PANDA_COMMAND_SERVER_SOCKET_PATH: /run/panda-command/command.sock");
+    expect(coreSection).toContain('PANDA_COMMAND_SERVER_URL: ""');
+    expect(coreSection).toContain('PANDA_COMMAND_SOCKET_MOUNTED_RUNNERS: "true"');
+    expect(coreSection).toContain(`- "${socketHostDir}:/run/panda-command"`);
+    expect(runnerSection).toContain(`- "${socketHostDir}:/run/panda-command:ro"`);
+    expect(compose).not.toMatch(/8096:8096/);
+    expect(coreSection).not.toContain("PANDA_COMMAND_SERVER_TOKEN");
+    expect(coreSection).not.toContain("PANDA_COMMAND_SERVER_ALLOW_COMMANDS");
+    expect(coreSection).not.toContain("PANDA_COMMAND_SERVER_AGENT");
+    expect(coreSection).not.toContain("PANDA_COMMAND_SERVER_SESSION");
+  });
+
+  it("passes the socket host directory to the managed disposable environment manager", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+      "PANDA_COMMAND_TRANSPORT=socket",
+      "PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true",
+      "PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN=environment-manager-token",
+    ].join("\n"));
+    const homeDir = await makeTempDir("panda-home-");
+    const socketHostDir = path.join(homeDir, ".panda", "run", "command");
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+
+    expect(result.exitCode).toBe(0);
+    const compose = await readFile(generatedComposePath, "utf8");
+    const managerStart = compose.indexOf("  panda-environment-manager:");
+    const browserStart = compose.indexOf("  panda-browser-runner:");
+    const managerSection = compose.slice(managerStart, browserStart);
+
+    expect(compose).toContain("PANDA_COMMAND_SERVER_SOCKET_PATH: /run/panda-command/command.sock");
+    expect(compose).toContain('PANDA_COMMAND_SERVER_URL: ""');
+    expect(compose).toContain('PANDA_COMMAND_SOCKET_MOUNTED_RUNNERS: "true"');
+    expect(compose).toContain(`- "${socketHostDir}:/run/panda-command"`);
+    expect(managerSection).toContain("PANDA_COMMAND_SOCKET_HOST_DIR: ${PANDA_COMMAND_SOCKET_HOST_DIR:-}");
+    expect(managerSection).toContain(`- "${socketHostDir}:${socketHostDir}:ro"`);
   });
 
   it("keeps Control publish disabled unless PANDA_CONTROL_ENABLED is truthy", async () => {
@@ -1055,6 +1151,7 @@ exit 42
     expect(generatedCompose).toContain("panda-runner-claw");
     expect(generatedCompose).toContain("panda-runner-luna");
     expect(generatedCompose).toContain("image: panda-runner:latest");
+    expect(generatedCompose).toContain("pull_policy: never");
     expect(generatedCompose).toContain('command: ["bash-server"]');
     expect(generatedCompose).toContain("BASH_SERVER_SHARED_SECRET: ${BASH_SERVER_SHARED_SECRET:-}");
     expect(generatedCompose).toContain("BASH_SERVER_ALLOWED_ROOTS: ${BASH_SERVER_ALLOWED_ROOTS:-}");

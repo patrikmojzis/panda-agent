@@ -10,22 +10,36 @@ import {parsePortOption} from "../lib/cli.js";
 import {ensureSchemas, withPostgresPool} from "../lib/postgres-bootstrap.js";
 import {createDaemon} from "./runtime/daemon.js";
 import {registerA2ACommands} from "../domain/a2a/cli.js";
+import {registerCommandCatalogCommands, registerCommandRouteHelpCommands} from "../domain/commands/cli.js";
+import {buildCommandRouteTree} from "../domain/commands/route-tree.js";
+import {registerAppCommandHelpCommands} from "../domain/apps/cli.js";
 import {PostgresAgentStore} from "../domain/agents/postgres.js";
 import {parseAgentKey, registerAgentCommands} from "../domain/agents/cli.js";
+import {registerSkillCommandHelpCommands} from "../domain/agents/skill-cli.js";
 import {registerCredentialCommands} from "../domain/credentials/cli.js";
+import {registerEnvCommandHelpCommands} from "../domain/credentials/env-cli.js";
 import {registerConnectorCommands} from "../domain/connectors/cli.js";
 import {registerControlCommands} from "../domain/control/cli.js";
 import {PostgresExecutionEnvironmentStore} from "../domain/execution-environments/postgres.js";
 import {normalizeExecutionEnvironmentAlias} from "../domain/execution-environments/types.js";
+import {registerEnvironmentCommandHelpCommands} from "../domain/execution-environments/cli.js";
 import {registerEmailCommands} from "../domain/email/cli.js";
 import {registerGatewayCommands} from "./gateway/cli.js";
 import {parseIdentityHandle, registerIdentityCommands} from "../domain/identity/cli.js";
 import {PostgresIdentityStore} from "../domain/identity/postgres.js";
 import {registerSessionCommands} from "./sessions/cli.js";
 import {PostgresSessionStore} from "../domain/sessions/postgres.js";
+import {registerTodoCommandHelpCommands} from "../domain/sessions/todo-cli.js";
+import {registerTimeCommandHelpCommands} from "../domain/time/cli.js";
+import {registerScheduleCommandHelpCommands} from "../domain/scheduling/tasks/cli.js";
 import {registerWikiCommands} from "../domain/wiki/cli.js";
+import {registerWatchCommandHelpCommands} from "../domain/watches/cli.js";
+import {registerWhisperCommandHelpCommands} from "../integrations/audio/cli.js";
 import {registerTelegramCommands} from "../integrations/channels/telegram/cli.js";
 import {registerDiscordCommands} from "../integrations/channels/discord/cli.js";
+import {registerVentCommandHelpCommands} from "../integrations/panda-trace/vent-cli.js";
+import {registerPostgresCommandHelpCommands} from "../integrations/postgres/cli.js";
+import {registerWebCommandHelpCommands} from "../integrations/web/cli.js";
 import {type ChatCliOptions, runChatCli} from "../ui/tui/chat.js";
 import {renderResumeHint} from "../ui/tui/exit-hint.js";
 import {registerWhatsAppCommands} from "../integrations/channels/whatsapp/cli.js";
@@ -39,6 +53,10 @@ import {
 import {registerObserveCommand} from "../ui/observe/cli.js";
 import {registerSmokeCommand} from "./smoke/cli.js";
 import {registerSubagentCommands} from "./subagents/cli.js";
+import {registerSubagentCommandHelpCommands} from "../domain/subagents/cli.js";
+import {DEFAULT_AGENT_COMMAND_DESCRIPTORS} from "../panda/commands/agent-command-descriptors.js";
+import {DEFAULT_AGENT_COMMAND_CATALOG} from "../panda/commands/agent-command-modules.js";
+import {registerImageCommandHelpCommands} from "../panda/commands/image-cli.js";
 
 try {
   (process as NodeJS.Process & { loadEnvFile?: (path?: string) => void }).loadEnvFile?.();
@@ -382,6 +400,7 @@ program
 configureChatCommand(program);
 registerSmokeCommand(program);
 registerSubagentCommands(program);
+registerSubagentCommandHelpCommands(program);
 
 configureChatCommand(
   program
@@ -474,13 +493,31 @@ registerA2ACommands(program);
 registerCredentialCommands(program);
 registerConnectorCommands(program);
 registerControlCommands(program);
+registerCommandCatalogCommands(program, DEFAULT_AGENT_COMMAND_DESCRIPTORS);
 registerEmailCommands(program);
 registerGatewayCommands(program);
 registerIdentityCommands(program);
+registerAppCommandHelpCommands(program);
+registerEnvironmentCommandHelpCommands(program);
+registerEnvCommandHelpCommands(program);
+registerVentCommandHelpCommands(program);
+registerPostgresCommandHelpCommands(program);
+registerWebCommandHelpCommands(program);
+registerImageCommandHelpCommands(program);
+registerWhisperCommandHelpCommands(program);
+registerScheduleCommandHelpCommands(program);
 registerSessionCommands(program);
+registerTimeCommandHelpCommands(program);
+registerSkillCommandHelpCommands(program);
+registerTodoCommandHelpCommands(program);
+registerWatchCommandHelpCommands(program);
 registerWikiCommands(program);
 registerTelegramCommands(program);
 registerDiscordCommands(program);
 registerWhatsAppCommands(program);
+registerCommandRouteHelpCommands(program, buildCommandRouteTree({
+  routes: DEFAULT_AGENT_COMMAND_CATALOG.routes(),
+  descriptors: DEFAULT_AGENT_COMMAND_DESCRIPTORS,
+}));
 
 await program.parseAsync(process.argv);

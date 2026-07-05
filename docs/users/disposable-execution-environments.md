@@ -1,14 +1,14 @@
 # Disposable execution environments and subagents
 
-Panda V2 uses durable `spawn_subagent(...)` sessions for delegated work. The old
-model-facing worker spawn path is gone.
+Panda V2 uses durable `panda subagent spawn ...` sessions for delegated work. The
+old model-facing worker spawn path is gone.
 
 ## Main flow
 
-- Use `spawn_subagent(profile="workspace", prompt="inspect the repo and report findings")` for the normal agent-workspace path.
-- Use `environment_create` first when the child needs an isolated filesystem or long-lived disposable runner.
-- Then call `spawn_subagent(profile="workspace", prompt="...", execution="isolated_environment", environmentId="...")`.
-- Subagents communicate progress and completion through normal A2A `message_agent` calls back to the parent session.
+- Use `panda subagent spawn "inspect the repo and report findings" --profile workspace` for the normal agent-workspace path.
+- Use `panda environment create` first when the child needs an isolated filesystem or long-lived disposable runner.
+- Then call `panda subagent spawn "..." --profile workspace --isolated --environment <environmentId>`.
+- Subagents communicate progress and completion through `panda a2a send --to-session <parentSessionId>` calls back to the parent session.
 
 ## Filesystem layout
 
@@ -27,10 +27,10 @@ Disposable workspace containers are intentionally minimal. By default, an
 isolated workspace should not be assumed to have `node`, `pnpm`, `corepack`, or
 `panda` installed.
 
-When a project needs tools, pass an explicit setup script to `environment_create`:
+When a project needs tools, pass an explicit setup script to `panda environment create`:
 
-```text
-environment_create(label="panda-agent", setupScript="./setup-worker.sh")
+```bash
+panda environment create --label panda-agent --setup-script ./setup-worker.sh
 ```
 
 Panda copies the script into the environment as `/artifacts/setup/setup.sh` and
@@ -81,15 +81,15 @@ Operators can attach named execution targets to normal sessions and inspect them
 from CLI or Control:
 
 ```bash
-panda runner attach <sessionRef> mac --agent <agentKey> --runner-url http://mac:8080 --allow-tools bash,read_file
-panda session targets bind <sessionRef> vps --agent <agentKey> --runner-url http://runner:8080 --allow-tools bash,read_file
+panda runner attach <sessionRef> mac --agent <agentKey> --runner-url http://mac:8080 --allow-tools bash
+panda session targets bind <sessionRef> vps --agent <agentKey> --runner-url http://runner:8080 --allow-tools bash
 panda session targets list <sessionRef> --agent <agentKey>
 panda session targets detach <sessionRef> vps --agent <agentKey>
 ```
 
 Use `--allow-tools` to declare what the selected target can run. Named targets
-fail closed without an allowlist; the allowlist is checked again when `bash`,
-`read_file`, `glob_files`, or `grep_files` receives a `target` argument.
+fail closed without an allowlist; the allowlist is checked again when `bash`
+receives a `target` argument.
 
 ## Runtime context
 
@@ -128,9 +128,9 @@ panda subagents purge --expired --execute
 ## Custom profiles
 
 Built-in profiles are seeded by the runtime. Agent-scoped custom profiles are
-managed with the CLI or, from an agent session, the model-facing
-`upsert_subagent_profile` tool. The tool scopes writes to the current `agentKey`
-and returns profile metadata without echoing the full prompt.
+managed with the CLI or, from an agent session, `panda subagent profile upsert`.
+Agent-session profile commands scope writes to the current `agentKey` and return
+profile metadata without echoing the full prompt.
 
 CLI examples:
 
@@ -140,16 +140,15 @@ panda subagents profiles get workspace --agent clawd --json
 panda subagents profiles upsert code-review \
   --agent clawd \
   --description "Review local code changes" \
-  --tool-groups core,workspace_read \
+  --tool-groups core \
   --prompt-file ./code-review-profile.md \
   --json
 panda subagents profiles disable code-review --agent clawd
 ```
 
 Profiles store prompt, tool groups, model/thinking defaults, and enabled state.
-`workspace_read` and `execute` are mutually exclusive: use `workspace_read` for
-read-only wrappers, or `execute` for shell/background execution. `execute` can
-read workspace files through shell commands, so do not combine them.
+Workspace inspection uses standard shell commands through granted runtime tools.
+Add `execute` when the subagent needs shell/background execution.
 They do **not** store credentials, credential policies, environment ids, raw tool
 allowlists, skill allowlists, or per-spawn execution choices; pass those at spawn
 time.

@@ -140,11 +140,11 @@ describe("Control model call trace view model", () => {
             content: [
               {type: "toolCall", id: "call_failed", name: "bash", arguments: {command: "exit 1"}},
               {type: "toolCall", id: "call_missing", name: "http_json", arguments: {url: "https://example.test"}},
-              {type: "toolCall", id: "call_slow", name: "read_file", arguments: {path: "/tmp/file"}},
+              {type: "toolCall", id: "call_slow", name: "view_media", arguments: {path: "/tmp/file.png"}},
             ],
           },
           {role: "toolResult", toolCallId: "call_failed", toolName: "bash", content: "exit code 1", isError: true, durationMs: 20},
-          {role: "toolResult", toolCallId: "call_slow", toolName: "read_file", content: "ok", durationMs: 900},
+          {role: "toolResult", toolCallId: "call_slow", toolName: "view_media", content: "ok", durationMs: 900},
           {role: "toolResult", toolCallId: "call_orphan", toolName: "bash", content: "orphaned", durationMs: 15},
         ],
       },

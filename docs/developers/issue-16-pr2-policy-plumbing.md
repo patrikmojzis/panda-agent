@@ -29,7 +29,7 @@ Tool groups changed accordingly:
 - `core` may include raw `agent_skill`, but grants `load` only.
 - `skill_maintenance` grants only `agent_skill` with `load,set,patch,delete`.
 - `operate` still grants broad operational tools and full skill operations.
-- Built-in `skill_maintainer` uses `core + workspace_read + memory + skill_maintenance`, not broad `operate`.
+- Built-in `skill_maintainer` uses `core + memory + skill_maintenance`, not broad `operate`.
 
 ## Hidden durable subagent seam
 

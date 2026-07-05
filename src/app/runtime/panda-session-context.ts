@@ -4,7 +4,6 @@ import type {OutboundDeliveryInput, OutboundDeliveryRecord,} from "../../domain/
 import type {ChannelActionInput, ChannelActionRecord,} from "../../domain/channels/actions/types.js";
 import type {OutboundItem, RememberedRoute} from "../../domain/channels/types.js";
 import type {A2ASenderEnvironmentSnapshot} from "../../domain/threads/requests/types.js";
-import type {IdentityRecord} from "../../domain/identity/types.js";
 import type {ShellExecutionContext, ShellSession} from "../../integrations/shell/types.js";
 import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 
@@ -24,10 +23,6 @@ export interface DefaultAgentRouteMemory {
 
 export interface DefaultAgentOutboundQueue {
   enqueueDelivery(input: OutboundDeliveryInput): Promise<OutboundDeliveryRecord>;
-}
-
-export interface DefaultAgentIdentityDirectory {
-  getIdentityByHandle(handle: string): Promise<IdentityRecord>;
 }
 
 export interface DefaultAgentChannelActionQueue {
@@ -54,6 +49,16 @@ export interface DefaultAgentMessageAgentService {
 
 export type DefaultAgentShellSession = ShellSession;
 
+export interface DefaultAgentCurrentInputContext {
+  messageId?: string;
+  source: string;
+  channelId?: string;
+  externalMessageId?: string;
+  actorId?: string;
+  identityId?: string;
+  metadata?: JsonValue;
+}
+
 export interface DefaultAgentSessionContext extends ShellExecutionContext {
   cwd?: string;
   agentKey: string;
@@ -61,30 +66,25 @@ export interface DefaultAgentSessionContext extends ShellExecutionContext {
   sessionKind?: AgentSessionKind;
   threadId: string;
   runId?: string;
-  currentInput?: {
-    messageId?: string;
-    source: string;
-    channelId?: string;
-    externalMessageId?: string;
-    actorId?: string;
-    identityId?: string;
-    metadata?: JsonValue;
-  };
-  currentRouteInput?: {
-    messageId?: string;
-    source: string;
-    channelId?: string;
-    externalMessageId?: string;
-    actorId?: string;
-    identityId?: string;
-    metadata?: JsonValue;
-  };
+  currentInput?: DefaultAgentCurrentInputContext;
+  currentRouteInput?: DefaultAgentCurrentInputContext;
   routeMemory?: DefaultAgentRouteMemory;
-  identityDirectory?: DefaultAgentIdentityDirectory;
   outboundQueue?: DefaultAgentOutboundQueue;
   channelActionQueue?: DefaultAgentChannelActionQueue;
   messageAgent?: DefaultAgentMessageAgentService;
   subagent?: JsonValue;
   subagentDepth?: number;
   resolveExecutionTarget?: (target?: string) => Promise<ResolvedExecutionEnvironment>;
+  refreshCommandAccess?: (input: {
+    executionEnvironment: ResolvedExecutionEnvironment;
+    currentInput?: DefaultAgentCurrentInputContext;
+  }) => Promise<{
+    refreshed: boolean;
+    reason?: string;
+    commandAccess?: {
+      url?: string;
+      socketPath?: string;
+      token: string;
+    };
+  }>;
 }

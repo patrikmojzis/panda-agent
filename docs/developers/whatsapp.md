@@ -96,7 +96,7 @@ Storage lives in:
 
 ## Outbound
 
-Replies go through the existing universal `outbound` tool.
+Replies go through the WhatsApp provider command, `panda whatsapp send` / `whatsapp.send`.
 
 WhatsApp-specific behavior should stay in the adapter layer:
 

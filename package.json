@@ -29,6 +29,10 @@
       "types": "./dist/domain/agents/index.d.ts",
       "import": "./dist/domain/agents/index.js"
     },
+    "./domain/commands": {
+      "types": "./dist/domain/commands/index.d.ts",
+      "import": "./dist/domain/commands/index.js"
+    },
     "./domain/identity": {
       "types": "./dist/domain/identity/index.d.ts",
       "import": "./dist/domain/identity/index.js"
@@ -80,6 +84,8 @@
     "start": "node dist/app/cli.js",
     "architecture:import-law": "node scripts/import-law-report.mjs",
     "architecture:import-law:ratchet": "node scripts/import-law-report.mjs --ratchet",
+    "agent-command-shim:update": "tsx scripts/agent-command-shim/generate-routes.ts --update",
+    "agent-command-shim:check": "tsx scripts/agent-command-shim/generate-routes.ts --check",
     "ci:test": "pnpm test",
     "ci:build": "pnpm build",
     "ci:architecture": "pnpm architecture:import-law:ratchet",

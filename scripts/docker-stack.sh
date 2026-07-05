@@ -91,6 +91,35 @@ resolve_environment_host_root() {
   esac
 }
 
+resolve_command_socket_host_dir() {
+  local value expanded
+  value="${PANDA_COMMAND_SOCKET_HOST_DIR:-$HOME/.panda/run/command}"
+  expanded="$(expand_home "$(expand_home_variable "$value")")"
+  [[ "$expanded" != *'$'* ]] \
+    || die "PANDA_COMMAND_SOCKET_HOST_DIR must not contain shell variables other than HOME."
+  case "$expanded" in
+    /*)
+      printf '%s\n' "$expanded"
+      ;;
+    *)
+      die "PANDA_COMMAND_SOCKET_HOST_DIR must be an absolute path."
+      ;;
+  esac
+}
+
+resolve_command_transport() {
+  local value
+  value="$(printf '%s' "$(trim "${PANDA_COMMAND_TRANSPORT:-http}")" | tr '[:upper:]' '[:lower:]')"
+  case "$value" in
+    http|socket)
+      printf '%s\n' "$value"
+      ;;
+    *)
+      die "PANDA_COMMAND_TRANSPORT must be one of: http, socket."
+      ;;
+  esac
+}
+
 docker_socket_path_from_host() {
   local docker_host
   docker_host="$(trim "${PANDA_DOCKER_HOST:-unix:///var/run/docker.sock}")"
@@ -165,6 +194,8 @@ generated_dir="$repo_root/.generated"
 generated_compose="$generated_dir/docker-compose.remote-bash.external-db.runners.yml"
 generated_wiki_compose="$generated_dir/docker-compose.wiki.ssl.yml"
 generated_public_caddyfile="$generated_dir/Caddyfile.public-edge"
+command_socket_container_dir="/run/panda-command"
+command_socket_container_path="$command_socket_container_dir/command.sock"
 docker_bin="${PANDA_DOCKER_BIN:-docker}"
 wiki_local_script="${PANDA_WIKI_LOCAL_SCRIPT:-$repo_root/scripts/wiki-local.sh}"
 wait_timeout_sec="${PANDA_STACK_WAIT_TIMEOUT_SEC:-120}"
@@ -184,6 +215,13 @@ load_env_file "$env_file"
 
 normalized_environment_host_root="$(resolve_environment_host_root)" || exit "$?"
 export PANDA_ENVIRONMENTS_HOST_ROOT="$normalized_environment_host_root"
+command_transport="$(resolve_command_transport)" || exit "$?"
+export PANDA_COMMAND_TRANSPORT="$command_transport"
+command_socket_host_dir=""
+if [[ "$command_transport" == "socket" ]]; then
+  command_socket_host_dir="$(resolve_command_socket_host_dir)" || exit "$?"
+  export PANDA_COMMAND_SOCKET_HOST_DIR="$command_socket_host_dir"
+fi
 
 declare -a normalized_agents=()
 declare -a panda_trace_services=()
@@ -931,6 +969,9 @@ ensure_host_dirs() {
   environments_root="$(expand_home "${PANDA_ENVIRONMENTS_HOST_ROOT:-$HOME/.panda/environments}")"
 
   mkdir -p "$core_root" "$shared_root" "$browser_root" "$environments_root"
+  if [[ "$command_transport" == "socket" ]]; then
+    mkdir -p "$command_socket_host_dir"
+  fi
   if ! agents_declared; then
     return
   fi
@@ -951,7 +992,7 @@ render_generated_compose() {
   if (( enable_disposable_environments )); then
     workspace_image_default="$(workspace_default_image)"
   fi
-  if ! agents_declared && (( ! enable_apps_edge && ! enable_gateway_edge && ! enable_disposable_environments && ! enable_control && ! enable_trace_collector )); then
+  if ! agents_declared && (( ! enable_apps_edge && ! enable_gateway_edge && ! enable_disposable_environments && ! enable_control && ! enable_trace_collector )) && [[ "$command_transport" != "socket" ]]; then
     cat > "$generated_compose" <<'EOF'
 services: {}
 EOF
@@ -960,12 +1001,12 @@ EOF
 
   {
     printf 'services:\n'
-    if (( enable_apps_edge || enable_disposable_environments || enable_control )); then
+    if (( enable_apps_edge || enable_disposable_environments || enable_control )) || [[ "$command_transport" == "socket" ]]; then
       cat <<EOF
   panda-core:
 EOF
       render_trace_labels "panda-core" "    "
-      if (( enable_apps_edge || enable_disposable_environments || enable_control )); then
+      if (( enable_apps_edge || enable_disposable_environments || enable_control )) || [[ "$command_transport" == "socket" ]]; then
         cat <<EOF
     environment:
 EOF
@@ -991,6 +1032,20 @@ EOF
       PANDA_ENVIRONMENTS_ROOT: \${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}
       PANDA_CORE_ENVIRONMENTS_ROOT: \${PANDA_CORE_ENVIRONMENTS_ROOT:-\${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}}
       PANDA_RUNNER_ENVIRONMENTS_ROOT: \${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}
+EOF
+      fi
+      if [[ "$command_transport" == "socket" ]]; then
+        cat <<EOF
+      PANDA_COMMAND_SERVER_ENABLED: "true"
+      PANDA_COMMAND_SERVER_SOCKET_PATH: $command_socket_container_path
+      PANDA_COMMAND_SERVER_URL: ""
+      PANDA_COMMAND_SOCKET_MOUNTED_RUNNERS: "true"
+EOF
+      fi
+      if [[ "$command_transport" == "socket" ]]; then
+        cat <<EOF
+    volumes:
+      - "$command_socket_host_dir:$command_socket_container_dir"
 EOF
       fi
       if (( enable_control )); then
@@ -1061,6 +1116,7 @@ EOF
       PANDA_RUNNER_ENVIRONMENTS_ROOT: \${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}
       PANDA_DISPOSABLE_CONTAINER_PREFIX: \${PANDA_DISPOSABLE_CONTAINER_PREFIX:-panda-env}
       PANDA_DISPOSABLE_CREATE_TIMEOUT_MS: \${PANDA_DISPOSABLE_CREATE_TIMEOUT_MS:-300000}
+      PANDA_COMMAND_SOCKET_HOST_DIR: \${PANDA_COMMAND_SOCKET_HOST_DIR:-}
       BASH_SERVER_SHARED_SECRET: \${BASH_SERVER_SHARED_SECRET:-}
       TZ: \${TZ:-UTC}
     volumes:
@@ -1072,6 +1128,13 @@ EOF
       fi
       cat <<EOF
       - "$PANDA_ENVIRONMENTS_HOST_ROOT:\${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}"
+EOF
+      if [[ "$command_transport" == "socket" ]]; then
+        cat <<EOF
+      - "$command_socket_host_dir:$command_socket_host_dir:ro"
+EOF
+      fi
+      cat <<EOF
     networks:
       - execution_manager_net
       - disposable_runner_net
@@ -1209,6 +1272,7 @@ EOF
         cat <<EOF
   panda-runner-$agent_key:
     image: panda-runner:latest
+    pull_policy: never
 EOF
         render_trace_labels "panda-runners" "    "
         cat <<EOF
@@ -1224,6 +1288,13 @@ EOF
       - \${HOME}/.panda/agents/$agent_key:/root/.panda/agents/$agent_key
       - \${SHARED_ROOT:-\${HOME}/.panda/shared}:/workspace/shared
       - "$PANDA_ENVIRONMENTS_HOST_ROOT/$agent_key:\${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}"
+EOF
+        if [[ "$command_transport" == "socket" ]]; then
+          cat <<EOF
+      - "$command_socket_host_dir:$command_socket_container_dir:ro"
+EOF
+        fi
+        cat <<EOF
     networks:
       - runner_net
     healthcheck:

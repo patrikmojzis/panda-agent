@@ -7,8 +7,10 @@ import type {
   AgentAppActionInputSchema,
   AgentAppActionMode,
   AgentAppActionResult,
+  AgentAppActionExecutionOptions,
   AgentAppInputField,
   AgentAppScalarInputField,
+  AgentAppViewExecutionOptions,
   AgentAppViewResult,
 } from "../../domain/apps/types.js";
 import {readAgentAppRequiredInputKeys} from "../../domain/apps/types.js";
@@ -23,21 +25,6 @@ import {
   readActionStatements,
   statementReturnsRows,
 } from "./sqlite-runtime.js";
-
-export interface AgentAppViewExecutionOptions {
-  identityId?: string;
-  params?: Record<string, unknown>;
-  pageSize?: number;
-  offset?: number;
-  sessionId?: string;
-}
-
-export interface AgentAppActionExecutionOptions {
-  identityId?: string;
-  input?: Record<string, unknown>;
-  sessionId?: string;
-  wake?: ((message: string) => Promise<void>) | undefined;
-}
 
 function validateRequiredAgentAppInputKeys(
   definition: AgentAppActionDefinition,

@@ -1,8 +1,9 @@
 import {describe, expect, it} from "vitest";
 
 import {createThreadDefinition} from "../src/app/runtime/create-runtime.js";
+import type {CommandDescriptor} from "../src/domain/commands/index.js";
 import type {ResolvedExecutionEnvironment} from "../src/domain/execution-environments/types.js";
-import {buildSubagentSessionMetadata} from "../src/domain/subagents/index.js";
+import {buildSubagentSessionMetadata, readSubagentSessionMetadata} from "../src/domain/subagents/index.js";
 import type {ThreadRecord} from "../src/domain/threads/runtime/types.js";
 import {DEFAULT_AGENT_INSTRUCTIONS} from "../src/prompts/runtime/default-agent.js";
 import {gatherContexts, Tool, z} from "../src/index.js";
@@ -20,6 +21,17 @@ class NamedTool extends Tool<typeof NamedTool.schema> {
     return null;
   }
 }
+
+const customCommandDescriptor: CommandDescriptor = {
+  name: "custom.inspect",
+  summary: "Inspect a custom extension.",
+  description: "Inspect a custom extension.",
+  usage: "panda custom inspect <target>",
+  inputModes: ["flags", "json"],
+  outputModes: ["json"],
+  arguments: [],
+  examples: [],
+};
 
 function createThread(overrides: Partial<ThreadRecord> = {}): ThreadRecord {
   const now = Date.now();
@@ -44,7 +56,7 @@ function createSubagentMetadata(overrides: Partial<Parameters<typeof buildSubage
       source: "builtin",
       description: "Workspace reader.",
       prompt: "PROFILE PROMPT ONLY",
-      toolGroups: ["core", "workspace_read"],
+      toolGroups: ["core"],
       thinking: "medium",
       transcriptMode: "none",
     },
@@ -56,14 +68,16 @@ function createSubagentMetadata(overrides: Partial<Parameters<typeof buildSubage
       skillPolicy: {mode: "all_agent"},
       toolPolicy: {
         allowedTools: [
-          "current_datetime",
-          "message_agent",
-          "agent_skill",
-          "read_file",
           "bash",
-          "postgres_readonly_query",
-          "outbound",
-          "wiki",
+          "background_job_status",
+          "background_job_wait",
+          "background_job_cancel",
+          "a2a.send",
+          "a2a.inspect",
+          "a2a.history",
+          "skill.load",
+          "postgres.readonly.query",
+          "wiki.read",
           ["worker", "spawn"].join("_"),
           "spawn_subagent",
         ],
@@ -88,7 +102,7 @@ function createEnvironment(
     credentialPolicy: {mode: "allowlist", envKeys: []},
     skillPolicy: {mode: "all_agent"},
     toolPolicy: {
-      allowedTools: ["current_datetime", "message_agent", "agent_skill", "read_file"],
+      allowedTools: ["bash", "a2a.send", "a2a.inspect", "a2a.history", "skill.load"],
       agentSkill: {allowedOperations: ["load"]},
     },
     source: "fallback",
@@ -97,6 +111,31 @@ function createEnvironment(
 }
 
 describe("subagent thread definitions", () => {
+  it("uses supplied command descriptors in the thread command catalog", async () => {
+    const definition = createThreadDefinition({
+      thread: createThread({
+        id: "thread-main",
+        sessionId: "session-main",
+      }),
+      session: {
+        id: "session-main",
+        agentKey: "panda",
+        metadata: {},
+      },
+      fallbackContext: {
+        cwd: "/tmp/panda",
+      },
+      commandDescriptors: [customCommandDescriptor],
+      llmContextSections: ["command_catalog"],
+      tools: [],
+    });
+
+    const dump = await gatherContexts(definition.llmContexts ?? []);
+
+    expect(dump).toContain("`panda custom inspect <target>`: Inspect a custom extension.");
+    expect(dump).not.toContain("`panda watch list");
+  });
+
   it("uses snapshotted profile prompt and subagent runtime context", async () => {
     const definition = createThreadDefinition({
       thread: createThread(),
@@ -143,7 +182,7 @@ describe("subagent thread definitions", () => {
     expect(dump).toContain("task: Inspect files.");
     expect(dump).toContain("context: Read-only please.");
     expect(dump).toContain("parentSessionId: parent-session");
-    expect(dump).toContain('message_agent({ sessionId: "parent-session" })');
+    expect(dump).toContain('panda a2a send --to-session "parent-session" --text <message>');
     expect(dump).toContain("calendar: Use for calendar work.");
     expect(dump).not.toContain("**Subagents:**");
     expect(dump).not.toContain("**Session Prompts:**");
@@ -164,14 +203,16 @@ describe("subagent thread definitions", () => {
       executionEnvironment: createEnvironment({
         toolPolicy: {
           allowedTools: [
-            "current_datetime",
-            "message_agent",
-            "agent_skill",
-            "read_file",
             "bash",
-            "postgres_readonly_query",
-            "outbound",
-            "wiki",
+            "background_job_status",
+            "background_job_wait",
+            "background_job_cancel",
+            "a2a.send",
+            "a2a.inspect",
+            "a2a.history",
+            "skill.load",
+            "postgres.readonly.query",
+            "wiki.read",
             ["worker", "spawn"].join("_"),
             "spawn_subagent",
           ],
@@ -181,29 +222,32 @@ describe("subagent thread definitions", () => {
         },
       }),
       tools: [
-        new NamedTool("current_datetime"),
+        new NamedTool("bash"),
+        new NamedTool("background_job_status"),
+        new NamedTool("background_job_wait"),
+        new NamedTool("background_job_cancel"),
         new NamedTool("message_agent"),
         new NamedTool("agent_skill"),
-        new NamedTool("read_file"),
-        new NamedTool("bash"),
         new NamedTool("postgres_readonly_query"),
         new NamedTool("outbound"),
         new NamedTool("wiki"),
+        new NamedTool("skill.load"),
+        new NamedTool("postgres.readonly.query"),
+        new NamedTool("wiki.read"),
         new NamedTool(["worker", "spawn"].join("_")),
         new NamedTool("spawn_subagent"),
-        new NamedTool("environment_create"),
+        new NamedTool("environment.create"),
       ],
     });
 
     expect(definition.agent.tools.map((tool) => tool.name)).toEqual([
-      "current_datetime",
-      "message_agent",
-      "agent_skill",
-      "read_file",
       "bash",
-      "postgres_readonly_query",
-      "outbound",
-      "wiki",
+      "background_job_status",
+      "background_job_wait",
+      "background_job_cancel",
+      "skill.load",
+      "postgres.readonly.query",
+      "wiki.read",
     ]);
   });
 
@@ -221,17 +265,44 @@ describe("subagent thread definitions", () => {
       },
       executionEnvironment: createEnvironment({
         toolPolicy: {
-          allowedTools: ["bash", "postgres_readonly_query"],
+          allowedTools: ["bash", "postgres.readonly.query"],
           bash: {allowed: false},
         },
       }),
       tools: [
         new NamedTool("bash"),
-        new NamedTool("postgres_readonly_query"),
+        new NamedTool("postgres.readonly.query"),
       ],
     });
 
     expect(definition.agent.tools.map((tool) => tool.name)).toEqual([]);
+  });
+
+  it("strips legacy workspace_read groups from persisted subagent metadata", () => {
+    const metadata = readSubagentSessionMetadata({
+      subagent: {
+        version: 1,
+        role: "workspace",
+        task: "Inspect files.",
+        parentSessionId: "parent-session",
+        execution: "agent_workspace",
+        profile: {
+          slug: "workspace",
+          source: "builtin",
+          description: "Workspace reader.",
+          prompt: "PROFILE PROMPT ONLY",
+          toolGroups: ["core", "workspace_read"],
+          transcriptMode: "none",
+        },
+        resolved: {
+          credentialPolicy: {mode: "allowlist", envKeys: []},
+          skillPolicy: {mode: "all_agent"},
+          toolPolicy: {},
+        },
+      },
+    });
+
+    expect(metadata?.profile.toolGroups).toEqual(["core"]);
   });
 
   it("fails closed for malformed subagent metadata", () => {

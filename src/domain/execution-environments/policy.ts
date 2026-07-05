@@ -126,7 +126,7 @@ export function isExecutionToolAllowedByPolicy(
   if (normalizedToolName === "bash" && policy?.bash?.allowed === false) {
     return false;
   }
-  if (normalizedToolName === "postgres_readonly_query" && policy?.postgresReadonly?.allowed === false) {
+  if (normalizedToolName === "postgres.readonly.query" && policy?.postgresReadonly?.allowed === false) {
     return false;
   }
 

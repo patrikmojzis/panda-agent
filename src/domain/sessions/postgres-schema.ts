@@ -1,4 +1,4 @@
-import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier, quoteQualifiedIdentifier} from "../../lib/postgres-relations.js";
+import {CREATE_RUNTIME_SCHEMA_SQL, postgresRelationExists, quoteIdentifier, quoteQualifiedIdentifier} from "../../lib/postgres-relations.js";
 
 import {buildAgentTableNames} from "../agents/postgres-shared.js";
 import {buildIdentityTableNames} from "../identity/postgres-shared.js";
@@ -11,31 +11,11 @@ import {
   SESSION_HEARTBEAT_PROMPT_SLUG,
 } from "./types.js";
 
-async function relationExists(pool: PgQueryable, schemaName: string, tableName: string): Promise<boolean> {
-  const result = await pool.query(`
-    SELECT 1
-    FROM information_schema.tables
-    WHERE table_schema = $1
-      AND table_name = $2
-    LIMIT 1
-  `, [schemaName, tableName]);
-  if (result.rows.length > 0) {
-    return true;
-  }
-
-  try {
-    await pool.query(`SELECT 1 FROM ${quoteQualifiedIdentifier(schemaName, tableName)} LIMIT 0`);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function migrateLegacyPromptStorage(pool: PgQueryable): Promise<void> {
   const tables = buildSessionTableNames();
   const agentTables = buildAgentTableNames();
-  const legacyAgentPromptsExist = await relationExists(pool, "runtime", "agent_prompts");
-  const legacyReadonlyAgentPromptsExist = await relationExists(pool, "session", "agent_prompts");
+  const legacyAgentPromptsExist = await postgresRelationExists(pool, "runtime", "agent_prompts");
+  const legacyReadonlyAgentPromptsExist = await postgresRelationExists(pool, "session", "agent_prompts");
 
   if (legacyAgentPromptsExist) {
     await pool.query(`

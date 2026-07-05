@@ -522,10 +522,10 @@ export class OpenAIImageClient {
       return await this.generateViaImagesApi(request, auth.token, signal);
     } catch (error) {
       if (request.signal?.aborted) {
-        throw new Error("image_generate was aborted.");
+        throw new Error("image.generate was aborted.");
       }
       if (timeoutSignal.aborted) {
-        throw new Error(`image_generate timed out after ${this.timeoutMs}ms.`);
+        throw new Error(`image.generate timed out after ${this.timeoutMs}ms.`);
       }
       throw error;
     }

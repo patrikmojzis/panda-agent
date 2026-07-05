@@ -164,6 +164,157 @@ describe("A2ASessionBindingRepo", () => {
     })).resolves.toBe(1);
   });
 
+  it("inspects and lists A2A deliveries scoped to the current session", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const {agentStore, sessionStore, threadStore} = await createRuntimeStores(pool);
+    await agentStore.bootstrapAgent({
+      agentKey: "koala",
+      displayName: "Koala",
+    });
+    await agentStore.bootstrapAgent({
+      agentKey: "otter",
+      displayName: "Otter",
+    });
+
+    await sessionStore.createSession({
+      id: "session-a",
+      agentKey: "panda",
+      kind: "main",
+      currentThreadId: "thread-a",
+    });
+    await sessionStore.createSession({
+      id: "session-b",
+      agentKey: "koala",
+      kind: "main",
+      currentThreadId: "thread-b",
+    });
+    await sessionStore.createSession({
+      id: "session-c",
+      agentKey: "otter",
+      kind: "main",
+      currentThreadId: "thread-c",
+    });
+    await threadStore.createThread({
+      id: "thread-a",
+      sessionId: "session-a",
+    });
+    await threadStore.createThread({
+      id: "thread-b",
+      sessionId: "session-b",
+    });
+    await threadStore.createThread({
+      id: "thread-c",
+      sessionId: "session-c",
+    });
+
+    const bindings = new A2ASessionBindingRepo({pool});
+    const deliveries = new PostgresOutboundDeliveryStore({pool});
+    await bindings.ensureSchema();
+    await deliveries.ensureSchema();
+
+    const outbound = await deliveries.enqueueDelivery({
+      threadId: "thread-a",
+      channel: "a2a",
+      target: {
+        source: "a2a",
+        connectorKey: "local",
+        externalConversationId: "session-b",
+        externalActorId: "koala",
+      },
+      items: [
+        {type: "text", text: "hello from panda"},
+        {type: "file", path: "/workspace/report.md", filename: "report.md"},
+      ],
+      metadata: {
+        a2a: {
+          messageId: "a2a:outbound",
+          fromAgentKey: "panda",
+          fromSessionId: "session-a",
+          fromThreadId: "thread-a",
+          fromRunId: "run-a",
+          toAgentKey: "koala",
+          toSessionId: "session-b",
+          sentAt: Date.parse("2026-06-24T12:00:00.000Z"),
+        },
+      },
+    });
+    await deliveries.markDeliverySent({
+      id: outbound.id,
+      sent: [
+        {type: "text", externalMessageId: "a2a:outbound"},
+        {type: "file", externalMessageId: "a2a:outbound"},
+      ],
+    });
+    await deliveries.enqueueDelivery({
+      threadId: "thread-c",
+      channel: "a2a",
+      target: {
+        source: "a2a",
+        connectorKey: "local",
+        externalConversationId: "session-b",
+        externalActorId: "koala",
+      },
+      items: [{type: "text", text: "not visible"}],
+      metadata: {
+        a2a: {
+          messageId: "a2a:hidden",
+          fromAgentKey: "otter",
+          fromSessionId: "session-c",
+          fromThreadId: "thread-c",
+          toAgentKey: "koala",
+          toSessionId: "session-b",
+          sentAt: Date.parse("2026-06-24T12:01:00.000Z"),
+        },
+      },
+    });
+
+    await expect(bindings.getA2ADelivery({
+      sessionId: "session-a",
+      deliveryId: outbound.id,
+    })).resolves.toMatchObject({
+      deliveryId: outbound.id,
+      messageId: "a2a:outbound",
+      direction: "outbound",
+      status: "sent",
+      fromSessionId: "session-a",
+      toSessionId: "session-b",
+      itemCount: 2,
+      items: [
+        {type: "text", textPreview: "hello from panda"},
+        {type: "file", path: "/workspace/report.md", filename: "report.md"},
+      ],
+      sentItems: [
+        {type: "text", externalMessageId: "a2a:outbound"},
+        {type: "file", externalMessageId: "a2a:outbound"},
+      ],
+    });
+    await expect(bindings.getA2ADelivery({
+      sessionId: "session-c",
+      deliveryId: outbound.id,
+    })).resolves.toBeNull();
+    await expect(bindings.listA2ADeliveries({
+      sessionId: "session-a",
+      peerSessionId: "session-b",
+      direction: "outbound",
+      limit: 10,
+    })).resolves.toMatchObject([
+      {
+        deliveryId: outbound.id,
+        direction: "outbound",
+      },
+    ]);
+  });
+
   it("rejects malformed persisted session binding rows", async () => {
     const now = new Date();
     const bindings = new A2ASessionBindingRepo({
@@ -389,7 +540,7 @@ describe("A2AMessagingService", () => {
       senderThreadId: "thread-a",
       sessionId: "session-a",
       items: [{type: "text", text: "self"}],
-    })).rejects.toThrow("message_agent does not allow sending to the same session.");
+    })).rejects.toThrow("a2a.send does not allow sending to the same session.");
 
     getSession.mockResolvedValueOnce({
       id: "session-b",
@@ -514,6 +665,7 @@ describe("createA2AOutboundAdapter", () => {
         {type: "text", text: "hello"},
         {type: "image", path: imagePath, caption: "photo"},
         {type: "file", path: filePath, filename: "report.txt", mimeType: "text/plain", caption: "report"},
+        {type: "file", path: imagePath, filename: "photo-copy.png", caption: "photo file"},
       ],
       metadata: {
         a2a: {
@@ -567,10 +719,22 @@ describe("createA2AOutboundAdapter", () => {
         mimeType: "text/plain",
       },
     });
+    expect(payload.items[3]).toMatchObject({
+      type: "file",
+      caption: "photo file",
+      filename: "photo-copy.png",
+      media: {
+        source: "a2a",
+        connectorKey: "local",
+        mimeType: "image/png",
+      },
+    });
     expect(payload.items[1].media.localPath.startsWith(receiverDir)).toBe(true);
     expect(payload.items[2].media.localPath.startsWith(receiverDir)).toBe(true);
+    expect(payload.items[3].media.localPath.startsWith(receiverDir)).toBe(true);
     await expect(readFile(payload.items[1].media.localPath)).resolves.toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     await expect(readFile(payload.items[2].media.localPath, "utf8")).resolves.toBe("hi from panda");
+    await expect(readFile(payload.items[3].media.localPath)).resolves.toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     expect(result).toEqual({
       ok: true,
       channel: "a2a",
@@ -583,6 +747,7 @@ describe("createA2AOutboundAdapter", () => {
       sent: [
         {type: "text", externalMessageId: "a2a:123"},
         {type: "image", externalMessageId: "a2a:123"},
+        {type: "file", externalMessageId: "a2a:123"},
         {type: "file", externalMessageId: "a2a:123"},
       ],
     });

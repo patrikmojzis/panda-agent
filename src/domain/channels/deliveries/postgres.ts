@@ -14,6 +14,7 @@ import {
     buildOutboundDeliveryTableNames,
     type OutboundDeliveryTableNames,
 } from "./postgres-shared.js";
+import {buildThreadRuntimeTableNames, type ThreadRuntimeTableNames} from "../../threads/runtime/postgres-shared.js";
 import {ensurePostgresOutboundDeliverySchema} from "./postgres-schema.js";
 import type {
     CompleteDeliveryInput,
@@ -23,6 +24,7 @@ import type {
     OutboundDeliveryInput,
     OutboundDeliveryRecord,
     OutboundDeliveryStatus,
+    OutboundDeliveryTargetHistoryFilter,
 } from "./types.js";
 
 export interface PostgresOutboundDeliveryStoreOptions {
@@ -246,12 +248,14 @@ export class PostgresOutboundDeliveryStore {
   private readonly pool: PgPoolLike<PgListenClient>;
   private readonly notificationPool: PgPoolLike<PgListenClient>;
   private readonly tables: OutboundDeliveryTableNames;
+  private readonly threadTables: ThreadRuntimeTableNames;
   private readonly notificationChannel: string;
 
   constructor(options: PostgresOutboundDeliveryStoreOptions) {
     this.pool = options.pool;
     this.notificationPool = options.notificationPool ?? options.pool;
     this.tables = buildOutboundDeliveryTableNames();
+    this.threadTables = buildThreadRuntimeTableNames();
     this.notificationChannel = buildDeliveryNotificationChannel();
   }
 
@@ -331,6 +335,39 @@ export class PostgresOutboundDeliveryStore {
     }
 
     return parseOutboundDeliveryRow(row as Record<string, unknown>);
+  }
+
+  async listDeliveriesForTarget(
+    filter: OutboundDeliveryTargetHistoryFilter,
+  ): Promise<readonly OutboundDeliveryRecord[]> {
+    const limit = Math.max(0, Math.min(filter.limit ?? 50, 200));
+    if (limit === 0) {
+      return [];
+    }
+
+    const result = await this.pool.query(
+      `
+        SELECT delivery.*
+        FROM ${this.tables.outboundDeliveries} AS delivery
+        INNER JOIN ${this.threadTables.threads} AS thread
+          ON thread.id = delivery.thread_id
+        WHERE thread.session_id = $1
+          AND delivery.channel = $2
+          AND delivery.connector_key = $3
+          AND delivery.external_conversation_id = $4
+        ORDER BY delivery.created_at DESC, delivery.id DESC
+        LIMIT $5
+      `,
+      [
+        requireNonEmptyString(filter.sessionId, "Outbound delivery session id must not be empty."),
+        requireNonEmptyString(filter.channel, "Outbound delivery channel must not be empty."),
+        requireNonEmptyString(filter.connectorKey, "Outbound delivery connector key must not be empty."),
+        requireNonEmptyString(filter.externalConversationId, "Outbound delivery conversation id must not be empty."),
+        limit,
+      ],
+    );
+
+    return result.rows.map((row) => parseOutboundDeliveryRow(row as Record<string, unknown>));
   }
 
   async claimNextPendingDelivery(lookup: DeliveryWorkerLookup): Promise<OutboundDeliveryRecord | null> {

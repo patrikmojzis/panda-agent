@@ -1,4 +1,15 @@
 export {
+  createScheduleCancelCommand,
+  createScheduleCreateCommand,
+  createScheduleUpdateCommand,
+  SCHEDULE_CANCEL_COMMAND_NAME,
+  SCHEDULE_CREATE_COMMAND_NAME,
+  SCHEDULE_UPDATE_COMMAND_NAME,
+  scheduleCancelCommandDescriptor,
+  scheduleCreateCommandDescriptor,
+  scheduleUpdateCommandDescriptor,
+} from "./commands.js";
+export {
   computeClaimNextFireAt,
   computeInitialNextFireAt,
   computeRecurringNextFireAt,
@@ -26,6 +37,7 @@ export {
   type FailScheduledTaskRunInput,
   type ListActiveScheduledTasksInput,
   type ListDueScheduledTasksInput,
+  type ListScheduledTaskRunsInput,
   type ScheduledTaskRecord,
   type ScheduledTaskRecurringSchedule,
   type ScheduledTaskRunRecord,

@@ -328,6 +328,82 @@ describe("BashTool", () => {
     }
   });
 
+  it("refreshes command access before executing bash in a disposable environment", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-command-refresh-"));
+    try {
+      const refreshCalls: Array<Parameters<NonNullable<DefaultAgentSessionContext["refreshCommandAccess"]>>[0]> = [];
+      const executor: BashExecutor = {
+        async execute(options) {
+          expect(refreshCalls).toHaveLength(1);
+          expect(options.env).toMatchObject({
+            PANDA_COMMAND_URL: "http://panda-core:8096",
+            PANDA_COMMAND_TOKEN: "fresh-token",
+          });
+          return successfulBashResult({
+            finalCwd: options.cwd,
+            stdout: "ok",
+          });
+        },
+      };
+      const tool = new BashTool({executor});
+      const context: DefaultAgentSessionContext = {
+        agentKey: "panda",
+        sessionId: "session-refresh",
+        threadId: "thread-refresh",
+        cwd: workspace,
+        currentInput: {
+          messageId: "message-current",
+          source: "tui",
+          identityId: "identity-current",
+        },
+        executionEnvironment: {
+          id: "env-disposable",
+          agentKey: "panda",
+          kind: "disposable_container",
+          state: "ready",
+          executionMode: "remote",
+          runnerUrl: "http://runner:8080",
+          initialCwd: "/workspace",
+          credentialPolicy: {mode: "none"},
+          skillPolicy: {mode: "none"},
+          toolPolicy: {},
+          source: "binding",
+        },
+        refreshCommandAccess: async (input) => {
+          refreshCalls.push(input);
+          return {
+            refreshed: true,
+            commandAccess: {
+              url: "http://panda-core:8096",
+              token: "fresh-token",
+            },
+          };
+        },
+      };
+
+      await tool.run({
+        command: "pwd",
+        env: {
+          PANDA_COMMAND_URL: "http://stale.invalid",
+          PANDA_COMMAND_TOKEN: "stale-token",
+        },
+      }, createRunContext(context));
+
+      expect(refreshCalls).toEqual([{
+        executionEnvironment: expect.objectContaining({
+          id: "env-disposable",
+        }),
+        currentInput: {
+          messageId: "message-current",
+          source: "tui",
+          identityId: "identity-current",
+        },
+      }]);
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
   it("denies bash when the selected target has no allowlist", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-target-denied-"));
     try {

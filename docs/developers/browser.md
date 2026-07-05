@@ -155,7 +155,7 @@ The runner deployment still needs the normal Chromium hardening:
 
 ## Safety Model
 
-The browser reuses the shared guarded-target checks from `web_fetch`.
+The browser reuses the shared guarded-target checks from `web.fetch`.
 
 It still blocks:
 

@@ -4,7 +4,7 @@ import type {Tool} from "../../kernel/agent/tool.js";
 import {resolveStoredContext} from "../../app/runtime/create-runtime.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {SessionRuntimeConfigRecord} from "../../domain/sessions/types.js";
-import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord,} from "../../domain/threads/runtime/types.js";
+import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord, ThreadToolJobRecord,} from "../../domain/threads/runtime/types.js";
 import {resolveDefaultAgentModelSelector} from "../../panda/defaults.js";
 import {type EntryRole, type RunPhase, type TranscriptEntry,} from "../tui/chat-shared.js";
 import {renderTranscriptEntries} from "../tui/transcript.js";
@@ -150,22 +150,28 @@ export function observeLatestStoredRun(input: {
 }
 
 export async function loadStoredThreadSnapshot(input: {
-  store: Pick<ThreadRuntimeStore, "getThread" | "loadTranscript" | "listRuns">;
+  store: Pick<ThreadRuntimeStore, "getThread" | "loadTranscript" | "listRuns"> & Partial<Pick<ThreadRuntimeStore, "listToolJobs">>;
   threadId: string;
+  includeToolJobs?: boolean;
 }): Promise<{
   thread: ThreadRecord;
   transcript: readonly ThreadMessageRecord[];
   runs: readonly ThreadRunRecord[];
+  toolJobs: readonly ThreadToolJobRecord[];
 }> {
-  const [thread, transcript, runs] = await Promise.all([
+  const [thread, transcript, runs, toolJobs] = await Promise.all([
     input.store.getThread(input.threadId),
     input.store.loadTranscript(input.threadId),
     input.store.listRuns(input.threadId),
+    input.includeToolJobs && input.store.listToolJobs
+      ? input.store.listToolJobs(input.threadId)
+      : Promise.resolve([]),
   ]);
 
   return {
     thread,
     transcript,
     runs,
+    toolJobs,
   };
 }

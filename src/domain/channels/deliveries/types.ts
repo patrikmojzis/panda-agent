@@ -33,6 +33,14 @@ export interface OutboundDeliveryRecord extends OutboundDeliveryInput {
   updatedAt: number;
 }
 
+export interface OutboundDeliveryTargetHistoryFilter {
+  sessionId: string;
+  channel: string;
+  connectorKey: string;
+  externalConversationId: string;
+  limit?: number;
+}
+
 export interface CompleteDeliveryInput {
   id: string;
   sent: readonly OutboundSentItem[];

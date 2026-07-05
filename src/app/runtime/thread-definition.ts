@@ -2,6 +2,7 @@ import type {LlmContext} from "../../kernel/agent/llm-context.js";
 import {Agent} from "../../kernel/agent/agent.js";
 import {mergeInferenceProjection} from "../../kernel/transcript/inference-projection.js";
 import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
+import type {CommandDescriptor} from "../../domain/commands/types.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 import {isExecutionToolAllowedByPolicy} from "../../domain/execution-environments/policy.js";
@@ -9,7 +10,14 @@ import type {SessionStore} from "../../domain/sessions/store.js";
 import type {AgentSessionKind, SessionPromptRecord, SessionRecord, SessionRuntimeConfigRecord} from "../../domain/sessions/types.js";
 import type {InferenceProjection, ResolvedThreadDefinition, ThreadRecord,} from "../../domain/threads/runtime/types.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
-import {buildDefaultAgentLlmContexts, type AgentProfileStore, type DefaultAgentLlmContextSection,} from "../../panda/contexts/builder.js";
+import {
+  buildDefaultAgentLlmContexts,
+  type AgentProfileStore,
+  type DefaultAgentLlmContextSection,
+  type PairedIdentitiesAgentStore,
+  type PairedIdentitiesIdentityStore,
+  type PairedIdentitiesRouteStore,
+} from "../../panda/contexts/builder.js";
 import {buildDefaultAgentToolsetsFromRegistry, createDefaultAgentToolRegistry} from "../../panda/definition.js";
 import {DEFAULT_AGENT_INSTRUCTIONS} from "../../prompts/runtime/default-agent.js";
 import {SubagentRuntimeContext} from "../../panda/contexts/subagent-runtime-context.js";
@@ -17,7 +25,6 @@ import type {SubagentProfileStore} from "../../domain/subagents/store.js";
 import type {DefaultAgentSessionContext} from "./panda-session-context.js";
 import type {BashToolOptions} from "../../panda/tools/bash-tool.js";
 import type {BrowserToolOptions} from "../../panda/tools/browser-tool.js";
-import type {ImageGenerateToolOptions} from "../../panda/tools/image-generate-tool.js";
 import {resolveRemoteInitialCwd} from "../../integrations/shell/bash-executor.js";
 import {mapHostAgentPathToRunner} from "../../integrations/shell/path-mapping.js";
 import type {Tool} from "../../kernel/agent/tool.js";
@@ -25,11 +32,12 @@ import type {WikiBindingService} from "../../domain/wiki/service.js";
 import {resolveSessionPromptCacheKey, resolveThreadPromptCacheKey} from "../../domain/threads/runtime/prompt-cache-key.js";
 import {readSubagentSessionMetadata, type SubagentSessionMetadata} from "../../domain/subagents/session-metadata.js";
 
-const POSTGRES_READONLY_TOOL_NAME = "postgres_readonly_query";
+const POSTGRES_READONLY_COMMAND_NAME = "postgres.readonly.query";
 const LEGACY_WORKER_SPAWN_TOOL_NAME = ["worker", "spawn"].join("_");
 const SUBAGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = [
   "environment",
   "bash_targets",
+  "command_catalog",
   "background_jobs",
   "skills",
   "todo_context",
@@ -51,8 +59,10 @@ export interface CreateThreadDefinitionOptions {
   thread: ThreadRecord;
   session: Pick<SessionRecord, "id" | "agentKey" | "metadata"> & {kind?: AgentSessionKind};
   fallbackContext: Pick<DefaultAgentSessionContext, "cwd">;
-  agentStore?: AgentProfileStore;
+  agentStore?: AgentProfileStore & Partial<PairedIdentitiesAgentStore>;
+  identityStore?: PairedIdentitiesIdentityStore;
   sessionStore?: Pick<SessionStore, "listAgentSessions" | "readSessionTodo">;
+  sessionRoutes?: PairedIdentitiesRouteStore;
   subagentProfiles?: Pick<SubagentProfileStore, "listProfiles">;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs"> & Partial<Pick<ThreadRuntimeStore, "listThreadSummaries">>;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
@@ -60,10 +70,10 @@ export interface CreateThreadDefinitionOptions {
   wikiBindings?: Pick<WikiBindingService, "getBinding">;
   bashToolOptions?: BashToolOptions;
   browserToolOptions?: BrowserToolOptions;
-  imageGenerateToolOptions?: ImageGenerateToolOptions;
   executionEnvironment?: ResolvedExecutionEnvironment;
   tools?: readonly Tool[];
   sessionPrompts?: readonly SessionPromptRecord[] | null;
+  commandDescriptors?: readonly CommandDescriptor[];
   runtimeConfig?: SessionRuntimeConfigRecord;
   extraLlmContexts?: readonly LlmContext[];
   llmContextSections?: readonly DefaultAgentLlmContextSection[];
@@ -113,7 +123,7 @@ function isSubagentToolAllowed(toolName: string, executionEnvironment?: Resolved
   if (!isExecutionToolAllowedByPolicy(policy, toolName, {requireAllowlist: true})) {
     return false;
   }
-  if (toolName === POSTGRES_READONLY_TOOL_NAME && policy?.postgresReadonly?.allowed !== true) {
+  if (toolName === POSTGRES_READONLY_COMMAND_NAME && policy?.postgresReadonly?.allowed !== true) {
     return false;
   }
 
@@ -122,13 +132,12 @@ function isSubagentToolAllowed(toolName: string, executionEnvironment?: Resolved
 
 function resolveSessionTools(
   tools: readonly Tool[] | undefined,
-  options: Pick<CreateThreadDefinitionOptions, "bashToolOptions" | "browserToolOptions" | "imageGenerateToolOptions" | "executionEnvironment" | "session">,
+  options: Pick<CreateThreadDefinitionOptions, "bashToolOptions" | "browserToolOptions" | "executionEnvironment" | "session">,
 ): readonly Tool[] {
   const baseTools = tools ?? (() => {
     const toolsets = buildDefaultAgentToolsetsFromRegistry(createDefaultAgentToolRegistry({
       bash: options.bashToolOptions,
       browser: options.browserToolOptions,
-      imageGenerate: options.imageGenerateToolOptions,
     }));
     return toolsets.main;
   })();
@@ -223,7 +232,9 @@ export function createThreadDefinition(
   const llmContexts: LlmContext[] = buildDefaultAgentLlmContexts({
     context,
     agentStore: options.agentStore,
+    identityStore: options.identityStore,
     sessionStore: options.sessionStore,
+    sessionRoutes: options.sessionRoutes,
     subagentProfiles: options.subagentProfiles,
     threadStore: options.threadStore,
     scheduledTasks: options.scheduledTasks,
@@ -234,6 +245,7 @@ export function createThreadDefinition(
     sections: resolveLlmContextSections(session, options.llmContextSections),
     skillPolicy: options.executionEnvironment?.skillPolicy,
     sessionPrompts: options.sessionPrompts,
+    commandDescriptors: options.commandDescriptors,
     extraLlmContexts: options.extraLlmContexts,
   });
   if (storedSubagent) {

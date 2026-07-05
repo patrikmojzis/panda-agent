@@ -34,8 +34,10 @@ import {
 import {normalizeSubagentProfileSlug} from "../../domain/subagents/types.js";
 import {
   normalizeSubagentToolGroups,
-  resolveSubagentToolPolicy
+  resolveSubagentToolPolicy,
 } from "../../domain/subagents/tool-groups.js";
+import type {CommandPolicyModule} from "../../domain/commands/types.js";
+import type {CommandCatalog} from "../../domain/commands/modules.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import type {ThreadRuntimeCoordinator} from "../../domain/threads/runtime/coordinator.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
@@ -105,6 +107,8 @@ export interface SubagentSessionServiceOptions {
   a2aBindings: {
     bindSession(input: BindA2ASessionInput): Promise<A2ASessionBindingRecord>;
   };
+  commandCatalog?: Pick<CommandCatalog, "namesForToolGroups">;
+  commandModules?: readonly CommandPolicyModule[];
   coordinator?: Pick<ThreadRuntimeCoordinator, "submitInput">;
 }
 
@@ -169,6 +173,8 @@ export class SubagentSessionService {
   private readonly profiles: SubagentProfileStore;
   private readonly environments?: SubagentEnvironmentAttacher;
   private readonly a2aBindings: SubagentSessionServiceOptions["a2aBindings"];
+  private readonly commandCatalog?: Pick<CommandCatalog, "namesForToolGroups">;
+  private readonly commandModules: readonly CommandPolicyModule[];
   private readonly coordinator?: Pick<ThreadRuntimeCoordinator, "submitInput">;
 
   constructor(options: SubagentSessionServiceOptions) {
@@ -178,6 +184,11 @@ export class SubagentSessionService {
     this.profiles = options.profiles;
     this.environments = options.environments;
     this.a2aBindings = options.a2aBindings;
+    if (options.commandCatalog && options.commandModules) {
+      throw new Error("Pass either commandCatalog or commandModules, not both.");
+    }
+    this.commandCatalog = options.commandCatalog;
+    this.commandModules = options.commandModules ?? [];
     this.coordinator = options.coordinator;
   }
 
@@ -205,7 +216,10 @@ export class SubagentSessionService {
     const resolvedModel = spawnModel.model ? spawnModel : profileModel;
     const credentialPolicy = buildCredentialPolicy(input);
     const skillPolicy = buildSkillPolicy();
-    const toolPolicy = resolveSubagentToolPolicy(resolvedProfile.profile.toolGroups);
+    const toolPolicy = resolveSubagentToolPolicy(resolvedProfile.profile.toolGroups, {
+      ...(this.commandCatalog ? {commandCatalog: this.commandCatalog} : {}),
+      ...(!this.commandCatalog ? {commandModules: this.commandModules} : {}),
+    });
     const thinking = input.thinking !== undefined
       ? input.thinking ?? undefined
       : resolvedProfile.profile.thinking;

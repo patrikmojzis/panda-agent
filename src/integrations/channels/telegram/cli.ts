@@ -3,6 +3,7 @@ import process from "node:process";
 import {Command, InvalidArgumentError} from "commander";
 
 import {DB_URL_OPTION_DESCRIPTION} from "../../../lib/cli.js";
+import {writeCommandDescriptorHelp} from "../../../domain/commands/cli.js";
 import {resolveMediaDir} from "../../../lib/data-dir.js";
 import {PostgresAgentStore} from "../../../domain/agents/postgres.js";
 import {normalizeAgentKey} from "../../../domain/agents/types.js";
@@ -15,6 +16,19 @@ import {trimToUndefined} from "../../../lib/strings.js";
 import {type HealthServer, type HealthSnapshot, resolveOptionalHealthServerBinding, startHealthServer} from "../../../lib/health-server.js";
 import {ensureSchemas, withPostgresPool} from "../../../lib/postgres-bootstrap.js";
 import {TELEGRAM_SOURCE} from "./config.js";
+import {
+  telegramChatListCommandDescriptor,
+  telegramChatInfoCommandDescriptor,
+  telegramDeleteCommandDescriptor,
+  telegramEditCommandDescriptor,
+  telegramHistoryCommandDescriptor,
+  telegramMediaFetchCommandDescriptor,
+  telegramPinCommandDescriptor,
+  telegramReactCommandDescriptor,
+  telegramSendCommandDescriptor,
+  telegramStickerSendCommandDescriptor,
+  telegramUnpinCommandDescriptor,
+} from "./commands.js";
 import {
   createTelegramBotIdentityClient,
   disableTelegramBotAccount,
@@ -49,6 +63,61 @@ interface TelegramAccountSetCliOptions extends TelegramAccountOwnerCliOptions {
 interface TelegramAccountImportEnvCliOptions extends TelegramAccountOwnerCliOptions {
   envKey: string;
   replace?: boolean;
+}
+
+interface TelegramReactCliOptions {
+  help?: boolean;
+  json?: boolean | string;
+}
+
+interface TelegramEditCliOptions {
+  help?: boolean;
+  json?: boolean | string;
+}
+
+interface TelegramDeleteCliOptions {
+  help?: boolean;
+  json?: boolean | string;
+}
+
+interface TelegramPinCliOptions {
+  help?: boolean;
+  json?: boolean | string;
+}
+
+interface TelegramUnpinCliOptions {
+  help?: boolean;
+  json?: boolean | string;
+}
+
+interface TelegramStickerSendCliOptions {
+  help?: boolean;
+  json?: boolean | string;
+}
+
+interface TelegramSendCliOptions {
+  help?: boolean;
+  json?: boolean | string;
+}
+
+interface TelegramChatListCliOptions {
+  help?: boolean;
+  json?: boolean | string;
+}
+
+interface TelegramChatInfoCliOptions {
+  help?: boolean;
+  json?: boolean | string;
+}
+
+interface TelegramHistoryCliOptions {
+  help?: boolean;
+  json?: boolean | string;
+}
+
+interface TelegramMediaFetchCliOptions {
+  help?: boolean;
+  json?: boolean | string;
 }
 
 interface TelegramPairCliOptions extends TelegramIdentityCliOptions {
@@ -650,6 +719,268 @@ export function registerTelegramCommands(program: Command, dependencies: Telegra
   const telegramProgram = program
     .command("telegram")
     .description("Run and manage the Telegram channel");
+
+  const chatProgram = telegramProgram
+    .command("chat")
+    .description("Inspect Telegram chats");
+
+  const stickerProgram = telegramProgram
+    .command("sticker")
+    .description("Send Telegram stickers");
+
+  chatProgram
+    .command("info")
+    .description(telegramChatInfoCommandDescriptor.summary)
+    .argument("[conversationId]", "Telegram conversation id")
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .option("--connector <connectorKey>", "Telegram connector key")
+    .action((_conversationId: string | undefined, options: TelegramChatInfoCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(telegramChatInfoCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda telegram chat info execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
+
+  telegramProgram
+    .command("history")
+    .description(telegramHistoryCommandDescriptor.summary)
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .option("--chat <conversationId>", "Telegram conversation id")
+    .option("--connector <connectorKey>", "Telegram connector key")
+    .option("--direction <direction>", "History direction: inbound, outbound, or all")
+    .option("--limit <n>", "Maximum number of history items")
+    .action((options: TelegramHistoryCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(telegramHistoryCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda telegram history execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
+
+  const mediaProgram = telegramProgram
+    .command("media")
+    .description("Telegram media commands");
+
+  mediaProgram
+    .command("fetch")
+    .description(telegramMediaFetchCommandDescriptor.summary)
+    .argument("[mediaId]", "Telegram media id from telegram.history")
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .option("--chat <conversationId>", "Telegram conversation id")
+    .option("--connector <connectorKey>", "Telegram connector key")
+    .option("--save <path>", "Workspace path to save the media")
+    .option("--overwrite", "Replace an existing file at the save path")
+    .action((_mediaId: string | undefined, options: TelegramMediaFetchCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(telegramMediaFetchCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda telegram media fetch execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
+
+  chatProgram
+    .command("list")
+    .description(telegramChatListCommandDescriptor.summary)
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .option("--connector <connectorKey>", "Telegram connector key")
+    .action((options: TelegramChatListCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(telegramChatListCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda telegram chat list execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
+
+  telegramProgram
+    .command("send")
+    .description(telegramSendCommandDescriptor.summary)
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .option("--chat <conversationId>", "Telegram conversation id")
+    .option("--connector <connectorKey>", "Telegram connector key")
+    .option("--text <text>", "Text message body")
+    .option("--image <path>", "Repeatable image path")
+    .option("--file <path>", "Repeatable file path")
+    .option("--reply-to-message-id <messageId>", "Telegram message id to reply to")
+    .action((options: TelegramSendCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(telegramSendCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda telegram send execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
+
+  stickerProgram
+    .command("send")
+    .description(telegramStickerSendCommandDescriptor.summary)
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .option("--chat <conversationId>", "Telegram conversation id")
+    .option("--connector <connectorKey>", "Telegram connector key")
+    .option("--file <path>", "Workspace sticker file path")
+    .option("--file-id <id>", "Telegram sticker file id")
+    .action((options: TelegramStickerSendCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(telegramStickerSendCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda telegram sticker send execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
+
+  telegramProgram
+    .command("edit")
+    .description(telegramEditCommandDescriptor.summary)
+    .argument("[messageId]", "Telegram message id to edit")
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .option("--text <text>", "Replacement message text")
+    .option("--chat <conversationId>", "Telegram conversation id")
+    .option("--connector <connectorKey>", "Telegram connector key")
+    .action((_messageId: string | undefined, options: TelegramEditCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(telegramEditCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda telegram edit execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
+
+  telegramProgram
+    .command("delete")
+    .description(telegramDeleteCommandDescriptor.summary)
+    .argument("[messageId]", "Telegram message id to delete")
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .option("--chat <conversationId>", "Telegram conversation id")
+    .option("--connector <connectorKey>", "Telegram connector key")
+    .action((_messageId: string | undefined, options: TelegramDeleteCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(telegramDeleteCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda telegram delete execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
+
+  telegramProgram
+    .command("pin")
+    .description(telegramPinCommandDescriptor.summary)
+    .argument("[messageId]", "Telegram message id to pin")
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .option("--chat <conversationId>", "Telegram conversation id")
+    .option("--connector <connectorKey>", "Telegram connector key")
+    .option("--silent", "Pin without notifying chat members")
+    .action((_messageId: string | undefined, options: TelegramPinCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(telegramPinCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda telegram pin execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
+
+  telegramProgram
+    .command("unpin")
+    .description(telegramUnpinCommandDescriptor.summary)
+    .argument("[messageId]", "Telegram message id to unpin")
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .option("--chat <conversationId>", "Telegram conversation id")
+    .option("--connector <connectorKey>", "Telegram connector key")
+    .action((_messageId: string | undefined, options: TelegramUnpinCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(telegramUnpinCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda telegram unpin execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
+
+  telegramProgram
+    .command("react")
+    .description(telegramReactCommandDescriptor.summary)
+    .argument("[messageId]", "Telegram message id to react to")
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
+    .option("--emoji <emoji>", "Reaction emoji to add")
+    .option("--remove", "Remove the current reaction")
+    .option("--chat <conversationId>", "Telegram conversation id")
+    .option("--connector <connectorKey>", "Telegram connector key")
+    .action((_messageId: string | undefined, options: TelegramReactCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(telegramReactCommandDescriptor, Boolean(options.json));
+        return;
+      }
+
+      throw new Error(
+        "panda telegram react execution requires the agent command shim transport; use --help for the command contract.",
+      );
+    });
 
   telegramProgram
     .command("whoami")

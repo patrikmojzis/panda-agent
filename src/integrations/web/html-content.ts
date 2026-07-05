@@ -289,7 +289,7 @@ export function extractReadableContentFromHtml(params: {
 
   const content = htmlToMarkdown(readableHtml, params.url);
   if (!content) {
-    throw new ToolError("web_fetch could not extract any readable content from the page.");
+    throw new ToolError("web.fetch could not extract any readable content from the page.");
   }
 
   return {

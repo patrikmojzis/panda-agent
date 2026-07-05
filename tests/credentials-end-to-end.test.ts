@@ -5,13 +5,16 @@ import {mkdtemp, rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 
-import {Agent, BashTool, stringToUserMessage,} from "../src/index.js";
+import {Agent, BashTool, stringToUserMessage, Tool, ToolError, z,} from "../src/index.js";
+import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
+import {createClearEnvValueCommand, createSetEnvValueCommand} from "../src/domain/credentials/commands.js";
 import {PostgresCredentialStore} from "../src/domain/credentials/postgres.js";
 import {CredentialResolver, CredentialService} from "../src/domain/credentials/resolver.js";
 import {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/index.js";
-import {SetEnvValueTool} from "../src/panda/index.js";
+import type {CommandExecutor} from "../src/domain/commands/types.js";
+import type {DefaultAgentSessionContext} from "../src/app/runtime/panda-session-context.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 describe("credentials end-to-end", () => {
@@ -70,6 +73,97 @@ describe("credentials end-to-end", () => {
     };
   }
 
+  class SetEnvValueTestTool extends Tool<typeof SetEnvValueTestTool.schema, DefaultAgentSessionContext> {
+    static schema = z.object({
+      key: z.string().trim().min(1),
+      value: z.string(),
+    });
+
+    name = "set_env_value";
+    description = "Set a credential for this test.";
+    schema = SetEnvValueTestTool.schema;
+
+    constructor(private readonly commandExecutor: CommandExecutor) {
+      super();
+    }
+
+    override redactCallArguments(args: Record<string, unknown>): Record<string, unknown> {
+      return {
+        ...args,
+        ...(typeof args.value === "string" ? {value: "[redacted]"} : {}),
+      };
+    }
+
+    async handle(args: z.output<typeof SetEnvValueTestTool.schema>, run: { context: DefaultAgentSessionContext }) {
+      const result = await this.commandExecutor.execute({
+        command: "env.set",
+        input: args,
+        scope: {
+          agentKey: run.context.agentKey,
+          sessionId: run.context.sessionId,
+          threadId: run.context.threadId,
+          allowedCommands: ["env.set"],
+          credentialMutationAllowed: true,
+        },
+      });
+      if (!result.ok) {
+        throw new ToolError(result.error.message);
+      }
+      return result.output;
+    }
+  }
+
+  function createEnvCommandExecutor(service: CredentialService) {
+    return new RuntimeCommandDispatcher({
+      commands: [
+        createSetEnvValueCommand(service),
+        createClearEnvValueCommand(service),
+      ],
+    });
+  }
+
+  it("requires explicit credential mutation permission for env writes", async () => {
+    const {service} = await createHarness();
+    const commandExecutor = createEnvCommandExecutor(service);
+    const staticScope = {
+      agentKey: "panda",
+      sessionId: "session-credentials-policy",
+      allowedCommands: ["env.set", "env.clear"],
+    };
+    const denied = {
+      ok: false,
+      error: {
+        code: "command_failed",
+        message: "Credential mutation is not allowed in this execution environment.",
+      },
+    };
+
+    await expect(commandExecutor.execute({
+      command: "env.set",
+      input: {key: "OPENAI_API_KEY", value: "secret"},
+      scope: staticScope,
+    })).resolves.toMatchObject(denied);
+    await expect(commandExecutor.execute({
+      command: "env.clear",
+      input: {key: "OPENAI_API_KEY"},
+      scope: staticScope,
+    })).resolves.toMatchObject(denied);
+    await expect(commandExecutor.execute({
+      command: "env.set",
+      input: {key: "OPENAI_API_KEY", value: "secret"},
+      scope: {
+        ...staticScope,
+        credentialMutationAllowed: true,
+      },
+    })).resolves.toMatchObject({
+      ok: true,
+      output: {
+        envKey: "OPENAI_API_KEY",
+        valueLength: 6,
+      },
+    });
+  });
+
   function createAssistantMessage(content: AssistantMessage["content"]): AssistantMessage {
     return {
       role: "assistant",
@@ -116,6 +210,7 @@ describe("credentials end-to-end", () => {
 
   it("stores a credential and injects it into a later bash call in the same thread", async () => {
     const {credentialStore, resolver, service, workspace} = await createHarness();
+    const commandExecutor = createEnvCommandExecutor(service);
     const runtime = createMockRuntime(
       createAssistantMessage([{
         type: "toolCall",
@@ -151,7 +246,7 @@ describe("credentials end-to-end", () => {
           name: "panda",
           instructions: "Use tools.",
           tools: [
-            new SetEnvValueTool({service}),
+            new SetEnvValueTestTool(commandExecutor),
             new BashTool({
               credentialResolver: resolver,
               outputDirectory: path.join(workspace, "tool-results"),
@@ -160,6 +255,8 @@ describe("credentials end-to-end", () => {
         }),
         context: {
           agentKey: "panda",
+          sessionId: "session-credentials-e2e",
+          threadId: "thread-credentials-e2e",
           cwd: workspace,
           shell: {
             cwd: workspace,
@@ -218,6 +315,7 @@ describe("credentials end-to-end", () => {
 
   it("redacts secret bash output before it reaches the transcript", async () => {
     const {resolver, service, workspace} = await createHarness();
+    const commandExecutor = createEnvCommandExecutor(service);
     const runtime = createMockRuntime(
       createAssistantMessage([{
         type: "toolCall",
@@ -253,7 +351,7 @@ describe("credentials end-to-end", () => {
           name: "panda",
           instructions: "Use tools.",
           tools: [
-            new SetEnvValueTool({service}),
+            new SetEnvValueTestTool(commandExecutor),
             new BashTool({
               credentialResolver: resolver,
               outputDirectory: path.join(workspace, "tool-results"),
@@ -262,6 +360,8 @@ describe("credentials end-to-end", () => {
         }),
         context: {
           agentKey: "panda",
+          sessionId: "session-credentials-redacted-bash",
+          threadId: "thread-credentials-redacted-bash",
           cwd: workspace,
           shell: {
             cwd: workspace,

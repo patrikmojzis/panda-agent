@@ -102,7 +102,7 @@ export class A2AMessagingService {
     const explicitSessionId = trimToUndefined(input.sessionId);
     const explicitAgentKey = trimToUndefined(input.agentKey);
     if (!explicitSessionId && !explicitAgentKey) {
-      throw new Error("message_agent requires agentKey or sessionId.");
+      throw new Error("a2a.send requires agentKey or sessionId.");
     }
 
     const targetSession = explicitSessionId
@@ -113,7 +113,7 @@ export class A2AMessagingService {
     }
 
     if (targetSession.id === input.senderSessionId) {
-      throw new Error("message_agent does not allow sending to the same session.");
+      throw new Error("a2a.send does not allow sending to the same session.");
     }
 
     const allowed = await this.bindings.hasBinding({

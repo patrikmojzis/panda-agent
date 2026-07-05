@@ -18,6 +18,9 @@ import type {
 import {
     type CreateThreadInput,
     type CreateThreadToolJobInput,
+    type ThreadChannelMediaFilter,
+    type ThreadChannelMediaRecord,
+    type ThreadChannelMessageFilter,
     missingThreadError,
     type ThreadInputDeliveryMode,
     type ThreadInputPayload,
@@ -31,6 +34,7 @@ import {
     type ThreadToolJobUpdate,
     type ThreadUpdate,
 } from "../../src/domain/threads/runtime/types.js";
+import type {MediaDescriptor} from "../../src/domain/channels/types.js";
 
 function matchesThreadInputIdentity(
   left: Pick<ThreadInputPayload, "source" | "channelId" | "externalMessageId">,
@@ -49,6 +53,61 @@ function cloneRecord<T extends object>(record: T): T {
   return {
     ...record,
   };
+}
+
+function readMediaDescriptor(value: unknown): MediaDescriptor | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.id !== "string"
+    || typeof record.source !== "string"
+    || typeof record.connectorKey !== "string"
+    || typeof record.mimeType !== "string"
+    || typeof record.sizeBytes !== "number"
+    || typeof record.localPath !== "string"
+    || typeof record.createdAt !== "number"
+  ) {
+    return null;
+  }
+
+  return {
+    id: record.id,
+    source: record.source,
+    connectorKey: record.connectorKey,
+    mimeType: record.mimeType,
+    sizeBytes: record.sizeBytes,
+    localPath: record.localPath,
+    ...(typeof record.originalFilename === "string" ? {originalFilename: record.originalFilename} : {}),
+    ...(typeof record.metadata === "object" && record.metadata !== null && !Array.isArray(record.metadata)
+      ? {metadata: record.metadata as MediaDescriptor["metadata"]}
+      : {}),
+    createdAt: record.createdAt,
+  };
+}
+
+function readMessageMedia(record: ThreadMessageRecord, source: string): readonly MediaDescriptor[] {
+  const metadata = record.metadata;
+  if (typeof metadata !== "object" || metadata === null || Array.isArray(metadata)) {
+    return [];
+  }
+
+  const sourceMetadata = (metadata as Record<string, unknown>)[source];
+  if (typeof sourceMetadata !== "object" || sourceMetadata === null || Array.isArray(sourceMetadata)) {
+    return [];
+  }
+
+  const media = (sourceMetadata as {media?: unknown}).media;
+  if (!Array.isArray(media)) {
+    return [];
+  }
+
+  return media.flatMap((entry) => {
+    const descriptor = readMediaDescriptor(entry);
+    return descriptor ? [descriptor] : [];
+  });
 }
 
 function missingRunError(runId: string): Error {
@@ -244,6 +303,53 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     }
 
     return thread.transcript.map((record) => cloneRecord(record));
+  }
+
+  async listChannelMessages(filter: ThreadChannelMessageFilter): Promise<readonly ThreadMessageRecord[]> {
+    return [...this.threads.values()]
+      .filter((state) => state.thread.sessionId === filter.sessionId)
+      .flatMap((state) => state.transcript)
+      .filter((record) => {
+        const metadata = record.metadata;
+        const route = metadata && typeof metadata === "object" && !Array.isArray(metadata)
+          ? (metadata as {route?: unknown}).route
+          : undefined;
+        const connectorKey = route && typeof route === "object" && !Array.isArray(route)
+          ? (route as {connectorKey?: unknown}).connectorKey
+          : undefined;
+        return record.source === filter.source
+          && record.channelId === filter.channelId
+          && connectorKey === filter.connectorKey;
+      })
+      .sort((left, right) => right.createdAt - left.createdAt || right.sequence - left.sequence)
+      .slice(0, Math.max(0, Math.min(filter.limit ?? 50, 200)))
+      .map((record) => cloneRecord(record));
+  }
+
+  async findChannelMedia(filter: ThreadChannelMediaFilter): Promise<ThreadChannelMediaRecord | null> {
+    const messages = await this.listChannelMessages({
+      sessionId: filter.sessionId,
+      source: filter.source,
+      connectorKey: filter.connectorKey,
+      channelId: filter.channelId,
+      limit: 200,
+    });
+
+    for (const message of messages) {
+      const media = readMessageMedia(message, filter.source).find((descriptor) => {
+        return descriptor.id === filter.mediaId
+          && descriptor.source === filter.source
+          && descriptor.connectorKey === filter.connectorKey;
+      });
+      if (media) {
+        return {
+          message,
+          media,
+        };
+      }
+    }
+
+    return null;
   }
 
   async enqueueInput(

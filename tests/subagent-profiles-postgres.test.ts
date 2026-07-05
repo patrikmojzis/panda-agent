@@ -194,7 +194,7 @@ describe("PostgresSubagentProfileStore", () => {
         source: "builtin",
         transcriptMode: "none",
         enabled: true,
-        toolGroups: ["core", "workspace_read"],
+        toolGroups: ["core"],
         thinking: "low",
       }),
       expect.objectContaining({
@@ -204,17 +204,48 @@ describe("PostgresSubagentProfileStore", () => {
       }),
       expect.objectContaining({
         slug: "browser",
-        toolGroups: ["core", "workspace_read", "internet"],
+        toolGroups: ["core", "internet"],
       }),
       expect.objectContaining({
         slug: "skill_maintainer",
-        toolGroups: ["core", "workspace_read", "memory", "skill_maintenance"],
+        toolGroups: ["core", "memory", "skill_maintenance"],
       }),
     ]));
 
     const tables = buildSubagentTableNames();
     const raw = await pool.query(`SELECT COUNT(*)::INTEGER AS count FROM ${tables.subagentProfiles}`);
     expect(raw.rows[0]).toMatchObject({count: BUILTIN_SUBAGENT_PROFILES.length});
+  });
+
+  it("strips legacy workspace_read groups from stored rows", async () => {
+    const {pool, profileStore} = await createStores();
+    const tables = buildSubagentTableNames();
+    await pool.query(`
+      INSERT INTO ${tables.subagentProfiles} (
+        slug,
+        agent_key,
+        description,
+        prompt,
+        tool_groups,
+        transcript_mode,
+        source,
+        enabled
+      ) VALUES (
+        'legacy_workspace',
+        NULL,
+        'Legacy profile.',
+        'Legacy prompt.',
+        '["core","workspace_read"]'::jsonb,
+        'none',
+        'builtin',
+        TRUE
+      )
+    `);
+
+    await expect(profileStore.getProfile({slug: "legacy_workspace"})).resolves.toMatchObject({
+      slug: "legacy_workspace",
+      toolGroups: ["core"],
+    });
   });
 
   it("supports agent-scoped custom profiles and filters disabled rows by default", async () => {
@@ -230,7 +261,7 @@ describe("PostgresSubagentProfileStore", () => {
       agentKey: "panda",
       description: "Review code changes and report concrete risks.",
       prompt: "Review the assigned patch.",
-      toolGroups: ["core", "workspace_read"],
+      toolGroups: ["core"],
       model: "openai/gpt-5.1",
       thinking: "high",
       source: "custom",
@@ -341,10 +372,6 @@ describe("PostgresSubagentProfileStore", () => {
       ...base,
       toolGroups: ["bash"],
     })).rejects.toThrow('Unknown subagent tool group "bash".');
-    await expect(profileStore.upsertProfile({
-      ...base,
-      toolGroups: ["core", "workspace_read", "execute"],
-    })).rejects.toThrow("execute can read workspace files through shell commands, so do not combine them.");
     await expect(profileStore.upsertProfile({
       ...base,
       source: "legacy" as never,
