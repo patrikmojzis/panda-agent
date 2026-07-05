@@ -2286,6 +2286,28 @@ describe("agent command shim", () => {
     });
   });
 
+  it("keeps command output quiet when downstream pipes exit early", async () => {
+    const server = await startWatchServer();
+    const env = shimEnv(server);
+    const pipelines = [
+      "\"$1\" commands --json | head -c 1 >/dev/null",
+      "\"$1\" commands | head -n 1 >/dev/null",
+      "\"$1\" time now --json '{}' | head -c 1 >/dev/null",
+    ];
+
+    for (const pipeline of pipelines) {
+      const {stderr} = await execFileAsync("bash", [
+        "-o",
+        "pipefail",
+        "-c",
+        pipeline,
+        "bash",
+        shimPath,
+      ], {env});
+      expect(stderr).not.toContain("curl:");
+    }
+  });
+
   it("executes vent.send native payloads through the transport without echoing the message", async () => {
     const server = await startWatchServer();
 

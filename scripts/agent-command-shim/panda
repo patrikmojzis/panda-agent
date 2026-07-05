@@ -72,13 +72,50 @@ command_url() {
   printf '%s/%s' "${base_url%/}" "${path#/}"
 }
 
-curl_command() {
+allow_sigpipe() {
+  local status
+  set +e
+  "$@"
+  status=$?
+  set -e
+  case "$status" in
+    0|141)
+      return 0
+      ;;
+    *)
+      return "$status"
+      ;;
+  esac
+}
+
+curl_command_to_file() {
+  local output="$1"
+  shift
   require_transport
   if [ -n "$socket_path" ]; then
-    curl -fsS --unix-socket "$socket_path" -H "authorization: Bearer ${token}" "$@"
+    curl -fsS --unix-socket "$socket_path" -H "authorization: Bearer ${token}" --output "$output" "$@"
     return
   fi
-  curl -fsS -H "authorization: Bearer ${token}" "$@"
+  curl -fsS -H "authorization: Bearer ${token}" --output "$output" "$@"
+}
+
+curl_command() {
+  local tmp status
+  tmp="$(mktemp "${TMPDIR:-/tmp}/panda-command.XXXXXX")"
+  set +e
+  curl_command_to_file "$tmp" "$@"
+  status=$?
+  set -e
+  if [ "$status" -ne 0 ]; then
+    rm -f "$tmp"
+    return "$status"
+  fi
+
+  printf '\n' >> "$tmp"
+  allow_sigpipe cat "$tmp"
+  status=$?
+  rm -f "$tmp"
+  return "$status"
 }
 
 curl_command_raw() {
@@ -213,7 +250,7 @@ execute_json_command() {
     return 1
   }
   if [ "$ok" = "true" ]; then
-    printf '%s\n' "$response" | jq -c 'if (.artifact and (.output | type) == "object") then (.output + {artifact: .artifact}) else .output end'
+    allow_sigpipe jq -c 'if (.artifact and (.output | type) == "object") then (.output + {artifact: .artifact}) else .output end' <<<"$response"
     return 0
   fi
 
@@ -231,7 +268,6 @@ execute_audio_file_command() {
     shift
     if [ "${1:-}" = "--json" ]; then
       curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-      printf '\n'
       return 0
     fi
     curl_command "$(command_url "/commands/${command_name}/help")"
@@ -377,7 +413,6 @@ execute_micro_app_cli() {
     shift
     if [ "${1:-}" = "--json" ]; then
       curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-      printf '\n'
       return 0
     fi
     curl_command "$(command_url "/commands/${command_name}/help")"
@@ -707,7 +742,6 @@ dispatch_generated_json_route() {
             fi
           fi
           if curl_command "$(command_url "/commands/${command_name}/help?format=json")"; then
-            printf '\n'
             return 0
           fi
           return $?
@@ -763,10 +797,10 @@ USAGE
     fi
     if [ "${1:-}" = "--json" ]; then
       curl_command "$(command_url "/commands")"
-      printf '\n'
       exit 0
     fi
-    curl_command "$(command_url "/commands")" | jq -r '.commands[].name'
+    commands_response="$(curl_command_raw "$(command_url "/commands")")"
+    allow_sigpipe jq -r '.commands[].name' <<<"$commands_response"
     exit 0
     ;;
   time)
@@ -797,7 +831,6 @@ USAGE
           fi
         fi
         curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-        printf '\n'
         exit 0
       fi
       if declare -F agent_command_shim_print_local_help >/dev/null; then
@@ -889,7 +922,6 @@ USAGE
           fi
         fi
         curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-        printf '\n'
         exit 0
       fi
       if declare -F agent_command_shim_print_local_help >/dev/null; then
@@ -1026,7 +1058,6 @@ USAGE
       shift
       if [ "${1:-}" = "--json" ]; then
         curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-        printf '\n'
         exit 0
       fi
       curl_command "$(command_url "/commands/${command_name}/help")"
@@ -1251,7 +1282,6 @@ USAGE
       shift
       if [ "${1:-}" = "--json" ]; then
         curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-        printf '\n'
         exit 0
       fi
       if declare -F agent_command_shim_print_local_help >/dev/null; then
@@ -1356,7 +1386,6 @@ USAGE
       shift
       if [ "${1:-}" = "--json" ]; then
         curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-        printf '\n'
         exit 0
       fi
       curl_command "$(command_url "/commands/${command_name}/help")"
@@ -1783,7 +1812,6 @@ USAGE
       shift
       if [ "${1:-}" = "--json" ]; then
         curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-        printf '\n'
         exit 0
       fi
       curl_command "$(command_url "/commands/${command_name}/help")"
@@ -2138,7 +2166,6 @@ USAGE
       shift
       if [ "${1:-}" = "--json" ]; then
         curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-        printf '\n'
         exit 0
       fi
       if declare -F agent_command_shim_print_local_help >/dev/null; then
@@ -2762,7 +2789,6 @@ USAGE
 	    print_session_prompt_current_help() {
 	      if [ "${1:-}" = "json" ]; then
 	        curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-	        printf '\n'
 	        return
 	      fi
 	      if declare -F agent_command_shim_print_local_help >/dev/null; then
@@ -2883,7 +2909,6 @@ USAGE
 	    print_session_prompt_current_help() {
 	      if [ "${1:-}" = "json" ]; then
 	        curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-	        printf '\n'
 	        return
 	      fi
 	      if declare -F agent_command_shim_print_local_help >/dev/null; then
@@ -2938,7 +2963,7 @@ USAGE
 	      payload="$(jq -n --arg slug "$prompt_slug" '{slug: $slug}')"
 	      if [ "$raw_output" = "true" ]; then
 	        response="$(execute_json_command "$command_name" "$payload")" || exit $?
-	        printf '%s\n' "$response" | jq -r '.content'
+	        allow_sigpipe jq -r '.content' <<<"$response"
 	        exit 0
 	      fi
 	      execute_json_command "$command_name" "$payload"
@@ -3097,7 +3122,6 @@ USAGE
 	      shift
 	      if [ "${1:-}" = "--json" ]; then
 	        curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-	        printf '\n'
 	        exit 0
 	      fi
 	      if declare -F agent_command_shim_print_local_help >/dev/null; then
@@ -3241,7 +3265,6 @@ USAGE
 	      shift
 	      if [ "${1:-}" = "--json" ]; then
 	        curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-	        printf '\n'
 	        exit 0
 	      fi
 	      if declare -F agent_command_shim_print_local_help >/dev/null; then
@@ -3514,7 +3537,6 @@ USAGE
       shift
       if [ "${1:-}" = "--json" ]; then
         curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-        printf '\n'
         exit 0
       fi
       curl_command "$(command_url "/commands/${command_name}/help")"
@@ -3661,7 +3683,6 @@ USAGE
       shift
       if [ "${1:-}" = "--json" ]; then
         curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-        printf '\n'
         exit 0
       fi
       curl_command "$(command_url "/commands/${command_name}/help")"
@@ -3837,7 +3858,6 @@ USAGE
       shift
       if [ "${1:-}" = "--json" ]; then
         curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-        printf '\n'
         exit 0
       fi
       if [ "$command_name" = "a2a.inspect" ]; then
@@ -4053,7 +4073,6 @@ USAGE
       shift
       if [ "${1:-}" = "--json" ]; then
         curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-        printf '\n'
         exit 0
       fi
       curl_command "$(command_url "/commands/${command_name}/help")"
@@ -4369,7 +4388,6 @@ USAGE
           shift
           if [ "${1:-}" = "--json" ]; then
             curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-            printf '\n'
             exit 0
           fi
           if declare -F agent_command_shim_print_local_help >/dev/null; then
@@ -4466,7 +4484,6 @@ USAGE
 	      shift
 	      if [ "${1:-}" = "--json" ]; then
 	        curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-	        printf '\n'
 	        exit 0
 	      fi
 	      if declare -F agent_command_shim_print_local_help >/dev/null; then
@@ -4722,7 +4739,6 @@ USAGE
 	      shift
 	      if [ "${1:-}" = "--json" ]; then
 	        curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-	        printf '\n'
 	        exit 0
 	      fi
 	        curl_command "$(command_url "/commands/${command_name}/help")"
@@ -5274,7 +5290,6 @@ USAGE
 	      shift
 	      if [ "${1:-}" = "--json" ]; then
 	        curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-	        printf '\n'
 	        exit 0
 	      fi
 	      curl_command "$(command_url "/commands/${command_name}/help")"
@@ -5481,7 +5496,6 @@ USAGE
 	      shift
 	      if [ "${1:-}" = "--json" ]; then
 	        curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-	        printf '\n'
 	        exit 0
 	      fi
 	      curl_command "$(command_url "/commands/${command_name}/help")"
@@ -5654,7 +5668,6 @@ USAGE
 	      shift
 	      if [ "${1:-}" = "--json" ]; then
 	        curl_command "$(command_url "/commands/${command_name}/help?format=json")"
-	        printf '\n'
 	        exit 0
 	      fi
 	      curl_command "$(command_url "/commands/${command_name}/help")"
