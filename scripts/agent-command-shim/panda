@@ -159,7 +159,7 @@ read_text_input() {
 
 sql_string_literal() {
   local value="$1"
-  local escaped="${value//\'/''}"
+  local escaped="${value//\'/\'\'}"
   printf "'%s'" "$escaped"
 }
 
