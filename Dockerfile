@@ -239,11 +239,6 @@ RUN --mount=type=cache,id=panda-apt-cache,target=/var/cache/apt,sharing=locked \
   apt_retry apt-get update; \
   apt_retry apt-get install -y --no-install-recommends mongodb-mongosh
 
-RUN mkdir -p /usr/local/lib/panda-agent-command-shim
-COPY scripts/agent-command-shim/routes.generated.sh /usr/local/lib/panda-agent-command-shim/routes.generated.sh
-COPY scripts/agent-command-shim/panda /usr/local/bin/panda
-RUN chmod +x /usr/local/bin/panda
-
 CMD ["sleep", "infinity"]
 
 FROM workspace-runner AS workspace
