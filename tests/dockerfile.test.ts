@@ -98,7 +98,7 @@ describe("Dockerfile targets", () => {
     expect(bashRunnerBody).toContain('CMD ["bash-server"]');
   });
 
-  it("adds a workspace image target with only the agent command shim", async () => {
+  it("adds a workspace image target without runtime command shims", async () => {
     const stages = parseDockerStages(await readFile(dockerfilePath, "utf8"));
     const workspace = stages.get("workspace-runner");
 
@@ -110,8 +110,8 @@ describe("Dockerfile targets", () => {
     expect(workspace?.body).not.toContain("corepack");
     expect(workspace?.body).not.toContain("pnpm");
     expect(workspace?.body).not.toContain("/app/dist");
-    expect(workspace?.body).toContain("COPY scripts/agent-command-shim/routes.generated.sh /usr/local/lib/panda-agent-command-shim/routes.generated.sh");
-    expect(workspace?.body).toContain("COPY scripts/agent-command-shim/panda /usr/local/bin/panda");
-    expect(workspace?.body).toContain("chmod +x /usr/local/bin/panda");
+    expect(workspace?.body).not.toContain("COPY scripts/agent-command-shim/routes.generated.sh");
+    expect(workspace?.body).not.toContain("COPY scripts/agent-command-shim/panda");
+    expect(workspace?.body).not.toContain("/usr/local/bin/panda");
   });
 });
