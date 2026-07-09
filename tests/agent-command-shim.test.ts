@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import {promisify} from "node:util";
 
-import {afterEach, describe, expect, it, vi} from "vitest";
+import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 
 import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
@@ -152,6 +152,34 @@ const execFileAsync = promisify(execFile);
 const shimPath = path.resolve("scripts/agent-command-shim/panda");
 const defaultTestCommandScopeAllowedCommands = DEFAULT_AGENT_COMMAND_DESCRIPTORS.map((descriptor) => descriptor.name);
 
+const COMMAND_TRANSPORT_ENV_KEYS = [
+  "PANDA_COMMAND_ACCESS_FILE",
+  "PANDA_COMMAND_SOCKET",
+  "PANDA_COMMAND_TOKEN",
+  "PANDA_COMMAND_URL",
+] as const;
+
+const originalCommandTransportEnv = Object.fromEntries(
+  COMMAND_TRANSPORT_ENV_KEYS.map((key) => [key, process.env[key]]),
+) as Record<typeof COMMAND_TRANSPORT_ENV_KEYS[number], string | undefined>;
+
+function clearCommandTransportEnv(): void {
+  for (const key of COMMAND_TRANSPORT_ENV_KEYS) {
+    delete process.env[key];
+  }
+}
+
+function restoreCommandTransportEnv(): void {
+  for (const key of COMMAND_TRANSPORT_ENV_KEYS) {
+    const value = originalCommandTransportEnv[key];
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+}
+
 class FakeReadonlyClient {
   readonly queries: Array<{text: string; values?: readonly unknown[]}> = [];
 
@@ -186,6 +214,10 @@ describe("agent command shim", () => {
   const servers: CommandHttpServer[] = [];
   const directories: string[] = [];
 
+  beforeEach(() => {
+    clearCommandTransportEnv();
+  });
+
   afterEach(async () => {
     vi.restoreAllMocks();
     while (servers.length > 0) {
@@ -194,6 +226,7 @@ describe("agent command shim", () => {
     while (directories.length > 0) {
       await rm(directories.pop()!, {recursive: true, force: true});
     }
+    restoreCommandTransportEnv();
   });
 
   async function startWatchServer(options: {
@@ -2194,9 +2227,21 @@ describe("agent command shim", () => {
     expect(DEFAULT_AGENT_COMMAND_SHIM_ROUTES).toEqual(
       commandRoutesFromModules(DEFAULT_AGENT_COMMAND_MODULES),
     );
-    expect(DEFAULT_AGENT_COMMAND_MODULES.map((module) => module.policy.capability)).toEqual(
-      DEFAULT_AGENT_COMMAND_MODULES.map((module) => module.descriptor.name),
-    );
+    expect(Object.fromEntries(
+      DEFAULT_AGENT_COMMAND_MODULES
+        .filter((module) => module.descriptor.name.startsWith("mcp."))
+        .map((module) => [module.descriptor.name, module.policy.capability]),
+    )).toEqual({
+      "mcp.tools": "mcp.*",
+      "mcp.call": "mcp.*",
+    });
+    expect(DEFAULT_AGENT_COMMAND_MODULES
+      .filter((module) => !module.descriptor.name.startsWith("mcp."))
+      .map((module) => module.policy.capability)).toEqual(
+        DEFAULT_AGENT_COMMAND_MODULES
+          .filter((module) => !module.descriptor.name.startsWith("mcp."))
+          .map((module) => module.descriptor.name),
+      );
   });
 
   it("uses canonical command names instead of removed namespace wildcards in test leases", () => {

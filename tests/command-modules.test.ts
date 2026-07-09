@@ -22,6 +22,8 @@ import {agentCommandPolicy} from "../src/panda/commands/agent-command-policy.js"
 
 const factoryBackedCommandNames = [
   "time.now",
+  "mcp.tools",
+  "mcp.call",
   "watch.list",
   "watch.show",
   "watch.runs",

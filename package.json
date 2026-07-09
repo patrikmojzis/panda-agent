@@ -125,6 +125,7 @@
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.80.6",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@mozilla/readability": "^0.6.0",
     "abort-controller": "^3.0.0",
     "baileys": "7.0.0-rc12",

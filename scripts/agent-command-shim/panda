@@ -259,6 +259,73 @@ execute_json_command() {
   return 1
 }
 
+
+mcp_input_error() {
+  printf '%s\n' "$1" >&2
+  return 2
+}
+
+
+mcp_require_positive_integer() {
+  local value="$1"
+  local label="$2"
+  case "$value" in
+    ''|*[!0-9]*)
+      mcp_input_error "$label requires a positive integer."
+      return 2
+      ;;
+  esac
+  if [ "$value" -le 0 ]; then
+    mcp_input_error "$label requires a positive integer."
+    return 2
+  fi
+}
+
+read_mcp_json_object_input() {
+  local value="$1"
+  local label="$2"
+  local json_value
+  if ! json_value="$(read_json_input "$value")"; then
+    mcp_input_error "$label could not be read."
+    return 2
+  fi
+  if ! printf '%s' "$json_value" | jq -e 'type == "object"' >/dev/null 2>&1; then
+    mcp_input_error "$label must be a JSON object."
+    return 2
+  fi
+  printf '%s' "$json_value"
+}
+
+mcp_execute_json_command() {
+  local command="$1"
+  local input="$2"
+  local body response status ok message exit_code
+  body="$(jq -n --arg command "$command" --arg cwd "$PWD" --argjson input "$input" '{command: $command, input: $input, outputMode: "json", workingDirectory: $cwd}')"
+  set +e
+  response="$(curl_command_raw -H "content-type: application/json" -X POST --data "$body" "$(command_url "/commands/execute")")"
+  status=$?
+  set -e
+  if [ "$status" -ne 0 ]; then
+    [ -z "$response" ] || printf '%s\n' "$response" >&2
+    return "$status"
+  fi
+
+  ok="$(printf '%s' "$response" | jq -r '.ok // empty')" || {
+    printf '%s\n' "$response" >&2
+    return 1
+  }
+  if [ "$ok" = "true" ]; then
+    allow_sigpipe jq -c 'if (.artifact and (.output | type) == "object") then (.output + {artifact: .artifact}) else .output end' <<<"$response"
+    exit_code="$(printf '%s' "$response" | jq -r 'if .output.exitCode != null then .output.exitCode elif .output.isError == true then 4 else 0 end')" || return 1
+    return "$exit_code"
+  fi
+
+  message="$(printf '%s\n' "$response" | jq -r '.error.message // .error // "Panda command failed."' 2>/dev/null)" || message="Panda command failed."
+  exit_code="$(printf '%s\n' "$response" | jq -r '.error.details.exitCode // 1' 2>/dev/null)" || exit_code="1"
+  printf '%s\n' "$message" >&2
+  return "$exit_code"
+}
+
 execute_audio_file_command() {
   local command_name="$1"
   local command_label="$2"
@@ -5637,6 +5704,124 @@ USAGE
 	    execute_micro_app_cli "micro-app" "$@"
 	    exit $?
 	    ;;
+
+  mcp)
+    shift
+    case "${1:-}" in
+      ""|--help|-h)
+        cat <<'USAGE'
+Usage:
+  panda mcp tools --help [--json]
+  panda mcp call --help [--json]
+  panda mcp tools <server> [--timeout-ms <ms>]
+  panda mcp call <server> <tool> --input <json|@file|@-> [--timeout-ms <ms>]
+  panda mcp tools --json @payload.json
+  panda mcp call --json @payload.json
+USAGE
+        exit 0
+        ;;
+    esac
+    subcommand="${1:-}"
+    case "$subcommand" in
+      tools) command_name="mcp.tools" ;;
+      call) command_name="mcp.call" ;;
+      *) mcp_input_error "Unknown panda mcp command. Try: panda mcp tools --help" ;;
+    esac
+    shift
+    if [ "${1:-}" = "--help" ]; then
+      shift
+      if [ "${1:-}" = "--json" ]; then
+        if declare -F agent_command_shim_print_local_help_json >/dev/null; then
+          if agent_command_shim_print_local_help_json "$command_name"; then
+            exit 0
+          fi
+        fi
+        curl_command "$(command_url "/commands/${command_name}/help?format=json")"
+        exit 0
+      fi
+      if declare -F agent_command_shim_print_local_help >/dev/null; then
+        if agent_command_shim_print_local_help "$command_name"; then
+          exit 0
+        fi
+      fi
+      curl_command "$(command_url "/commands/${command_name}/help")"
+      exit 0
+    fi
+    if [ "${1:-}" = "--json" ]; then
+      shift
+      [ -n "${1:-}" ] || mcp_input_error "panda mcp ${subcommand} --json requires @file, @-, or inline JSON."
+      payload="$(read_mcp_json_object_input "$1" "panda mcp ${subcommand} --json")"
+      mcp_execute_json_command "$command_name" "$payload"
+      exit $?
+    fi
+    case "$subcommand" in
+      tools)
+        server_key="${1:-}"
+        [ -n "$server_key" ] || mcp_input_error "panda mcp tools requires <server>."
+        case "$server_key" in --*) mcp_input_error "panda mcp tools requires <server> before options." ;; esac
+        shift
+        timeout_ms=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --timeout-ms)
+              [ "$#" -gt 1 ] || mcp_input_error "panda mcp tools --timeout-ms requires a value."
+              mcp_require_positive_integer "$2" "panda mcp tools --timeout-ms"
+              timeout_ms="$2"
+              shift 2
+              ;;
+            *)
+              mcp_input_error "Unknown panda mcp tools option: $1"
+              ;;
+          esac
+        done
+        payload="$(jq -n --arg server "$server_key" --arg timeoutMs "$timeout_ms" '{server: $server} + (if $timeoutMs != "" then {timeoutMs: ($timeoutMs | tonumber)} else {} end)')"
+        mcp_execute_json_command "$command_name" "$payload"
+        exit $?
+        ;;
+      call)
+        server_key="${1:-}"
+        [ -n "$server_key" ] || mcp_input_error "panda mcp call requires <server> <tool>."
+        case "$server_key" in --*) mcp_input_error "panda mcp call requires <server> before options." ;; esac
+        shift
+        tool_name="${1:-}"
+        [ -n "$tool_name" ] || mcp_input_error "panda mcp call requires <tool>."
+        case "$tool_name" in --*) mcp_input_error "panda mcp call requires <tool> before options." ;; esac
+        shift
+        input_json=""
+        input_seen="false"
+        timeout_ms=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --input)
+              [ "$#" -gt 1 ] || mcp_input_error "panda mcp call --input requires JSON, @file, or @-."
+              input_json="$(read_mcp_json_object_input "$2" "panda mcp call --input")"
+              input_seen="true"
+              shift 2
+              ;;
+            --timeout-ms)
+              [ "$#" -gt 1 ] || mcp_input_error "panda mcp call --timeout-ms requires a value."
+              mcp_require_positive_integer "$2" "panda mcp call --timeout-ms"
+              timeout_ms="$2"
+              shift 2
+              ;;
+            *)
+              mcp_input_error "Unknown panda mcp call option: $1"
+              ;;
+          esac
+        done
+        [ "$input_seen" = "true" ] || mcp_input_error "panda mcp call requires --input <json|@file|@->."
+        payload="$(jq -n \
+          --arg server "$server_key" \
+          --arg tool "$tool_name" \
+          --arg timeoutMs "$timeout_ms" \
+          --argjson input "$input_json" \
+          '{server: $server, tool: $tool, input: $input}
+           + (if $timeoutMs != "" then {timeoutMs: ($timeoutMs | tonumber)} else {} end)')"
+        mcp_execute_json_command "$command_name" "$payload"
+        exit $?
+        ;;
+    esac
+    ;;
 	  env)
 	    shift
 	    case "${1:-}" in

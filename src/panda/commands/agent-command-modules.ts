@@ -154,6 +154,13 @@ import {
   createTimeNowCommand,
   timeNowCommandDescriptor,
 } from "../../domain/time/commands.js";
+import {
+  createMcpCallCommand,
+  createMcpToolsCommand,
+  MCP_COMMAND_CAPABILITY,
+  mcpCallCommandDescriptor,
+  mcpToolsCommandDescriptor,
+} from "../../domain/mcp/commands.js";
 import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import type {WatchMutationService} from "../../domain/watches/mutation-service.js";
 import type {WatchStore} from "../../domain/watches/store.js";
@@ -603,6 +610,20 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
     "{}",
     undefined,
     () => createTimeNowCommand(),
+  ),
+  agentCommandModule(
+    mcpToolsCommandDescriptor,
+    ["mcp", "tools"],
+    "@payload.json",
+    agentCommandPolicy(["mcp"], {capability: MCP_COMMAND_CAPABILITY}),
+    (dependencies) => createMcpToolsCommand({env: dependencies.env}),
+  ),
+  agentCommandModule(
+    mcpCallCommandDescriptor,
+    ["mcp", "call"],
+    "@payload.json",
+    agentCommandPolicy(["mcp"], {capability: MCP_COMMAND_CAPABILITY}),
+    (dependencies) => createMcpCallCommand({env: dependencies.env}),
   ),
   agentCommandModule(
     watchListCommandDescriptor,
