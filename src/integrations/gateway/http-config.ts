@@ -1,7 +1,6 @@
 import type {PostgresGatewayStore} from "../../domain/gateway/postgres.js";
 import {readTcpPort} from "../../lib/numbers.js";
 import {trimToNull} from "../../lib/strings.js";
-import type {GatewayHaeJsonIngestConfig} from "./hae-json-ingest.js";
 import type {GatewayWorker} from "./worker.js";
 
 export const DEFAULT_GATEWAY_HOST = "127.0.0.1";
@@ -20,9 +19,6 @@ export const DEFAULT_GATEWAY_ATTACHMENT_UPLOAD_TTL_MS = 60 * 60_000;
 export const DEFAULT_GATEWAY_DEVICE_COMMAND_MAX_WAIT_MS = 30_000;
 export const DEFAULT_GATEWAY_ATTACHMENT_RETENTION_MS = 7 * 24 * 60 * 60_000;
 export const DEFAULT_GATEWAY_ATTACHMENT_QUARANTINE_TTL_MS = 24 * 60 * 60_000;
-export const DEFAULT_GATEWAY_HAE_JSON_INBOX_DIR = "/root/.panda/agents/clawd/health-auto-import-inbox";
-export const DEFAULT_GATEWAY_HAE_JSON_MAX_BYTES = 25 * 1024 * 1024;
-export const DEFAULT_GATEWAY_HAE_JSON_SOURCE = "health-auto-export";
 export const DEFAULT_GATEWAY_ATTACHMENT_ALLOWED_MIME_TYPES = [
   "text/plain",
   "application/json",
@@ -46,7 +42,6 @@ export interface GatewayServerOptions {
   attachmentUploadTtlMs?: number;
   deviceCommandMaxWaitMs?: number;
   env?: NodeJS.ProcessEnv;
-  haeJsonIngest?: GatewayHaeJsonIngestConfig;
   host?: string;
   maxActiveTokensPerSource?: number;
   maxAttachmentBytes?: number;
@@ -100,45 +95,11 @@ function parseMimeAllowlist(value: string | null): readonly string[] {
   return parsed;
 }
 
-function hasHaeJsonIngestKnob(env: NodeJS.ProcessEnv): boolean {
-  return Boolean(
-    trimToNull(env.GATEWAY_HAE_JSON_INBOX_DIR)
-    ?? trimToNull(env.GATEWAY_HAE_JSON_MAX_BYTES)
-    ?? trimToNull(env.GATEWAY_HAE_JSON_SOURCE),
-  );
-}
-
-function readHaeJsonSource(value: string | null): string {
-  const source = value ?? DEFAULT_GATEWAY_HAE_JSON_SOURCE;
-  if (source.length > 120) {
-    throw new Error("GATEWAY_HAE_JSON_SOURCE must be at most 120 characters.");
-  }
-  return source;
-}
-
-function resolveHaeJsonIngestConfig(env: NodeJS.ProcessEnv): GatewayHaeJsonIngestConfig | undefined {
-  const token = trimToNull(env.GATEWAY_HAE_JSON_TOKEN);
-  if (!token) {
-    if (hasHaeJsonIngestKnob(env)) {
-      throw new Error("GATEWAY_HAE_JSON_TOKEN is required when configuring HAE JSON ingest.");
-    }
-    return undefined;
-  }
-
-  return {
-    token,
-    inboxDir: trimToNull(env.GATEWAY_HAE_JSON_INBOX_DIR) ?? DEFAULT_GATEWAY_HAE_JSON_INBOX_DIR,
-    maxBytes: readPositiveInteger(trimToNull(env.GATEWAY_HAE_JSON_MAX_BYTES), DEFAULT_GATEWAY_HAE_JSON_MAX_BYTES),
-    source: readHaeJsonSource(trimToNull(env.GATEWAY_HAE_JSON_SOURCE)),
-  };
-}
-
 /**
  * Resolves gateway HTTP server knobs from env without mixing env parsing into
  * the public request dispatcher.
  */
 export function resolveGatewayHttpConfig(env: NodeJS.ProcessEnv = process.env): GatewayHttpConfig {
-  const haeJsonIngest = resolveHaeJsonIngestConfig(env);
   return {
     env,
     host: trimToNull(env.GATEWAY_HOST) ?? DEFAULT_GATEWAY_HOST,
@@ -194,7 +155,6 @@ export function resolveGatewayHttpConfig(env: NodeJS.ProcessEnv = process.env): 
       DEFAULT_GATEWAY_ATTACHMENT_QUARANTINE_TTL_MS,
     ),
     attachmentAllowedMimeTypes: parseMimeAllowlist(trimToNull(env.GATEWAY_ATTACHMENT_ALLOWED_MIME_TYPES)),
-    ...(haeJsonIngest ? {haeJsonIngest} : {}),
   };
 }
 
