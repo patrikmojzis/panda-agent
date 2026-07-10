@@ -42,16 +42,7 @@ For example:
 - Use `panda env set <key> --stdin` or `panda env set <key> --from-file <path>` only when the agent already has the secret value.
 - Stored env credentials belong to the current agent.
 
-Examples:
-
-```json
-{
-  "key": "DATABASE_URL",
-  "value": "postgres://user:pass@db.example.com:5432/app"
-}
-```
-
-Agent CLI:
+Agent CLI example:
 
 ```bash
 printf '%s' "$DATABASE_URL" | panda env set DATABASE_URL --stdin
@@ -74,15 +65,6 @@ panda credentials set DATABASE_URL --agent panda
 ## MongoDB Example
 
 Store credential:
-
-```json
-{
-  "key": "MONGO_URI",
-  "value": "mongodb+srv://user:pass@cluster.example/app"
-}
-```
-
-Agent CLI:
 
 ```bash
 printf '%s' "$MONGO_URI" | panda env set MONGO_URI --stdin
@@ -130,15 +112,6 @@ panda watch create --json @watch.json
 
 Store credential:
 
-```json
-{
-  "key": "DATABASE_URL",
-  "value": "postgres://user:pass@db.example.com:5432/app"
-}
-```
-
-Agent CLI:
-
 ```bash
 printf '%s' "$DATABASE_URL" | panda env set DATABASE_URL --stdin
 ```
@@ -184,15 +157,6 @@ Notes:
 ## HTTP JSON Example
 
 Store credential:
-
-```json
-{
-  "key": "COINAPI_TOKEN",
-  "value": "token-goes-here"
-}
-```
-
-Agent CLI:
 
 ```bash
 printf '%s' "$COINAPI_TOKEN" | panda env set COINAPI_TOKEN --stdin
@@ -260,15 +224,6 @@ If the API uses a custom header instead of bearer auth:
 ## HTTP HTML Example
 
 Store credential if needed:
-
-```json
-{
-  "key": "LISTINGS_COOKIE",
-  "value": "session=abc123"
-}
-```
-
-Agent CLI:
 
 ```bash
 printf '%s' "$LISTINGS_COOKIE" | panda env set LISTINGS_COOKIE --stdin
@@ -350,29 +305,8 @@ Create watch for a page-content change instead:
 
 Store credentials:
 
-```json
-{
-  "key": "IMAP_USERNAME",
-  "value": "alerts@example.com"
-}
-```
-
-Agent CLI:
-
 ```bash
 printf '%s' "$IMAP_USERNAME" | panda env set IMAP_USERNAME --stdin
-```
-
-```json
-{
-  "key": "IMAP_PASSWORD",
-  "value": "super-secret-password"
-}
-```
-
-Agent CLI:
-
-```bash
 printf '%s' "$IMAP_PASSWORD" | panda env set IMAP_PASSWORD --stdin
 ```
 
