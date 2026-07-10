@@ -114,6 +114,25 @@ describe("model selector", () => {
     expect(resolveDefaultAgentSubagentModelSelector(role, {})).toBeUndefined();
   });
 
+  it.each([
+    ["openai-codex", "gpt-5.6-luna"],
+    ["openai-codex", "gpt-5.6-sol"],
+    ["openai-codex", "gpt-5.6-terra"],
+    ["openai", "gpt-5.6-luna"],
+    ["openai", "gpt-5.6-sol"],
+    ["openai", "gpt-5.6-terra"],
+  ] as const)("resolves the pi-ai GPT-5.6 catalog model %s/%s", (providerName, modelId) => {
+    expect(resolveModelSelector(`${providerName}/${modelId}`)).toEqual({
+      canonical: `${providerName}/${modelId}`,
+      providerName,
+      modelId,
+    });
+    expect(resolveProviderModel(providerName, modelId)).toMatchObject({
+      id: modelId,
+      provider: providerName,
+    });
+  });
+
   it("throws a configuration error for unknown model ids", () => {
     expect(() => resolveProviderModel("openai", "gpt-not-real")).toThrowError(ConfigurationError);
     expect(() => resolveProviderModel("openai", "gpt-not-real")).toThrowError(

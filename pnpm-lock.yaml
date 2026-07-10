@@ -18,8 +18,8 @@ importers:
   .:
     dependencies:
       '@earendil-works/pi-ai':
-        specifier: ^0.79.1
-        version: 0.79.1(@modelcontextprotocol/sdk@1.29.0(zod@4.3.6))(ws@8.21.0)(zod@4.3.6)
+        specifier: ^0.80.6
+        version: 0.80.6(@modelcontextprotocol/sdk@1.29.0(zod@4.3.6))(ws@8.21.0)(zod@4.3.6)
       '@mozilla/readability':
         specifier: ^0.6.0
         version: 0.6.0
@@ -98,7 +98,7 @@ importers:
         version: 6.0.3
       vitest:
         specifier: ^4.1.8
-        version: 4.1.8(@types/node@25.6.0)(msw@2.14.6(@types/node@25.6.0)(typescript@6.0.3))(vite@8.0.16(@types/node@25.6.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4))
+        version: 4.1.8(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(msw@2.14.6(@types/node@25.6.0)(typescript@6.0.3))(vite@8.0.16(@types/node@25.6.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4))
 
   apps/control-ui:
     dependencies:
@@ -318,10 +318,6 @@ packages:
     resolution: {integrity: sha512-43ajd1NF0RMgX5k0hxCNUyEdrtFUsb2aHT2QvpktSC/2Eyb2Jr/JPVqdp0XIoaHWikZJq5tNWSLO6kB5q2eMCA==}
     engines: {node: '>=20.0.0'}
 
-  '@aws-sdk/types@3.973.8':
-    resolution: {integrity: sha512-gjlAdtHMbtR9X5iIhVUvbVcy55KnznpC6bkDUWW9z915bi0ckdUr5cjf16Kp6xq0bP5HBD2xzgbL9F9Quv5vUw==}
-    engines: {node: '>=20.0.0'}
-
   '@aws-sdk/util-locate-window@3.965.5':
     resolution: {integrity: sha512-WhlJNNINQB+9qtLtZJcpQdgZw3SCDCpXdUJP7cToGwHbCWCnRckGlc6Bx/OhWwIYFNAn+FIydY8SZ0QmVu3xTQ==}
     engines: {node: '>=20.0.0'}
@@ -514,8 +510,8 @@ packages:
     resolution: {integrity: sha512-60Vh31k5bAAPq57Isx+Iopl2FrZQzZyUc4kh/OESgXiwhrKXqdxEn3JGTGSawng1DkkeC4jofFq1VpPJqNQx4w==}
     hasBin: true
 
-  '@earendil-works/pi-ai@0.79.1':
-    resolution: {integrity: sha512-UnORwrcsTNLm4StEvoM8iEom0u87Te7BXEWxhec3iNXygWD6eEBosUoq9ddcveqtj/QpUZBMPWUu81cCtZxzkQ==}
+  '@earendil-works/pi-ai@0.80.6':
+    resolution: {integrity: sha512-7xfLk8sANBp+bpPEbjoOZTbPxsa+++b1JXAoSJsNa3vbs9AHHEclmvg54XLQcxH+fuwaeti/g2jeIfJ+mVYLpA==}
     engines: {node: '>=22.19.0'}
     hasBin: true
 
@@ -1004,8 +1000,13 @@ packages:
   '@keyv/serialize@1.1.1':
     resolution: {integrity: sha512-dXn3FZhPv0US+7dtJsIi2R+c7qWYiReoEh5zUntWCf4oSpMNib8FDhSoed6m3QyZdx5hK7iLFkYk3rNxwt8vTA==}
 
-  '@mistralai/mistralai@2.2.1':
-    resolution: {integrity: sha512-uKU8CZmL2RzYKmplsU01hii4p3pe4HqJefpWNRWXm1Tcm0Sm4xXfwSLIy4k7ZCPlbETCGcp69E7hZs+WOJ5itQ==}
+  '@mistralai/mistralai@2.2.6':
+    resolution: {integrity: sha512-W8pX7zHxjJvMIpw8JMxeJEleapXX0Q9NPszdNzqkM3MIEoIGPObdodujj+WHteXEvGfaP/AMwlNyRfEzSY6dQQ==}
+    peerDependencies:
+      '@opentelemetry/api': ^1.9.0
+    peerDependenciesMeta:
+      '@opentelemetry/api':
+        optional: true
 
   '@modelcontextprotocol/sdk@1.29.0':
     resolution: {integrity: sha512-zo37mZA9hJWpULgkRpowewez1y6ML5GsXJPY8FI0tBBCd77HEvza4jDqRKOXgHNn867PVGCyTdzqpz0izu5ZjQ==}
@@ -1072,6 +1073,14 @@ packages:
 
   '@open-draft/until@2.1.0':
     resolution: {integrity: sha512-U69T3ItWHvLwGg5eJ0n3I62nWuE6ilHlmz7zM0npLBRvPRd7e6NYmg54vvRtP5mZG7kZqZCFVdsTWo7BPtBujg==}
+
+  '@opentelemetry/api@1.9.0':
+    resolution: {integrity: sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg==}
+    engines: {node: '>=8.0.0'}
+
+  '@opentelemetry/semantic-conventions@1.43.0':
+    resolution: {integrity: sha512-eSYWTm620tTk45EKSedaUL8MFYI8hW164hIXsgIHyxu3VobUB3fFCu5t0hQby6OoWRPsG1KkKUG2M5UadiLiVg==}
+    engines: {node: '>=14'}
 
   '@oxc-project/types@0.133.0':
     resolution: {integrity: sha512-KzkdCd6Uxqnf6l3HOw1xfatAlUURA0g14cvBYFyJ5SaNOQbOUvBr9PKArcPcrNIeRsBdgcUzOGrhKveVpvOIGA==}
@@ -1966,10 +1975,6 @@ packages:
 
   '@smithy/signature-v4@5.4.6':
     resolution: {integrity: sha512-Ojg4B6oIDlIr1R86xCDJt1zJWnYa0VINmqdjfe9qxWjdRivHalZ3iSlQgVqYbW0MdpFOC5XfHEWsnbmdnpIILQ==}
-    engines: {node: '>=18.0.0'}
-
-  '@smithy/types@4.14.1':
-    resolution: {integrity: sha512-59b5HtSVrVR/eYNei3BUj3DCPKD/G7EtDDe7OEJE7i7FtQFugYo6MxbotS8mVJkLNVf8gYaAlEBwwtJ9HzhWSg==}
     engines: {node: '>=18.0.0'}
 
   '@smithy/types@4.14.3':
@@ -4973,7 +4978,7 @@ snapshots:
   '@aws-crypto/crc32@5.2.0':
     dependencies:
       '@aws-crypto/util': 5.2.0
-      '@aws-sdk/types': 3.973.8
+      '@aws-sdk/types': 3.973.12
       tslib: 2.8.1
 
   '@aws-crypto/sha256-browser@5.2.0':
@@ -4981,7 +4986,7 @@ snapshots:
       '@aws-crypto/sha256-js': 5.2.0
       '@aws-crypto/supports-web-crypto': 5.2.0
       '@aws-crypto/util': 5.2.0
-      '@aws-sdk/types': 3.973.8
+      '@aws-sdk/types': 3.973.12
       '@aws-sdk/util-locate-window': 3.965.5
       '@smithy/util-utf8': 2.3.0
       tslib: 2.8.1
@@ -4989,7 +4994,7 @@ snapshots:
   '@aws-crypto/sha256-js@5.2.0':
     dependencies:
       '@aws-crypto/util': 5.2.0
-      '@aws-sdk/types': 3.973.8
+      '@aws-sdk/types': 3.973.12
       tslib: 2.8.1
 
   '@aws-crypto/supports-web-crypto@5.2.0':
@@ -4998,7 +5003,7 @@ snapshots:
 
   '@aws-crypto/util@5.2.0':
     dependencies:
-      '@aws-sdk/types': 3.973.8
+      '@aws-sdk/types': 3.973.12
       '@smithy/util-utf8': 2.3.0
       tslib: 2.8.1
 
@@ -5012,11 +5017,11 @@ snapshots:
       '@aws-sdk/middleware-eventstream': 3.972.17
       '@aws-sdk/middleware-websocket': 3.972.28
       '@aws-sdk/token-providers': 3.1048.0
-      '@aws-sdk/types': 3.973.8
+      '@aws-sdk/types': 3.973.12
       '@smithy/core': 3.24.6
       '@smithy/fetch-http-handler': 5.4.6
-      '@smithy/node-http-handler': 4.7.3
-      '@smithy/types': 4.14.1
+      '@smithy/node-http-handler': 4.7.7
+      '@smithy/types': 4.14.3
       tslib: 2.8.1
 
   '@aws-sdk/core@3.974.20':
@@ -5162,9 +5167,9 @@ snapshots:
     dependencies:
       '@aws-sdk/core': 3.974.20
       '@aws-sdk/nested-clients': 3.997.19
-      '@aws-sdk/types': 3.973.8
+      '@aws-sdk/types': 3.973.12
       '@smithy/core': 3.24.6
-      '@smithy/types': 4.14.1
+      '@smithy/types': 4.14.3
       tslib: 2.8.1
 
   '@aws-sdk/token-providers@3.1065.0':
@@ -5179,11 +5184,6 @@ snapshots:
   '@aws-sdk/types@3.973.12':
     dependencies:
       '@smithy/types': 4.14.3
-      tslib: 2.8.1
-
-  '@aws-sdk/types@3.973.8':
-    dependencies:
-      '@smithy/types': 4.14.1
       tslib: 2.8.1
 
   '@aws-sdk/util-locate-window@3.965.5':
@@ -5448,12 +5448,13 @@ snapshots:
       which: 4.0.0
       yocto-spinner: 1.2.0
 
-  '@earendil-works/pi-ai@0.79.1(@modelcontextprotocol/sdk@1.29.0(zod@4.3.6))(ws@8.21.0)(zod@4.3.6)':
+  '@earendil-works/pi-ai@0.80.6(@modelcontextprotocol/sdk@1.29.0(zod@4.3.6))(ws@8.21.0)(zod@4.3.6)':
     dependencies:
       '@anthropic-ai/sdk': 0.91.1(zod@4.3.6)
       '@aws-sdk/client-bedrock-runtime': 3.1048.0
       '@google/genai': 1.52.0(@modelcontextprotocol/sdk@1.29.0(zod@4.3.6))
-      '@mistralai/mistralai': 2.2.1
+      '@mistralai/mistralai': 2.2.6(@opentelemetry/api@1.9.0)
+      '@opentelemetry/api': 1.9.0
       '@smithy/node-http-handler': 4.7.3
       http-proxy-agent: 7.0.2
       https-proxy-agent: 7.0.6
@@ -5836,11 +5837,14 @@ snapshots:
 
   '@keyv/serialize@1.1.1': {}
 
-  '@mistralai/mistralai@2.2.1':
+  '@mistralai/mistralai@2.2.6(@opentelemetry/api@1.9.0)':
     dependencies:
+      '@opentelemetry/semantic-conventions': 1.43.0
       ws: 8.21.0
       zod: 4.3.6
       zod-to-json-schema: 3.25.2(zod@4.3.6)
+    optionalDependencies:
+      '@opentelemetry/api': 1.9.0
     transitivePeerDependencies:
       - bufferutil
       - utf-8-validate
@@ -5944,6 +5948,10 @@ snapshots:
       outvariant: 1.4.3
 
   '@open-draft/until@2.1.0': {}
+
+  '@opentelemetry/api@1.9.0': {}
+
+  '@opentelemetry/semantic-conventions@1.43.0': {}
 
   '@oxc-project/types@0.133.0': {}
 
@@ -6844,10 +6852,6 @@ snapshots:
     dependencies:
       '@smithy/core': 3.24.6
       '@smithy/types': 4.14.3
-      tslib: 2.8.1
-
-  '@smithy/types@4.14.1':
-    dependencies:
       tslib: 2.8.1
 
   '@smithy/types@4.14.3':
@@ -9682,7 +9686,7 @@ snapshots:
       jiti: 2.7.0
       tsx: 4.22.4
 
-  vitest@4.1.8(@types/node@25.6.0)(msw@2.14.6(@types/node@25.6.0)(typescript@6.0.3))(vite@8.0.16(@types/node@25.6.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)):
+  vitest@4.1.8(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(msw@2.14.6(@types/node@25.6.0)(typescript@6.0.3))(vite@8.0.16(@types/node@25.6.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)):
     dependencies:
       '@vitest/expect': 4.1.8
       '@vitest/mocker': 4.1.8(msw@2.14.6(@types/node@25.6.0)(typescript@6.0.3))(vite@8.0.16(@types/node@25.6.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4))
@@ -9705,6 +9709,7 @@ snapshots:
       vite: 8.0.16(@types/node@25.6.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.4)
       why-is-node-running: 2.3.0
     optionalDependencies:
+      '@opentelemetry/api': 1.9.0
       '@types/node': 25.6.0
     transitivePeerDependencies:
       - msw
