@@ -43,7 +43,7 @@ function resultFor(message) {
       id: message.id,
       result: {
         protocolVersion: message.params?.protocolVersion ?? "2025-11-25",
-        capabilities: {
+        capabilities: mode === "invalid-initialize" ? "malformed" : {
           tools: {listChanged: false},
           ...(emitSecretKeys && secret ? {experimental: {[secret]: {source: "server-metadata"}}} : {}),
         },

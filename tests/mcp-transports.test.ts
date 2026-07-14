@@ -72,6 +72,14 @@ describe("MCP exact raw secret redaction", () => {
     });
     expect(() => redactExactJson({[secret]: "one", "[redacted]": "two"}, [secret]))
       .toThrow(McpRedactionCollisionError);
+    const protoKeys = redactExactJson(JSON.parse(
+      '{"__proto__":"primitive","nested":{"__proto__":{"kept":true}}}',
+    ), [secret]);
+    expect(Object.prototype.hasOwnProperty.call(protoKeys, "__proto__")).toBe(true);
+    expect(JSON.stringify(protoKeys)).toBe(
+      '{"__proto__":"primitive","nested":{"__proto__":{"kept":true}}}',
+    );
+    expect(Object.getPrototypeOf(protoKeys)).toBe(Object.prototype);
   });
 
   it("holds a raw suffix so a secret split across stderr chunks is redacted", () => {
@@ -228,6 +236,14 @@ describe("MCP SDK runner", () => {
       url: "http://127.0.0.1:1/mcp",
       timeoutMs: 2_000,
     }))).rejects.toMatchObject({exitCode: 3, phase: "connect"});
+
+    const invalidInitialize = await startHttpFixture("invalid-initialize");
+    await expect(new SdkMcpRunner().listTools(invocation({
+      transport: "streamable-http",
+      enabled: true,
+      url: invalidInitialize.mcp,
+      timeoutMs: 2_000,
+    }))).rejects.toMatchObject({exitCode: 3, phase: "invalid_content"});
 
     const expired = await startHttpFixture("session-expired");
     await expect(new SdkMcpRunner().listTools(invocation({

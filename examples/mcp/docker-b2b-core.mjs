@@ -6,7 +6,6 @@ import {startCommandHttpServer} from "/app/dist/integrations/commands/http-serve
 import {startControlServer} from "/app/dist/integrations/control/http-server.js";
 
 const databaseUrl = process.env.DATABASE_URL;
-const commandUrl = process.env.MCP_B2B_COMMAND_URL ?? "http://mcp-core:8096";
 const accessDir = process.env.MCP_B2B_ACCESS_DIR ?? "/run/panda-b2b";
 if (!databaseUrl) throw new Error("DATABASE_URL is required.");
 
@@ -20,11 +19,11 @@ const runtime = await createRuntime({
 let commandServer;
 let controlServer;
 
-async function writeAccessFile(name, lease) {
-  if (!lease) throw new Error(`MCP B2B ${name} lease was not issued.`);
+async function writeAccessFile(name, commandAccess) {
+  if (!commandAccess?.url) throw new Error(`MCP B2B ${name} HTTP command access was not issued.`);
   await writeFile(
     `${accessDir}/${name}`,
-    `PANDA_COMMAND_URL=${commandUrl}\nPANDA_COMMAND_SOCKET=\nPANDA_COMMAND_TOKEN=${lease.token}\n`,
+    `PANDA_COMMAND_URL=${commandAccess.url}\nPANDA_COMMAND_SOCKET=\nPANDA_COMMAND_TOKEN=${commandAccess.token}\n`,
     {mode: 0o600},
   );
 }
@@ -50,16 +49,27 @@ try {
     currentThreadId: "thread-mcp-primary",
     createdByIdentityId: "identity-mcp-b2b",
   });
-  for (const suffix of ["deny", "allow"]) {
-    await runtime.sessionStore.createSession({
-      id: `session-mcp-subagent-${suffix}`,
-      agentKey: "panda",
-      kind: "subagent",
-      currentThreadId: `thread-mcp-subagent-${suffix}`,
-      createdByIdentityId: "identity-mcp-b2b",
-      metadata: {mcpB2b: true},
-    });
-  }
+  const deniedSubagent = await runtime.subagentSessions.createSubagentSession({
+    agentKey: "panda",
+    parentSessionId: "session-mcp-primary",
+    task: "Prove MCP credential denial through production policy resolution.",
+    toolGroups: ["mcp"],
+    sessionId: "session-mcp-subagent-deny",
+    threadId: "thread-mcp-subagent-deny",
+    createdByIdentityId: "identity-mcp-b2b",
+    deliveryMode: "queue",
+  });
+  const allowedSubagent = await runtime.subagentSessions.createSubagentSession({
+    agentKey: "panda",
+    parentSessionId: "session-mcp-primary",
+    task: "Prove MCP credential allowlisting through production policy resolution.",
+    toolGroups: ["mcp"],
+    credentialAllowlist: ["FIXTURE_SECRET"],
+    sessionId: "session-mcp-subagent-allow",
+    threadId: "thread-mcp-subagent-allow",
+    createdByIdentityId: "identity-mcp-b2b",
+    deliveryMode: "queue",
+  });
 
   commandServer = await startCommandHttpServer({
     host: "0.0.0.0",
@@ -90,26 +100,24 @@ try {
     },
   });
 
-  const toolPolicy = {allowedTools: ["mcp.*"]};
+  async function refreshCommandAccess(session) {
+    const executionEnvironment = await runtime.executionEnvironmentResolver.resolveDefault(session);
+    const refreshed = await runtime.executionEnvironmentService.refreshSessionCommandAccess({
+      session,
+      executionEnvironment,
+    });
+    if (!refreshed.refreshed || !refreshed.commandAccess) {
+      throw new Error(`MCP B2B command access refresh failed: ${refreshed.reason ?? "unknown"}.`);
+    }
+    return refreshed.commandAccess;
+  }
+
   await mkdir(accessDir, {recursive: true, mode: 0o700});
-  await writeAccessFile("primary", runtime.commandLeases.issueCommandLease({
-    agentKey: "panda",
-    sessionId: "session-mcp-primary",
-    toolPolicy,
-    credentialPolicy: {mode: "all_agent"},
-  }));
-  await writeAccessFile("subagent-deny", runtime.commandLeases.issueCommandLease({
-    agentKey: "panda",
-    sessionId: "session-mcp-subagent-deny",
-    toolPolicy,
-    credentialPolicy: {mode: "none"},
-  }));
-  await writeAccessFile("subagent-allow", runtime.commandLeases.issueCommandLease({
-    agentKey: "panda",
-    sessionId: "session-mcp-subagent-allow",
-    toolPolicy,
-    credentialPolicy: {mode: "allowlist", envKeys: ["FIXTURE_SECRET"]},
-  }));
+  const primarySession = await runtime.sessionStore.getSession("session-mcp-primary");
+  await writeAccessFile("primary-initial", await refreshCommandAccess(primarySession));
+  await writeAccessFile("primary", await refreshCommandAccess(primarySession));
+  await writeAccessFile("subagent-deny", await refreshCommandAccess(deniedSubagent.session));
+  await writeAccessFile("subagent-allow", await refreshCommandAccess(allowedSubagent.session));
 
   process.stdout.write(`READY ${JSON.stringify({controlPort: controlServer.port, commandPort: commandServer.port})}\n`);
   await new Promise((resolve) => {

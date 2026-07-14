@@ -36,7 +36,12 @@ export function redactExactJson(value: unknown, secrets: readonly string[]): Jso
         if (Object.prototype.hasOwnProperty.call(result, redactedKey)) {
           throw new McpRedactionCollisionError();
         }
-        result[redactedKey] = visit(child);
+        Object.defineProperty(result, redactedKey, {
+          value: visit(child),
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
       }
       return result;
     }

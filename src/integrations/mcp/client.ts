@@ -134,7 +134,11 @@ function phaseForHttpStatus(status: number, sessionRequest: boolean): Extract<Mc
   return "http_status";
 }
 
-function createBoundedFetch(config: McpResolvedHttpServerConfig, deadlineSignal: AbortSignal): typeof fetch {
+function createBoundedFetch(
+  config: McpResolvedHttpServerConfig,
+  deadlineSignal: AbortSignal,
+  onResponse: () => void,
+): typeof fetch {
   const configured = new URL(config.url);
   return async (input, init = {}) => {
     const request = new Request(input, init);
@@ -146,6 +150,7 @@ function createBoundedFetch(config: McpResolvedHttpServerConfig, deadlineSignal:
     let response: Response;
     try {
       response = await fetch(request, {redirect: "manual", signal});
+      onResponse();
     } catch (error) {
       if (deadlineSignal.aborted || (error instanceof DOMException && error.name === "AbortError")) throw error;
       throw new McpHttpBoundaryError("connect");
@@ -311,6 +316,7 @@ export class SdkMcpRunner implements McpRunner {
     const client = createClient();
     let transport: BoundedStdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport;
     let stage: "connect" | "operation" = "connect";
+    let httpResponseReceived = false;
     let stderr = "";
     let stderrTruncated = false;
     let stderrFinished = false;
@@ -342,7 +348,9 @@ export class SdkMcpRunner implements McpRunner {
       });
       transport.stderr.on("data", (chunk) => redactor?.append(Buffer.isBuffer(chunk) ? chunk : String(chunk)));
     } else {
-      const fetch = createBoundedFetch(config, deadline.signal);
+      const fetch = createBoundedFetch(config, deadline.signal, () => {
+        httpResponseReceived = true;
+      });
       const requestInit = {headers: config.headers};
       transport = config.transport === "streamable-http"
         ? new StreamableHTTPClientTransport(new URL(config.url), {fetch, requestInit})
@@ -380,6 +388,8 @@ export class SdkMcpRunner implements McpRunner {
         stderrFinished = true;
       }
       const timeout = isTimeout(error, deadline.signal);
+      const initializationProtocolDataReceived = httpResponseReceived
+        || (transport instanceof BoundedStdioClientTransport && transport.protocolMessageReceived);
       const phase: McpRunnerPhase = timeout
         ? "timeout"
         : error instanceof McpOutputLimitError
@@ -391,7 +401,7 @@ export class SdkMcpRunner implements McpRunner {
             : error instanceof McpRedactionCollisionError || error instanceof SyntaxError
               ? "invalid_content"
               : stage === "connect"
-                ? "connect"
+                ? initializationProtocolDataReceived ? "invalid_content" : "connect"
                 : "protocol";
       const status = httpStatus(error);
       throw new McpRunnerError({

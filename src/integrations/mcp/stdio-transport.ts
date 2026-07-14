@@ -32,11 +32,16 @@ export class BoundedStdioClientTransport implements Transport {
   private readonly stderrStream = new PassThrough();
   private pending = Buffer.alloc(0);
   private overflowed = false;
+  private receivedMessage = false;
 
   constructor(private readonly options: BoundedStdioTransportOptions) {}
 
   get stderr(): Stream {
     return this.stderrStream;
+  }
+
+  get protocolMessageReceived(): boolean {
+    return this.receivedMessage;
   }
 
   get ingressLimitExceeded(): boolean {
@@ -100,7 +105,9 @@ export class BoundedStdioClientTransport implements Transport {
       this.pending = Buffer.alloc(0);
       try {
         const text = line.toString("utf8").replace(/\r$/, "");
-        this.onmessage?.(deserializeMessage(text));
+        const message = deserializeMessage(text);
+        this.receivedMessage = true;
+        this.onmessage?.(message);
       } catch (error) {
         this.onerror?.(error instanceof Error ? error : new Error(String(error)));
       }

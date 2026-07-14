@@ -24,9 +24,17 @@ describe("MCP Docker B2B contract", () => {
     expect(core).toContain("createRuntime");
     expect(core).toContain("startControlServer");
     expect(core).toContain("startCommandHttpServer");
-    expect(core).toContain('credentialPolicy: {mode: "none"}');
-    expect(core).toContain('credentialPolicy: {mode: "allowlist", envKeys: ["FIXTURE_SECRET"]}');
-    expect(core).toContain('credentialPolicy: {mode: "all_agent"}');
+    expect(core).toContain("subagentSessions.createSubagentSession");
+    expect(core).toContain("executionEnvironmentResolver.resolveDefault");
+    expect(core).toContain("executionEnvironmentService.refreshSessionCommandAccess");
+    expect(core).toContain('writeAccessFile("primary-initial", await refreshCommandAccess(primarySession))');
+    expect(core.match(/refreshCommandAccess\(primarySession\)/g)).toHaveLength(2);
+    expect(core).toContain('credentialAllowlist: ["FIXTURE_SECRET"]');
+    expect(core).not.toContain("issueCommandLease");
+    expect(core).not.toContain("credentialPolicy:");
+    expect(core).not.toContain('kind: "subagent"');
+    expect(live).toContain('details: {exitCode: 3, kind: "authentication"}');
+    expect(live).toContain("still exists after removal");
   });
 
   it("triggers for every MCP authority, command, shim, subagent, runtime, Control, UI, and fixture seam", async () => {
