@@ -188,6 +188,23 @@ describe("generic MCP commands", () => {
     expect(deps.runner.listTools).not.toHaveBeenCalled();
   });
 
+  it("fails closed without a partial command result over the normalized 8 MiB cap", async () => {
+    const deps = dependencies({
+      runner: {
+        listTools: vi.fn(async () => ({
+          value: {tools: [{name: "huge", description: "x".repeat(8 * 1024 * 1024)}]},
+          diagnostics: {transport: "stdio" as const, stderr: "", stderrTruncated: false},
+        })),
+        callTool: vi.fn(),
+      },
+    });
+    const result = await new RuntimeCommandDispatcher({commands: [createMcpToolsCommand(deps)]}).execute(
+      request("mcp.tools", {server: "fixture"}),
+    );
+    expect(result).toMatchObject({ok: false, error: {details: {exitCode: 3, kind: "output_limit"}}});
+    expect(result).not.toHaveProperty("output");
+  });
+
   it("rejects timeout overrides outside the 1s-120s contract", async () => {
     const deps = dependencies();
     const dispatcher = new RuntimeCommandDispatcher({commands: [createMcpToolsCommand(deps)]});

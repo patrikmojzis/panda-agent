@@ -124,6 +124,11 @@ async function runStdio() {
           process.stdout.write("x".repeat(8 * 1024 * 1024 + 1));
           return;
         }
+        if (mode === "stderr-flood" && message.method === "tools/call") {
+          if (!process.stderr.write("z".repeat(70 * 1024))) {
+            await once(process.stderr, "drain");
+          }
+        }
         if (message.method === "tools/call" && message.params?.name === "secret_echo" && secret) {
           const split = Math.max(1, Math.floor(secret.length / 2));
           process.stderr.write(`stderr:${secret.slice(0, split)}`);

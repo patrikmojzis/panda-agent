@@ -178,6 +178,18 @@ describe("MCP SDK runner", () => {
     expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 
+  it("caps stdio stderr at 64 KiB and marks truncation", async () => {
+    const result = await new SdkMcpRunner().callTool(invocation({
+      transport: "stdio",
+      enabled: true,
+      command: process.execPath,
+      args: [fixturePath, "--transport", "stdio", "--mode", "stderr-flood"],
+      timeoutMs: 2_000,
+    }), {name: "echo", arguments: {}});
+    expect(result.diagnostics).toMatchObject({stderrTruncated: true});
+    expect(Buffer.byteLength(result.diagnostics.stderr ?? "", "utf8")).toBeLessThanOrEqual(64 * 1024);
+  });
+
   it("kills stdio before parsing a JSON-RPC line over 8 MiB", async () => {
     await expect(new SdkMcpRunner().listTools(invocation({
       transport: "stdio",
