@@ -202,6 +202,9 @@ function defaultModuleDependencies(): AgentCommandModuleDependencies {
     sessionTodos: {} as AgentCommandModuleDependencies["sessionTodos"],
     subagentProfiles: {} as AgentCommandModuleDependencies["subagentProfiles"],
     credentials: {} as AgentCommandModuleDependencies["credentials"],
+    credentialResolver: {} as AgentCommandModuleDependencies["credentialResolver"],
+    mcpConfigs: {} as AgentCommandModuleDependencies["mcpConfigs"],
+    mcpRunner: {} as AgentCommandModuleDependencies["mcpRunner"],
     postgresReadonly: {
       pool: {} as NonNullable<AgentCommandModuleDependencies["postgresReadonly"]>["pool"],
     },

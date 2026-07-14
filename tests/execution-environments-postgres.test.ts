@@ -540,7 +540,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
         mode: "all_agent",
       },
       toolPolicy: {
-        allowedTools: expect.arrayContaining(["bash", "view_media"]),
+        allowedTools: expect.arrayContaining(["bash", "view_media", "mcp.*"]),
         bash: {
           allowed: true,
         },
@@ -1025,6 +1025,33 @@ describe("PostgresExecutionEnvironmentStore", () => {
     })).rejects.toThrow("already exists with different policy");
   });
 
+  it("carries credential policy in the initial disposable command lease", async () => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const session = await sessionStore.getSession("session-worker");
+    const manager = new FakeEnvironmentManager();
+    const commandLeases = new RuntimeCommandLeaseService({
+      baseUrl: "http://panda-core:8096",
+      commandCatalog: DEFAULT_AGENT_COMMAND_CATALOG,
+    });
+    const service = new ExecutionEnvironmentLifecycleService({store: environmentStore, manager, commandLeases});
+    await service.createDisposableForSession({
+      session,
+      environmentId: "env-mcp-policy",
+      credentialPolicy: {mode: "allowlist", envKeys: ["MCP_TOKEN"]},
+      skillPolicy: {mode: "none"},
+      toolPolicy: {allowedTools: ["mcp.*"]},
+    });
+    const token = manager.requests[0]?.commandAccess?.token;
+    expect(token).toBeTruthy();
+    await expect(commandLeases.verify(token!)).resolves.toMatchObject({
+      agentKey: "panda",
+      sessionId: "session-worker",
+      environmentId: "env-mcp-policy",
+      credentialPolicy: {mode: "allowlist", envKeys: ["MCP_TOKEN"]},
+      allowedCommands: ["mcp.tools", "mcp.call"],
+    });
+  });
+
   it("refreshes disposable command access with current input identity scope", async () => {
     const {environmentStore, sessionStore} = await createHarness();
     const session = await sessionStore.getSession("session-worker");
@@ -1045,6 +1072,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
         id: "env-worker",
         kind: "disposable_container",
         source: "binding",
+        credentialPolicy: {mode: "allowlist", envKeys: ["MCP_TOKEN"]},
         skillPolicy: {mode: "all_agent"},
         toolPolicy: {allowedTools: ["micro-app.link.create", "micro-app.view"]},
       },
@@ -1074,6 +1102,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
       environmentId: "env-worker",
       identityId: "identity-current",
       inputMessageId: "message-current",
+      credentialPolicy: {mode: "allowlist", envKeys: ["MCP_TOKEN"]},
       allowedCommands: ["micro-app.link.create", "micro-app.view"],
     });
   });
@@ -1134,6 +1163,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
         id: "persistent_agent_runner:panda",
         kind: "persistent_agent_runner",
         source: "fallback",
+        credentialPolicy: {mode: "all_agent"},
         skillPolicy: {mode: "all_agent"},
         toolPolicy: {
           allowedTools: [
@@ -1171,6 +1201,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
     await expect(commandLeases.verify(refresh.commandAccess!.token)).resolves.toMatchObject({
       agentKey: "panda",
       sessionId: "session-main",
+      credentialPolicy: {mode: "all_agent"},
       allowedCommands: [
         "telegram.chat.list",
         "telegram.chat.info",

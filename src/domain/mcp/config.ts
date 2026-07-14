@@ -1,182 +1,250 @@
-import {readFile} from "node:fs/promises";
-import path from "node:path";
-
+import {normalizeCredentialEnvKey} from "../credentials/types.js";
 import {isRecord} from "../../lib/records.js";
-import {resolveAgentDir} from "../../lib/data-dir.js";
-import {trimToNull} from "../../lib/strings.js";
 import {
-  MCP_CONFIG_ENV_KEY,
-  MCP_DEFAULT_CONFIG_FILE,
   MCP_DEFAULT_TIMEOUT_MS,
+  MCP_MAX_SERVERS,
   MCP_MAX_TIMEOUT_MS,
   MCP_MIN_TIMEOUT_MS,
   type McpAgentConfig,
-  type McpResolvedAgentConfig,
+  type McpHttpBearerAuth,
+  type McpHttpHeaderValue,
   type McpServerConfig,
+  type McpValueSource,
 } from "./types.js";
 
 const SERVER_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-
-function isMissingFile(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
-}
+const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const COMMON_SERVER_FIELDS = new Set(["transport", "enabled", "timeoutMs"]);
+const STDIO_SERVER_FIELDS = new Set([...COMMON_SERVER_FIELDS, "command", "args", "cwd", "env"]);
+const HTTP_SERVER_FIELDS = new Set([...COMMON_SERVER_FIELDS, "url", "headers", "auth"]);
+const VALUE_SOURCE_FIELDS = new Set(["value", "credentialEnvKey"]);
+const HEADER_FIELDS = new Set(["name", "value", "credentialEnvKey"]);
+const AUTH_FIELDS = new Set(["type", "credentialEnvKey"]);
+const CONFIG_FIELDS = new Set(["servers"]);
+const RESERVED_HEADERS = new Set([
+  "host",
+  "content-length",
+  "connection",
+  "transfer-encoding",
+  "upgrade",
+  "accept",
+  "content-type",
+  "mcp-session-id",
+  "mcp-protocol-version",
+  "last-event-id",
+]);
 
 export function isSafeMcpServerName(value: string): boolean {
   return SERVER_NAME_PATTERN.test(value);
+}
+
+function assertKnownFields(value: Record<string, unknown>, allowed: ReadonlySet<string>, label: string): void {
+  const unknown = Object.keys(value).filter((key) => !allowed.has(key));
+  if (unknown.length > 0) {
+    throw new Error(`${label} contains unsupported field ${unknown[0]}.`);
+  }
 }
 
 function readRequiredString(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error(`${label} must be a non-empty string.`);
   }
-
+  if (/\r|\n/.test(value)) {
+    throw new Error(`${label} must not contain CR or LF characters.`);
+  }
   return value.trim();
 }
 
+function readLiteralString(value: unknown, label: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`${label} must be a string.`);
+  }
+  if (/\r|\n/.test(value)) {
+    throw new Error(`${label} must not contain CR or LF characters.`);
+  }
+  return value;
+}
+
 function readOptionalString(value: unknown, label: string): string | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-
-  return readRequiredString(value, label);
+  return value === undefined || value === null ? undefined : readRequiredString(value, label);
 }
 
-function readStringArray(value: unknown, label: string): string[] {
-  if (value === undefined || value === null) {
-    return [];
+function readEnabled(value: unknown, label: string): boolean {
+  if (typeof value !== "boolean") {
+    throw new Error(`${label} must be a boolean.`);
   }
-  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
-    throw new Error(`${label} must be an array of strings.`);
-  }
-
-  return value.map((entry) => entry);
-}
-
-function readStringMap(value: unknown, label: string): Record<string, string> | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-  if (!isRecord(value)) {
-    throw new Error(`${label} must be an object with string values.`);
-  }
-
-  const entries: Array<[string, string]> = [];
-  for (const [key, entry] of Object.entries(value)) {
-    if (!key.trim()) {
-      throw new Error(`${label} keys must be non-empty strings.`);
-    }
-    if (typeof entry !== "string") {
-      throw new Error(`${label}.${key} must be a string.`);
-    }
-    entries.push([key, entry]);
-  }
-
-  return Object.fromEntries(entries);
+  return value;
 }
 
 function readTimeoutMs(value: unknown, label: string): number {
-  if (value === undefined || value === null) {
-    return MCP_DEFAULT_TIMEOUT_MS;
-  }
+  if (value === undefined || value === null) return MCP_DEFAULT_TIMEOUT_MS;
   if (typeof value !== "number" || !Number.isInteger(value)) {
     throw new Error(`${label} must be an integer number of milliseconds.`);
   }
   if (value < MCP_MIN_TIMEOUT_MS || value > MCP_MAX_TIMEOUT_MS) {
     throw new Error(`${label} must be between ${MCP_MIN_TIMEOUT_MS} and ${MCP_MAX_TIMEOUT_MS}.`);
   }
-
   return value;
 }
 
-function normalizeServerConfig(name: string, value: unknown): McpServerConfig {
+function readStringArray(value: unknown, label: string): string[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string" || /\0/.test(entry))) {
+    throw new Error(`${label} must be an array of strings without NUL characters.`);
+  }
+  return [...value];
+}
+
+function readValueSource(value: unknown, label: string): McpValueSource {
+  if (!isRecord(value)) throw new Error(`${label} must be a JSON object.`);
+  assertKnownFields(value, VALUE_SOURCE_FIELDS, label);
+  const hasValue = Object.hasOwn(value, "value");
+  const hasCredential = Object.hasOwn(value, "credentialEnvKey");
+  if (hasValue === hasCredential) {
+    throw new Error(`${label} must include exactly one of value or credentialEnvKey.`);
+  }
+  if (hasValue) return {value: readLiteralString(value.value, `${label} value`)};
+  return {
+    credentialEnvKey: normalizeCredentialEnvKey(
+      readRequiredString(value.credentialEnvKey, `${label} credentialEnvKey`),
+    ),
+  };
+}
+
+function readEnvironment(value: unknown, label: string): Record<string, McpValueSource> | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) throw new Error(`${label} must be a JSON object.`);
+  const entries = Object.entries(value).map(([key, source]) => {
+    const envKey = normalizeCredentialEnvKey(key);
+    return [envKey, readValueSource(source, `${label}.${envKey}`)] as const;
+  });
+  return Object.fromEntries(entries);
+}
+
+function readUrl(value: unknown, label: string): string {
+  const raw = readRequiredString(value, label);
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`${label} must be a valid absolute URL.`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`${label} must use http: or https:.`);
+  }
+  if (url.username || url.password) throw new Error(`${label} must not include userinfo.`);
+  if (url.hash) throw new Error(`${label} must not include a fragment.`);
+  return url.toString();
+}
+
+function normalizeHeaderName(value: unknown, label: string): string {
+  const name = readRequiredString(value, label);
+  if (!HEADER_NAME_PATTERN.test(name)) throw new Error(`${label} is not a valid HTTP header name.`);
+  const lower = name.toLowerCase();
+  if (RESERVED_HEADERS.has(lower) || lower.startsWith("proxy-")) {
+    throw new Error(`${label} ${name} is owned by HTTP or the MCP SDK.`);
+  }
+  return name;
+}
+
+function readHeaders(value: unknown, label: string, hasAuth: boolean): McpHttpHeaderValue[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array.`);
+  const seen = new Set<string>();
+  return value.map((entry, index) => {
+    const itemLabel = `${label}[${index}]`;
+    if (!isRecord(entry)) throw new Error(`${itemLabel} must be a JSON object.`);
+    assertKnownFields(entry, HEADER_FIELDS, itemLabel);
+    const name = normalizeHeaderName(entry.name, `${itemLabel} name`);
+    const lower = name.toLowerCase();
+    if (seen.has(lower)) throw new Error(`${label} contains duplicate header ${name}.`);
+    if (hasAuth && lower === "authorization") {
+      throw new Error(`${itemLabel} Authorization conflicts with bearer auth.`);
+    }
+    seen.add(lower);
+    const hasValue = Object.hasOwn(entry, "value");
+    const hasCredential = Object.hasOwn(entry, "credentialEnvKey");
+    if (hasValue === hasCredential) {
+      throw new Error(`${itemLabel} must include exactly one of value or credentialEnvKey.`);
+    }
+    return hasValue
+      ? {name, value: readLiteralString(entry.value, `${itemLabel} value`)}
+      : {
+        name,
+        credentialEnvKey: normalizeCredentialEnvKey(
+          readRequiredString(entry.credentialEnvKey, `${itemLabel} credentialEnvKey`),
+        ),
+      };
+  });
+}
+
+function readAuth(value: unknown, label: string): McpHttpBearerAuth | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isRecord(value)) throw new Error(`${label} must be a JSON object.`);
+  assertKnownFields(value, AUTH_FIELDS, label);
+  if (value.type !== "bearer") throw new Error(`${label} type must be "bearer".`);
+  return {
+    type: "bearer",
+    credentialEnvKey: normalizeCredentialEnvKey(
+      readRequiredString(value.credentialEnvKey, `${label} credentialEnvKey`),
+    ),
+  };
+}
+
+export function normalizeMcpServerConfig(name: string, value: unknown): McpServerConfig {
   if (!isSafeMcpServerName(name)) {
     throw new Error(`MCP server name ${JSON.stringify(name)} must match ${SERVER_NAME_PATTERN}.`);
   }
-  if (!isRecord(value)) {
-    throw new Error(`MCP server ${name} must be a JSON object.`);
+  if (!isRecord(value)) throw new Error(`MCP server ${name} must be a JSON object.`);
+  if (value.transport === "stdio") {
+    assertKnownFields(value, STDIO_SERVER_FIELDS, `MCP server ${name}`);
+    const cwd = readOptionalString(value.cwd, `MCP server ${name} cwd`);
+    const env = readEnvironment(value.env, `MCP server ${name} env`);
+    return {
+      transport: "stdio",
+      enabled: readEnabled(value.enabled, `MCP server ${name} enabled`),
+      command: readRequiredString(value.command, `MCP server ${name} command`),
+      args: readStringArray(value.args, `MCP server ${name} args`),
+      ...(cwd ? {cwd} : {}),
+      ...(env ? {env} : {}),
+      timeoutMs: readTimeoutMs(value.timeoutMs, `MCP server ${name} timeoutMs`),
+    };
   }
-  const transport = value.transport ?? "stdio";
-  if (transport !== "stdio") {
-    throw new Error(`MCP server ${name} transport must be "stdio".`);
+  if (value.transport === "streamable-http" || value.transport === "sse") {
+    assertKnownFields(value, HTTP_SERVER_FIELDS, `MCP server ${name}`);
+    const auth = readAuth(value.auth, `MCP server ${name} auth`);
+    const headers = readHeaders(value.headers, `MCP server ${name} headers`, Boolean(auth));
+    return {
+      transport: value.transport,
+      enabled: readEnabled(value.enabled, `MCP server ${name} enabled`),
+      url: readUrl(value.url, `MCP server ${name} url`),
+      ...(headers ? {headers} : {}),
+      ...(auth ? {auth} : {}),
+      timeoutMs: readTimeoutMs(value.timeoutMs, `MCP server ${name} timeoutMs`),
+    };
   }
+  throw new Error(`MCP server ${name} transport must be "stdio", "streamable-http", or "sse".`);
+}
 
-  const cwd = readOptionalString(value.cwd, `MCP server ${name} cwd`);
+export function normalizeMcpConfig(value: unknown): McpAgentConfig {
+  if (!isRecord(value)) throw new Error("MCP config must be a JSON object.");
+  assertKnownFields(value, CONFIG_FIELDS, "MCP config");
+  if (!isRecord(value.servers)) throw new Error("MCP config must include a servers object.");
+  const entries = Object.entries(value.servers);
+  if (entries.length > MCP_MAX_SERVERS) {
+    throw new Error(`MCP config cannot contain more than ${MCP_MAX_SERVERS} servers.`);
+  }
   return {
-    transport: "stdio",
-    command: readRequiredString(value.command, `MCP server ${name} command`),
-    args: readStringArray(value.args, `MCP server ${name} args`),
-    ...(cwd ? {cwd} : {}),
-    ...(value.env === undefined || value.env === null ? {} : {env: readStringMap(value.env, `MCP server ${name} env`)}),
-    timeoutMs: readTimeoutMs(value.timeoutMs, `MCP server ${name} timeoutMs`),
+    servers: Object.fromEntries(entries.map(([name, config]) => [name, normalizeMcpServerConfig(name, config)])),
   };
 }
 
-function normalizeMcpConfig(value: unknown): McpAgentConfig {
-  if (!isRecord(value)) {
-    throw new Error("MCP config must be a JSON object.");
-  }
-  if (!isRecord(value.servers)) {
-    throw new Error("MCP config must include a servers object.");
-  }
-
-  const servers: Record<string, McpServerConfig> = {};
-  for (const [name, serverConfig] of Object.entries(value.servers)) {
-    servers[name] = normalizeServerConfig(name, serverConfig);
-  }
-
-  return {servers};
-}
-
-export function resolveAgentMcpConfigPath(agentKey: string, env: NodeJS.ProcessEnv = process.env): string {
-  const override = trimToNull(env[MCP_CONFIG_ENV_KEY]);
-  if (override) {
-    return path.resolve(override);
-  }
-
-  return path.join(resolveAgentDir(agentKey, env), MCP_DEFAULT_CONFIG_FILE);
-}
-
-export async function readAgentMcpConfig(
-  agentKey: string,
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<McpResolvedAgentConfig> {
-  const source = resolveAgentMcpConfigPath(agentKey, env);
-  let raw: string;
-  try {
-    raw = await readFile(source, "utf8");
-  } catch (error) {
-    if (isMissingFile(error)) {
-      return {source, config: {servers: {}}};
-    }
-    throw error;
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    throw new Error(`Invalid MCP config JSON at ${source}: ${error instanceof Error ? error.message : String(error)}`);
-  }
-
-  return {
-    source,
-    config: normalizeMcpConfig(parsed),
-  };
-}
-
-export async function readAgentMcpServerConfig(
-  agentKey: string,
-  server: string,
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<{config: McpServerConfig; source: string}> {
-  if (!isSafeMcpServerName(server)) {
-    throw new Error(`MCP server name ${JSON.stringify(server)} must match ${SERVER_NAME_PATTERN}.`);
-  }
-  const resolved = await readAgentMcpConfig(agentKey, env);
-  const serverConfig = resolved.config.servers[server];
-  if (!serverConfig) {
-    throw new Error(`MCP server ${server} is not configured in ${resolved.source}.`);
-  }
-
-  return {config: serverConfig, source: resolved.source};
+export function referencedMcpCredentialEnvKeys(config: McpServerConfig): string[] {
+  const keys = config.transport === "stdio"
+    ? Object.values(config.env ?? {}).flatMap((source) => "credentialEnvKey" in source ? [source.credentialEnvKey] : [])
+    : [
+      ...(config.auth ? [config.auth.credentialEnvKey] : []),
+      ...(config.headers ?? []).flatMap((header) => header.credentialEnvKey ? [header.credentialEnvKey] : []),
+    ];
+  return [...new Set(keys)];
 }

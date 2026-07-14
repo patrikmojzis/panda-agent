@@ -28,6 +28,7 @@ import type {AgentAppAuthService} from "../../domain/apps/auth.js";
 import type {PostgresControlAuthService} from "../../domain/control/auth.js";
 import type {ControlReadService} from "../../domain/control/read-service.js";
 import type {ControlHomeService} from "../../domain/control/home-service.js";
+import type {ControlMcpService} from "../../domain/control/mcp-service.js";
 import type {ControlOperatorService} from "../../domain/control/operator-service.js";
 import type {ControlBriefingService} from "../../domain/control/briefing-service.js";
 import type {ControlHeartbeatService} from "../../domain/control/heartbeat-service.js";
@@ -126,6 +127,7 @@ export interface RuntimeServices {
   controlReads: ControlReadService;
   controlHome: ControlHomeService;
   controlOperator: ControlOperatorService;
+  controlMcp: ControlMcpService;
   controlBriefings: ControlBriefingService;
   controlHeartbeats: ControlHeartbeatService;
   controlScheduledTasks: ControlScheduledTasksService;
@@ -236,6 +238,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     controlReads: runtime.controlReads,
     controlHome: runtime.controlHome,
     controlOperator: runtime.controlOperator,
+    controlMcp: runtime.controlMcp,
     controlBriefings: runtime.controlBriefings,
     controlHeartbeats: runtime.controlHeartbeats,
     controlScheduledTasks: runtime.controlScheduledTasks,

@@ -1,8 +1,8 @@
 export {
   isSafeMcpServerName,
-  readAgentMcpConfig,
-  readAgentMcpServerConfig,
-  resolveAgentMcpConfigPath,
+  normalizeMcpConfig,
+  normalizeMcpServerConfig,
+  referencedMcpCredentialEnvKeys,
 } from "./config.js";
 export {
   createMcpCallCommand,
@@ -13,14 +13,25 @@ export {
   mcpCallCommandDescriptor,
   mcpToolsCommandDescriptor,
 } from "./commands.js";
+export {PostgresMcpConfigStore} from "./postgres.js";
+export {InMemoryMcpConfigStore} from "./store.js";
+export type {McpConfigReader, McpConfigStore} from "./store.js";
 export type {
   McpAgentConfig,
+  McpAgentConfigRecord,
   McpCallOutput,
   McpCompatibilityWarning,
+  McpHttpBearerAuth,
+  McpHttpHeaderValue,
+  McpHttpServerConfig,
   McpOperationDiagnostics,
-  McpResolvedAgentConfig,
+  McpResolvedInvocation,
+  McpResolvedServerConfig,
+  McpRunner,
+  McpRunnerResult,
   McpServerConfig,
   McpStdioServerConfig,
   McpToolsOutput,
   McpTransportKind,
+  McpValueSource,
 } from "./types.js";

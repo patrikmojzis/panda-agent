@@ -165,6 +165,7 @@ export interface ControlAgentRow {
   status: string;
   sessionCount: number;
   paired: boolean;
+  mcpServerCount: number;
 }
 
 export interface ControlAgentDetail extends ControlAgentRow {

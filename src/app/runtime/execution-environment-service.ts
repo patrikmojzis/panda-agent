@@ -83,7 +83,7 @@ export interface RefreshSessionCommandAccessInput {
   session: Pick<SessionRecord, "id" | "agentKey">;
   executionEnvironment: Pick<
     ResolvedExecutionEnvironment,
-    "id" | "kind" | "skillPolicy" | "source" | "toolPolicy"
+    "credentialPolicy" | "id" | "kind" | "skillPolicy" | "source" | "toolPolicy"
   >;
   identityId?: string;
   inputMessageId?: string;
@@ -249,6 +249,7 @@ export class ExecutionEnvironmentLifecycleService {
       ...(input.executionEnvironment.source === "binding" ? {environmentId: input.executionEnvironment.id} : {}),
       toolPolicy: input.executionEnvironment.toolPolicy,
       skillPolicy: input.executionEnvironment.skillPolicy,
+      credentialPolicy: input.executionEnvironment.credentialPolicy,
       credentialMutationAllowed: input.executionEnvironment.source === "fallback",
       ...(input.identityId ? {identityId: input.identityId} : {}),
       ...(input.inputMessageId ? {inputMessageId: input.inputMessageId} : {}),
@@ -353,6 +354,7 @@ export class ExecutionEnvironmentLifecycleService {
         environmentId,
         toolPolicy,
         skillPolicy,
+        credentialPolicy,
         credentialMutationAllowed: false,
         socketAccessAllowed: true,
         ...(input.ttlMs === undefined ? {} : {ttlMs: input.ttlMs}),
