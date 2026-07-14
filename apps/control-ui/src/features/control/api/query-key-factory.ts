@@ -56,6 +56,8 @@ export const controlKeys = {
       [...controlKeys.agents.detail(agentKey), "sessions", params] as const,
     session: (agentKey: string, sessionId: string) =>
       [...controlKeys.agents.detail(agentKey), "sessions", "detail", sessionId] as const,
+    mcpServers: (agentKey: string) =>
+      [...controlKeys.agents.detail(agentKey), "mcp-servers"] as const,
     credentials: (agentKey: string, params: TableParams) =>
       [...controlKeys.agents.detail(agentKey), "credentials", params] as const,
     wikiBinding: (agentKey: string) =>

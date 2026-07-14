@@ -126,6 +126,15 @@ export function useAgentSessions(
   })
 }
 
+export function useAgentMcpServers(agentKey: string, options?: QueryFlags) {
+  return useQuery({
+    queryKey: controlKeys.agents.mcpServers(agentKey),
+    queryFn: () => controlApi.mcpServers(agentKey),
+    enabled: options?.enabled ?? Boolean(agentKey),
+    staleTime: options?.staleTime,
+  })
+}
+
 export function useAgentCredentials(
   agentKey: string,
   params: TableParams,

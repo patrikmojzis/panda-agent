@@ -11,6 +11,7 @@ import {
   Home,
   KeyRound,
   Link2,
+  ServerCog,
   Network,
   Plug,
   RadioTower,
@@ -75,6 +76,12 @@ export const AGENT_RESOURCE_TABS: ControlTabDefinition[] = [
     count: (agent) => agent?.connectorCount,
   },
   { value: "bindings", label: "Bindings", icon: Link2 },
+  {
+    value: "mcp",
+    label: "MCP",
+    icon: ServerCog,
+    count: (agent) => agent?.mcpServerCount,
+  },
   {
     value: "credentials",
     label: "Credentials",
