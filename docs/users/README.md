@@ -15,6 +15,7 @@ Start here:
 - [Email](./email.md)
 - [Telegram](./telegram.md)
 - [Credentials](./credentials.md)
+- [MCP Servers](./mcp.md)
 - [Skills](./skills.md)
 - [Heartbeat](./heartbeat.md)
 - [Watches](./watches.md)

@@ -21,6 +21,7 @@ Start here:
 - [Browser](./browser.md)
 - [Identity](./identity.md)
 - [Credentials](./credentials.md)
+- [MCP Architecture and Validation](./mcp.md)
 - [Email](./email.md)
 - [Gateway](./gateway.md)
 - [Wiki](./wiki.md)

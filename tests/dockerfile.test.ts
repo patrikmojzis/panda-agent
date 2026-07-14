@@ -57,6 +57,11 @@ describe("Dockerfile targets", () => {
     expect(appBody).toContain("ENV PANDA_CONTROL_UI_DIR=/app/control-ui");
   });
 
+  it("ships the deterministic MCP fixture in the production app image", async () => {
+    const stages = parseDockerStages(await readFile(dockerfilePath, "utf8"));
+    expect(stages.get("app")?.body).toContain("COPY examples/mcp ./examples/mcp");
+  });
+
   it("keeps Control UI build dependencies out of runtime images", async () => {
     const stages = parseDockerStages(await readFile(dockerfilePath, "utf8"));
     const prodDepsBody = stages.get("prod-deps")?.body ?? "";
