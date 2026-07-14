@@ -24,6 +24,10 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { useToastMutation } from "@/features/control/api/mutations"
+import {
+  formatMcpArgs,
+  parseMcpArgs,
+} from "@/features/control/agent/mcp-form-model"
 import { controlKeys } from "@/features/control/api/query-key-factory"
 import {
   useAgentCredentials,
@@ -66,7 +70,7 @@ const emptyDraft: Draft = {
   enabled: true,
   timeoutMs: "30000",
   command: "",
-  args: "",
+  args: "[]",
   cwd: "",
   env: "{}",
   url: "",
@@ -84,7 +88,7 @@ function draftFor(row?: McpServerRow): Draft {
       enabled: row.enabled,
       timeoutMs: String(row.timeoutMs),
       command: row.command,
-      args: row.args.join("\n"),
+      args: formatMcpArgs(row.args),
       cwd: row.cwd ?? "",
       env: JSON.stringify(row.env ?? {}, null, 2),
     }
@@ -137,7 +141,7 @@ function payloadFor(draft: Draft): McpServerPayload {
       transport: "stdio",
       enabled: draft.enabled,
       command: draft.command.trim(),
-      args: draft.args.split("\n").filter((value) => value.length > 0),
+      args: parseMcpArgs(draft.args),
       ...(draft.cwd.trim() ? { cwd: draft.cwd.trim() } : {}),
       ...(Object.keys(env).length > 0 ? { env } : {}),
       timeoutMs,
@@ -213,7 +217,7 @@ function McpServerDialog({
       ...current,
       transport,
       command: "",
-      args: "",
+      args: "[]",
       cwd: "",
       env: "{}",
       url: "",
@@ -304,12 +308,18 @@ function McpServerDialog({
                 />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="mcp-args">Arguments (one per line)</Label>
+                <Label htmlFor="mcp-args">Arguments JSON array</Label>
                 <Textarea
                   id="mcp-args"
+                  className="min-h-32 font-mono text-xs"
                   value={draft.args}
                   onChange={(event) => field("args", event.target.value)}
+                  aria-describedby="mcp-args-help"
                 />
+                <p id="mcp-args-help" className="text-xs text-muted-foreground">
+                  One JSON string per argument. Empty strings and embedded
+                  newlines are preserved.
+                </p>
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="mcp-cwd">Working directory</Label>

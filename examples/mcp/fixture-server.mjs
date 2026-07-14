@@ -10,8 +10,10 @@ const option = (name, fallback) => {
 };
 const transport = option("--transport", "stdio");
 const port = Number(option("--port", "0"));
+const host = option("--host", "127.0.0.1");
 const mode = option("--mode", "normal");
 const secret = process.env.FIXTURE_SECRET ?? "";
+const emitSecretKeys = mode === "secret-keys" || mode === "secret-key-collision";
 const events = [];
 const sessions = new Map();
 
@@ -41,8 +43,15 @@ function resultFor(message) {
       id: message.id,
       result: {
         protocolVersion: message.params?.protocolVersion ?? "2025-11-25",
-        capabilities: {tools: {listChanged: false}},
-        serverInfo: {name: "panda-mcp-fixture", version: "1.0.0"},
+        capabilities: {
+          tools: {listChanged: false},
+          ...(emitSecretKeys && secret ? {experimental: {[secret]: {source: "server-metadata"}}} : {}),
+        },
+        serverInfo: {
+          name: "panda-mcp-fixture",
+          version: "1.0.0",
+          ...(emitSecretKeys && secret ? {[secret]: "server-metadata"} : {}),
+        },
       },
     };
   }
@@ -51,12 +60,19 @@ function resultFor(message) {
     if (mode === "cursor-cycle" && second) {
       return {jsonrpc: "2.0", id: message.id, result: {tools: [richTools[1]], nextCursor: "page-2"}};
     }
+    const tools = second ? [richTools[1]] : [richTools[0]];
+    if (mode === "aggregate-oversize") {
+      tools[0] = {...tools[0], description: "x".repeat(4_500_000)};
+    }
+    if (emitSecretKeys && secret) {
+      tools[0] = {...tools[0], _meta: {...tools[0]._meta, [secret]: "tool-metadata"}};
+    }
     return {
       jsonrpc: "2.0",
       id: message.id,
       result: second
-        ? {tools: [richTools[1]], _meta: {page: 2}}
-        : {tools: [richTools[0]], nextCursor: "page-2", _meta: {page: 1}},
+        ? {tools, _meta: {page: 2, ...(emitSecretKeys && secret ? {[secret]: "list-metadata"} : {})}}
+        : {tools, nextCursor: "page-2", _meta: {page: 1, ...(emitSecretKeys && secret ? {[secret]: "list-metadata"} : {})}},
     };
   }
   if (method === "tools/call") {
@@ -84,8 +100,17 @@ function resultFor(message) {
           {type: "text", text},
           {type: "resource_link", uri: "fixture://resource", name: "fixture"},
         ],
-        structuredContent: {echo: text, nested: {value: text}},
-        _meta: {fixtureSecretEcho: text, untouched: true},
+        structuredContent: {
+          echo: text,
+          nested: {value: text},
+          ...(emitSecretKeys && secret ? {[secret]: "structured-key"} : {}),
+          ...(mode === "secret-key-collision" ? {"[redacted]": "collision"} : {}),
+        },
+        _meta: {
+          fixtureSecretEcho: text,
+          untouched: true,
+          ...(emitSecretKeys && secret ? {[secret]: "result-metadata"} : {}),
+        },
         isError: false,
       },
     };
@@ -185,6 +210,21 @@ async function runHttp() {
       response.end(`remote body ${secret}`);
       return;
     }
+    if (url.pathname === "/auth") {
+      response.writeHead(401, {"content-type": "application/json"});
+      response.end(JSON.stringify({error: `unauthorized ${secret}`}));
+      return;
+    }
+    if (url.pathname === "/invalid-content") {
+      response.writeHead(200, {"content-type": "text/plain"});
+      response.end(`not MCP ${secret}`);
+      return;
+    }
+    if (url.pathname === "/invalid-json") {
+      response.writeHead(200, {"content-type": "application/json"});
+      response.end("{not-json");
+      return;
+    }
     if (url.pathname === "/oversize") {
       response.writeHead(200, {"content-type": "application/json"});
       response.end(`{"padding":"${"x".repeat(8 * 1024 * 1024)}"}`);
@@ -192,6 +232,10 @@ async function runHttp() {
     }
     record(request);
     if (url.pathname === "/mcp") {
+      if (mode === "require-auth" && request.headers.authorization !== `Bearer ${secret}`) {
+        json(response, 401, {error: "unauthorized"});
+        return;
+      }
       const sessionId = String(request.headers["mcp-session-id"] ?? "");
       if (request.method === "DELETE") {
         sessions.delete(sessionId);
@@ -207,7 +251,10 @@ async function runHttp() {
       const body = await readJson(request);
       const initialized = (Array.isArray(body) ? body : [body]).some((message) => message.method === "initialize");
       const resolvedSession = initialized ? randomUUID() : sessionId;
-      if (initialized) sessions.set(resolvedSession, true);
+      if (initialized) {
+        sessions.set(resolvedSession, true);
+        if (mode === "session-expired") sessions.delete(resolvedSession);
+      }
       if (!initialized && !sessions.has(resolvedSession)) {
         json(response, 404, {error: "unknown session"});
         return;
@@ -250,7 +297,7 @@ async function runHttp() {
     response.writeHead(404);
     response.end();
   });
-  server.listen(port, "127.0.0.1");
+  server.listen(port, host);
   await once(server, "listening");
   const address = server.address();
   process.stdout.write(`READY ${JSON.stringify({port: address.port, mcp: `http://127.0.0.1:${address.port}/mcp`, sse: `http://127.0.0.1:${address.port}/sse`})}\n`);

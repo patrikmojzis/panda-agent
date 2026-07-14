@@ -19,18 +19,28 @@ import {
   type McpRunnerResult,
 } from "../../domain/mcp/types.js";
 import {BoundedStdioClientTransport, McpStdioIngressLimitError} from "./stdio-transport.js";
-import {redactExactJson, StreamingSecretRedactor} from "./redaction.js";
+import {McpRedactionCollisionError, redactExactJson, StreamingSecretRedactor} from "./redaction.js";
+
+export type McpRunnerPhase =
+  | "connect"
+  | "http_status"
+  | "invalid_content"
+  | "protocol"
+  | "session_expired"
+  | "authentication"
+  | "timeout"
+  | "output_limit";
 
 export class McpRunnerError extends Error {
   readonly exitCode: 3 | 124;
-  readonly phase: "transport_protocol" | "timeout" | "output_limit";
+  readonly phase: McpRunnerPhase;
   readonly diagnostics: McpOperationDiagnostics;
   readonly httpStatus?: number;
 
   constructor(input: {
     message: string;
     exitCode: 3 | 124;
-    phase: "transport_protocol" | "timeout" | "output_limit";
+    phase: McpRunnerPhase;
     diagnostics: McpOperationDiagnostics;
     httpStatus?: number;
   }) {
@@ -44,8 +54,11 @@ export class McpRunnerError extends Error {
 }
 
 class McpHttpBoundaryError extends Error {
-  constructor(readonly status?: number) {
-    super(status ? `MCP HTTP status ${status}.` : "MCP HTTP boundary rejected the request.");
+  constructor(
+    readonly phase: Extract<McpRunnerPhase, "connect" | "http_status" | "invalid_content" | "session_expired" | "authentication" | "output_limit">,
+    readonly status?: number,
+  ) {
+    super("MCP HTTP boundary rejected the request.");
     this.name = "McpHttpBoundaryError";
   }
 }
@@ -100,7 +113,7 @@ function cappedResponseBody(body: ReadableStream<Uint8Array> | null, signal: Abo
     transform(chunk, controller) {
       bytes += chunk.byteLength;
       if (bytes > MCP_HTTP_RESPONSE_MAX_BYTES) {
-        controller.error(new McpHttpBoundaryError());
+        controller.error(new McpHttpBoundaryError("output_limit"));
         return;
       }
       controller.enqueue(chunk);
@@ -108,22 +121,49 @@ function cappedResponseBody(body: ReadableStream<Uint8Array> | null, signal: Abo
   }), {signal});
 }
 
+function requestContentTypeIsValid(method: string, response: Response): boolean {
+  if (response.status === 202 || response.status === 204 || method === "DELETE") return true;
+  const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (method === "GET") return contentType === "text/event-stream";
+  return contentType === "application/json" || contentType === "text/event-stream";
+}
+
+function phaseForHttpStatus(status: number, sessionRequest: boolean): Extract<McpRunnerPhase, "http_status" | "session_expired" | "authentication"> {
+  if (status === 401 || status === 403) return "authentication";
+  if (status === 404 && sessionRequest) return "session_expired";
+  return "http_status";
+}
+
 function createBoundedFetch(config: McpResolvedHttpServerConfig, deadlineSignal: AbortSignal): typeof fetch {
   const configured = new URL(config.url);
   return async (input, init = {}) => {
-    const requestUrl = new URL(input instanceof Request ? input.url : String(input));
+    const request = new Request(input, init);
+    const requestUrl = new URL(request.url);
     if ((requestUrl.protocol !== "http:" && requestUrl.protocol !== "https:") || requestUrl.origin !== configured.origin) {
-      throw new McpHttpBoundaryError();
+      throw new McpHttpBoundaryError("connect");
     }
-    const signal = abortSignals(deadlineSignal, init.signal);
-    const response = await fetch(input, {...init, redirect: "manual", signal});
+    const signal = abortSignals(deadlineSignal, request.signal);
+    let response: Response;
+    try {
+      response = await fetch(request, {redirect: "manual", signal});
+    } catch (error) {
+      if (deadlineSignal.aborted || (error instanceof DOMException && error.name === "AbortError")) throw error;
+      throw new McpHttpBoundaryError("connect");
+    }
     if (response.status >= 300 && response.status < 400) {
       await response.body?.cancel().catch(() => undefined);
-      throw new McpHttpBoundaryError(response.status);
+      throw new McpHttpBoundaryError("http_status", response.status);
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
-      return new Response(null, {status: response.status, statusText: "MCP transport error"});
+      throw new McpHttpBoundaryError(
+        phaseForHttpStatus(response.status, request.headers.has("mcp-session-id")),
+        response.status,
+      );
+    }
+    if (!requestContentTypeIsValid(request.method, response)) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new McpHttpBoundaryError("invalid_content");
     }
     return new Response(cappedResponseBody(response.body, signal), {
       status: response.status,
@@ -178,6 +218,40 @@ async function terminateSession(
   ]);
 }
 
+function retainedToolsEnvelopeBytes(envelope: JsonObject, tools: readonly JsonValue[]): number {
+  return Buffer.byteLength(JSON.stringify({...envelope, tools}), "utf8");
+}
+
+function appendBoundedTools(
+  retained: JsonValue[],
+  pageTools: readonly JsonValue[],
+  retainedBytes: number,
+): number {
+  let bytes = retainedBytes;
+  for (const tool of pageTools) {
+    if (retained.length + 1 > MCP_MAX_TOOLS) throw new McpOutputLimitError();
+    const addition = Buffer.byteLength(JSON.stringify(tool), "utf8") + (retained.length === 0 ? 0 : 1);
+    if (bytes + addition > MCP_OUTPUT_MAX_BYTES) throw new McpOutputLimitError();
+    retained.push(tool);
+    bytes += addition;
+  }
+  return bytes;
+}
+
+function runnerErrorMessage(transport: McpResolvedInvocation["config"]["transport"], phase: McpRunnerPhase): string {
+  const messages: Record<McpRunnerPhase, string> = {
+    connect: `MCP ${transport} connection failed.`,
+    http_status: "MCP HTTP request returned an error status.",
+    invalid_content: "MCP response content was invalid.",
+    protocol: `MCP ${transport} protocol operation failed.`,
+    session_expired: "MCP HTTP session expired.",
+    authentication: "MCP HTTP authentication failed.",
+    timeout: `MCP ${transport} command timed out.`,
+    output_limit: `MCP ${transport} response exceeded a configured limit.`,
+  };
+  return messages[phase];
+}
+
 export class SdkMcpRunner implements McpRunner {
   async listTools(invocation: McpResolvedInvocation): Promise<McpRunnerResult<JsonObject>> {
     return this.run(invocation, async (client, requestOptions) => {
@@ -185,18 +259,22 @@ export class SdkMcpRunner implements McpRunner {
       const cursors = new Set<string>();
       let cursor: string | undefined;
       let firstEnvelope: JsonObject | undefined;
+      let retainedBytes = 0;
       for (let page = 0; page < MCP_MAX_TOOL_PAGES; page += 1) {
         const value = await client.listTools(cursor ? {cursor} : undefined, requestOptions);
         const envelope = boundedJsonObject(value, invocation.knownSecrets);
-        firstEnvelope ??= envelope;
         if (!Array.isArray(envelope.tools)) throw new Error("MCP tools result.tools must be an array.");
-        tools.push(...envelope.tools);
-        if (tools.length > MCP_MAX_TOOLS) throw new McpOutputLimitError();
+        if (!firstEnvelope) {
+          firstEnvelope = {...envelope};
+          delete firstEnvelope.tools;
+          delete firstEnvelope.nextCursor;
+          retainedBytes = retainedToolsEnvelopeBytes(firstEnvelope, []);
+          if (retainedBytes > MCP_OUTPUT_MAX_BYTES) throw new McpOutputLimitError();
+        }
+        retainedBytes = appendBoundedTools(tools, envelope.tools, retainedBytes);
         const nextCursor = envelope.nextCursor;
         if (nextCursor === undefined || nextCursor === null || nextCursor === "") {
-          const complete: JsonObject = {...firstEnvelope, tools};
-          delete complete.nextCursor;
-          return boundedJsonObject(complete, invocation.knownSecrets);
+          return boundedJsonObject({...firstEnvelope, tools}, invocation.knownSecrets);
         }
         if (typeof nextCursor !== "string") throw new Error("MCP tools nextCursor must be a string.");
         if (cursors.has(nextCursor)) throw new Error("MCP tools pagination cursor cycle detected.");
@@ -232,6 +310,7 @@ export class SdkMcpRunner implements McpRunner {
     const requestOptions = {signal: deadline.signal, timeout: config.timeoutMs, maxTotalTimeout: config.timeoutMs};
     const client = createClient();
     let transport: BoundedStdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport;
+    let stage: "connect" | "operation" = "connect";
     let stderr = "";
     let stderrTruncated = false;
     let stderrFinished = false;
@@ -276,6 +355,7 @@ export class SdkMcpRunner implements McpRunner {
 
     try {
       await client.connect(transport, requestOptions);
+      stage = "operation";
       const value = await operation(client, requestOptions);
       if (redactor && remaining(deadlineAt) > 0) {
         await new Promise<void>((resolve) => setImmediate(resolve));
@@ -300,15 +380,22 @@ export class SdkMcpRunner implements McpRunner {
         stderrFinished = true;
       }
       const timeout = isTimeout(error, deadline.signal);
-      const outputLimit = error instanceof McpOutputLimitError;
-      const phase = timeout ? "timeout" : outputLimit ? "output_limit" : "transport_protocol";
+      const phase: McpRunnerPhase = timeout
+        ? "timeout"
+        : error instanceof McpOutputLimitError
+            || error instanceof McpStdioIngressLimitError
+            || (transport instanceof BoundedStdioClientTransport && transport.ingressLimitExceeded)
+          ? "output_limit"
+          : error instanceof McpHttpBoundaryError
+            ? error.phase
+            : error instanceof McpRedactionCollisionError || error instanceof SyntaxError
+              ? "invalid_content"
+              : stage === "connect"
+                ? "connect"
+                : "protocol";
       const status = httpStatus(error);
       throw new McpRunnerError({
-        message: timeout
-          ? `MCP ${config.transport} command timed out.`
-          : outputLimit || error instanceof McpStdioIngressLimitError
-            ? `MCP ${config.transport} response exceeded a configured limit.`
-            : `MCP ${config.transport} transport/protocol failure.`,
+        message: runnerErrorMessage(config.transport, phase),
         exitCode: timeout ? 124 : 3,
         phase,
         diagnostics: diagnostics(),

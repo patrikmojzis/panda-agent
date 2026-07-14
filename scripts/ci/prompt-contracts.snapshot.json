@@ -55,10 +55,10 @@
       "sha256": "5d0e246a9d83fbfbc7dd073b6422cf7351c6c2742fecd2a9298b28afdfe51002"
     },
     {
-      "bytes": 6672,
+      "bytes": 6669,
       "lines": 173,
       "path": "src/domain/subagents/tool-groups.ts",
-      "sha256": "088a90add3c1461c4fd99b33af3bcd1736e3a06860d2743c59a5bd3ba1548d3b"
+      "sha256": "b7e101a9f4ce871d3ec84d32a9b3115ca8c4439971d6620de23890673567087d"
     },
     {
       "bytes": 433,
@@ -473,7 +473,7 @@
       ]
     },
     "mcp": {
-      "description": "Generic Model Context Protocol stdio server tool discovery and calls.",
+      "description": "Configured Model Context Protocol server tool discovery and calls.",
       "toolNames": [
         "mcp.*"
       ]

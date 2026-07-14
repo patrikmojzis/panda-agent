@@ -2,6 +2,13 @@ import {StringDecoder} from "node:string_decoder";
 
 import {normalizeToJsonValue, type JsonValue} from "../../lib/json.js";
 
+export class McpRedactionCollisionError extends Error {
+  constructor() {
+    super("MCP redaction produced duplicate object keys.");
+    this.name = "McpRedactionCollisionError";
+  }
+}
+
 export function exactSecretInventory(values: readonly string[]): string[] {
   return [...new Set(values.filter((value) => value.length > 0))]
     .sort((left, right) => right.length - left.length);
@@ -23,7 +30,15 @@ export function redactExactJson(value: unknown, secrets: readonly string[]): Jso
     if (typeof entry === "string") return redactExactString(entry, inventory);
     if (Array.isArray(entry)) return entry.map(visit);
     if (entry && typeof entry === "object") {
-      return Object.fromEntries(Object.entries(entry).map(([key, child]) => [key, visit(child)]));
+      const result: Record<string, JsonValue> = {};
+      for (const [key, child] of Object.entries(entry)) {
+        const redactedKey = redactExactString(key, inventory);
+        if (Object.prototype.hasOwnProperty.call(result, redactedKey)) {
+          throw new McpRedactionCollisionError();
+        }
+        result[redactedKey] = visit(child);
+      }
+      return result;
     }
     return entry;
   }

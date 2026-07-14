@@ -39,6 +39,10 @@ export class BoundedStdioClientTransport implements Transport {
     return this.stderrStream;
   }
 
+  get ingressLimitExceeded(): boolean {
+    return this.overflowed;
+  }
+
   get pid(): number | null {
     return this.process?.pid ?? null;
   }

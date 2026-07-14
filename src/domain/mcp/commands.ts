@@ -105,12 +105,12 @@ function parseCallInput(input: unknown): McpCallCommandInput {
 
 function toJsonObject(value: unknown, label: string): JsonObject {
   const normalized = normalizeToJsonValue(value);
-  if (!isJsonObject(normalized)) throw commandError(`${label} must be a JSON object.`, 3, "transport_protocol");
+  if (!isJsonObject(normalized)) throw commandError(`${label} must be a JSON object.`, 3, "invalid_content");
   return normalized;
 }
 
 function toJsonObjectArray(value: unknown, label: string): JsonObject[] {
-  if (!Array.isArray(value)) throw commandError(`${label} must be an array.`, 3, "transport_protocol");
+  if (!Array.isArray(value)) throw commandError(`${label} must be an array.`, 3, "invalid_content");
   return value.map((entry, index) => toJsonObject(entry, `${label}[${index}]`));
 }
 
@@ -311,7 +311,7 @@ export const mcpCallCommandDescriptor: CommandDescriptor = {
     {description: "Read tool input from a file", command: "panda mcp call filesystem write_file --input @payload.json"},
   ],
   requiredCapabilities: [MCP_COMMAND_CAPABILITY],
-  resultShape: {server: "string", tool: "string", content: "array", structuredContent: "object|undefined", _meta: "object|undefined", isError: "boolean|undefined", diagnostics: "object", compatibilityWarnings: "array", exitCode: "number"},
+  resultShape: {server: "string", tool: "string", content: "array", structuredContent: "object|undefined", _meta: "object|undefined", isError: "boolean|undefined", diagnostics: "object", compatibilityWarnings: "array", exitCode: "number", phase: "tool_error|undefined"},
 };
 
 export function createMcpToolsCommand(options: McpCommandOptions): RegisteredCommand {
@@ -359,6 +359,7 @@ export function createMcpCallCommand(options: McpCommandOptions): RegisteredComm
           diagnostics: diagnosticsJson(run.diagnostics),
           compatibilityWarnings: [],
           exitCode: isError ? 4 : 0,
+          ...(isError ? {phase: "tool_error"} : {}),
         }, run);
         assertOutputSize(output);
         return {

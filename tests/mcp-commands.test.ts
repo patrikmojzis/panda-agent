@@ -1,3 +1,6 @@
+import path from "node:path";
+import {fileURLToPath} from "node:url";
+
 import {describe, expect, it, vi} from "vitest";
 
 import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
@@ -11,8 +14,10 @@ import {
 import {InMemoryMcpConfigStore} from "../src/domain/mcp/store.js";
 import type {McpRunner} from "../src/domain/mcp/types.js";
 import {DEFAULT_AGENT_COMMAND_CATALOG} from "../src/panda/commands/agent-command-modules.js";
+import {SdkMcpRunner} from "../src/integrations/mcp/client.js";
 
 const secret = "raw-secret-value";
+const fixturePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../examples/mcp/fixture-server.mjs");
 const baseConfig = {
   servers: {
     fixture: {
@@ -154,6 +159,35 @@ describe("generic MCP commands", () => {
     expect(deps.runner.listTools).not.toHaveBeenCalled();
   });
 
+  it("keeps full-runner secret keys out of command/transcript-visible serialization", async () => {
+    const configs = new InMemoryMcpConfigStore({panda: {servers: {fixture: {
+      transport: "stdio",
+      enabled: true,
+      command: process.execPath,
+      args: [fixturePath, "--transport", "stdio", "--mode", "secret-keys"],
+      env: {FIXTURE_SECRET: {credentialEnvKey: "FIXTURE_SECRET"}},
+      timeoutMs: 5_000,
+    }}}});
+    const deps = dependencies({configs, runner: new SdkMcpRunner()});
+    const dispatcher = new RuntimeCommandDispatcher({
+      commands: [createMcpToolsCommand(deps), createMcpCallCommand(deps)],
+    });
+    const tools = await dispatcher.execute(request("mcp.tools", {server: "fixture"}));
+    const called = await dispatcher.execute(request("mcp.call", {server: "fixture", tool: "secret_echo", input: {}}));
+    for (const visible of [tools, called]) {
+      const serialized = JSON.stringify(visible);
+      expect(serialized).not.toContain(secret);
+      expect(serialized).toContain('"[redacted]"');
+    }
+    expect(called).toMatchObject({
+      ok: true,
+      output: {
+        structuredContent: {"[redacted]": "structured-key"},
+        _meta: {"[redacted]": "result-metadata"},
+      },
+    });
+  });
+
   it("preserves tool-level isError as command output with exitCode 4", async () => {
     const deps = dependencies({
       runner: {
@@ -167,7 +201,7 @@ describe("generic MCP commands", () => {
     const result = await new RuntimeCommandDispatcher({commands: [createMcpCallCommand(deps)]}).execute(
       request("mcp.call", {server: "fixture", tool: "tool_error", input: {}}),
     );
-    expect(result).toMatchObject({ok: true, output: {isError: true, exitCode: 4}});
+    expect(result).toMatchObject({ok: true, output: {isError: true, exitCode: 4, phase: "tool_error"}});
   });
 
   it("fails disabled and unknown servers before credential resolution", async () => {

@@ -33,3 +33,11 @@ PANDA_MCP_B2B_DOCKER_SMOKE=1 \
 ```
 
 The Docker lane builds the production app target, runs the fixture on a private Docker network, and exercises compiled stdio, Streamable HTTP, and SSE clients. Keep `src/domain/mcp/**`, `src/integrations/mcp/**`, Control/UI, fixture, Dockerfile, and B2B test paths in the Docker workflow filter.
+
+## Stable failure phases
+
+Command failures expose only sanitized phases: `connect`, `http_status`,
+`invalid_content`, `protocol`, `session_expired`, `authentication`, `timeout`,
+or `output_limit`. Tool envelopes with `isError: true` remain successful command
+output with exit code `4` and phase `tool_error`. Remote response bodies, endpoint
+URLs, headers, session IDs, inputs, and credential values are not diagnostics.

@@ -11,13 +11,23 @@ on:
       - pnpm-workspace.yaml
       - tsconfig.json
       - vitest.live.config.ts
+      - scripts/agent-command-shim/**
       - src/app/runtime/**
-      - src/integrations/shell/**
-      - src/domain/execution-environments/**
-      - src/domain/mcp/**
-      - src/integrations/mcp/**
+      - src/domain/agents/**
+      - src/domain/commands/**
       - src/domain/control/**
+      - src/domain/credentials/**
+      - src/domain/execution-environments/**
+      - src/domain/identity/**
+      - src/domain/mcp/**
+      - src/domain/sessions/**
+      - src/domain/subagents/**
+      - src/integrations/commands/**
       - src/integrations/control/**
+      - src/integrations/mcp/**
+      - src/integrations/shell/**
+      - src/lib/**
+      - src/panda/commands/**
       - apps/control-ui/**
       - examples/mcp/**
       - tests/live/docker-workspace-exec-b2b.live.test.ts
@@ -58,7 +68,7 @@ jobs:
         run: pnpm vitest run --config vitest.live.config.ts --testTimeout=600000 tests/live/docker-workspace-exec-b2b.live.test.ts
 
   b2b-docker-mcp:
-    name: B2b Docker MCP transports
+    name: B2b Docker MCP Control and command chain
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

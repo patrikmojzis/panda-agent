@@ -64,7 +64,7 @@ export const SUBAGENT_TOOL_GROUP_DEFINITIONS = {
     nativeToolNames: [],
   },
   mcp: {
-    description: "Generic Model Context Protocol stdio server tool discovery and calls.",
+    description: "Configured Model Context Protocol server tool discovery and calls.",
     nativeToolNames: [],
   },
 } as const satisfies Record<string, SubagentToolGroupDefinition>;
