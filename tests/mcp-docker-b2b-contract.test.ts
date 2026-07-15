@@ -21,6 +21,8 @@ describe("MCP Docker B2B contract", () => {
     expect(live).toContain("PANDA_COMMAND_ACCESS_FILE");
     expect(live).toContain('"--entrypoint", "/usr/local/bin/panda"');
     expect(live).toContain("runtime.agent_mcp_configs");
+    expect(live).not.toContain("jsonb_object_length");
+    expect(live).toContain("jsonb_object_keys(configs.config->'servers')");
     expect(core).toContain("createRuntime");
     expect(core).toContain("startControlServer");
     expect(core).toContain("startCommandHttpServer");

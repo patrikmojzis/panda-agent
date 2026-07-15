@@ -211,7 +211,7 @@ describeLive("Docker MCP built-app Control-to-shim B2B", () => {
     expect(http.status).toBe(200);
     const persisted = await docker([
       "exec", postgres, "psql", "-U", "postgres", "-d", "panda", "-Atc",
-      "SELECT jsonb_object_length(config->'servers') FROM runtime.agent_mcp_configs WHERE agent_key='panda'",
+      "SELECT count(*) FROM runtime.agent_mcp_configs AS configs CROSS JOIN LATERAL jsonb_object_keys(configs.config->'servers') AS server_keys(server_name) WHERE configs.agent_key='panda'",
     ]);
     expect(persisted.stdout).toBe("2");
 
