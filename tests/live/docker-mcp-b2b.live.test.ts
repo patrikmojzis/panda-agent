@@ -260,8 +260,8 @@ describeLive("Docker MCP built-app Control-to-shim B2B", () => {
     await expect(deleteStdio.json()).resolves.toMatchObject({deleted: true});
     const removed = await docker([
       "exec", postgres, "psql", "-U", "postgres", "-d", "panda", "-Atc",
-      "SELECT count(*) FROM runtime.agent_mcp_configs WHERE agent_key='panda'",
+      "SELECT count(DISTINCT configs.agent_key), count(server_keys.server_name) FROM runtime.agent_mcp_configs AS configs LEFT JOIN LATERAL jsonb_object_keys(configs.config->'servers') AS server_keys(server_name) ON true WHERE configs.agent_key='panda'",
     ]);
-    expect(removed.stdout).toBe("0");
+    expect(removed.stdout).toBe("1|0");
   }, 600_000);
 });

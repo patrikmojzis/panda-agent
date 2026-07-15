@@ -23,6 +23,8 @@ describe("MCP Docker B2B contract", () => {
     expect(live).toContain("runtime.agent_mcp_configs");
     expect(live).not.toContain("jsonb_object_length");
     expect(live).toContain("jsonb_object_keys(configs.config->'servers')");
+    expect(live).toContain("LEFT JOIN LATERAL jsonb_object_keys(configs.config->'servers')");
+    expect(live).toContain('expect(removed.stdout).toBe("1|0")');
     expect(core).toContain("createRuntime");
     expect(core).toContain("startControlServer");
     expect(core).toContain("startCommandHttpServer");
