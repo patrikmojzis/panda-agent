@@ -1,9 +1,13 @@
 import {spawn, type ChildProcess} from "node:child_process";
+import {randomUUID} from "node:crypto";
+import {mkdtemp, readFile, rm} from "node:fs/promises";
+import {tmpdir} from "node:os";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {SdkMcpRunner} from "../src/integrations/mcp/client.js";
+import {BoundedStdioClientTransport} from "../src/integrations/mcp/stdio-transport.js";
 import {
   McpRedactionCollisionError,
   redactExactJson,
@@ -11,11 +15,51 @@ import {
   StreamingSecretRedactor,
 } from "../src/integrations/mcp/redaction.js";
 import type {McpResolvedInvocation, McpResolvedServerConfig} from "../src/domain/mcp/types.js";
+import {waitFor} from "./helpers/wait-for.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixturePath = path.join(root, "examples/mcp/fixture-server.mjs");
 const secret = "fixture-raw-secret-value";
 const children: ChildProcess[] = [];
+
+interface ProcessTreeState {
+  parentPid: number;
+  descendantPid: number;
+  marker: string;
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+function forceKill(pid: number): void {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+  }
+}
+
+async function waitForProcessesToExit(...pids: number[]): Promise<void> {
+  await waitFor(() => {
+    for (const pid of pids) expect(processExists(pid)).toBe(false);
+  }, 2_000);
+}
+
+async function readProcessTreeState(statePath: string): Promise<ProcessTreeState> {
+  let state: ProcessTreeState | undefined;
+  await waitFor(async () => {
+    state = JSON.parse(await readFile(statePath, "utf8")) as ProcessTreeState;
+  }, 2_000);
+  if (!state) throw new Error("Process-tree fixture did not write state.");
+  return state;
+}
 
 function invocation(config: McpResolvedServerConfig): McpResolvedInvocation {
   return {config, knownSecrets: [secret]};
@@ -273,6 +317,343 @@ describe("MCP SDK runner", () => {
     }), {name: "delay", arguments: {delayMs: 2_000}})).rejects.toMatchObject({exitCode: 124, phase: "timeout"});
     expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
+
+  for (const scenario of ["normal close", "timeout"] as const) {
+    it.skipIf(process.platform === "win32")(`kills the stdio process group on ${scenario}`, async () => {
+      const directory = await mkdtemp(path.join(tmpdir(), "panda-mcp-process-tree-"));
+      const statePath = path.join(directory, "state.json");
+      const marker = `panda-mcp-process-tree-${randomUUID()}`;
+      let state: ProcessTreeState | undefined;
+      const groupKillSpy = scenario === "normal close" ? vi.spyOn(process, "kill") : undefined;
+
+      try {
+        const operation = new SdkMcpRunner().callTool(invocation({
+          transport: "stdio",
+          enabled: true,
+          command: process.execPath,
+          args: [fixturePath, "--transport", "stdio", "--mode", "process-tree"],
+          env: {
+            FIXTURE_PROCESS_TREE_MARKER: marker,
+            FIXTURE_PROCESS_TREE_STATE: statePath,
+          },
+          timeoutMs: scenario === "timeout" ? 500 : 5_000,
+        }), scenario === "timeout"
+          ? {name: "delay", arguments: {delayMs: 10_000}}
+          : {name: "echo", arguments: {message: "process-tree-close"}});
+        if (scenario === "timeout") {
+          await expect(operation).rejects.toMatchObject({exitCode: 124, phase: "timeout"});
+        } else {
+          await expect(operation).resolves.toMatchObject({
+            value: {structuredContent: {echo: "process-tree-close"}},
+          });
+        }
+
+        state = await readProcessTreeState(statePath);
+        expect(state).toMatchObject({marker});
+        expect(state.parentPid).toBeGreaterThan(0);
+        expect(state.descendantPid).toBeGreaterThan(0);
+        expect(state.descendantPid).not.toBe(state.parentPid);
+        await waitForProcessesToExit(state.parentPid, state.descendantPid);
+        if (groupKillSpy) {
+          const groupSignals = () => groupKillSpy.mock.calls
+            .filter(([pid]) => pid === -state!.parentPid)
+            .map(([, signal]) => signal);
+          expect(groupSignals()).toEqual(["SIGKILL"]);
+          await new Promise((resolve) => setTimeout(resolve, 150));
+          expect(groupSignals()).toEqual(["SIGKILL"]);
+        }
+      } finally {
+        groupKillSpy?.mockRestore();
+        if (!state) {
+          state = await readFile(statePath, "utf8")
+            .then((value) => JSON.parse(value) as ProcessTreeState)
+            .catch(() => undefined);
+        }
+        if (state) {
+          forceKill(state.parentPid);
+          forceKill(state.descendantPid);
+          await waitForProcessesToExit(state.parentPid, state.descendantPid);
+        }
+        await rm(directory, {recursive: true, force: true});
+      }
+    });
+  }
+
+  for (const scenario of ["external abort", "ingress overflow"] as const) {
+    it.skipIf(process.platform === "win32")(`kills the stdio process group on ${scenario}`, async () => {
+      const directory = await mkdtemp(path.join(tmpdir(), "panda-mcp-process-tree-trigger-"));
+      const statePath = path.join(directory, "state.json");
+      const marker = `panda-mcp-process-tree-trigger-${randomUUID()}`;
+      const controller = new AbortController();
+      const transport = new BoundedStdioClientTransport({
+        command: process.execPath,
+        args: [
+          fixturePath,
+          "--transport", "stdio",
+          "--mode", scenario === "ingress overflow" ? "process-tree-oversize-line" : "process-tree",
+        ],
+        env: {
+          FIXTURE_PROCESS_TREE_MARKER: marker,
+          FIXTURE_PROCESS_TREE_STATE: statePath,
+        },
+        maxLineBytes: 1_024,
+        deadlineAt: Date.now() + 5_000,
+        signal: controller.signal,
+      });
+      let state: ProcessTreeState | undefined;
+
+      try {
+        await transport.start();
+        state = await readProcessTreeState(statePath);
+        expect(state).toMatchObject({marker});
+        expect(processExists(state.parentPid)).toBe(true);
+        expect(processExists(state.descendantPid)).toBe(true);
+
+        if (scenario === "external abort") {
+          controller.abort(new Error("fixture abort"));
+          expect(controller.signal.aborted).toBe(true);
+        } else {
+          await transport.send({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "initialize",
+            params: {
+              protocolVersion: "2025-06-18",
+              capabilities: {},
+              clientInfo: {name: "process-tree-test", version: "1"},
+            },
+          });
+          await waitFor(() => expect(transport.ingressLimitExceeded).toBe(true), 2_000);
+        }
+
+        await transport.close();
+        await waitForProcessesToExit(state.parentPid, state.descendantPid);
+      } finally {
+        await transport.close().catch(() => undefined);
+        if (!state) {
+          state = await readFile(statePath, "utf8")
+            .then((value) => JSON.parse(value) as ProcessTreeState)
+            .catch(() => undefined);
+        }
+        if (state) {
+          forceKill(state.parentPid);
+          forceKill(state.descendantPid);
+          await waitForProcessesToExit(state.parentPid, state.descendantPid);
+        }
+        await rm(directory, {recursive: true, force: true});
+      }
+    });
+  }
+
+  it.skipIf(process.platform === "win32")("kills the process group before a throwing ingress callback escapes", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "panda-mcp-throwing-ingress-"));
+    const statePath = path.join(directory, "state.json");
+    const marker = `panda-mcp-throwing-ingress-${randomUUID()}`;
+    const transport = new BoundedStdioClientTransport({
+      command: process.execPath,
+      args: [fixturePath, "--transport", "stdio", "--mode", "process-tree"],
+      env: {
+        FIXTURE_PROCESS_TREE_MARKER: marker,
+        FIXTURE_PROCESS_TREE_STATE: statePath,
+      },
+      maxLineBytes: 1_024,
+      deadlineAt: Date.now() + 5_000,
+      signal: new AbortController().signal,
+    });
+    const callbackError = new Error("throwing ingress callback");
+    let state: ProcessTreeState | undefined;
+
+    try {
+      await transport.start();
+      state = await readProcessTreeState(statePath);
+      expect(state).toMatchObject({marker});
+      expect(processExists(state.parentPid)).toBe(true);
+      expect(processExists(state.descendantPid)).toBe(true);
+      transport.onerror = () => { throw callbackError };
+      const acceptChunk = (transport as unknown as {acceptChunk(chunk: Buffer): void}).acceptChunk.bind(transport);
+
+      expect(() => acceptChunk(Buffer.alloc(1_025))).toThrow(callbackError);
+      expect(transport.ingressLimitExceeded).toBe(true);
+      await waitForProcessesToExit(state.parentPid, state.descendantPid);
+    } finally {
+      transport.onerror = undefined;
+      await transport.close().catch(() => undefined);
+      if (!state) {
+        state = await readFile(statePath, "utf8")
+          .then((value) => JSON.parse(value) as ProcessTreeState)
+          .catch(() => undefined);
+      }
+      if (state) {
+        forceKill(state.parentPid);
+        forceKill(state.descendantPid);
+        await waitForProcessesToExit(state.parentPid, state.descendantPid);
+      }
+      await rm(directory, {recursive: true, force: true});
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("kills the process group when its leader exits before close", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "panda-mcp-leader-exit-"));
+    const statePath = path.join(directory, "state.json");
+    const marker = `panda-mcp-leader-exit-${randomUUID()}`;
+    const transport = new BoundedStdioClientTransport({
+      command: process.execPath,
+      args: [fixturePath, "--transport", "stdio", "--mode", "process-tree-leader-exit"],
+      env: {
+        FIXTURE_PROCESS_TREE_MARKER: marker,
+        FIXTURE_PROCESS_TREE_STATE: statePath,
+      },
+      maxLineBytes: 1_024,
+      deadlineAt: Date.now() + 5_000,
+      signal: new AbortController().signal,
+    });
+    let state: ProcessTreeState | undefined;
+    let closed = false;
+    transport.onclose = () => { closed = true };
+
+    try {
+      await transport.start();
+      state = await readProcessTreeState(statePath);
+      expect(state).toMatchObject({marker});
+      expect(state.parentPid).toBeGreaterThan(0);
+      expect(state.descendantPid).toBeGreaterThan(0);
+      expect(state.descendantPid).not.toBe(state.parentPid);
+      await waitForProcessesToExit(state.parentPid, state.descendantPid);
+      await waitFor(() => expect(transport.pid).toBeNull(), 2_000);
+      expect(closed).toBe(true);
+    } finally {
+      await transport.close().catch(() => undefined);
+      if (!state) {
+        state = await readFile(statePath, "utf8")
+          .then((value) => JSON.parse(value) as ProcessTreeState)
+          .catch(() => undefined);
+      }
+      if (state) {
+        forceKill(state.parentPid);
+        forceKill(state.descendantPid);
+        await waitForProcessesToExit(state.parentPid, state.descendantPid);
+      }
+      await rm(directory, {recursive: true, force: true});
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("shares process-group cleanup across concurrent closes", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "panda-mcp-concurrent-close-"));
+    const statePath = path.join(directory, "state.json");
+    const marker = `panda-mcp-concurrent-close-${randomUUID()}`;
+    const transport = new BoundedStdioClientTransport({
+      command: process.execPath,
+      args: [fixturePath, "--transport", "stdio", "--mode", "process-tree-concurrent-close"],
+      env: {
+        FIXTURE_PROCESS_TREE_MARKER: marker,
+        FIXTURE_PROCESS_TREE_STATE: statePath,
+      },
+      maxLineBytes: 1_024,
+      deadlineAt: Date.now() + 5_000,
+      signal: new AbortController().signal,
+    });
+    let state: ProcessTreeState | undefined;
+    let closes: Promise<void>[] = [];
+    const groupKillSpy = vi.spyOn(process, "kill");
+
+    try {
+      await transport.start();
+      state = await readProcessTreeState(statePath);
+      expect(state).toMatchObject({marker});
+      expect(processExists(state.parentPid)).toBe(true);
+      expect(processExists(state.descendantPid)).toBe(true);
+
+      const groupSignals = () => groupKillSpy.mock.calls
+        .filter(([pid]) => pid === -state!.parentPid)
+        .map(([, signal]) => signal);
+      const firstClose = transport.close();
+      closes = [firstClose];
+      expect(groupSignals()).toEqual(["SIGKILL"]);
+      const secondClose = transport.close();
+      closes.push(secondClose);
+      let firstResolved = false;
+      let secondResolved = false;
+      void firstClose.then(() => { firstResolved = true });
+      void secondClose.then(() => { secondResolved = true });
+
+      expect(secondClose).toBe(firstClose);
+      await Promise.all(closes);
+      expect(firstResolved).toBe(true);
+      expect(secondResolved).toBe(true);
+      await waitForProcessesToExit(state.parentPid, state.descendantPid);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      expect(groupSignals()).toEqual(["SIGKILL"]);
+    } finally {
+      groupKillSpy.mockRestore();
+      await Promise.allSettled(closes);
+      await transport.close().catch(() => undefined);
+      if (!state) {
+        state = await readFile(statePath, "utf8")
+          .then((value) => JSON.parse(value) as ProcessTreeState)
+          .catch(() => undefined);
+      }
+      if (state) {
+        forceKill(state.parentPid);
+        forceKill(state.descendantPid);
+        await waitForProcessesToExit(state.parentPid, state.descendantPid);
+      }
+      await rm(directory, {recursive: true, force: true});
+    }
+  });
+
+  for (const scenario of ["awaited close", "same-turn close"] as const) {
+    it(`rejects start after ${scenario} before start`, async () => {
+      const directory = await mkdtemp(path.join(tmpdir(), "panda-mcp-close-before-start-"));
+      const statePath = path.join(directory, "state.json");
+      const marker = `panda-mcp-close-before-start-${randomUUID()}`;
+      const transport = new BoundedStdioClientTransport({
+        command: process.execPath,
+        args: [fixturePath, "--transport", "stdio", "--mode", "process-tree"],
+        env: {
+          FIXTURE_PROCESS_TREE_MARKER: marker,
+          FIXTURE_PROCESS_TREE_STATE: statePath,
+        },
+        maxLineBytes: 1_024,
+        deadlineAt: Date.now() + 5_000,
+        signal: new AbortController().signal,
+      });
+      let state: ProcessTreeState | undefined;
+      let started = false;
+
+      try {
+        const close = transport.close();
+        if (scenario === "awaited close") await close;
+        let startError: unknown;
+        try {
+          await transport.start();
+          started = true;
+        } catch (error) {
+          startError = error;
+        }
+        await close;
+
+        expect(startError).toMatchObject({message: "Bounded stdio transport already closed."});
+        expect(started).toBe(false);
+        expect(transport.pid).toBeNull();
+        await expect(readFile(statePath, "utf8")).rejects.toMatchObject({code: "ENOENT"});
+      } finally {
+        await transport.close().catch(() => undefined);
+        if (started) {
+          state = await readProcessTreeState(statePath);
+        } else {
+          state = await readFile(statePath, "utf8")
+            .then((value) => JSON.parse(value) as ProcessTreeState)
+            .catch(() => undefined);
+        }
+        if (state) {
+          forceKill(state.parentPid);
+          forceKill(state.descendantPid);
+          await waitForProcessesToExit(state.parentPid, state.descendantPid);
+        }
+        await rm(directory, {recursive: true, force: true});
+      }
+    });
+  }
 
   it("caps stdio stderr at 64 KiB and marks truncation", async () => {
     const result = await new SdkMcpRunner().callTool(invocation({

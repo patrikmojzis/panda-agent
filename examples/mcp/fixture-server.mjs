@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {spawn} from "node:child_process";
 import {createServer} from "node:http";
 import {randomUUID} from "node:crypto";
 import {once} from "node:events";
@@ -133,7 +134,38 @@ function writeStdio(value) {
   process.stdout.write(`${JSON.stringify(value)}\n`);
 }
 
+async function spawnProcessTreeDescendant(inheritStdio = false) {
+  const marker = process.env.FIXTURE_PROCESS_TREE_MARKER;
+  const statePath = process.env.FIXTURE_PROCESS_TREE_STATE;
+  if (!marker || !statePath) throw new Error("Process-tree fixture requires marker and state paths.");
+
+  process.env.FIXTURE_PROCESS_TREE_PARENT_PID = String(process.pid);
+  const script = `
+    import {writeFileSync} from "node:fs";
+    const marker = process.env.FIXTURE_PROCESS_TREE_MARKER;
+    writeFileSync(process.env.FIXTURE_PROCESS_TREE_STATE, JSON.stringify({
+      parentPid: Number(process.env.FIXTURE_PROCESS_TREE_PARENT_PID),
+      descendantPid: process.pid,
+      marker,
+    }));
+    process.title = marker;
+    process.on("SIGTERM", () => {});
+    process.send?.("ready");
+    process.disconnect?.();
+    setInterval(() => {}, 60_000);
+  `;
+  const descendant = spawn(process.execPath, ["--input-type=module", "-e", script], {
+    stdio: ["ignore", inheritStdio ? "inherit" : "ignore", inheritStdio ? "inherit" : "ignore", "ipc"],
+  });
+  await once(descendant, "message");
+  descendant.unref();
+}
+
 async function runStdio() {
+  if (mode.startsWith("process-tree")) {
+    await spawnProcessTreeDescendant(mode === "process-tree-leader-exit");
+  }
+  if (mode === "process-tree-leader-exit") return;
   let pending = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => {
@@ -145,7 +177,7 @@ async function runStdio() {
       if (!line) continue;
       void (async () => {
         const message = JSON.parse(line);
-        if (mode === "oversize-line" && message.method === "initialize") {
+        if (mode.endsWith("oversize-line") && message.method === "initialize") {
           process.stdout.write("x".repeat(8 * 1024 * 1024 + 1));
           return;
         }
@@ -168,6 +200,9 @@ async function runStdio() {
     }
   });
   await once(process.stdin, "end");
+  if (mode === "process-tree-concurrent-close") {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
 }
 
 function json(response, status, value, headers = {}) {

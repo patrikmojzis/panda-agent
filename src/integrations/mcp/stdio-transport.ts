@@ -29,6 +29,11 @@ export class BoundedStdioClientTransport implements Transport {
   onmessage?: (message: JSONRPCMessage) => void;
 
   private process?: ChildProcessWithoutNullStreams;
+  private started = false;
+  private closeRequested = false;
+  private processGroupId?: number;
+  private termination?: Promise<void>;
+  private closePromise?: Promise<void>;
   private readonly stderrStream = new PassThrough();
   private pending = Buffer.alloc(0);
   private overflowed = false;
@@ -53,8 +58,10 @@ export class BoundedStdioClientTransport implements Transport {
   }
 
   async start(): Promise<void> {
-    if (this.process) throw new Error("Bounded stdio transport already started.");
+    if (this.started) throw new Error("Bounded stdio transport already started.");
+    if (this.closeRequested) throw new Error("Bounded stdio transport already closed.");
     if (this.options.signal.aborted) throw this.options.signal.reason;
+    this.started = true;
 
     await new Promise<void>((resolve, reject) => {
       const child = spawn(this.options.command, [...this.options.args], {
@@ -63,10 +70,15 @@ export class BoundedStdioClientTransport implements Transport {
         shell: false,
         windowsHide: process.platform === "win32",
         stdio: ["pipe", "pipe", "pipe"],
+        detached: process.platform !== "win32",
       });
       this.process = child;
-      const onAbort = () => this.kill("SIGKILL");
+      if (process.platform !== "win32" && child.pid !== undefined && child.pid > 0) {
+        this.processGroupId = child.pid;
+      }
+      const onAbort = () => void this.terminate(child, false);
       this.options.signal.addEventListener("abort", onAbort, {once: true});
+      child.once("exit", () => void this.terminate(child, true));
       child.once("spawn", resolve);
       child.once("error", (error) => {
         reject(error);
@@ -74,7 +86,8 @@ export class BoundedStdioClientTransport implements Transport {
       });
       child.once("close", () => {
         this.options.signal.removeEventListener("abort", onAbort);
-        this.process = undefined;
+        if (this.process === child) this.process = undefined;
+        void this.terminate(child, true);
         this.onclose?.();
       });
       child.stdin.on("error", (error) => this.onerror?.(error));
@@ -95,8 +108,8 @@ export class BoundedStdioClientTransport implements Transport {
         this.overflowed = true;
         this.pending = Buffer.alloc(0);
         const error = new McpStdioIngressLimitError();
+        void this.terminate(this.process, false);
         this.onerror?.(error);
-        this.kill("SIGKILL");
         return;
       }
       if (segment.length > 0) this.pending = Buffer.concat([this.pending, segment]);
@@ -126,32 +139,89 @@ export class BoundedStdioClientTransport implements Transport {
     });
   }
 
-  async close(): Promise<void> {
+  close(): Promise<void> {
+    this.closeRequested = true;
+    if (!this.closePromise) {
+      let resolveClose!: () => void;
+      let rejectClose!: (reason?: unknown) => void;
+      this.closePromise = new Promise<void>((resolve, reject) => {
+        resolveClose = resolve;
+        rejectClose = reject;
+      });
+      void this.closeOnce().then(resolveClose, rejectClose);
+    }
+    return this.closePromise;
+  }
+
+  private async closeOnce(): Promise<void> {
     const child = this.process;
     this.pending = Buffer.alloc(0);
-    if (!child) return;
+    if (!child) {
+      await this.termination;
+      return;
+    }
     this.process = undefined;
+    if (process.platform !== "win32") {
+      await this.terminate(child, false);
+      return;
+    }
     if (this.options.signal.aborted || Date.now() >= this.options.deadlineAt) {
-      child.kill("SIGKILL");
+      await this.terminate(child, false);
       return;
     }
     child.stdin.end();
     const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
     const remaining = Math.max(0, this.options.deadlineAt - Date.now());
     await Promise.race([closed, new Promise<void>((resolve) => setTimeout(resolve, Math.min(250, remaining)).unref())]);
-    if (child.exitCode === null) child.kill("SIGTERM");
-    const afterTerm = Math.max(0, this.options.deadlineAt - Date.now());
-    if (afterTerm > 0) {
-      await Promise.race([closed, new Promise<void>((resolve) => setTimeout(resolve, Math.min(100, afterTerm)).unref())]);
-    }
-    if (child.exitCode === null) child.kill("SIGKILL");
+    await this.terminate(child, true);
   }
 
-  private kill(signal: NodeJS.Signals): void {
+  private terminate(child: ChildProcessWithoutNullStreams | undefined, graceful: boolean): Promise<void> {
+    if (process.platform !== "win32") {
+      this.killProcessGroup();
+      return Promise.resolve();
+    }
+    if (!graceful) {
+      this.signalChild(child, "SIGKILL");
+      return Promise.resolve();
+    }
+
+    this.termination ??= this.terminateWindowsGracefully(child);
+    return this.termination;
+  }
+
+  private async terminateWindowsGracefully(child: ChildProcessWithoutNullStreams | undefined): Promise<void> {
+    const termSent = this.signalChild(child, "SIGTERM");
+    const afterTerm = Math.max(0, this.options.deadlineAt - Date.now());
+    if (termSent && afterTerm > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(100, afterTerm)));
+    }
+    this.signalChild(child, "SIGKILL");
+  }
+
+  private killProcessGroup(): void {
+    const processGroupId = this.processGroupId;
+    if (processGroupId === undefined) return;
+    this.processGroupId = undefined;
     try {
-      this.process?.kill(signal);
+      process.kill(-processGroupId, "SIGKILL");
     } catch {
-      // Best-effort cleanup only.
+      // The group has already exited or cannot be signaled.
+    }
+  }
+
+  private signalChild(child: ChildProcessWithoutNullStreams | undefined, signal: NodeJS.Signals): boolean {
+    const pid = child?.pid;
+    if (!child || pid === undefined || pid <= 0
+      || child.exitCode !== null || child.signalCode !== null) {
+      return false;
+    }
+
+    try {
+      child.kill(signal);
+      return true;
+    } catch {
+      return false;
     }
   }
 }
