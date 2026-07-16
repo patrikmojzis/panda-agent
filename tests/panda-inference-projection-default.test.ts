@@ -1,4 +1,5 @@
 import {describe, expect, it} from "vitest";
+import type {AssistantMessage, ToolResultMessage} from "@earendil-works/pi-ai";
 
 import {createThreadDefinition, DEFAULT_INFERENCE_PROJECTION,} from "../src/app/runtime/create-runtime.js";
 import {projectTranscriptForInference} from "../src/domain/threads/runtime/index.js";
@@ -39,6 +40,22 @@ function createTranscriptRecord(
   };
 }
 
+function createRuntimeTranscriptRecord(
+  sequence: number,
+  message: AssistantMessage | ToolResultMessage,
+  createdAt: number,
+): ThreadMessageRecord {
+  return {
+    id: `record-${sequence}`,
+    threadId: "thread-defaults",
+    sequence,
+    origin: "runtime",
+    source: message.role === "toolResult" ? `tool:${message.toolName}` : "assistant",
+    message,
+    createdAt,
+  };
+}
+
 describe("createThreadDefinition inference projection defaults", () => {
   it("applies Panda's global inference projection by default without age-dropping messages", () => {
     const definition = createThreadDefinition({
@@ -53,18 +70,14 @@ describe("createThreadDefinition inference projection defaults", () => {
     });
 
     expect(DEFAULT_INFERENCE_PROJECTION).toEqual({
-      dropToolCalls: {
-        preserveRecentUserTurns: 20,
-      },
       dropThinking: {
-        preserveRecentUserTurns: 10,
-      },
-      dropImages: {
         preserveRecentUserTurns: 20,
       },
     });
     expect(definition.inferenceProjection).toEqual(DEFAULT_INFERENCE_PROJECTION);
     expect(DEFAULT_INFERENCE_PROJECTION).not.toHaveProperty("dropMessages");
+    expect(DEFAULT_INFERENCE_PROJECTION).not.toHaveProperty("dropToolCalls");
+    expect(DEFAULT_INFERENCE_PROJECTION).not.toHaveProperty("dropImages");
     expect(definition.inferenceProjection?.dropMessages).toBeUndefined();
   });
 
@@ -82,6 +95,44 @@ describe("createThreadDefinition inference projection defaults", () => {
     );
 
     expect(projected.map((record) => record.sequence)).toEqual([1, 2]);
+  });
+
+  it("keeps old tool calls, tool results, and images in Panda's default projection", () => {
+    const toolCall: AssistantMessage = {
+      role: "assistant",
+      content: [{type: "toolCall", id: "call-1", name: "inspect", arguments: {}}],
+      api: "openai-responses",
+      provider: "openai",
+      model: "openai/gpt-5.1",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0},
+      },
+      stopReason: "toolUse",
+      timestamp: 1,
+    };
+    const toolResult: ToolResultMessage = {
+      role: "toolResult",
+      toolCallId: "call-1",
+      toolName: "inspect",
+      content: [
+        {type: "text", text: "result"},
+        {type: "image", data: "ZmFrZQ==", mimeType: "image/png"},
+      ],
+      isError: false,
+      timestamp: 2,
+    };
+    const transcript = [
+      createTranscriptRecord(1, "inspect the image", 1),
+      createRuntimeTranscriptRecord(2, toolCall, 2),
+      createRuntimeTranscriptRecord(3, toolResult, 3),
+    ];
+
+    expect(projectTranscriptForInference(transcript, DEFAULT_INFERENCE_PROJECTION, 10 * DAY_MS)).toEqual(transcript);
   });
 
   it("merges session runtime overrides on top of the Panda default", () => {
