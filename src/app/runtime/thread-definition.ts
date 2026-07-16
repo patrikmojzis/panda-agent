@@ -44,13 +44,7 @@ const SUBAGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = 
 ];
 
 export const DEFAULT_INFERENCE_PROJECTION: InferenceProjection = {
-  dropToolCalls: {
-    preserveRecentUserTurns: 20,
-  },
   dropThinking: {
-    preserveRecentUserTurns: 10,
-  },
-  dropImages: {
     preserveRecentUserTurns: 20,
   },
 };
