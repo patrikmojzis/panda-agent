@@ -3,7 +3,7 @@ import {tmpdir} from "node:os";
 import path from "node:path";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
-import type {AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream} from "@earendil-works/pi-ai";
+import {createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEvent, type AssistantMessageEventStream} from "@earendil-works/pi-ai";
 
 import {
     Agent,
@@ -543,6 +543,13 @@ describe("Thread", () => {
     ["invalid input", new Error("invalid request argument")],
     ["context", new Error("context window token limit exceeded")],
     ["abort", Object.assign(new Error("The operation was aborted"), {name: "AbortError"})],
+    ["structured abort with transient prose", new ProviderRuntimeError("socket closed", {
+      providerName: "openai",
+      modelId: "gpt-4o-mini",
+      failureKind: "provider_abort",
+      providerMessage: "socket closed",
+      retryable: false,
+    })],
     ["Unicode", new Error("unsupported Unicode escape sequence")],
     ["environment", new Error("execution environment container exited")],
   ])("does not retry denied provider failures: %s", async (_label, failure) => {
@@ -709,15 +716,28 @@ describe("Thread", () => {
       arguments: {},
     }]);
     const sideEffect = vi.fn();
+    const initialFailure = createAssistantMessageEventStream();
+    initialFailure.push({
+      type: "error",
+      reason: "error",
+      error: {...message(""), stopReason: "error", errorMessage: "fetch failed"},
+    });
+    const partialFailure = createAssistantMessageEventStream();
+    partialFailure.push({
+      type: "toolcall_end",
+      contentIndex: 0,
+      toolCall: partial.content[0] as Extract<AssistantMessage["content"][number], {type: "toolCall"}>,
+      partial,
+    });
+    partialFailure.push({
+      type: "error",
+      reason: "error",
+      error: {...partial, stopReason: "error", errorMessage: "socket closed"},
+    });
     const stream = vi.fn()
-      .mockReturnValueOnce(failingStream(new Error("fetch failed")))
+      .mockReturnValueOnce(initialFailure)
       .mockReturnValueOnce(completedStream(message("recovered")))
-      .mockReturnValueOnce(failingStream(new Error("socket closed"), [{
-        type: "toolcall_end",
-        contentIndex: 0,
-        toolCall: partial.content[0] as Extract<AssistantMessage["content"][number], {type: "toolCall"}>,
-        partial,
-      }]));
+      .mockReturnValueOnce(partialFailure);
     const thread = new Thread({
       agent: new Agent({
         name: "stream-retry",
@@ -741,6 +761,7 @@ describe("Thread", () => {
     await vi.advanceTimersByTimeAsync(500);
     expect(await firstRun).toEqual({ok: true});
     expect(stream).toHaveBeenCalledTimes(2);
+    expect(firstEvents.some((event) => event.type === "error")).toBe(false);
 
     thread.addMessage(stringToUserMessage("stream again"));
     const secondEvents: ThreadRunEvent[] = [];
@@ -749,7 +770,7 @@ describe("Thread", () => {
         secondEvents.push(event as ThreadRunEvent);
       }
     }).rejects.toMatchObject({failureKind: "provider_transport_network"});
-    expect(secondEvents).toHaveLength(1);
+    expect(secondEvents.map((event) => event.type)).toEqual(["toolcall_end", "error"]);
     expect(stream).toHaveBeenCalledTimes(3);
     expect(sideEffect).not.toHaveBeenCalled();
   });

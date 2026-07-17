@@ -133,7 +133,7 @@ class FailingRuntime implements LlmRuntime {
         providerName: "openai",
         modelId: "gpt-test",
         failureKind: "provider_timeout",
-        providerMessage: "timeout token=sk-abcdefghijklmnopqrstuvwxyz {\"messages\":[{\"content\":\"raw provider payload\"}]}",
+        providerMessage: "timeout Bearer provider-bearer-abcdefghijklmnopqrstuvwxyz token=sk-abcdefghijklmnopqrstuvwxyz {\"messages\":[{\"content\":\"raw provider payload\"}]}",
         status: 504,
         requestId: "request-secret-token=abcdef1234567890",
         timedOut: true,
@@ -301,9 +301,14 @@ describe("model call traces", () => {
       expect(trace.errorJson).toMatchObject({category: "provider_timeout", status: 504, timedOut: true});
     }
     const text = JSON.stringify(traces.data);
-    expect(text).toContain("token=sk-abcdefghijklmnopqrstuvwxyz");
-    expect(text).toContain("request-secret-token=abcdef1234567890");
-    expect(text).not.toContain("raw provider payload");
+    for (const sentinel of [
+      "provider-bearer-abcdefghijklmnopqrstuvwxyz",
+      "sk-abcdefghijklmnopqrstuvwxyz",
+      "abcdef1234567890",
+      "raw provider payload",
+    ]) expect(text).not.toContain(sentinel);
+    expect(text).toContain("[redacted:credential]");
+    expect(text).toContain("[redacted:request-id]");
   });
 
   it("records failed and completed traces with common attribution for a successful retry", async () => {
@@ -336,7 +341,7 @@ describe("model call traces", () => {
     expect(runtime.stream).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves token-shaped prose while redacting tool payloads and blobs before persistence", async () => {
+  it("preserves token-shaped request prose while redacting tool payloads and blobs before persistence", async () => {
     const {pool, store} = await createStore();
     const base64Blob = Buffer.from("private image bytes".repeat(20)).toString("base64");
     const toolCall = {

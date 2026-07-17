@@ -11,6 +11,8 @@ import type {RecordModelCallTraceInput} from "./types.js";
 const BLOB_KEY_PATTERN = /^(?:data|image|imageData|base64|blob|bytes|buffer|payload)$/i;
 const PROMPT_CACHE_KEY_REDACTION_PATTERN = /^\[redacted:prompt-cache-key:sha256:[a-f0-9]{16}\]$/;
 const ERROR_MAX_CHARS = 500;
+const CREDENTIAL_REDACTION = "[redacted:credential]";
+const REQUEST_ID_REDACTION = "[redacted:request-id]";
 
 function isJsonRecord(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -39,6 +41,14 @@ function blobPlaceholder(kind: string, value: string): JsonObject {
 
 function isPromptCacheKeyField(key: string | undefined): boolean {
   return key?.replace(/[^a-z0-9]/gi, "").toLowerCase().includes("promptcachekey") ?? false;
+}
+
+function redactCredentialShapedText(value: string): string {
+  return value
+    .replace(/\bBearer\s+(?!\[redacted:credential\])[^\s,;]+/gi, `Bearer ${CREDENTIAL_REDACTION}`)
+    .replace(/\b(?:sk|rk|pk|ghp|github_pat|xox[baprs])-[-A-Za-z0-9_]{8,}\b/g, CREDENTIAL_REDACTION)
+    .replace(/([?&](?:access_?token|api_?key|auth|credential|secret|token)=)[^&#\s]+/gi, `$1${CREDENTIAL_REDACTION}`)
+    .replace(/(\b(?:access_?token|api_?key|auth(?:orization)?|credential|password|secret|sessionid|token)\b\s*[:=]\s*)(?!\[redacted:credential\])(?:["']?)[^\s,;"']+/gi, `$1${CREDENTIAL_REDACTION}`);
 }
 
 function sanitizeString(value: string, key?: string): JsonValue {
@@ -216,7 +226,7 @@ function cutStructuredErrorPayload(value: string): string {
 }
 
 function sanitizeErrorMessage(value: string): string {
-  const sanitized = normalizeErrorWhitespace(cutStructuredErrorPayload(value));
+  const sanitized = redactCredentialShapedText(normalizeErrorWhitespace(cutStructuredErrorPayload(value)));
   if (!sanitized) {
     return "Model call failed.";
   }
@@ -234,7 +244,7 @@ export function sanitizeTraceError(error: unknown): JsonObject {
       provider: error.providerName,
       model: error.modelId,
       ...(typeof error.status === "number" ? {status: error.status} : {}),
-      ...(error.requestId ? {requestId: sanitizeErrorMessage(error.requestId)} : {}),
+      ...(error.requestId ? {requestId: REQUEST_ID_REDACTION} : {}),
       ...(error.stopReason ? {stopReason: sanitizeErrorMessage(error.stopReason)} : {}),
       retryable: error.retryable,
       timedOut: error.timedOut,

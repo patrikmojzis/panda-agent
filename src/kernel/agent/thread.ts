@@ -464,7 +464,8 @@ function isRetryableProviderRuntimeError(
     signal: request.signal,
     status: error.status,
   };
-  if (hasProviderAbortSignal(classificationInput)
+  if (error.failureKind === "provider_abort"
+    || hasProviderAbortSignal(classificationInput)
     || hasProviderFailureDenySignal(classificationInput)) {
     return false;
   }
@@ -1272,6 +1273,12 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       try {
         const stream = this.runtime.stream(request);
         for await (const event of stream) {
+          // pi-ai represents a pre-start provider failure as the stream's first
+          // terminal error event. Keep that event behind Panda's public boundary
+          // until the failed result has been classified for retry.
+          if (!eventYielded && event.type === "error") {
+            continue;
+          }
           eventYielded = true;
           yield event;
         }
