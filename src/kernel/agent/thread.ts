@@ -180,6 +180,8 @@ function isAssistantMessage(event: ThreadRunEvent): event is AssistantMessage {
 }
 
 const PROVIDER_ERROR_DETAIL_MAX_CHARS = 800;
+const MODEL_CALL_MAX_ATTEMPTS = 3;
+const MODEL_CALL_RETRY_BASE_DELAY_MS = 1_000;
 
 function fallbackProviderFailureMessage(stopReason?: string): string {
   return stopReason === "aborted" ? "Provider request was aborted." : "Streaming failed";
@@ -197,8 +199,6 @@ function sanitizeProviderErrorDetail(value: string, stopReason?: string): string
   const normalized = value.replace(/\s+/g, " ").trim() || fallbackProviderFailureMessage(stopReason);
   return truncateProviderErrorDetail(normalized);
 }
-
-const PROVIDER_SERVER_ERROR_STATUSES = new Set([500, 501, 502, 503, 504]);
 
 interface ProviderFailureDetails {
   rawMessage: string;
@@ -338,6 +338,43 @@ function buildProviderFailureDetails(
   };
 }
 
+function providerFailureSignalText(input: {
+  message: string;
+  providerCode?: string;
+  providerType?: string;
+}): string {
+  return [input.message, input.providerCode, input.providerType]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join(" ")
+    .toLowerCase();
+}
+
+function hasProviderFailureDenySignal(input: {
+  message: string;
+  status?: number;
+  providerCode?: string;
+  providerType?: string;
+}): boolean {
+  const status = input.status === undefined ? undefined : Math.trunc(input.status);
+  if (status !== undefined && status >= 400 && status <= 499) {
+    return true;
+  }
+
+  const text = providerFailureSignalText(input);
+  return /unsupported unicode escape sequence/.test(text)
+    || /(?:^|[^0-9])4\d{2}(?:[^0-9]|$)/.test(text)
+    || /\b(?:rate[\s_-]*limit|too many requests|quota exceeded|insufficient quota|throttl(?:e|ed|ing))\b/.test(text)
+    || /\b(?:execution environment|container|runner|sandbox)\b.*\b(?:failed|exited|stopped|terminated|destroyed|unavailable|not found|lifecycle)\b/.test(text)
+    || /\b(?:failed|exited|stopped|terminated|destroyed|unavailable|not found|lifecycle)\b.*\b(?:execution environment|container|runner|sandbox)\b/.test(text)
+    || /\b(?:authentication|authorization|credential|api[\s_-]*key|permission)\b.{0,120}\b(?:failed|invalid|denied|missing|expired|unauthorized|forbidden)\b/.test(text)
+    || /\b(?:failed|invalid|denied|missing|expired|unauthorized|forbidden)\b.{0,20}\b(?:authentication|authorization|credential|api[\s_-]*key|permission)\b/.test(text)
+    || /\b(?:unauthorized|forbidden|permission denied|access denied)\b/.test(text)
+    || /\bbad request\b/.test(text)
+    || /\b(?:invalid|malformed)\s+(?:request|input|argument|arguments|payload|parameter|parameters)\b/.test(text)
+    || /\b(?:request|input|argument|arguments|payload|parameter|parameters)\s+(?:is\s+)?(?:invalid|malformed)\b/.test(text)
+    || /\b(?:context window|context length|token limit|maximum context|too many tokens|prompt too long)\b/.test(text);
+}
+
 function hasProviderServerErrorSignal(input: {
   message: string;
   status?: number;
@@ -345,18 +382,29 @@ function hasProviderServerErrorSignal(input: {
   providerType?: string;
 }): boolean {
   const status = input.status === undefined ? undefined : Math.trunc(input.status);
-  if (status !== undefined && PROVIDER_SERVER_ERROR_STATUSES.has(status)) {
+  if (status !== undefined && status >= 500 && status <= 599) {
     return true;
   }
 
-  const text = [input.message, input.providerCode, input.providerType]
-    .filter((value): value is string => typeof value === "string" && value.length > 0)
-    .join(" ")
-    .toLowerCase();
-
+  const text = providerFailureSignalText(input);
   return /(^|[^a-z0-9])(?:internal[_-])?server[_-]error([^a-z0-9]|$)/.test(text)
     || /\binternal[\s_-]+server[\s_-]+error\b/.test(text)
-    || /\bserver\s+(?:had|encountered)\s+an\s+error\b/.test(text);
+    || /\bserver\s+(?:had|encountered)\s+an\s+error\b/.test(text)
+    || /\b(?:overload(?:ed)?|service[\s_-]+unavailable)\b/.test(text)
+    || /\b(?:you can retry(?: your request)?|retry your request|try again later)\b/.test(text);
+}
+
+function hasProviderAbortSignal(input: {
+  message: string;
+  stopReason?: string;
+  signal?: AbortSignal;
+}): boolean {
+  const message = input.message.toLowerCase();
+  return input.stopReason === "aborted"
+    || input.signal?.aborted === true
+    || /\baborterror\b/.test(message)
+    || /\b(?:request|operation)\s+(?:was\s+)?aborted\b/.test(message)
+    || /\b(?:cancelled|canceled|cancellation)\b/.test(message);
 }
 
 function classifyProviderRuntimeFailure(input: {
@@ -369,10 +417,12 @@ function classifyProviderRuntimeFailure(input: {
 }): ProviderRuntimeFailureKind {
   const message = input.message.toLowerCase();
 
-  if (input.stopReason === "aborted"
-    || input.signal?.aborted
-    || /\b(abort(?:ed)?|cancelled|canceled|aborterror)\b/.test(message)) {
+  if (hasProviderAbortSignal(input)) {
     return "provider_abort";
+  }
+
+  if (hasProviderFailureDenySignal(input)) {
+    return "provider_error";
   }
 
   if (hasProviderServerErrorSignal(input)) {
@@ -383,26 +433,144 @@ function classifyProviderRuntimeFailure(input: {
     return "provider_timeout";
   }
 
-  if (/(^|\s)terminated(\s|$|\.)/.test(message)) {
+  if (/\b(?:terminated|premature(?:ly)? terminated|premature termination)\b/.test(message)) {
     return "provider_transport_terminated";
   }
 
-  if (/\b(fetch failed|socket|econnreset|econnrefused|enotfound|epipe|network|connection reset|connection closed|connection aborted|und_err_socket)\b/.test(message)) {
+  if (/\b(?:websocket|fetch failed|socket|econnreset|econnrefused|econnaborted|enotfound|epipe|network|connection reset|connection closed|connection aborted|connection refused|connect failed|failed to connect|premature close|und_err_socket)\b/.test(message)) {
     return "provider_transport_network";
   }
 
   return "provider_error";
 }
 
-function isRetryableProviderRuntimeFailure(failureKind: ProviderRuntimeFailureKind): boolean {
-  return failureKind === "provider_server_error";
+function isRetryableProviderRuntimeFailure(failureKind?: ProviderRuntimeFailureKind): boolean {
+  return failureKind === "provider_timeout"
+    || failureKind === "provider_server_error"
+    || failureKind === "provider_transport_terminated"
+    || failureKind === "provider_transport_network";
+}
+
+function isRetryableProviderRuntimeError(
+  error: ProviderRuntimeError,
+  request: LlmRuntimeRequest,
+): boolean {
+  const message = [error.providerMessage, error.message]
+    .filter((value): value is string => typeof value === "string" && value.length > 0)
+    .join(" ");
+  const classificationInput = {
+    message,
+    stopReason: error.stopReason,
+    signal: request.signal,
+    status: error.status,
+  };
+  if (error.failureKind === "provider_abort"
+    || hasProviderAbortSignal(classificationInput)
+    || hasProviderFailureDenySignal(classificationInput)) {
+    return false;
+  }
+
+  return isRetryableProviderRuntimeFailure(classifyProviderRuntimeFailure(classificationInput))
+    || isRetryableProviderRuntimeFailure(error.failureKind);
+}
+
+function calculateModelCallRetryDelay(retryOrdinal: number): number {
+  const ceiling = MODEL_CALL_RETRY_BASE_DELAY_MS * (2 ** (retryOrdinal - 1));
+  return Math.floor((ceiling / 2) + (Math.random() * ceiling / 2));
+}
+
+async function waitForModelCallRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+
+  await new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onAbort = () => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+      signal?.removeEventListener("abort", onAbort);
+      try {
+        throwIfAborted(signal);
+      } catch (error) {
+        reject(error);
+      }
+    };
+
+    signal?.addEventListener("abort", onAbort, {once: true});
+    timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+
+    if (signal?.aborted) {
+      onAbort();
+    }
+  });
+
+  throwIfAborted(signal);
+}
+
+function warnModelCallRetry(input: {
+  error: ProviderRuntimeError;
+  request: LlmRuntimeRequest;
+  attempt: number;
+  delayMs: number;
+}): void {
+  console.warn("Retrying transient provider model call.", {
+    provider: input.request.providerName,
+    model: input.request.modelId,
+    failureKind: input.error.failureKind,
+    ...(input.error.status !== undefined && Number.isFinite(input.error.status)
+      ? {status: input.error.status}
+      : {}),
+    attempt: input.attempt,
+    maxAttempts: MODEL_CALL_MAX_ATTEMPTS,
+    delayMs: input.delayMs,
+    runId: input.request.metadata?.runId,
+    threadId: input.request.metadata?.threadId,
+    turn: input.request.metadata?.turn,
+  });
+}
+
+function withRetryExhaustion(
+  error: ProviderRuntimeError,
+  request: LlmRuntimeRequest,
+  attempts: number,
+): ProviderRuntimeError {
+  const failureKind = error.failureKind ?? "provider_error";
+  const status = typeof error.status === "number" && Number.isFinite(error.status)
+    ? Math.trunc(error.status)
+    : undefined;
+  const stopReason = error.stopReason === "error" || error.stopReason === "aborted"
+    ? error.stopReason
+    : undefined;
+  const baseMessage = formatProviderRuntimeErrorMessage({
+    request,
+    stopReason,
+    failureKind,
+    status,
+    retryable: true,
+  });
+  return new ProviderRuntimeError(
+    `${baseMessage.slice(0, -1)}; attempts=${attempts}; maxAttempts=${MODEL_CALL_MAX_ATTEMPTS}; retryExhausted=true.`,
+    {
+      providerName: request.providerName,
+      modelId: request.modelId,
+      status,
+      durationMs: error.durationMs,
+      timedOut: error.timedOut,
+      retryable: true,
+      stopReason,
+      failureKind,
+    },
+  );
 }
 
 function formatProviderRuntimeErrorMessage(input: {
   request: LlmRuntimeRequest;
   stopReason?: string;
   failureKind: ProviderRuntimeFailureKind;
-  providerMessage: string;
+  providerMessage?: string;
   status?: number;
   requestId?: string;
   retryable?: boolean;
@@ -416,7 +584,7 @@ function formatProviderRuntimeErrorMessage(input: {
     ...(input.retryable ? ["retryable=true"] : []),
     ...(input.status !== undefined ? [`status=${input.status}`] : []),
     ...(input.requestId ? [`requestId=${sanitizeProviderErrorDetail(input.requestId)}`] : []),
-    `detail=${input.providerMessage}`,
+    ...(input.providerMessage ? [`detail=${input.providerMessage}`] : []),
   ];
 
   return `${parts.join("; ")}.`;
@@ -982,22 +1150,55 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     throwIfAborted(this.signal);
     const request = await this.buildRuntimeRequest(runMessages);
     this.assertRuntimeRequestWithinHardWindow(request);
-    const startedAt = Date.now();
-    let response: AssistantMessage;
-    try {
-      response = await this.runtime.complete(request);
-    } catch (error) {
-      const tracedError = wrapClassifiedProviderFailure(error, request, startedAt) ?? error;
-      await this.recordModelCallTrace({mode: "complete", request, startedAt, error: tracedError});
-      throw tracedError;
+    let response: AssistantMessage | undefined;
+    for (let attempt = 1; attempt <= MODEL_CALL_MAX_ATTEMPTS; attempt += 1) {
+      throwIfAborted(this.signal);
+      response = undefined;
+      const startedAt = Date.now();
+      let attemptError: unknown;
+
+      try {
+        response = await this.runtime.complete(request);
+      } catch (error) {
+        attemptError = wrapClassifiedProviderFailure(error, request, startedAt) ?? error;
+      }
+
+      if (attemptError === undefined) {
+        try {
+          throwIfAssistantResponseFailed(response!, request, startedAt);
+        } catch (error) {
+          attemptError = error;
+        }
+      }
+
+      if (attemptError === undefined) {
+        await this.recordModelCallTrace({mode: "complete", request, startedAt, response: response!});
+        break;
+      }
+
+      await this.recordModelCallTrace({
+        mode: "complete",
+        request,
+        startedAt,
+        ...(response !== undefined ? {response} : {}),
+        error: attemptError,
+      });
+      if (!(attemptError instanceof ProviderRuntimeError)
+        || !isRetryableProviderRuntimeError(attemptError, request)) {
+        throw attemptError;
+      }
+      if (attempt === MODEL_CALL_MAX_ATTEMPTS) {
+        throw withRetryExhaustion(attemptError, request, attempt);
+      }
+
+      throwIfAborted(this.signal);
+      const delayMs = calculateModelCallRetryDelay(attempt);
+      warnModelCallRetry({error: attemptError, request, attempt: attempt + 1, delayMs});
+      await waitForModelCallRetry(delayMs, this.signal);
     }
-    try {
-      throwIfAssistantResponseFailed(response, request, startedAt);
-    } catch (error) {
-      await this.recordModelCallTrace({mode: "complete", request, startedAt, response, error});
-      throw error;
+    if (response === undefined) {
+      throw new Error("Provider runtime returned no response.");
     }
-    await this.recordModelCallTrace({mode: "complete", request, startedAt, response});
     throwIfAborted(this.signal);
 
     yield response;
@@ -1059,28 +1260,69 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     throwIfAborted(this.signal);
     const request = await this.buildRuntimeRequest(runMessages);
     this.assertRuntimeRequestWithinHardWindow(request);
-    const startedAt = Date.now();
-    let response: AssistantMessage;
-    try {
-      const stream = this.runtime.stream(request);
+    let response: AssistantMessage | undefined;
+    for (let attempt = 1; attempt <= MODEL_CALL_MAX_ATTEMPTS; attempt += 1) {
+      throwIfAborted(this.signal);
+      response = undefined;
+      const startedAt = Date.now();
+      let attemptError: unknown;
+      let eventYielded = false;
 
-      for await (const event of stream) {
-        yield event;
+      try {
+        const stream = this.runtime.stream(request);
+        for await (const event of stream) {
+          // pi-ai represents a pre-start provider failure as the stream's first
+          // terminal error event. Keep that event behind Panda's public boundary
+          // until the failed result has been classified for retry.
+          if (!eventYielded && event.type === "error") {
+            continue;
+          }
+          eventYielded = true;
+          yield event;
+        }
+        response = await stream.result();
+      } catch (error) {
+        attemptError = wrapClassifiedProviderFailure(error, request, startedAt) ?? error;
       }
 
-      response = await stream.result();
-    } catch (error) {
-      const tracedError = wrapClassifiedProviderFailure(error, request, startedAt) ?? error;
-      await this.recordModelCallTrace({mode: "stream", request, startedAt, error: tracedError});
-      throw tracedError;
+      if (attemptError === undefined) {
+        try {
+          throwIfAssistantResponseFailed(response!, request, startedAt);
+        } catch (error) {
+          attemptError = error;
+        }
+      }
+
+      if (attemptError === undefined) {
+        await this.recordModelCallTrace({mode: "stream", request, startedAt, response: response!});
+        break;
+      }
+
+      await this.recordModelCallTrace({
+        mode: "stream",
+        request,
+        startedAt,
+        ...(response !== undefined ? {response} : {}),
+        error: attemptError,
+      });
+      if (eventYielded
+        || !(attemptError instanceof ProviderRuntimeError)
+        || !isRetryableProviderRuntimeError(attemptError, request)) {
+        throw attemptError;
+      }
+      if (attempt === MODEL_CALL_MAX_ATTEMPTS) {
+        throw withRetryExhaustion(attemptError, request, attempt);
+      }
+
+      throwIfAborted(this.signal);
+      const delayMs = calculateModelCallRetryDelay(attempt);
+      warnModelCallRetry({error: attemptError, request, attempt: attempt + 1, delayMs});
+      await waitForModelCallRetry(delayMs, this.signal);
     }
-    try {
-      throwIfAssistantResponseFailed(response, request, startedAt);
-    } catch (error) {
-      await this.recordModelCallTrace({mode: "stream", request, startedAt, response, error});
-      throw error;
+    if (response === undefined) {
+      throw new Error("Provider runtime stream returned no response.");
     }
-    await this.recordModelCallTrace({mode: "stream", request, startedAt, response});
+    throwIfAborted(this.signal);
 
     const functionCalls = await this.finalizeAssistantTurn(response, runContext);
     if (functionCalls.length === 0) {

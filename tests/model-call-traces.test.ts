@@ -1,6 +1,6 @@
 import {DataType, newDb} from "pg-mem";
 import {afterEach, describe, expect, it, vi} from "vitest";
-import type {AssistantMessage, AssistantMessageEventStream} from "@earendil-works/pi-ai";
+import {createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream} from "@earendil-works/pi-ai";
 import {z} from "zod";
 
 import {Agent} from "../src/kernel/agent/agent.js";
@@ -17,8 +17,13 @@ const PROMPT_CACHE_KEY_REDACTION_PATTERN = /^\[redacted:prompt-cache-key:sha256:
 const TRACE_CONTEXT_CONTENT = "llm context section with trace-context-value";
 const TRACE_CONTEXT_CACHE_PART = "trace-context-cache-raw-secret";
 const FUTURE_CONTEXT_CONTENT = "future llm context section with auto-display-value";
+const PROVIDER_CREDENTIAL_SENTINEL = "sk-retry247credential987654321";
+const PROVIDER_REQUEST_ID_SENTINEL = "req-retry247request987654321";
+const PROVIDER_PAYLOAD_SENTINEL = "RETRY247_PROVIDER_PAYLOAD_SENTINEL";
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
   while (pools.length > 0) await pools.pop()?.end();
 });
 
@@ -123,24 +128,28 @@ class CompleteRuntime implements LlmRuntime {
   });
 }
 
-class FailingRuntime implements LlmRuntime {
-  readonly complete = vi.fn(async () => {
-    throw new ProviderRuntimeError(
-      "Provider runtime failed; detail=Bearer abcdefghijklmnopqrstuvwxyz sk-abcdefghijklmnopqrstuvwxyz {\"messages\":[{\"content\":\"raw provider payload\"}]}",
-      {
-        providerName: "openai",
-        modelId: "gpt-test",
-        failureKind: "provider_timeout",
-        providerMessage: "timeout token=sk-abcdefghijklmnopqrstuvwxyz {\"messages\":[{\"content\":\"raw provider payload\"}]}",
-        status: 504,
-        requestId: "request-secret-token=abcdef1234567890",
-        timedOut: true,
+function sensitiveTerminalErrorStream(): AssistantMessageEventStream {
+  const response = assistant("", {
+    stopReason: "error",
+    errorMessage: JSON.stringify({
+      error: {
+        message: `The server had an error. Bearer ${PROVIDER_CREDENTIAL_SENTINEL} requestId=${PROVIDER_REQUEST_ID_SENTINEL} payload={${PROVIDER_PAYLOAD_SENTINEL}}`,
+        type: "server_error",
+        code: "server_error",
       },
-    );
+      status: 503,
+      request_id: PROVIDER_REQUEST_ID_SENTINEL,
+      debug: {payload: PROVIDER_PAYLOAD_SENTINEL},
+    }),
   });
-  readonly stream = vi.fn(() => {
-    throw new Error("stream not used");
-  });
+  const stream = createAssistantMessageEventStream();
+  stream.push({type: "error", reason: "error", error: response});
+  return stream;
+}
+
+class SensitiveTerminalErrorRuntime implements LlmRuntime {
+  readonly complete = vi.fn(async () => sensitiveTerminalErrorStream().result());
+  readonly stream = vi.fn(() => sensitiveTerminalErrorStream());
 }
 
 function streamFor(result: AssistantMessage): AssistantMessageEventStream {
@@ -148,6 +157,25 @@ function streamFor(result: AssistantMessage): AssistantMessageEventStream {
     async *[Symbol.asyncIterator]() {},
     result: async () => result,
   } as AssistantMessageEventStream;
+}
+
+class RecoveringRuntime implements LlmRuntime {
+  readonly complete = vi.fn()
+    .mockRejectedValueOnce(new ProviderRuntimeError(
+      "Provider runtime failed; detail=try again later {\"messages\":[{\"content\":\"raw retry payload\"}]}",
+      {
+        providerName: "openai",
+        modelId: "gpt-test",
+        failureKind: "provider_server_error",
+        providerMessage: "try again later {\"messages\":[{\"content\":\"raw retry payload\"}]}",
+        status: 503,
+        retryable: true,
+      },
+    ))
+    .mockResolvedValue(assistant("recovered"));
+  readonly stream = vi.fn(() => {
+    throw new Error("stream not used");
+  });
 }
 
 class StreamRuntime implements LlmRuntime {
@@ -257,21 +285,61 @@ describe("model call traces", () => {
     expect(JSON.stringify(sections)).toContain("auto-display-value");
   });
 
-  it("writes one failed trace without redacting token-shaped provider error prose", async () => {
-    const {store} = await createStore();
-    const runtime = new FailingRuntime();
+  it.each(["complete", "stream"] as const)(
+    "sanitizes installed terminal assistant errors in every exhausted %s trace",
+    async (mode) => {
+      vi.spyOn(Math, "random").mockReturnValue(0);
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const {store} = await createStore();
+      const runtime = new SensitiveTerminalErrorRuntime();
+      const thread = createThread({runtime, store});
 
-    await expect(drainThread(createThread({runtime, store}))).rejects.toThrow("Provider runtime failed");
+      await expect(mode === "complete" ? drainThread(thread) : drainStream(thread)).rejects.toThrow(
+        "attempts=3; maxAttempts=3; retryExhausted=true",
+      );
+
+      const traces = await store.listTraces();
+      expect(traces.data).toHaveLength(3);
+      expect(traces.data.map((trace) => trace.status)).toEqual(["failed", "failed", "failed"]);
+      expect(traces.data.every((trace) => trace.callIndex === 1)).toBe(true);
+      expect(mode === "complete" ? runtime.complete : runtime.stream).toHaveBeenCalledTimes(3);
+      for (const trace of traces.data) {
+        expect(trace).toMatchObject({
+          runId: "00000000-0000-0000-0000-000000000101",
+          threadId: "thread-panda",
+          mode,
+          turn: 1,
+        });
+        expect(trace.errorJson).toMatchObject({category: "provider_server_error", status: 503});
+        expect(trace.responseJson).not.toHaveProperty("errorMessage");
+      }
+      const serializedTraces = JSON.stringify(traces.data);
+      for (const sentinel of [
+        PROVIDER_CREDENTIAL_SENTINEL,
+        PROVIDER_REQUEST_ID_SENTINEL,
+        PROVIDER_PAYLOAD_SENTINEL,
+      ]) expect(serializedTraces).not.toContain(sentinel);
+      expect(serializedTraces).toContain("[redacted:credential]");
+      expect(serializedTraces).toContain("[redacted:request-id]");
+    },
+  );
+
+  it("records failed and completed traces with common attribution for a successful retry", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const {store} = await createStore();
+    const runtime = new RecoveringRuntime();
+
+    await drainThread(createThread({runtime, store}));
 
     const traces = await store.listTraces();
-    expect(traces.data).toHaveLength(1);
-    const trace = traces.data[0]!;
-    expect(trace.status).toBe("failed");
-    expect(trace.errorJson).toMatchObject({category: "provider_timeout", status: 504, timedOut: true});
-    const text = JSON.stringify(trace);
-    expect(text).toContain("token=sk-abcdefghijklmnopqrstuvwxyz");
-    expect(text).toContain("request-secret-token=abcdef1234567890");
-    expect(text).not.toContain("raw provider payload");
+    expect(traces.data).toHaveLength(2);
+    expect(traces.data.map((trace) => trace.status).sort()).toEqual(["completed", "failed"]);
+    expect(traces.data.every((trace) => trace.callIndex === 1)).toBe(true);
+    expect(traces.data.every((trace) => trace.runId === "00000000-0000-0000-0000-000000000101")).toBe(true);
+    expect(traces.data.every((trace) => trace.threadId === "thread-panda")).toBe(true);
+    expect(traces.data.every((trace) => trace.turn === 1)).toBe(true);
+    expect(JSON.stringify(traces.data)).not.toContain("raw retry payload");
   });
 
   it("writes one final trace for streaming after the stream result resolves", async () => {
@@ -286,7 +354,7 @@ describe("model call traces", () => {
     expect(runtime.stream).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves token-shaped prose while redacting tool payloads and blobs before persistence", async () => {
+  it("preserves token-shaped request prose while redacting tool payloads and blobs before persistence", async () => {
     const {pool, store} = await createStore();
     const base64Blob = Buffer.from("private image bytes".repeat(20)).toString("base64");
     const toolCall = {

@@ -2,8 +2,8 @@ import {mkdtemp, rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 
-import {describe, expect, it, vi} from "vitest";
-import type {AssistantMessage} from "@earendil-works/pi-ai";
+import {afterEach, describe, expect, it, vi} from "vitest";
+import {createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEvent, type AssistantMessageEventStream} from "@earendil-works/pi-ai";
 
 import {
     Agent,
@@ -27,6 +27,11 @@ import {runThreadStep, type ThreadStepResult} from "../src/kernel/agent/thread.j
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
+const PROVIDER_CREDENTIAL_SENTINEL = "sk-retry247credential987654321";
+const PROVIDER_REQUEST_ID_SENTINEL = "req-retry247request987654321";
+const PROVIDER_PAYLOAD_SENTINEL = "RETRY247_PROVIDER_PAYLOAD_SENTINEL";
+const RAW_CAUSE_SENTINEL = "RETRY247_RAW_CAUSE_SENTINEL";
+
 class EchoTool extends Tool<typeof EchoTool.schema> {
   name = "echo";
   description = "Echo a message";
@@ -43,6 +48,22 @@ class EchoTool extends Tool<typeof EchoTool.schema> {
       echoed: args.message,
       turn: run.turn,
     };
+  }
+}
+
+class CountingTool extends Tool<typeof CountingTool.schema> {
+  name = "counting";
+  description = "Count side effects";
+  static schema = z.object({});
+  schema = CountingTool.schema;
+
+  constructor(private readonly sideEffect: () => void) {
+    super();
+  }
+
+  async handle(): Promise<{ counted: true }> {
+    this.sideEffect();
+    return { counted: true };
   }
 }
 
@@ -190,16 +211,53 @@ function message(text: string): AssistantMessage {
   return createAssistantMessage([{ type: "text", text }]);
 }
 
+function failingStream(
+  error: Error,
+  events: readonly AssistantMessageEvent[] = [],
+): AssistantMessageEventStream {
+  return {
+    async *[Symbol.asyncIterator]() {
+      for (const event of events) {
+        yield event;
+      }
+      throw error;
+    },
+    result: async () => {
+      throw error;
+    },
+  } as AssistantMessageEventStream;
+}
+
+function completedStream(response: AssistantMessage): AssistantMessageEventStream {
+  return {
+    async *[Symbol.asyncIterator]() {},
+    result: async () => response,
+  } as AssistantMessageEventStream;
+}
+
+function terminalErrorStream(errorMessage: string): AssistantMessageEventStream {
+  const response = createAssistantMessage([], {stopReason: "error", errorMessage});
+  const stream = createAssistantMessageEventStream();
+  stream.push({type: "error", reason: "error", error: response});
+  return stream;
+}
+
 function eventKind(event: ThreadRunEvent): string {
   return "type" in event ? event.type : event.role;
 }
 
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
 describe("Thread", () => {
   it("contextualizes terminated provider responses while preserving streaming failure compatibility", async () => {
-    const runtime = createMockRuntime(createAssistantMessage([], {
+    const terminated = createAssistantMessage([], {
       stopReason: "error",
       errorMessage: "terminated",
-    }));
+    });
+    const runtime = createMockRuntime(terminated, terminated, terminated);
 
     const thread = new Thread({
       agent: new Agent({
@@ -227,11 +285,11 @@ describe("Thread", () => {
     expect(error.modelId).toBe("gpt-4o-mini");
     expect(error.stopReason).toBe("error");
     expect(error.failureKind).toBe("provider_transport_terminated");
-    expect(error.providerMessage).toBe("terminated");
+    expect(error.providerMessage).toBeUndefined();
     expect(error.message).toContain("provider=openai");
     expect(error.message).toContain("model=gpt-4o-mini");
     expect(error.message).toContain("failureKind=provider_transport_terminated");
-    expect(error.message).toContain("detail=terminated");
+    expect(error.message).not.toContain("detail=");
   });
 
   it("wraps transport-like runtime throws with provider diagnostics", async () => {
@@ -260,7 +318,7 @@ describe("Thread", () => {
       providerName: "openai",
       modelId: "gpt-4o-mini",
       failureKind: "provider_transport_network",
-      providerMessage: "fetch failed",
+      providerMessage: undefined,
     });
   });
 
@@ -308,68 +366,77 @@ describe("Thread", () => {
       failureKind: "provider_server_error",
       retryable: true,
       status: 501,
-      requestId: "req_server_123",
-      providerMessage: "The server had an error while processing your request.",
     });
+    expect(error.requestId).toBeUndefined();
+    expect(error.providerMessage).toBeUndefined();
+    expect(error.cause).toBeUndefined();
     expect(error.message).toContain("failureKind=provider_server_error");
     expect(error.message).toContain("retryable=true");
     expect(error.message).toContain("status=501");
-    expect(error.message).toContain("requestId=req_server_123");
-    expect(error.message).toContain("detail=The server had an error while processing your request.");
+    expect(error.message).not.toContain("req_server_123");
+    expect(error.message).not.toContain("detail=");
   });
 
-  it("extracts safe detail from raw Codex server_error payloads", async () => {
-    const runtime = createMockRuntime(createAssistantMessage([], {
-      stopReason: "error",
-      errorMessage: JSON.stringify({
-        error: {
-          message: "The server had an error while processing your request. apiKey=sk-abcdefghijklmnopqrstuvwxyz987654321",
-          type: "server_error",
-          code: "server_error",
-        },
-        request_id: "req_payload_123",
-        debug: {
-          prompt: "NEVER_PERSIST_THIS_PROMPT",
-        },
-      }),
-    }));
-
+  it("fails closed for installed terminal assistant diagnostics after retry exhaustion", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const providerError = JSON.stringify({
+      error: {
+        message: `The server had an error. Bearer ${PROVIDER_CREDENTIAL_SENTINEL} requestId=${PROVIDER_REQUEST_ID_SENTINEL} payload={${PROVIDER_PAYLOAD_SENTINEL}}`,
+        type: "server_error",
+        code: "server_error",
+      },
+      status: 503,
+      request_id: PROVIDER_REQUEST_ID_SENTINEL,
+      debug: {payload: PROVIDER_PAYLOAD_SENTINEL},
+    });
+    const complete = vi.fn(async () => terminalErrorStream(providerError).result());
     const thread = new Thread({
-      agent: new Agent({
-        name: "core",
-        instructions: "Reply briefly",
-      }),
+      agent: new Agent({name: "core", instructions: "Reply briefly"}),
       model: "openai-codex/gpt-5.4",
       messages: [stringToUserMessage("hi")],
-      runtime,
+      runtime: {
+        complete,
+        stream: vi.fn(() => { throw new Error("Streaming was not expected in this test"); }),
+      },
     });
 
-    let caught: unknown;
-    try {
-      for await (const _output of thread.run()) {
-        // Exhaust the generator.
-      }
-    } catch (error) {
-      caught = error;
-    }
+    const outcome = thread.runToCompletion().then(
+      (value) => ({value}),
+      (error: unknown) => ({error}),
+    );
+    await vi.advanceTimersByTimeAsync(1_500);
+    const result = await outcome;
 
-    expect(caught).toBeInstanceOf(ProviderRuntimeError);
-    const error = caught as ProviderRuntimeError;
-    expect(error.failureKind).toBe("provider_server_error");
-    expect(error.retryable).toBe(true);
-    expect(error.requestId).toBe("req_payload_123");
-    expect(error.providerMessage).toContain("apiKey=sk-abcdefghijklmnopqrstuvwxyz987654321");
-    expect(error.message).toContain("retryable=true");
-    expect(error.message).toContain("requestId=req_payload_123");
-    expect(error.message).not.toContain("NEVER_PERSIST_THIS_PROMPT");
-    expect(error.message).not.toContain('"debug"');
+    expect(result.error).toBeInstanceOf(ProviderRuntimeError);
+    const error = result.error as ProviderRuntimeError;
+    expect(complete).toHaveBeenCalledTimes(3);
+    expect(error).toMatchObject({
+      providerName: "openai-codex",
+      modelId: "gpt-5.4",
+      failureKind: "provider_server_error",
+      status: 503,
+      retryable: true,
+    });
+    expect(error.requestId).toBeUndefined();
+    expect(error.providerMessage).toBeUndefined();
+    expect(error.cause).toBeUndefined();
+    expect(error.message).toContain("attempts=3; maxAttempts=3; retryExhausted=true");
+    for (const sentinel of [
+      PROVIDER_CREDENTIAL_SENTINEL,
+      PROVIDER_REQUEST_ID_SENTINEL,
+      PROVIDER_PAYLOAD_SENTINEL,
+    ]) expect(JSON.stringify(error)).not.toContain(sentinel);
+    expect(error.message).not.toContain("detail=");
   });
 
-  it("caps provider failure details without redacting token-shaped prose", async () => {
-    const runtime = createMockRuntime(createAssistantMessage([], {
+  it("omits provider prose from exhausted public diagnostics", async () => {
+    const verboseFailure = createAssistantMessage([], {
       stopReason: "error",
       errorMessage: `fetch failed Bearer abcdefghijklmnopqrstuvwxyz987654321 apiKey=sk-abcdefghijklmnopqrstuvwxyz987654321 ${"x".repeat(1_000)}`,
-    }));
+    });
+    const runtime = createMockRuntime(verboseFailure, verboseFailure, verboseFailure);
 
     const thread = new Thread({
       agent: new Agent({
@@ -393,10 +460,341 @@ describe("Thread", () => {
     expect(caught).toBeInstanceOf(ProviderRuntimeError);
     const error = caught as ProviderRuntimeError;
     expect(error.failureKind).toBe("provider_transport_network");
-    expect(error.providerMessage).toContain("Bearer abcdefghijklmnopqrstuvwxyz987654321");
-    expect(error.providerMessage).toContain("apiKey=sk-abcdefghijklmnopqrstuvwxyz987654321");
-    expect(error.providerMessage).toContain("[truncated");
-    expect(error.message.length).toBeLessThan(1_100);
+    expect(error.providerMessage).toBeUndefined();
+    expect(error.requestId).toBeUndefined();
+    expect(error.message).not.toContain("abcdefghijklmnopqrstuvwxyz987654321");
+    expect(error.message).not.toContain("detail=");
+    expect(error.message.length).toBeLessThan(500);
+  });
+
+  it.each([
+    ["WebSocket connection closed unexpectedly", "provider_transport_network"],
+    ["Provider stream terminated", "provider_transport_terminated"],
+    ["Provider request timed out", "provider_timeout"],
+    ["The model is overloaded, try again later", "provider_server_error"],
+    ["You can retry your request", "provider_server_error"],
+  ])("retries transient provider failures before exposing an assistant result: %s", async (detail, failureKind) => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const failure = new Error(detail);
+    const requestObjects: LlmRuntimeRequest[] = [];
+    const complete = vi.fn(async (request: LlmRuntimeRequest) => {
+      requestObjects.push(request);
+      if (requestObjects.length === 1) {
+        throw failure;
+      }
+      return message("recovered");
+    });
+    const thread = new Thread({
+      agent: new Agent({name: "retry", instructions: "Reply briefly"}),
+      model: "openai/gpt-4o-mini",
+      messages: [stringToUserMessage("hi")],
+      runtime: {
+        complete,
+        stream: vi.fn(() => { throw new Error("stream not expected"); }),
+      },
+      context: {runId: "run-retry", threadId: "thread-retry"},
+    });
+
+    const outcome = thread.runToCompletion().then(
+      (value) => ({value}),
+      (error: unknown) => ({error}),
+    );
+    await vi.advanceTimersByTimeAsync(500);
+
+    await expect(outcome).resolves.toEqual({value: expect.objectContaining({role: "assistant"})});
+    expect(complete).toHaveBeenCalledTimes(2);
+    expect(requestObjects[1]).toBe(requestObjects[0]);
+    expect(warning).toHaveBeenCalledWith(
+      "Retrying transient provider model call.",
+      expect.objectContaining({
+        failureKind,
+        attempt: 2,
+        maxAttempts: 3,
+        delayMs: 500,
+        runId: "run-retry",
+        threadId: "thread-retry",
+      }),
+    );
+  });
+
+  it("retries every structured 5xx status", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    for (const status of [500, 505, 599]) {
+      const failure = Object.assign(new Error("provider rejected request"), {status});
+      const complete = vi.fn().mockRejectedValueOnce(failure).mockResolvedValueOnce(message("ok"));
+      const thread = new Thread({
+        agent: new Agent({name: "retry-5xx", instructions: "Reply briefly"}),
+        model: "openai/gpt-4o-mini",
+        messages: [stringToUserMessage("hi")],
+        runtime: {complete, stream: vi.fn(() => { throw new Error("stream not expected"); })},
+      });
+
+      const outcome = thread.runToCompletion().then(
+        (value) => ({value}),
+        (error: unknown) => ({error}),
+      );
+      await vi.advanceTimersByTimeAsync(500);
+      expect(await outcome).toEqual({value: expect.objectContaining({role: "assistant"})});
+      expect(complete).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it.each([
+    ["400", Object.assign(new Error("try again later"), {status: 400})],
+    ["408", Object.assign(new Error("request timed out"), {status: 408})],
+    ["429", Object.assign(new Error("try again later"), {status: 429})],
+    ["499", Object.assign(new Error("server error"), {status: 499})],
+    ["raw 408", new Error("HTTP 408 request timeout")],
+    ["rate limit", new Error("rate limit exceeded, try again later")],
+    ["retryable ProviderRuntimeError with 4xx", new ProviderRuntimeError("retryable", {
+      providerName: "openai",
+      modelId: "gpt-4o-mini",
+      status: 429,
+      failureKind: "provider_server_error",
+      retryable: true,
+    })],
+    ["auth", new Error("authentication failed: invalid api key")],
+    ["permission", new Error("permission denied")],
+    ["invalid input", new Error("invalid request argument")],
+    ["context", new Error("context window token limit exceeded")],
+    ["abort", Object.assign(new Error("The operation was aborted"), {name: "AbortError"})],
+    ["structured abort with transient prose", new ProviderRuntimeError("socket closed", {
+      providerName: "openai",
+      modelId: "gpt-4o-mini",
+      failureKind: "provider_abort",
+      providerMessage: "socket closed",
+      retryable: false,
+    })],
+    ["Unicode", new Error("unsupported Unicode escape sequence")],
+    ["environment", new Error("execution environment container exited")],
+  ])("does not retry denied provider failures: %s", async (_label, failure) => {
+    const complete = vi.fn().mockRejectedValue(failure);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const thread = new Thread({
+      agent: new Agent({name: "no-retry", instructions: "Reply briefly"}),
+      model: "openai/gpt-4o-mini",
+      messages: [stringToUserMessage("hi")],
+      runtime: {complete, stream: vi.fn(() => { throw new Error("stream not expected"); })},
+    });
+
+    await expect(thread.runToCompletion()).rejects.toThrow();
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(warning).not.toHaveBeenCalledWith(
+      "Retrying transient provider model call.",
+      expect.anything(),
+    );
+  });
+
+  it.each([
+    [0, 500, 1_000],
+    [0.999_999, 999, 1_999],
+  ])("bounds equal-jitter backoff and exhaustion metadata with random=%s", async (random, firstDelay, secondDelay) => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(random);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const failure = new Error(`fetch failed ${RAW_CAUSE_SENTINEL}`);
+    const requests: LlmRuntimeRequest[] = [];
+    const callTimes: number[] = [];
+    const complete = vi.fn(async (request: LlmRuntimeRequest) => {
+      requests.push(request);
+      callTimes.push(Date.now());
+      throw failure;
+    });
+    const events: string[] = [];
+    const thread = new Thread({
+      agent: new Agent({name: "bounded-retry", instructions: "Reply briefly"}),
+      model: "openai/gpt-4o-mini",
+      messages: [stringToUserMessage("hi")],
+      runtime: {complete, stream: vi.fn(() => { throw new Error("stream not expected"); })},
+      hooks: [new RecordingHook(events)],
+      runPipelines: [new RecordingPipeline(events)],
+    });
+
+    const outcome = thread.runToCompletion().then(
+      (value) => ({value}),
+      (error: unknown) => ({error}),
+    );
+    await vi.advanceTimersByTimeAsync(firstDelay - 1);
+    expect(complete).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(complete).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(secondDelay - 1);
+    expect(complete).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+
+    const result = await outcome;
+    expect(result.error).toBeInstanceOf(ProviderRuntimeError);
+    expect((result.error as Error).message).toContain("attempts=3; maxAttempts=3; retryExhausted=true");
+    expect((result.error as Error & {cause?: unknown}).cause).toBeUndefined();
+    expect((result.error as Error).message).not.toContain(RAW_CAUSE_SENTINEL);
+    expect(complete).toHaveBeenCalledTimes(3);
+    expect(callTimes.map((time) => time - callTimes[0]!)).toEqual([
+      0,
+      firstDelay,
+      firstDelay + secondDelay,
+    ]);
+    expect(requests[1]).toBe(requests[0]);
+    expect(requests[2]).toBe(requests[0]);
+    expect(events).toEqual(["preflight", "start"]);
+    expect(warning).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(warning.mock.calls)).not.toContain("fetch failed");
+  });
+
+  it("aborts a pending retry delay without launching another provider call", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const controller = new AbortController();
+    const complete = vi.fn().mockRejectedValue(new Error("fetch failed"));
+    const thread = new Thread({
+      agent: new Agent({name: "abort-retry", instructions: "Reply briefly"}),
+      model: "openai/gpt-4o-mini",
+      messages: [stringToUserMessage("hi")],
+      runtime: {complete, stream: vi.fn(() => { throw new Error("stream not expected"); })},
+      signal: controller.signal,
+    });
+
+    const outcome = thread.runToCompletion().then(
+      (value) => ({value}),
+      (error: unknown) => ({error}),
+    );
+    await vi.advanceTimersByTimeAsync(100);
+    const abortReason = new Error("caller cancelled");
+    controller.abort(abortReason);
+
+    expect((await outcome).error).toBe(abortReason);
+    await vi.runAllTimersAsync();
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries only the model call after a completed tool side effect", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const sideEffect = vi.fn();
+    const requests: LlmRuntimeRequest[] = [];
+    const complete = vi.fn(async (request: LlmRuntimeRequest) => {
+      requests.push(request);
+      if (requests.length === 1) {
+        return createAssistantMessage([{
+          type: "toolCall",
+          id: "call_count",
+          name: "counting",
+          arguments: {},
+        }]);
+      }
+      if (requests.length === 2) {
+        throw new Error("socket closed");
+      }
+      return message("done");
+    });
+    const events: string[] = [];
+    const thread = new Thread({
+      agent: new Agent({
+        name: "tool-retry",
+        instructions: "Use tools",
+        tools: [new CountingTool(sideEffect)],
+      }),
+      model: "openai/gpt-4o-mini",
+      messages: [stringToUserMessage("count")],
+      runtime: {complete, stream: vi.fn(() => { throw new Error("stream not expected"); })},
+      hooks: [new RecordingHook(events)],
+      runPipelines: [new RecordingPipeline(events)],
+    });
+
+    const outcome = thread.runToCompletion().then(
+      (value) => ({value}),
+      (error: unknown) => ({error}),
+    );
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect((await outcome).error).toBeUndefined();
+    expect(sideEffect).toHaveBeenCalledTimes(1);
+    expect(requests).toHaveLength(3);
+    expect(requests[2]).toBe(requests[1]);
+    expect(requests[1]?.context.messages).toEqual(requests[2]?.context.messages);
+    expect(requests[1]?.context.messages.filter((entry) => entry.role === "toolResult")).toHaveLength(1);
+    expect(thread.messages.filter((entry) => entry.role === "assistant")).toHaveLength(2);
+    expect(thread.messages.filter((entry) => entry.role === "toolResult")).toHaveLength(1);
+    expect(events).toEqual([
+      "preflight", "start", "end", "postflight",
+      "preflight", "start", "end", "postflight",
+    ]);
+  });
+
+  it("retries a zero-yield stream failure but fails closed after a yielded tool call", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const partial = createAssistantMessage([{
+      type: "toolCall",
+      id: "partial_call",
+      name: "counting",
+      arguments: {},
+    }]);
+    const sideEffect = vi.fn();
+    const initialFailure = createAssistantMessageEventStream();
+    initialFailure.push({
+      type: "error",
+      reason: "error",
+      error: {...message(""), stopReason: "error", errorMessage: "fetch failed"},
+    });
+    const partialFailure = createAssistantMessageEventStream();
+    partialFailure.push({
+      type: "toolcall_end",
+      contentIndex: 0,
+      toolCall: partial.content[0] as Extract<AssistantMessage["content"][number], {type: "toolCall"}>,
+      partial,
+    });
+    partialFailure.push({
+      type: "error",
+      reason: "error",
+      error: {...partial, stopReason: "error", errorMessage: "socket closed"},
+    });
+    const stream = vi.fn()
+      .mockReturnValueOnce(initialFailure)
+      .mockReturnValueOnce(completedStream(message("recovered")))
+      .mockReturnValueOnce(partialFailure);
+    const thread = new Thread({
+      agent: new Agent({
+        name: "stream-retry",
+        instructions: "Use tools",
+        tools: [new CountingTool(sideEffect)],
+      }),
+      model: "openai/gpt-4o-mini",
+      messages: [stringToUserMessage("stream")],
+      runtime: {complete: vi.fn(), stream},
+    });
+
+    const firstEvents: ThreadRunEvent[] = [];
+    const firstRun = (async () => {
+      for await (const event of thread.stream()) {
+        firstEvents.push(event as ThreadRunEvent);
+      }
+    })().then(
+      () => ({ok: true}),
+      (error: unknown) => ({error}),
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    expect(await firstRun).toEqual({ok: true});
+    expect(stream).toHaveBeenCalledTimes(2);
+    expect(firstEvents.some((event) => event.type === "error")).toBe(false);
+
+    thread.addMessage(stringToUserMessage("stream again"));
+    const secondEvents: ThreadRunEvent[] = [];
+    await expect(async () => {
+      for await (const event of thread.stream()) {
+        secondEvents.push(event as ThreadRunEvent);
+      }
+    }).rejects.toMatchObject({failureKind: "provider_transport_network"});
+    expect(secondEvents.map((event) => event.type)).toEqual(["toolcall_end", "error"]);
+    expect(stream).toHaveBeenCalledTimes(3);
+    expect(sideEffect).not.toHaveBeenCalled();
   });
 
   it("runs recursive tool calls and hook/pipeline callbacks", async () => {
