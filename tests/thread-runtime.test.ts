@@ -2895,7 +2895,13 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(run?.error).toContain("crash-tool boom");
   });
 
-  it("persists contextual provider diagnostics when the provider returns terminated after a tool call", async () => {
+  it("exhausts bounded retries after a completed tool without replaying the tool", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const terminated = createAssistantMessage([], {
+      stopReason: "error",
+      errorMessage: "terminated",
+    });
     const runtime = createMockRuntime(
       createAssistantMessage([
         {
@@ -2905,18 +2911,19 @@ describe("ThreadRuntimeCoordinator", () => {
           arguments: { message: "hi" },
         },
       ]),
-      createAssistantMessage([], {
-        stopReason: "error",
-        errorMessage: "terminated",
-      }),
+      terminated,
+      terminated,
+      terminated,
     );
+    const echoTool = new EchoTool();
+    const toolSideEffect = vi.spyOn(echoTool, "handle");
 
     const store = new TestThreadRuntimeStore();
     const registry = new TestThreadDefinitionRegistry().register("provider-error-agent", {
       agent: new Agent({
         name: "provider-error-agent",
         instructions: "Use tools when needed",
-        tools: [new EchoTool()],
+        tools: [echoTool],
       }),
       runtime,
       model: "openai/gpt-4o-mini",
@@ -2950,6 +2957,10 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(run?.error).toContain("stopReason=error");
     expect(run?.error).toContain("failureKind=provider_transport_terminated");
     expect(run?.error).toContain("detail=terminated");
+    expect(run?.error).toContain("attempts=3; maxAttempts=3; retryExhausted=true");
+    expect(runtime.complete).toHaveBeenCalledTimes(4);
+    expect(toolSideEffect).toHaveBeenCalledTimes(1);
+    expect(warning).toHaveBeenCalledTimes(2);
 
     const transcript = await store.loadTranscript("thread-provider-error");
     expect(transcript.map((entry) => entry.source)).toEqual([
@@ -2959,7 +2970,14 @@ describe("ThreadRuntimeCoordinator", () => {
     ]);
   });
 
-  it("marks server_error failures retryable and resumes on same-thread wake", async () => {
+  it("recovers a server error in one run while queuing input behind the exact retried request", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const retryScheduled = createDeferred<void>();
+    vi.spyOn(console, "warn").mockImplementation((message) => {
+      if (message === "Retrying transient provider model call.") {
+        retryScheduled.resolve();
+      }
+    });
     const serverError = Object.assign(new Error("OpenAI request failed"), {
       status: 501,
       requestID: "req_server_resume",
@@ -2969,11 +2987,21 @@ describe("ThreadRuntimeCoordinator", () => {
         code: "server_error",
       },
     });
+    let callCount = 0;
     const runtime: LlmRuntime & { complete: ReturnType<typeof vi.fn> } = {
-      complete: vi.fn()
-        .mockRejectedValueOnce(serverError)
-        .mockResolvedValueOnce(message("resumed reply"))
-        .mockResolvedValueOnce(message("resumed wake drain")),
+      complete: vi.fn().mockImplementation(async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          throw serverError;
+        }
+        if (callCount === 2) {
+          return message("automatic retry reply");
+        }
+        if (callCount === 3) {
+          return message("queued input reply");
+        }
+        return message("idle reroll reply");
+      }),
       stream: vi.fn(() => {
         throw new Error("Streaming was not expected in this test");
       }),
@@ -2996,7 +3024,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     const coordinator = new ThreadRuntimeCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
+      leaseManager: new SharedLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -3004,45 +3032,50 @@ describe("ThreadRuntimeCoordinator", () => {
       message: stringToUserMessage("worker handoff"),
       source: "worker",
     });
-
-    await expect(coordinator.waitForIdle("thread-provider-server-error")).rejects.toThrow(
-      "failureKind=provider_server_error",
-    );
-
-    let runs = await store.listRuns("thread-provider-server-error");
-    expect(runs).toHaveLength(1);
-    expect(runs[0]?.status).toBe("failed");
-    expect(runs[0]?.error).toContain("failureKind=provider_server_error");
-    expect(runs[0]?.error).toContain("retryable=true");
-    expect(runs[0]?.error).toContain("status=501");
-    expect(runs[0]?.error).toContain("requestId=req_server_resume");
-    expect(runs[0]?.error).toContain("detail=The server had an error while processing your request.");
-
-    await coordinator.wake("thread-provider-server-error");
+    await retryScheduled.promise;
+    await coordinator.submitInput("thread-provider-server-error", {
+      message: stringToUserMessage("queued during retry"),
+      source: "tui",
+    });
     await coordinator.waitForIdle("thread-provider-server-error");
 
-    runs = await store.listRuns("thread-provider-server-error");
-    expect(runs.map((run) => run.status)).toEqual(["failed", "completed"]);
-    expect(runtime.complete).toHaveBeenCalledTimes(3);
+    const runs = await store.listRuns("thread-provider-server-error");
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("completed");
+    expect(runtime.complete).toHaveBeenCalledTimes(4);
+    expect(runtime.complete.mock.calls[1]?.[0]).toBe(runtime.complete.mock.calls[0]?.[0]);
+    expect(JSON.stringify(runtime.complete.mock.calls[1]?.[0].context.messages)).not.toContain("queued during retry");
+    expect(JSON.stringify(runtime.complete.mock.calls[2]?.[0].context.messages)).toContain("queued during retry");
 
     const transcript = await store.loadTranscript("thread-provider-server-error");
     expect(transcript.filter((entry) => entry.origin === "input" && entry.source === "worker")).toHaveLength(1);
+    expect(transcript.filter((entry) => entry.origin === "input" && entry.source === "tui")).toHaveLength(1);
     expect(transcript.map((entry) => entry.source)).toEqual([
       "worker",
       "assistant",
+      "tui",
+      "assistant",
+      "runtime",
       "assistant",
     ]);
+    expect(transcript.filter((entry) => entry.origin !== "input").every((entry) => entry.runId === runs[0]?.id)).toBe(true);
   });
 
-  it("fails a timed out complete call without wedging the thread for later inputs", async () => {
-    const runtime = new DeferredRuntime();
-    runtime.queue(new Promise<AssistantMessage>((_resolve, reject) => {
-      setTimeout(() => {
-        reject(new Error("Provider request timed out after 20ms."));
-      }, 20);
-    }));
-    runtime.queue(message("recovered reply"));
-    runtime.queue(message("recovered extra pass"));
+  it("resets the retry budget for a later run after timeout exhaustion", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const timeout = new Error("Provider request timed out after 20ms.");
+    const runtime: LlmRuntime & { complete: ReturnType<typeof vi.fn> } = {
+      complete: vi.fn()
+        .mockRejectedValueOnce(timeout)
+        .mockRejectedValueOnce(timeout)
+        .mockRejectedValueOnce(timeout)
+        .mockResolvedValueOnce(message("recovered reply"))
+        .mockResolvedValueOnce(message("recovered extra pass")),
+      stream: vi.fn(() => {
+        throw new Error("Streaming was not expected in this test");
+      }),
+    };
 
     const store = new TestThreadRuntimeStore();
     const registry = new TestThreadDefinitionRegistry().register("provider-timeout-agent", {
@@ -3077,21 +3110,18 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]?.status).toBe("failed");
     expect(runs[0]?.error).toContain("failureKind=provider_timeout");
-    expect(runs[0]?.error).toContain("Provider request timed out after 20ms.");
+    expect(runs[0]?.error).toContain("attempts=3; maxAttempts=3; retryExhausted=true");
     expect(await store.listRunningRuns()).toEqual([]);
 
     await coordinator.submitInput("thread-provider-timeout", {
       message: stringToUserMessage("second try"),
       source: "tui",
     });
-
     await coordinator.waitForIdle("thread-provider-timeout");
 
     runs = await store.listRuns("thread-provider-timeout");
-    expect(runs).toHaveLength(2);
-    expect(runs[0]?.status).toBe("failed");
-    expect(runs[1]?.status).toBe("completed");
-    expect(runtime.complete).toHaveBeenCalledTimes(3);
+    expect(runs.map((run) => run.status)).toEqual(["failed", "completed"]);
+    expect(runtime.complete).toHaveBeenCalledTimes(5);
 
     const transcript = await store.loadTranscript("thread-provider-timeout");
     expect(transcript.map((entry) => entry.source)).toEqual([
@@ -3102,6 +3132,7 @@ describe("ThreadRuntimeCoordinator", () => {
       "assistant",
     ]);
   });
+
 });
 
 describe("Thread hard context window guard", () => {

@@ -19,6 +19,8 @@ const TRACE_CONTEXT_CACHE_PART = "trace-context-cache-raw-secret";
 const FUTURE_CONTEXT_CONTENT = "future llm context section with auto-display-value";
 
 afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
   while (pools.length > 0) await pools.pop()?.end();
 });
 
@@ -150,6 +152,25 @@ function streamFor(result: AssistantMessage): AssistantMessageEventStream {
   } as AssistantMessageEventStream;
 }
 
+class RecoveringRuntime implements LlmRuntime {
+  readonly complete = vi.fn()
+    .mockRejectedValueOnce(new ProviderRuntimeError(
+      "Provider runtime failed; detail=try again later {\"messages\":[{\"content\":\"raw retry payload\"}]}",
+      {
+        providerName: "openai",
+        modelId: "gpt-test",
+        failureKind: "provider_server_error",
+        providerMessage: "try again later {\"messages\":[{\"content\":\"raw retry payload\"}]}",
+        status: 503,
+        retryable: true,
+      },
+    ))
+    .mockResolvedValue(assistant("recovered"));
+  readonly stream = vi.fn(() => {
+    throw new Error("stream not used");
+  });
+}
+
 class StreamRuntime implements LlmRuntime {
   readonly complete = vi.fn(async () => assistant("not used"));
   readonly stream = vi.fn((_request: LlmRuntimeRequest) => streamFor(assistant("streamed")));
@@ -257,21 +278,50 @@ describe("model call traces", () => {
     expect(JSON.stringify(sections)).toContain("auto-display-value");
   });
 
-  it("writes one failed trace without redacting token-shaped provider error prose", async () => {
+  it("writes one sanitized failed trace per exhausted physical attempt", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
     const {store} = await createStore();
     const runtime = new FailingRuntime();
 
-    await expect(drainThread(createThread({runtime, store}))).rejects.toThrow("Provider runtime failed");
+    await expect(drainThread(createThread({runtime, store}))).rejects.toThrow(
+      "attempts=3; maxAttempts=3; retryExhausted=true",
+    );
 
     const traces = await store.listTraces();
-    expect(traces.data).toHaveLength(1);
-    const trace = traces.data[0]!;
-    expect(trace.status).toBe("failed");
-    expect(trace.errorJson).toMatchObject({category: "provider_timeout", status: 504, timedOut: true});
-    const text = JSON.stringify(trace);
+    expect(traces.data).toHaveLength(3);
+    expect(traces.data.map((trace) => trace.status)).toEqual(["failed", "failed", "failed"]);
+    expect(traces.data.every((trace) => trace.callIndex === 1)).toBe(true);
+    for (const trace of traces.data) {
+      expect(trace).toMatchObject({
+        runId: "00000000-0000-0000-0000-000000000101",
+        threadId: "thread-panda",
+        turn: 1,
+      });
+      expect(trace.errorJson).toMatchObject({category: "provider_timeout", status: 504, timedOut: true});
+    }
+    const text = JSON.stringify(traces.data);
     expect(text).toContain("token=sk-abcdefghijklmnopqrstuvwxyz");
     expect(text).toContain("request-secret-token=abcdef1234567890");
     expect(text).not.toContain("raw provider payload");
+  });
+
+  it("records failed and completed traces with common attribution for a successful retry", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const {store} = await createStore();
+    const runtime = new RecoveringRuntime();
+
+    await drainThread(createThread({runtime, store}));
+
+    const traces = await store.listTraces();
+    expect(traces.data).toHaveLength(2);
+    expect(traces.data.map((trace) => trace.status).sort()).toEqual(["completed", "failed"]);
+    expect(traces.data.every((trace) => trace.callIndex === 1)).toBe(true);
+    expect(traces.data.every((trace) => trace.runId === "00000000-0000-0000-0000-000000000101")).toBe(true);
+    expect(traces.data.every((trace) => trace.threadId === "thread-panda")).toBe(true);
+    expect(traces.data.every((trace) => trace.turn === 1)).toBe(true);
+    expect(JSON.stringify(traces.data)).not.toContain("raw retry payload");
   });
 
   it("writes one final trace for streaming after the stream result resolves", async () => {
