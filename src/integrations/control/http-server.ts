@@ -8,6 +8,7 @@ import {writeJsonResponse} from "../../lib/http.js";
 import {DEFAULT_CONTROL_REMEMBERED_SESSION_TTL_MS, type PostgresControlAuthService} from "../../domain/control/auth.js";
 import type {ControlReadService} from "../../domain/control/read-service.js";
 import type {ControlHomeService} from "../../domain/control/home-service.js";
+import type {ControlMcpService} from "../../domain/control/mcp-service.js";
 import type {
     ControlA2ABindingTableInput,
     ControlAgentPairingTableInput,
@@ -150,6 +151,7 @@ export interface StartControlServerOptions {
   reads: ControlReadService;
   home: ControlHomeService;
   operator: ControlOperatorService;
+  mcp: ControlMcpService;
   briefings: ControlBriefingService;
   heartbeats: ControlHeartbeatService;
   scheduledTasks: ControlScheduledTasksService;
@@ -646,6 +648,12 @@ function matchAgentResourcePath(path: string, resource: string): {agentKey: stri
   const match = new RegExp(`^/agents/([^/]+)/${resource}$`).exec(path);
   if (!match) return null;
   return {agentKey: decodeURIComponent(match[1]!)};
+}
+
+function matchAgentMcpServerPath(path: string): {agentKey: string; serverName: string} | null {
+  const match = /^\/agents\/([^/]+)\/mcp-servers\/([^/]+)$/.exec(path);
+  if (!match) return null;
+  return {agentKey: decodeURIComponent(match[1]!), serverName: decodeURIComponent(match[2]!)};
 }
 
 function matchAgentCredentialPath(path: string): {agentKey: string; envKey: string} | null {
@@ -1166,6 +1174,41 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         }
         return;
       }
+      const mcpServersPath = matchAgentResourcePath(path, "mcp-servers");
+      if (mcpServersPath && request.method === "GET") {
+        try {
+          writeJsonResponse(response, 200, await options.mcp.listServers(session, mcpServersPath.agentKey));
+        } catch {
+          throw new ControlHttpError(404, "Control MCP target agent was not found or is not visible.");
+        }
+        return;
+      }
+      const mcpServerPath = matchAgentMcpServerPath(path);
+      if (mcpServerPath && request.method === "PUT") {
+        requireCsrf(request, options.auth, session);
+        try {
+          const result = await options.mcp.putServer(session, mcpServerPath.agentKey, mcpServerPath.serverName, await readBody(request));
+          await recordOperatorAudit(options.auth, session, result.audit);
+          writeJsonResponse(response, 200, {server: result.server});
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Control MCP server update failed.";
+          throw new ControlHttpError(message === "Control target agent was not found or is not visible." ? 404 : 400, message);
+        }
+        return;
+      }
+      if (mcpServerPath && request.method === "DELETE") {
+        requireCsrf(request, options.auth, session);
+        try {
+          const result = await options.mcp.deleteServer(session, mcpServerPath.agentKey, mcpServerPath.serverName);
+          await recordOperatorAudit(options.auth, session, result.audit);
+          writeJsonResponse(response, 200, {deleted: result.deleted});
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Control MCP server delete failed.";
+          throw new ControlHttpError(message === "Control target agent was not found or is not visible." ? 404 : 400, message);
+        }
+        return;
+      }
+
       if (request.method === "GET" && path === "/credentials") {
         writeJsonResponse(response, 200, {credentials: await options.reads.listCredentials(session)});
         return;

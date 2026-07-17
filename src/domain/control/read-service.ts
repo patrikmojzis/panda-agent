@@ -1,6 +1,8 @@
 import type {PgQueryable} from "../../lib/postgres-query.js";
 import {buildAgentTableNames} from "../agents/postgres-shared.js";
 import {buildCredentialTableNames} from "../credentials/postgres-shared.js";
+import {normalizeMcpConfig} from "../mcp/config.js";
+import {buildMcpTableNames} from "../mcp/postgres-shared.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import {buildThreadRuntimeTableNames} from "../threads/runtime/postgres-shared.js";
 import {buildControlTableNames} from "./postgres-shared.js";
@@ -12,6 +14,7 @@ export interface ControlAgentSummary {
   status: string;
   sessionCount: number;
   paired: boolean;
+  mcpServerCount: number;
 }
 
 export interface ControlCredentialSummary {
@@ -130,6 +133,11 @@ function safeOperatorSummary(value: unknown): Record<string, unknown> {
     ...(raw.status === "active" || raw.status === "deleted" ? {status: raw.status} : {}),
     ...(typeof raw.loginTokenExpiresAt === "string" ? {loginTokenExpiresAt: raw.loginTokenExpiresAt} : {}),
     ...(typeof raw.envKey === "string" ? {envKey: raw.envKey} : {}),
+    ...(typeof raw.serverName === "string" ? {serverName: raw.serverName} : {}),
+    ...(raw.transport === "stdio" || raw.transport === "streamable-http" || raw.transport === "sse" ? {transport: raw.transport} : {}),
+    ...(typeof raw.enabled === "boolean" ? {enabled: raw.enabled} : {}),
+    ...(Array.isArray(raw.changedFields) && raw.changedFields.every((entry) => typeof entry === "string") ? {changedFields: raw.changedFields} : {}),
+    ...(Array.isArray(raw.credentialEnvKeys) && raw.credentialEnvKeys.every((entry) => typeof entry === "string") ? {credentialEnvKeys: raw.credentialEnvKeys} : {}),
     ...(typeof raw.skillKey === "string" ? {skillKey: raw.skillKey} : {}),
     ...(typeof raw.agentEditable === "boolean" ? {agentEditable: raw.agentEditable} : {}),
     ...(typeof raw.slug === "string" ? {slug: raw.slug} : {}),
@@ -215,6 +223,7 @@ export class ControlReadService {
   private readonly threads = buildThreadRuntimeTableNames();
   private readonly credentials = buildCredentialTableNames();
   private readonly control = buildControlTableNames();
+  private readonly mcp = buildMcpTableNames();
 
   constructor(options: {pool: PgQueryable}) {
     this.pool = options.pool;
@@ -252,7 +261,7 @@ export class ControlReadService {
         ORDER BY agent.agent_key ASC
       `, [session.identityId]);
 
-    return result.rows.map((raw) => {
+    const summaries = result.rows.map((raw) => {
       const row = raw as Record<string, unknown>;
       return {
         agentKey: String(row.agent_key),
@@ -260,8 +269,20 @@ export class ControlReadService {
         status: String(row.status),
         sessionCount: Number(row.session_count ?? 0),
         paired: Number(row.pairing_count ?? 0) > 0,
+        mcpServerCount: 0,
       };
     });
+    if (summaries.length === 0) return summaries;
+    const configs = await this.pool.query(`
+      SELECT agent_key, config
+      FROM ${this.mcp.configs}
+      WHERE agent_key IN (${summaries.map((_, index) => `$${index + 1}`).join(", ")})
+    `, summaries.map((agent) => agent.agentKey));
+    const counts = new Map(configs.rows.map((raw) => {
+      const row = raw as Record<string, unknown>;
+      return [String(row.agent_key), Object.keys(normalizeMcpConfig(row.config).servers).length] as const;
+    }));
+    return summaries.map((agent) => ({...agent, mcpServerCount: counts.get(agent.agentKey) ?? 0}));
   }
 
   async getOverview(session: ControlSessionRecord): Promise<Record<string, unknown>> {

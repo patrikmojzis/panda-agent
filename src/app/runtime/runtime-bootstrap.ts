@@ -4,6 +4,8 @@ import {PostgresAgentStore} from "../../domain/agents/postgres.js";
 import type {AgentStore} from "../../domain/agents/store.js";
 import {CredentialResolver, CredentialService} from "../../domain/credentials/resolver.js";
 import {PostgresCredentialStore} from "../../domain/credentials/postgres.js";
+import {PostgresMcpConfigStore} from "../../domain/mcp/postgres.js";
+import {SdkMcpRunner} from "../../integrations/mcp/client.js";
 import {resolveCredentialCrypto} from "../../domain/credentials/crypto.js";
 import {PostgresExecutionEnvironmentStore} from "../../domain/execution-environments/postgres.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
@@ -74,6 +76,7 @@ import {A2ASessionBindingRepo} from "../../domain/a2a/repo.js";
 import {PostgresControlAuthService} from "../../domain/control/auth.js";
 import {ControlReadService} from "../../domain/control/read-service.js";
 import {ControlHomeService} from "../../domain/control/home-service.js";
+import {ControlMcpService} from "../../domain/control/mcp-service.js";
 import {ControlOperatorService} from "../../domain/control/operator-service.js";
 import {createTelegramBotIdentityClient} from "../../integrations/channels/telegram/account.js";
 import {ControlBriefingService} from "../../domain/control/briefing-service.js";
@@ -133,6 +136,7 @@ interface RuntimeBootstrapResult {
   controlReads: ControlReadService;
   controlHome: ControlHomeService;
   controlOperator: ControlOperatorService;
+  controlMcp: ControlMcpService;
   controlBriefings: ControlBriefingService;
   controlHeartbeats: ControlHeartbeatService;
   controlScheduledTasks: ControlScheduledTasksService;
@@ -470,6 +474,8 @@ export async function bootstrapRuntime(
     const credentialStore = new PostgresCredentialStore({
       pool: postgresPool,
     });
+    const mcpConfigs = new PostgresMcpConfigStore(postgresPool);
+    const mcpRunner = new SdkMcpRunner();
     const connectorAccountStore = new PostgresConnectorAccountStore({
       pool: postgresPool,
     });
@@ -533,6 +539,11 @@ export async function bootstrapRuntime(
     const credentialResolver = new CredentialResolver({
       store: credentialStore,
       crypto: credentialCrypto,
+    });
+    const controlMcp = new ControlMcpService({
+      reads: controlReads,
+      configs: mcpConfigs,
+      credentials: credentialResolver,
     });
     const executionEnvironmentManager = createExecutionEnvironmentManagerClientFromEnv(process.env);
     const executionEnvironmentSetupRunner = new RemoteExecutionEnvironmentSetupRunner({
@@ -634,6 +645,9 @@ export async function bootstrapRuntime(
       sessionTodos: sessionStore,
       subagentProfiles,
       credentials: credentialService ?? undefined,
+      credentialResolver,
+      mcpConfigs,
+      mcpRunner,
       postgresReadonly: postgresReadonlyCommandOptions,
       executionEnvironments,
       environmentLifecycle: executionEnvironmentService,
@@ -653,6 +667,7 @@ export async function bootstrapRuntime(
     });
     await ensureSchemas([
       credentialStore,
+      mcpConfigs,
       connectorAccountStore,
       appAuth,
       email,
@@ -727,6 +742,7 @@ export async function bootstrapRuntime(
       controlReads,
       controlHome,
       controlOperator,
+      controlMcp,
       controlBriefings,
       controlHeartbeats,
       controlScheduledTasks,

@@ -5,6 +5,12 @@ agent_command_shim_lookup_route() {
     'time now')
       printf '%s\t%s\n' 'time.now' 'time now'
       ;;
+    'mcp tools')
+      printf '%s\t%s\n' 'mcp.tools' 'mcp tools'
+      ;;
+    'mcp call')
+      printf '%s\t%s\n' 'mcp.call' 'mcp call'
+      ;;
     'watch list')
       printf '%s\t%s\n' 'watch.list' 'watch list'
       ;;
@@ -314,6 +320,8 @@ agent_command_shim_lookup_route() {
 agent_command_shim_print_root_usage_commands() {
   cat <<'PANDA_COMMAND_ROOT_USAGE_COMMANDS'
   panda time now [--timezone <iana>] [--format iso|local|full]
+  panda mcp tools <server> [--timeout-ms <ms>]
+  panda mcp call <server> <tool> --input <json|@file|@-> [--timeout-ms <ms>]
   panda watch list [--status enabled|disabled|all] [--limit <n>]
   panda watch show <watch-id>
   panda watch runs <watch-id> [--limit <n>]
@@ -464,6 +472,26 @@ Detailed help is available only through the current agent command lease.
 Usage:
   panda time now --json @payload.json
 PANDA_COMMAND_HELP_time_now
+      ;;
+    'mcp.tools')
+      cat <<'PANDA_COMMAND_HELP_mcp_tools'
+Panda command: mcp.tools
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda mcp tools --json @payload.json
+PANDA_COMMAND_HELP_mcp_tools
+      ;;
+    'mcp.call')
+      cat <<'PANDA_COMMAND_HELP_mcp_call'
+Panda command: mcp.call
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda mcp call --json @payload.json
+PANDA_COMMAND_HELP_mcp_call
       ;;
     'watch.list')
       cat <<'PANDA_COMMAND_HELP_watch_list'
@@ -1494,6 +1522,42 @@ agent_command_shim_print_local_help_json() {
   "examples": []
 }
 PANDA_COMMAND_HELP_JSON_time_now
+      ;;
+    'mcp.tools')
+      cat <<'PANDA_COMMAND_HELP_JSON_mcp_tools'
+{
+  "name": "mcp.tools",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda mcp tools --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_mcp_tools
+      ;;
+    'mcp.call')
+      cat <<'PANDA_COMMAND_HELP_JSON_mcp_call'
+{
+  "name": "mcp.call",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda mcp call --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_mcp_call
       ;;
     'watch.list')
       cat <<'PANDA_COMMAND_HELP_JSON_watch_list'

@@ -7,6 +7,7 @@ import {
   normalizeAgentSkillOperations,
 } from "../../domain/execution-environments/policy.js";
 import type {
+  ExecutionCredentialPolicy,
   ExecutionSkillPolicy,
   ExecutionToolPolicy,
 } from "../../domain/execution-environments/types.js";
@@ -29,6 +30,7 @@ export interface IssueCommandLeaseInput {
   inputMessageId?: string;
   toolPolicy?: ExecutionToolPolicy;
   skillPolicy?: ExecutionSkillPolicy;
+  credentialPolicy?: ExecutionCredentialPolicy;
   credentialMutationAllowed?: boolean;
   socketAccessAllowed?: boolean;
   ttlMs?: number;
@@ -117,6 +119,7 @@ export class RuntimeCommandLeaseService implements CommandLeaseVerifier, Command
       allowedCommands,
       expiresAt,
       credentialMutationAllowed: input.credentialMutationAllowed === true,
+      ...(input.credentialPolicy ? {credentialPolicy: input.credentialPolicy} : {}),
       ...(input.skillPolicy ? {skillPolicy: input.skillPolicy} : {}),
       ...(input.toolPolicy?.agentSkill?.allowedOperations
         ? {agentSkillAllowedOperations: normalizeAgentSkillOperations(input.toolPolicy.agentSkill.allowedOperations)}

@@ -98,6 +98,7 @@ COPY --from=build /app/dist ./dist
 COPY --from=build /app/apps/control-ui/dist ./control-ui
 COPY docs/agents ./docs/agents
 COPY examples/apps ./examples/apps
+COPY examples/mcp ./examples/mcp
 
 RUN ln -sf /app/dist/app/cli.js /usr/local/bin/panda \
   && chmod +x /app/dist/app/cli.js

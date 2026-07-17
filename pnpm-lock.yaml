@@ -11,7 +11,7 @@ overrides:
   basic-ftp: 5.3.1
   fast-xml-builder: 1.1.7
   nodemailer: 9.0.1
-  linkify-it: 5.0.1
+  linkify-it: 5.0.2
 
 importers:
 
@@ -20,6 +20,9 @@ importers:
       '@earendil-works/pi-ai':
         specifier: ^0.80.6
         version: 0.80.6(@modelcontextprotocol/sdk@1.29.0(zod@4.3.6))(ws@8.21.0)(zod@4.3.6)
+      '@modelcontextprotocol/sdk':
+        specifier: 1.29.0
+        version: 1.29.0(zod@4.3.6)
       '@mozilla/readability':
         specifier: ^0.6.0
         version: 0.6.0
@@ -3564,8 +3567,8 @@ packages:
       canvas:
         optional: true
 
-  linkify-it@5.0.1:
-    resolution: {integrity: sha512-wVoTjP4Q6R0NW5hiZkVJaFZPWgtXfoGF+6LucL3/FtiNjmcHhYjEr5f1Kqjirc1nBW07J/ZuRFumqr2oqccEWg==}
+  linkify-it@5.0.2:
+    resolution: {integrity: sha512-ONTm2jCMAVZjgQa/Fy1kScXsuOoF5NPTsoFBdE1KVIZ2vAh/r9+Bqo+0jINCBYnavTPQZz38QzFTme79ENoN3Q==}
 
   locate-path@6.0.0:
     resolution: {integrity: sha512-iPZK6eYjbxRu3uB4/WZ3EsEIMJFMqAoopl3R+zuq0UjcAm/MO6KCweDgPfP3elTztoKP3KtnVHxTn2NHBSDVUw==}
@@ -5892,7 +5895,6 @@ snapshots:
       zod-to-json-schema: 3.25.2(zod@4.3.6)
     transitivePeerDependencies:
       - supports-color
-    optional: true
 
   '@mongodb-js/saslprep@1.4.9':
     dependencies:
@@ -8435,7 +8437,7 @@ snapshots:
       htmlparser2: 10.1.0
       uhyphen: 0.2.0
 
-  linkify-it@5.0.1:
+  linkify-it@5.0.2:
     dependencies:
       uc.micro: 2.1.0
 
@@ -8478,7 +8480,7 @@ snapshots:
       html-to-text: 9.0.5
       iconv-lite: 0.7.2
       libmime: 5.3.8
-      linkify-it: 5.0.1
+      linkify-it: 5.0.2
       nodemailer: 9.0.1
       punycode.js: 2.3.1
       tlds: 1.261.0

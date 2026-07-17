@@ -5,9 +5,9 @@ export const subagentToolGroupOptions = [
     description: "Safe basics and parent A2A updates.",
   },
   {
-    label: "Workspace read",
-    value: "workspace_read",
-    description: "Read-only workspace and artifact inspection.",
+    label: "MCP",
+    value: "mcp",
+    description: "Configured agent MCP server discovery and tool calls.",
   },
   {
     label: "Internet",

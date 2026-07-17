@@ -81,6 +81,21 @@ describe("RuntimeCommandLeaseService", () => {
     });
   });
 
+  it("round-trips execution credential policy in the signed lease scope", async () => {
+    const service = createLeaseService({baseUrl: "http://127.0.0.1:8096"});
+    const lease = service.issueCommandLease({
+      agentKey: "panda",
+      sessionId: "session-subagent",
+      credentialPolicy: {mode: "allowlist", envKeys: ["MCP_TOKEN"]},
+      toolPolicy: {allowedTools: ["mcp.*"]},
+    });
+    expect(lease).not.toBeNull();
+    await expect(service.verify(lease!.token)).resolves.toMatchObject({
+      credentialPolicy: {mode: "allowlist", envKeys: ["MCP_TOKEN"]},
+      allowedCommands: ["mcp.tools", "mcp.call"],
+    });
+  });
+
   it("can lease every default command when module policy requirements are satisfied", async () => {
     const service = createLeaseService({
       baseUrl: "http://127.0.0.1:8096",

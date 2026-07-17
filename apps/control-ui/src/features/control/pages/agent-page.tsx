@@ -45,6 +45,7 @@ import {
   BindingsPanel,
   ConnectorsPanel,
   CredentialsPanel,
+  McpPanel,
   SkillsPanel,
   SubagentsPanel,
   WikiPanel,
@@ -544,6 +545,8 @@ function agentTabContent(agentKey: string, value: string) {
       return <SessionsPanel agentKey={agentKey} />
     case "access":
       return <AccessPanel agentKey={agentKey} />
+    case "mcp":
+      return <McpPanel agentKey={agentKey} />
     case "credentials":
       return <CredentialsPanel agentKey={agentKey} />
     case "wiki":

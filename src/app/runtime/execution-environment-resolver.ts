@@ -76,6 +76,7 @@ function defaultPersistentToolPolicy(session: Pick<SessionRecord, "kind">): Exec
       "brave.place.search",
       "brave.place.poi",
       "brave.place.description",
+      "mcp.*",
       "time.now",
       "email.account.list",
       "email.list",

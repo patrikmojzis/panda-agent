@@ -24,6 +24,9 @@ export interface RuntimeCommandDependenciesInput {
   sessionTodos: RequiredCommandDependency<"sessionTodos">;
   subagentProfiles: RequiredCommandDependency<"subagentProfiles">;
   credentials?: AgentCommandModuleDependencies["credentials"];
+  credentialResolver: RequiredCommandDependency<"credentialResolver">;
+  mcpConfigs: RequiredCommandDependency<"mcpConfigs">;
+  mcpRunner: RequiredCommandDependency<"mcpRunner">;
   postgresReadonly: RequiredCommandDependency<"postgresReadonly">;
   executionEnvironments: RequiredCommandDependency<"executionEnvironments">;
   environmentLifecycle: RequiredCommandDependency<"environmentLifecycle">;
@@ -76,6 +79,9 @@ export function buildRuntimeCommandDependencies(
     sessionTodos: input.sessionTodos,
     subagentProfiles: input.subagentProfiles,
     credentials: input.credentials,
+    credentialResolver: input.credentialResolver,
+    mcpConfigs: input.mcpConfigs,
+    mcpRunner: input.mcpRunner,
     postgresReadonly: input.postgresReadonly,
     executionEnvironments: input.executionEnvironments,
     environmentLifecycle: input.environmentLifecycle,

@@ -93,7 +93,7 @@
     "ci:control-ui": "pnpm control:typecheck && pnpm control:build",
     "ci:prompt-contracts:update": "tsx scripts/ci/prompt-contracts.ts --update",
     "ci:postgres-startup": "tsx scripts/ci/postgres-startup-rehearsal.ts",
-    "ci:audit": "pnpm audit --audit-level high",
+    "ci:audit": "npm audit --package-lock-only --audit-level high",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "smoke": "tsx src/app/cli.ts smoke",
@@ -121,10 +121,12 @@
     "hono": "4.12.25",
     "basic-ftp": "5.3.1",
     "fast-xml-builder": "1.1.7",
-    "nodemailer": "9.0.1"
+    "nodemailer": "9.0.1",
+    "linkify-it": "5.0.2"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.80.6",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@mozilla/readability": "^0.6.0",
     "abort-controller": "^3.0.0",
     "baileys": "7.0.0-rc12",
