@@ -57,6 +57,7 @@ export type AgentRow = {
   status: string
   sessionCount: number
   paired: boolean
+  mcpServerCount: number
 }
 
 export type AgentDetail = AgentRow & {
@@ -68,6 +69,51 @@ export type AgentDetail = AgentRow & {
   gatewaySourceCount: number
   wikiBindingSet: boolean
 }
+
+export type McpValueSource =
+  | { value: string }
+  | { credentialEnvKey: string }
+
+export type McpHeaderValue = {
+  name: string
+  value?: string
+  credentialEnvKey?: string
+}
+
+export type McpServerStatus =
+  | "disabled"
+  | "ready"
+  | "missing_credentials"
+  | "credential_store_unavailable"
+  | "credential_unreadable"
+
+export type McpServerRow = {
+  serverName: string
+  enabled: boolean
+  timeoutMs: number
+  credentialEnvKeys: string[]
+  status: McpServerStatus
+  createdAt?: string
+  updatedAt?: string
+} & (
+  | {
+      transport: "stdio"
+      command: string
+      args: string[]
+      cwd?: string
+      env?: Record<string, McpValueSource>
+    }
+  | {
+      transport: "streamable-http" | "sse"
+      url: string
+      headers?: McpHeaderValue[]
+      auth?: { type: "bearer"; credentialEnvKey: string }
+    }
+)
+
+export type McpServerPayload =
+  | Omit<Extract<McpServerRow, { transport: "stdio" }>, "serverName" | "credentialEnvKeys" | "status" | "createdAt" | "updatedAt">
+  | Omit<Extract<McpServerRow, { transport: "streamable-http" | "sse" }>, "serverName" | "credentialEnvKeys" | "status" | "createdAt" | "updatedAt">
 
 export type SessionRow = {
   id: string
@@ -738,6 +784,18 @@ export const controlApi = {
     apiWrite<{ session: SessionRow; previousThreadId: string }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/reset`,
       { csrfToken }
+    ),
+  mcpServers: (agentKey: string) =>
+    apiGet<{ servers: McpServerRow[]; count: number }>(`/agents/${encodeURIComponent(agentKey)}/mcp-servers`),
+  putMcpServer: (agentKey: string, serverName: string, body: McpServerPayload, csrfToken?: string | null) =>
+    apiWrite<{ server: McpServerRow }>(
+      `/agents/${encodeURIComponent(agentKey)}/mcp-servers/${encodeURIComponent(serverName)}`,
+      { method: "PUT", body, csrfToken }
+    ),
+  deleteMcpServer: (agentKey: string, serverName: string, csrfToken?: string | null) =>
+    apiWrite<{ deleted: boolean }>(
+      `/agents/${encodeURIComponent(agentKey)}/mcp-servers/${encodeURIComponent(serverName)}`,
+      { method: "DELETE", csrfToken }
     ),
   credentials: (agentKey: string, params: TableParams) =>
     apiGet<PaginatedResponse<CredentialRow>>(`/agents/${encodeURIComponent(agentKey)}/credentials${qs(params)}`),

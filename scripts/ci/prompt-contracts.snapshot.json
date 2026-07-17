@@ -1,10 +1,10 @@
 {
   "files": [
     {
-      "bytes": 99207,
-      "lines": 3303,
+      "bytes": 100890,
+      "lines": 3367,
       "path": "scripts/agent-command-shim/routes.generated.sh",
-      "sha256": "90107dbeab413bda073ca918275da907f80e0d208093de43f9730d23834e2bb0"
+      "sha256": "930de050dc4ff7add9d71d9b9e75e54c1c17dff3405abce62287eeb8087a8bc6"
     },
     {
       "bytes": 1166,
@@ -13,10 +13,10 @@
       "sha256": "5bdd27237cdbea0029962f848523647def7fb81053ec670d6d708d4eb51a8c10"
     },
     {
-      "bytes": 12197,
-      "lines": 275,
+      "bytes": 12342,
+      "lines": 278,
       "path": "src/app/runtime/create-runtime.ts",
-      "sha256": "f970488dc7bcdb4bfa1e9565358b5f50131c54a8f30617d63f8757bdad2a467c"
+      "sha256": "90f5ef6dfaeebf09223f66734e27bc6563b2133246cace59746f129535bf7b40"
     },
     {
       "bytes": 15318,
@@ -37,16 +37,16 @@
       "sha256": "fa9eff3c7501170c201b9b636d3ec5a26258b6dfbe7662530c32452198534f85"
     },
     {
-      "bytes": 28183,
-      "lines": 793,
+      "bytes": 28771,
+      "lines": 809,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "b0a6bade040cffe3cc416fe374a29e6ced876492c2b9cf9d9da29b037c071099"
+      "sha256": "3761255d7f5b7ecf4bcf4f11ddde15fef5bff82330119f0851d30078decb2f63"
     },
     {
-      "bytes": 11246,
-      "lines": 276,
+      "bytes": 11135,
+      "lines": 270,
       "path": "src/app/runtime/thread-definition.ts",
-      "sha256": "d97408f2062a6fa8b2723f6d5d63df3f5d3621e0de3eb249f5d48f3a58bdc7af"
+      "sha256": "ffe9b6f8420f34356231ed7d8e534f3d00ff6e824661ce1cacf044aadf762a84"
     },
     {
       "bytes": 1490,
@@ -55,10 +55,10 @@
       "sha256": "5d0e246a9d83fbfbc7dd073b6422cf7351c6c2742fecd2a9298b28afdfe51002"
     },
     {
-      "bytes": 6543,
-      "lines": 169,
+      "bytes": 6669,
+      "lines": 173,
       "path": "src/domain/subagents/tool-groups.ts",
-      "sha256": "27028d7c695dd5a9f767747ac3b8a6b8a74c34ab61f02744473cdd598d1d08ab"
+      "sha256": "b7e101a9f4ce871d3ec84d32a9b3115ca8c4439971d6620de23890673567087d"
     },
     {
       "bytes": 433,
@@ -67,10 +67,10 @@
       "sha256": "c6d98f315f2cfc237bbf5fdd6eb957112e92238bedd6e16956056d0a7939fb56"
     },
     {
-      "bytes": 48123,
-      "lines": 1398,
+      "bytes": 49547,
+      "lines": 1436,
       "path": "src/panda/commands/agent-command-modules.ts",
-      "sha256": "a04538f10f1ce8a744860537241b57da0c733b9b4e641cacca8c0e57dc4318fa"
+      "sha256": "236e017574475a566d2d997dbc5cb28fd6650c4475279e75da92e8e2dc5c2f3e"
     },
     {
       "bytes": 572,
@@ -470,6 +470,12 @@
         "brave.place.poi",
         "brave.place.description",
         "openai.web_research"
+      ]
+    },
+    "mcp": {
+      "description": "Configured Model Context Protocol server tool discovery and calls.",
+      "toolNames": [
+        "mcp.*"
       ]
     },
     "memory": {

@@ -54,6 +54,7 @@ describe("resolveRuntimeCommandScope", () => {
     agentKey: "panda",
     sessionId: "session-main",
     environmentId: "env-worker",
+    credentialPolicy: {mode: "allowlist", envKeys: ["MCP_TOKEN"]},
   };
 
   it("attaches current thread and bound environment metadata", async () => {
@@ -67,6 +68,7 @@ describe("resolveRuntimeCommandScope", () => {
       },
     })).resolves.toMatchObject({
       threadId: "thread-current",
+      credentialPolicy: {mode: "allowlist", envKeys: ["MCP_TOKEN"]},
       executionEnvironment: {
         id: "env-worker",
         agentKey: "panda",

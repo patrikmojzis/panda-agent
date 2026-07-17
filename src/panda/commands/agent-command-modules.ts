@@ -154,6 +154,16 @@ import {
   createTimeNowCommand,
   timeNowCommandDescriptor,
 } from "../../domain/time/commands.js";
+import {
+  createMcpCallCommand,
+  createMcpToolsCommand,
+  MCP_COMMAND_CAPABILITY,
+  mcpCallCommandDescriptor,
+  mcpToolsCommandDescriptor,
+} from "../../domain/mcp/commands.js";
+import type {CredentialResolver} from "../../domain/credentials/resolver.js";
+import type {McpConfigReader} from "../../domain/mcp/store.js";
+import type {McpRunner} from "../../domain/mcp/types.js";
 import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import type {WatchMutationService} from "../../domain/watches/mutation-service.js";
 import type {WatchStore} from "../../domain/watches/store.js";
@@ -345,6 +355,9 @@ export interface AgentCommandModuleDependencies {
   sessionTodos?: SessionTodoCommandStore;
   subagentProfiles?: SubagentProfileCommandStore;
   credentials?: EnvCommandService;
+  credentialResolver?: Pick<CredentialResolver, "resolveCredential">;
+  mcpConfigs?: McpConfigReader;
+  mcpRunner?: McpRunner;
   postgresReadonly?: PostgresReadonlyQueryCommandOptions;
   executionEnvironments?: EnvironmentReadCommandServices["environments"];
   environmentLifecycle?: EnvironmentCommandLifecycle;
@@ -407,6 +420,17 @@ function agentCommandModuleForPhase(registrationPhase: CommandRegistrationPhase)
 const runtimeSubagentCommandModule = agentCommandModuleForPhase("runtime.subagent");
 const daemonChannelCommandModule = agentCommandModuleForPhase("daemon.channel");
 const daemonA2ACommandModule = agentCommandModuleForPhase("daemon.a2a");
+
+function requireMcpOptions(dependencies: AgentCommandModuleDependencies) {
+  if (!dependencies.mcpConfigs || !dependencies.mcpRunner || !dependencies.credentialResolver) {
+    throw new Error("Agent command module requires MCP registry, runner, and credential resolver.");
+  }
+  return {
+    configs: dependencies.mcpConfigs,
+    runner: dependencies.mcpRunner,
+    credentials: dependencies.credentialResolver,
+  };
+}
 
 function requireBackgroundJobService(dependencies: AgentCommandModuleDependencies): BackgroundToolJobService {
   if (!dependencies.backgroundJobService) {
@@ -603,6 +627,20 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
     "{}",
     undefined,
     () => createTimeNowCommand(),
+  ),
+  agentCommandModule(
+    mcpToolsCommandDescriptor,
+    ["mcp", "tools"],
+    "@payload.json",
+    agentCommandPolicy(["mcp"], {capability: MCP_COMMAND_CAPABILITY}),
+    (dependencies) => createMcpToolsCommand(requireMcpOptions(dependencies)),
+  ),
+  agentCommandModule(
+    mcpCallCommandDescriptor,
+    ["mcp", "call"],
+    "@payload.json",
+    agentCommandPolicy(["mcp"], {capability: MCP_COMMAND_CAPABILITY}),
+    (dependencies) => createMcpCallCommand(requireMcpOptions(dependencies)),
   ),
   agentCommandModule(
     watchListCommandDescriptor,

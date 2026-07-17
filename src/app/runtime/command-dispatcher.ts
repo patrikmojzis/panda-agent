@@ -1,6 +1,6 @@
 import {randomUUID} from "node:crypto";
 
-import type {JsonObject, JsonValue} from "../../lib/json.js";
+import {isJsonObject, type JsonObject, type JsonValue} from "../../lib/json.js";
 import {
     isCommandAllowed,
 } from "../../domain/commands/registry.js";
@@ -40,7 +40,14 @@ function errorDetails(error: unknown): JsonObject | undefined {
     return undefined;
   }
 
-  return error.name ? {name: error.name} : undefined;
+  const commandDetails = (error as {pandaCommandErrorDetails?: unknown}).pandaCommandErrorDetails;
+  const details = isJsonObject(commandDetails) ? commandDetails : undefined;
+  const output: JsonObject = {
+    ...(error.name ? {name: error.name} : {}),
+    ...(details ?? {}),
+  };
+
+  return Object.keys(output).length > 0 ? output : undefined;
 }
 
 function errorMessage(error: unknown): string {

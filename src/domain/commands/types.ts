@@ -1,5 +1,5 @@
 import type {JsonObject, JsonValue} from "../../lib/json.js";
-import type {AgentSkillOperation, ExecutionEnvironmentKind, ExecutionEnvironmentState, ExecutionSkillPolicy} from "../execution-environments/types.js";
+import type {AgentSkillOperation, ExecutionCredentialPolicy, ExecutionEnvironmentKind, ExecutionEnvironmentState, ExecutionSkillPolicy} from "../execution-environments/types.js";
 
 export type CommandName = `${string}.${string}`;
 export type CommandOutputMode = "text" | "json";
@@ -75,6 +75,7 @@ export interface CommandScope {
   allowedCommands?: readonly CommandName[];
   expiresAt?: string;
   credentialMutationAllowed?: boolean;
+  credentialPolicy?: ExecutionCredentialPolicy;
   skillPolicy?: ExecutionSkillPolicy;
   agentSkillAllowedOperations?: readonly AgentSkillOperation[];
   executionEnvironment?: {

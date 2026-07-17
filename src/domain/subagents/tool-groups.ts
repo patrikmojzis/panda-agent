@@ -63,6 +63,10 @@ export const SUBAGENT_TOOL_GROUP_DEFINITIONS = {
     description: "Human/channel outbound communication surfaces.",
     nativeToolNames: [],
   },
+  mcp: {
+    description: "Configured Model Context Protocol server tool discovery and calls.",
+    nativeToolNames: [],
+  },
 } as const satisfies Record<string, SubagentToolGroupDefinition>;
 
 export type SubagentToolGroup = keyof typeof SUBAGENT_TOOL_GROUP_DEFINITIONS;

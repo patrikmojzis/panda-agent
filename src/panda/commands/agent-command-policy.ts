@@ -3,9 +3,9 @@ import type {SubagentToolGroup} from "../../domain/subagents/tool-groups.js";
 
 export type AgentCommandToolGroup = SubagentToolGroup;
 
-export type AgentCommandPolicyInput = Omit<CommandPolicyDescriptor, "capability" | "toolGroups">;
+export type AgentCommandPolicyInput = Omit<CommandPolicyDescriptor, "toolGroups">;
 
-export type AgentCommandPolicy = Omit<CommandPolicyDescriptor, "capability"> & {
+export type AgentCommandPolicy = CommandPolicyDescriptor & {
   toolGroups: readonly AgentCommandToolGroup[];
 };
 

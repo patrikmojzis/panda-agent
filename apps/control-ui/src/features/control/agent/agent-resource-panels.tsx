@@ -1,4 +1,5 @@
 export { AccessPanel } from "@/features/control/agent/access-panel"
+export { McpPanel } from "@/features/control/agent/mcp-panel"
 export { CredentialsPanel } from "@/features/control/agent/credentials-panel"
 export { WikiPanel } from "@/features/control/agent/wiki-panel"
 export {

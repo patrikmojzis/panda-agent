@@ -10,6 +10,8 @@ import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/postgres.js";
 import {PostgresCredentialStore} from "../src/domain/credentials/postgres.js";
 import {CredentialService} from "../src/domain/credentials/resolver.js";
+import {PostgresMcpConfigStore} from "../src/domain/mcp/postgres.js";
+import {ControlMcpService} from "../src/domain/control/mcp-service.js";
 import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/postgres.js";
 import {PostgresControlAuthService} from "../src/domain/control/auth.js";
@@ -70,6 +72,7 @@ async function createHarness(options: {
   const sessions = new PostgresSessionStore({pool});
   const executionEnvironments = new PostgresExecutionEnvironmentStore({pool});
   const credentials = new PostgresCredentialStore({pool});
+  const mcpConfigs = new PostgresMcpConfigStore(pool);
   const threads = new PostgresThreadRuntimeStore({pool});
   const auth = new PostgresControlAuthService({pool});
   const reads = new ControlReadService({pool});
@@ -92,6 +95,7 @@ async function createHarness(options: {
   const wikiBindingStore = new PostgresWikiBindingStore({pool});
   const credentialCrypto = new CredentialCrypto("control-test-master-key");
   const credentialService = new CredentialService({store: credentials, crypto: credentialCrypto});
+  const controlMcp = new ControlMcpService({reads, configs: mcpConfigs, credentials: credentialService});
   const wikiBindingService = new WikiBindingService({store: wikiBindingStore, crypto: credentialCrypto});
   const operator = new ControlOperatorService({
     pool,
@@ -136,6 +140,7 @@ async function createHarness(options: {
   await executionEnvironments.ensureSchema();
   await threads.ensureSchema();
   await credentials.ensureSchema();
+  await mcpConfigs.ensureSchema();
   await auth.ensureSchema();
   await scheduledTaskStore.ensureSchema();
   await watchStore.ensureSchema();
@@ -156,11 +161,11 @@ async function createHarness(options: {
     INSERT INTO "runtime"."credentials" (id, env_key, agent_key, value_ciphertext, value_iv, value_tag, key_version)
     VALUES ('00000000-0000-0000-0000-000000000001', 'API_TOKEN', 'panda', '\\x5345435245545f53454e54494e454c', '\\x6976', '\\x746167', 1)
   `);
-  return {pool, identities, agents, sessions, executionEnvironments, a2aBindings, auth, reads, home, operator, briefings, heartbeats, scheduledTaskStore, watchStore, connectorAccountStore, credentialCrypto, emailStore, wikiBindingStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts, modelCallTraces, controlModelCallTraces};
+  return {pool, identities, agents, sessions, executionEnvironments, a2aBindings, auth, reads, home, operator, controlMcp, mcpConfigs, briefings, heartbeats, scheduledTaskStore, watchStore, connectorAccountStore, credentialCrypto, emailStore, wikiBindingStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts, modelCallTraces, controlModelCallTraces};
 }
 
 async function startHarnessServer(harness: Awaited<ReturnType<typeof createHarness>>, options: {env?: NodeJS.ProcessEnv} = {}) {
-  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, briefings: harness.briefings, heartbeats: harness.heartbeats, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, modelCallTraces: harness.controlModelCallTraces, identityStore: harness.identities, env: options.env});
+  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, mcp: harness.controlMcp, briefings: harness.briefings, heartbeats: harness.heartbeats, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, modelCallTraces: harness.controlModelCallTraces, identityStore: harness.identities, env: options.env});
   servers.push(server);
   return `http://${server.host}:${server.port}`;
 }
@@ -185,6 +190,85 @@ describe("Control auth HTTP", () => {
 
     await harness.auth.createGrant({identityId: "identity-patrik", role: "admin"});
     await expect((await fetch(`${base}/api/control/bootstrap`)).json()).resolves.toEqual({hasGrant: true});
+  });
+
+  it("manages agent MCP servers with CSRF, scoped visibility, safe DTOs, counts, and producer-allowlisted raw audit", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role: "admin"});
+    const login = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
+    const loginBody = await login.json() as {csrfToken: string};
+    const cookies = cookieHeader(login);
+    const config = {
+      transport: "stdio",
+      enabled: true,
+      command: "COMMAND_AUDIT_SENTINEL",
+      args: ["ARG_AUDIT_SENTINEL"],
+      cwd: "/CWD_AUDIT_SENTINEL",
+      env: {
+        API_TOKEN: {credentialEnvKey: "API_TOKEN"},
+        TENANT: {value: "LITERAL_AUDIT_SENTINEL"},
+      },
+      timeoutMs: 30_000,
+    };
+
+    const noCsrf = await fetch(`${base}/api/control/agents/panda/mcp-servers/fixture`, {
+      method: "PUT",
+      headers: {cookie: cookies, "content-type": "application/json"},
+      body: JSON.stringify(config),
+    });
+    expect(noCsrf.status).toBe(403);
+
+    const put = await fetch(`${base}/api/control/agents/panda/mcp-servers/fixture`, {
+      method: "PUT",
+      headers: {cookie: cookies, "content-type": "application/json", "x-control-csrf": loginBody.csrfToken},
+      body: JSON.stringify(config),
+    });
+    expect(put.status).toBe(200);
+    const putBody = await put.json() as {server: Record<string, unknown>};
+    expect(putBody.server).toMatchObject({
+      serverName: "fixture",
+      transport: "stdio",
+      command: "COMMAND_AUDIT_SENTINEL",
+      args: ["ARG_AUDIT_SENTINEL"],
+      credentialEnvKeys: ["API_TOKEN"],
+      status: "credential_unreadable",
+    });
+    expect(JSON.stringify(putBody)).not.toContain("SECRET_SENTINEL");
+
+    const list = await fetch(`${base}/api/control/agents/panda/mcp-servers`, {headers: {cookie: cookies}});
+    expect(list.status).toBe(200);
+    await expect(list.json()).resolves.toMatchObject({count: 1, servers: [{serverName: "fixture"}]});
+    const agent = await fetch(`${base}/api/control/agents/panda`, {headers: {cookie: cookies}});
+    await expect(agent.json()).resolves.toMatchObject({agent: {mcpServerCount: 1}});
+
+    const rawAudit = await harness.pool.query(`
+      SELECT metadata
+      FROM "runtime"."control_audit_events"
+      WHERE event_type = 'control_operator_write'
+        AND metadata->>'action' = 'put_mcp_server'
+    `);
+    const metadata = rawAudit.rows[0]?.metadata as Record<string, unknown>;
+    expect(Object.keys(metadata).sort()).toEqual([
+      "action", "agentKey", "changedFields", "credentialEnvKeys", "enabled", "serverName", "transport",
+    ].sort());
+    const rawText = JSON.stringify(metadata);
+    for (const forbidden of ["COMMAND_AUDIT_SENTINEL", "ARG_AUDIT_SENTINEL", "CWD_AUDIT_SENTINEL", "LITERAL_AUDIT_SENTINEL", "SECRET_SENTINEL", "url", "headers", "auth", "input", "result"]) {
+      expect(rawText).not.toContain(forbidden);
+    }
+
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const scopedGrant = await harness.auth.createGrant({identityId: "identity-patrik", role: "scoped", agentKey: "panda"});
+    const scopedLogin = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: scopedGrant.loginToken})});
+    const scopedCookies = cookieHeader(scopedLogin);
+    expect((await fetch(`${base}/api/control/agents/luna/mcp-servers`, {headers: {cookie: scopedCookies}})).status).toBe(404);
+
+    const deleted = await fetch(`${base}/api/control/agents/panda/mcp-servers/fixture`, {
+      method: "DELETE",
+      headers: {cookie: cookies, "x-control-csrf": loginBody.csrfToken},
+    });
+    expect(deleted.status).toBe(200);
+    await expect(deleted.json()).resolves.toEqual({deleted: true});
   });
 
   it("rejects expired Control login tokens", async () => {

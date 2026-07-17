@@ -2,6 +2,7 @@ import {describe, expect, it} from "vitest";
 
 import {createCommandCatalog} from "../src/domain/commands/index.js";
 import {
+  BUILTIN_SUBAGENT_PROFILES,
   describeSubagentToolGroups,
   expandSubagentToolGroups,
   normalizePersistedSubagentToolGroups,
@@ -22,6 +23,7 @@ describe("subagent tool groups", () => {
       "skill_maintenance",
       "operate",
       "communicate_human",
+      "mcp",
     ]);
 
     const groups = describeSubagentToolGroups({
@@ -115,6 +117,12 @@ describe("subagent tool groups", () => {
             "brave.place.poi",
             "brave.place.description",
             "openai.web_research",
+          ],
+        },
+        "mcp": {
+          "agentSkillOperations": undefined,
+          "toolNames": [
+            "mcp.*",
           ],
         },
         "memory": {
@@ -213,11 +221,27 @@ describe("subagent tool groups", () => {
       core: ["bash", "background_job_status", "background_job_wait", "background_job_cancel", "view_media"],
       internet: ["browser"],
       memory: [],
+      mcp: [],
       execute: ["bash", "background_job_status", "background_job_wait", "background_job_cancel"],
       skill_maintenance: [],
       operate: ["thinking_set"],
       communicate_human: [],
     });
+  });
+
+  it("keeps MCP as an explicit opt-in group", () => {
+    expect(expandSubagentToolGroups(["mcp"], {
+      commandCatalog: DEFAULT_AGENT_COMMAND_CATALOG,
+    })).toEqual(["mcp.*"]);
+    expect(BUILTIN_SUBAGENT_PROFILES.map((profile) => ({
+      slug: profile.slug,
+      toolGroups: profile.toolGroups,
+    }))).toEqual([
+      {slug: "workspace", toolGroups: ["core"]},
+      {slug: "memory", toolGroups: ["core", "memory"]},
+      {slug: "browser", toolGroups: ["core", "internet"]},
+      {slug: "skill_maintainer", toolGroups: ["core", "memory", "skill_maintenance"]},
+    ]);
   });
 
   it("expands groups to de-duplicated raw tool names", () => {
