@@ -65,6 +65,26 @@ describe("model context policy", () => {
     }));
   });
 
+  it("uses the larger GPT-5.6 budget only through the Codex provider", () => {
+    const codex = resolveModelRuntimeBudget("openai-codex/gpt-5.6-sol");
+    const api = resolveModelRuntimeBudget("openai/gpt-5.6-sol");
+
+    expect(codex).toMatchObject({
+      hardWindow: 372_000,
+      operatingWindow: 340_000,
+      compactTriggerTokens: 306_000,
+      match: "gpt-5.6",
+      matchKind: "prefix",
+    });
+    expect(api).toMatchObject({
+      hardWindow: 1_050_000,
+      operatingWindow: 272_000,
+      compactTriggerTokens: 244_800,
+      match: "gpt-5",
+      matchKind: "prefix",
+    });
+  });
+
   it("computes compact trigger tokens from the configured percentage", () => {
     expect(getCompactTriggerTokens({
       operatingWindow: 200_000,

@@ -10,6 +10,8 @@ export interface ModelContextPolicy {
 export interface ModelContextPolicyRule extends ModelContextPolicy {
   kind: "exact" | "prefix";
   match: string;
+  /** Restricts this rule to one provider while unscoped family rules stay portable. */
+  providerName?: string;
 }
 
 export interface ResolvedModelContextPolicy extends ModelContextPolicy {
@@ -30,6 +32,14 @@ export const DEFAULT_MODEL_CONTEXT_POLICY: ModelContextPolicy = {
 };
 
 export const MODEL_CONTEXT_POLICY_RULES: readonly ModelContextPolicyRule[] = [
+  {
+    kind: "prefix",
+    match: "gpt-5.6",
+    providerName: "openai-codex",
+    hardWindow: 372_000,
+    operatingWindow: 340_000,
+    compactAtPercent: 90,
+  },
   {
     kind: "prefix",
     match: "gpt-5",
@@ -61,7 +71,7 @@ function sanitizePositiveInteger(value: unknown): number | undefined {
   return Math.trunc(value);
 }
 
-function resolveModelIdentity(value?: string): {canonicalModel: string; modelId: string} {
+function resolveModelIdentity(value?: string): {canonicalModel: string; modelId: string; providerName?: string} {
   const fallbackCanonicalModel = resolveRuntimeDefaultModelSelector();
   const trimmed = typeof value === "string" ? value.trim() : "";
   if (!trimmed) {
@@ -69,6 +79,7 @@ function resolveModelIdentity(value?: string): {canonicalModel: string; modelId:
     return {
       canonicalModel: fallback.canonical,
       modelId: fallback.modelId,
+      providerName: fallback.providerName,
     };
   }
 
@@ -77,6 +88,7 @@ function resolveModelIdentity(value?: string): {canonicalModel: string; modelId:
     return {
       canonicalModel: resolved.canonical,
       modelId: resolved.modelId,
+      providerName: resolved.providerName,
     };
   } catch {
     if (trimmed.includes("/")) {
@@ -86,6 +98,7 @@ function resolveModelIdentity(value?: string): {canonicalModel: string; modelId:
         return {
           canonicalModel: trimmed,
           modelId,
+          providerName: trimmed.slice(0, separatorIndex).trim() || undefined,
         };
       }
     }
@@ -110,10 +123,14 @@ export function resolveModelContextPolicy(
     fallback?: ModelContextPolicy;
   } = {},
 ): ResolvedModelContextPolicy {
-  const {canonicalModel, modelId} = resolveModelIdentity(model);
+  const {canonicalModel, modelId, providerName} = resolveModelIdentity(model);
   const rules = options.rules ?? MODEL_CONTEXT_POLICY_RULES;
   const fallback = options.fallback ?? DEFAULT_MODEL_CONTEXT_POLICY;
-  const exactMatch = rules.find((rule) => rule.kind === "exact" && rule.match === modelId);
+  const exactMatch = rules.find((rule) => (
+    rule.kind === "exact"
+    && rule.match === modelId
+    && (rule.providerName === undefined || rule.providerName === providerName)
+  ));
 
   if (exactMatch) {
     return {
@@ -127,7 +144,11 @@ export function resolveModelContextPolicy(
     };
   }
 
-  const prefixMatch = rules.find((rule) => rule.kind === "prefix" && modelId.startsWith(rule.match));
+  const prefixMatch = rules.find((rule) => (
+    rule.kind === "prefix"
+    && modelId.startsWith(rule.match)
+    && (rule.providerName === undefined || rule.providerName === providerName)
+  ));
   if (prefixMatch) {
     return {
       canonicalModel,
