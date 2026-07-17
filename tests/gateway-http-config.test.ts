@@ -1,9 +1,6 @@
 import {describe, expect, it} from "vitest";
 
 import {
-  DEFAULT_GATEWAY_HAE_JSON_INBOX_DIR,
-  DEFAULT_GATEWAY_HAE_JSON_MAX_BYTES,
-  DEFAULT_GATEWAY_HAE_JSON_SOURCE,
   DEFAULT_GATEWAY_HOST,
   DEFAULT_GATEWAY_PORT,
   resolveGatewayHttpConfig,
@@ -29,8 +26,6 @@ describe("gateway HTTP config", () => {
       attachmentQuarantineTtlMs: 86_400_000,
       attachmentAllowedMimeTypes: expect.arrayContaining(["image/png", "application/pdf"]),
     });
-    expect(resolveGatewayHttpConfig({}).haeJsonIngest).toBeUndefined();
-
     expect(resolveGatewayHttpConfig({
       GATEWAY_HOST: "0.0.0.0",
       GATEWAY_PORT: "8095",
@@ -48,10 +43,6 @@ describe("gateway HTTP config", () => {
       GATEWAY_ATTACHMENT_RETENTION_MS: "120000",
       GATEWAY_ATTACHMENT_QUARANTINE_TTL_MS: "30000",
       GATEWAY_ATTACHMENT_ALLOWED_MIME_TYPES: "text/plain,image/png",
-      GATEWAY_HAE_JSON_TOKEN: "synthetic-hae-token",
-      GATEWAY_HAE_JSON_INBOX_DIR: "/tmp/synthetic-hae-inbox",
-      GATEWAY_HAE_JSON_MAX_BYTES: "12345",
-      GATEWAY_HAE_JSON_SOURCE: "synthetic-hae",
     })).toMatchObject({
       host: "0.0.0.0",
       port: 8095,
@@ -69,31 +60,7 @@ describe("gateway HTTP config", () => {
       attachmentRetentionMs: 120_000,
       attachmentQuarantineTtlMs: 30_000,
       attachmentAllowedMimeTypes: ["text/plain", "image/png"],
-      haeJsonIngest: {
-        token: "synthetic-hae-token",
-        inboxDir: "/tmp/synthetic-hae-inbox",
-        maxBytes: 12345,
-        source: "synthetic-hae",
-      },
     });
-  });
-
-
-  it("enables HAE JSON ingest only when its dedicated token is configured", () => {
-    expect(resolveGatewayHttpConfig({
-      GATEWAY_HAE_JSON_TOKEN: " token-with-spaces ",
-    })).toMatchObject({
-      haeJsonIngest: {
-        token: "token-with-spaces",
-        inboxDir: DEFAULT_GATEWAY_HAE_JSON_INBOX_DIR,
-        maxBytes: DEFAULT_GATEWAY_HAE_JSON_MAX_BYTES,
-        source: DEFAULT_GATEWAY_HAE_JSON_SOURCE,
-      },
-    });
-
-    expect(() => resolveGatewayHttpConfig({
-      GATEWAY_HAE_JSON_INBOX_DIR: "/tmp/synthetic-hae-inbox",
-    })).toThrow("GATEWAY_HAE_JSON_TOKEN is required when configuring HAE JSON ingest.");
   });
 
   it("rejects invalid ports before the server starts", () => {
