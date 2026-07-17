@@ -17,6 +17,7 @@ import { sessionTabPath } from "@/app/control-routes"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { DetailField, DetailPanel } from "@/features/control/detail-primitives"
 import { StatusBadge, humanize, short } from "@/features/control/control-display"
@@ -170,7 +171,9 @@ export function ModelCallTraceDebugger({
     })
   }
 
+  const explicitlySelectedSpan = viewModel.spans.find((span) => span.id === selectedSpanParam) ?? null
   const selectedSpan =
+    explicitlySelectedSpan ??
     filteredSpans.find((span) => span.id === selectedSpanId) ??
     filteredSpans[0] ??
     (hasTimelineFilter ? null : viewModel.spans[0]) ??
@@ -204,53 +207,57 @@ export function ModelCallTraceDebugger({
             <TabsTrigger value="diff">Diff</TabsTrigger>
           </TabsList>
           <div className="text-xs text-muted-foreground">
-            {selectedSpan ? <>Selected <code>{selectedSpan.id}</code></> : "No span selected"}
+            {explicitlySelectedSpan
+              ? <>Selected <code>{explicitlySelectedSpan.id}</code></>
+              : "Select a span to inspect"}
           </div>
         </div>
         <TabsContent value="timeline" className="mt-1">
-          <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(21rem,28rem)]">
-            <section className="grid min-w-0 gap-3" aria-label="Model call timeline">
-              <TimelineToolbar
-                filter={filter}
-                filterCounts={filterCounts}
-                query={query}
-                spans={viewModel.spans}
-                filteredCount={filteredSpans.length}
-                onFilterChange={setFilter}
-                onQueryChange={setQuery}
-                onSelectSpan={selectSpan}
-                viewModel={viewModel}
-              />
-              <div className="grid min-w-0 gap-2">
-                {filteredSpans.length > 0 ? (
-                  filteredSpans.map((span) => (
-                    <TimelineSpanCard
-                      key={span.id}
-                      span={span}
-                      selected={selectedSpan?.id === span.id}
-                      onSelect={() => selectSpan(span.id)}
-                    />
-                  ))
-                ) : (
-                  <div className="grid gap-3 border p-6 text-sm text-muted-foreground" role="status">
-                    <div>No timeline spans match this filter/search.</div>
-                    {hasTimelineFilter ? (
-                      <div>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={clearTimelineFilters}
-                        >
-                          Clear timeline filters
-                        </Button>
-                      </div>
-                    ) : null}
-                  </div>
-                )}
-              </div>
-            </section>
-            <SpanInspector span={selectedSpan} spanPath={selectedSpanPath} />
-          </div>
+          <section className="grid min-w-0 gap-3" aria-label="Model call timeline">
+            <TimelineToolbar
+              filter={filter}
+              filterCounts={filterCounts}
+              query={query}
+              spans={viewModel.spans}
+              filteredCount={filteredSpans.length}
+              onFilterChange={setFilter}
+              onQueryChange={setQuery}
+              onSelectSpan={selectSpan}
+              viewModel={viewModel}
+            />
+            <div className="grid min-w-0 gap-2">
+              {filteredSpans.length > 0 ? (
+                filteredSpans.map((span) => (
+                  <TimelineSpanCard
+                    key={span.id}
+                    span={span}
+                    selected={explicitlySelectedSpan?.id === span.id}
+                    onSelect={() => selectSpan(span.id)}
+                  />
+                ))
+              ) : (
+                <div className="grid gap-3 border p-6 text-sm text-muted-foreground" role="status">
+                  <div>No timeline spans match this filter/search.</div>
+                  {hasTimelineFilter ? (
+                    <div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={clearTimelineFilters}
+                      >
+                        Clear timeline filters
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+              )}
+            </div>
+          </section>
+          <SpanInspectorSheet
+            span={explicitlySelectedSpan}
+            spanPath={selectedSpanPath}
+            onClose={() => updateTraceParams({ span: null })}
+          />
         </TabsContent>
         <TabsContent value="input" className="mt-1">
           <InputShapeView trace={trace} viewModel={viewModel} />
@@ -1419,69 +1426,71 @@ function ToolPairPreview({ span }: { span: TraceSpan }) {
   )
 }
 
-function SpanInspector({
+function SpanInspectorSheet({
+  onClose,
   span,
   spanPath,
 }: {
+  onClose: () => void
   span: TraceSpan | null
   spanPath: string | null
 }) {
-  if (!span) {
-    return (
-      <aside className="min-w-0 xl:sticky xl:top-32 xl:self-start">
-        <DetailPanel title="Inspector">
-          <div className="text-sm text-muted-foreground">Select a timeline span to inspect it.</div>
-        </DetailPanel>
-      </aside>
-    )
-  }
-
   return (
-    <aside className="min-w-0 xl:sticky xl:top-32 xl:self-start">
-      <DetailPanel
-        title="Inspector"
-        action={
-          <div className="flex shrink-0 flex-wrap items-center gap-2">
-            <SpanStatusBadge status={span.status} />
-            <CopySpanLinkButton path={spanPath} spanId={span.id} />
-            <CopySanitizedJsonButton label="Copy span JSON" toastLabel="Span JSON copied" value={span.raw} />
+    <Sheet open={Boolean(span)} onOpenChange={(open) => !open && onClose()}>
+      <SheetContent className="min-w-0 gap-0 overflow-x-hidden data-[side=right]:w-full data-[side=right]:sm:max-w-2xl">
+        <SheetHeader className="shrink-0 border-b pr-12">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <SheetTitle>Inspector</SheetTitle>
+            {span ? <SpanStatusBadge status={span.status} /> : null}
           </div>
-        }
-      >
-        <div className="grid min-w-0 gap-4">
-          <div className="grid min-w-0 gap-2">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <Badge variant="outline" className="tabular-nums">#{span.order}</Badge>
-              <Badge variant="secondary">{kindLabel(span.kind)}</Badge>
-              <span className="min-w-0 break-words text-sm font-semibold">{span.title}</span>
+          <SheetDescription>
+            {span ? `#${span.order} ${kindLabel(span.kind)} - ${span.title}` : "Selected timeline span"}
+          </SheetDescription>
+          {span ? (
+            <div className="flex flex-wrap items-center gap-2 pt-2">
+              <CopySpanLinkButton path={spanPath} spanId={span.id} />
+              <CopySanitizedJsonButton label="Copy span JSON" toastLabel="Span JSON copied" value={span.raw} />
             </div>
-            {span.subtitle ? (
-              <div className="text-sm text-muted-foreground">{span.subtitle}</div>
-            ) : null}
-            {span.preview ? <ReadablePreview value={span.preview} className="max-h-40" /> : null}
+          ) : null}
+        </SheetHeader>
+        {span ? (
+          <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <div className="grid min-w-0 gap-4">
+              <div className="grid min-w-0 gap-2">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <Badge variant="outline" className="tabular-nums">#{span.order}</Badge>
+                  <Badge variant="secondary">{kindLabel(span.kind)}</Badge>
+                  <span className="min-w-0 break-words text-sm font-semibold">{span.title}</span>
+                </div>
+                {span.subtitle ? (
+                  <div className="text-sm text-muted-foreground">{span.subtitle}</div>
+                ) : null}
+                {span.preview ? <ReadablePreview value={span.preview} className="max-h-40" /> : null}
+              </div>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <DetailField label="Span id" value={<CodeValue value={span.id} />} />
+                <DetailField label="Raw payload" value={formatBytes(sanitizedPayloadSize(span.raw)) ?? "-"} />
+                {span.metrics.map((metric) => (
+                  <DetailField key={`${metric.label}:${metric.value}`} label={metric.label} value={metric.value} />
+                ))}
+                {span.tool?.callId ? (
+                  <DetailField label="Tool call id" value={<CodeValue value={span.tool.callId} />} />
+                ) : null}
+                {span.role ? <DetailField label="Role" value={humanize(span.role)} /> : null}
+                {span.source ? <DetailField label="Source" value={span.source} /> : null}
+              </div>
+              {span.tool ? <ToolInspectorSections span={span} /> : <PayloadSection title="Payload" value={span.raw} />}
+              <details className="grid min-w-0 gap-2">
+                <summary className="cursor-pointer select-none text-xs text-muted-foreground">
+                  Raw selected span JSON
+                </summary>
+                <SanitizedJsonBlock value={span.raw} />
+              </details>
+            </div>
           </div>
-          <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
-            <DetailField label="Span id" value={<CodeValue value={span.id} />} />
-            <DetailField label="Raw payload" value={formatBytes(sanitizedPayloadSize(span.raw)) ?? "-"} />
-            {span.metrics.map((metric) => (
-              <DetailField key={`${metric.label}:${metric.value}`} label={metric.label} value={metric.value} />
-            ))}
-            {span.tool?.callId ? (
-              <DetailField label="Tool call id" value={<CodeValue value={span.tool.callId} />} />
-            ) : null}
-            {span.role ? <DetailField label="Role" value={humanize(span.role)} /> : null}
-            {span.source ? <DetailField label="Source" value={span.source} /> : null}
-          </div>
-          {span.tool ? <ToolInspectorSections span={span} /> : <PayloadSection title="Payload" value={span.raw} />}
-          <details className="grid min-w-0 gap-2">
-            <summary className="cursor-pointer select-none text-xs text-muted-foreground">
-              Raw selected span JSON
-            </summary>
-            <SanitizedJsonBlock value={span.raw} />
-          </details>
-        </div>
-      </DetailPanel>
-    </aside>
+        ) : null}
+      </SheetContent>
+    </Sheet>
   )
 }
 
