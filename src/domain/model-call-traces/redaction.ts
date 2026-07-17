@@ -48,7 +48,9 @@ function redactCredentialShapedText(value: string): string {
     .replace(/\bBearer\s+(?!\[redacted:credential\])[^\s,;]+/gi, `Bearer ${CREDENTIAL_REDACTION}`)
     .replace(/\b(?:sk|rk|pk|ghp|github_pat|xox[baprs])-[-A-Za-z0-9_]{8,}\b/g, CREDENTIAL_REDACTION)
     .replace(/([?&](?:access_?token|api_?key|auth|credential|secret|token)=)[^&#\s]+/gi, `$1${CREDENTIAL_REDACTION}`)
-    .replace(/(\b(?:access_?token|api_?key|auth(?:orization)?|credential|password|secret|sessionid|token)\b\s*[:=]\s*)(?!\[redacted:credential\])(?:["']?)[^\s,;"']+/gi, `$1${CREDENTIAL_REDACTION}`);
+    .replace(/(\b(?:access_?token|api_?key|auth(?:orization)?|credential|password|secret|sessionid|token)\b\s*[:=]\s*)(?!\[redacted:credential\])(?:["']?)[^\s,;"']+/gi, `$1${CREDENTIAL_REDACTION}`)
+    .replace(/(\b(?:x[-_])?request[-_\s]*id\b\s*[:=]\s*)(?!\[redacted:request-id\])(?:["']?)[^\s,;"']+/gi, `$1${REQUEST_ID_REDACTION}`)
+    .replace(/\breq[-_][A-Za-z0-9][A-Za-z0-9_-]{7,}\b/g, REQUEST_ID_REDACTION);
 }
 
 function sanitizeString(value: string, key?: string): JsonValue {
@@ -204,6 +206,19 @@ export function sanitizeTraceMessage(message: unknown, tools: readonly Tool[]): 
   return sanitizeJsonValue(next);
 }
 
+function sanitizeTraceResponse(message: unknown, tools: readonly Tool[]): JsonValue {
+  const sanitized = sanitizeTraceMessage(message, tools);
+  if (!isJsonRecord(sanitized)
+    || sanitized.role !== "assistant"
+    || (sanitized.stopReason !== "error" && sanitized.stopReason !== "aborted")) {
+    return sanitized;
+  }
+
+  const withoutErrorMessage = {...sanitized};
+  delete withoutErrorMessage.errorMessage;
+  return withoutErrorMessage;
+}
+
 function sanitizeTraceMessages(messages: readonly unknown[], tools: readonly Tool[]): JsonValue[] {
   return messages.map((message) => sanitizeTraceMessage(message, tools));
 }
@@ -281,7 +296,7 @@ export function buildSanitizedModelCallTrace(input: RecordModelCallTraceInput): 
       ? {llmContextSections: sanitizeTraceJson(request.trace.llmContextSections)}
       : {}),
   };
-  const responseJson = input.response ? sanitizeTraceMessage(input.response, input.tools) : undefined;
+  const responseJson = input.response ? sanitizeTraceResponse(input.response, input.tools) : undefined;
   const usageJson = input.response && isRecord(input.response.usage)
     ? sanitizeTraceJson(input.response.usage)
     : undefined;

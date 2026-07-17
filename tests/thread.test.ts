@@ -27,6 +27,11 @@ import {runThreadStep, type ThreadStepResult} from "../src/kernel/agent/thread.j
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
+const PROVIDER_CREDENTIAL_SENTINEL = "sk-retry247credential987654321";
+const PROVIDER_REQUEST_ID_SENTINEL = "req-retry247request987654321";
+const PROVIDER_PAYLOAD_SENTINEL = "RETRY247_PROVIDER_PAYLOAD_SENTINEL";
+const RAW_CAUSE_SENTINEL = "RETRY247_RAW_CAUSE_SENTINEL";
+
 class EchoTool extends Tool<typeof EchoTool.schema> {
   name = "echo";
   description = "Echo a message";
@@ -230,6 +235,13 @@ function completedStream(response: AssistantMessage): AssistantMessageEventStrea
   } as AssistantMessageEventStream;
 }
 
+function terminalErrorStream(errorMessage: string): AssistantMessageEventStream {
+  const response = createAssistantMessage([], {stopReason: "error", errorMessage});
+  const stream = createAssistantMessageEventStream();
+  stream.push({type: "error", reason: "error", error: response});
+  return stream;
+}
+
 function eventKind(event: ThreadRunEvent): string {
   return "type" in event ? event.type : event.role;
 }
@@ -273,11 +285,11 @@ describe("Thread", () => {
     expect(error.modelId).toBe("gpt-4o-mini");
     expect(error.stopReason).toBe("error");
     expect(error.failureKind).toBe("provider_transport_terminated");
-    expect(error.providerMessage).toBe("terminated");
+    expect(error.providerMessage).toBeUndefined();
     expect(error.message).toContain("provider=openai");
     expect(error.message).toContain("model=gpt-4o-mini");
     expect(error.message).toContain("failureKind=provider_transport_terminated");
-    expect(error.message).toContain("detail=terminated");
+    expect(error.message).not.toContain("detail=");
   });
 
   it("wraps transport-like runtime throws with provider diagnostics", async () => {
@@ -306,7 +318,7 @@ describe("Thread", () => {
       providerName: "openai",
       modelId: "gpt-4o-mini",
       failureKind: "provider_transport_network",
-      providerMessage: "fetch failed",
+      providerMessage: undefined,
     });
   });
 
@@ -354,65 +366,72 @@ describe("Thread", () => {
       failureKind: "provider_server_error",
       retryable: true,
       status: 501,
-      requestId: "req_server_123",
-      providerMessage: "The server had an error while processing your request.",
     });
+    expect(error.requestId).toBeUndefined();
+    expect(error.providerMessage).toBeUndefined();
+    expect(error.cause).toBeUndefined();
     expect(error.message).toContain("failureKind=provider_server_error");
     expect(error.message).toContain("retryable=true");
     expect(error.message).toContain("status=501");
-    expect(error.message).toContain("requestId=req_server_123");
-    expect(error.message).toContain("detail=The server had an error while processing your request.");
+    expect(error.message).not.toContain("req_server_123");
+    expect(error.message).not.toContain("detail=");
   });
 
-  it("extracts safe detail from raw Codex server_error payloads", async () => {
-    const rawServerError = createAssistantMessage([], {
-      stopReason: "error",
-      errorMessage: JSON.stringify({
-        error: {
-          message: "The server had an error while processing your request. apiKey=sk-abcdefghijklmnopqrstuvwxyz987654321",
-          type: "server_error",
-          code: "server_error",
-        },
-        request_id: "req_payload_123",
-        debug: {
-          prompt: "NEVER_PERSIST_THIS_PROMPT",
-        },
-      }),
+  it("fails closed for installed terminal assistant diagnostics after retry exhaustion", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const providerError = JSON.stringify({
+      error: {
+        message: `The server had an error. Bearer ${PROVIDER_CREDENTIAL_SENTINEL} requestId=${PROVIDER_REQUEST_ID_SENTINEL} payload={${PROVIDER_PAYLOAD_SENTINEL}}`,
+        type: "server_error",
+        code: "server_error",
+      },
+      status: 503,
+      request_id: PROVIDER_REQUEST_ID_SENTINEL,
+      debug: {payload: PROVIDER_PAYLOAD_SENTINEL},
     });
-    const runtime = createMockRuntime(rawServerError, rawServerError, rawServerError);
-
+    const complete = vi.fn(async () => terminalErrorStream(providerError).result());
     const thread = new Thread({
-      agent: new Agent({
-        name: "core",
-        instructions: "Reply briefly",
-      }),
+      agent: new Agent({name: "core", instructions: "Reply briefly"}),
       model: "openai-codex/gpt-5.4",
       messages: [stringToUserMessage("hi")],
-      runtime,
+      runtime: {
+        complete,
+        stream: vi.fn(() => { throw new Error("Streaming was not expected in this test"); }),
+      },
     });
 
-    let caught: unknown;
-    try {
-      for await (const _output of thread.run()) {
-        // Exhaust the generator.
-      }
-    } catch (error) {
-      caught = error;
-    }
+    const outcome = thread.runToCompletion().then(
+      (value) => ({value}),
+      (error: unknown) => ({error}),
+    );
+    await vi.advanceTimersByTimeAsync(1_500);
+    const result = await outcome;
 
-    expect(caught).toBeInstanceOf(ProviderRuntimeError);
-    const error = caught as ProviderRuntimeError;
-    expect(error.failureKind).toBe("provider_server_error");
-    expect(error.retryable).toBe(true);
-    expect(error.requestId).toBe("req_payload_123");
-    expect(error.providerMessage).toContain("apiKey=sk-abcdefghijklmnopqrstuvwxyz987654321");
-    expect(error.message).toContain("retryable=true");
-    expect(error.message).toContain("requestId=req_payload_123");
-    expect(error.message).not.toContain("NEVER_PERSIST_THIS_PROMPT");
-    expect(error.message).not.toContain('"debug"');
+    expect(result.error).toBeInstanceOf(ProviderRuntimeError);
+    const error = result.error as ProviderRuntimeError;
+    expect(complete).toHaveBeenCalledTimes(3);
+    expect(error).toMatchObject({
+      providerName: "openai-codex",
+      modelId: "gpt-5.4",
+      failureKind: "provider_server_error",
+      status: 503,
+      retryable: true,
+    });
+    expect(error.requestId).toBeUndefined();
+    expect(error.providerMessage).toBeUndefined();
+    expect(error.cause).toBeUndefined();
+    expect(error.message).toContain("attempts=3; maxAttempts=3; retryExhausted=true");
+    for (const sentinel of [
+      PROVIDER_CREDENTIAL_SENTINEL,
+      PROVIDER_REQUEST_ID_SENTINEL,
+      PROVIDER_PAYLOAD_SENTINEL,
+    ]) expect(JSON.stringify(error)).not.toContain(sentinel);
+    expect(error.message).not.toContain("detail=");
   });
 
-  it("caps provider failure details without redacting token-shaped prose", async () => {
+  it("omits provider prose from exhausted public diagnostics", async () => {
     const verboseFailure = createAssistantMessage([], {
       stopReason: "error",
       errorMessage: `fetch failed Bearer abcdefghijklmnopqrstuvwxyz987654321 apiKey=sk-abcdefghijklmnopqrstuvwxyz987654321 ${"x".repeat(1_000)}`,
@@ -441,10 +460,11 @@ describe("Thread", () => {
     expect(caught).toBeInstanceOf(ProviderRuntimeError);
     const error = caught as ProviderRuntimeError;
     expect(error.failureKind).toBe("provider_transport_network");
-    expect(error.providerMessage).toContain("Bearer abcdefghijklmnopqrstuvwxyz987654321");
-    expect(error.providerMessage).toContain("apiKey=sk-abcdefghijklmnopqrstuvwxyz987654321");
-    expect(error.providerMessage).toContain("[truncated");
-    expect(error.message.length).toBeLessThan(1_100);
+    expect(error.providerMessage).toBeUndefined();
+    expect(error.requestId).toBeUndefined();
+    expect(error.message).not.toContain("abcdefghijklmnopqrstuvwxyz987654321");
+    expect(error.message).not.toContain("detail=");
+    expect(error.message.length).toBeLessThan(500);
   });
 
   it.each([
@@ -577,7 +597,7 @@ describe("Thread", () => {
     vi.useFakeTimers();
     vi.spyOn(Math, "random").mockReturnValue(random);
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const failure = new Error("fetch failed");
+    const failure = new Error(`fetch failed ${RAW_CAUSE_SENTINEL}`);
     const requests: LlmRuntimeRequest[] = [];
     const callTimes: number[] = [];
     const complete = vi.fn(async (request: LlmRuntimeRequest) => {
@@ -610,6 +630,8 @@ describe("Thread", () => {
     const result = await outcome;
     expect(result.error).toBeInstanceOf(ProviderRuntimeError);
     expect((result.error as Error).message).toContain("attempts=3; maxAttempts=3; retryExhausted=true");
+    expect((result.error as Error & {cause?: unknown}).cause).toBeUndefined();
+    expect((result.error as Error).message).not.toContain(RAW_CAUSE_SENTINEL);
     expect(complete).toHaveBeenCalledTimes(3);
     expect(callTimes.map((time) => time - callTimes[0]!)).toEqual([
       0,

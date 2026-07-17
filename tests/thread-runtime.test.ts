@@ -3,7 +3,7 @@ import {tmpdir} from "node:os";
 import path from "node:path";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
-import type {AssistantMessage} from "@earendil-works/pi-ai";
+import {createAssistantMessageEventStream, type AssistantMessage} from "@earendil-works/pi-ai";
 import {
     Agent,
     BackgroundJobStatusTool,
@@ -92,6 +92,10 @@ const TEST_MODEL_WINDOW_1000 = TEST_MODELS.window1000;
 const TEST_MODEL_WINDOW_5000 = TEST_MODELS.window5000;
 const TEST_MODEL_WINDOW_6000 = TEST_MODELS.window6000;
 
+const PROVIDER_CREDENTIAL_SENTINEL = "sk-retry247credential987654321";
+const PROVIDER_REQUEST_ID_SENTINEL = "req-retry247request987654321";
+const PROVIDER_PAYLOAD_SENTINEL = "RETRY247_PROVIDER_PAYLOAD_SENTINEL";
+
 function createDeferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
@@ -157,6 +161,13 @@ function createAssistantMessage(
 
 function message(text: string): AssistantMessage {
   return createAssistantMessage([{ type: "text", text }]);
+}
+
+function terminalAssistantError(errorMessage: string): Promise<AssistantMessage> {
+  const response = createAssistantMessage([], {stopReason: "error", errorMessage});
+  const stream = createAssistantMessageEventStream();
+  stream.push({type: "error", reason: "error", error: response});
+  return stream.result();
 }
 
 function createMockRuntime(...responses: AssistantMessage[]): LlmRuntime & {
@@ -2898,23 +2909,34 @@ describe("ThreadRuntimeCoordinator", () => {
   it("exhausts bounded retries after a completed tool without replaying the tool", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0);
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const terminated = createAssistantMessage([], {
-      stopReason: "error",
-      errorMessage: "terminated",
+    const providerError = JSON.stringify({
+      error: {
+        message: `The server had an error. Bearer ${PROVIDER_CREDENTIAL_SENTINEL} requestId=${PROVIDER_REQUEST_ID_SENTINEL} payload={${PROVIDER_PAYLOAD_SENTINEL}}`,
+        type: "server_error",
+        code: "server_error",
+      },
+      status: 503,
+      request_id: PROVIDER_REQUEST_ID_SENTINEL,
+      debug: {payload: PROVIDER_PAYLOAD_SENTINEL},
     });
-    const runtime = createMockRuntime(
-      createAssistantMessage([
-        {
-          type: "toolCall",
-          id: "call_echo",
-          name: "echo",
-          arguments: { message: "hi" },
-        },
-      ]),
-      terminated,
-      terminated,
-      terminated,
-    );
+    let callCount = 0;
+    const runtime: LlmRuntime & {complete: ReturnType<typeof vi.fn>} = {
+      complete: vi.fn(async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return createAssistantMessage([{
+            type: "toolCall",
+            id: "call_echo",
+            name: "echo",
+            arguments: {message: "hi"},
+          }]);
+        }
+        return terminalAssistantError(providerError);
+      }),
+      stream: vi.fn(() => {
+        throw new Error("Streaming was not expected in this test");
+      }),
+    };
     const echoTool = new EchoTool();
     const toolSideEffect = vi.spyOn(echoTool, "handle");
 
@@ -2946,7 +2968,7 @@ describe("ThreadRuntimeCoordinator", () => {
     });
 
     await expect(coordinator.waitForIdle("thread-provider-error")).rejects.toThrow(
-      "failureKind=provider_transport_terminated",
+      "failureKind=provider_server_error",
     );
 
     const [run] = await store.listRuns("thread-provider-error");
@@ -2955,9 +2977,15 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(run?.error).toContain("provider=openai");
     expect(run?.error).toContain("model=gpt-4o-mini");
     expect(run?.error).toContain("stopReason=error");
-    expect(run?.error).toContain("failureKind=provider_transport_terminated");
-    expect(run?.error).toContain("detail=terminated");
+    expect(run?.error).toContain("failureKind=provider_server_error");
+    expect(run?.error).toContain("status=503");
+    expect(run?.error).not.toContain("detail=");
     expect(run?.error).toContain("attempts=3; maxAttempts=3; retryExhausted=true");
+    for (const sentinel of [
+      PROVIDER_CREDENTIAL_SENTINEL,
+      PROVIDER_REQUEST_ID_SENTINEL,
+      PROVIDER_PAYLOAD_SENTINEL,
+    ]) expect(run?.error).not.toContain(sentinel);
     expect(runtime.complete).toHaveBeenCalledTimes(4);
     expect(toolSideEffect).toHaveBeenCalledTimes(1);
     expect(warning).toHaveBeenCalledTimes(2);

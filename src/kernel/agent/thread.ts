@@ -537,33 +537,31 @@ function withRetryExhaustion(
   request: LlmRuntimeRequest,
   attempts: number,
 ): ProviderRuntimeError {
-  const providerMessage = sanitizeProviderErrorDetail(
-    error.providerMessage ?? fallbackProviderFailureMessage(error.stopReason),
-    error.stopReason,
-  );
+  const failureKind = error.failureKind ?? "provider_error";
+  const status = typeof error.status === "number" && Number.isFinite(error.status)
+    ? Math.trunc(error.status)
+    : undefined;
+  const stopReason = error.stopReason === "error" || error.stopReason === "aborted"
+    ? error.stopReason
+    : undefined;
   const baseMessage = formatProviderRuntimeErrorMessage({
     request,
-    stopReason: error.stopReason,
-    failureKind: error.failureKind ?? "provider_error",
-    providerMessage,
-    status: error.status,
-    requestId: error.requestId,
+    stopReason,
+    failureKind,
+    status,
     retryable: true,
   });
   return new ProviderRuntimeError(
     `${baseMessage.slice(0, -1)}; attempts=${attempts}; maxAttempts=${MODEL_CALL_MAX_ATTEMPTS}; retryExhausted=true.`,
     {
-      providerName: error.providerName,
-      modelId: error.modelId,
-      status: error.status,
-      requestId: error.requestId,
+      providerName: request.providerName,
+      modelId: request.modelId,
+      status,
       durationMs: error.durationMs,
       timedOut: error.timedOut,
       retryable: true,
-      stopReason: error.stopReason,
-      failureKind: error.failureKind,
-      providerMessage,
-      cause: error.cause,
+      stopReason,
+      failureKind,
     },
   );
 }
@@ -572,7 +570,7 @@ function formatProviderRuntimeErrorMessage(input: {
   request: LlmRuntimeRequest;
   stopReason?: string;
   failureKind: ProviderRuntimeFailureKind;
-  providerMessage: string;
+  providerMessage?: string;
   status?: number;
   requestId?: string;
   retryable?: boolean;
@@ -586,7 +584,7 @@ function formatProviderRuntimeErrorMessage(input: {
     ...(input.retryable ? ["retryable=true"] : []),
     ...(input.status !== undefined ? [`status=${input.status}`] : []),
     ...(input.requestId ? [`requestId=${sanitizeProviderErrorDetail(input.requestId)}`] : []),
-    `detail=${input.providerMessage}`,
+    ...(input.providerMessage ? [`detail=${input.providerMessage}`] : []),
   ];
 
   return `${parts.join("; ")}.`;
