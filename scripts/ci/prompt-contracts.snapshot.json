@@ -55,10 +55,10 @@
       "sha256": "5d0e246a9d83fbfbc7dd073b6422cf7351c6c2742fecd2a9298b28afdfe51002"
     },
     {
-      "bytes": 6669,
-      "lines": 173,
+      "bytes": 5790,
+      "lines": 151,
       "path": "src/domain/subagents/tool-groups.ts",
-      "sha256": "b7e101a9f4ce871d3ec84d32a9b3115ca8c4439971d6620de23890673567087d"
+      "sha256": "4b5506257862a0e4e56dded0522ad0c2c56f3504f14142ab67c9dd0dd262e678"
     },
     {
       "bytes": 433,
@@ -442,18 +442,6 @@
         "image.generate",
         "whisper.transcribe",
         "whisper.translate"
-      ]
-    },
-    "execute": {
-      "bash": {
-        "allowed": true
-      },
-      "description": "Active runtime execution and background job control.",
-      "toolNames": [
-        "bash",
-        "background_job_status",
-        "background_job_wait",
-        "background_job_cancel"
       ]
     },
     "internet": {

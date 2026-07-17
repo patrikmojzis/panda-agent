@@ -26,7 +26,7 @@ import {
   type SubagentProfileRecord,
   type UpsertSubagentProfileInput,
 } from "./types.js";
-import {normalizePersistedSubagentToolGroups} from "./tool-groups.js";
+import {normalizeSubagentToolGroups} from "./tool-groups.js";
 
 export interface PostgresSubagentProfileStoreOptions {
   pool: PgPoolLike;
@@ -45,7 +45,7 @@ function parseToolGroups(value: unknown): SubagentProfileRecord["toolGroups"] {
     throw new Error("Subagent profile tool groups must contain only strings.");
   }
 
-  return normalizePersistedSubagentToolGroups(json);
+  return normalizeSubagentToolGroups(json);
 }
 
 function parseProfileRow(row: Record<string, unknown>): SubagentProfileRecord {

@@ -5,7 +5,6 @@ import {
   BUILTIN_SUBAGENT_PROFILES,
   describeSubagentToolGroups,
   expandSubagentToolGroups,
-  normalizePersistedSubagentToolGroups,
   normalizeSubagentToolGroups,
   resolveSubagentToolPolicy,
   SUBAGENT_TOOL_GROUP_DEFINITIONS,
@@ -19,7 +18,6 @@ describe("subagent tool groups", () => {
       "core",
       "internet",
       "memory",
-      "execute",
       "skill_maintenance",
       "operate",
       "communicate_human",
@@ -92,15 +90,6 @@ describe("subagent tool groups", () => {
             "image.generate",
             "whisper.transcribe",
             "whisper.translate",
-          ],
-        },
-        "execute": {
-          "agentSkillOperations": undefined,
-          "toolNames": [
-            "bash",
-            "background_job_status",
-            "background_job_wait",
-            "background_job_cancel",
           ],
         },
         "internet": {
@@ -222,7 +211,6 @@ describe("subagent tool groups", () => {
       internet: ["browser"],
       memory: [],
       mcp: [],
-      execute: ["bash", "background_job_status", "background_job_wait", "background_job_cancel"],
       skill_maintenance: [],
       operate: ["thinking_set"],
       communicate_human: [],
@@ -368,10 +356,9 @@ describe("subagent tool groups", () => {
         allowedOperations: ["load", "set", "patch", "delete"],
       },
     });
-    expect(resolveSubagentToolPolicy(["core", "memory", "execute"], {
+    expect(resolveSubagentToolPolicy(["core", "memory"], {
       commandCatalog: DEFAULT_AGENT_COMMAND_CATALOG,
     })).toMatchObject({
-      bash: {allowed: true},
       postgresReadonly: {allowed: true},
     });
     expect(resolveSubagentToolPolicy(["skill_maintenance"], {
@@ -393,17 +380,5 @@ describe("subagent tool groups", () => {
     expect(() => normalizeSubagentToolGroups(["core", "bash"])).toThrow(
       'Unknown subagent tool group "bash".',
     );
-  });
-
-  it("rejects the removed workspace read group for new inputs", () => {
-    expect(() => normalizeSubagentToolGroups(["workspace_read"])).toThrow(
-      'Unknown subagent tool group "workspace_read".',
-    );
-  });
-
-  it("strips the historical workspace read group from persisted rows", () => {
-    expect(normalizePersistedSubagentToolGroups(["core", "workspace_read", "core"])).toEqual([
-      "core",
-    ]);
   });
 });

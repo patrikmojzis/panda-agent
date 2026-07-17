@@ -147,8 +147,8 @@ panda subagents profiles disable code-review --agent clawd
 ```
 
 Profiles store prompt, tool groups, model/thinking defaults, and enabled state.
-Workspace inspection uses standard shell commands through granted runtime tools.
-Add `execute` when the subagent needs shell/background execution.
+Workspace inspection and shell/background execution use the runtime tools in
+`core`.
 They do **not** store credentials, credential policies, environment ids, raw tool
 allowlists, skill allowlists, or per-spawn execution choices; pass those at spawn
 time.

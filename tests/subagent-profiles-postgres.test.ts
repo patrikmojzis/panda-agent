@@ -217,7 +217,7 @@ describe("PostgresSubagentProfileStore", () => {
     expect(raw.rows[0]).toMatchObject({count: BUILTIN_SUBAGENT_PROFILES.length});
   });
 
-  it("strips legacy workspace_read groups from stored rows", async () => {
+  it("rejects unknown tool groups from stored rows", async () => {
     const {pool, profileStore} = await createStores();
     const tables = buildSubagentTableNames();
     await pool.query(`
@@ -231,21 +231,20 @@ describe("PostgresSubagentProfileStore", () => {
         source,
         enabled
       ) VALUES (
-        'legacy_workspace',
+        'invalid_profile',
         NULL,
-        'Legacy profile.',
-        'Legacy prompt.',
-        '["core","workspace_read"]'::jsonb,
+        'Invalid profile.',
+        'Invalid prompt.',
+        '["core","bash"]'::jsonb,
         'none',
         'builtin',
         TRUE
       )
     `);
 
-    await expect(profileStore.getProfile({slug: "legacy_workspace"})).resolves.toMatchObject({
-      slug: "legacy_workspace",
-      toolGroups: ["core"],
-    });
+    await expect(profileStore.getProfile({slug: "invalid_profile"})).rejects.toThrow(
+      'Unknown subagent tool group "bash".',
+    );
   });
 
   it("supports agent-scoped custom profiles and filters disabled rows by default", async () => {

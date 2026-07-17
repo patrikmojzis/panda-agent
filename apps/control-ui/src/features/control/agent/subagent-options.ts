@@ -20,11 +20,6 @@ export const subagentToolGroupOptions = [
     description: "Read/query durable Panda memory surfaces.",
   },
   {
-    label: "Execute",
-    value: "execute",
-    description: "Runtime execution and background job control.",
-  },
-  {
     label: "Skill maintenance",
     value: "skill_maintenance",
     description: "Durable skill create/update/delete access.",
@@ -40,6 +35,13 @@ export const subagentToolGroupOptions = [
     description: "Human/channel outbound communication surfaces.",
   },
 ]
+
+const subagentToolGroupValues = new Set(subagentToolGroupOptions.map((option) => option.value))
+
+/** Keep API-provided tool groups within the options supported by this Control build. */
+export function filterKnownSubagentToolGroups(values: readonly string[]): string[] {
+  return [...new Set(values.filter((value) => subagentToolGroupValues.has(value)))]
+}
 
 export const subagentSourceFilterOptions = [
   { label: "Custom", value: "custom" },

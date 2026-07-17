@@ -10,7 +10,6 @@ interface SubagentToolGroupDefinition {
   description: string;
   nativeToolNames: readonly string[];
   agentSkillOperations?: readonly AgentSkillOperation[];
-  bash?: {allowed: true};
   postgresReadonly?: {allowed: true};
 }
 
@@ -36,16 +35,6 @@ export const SUBAGENT_TOOL_GROUP_DEFINITIONS = {
     description: "Durable Panda memory and wiki operations.",
     nativeToolNames: [],
     postgresReadonly: {allowed: true},
-  },
-  execute: {
-    description: "Active runtime execution and background job control.",
-    nativeToolNames: [
-      "bash",
-      "background_job_status",
-      "background_job_wait",
-      "background_job_cancel",
-    ],
-    bash: {allowed: true},
   },
   skill_maintenance: {
     description: "Narrow durable skill load/create/patch/delete access without broad operational tools.",
@@ -93,11 +82,6 @@ export function normalizeSubagentToolGroups(values: readonly string[]): Subagent
   return normalized as SubagentToolGroup[];
 }
 
-/** Strip no-op historical groups when reading durable records from before the hard cut. */
-export function normalizePersistedSubagentToolGroups(values: readonly string[]): SubagentToolGroup[] {
-  return normalizeSubagentToolGroups(values.filter((value) => value !== "workspace_read"));
-}
-
 export interface ExpandSubagentToolGroupsOptions {
   commandCatalog?: Pick<CommandCatalog, "namesForToolGroups">;
   commandModules?: readonly CommandPolicyModule[];
@@ -138,10 +122,6 @@ export function resolveSubagentToolPolicy(
     const definition = SUBAGENT_TOOL_GROUP_DEFINITIONS[group];
     return "agentSkillOperations" in definition ? [...definition.agentSkillOperations] : [];
   }));
-  const grantsBash = normalizedGroups.some((group) => {
-    const definition = SUBAGENT_TOOL_GROUP_DEFINITIONS[group];
-    return "bash" in definition && definition.bash.allowed === true;
-  });
   const grantsPostgresReadonly = normalizedGroups.some((group) => {
     const definition = SUBAGENT_TOOL_GROUP_DEFINITIONS[group];
     return "postgresReadonly" in definition && definition.postgresReadonly.allowed === true;
@@ -149,7 +129,6 @@ export function resolveSubagentToolPolicy(
 
   return {
     ...(allowedTools.length > 0 ? {allowedTools} : {}),
-    ...(grantsBash ? {bash: {allowed: true}} : {}),
     ...(grantsPostgresReadonly ? {postgresReadonly: {allowed: true}} : {}),
     ...(agentSkillOperations.length > 0
       ? {agentSkill: {allowedOperations: agentSkillOperations}}
@@ -165,7 +144,6 @@ export function describeSubagentToolGroups(
     return [group, {
       description: definition.description,
       ...("agentSkillOperations" in definition ? {agentSkillOperations: definition.agentSkillOperations} : {}),
-      ...("bash" in definition ? {bash: definition.bash} : {}),
       ...("postgresReadonly" in definition ? {postgresReadonly: definition.postgresReadonly} : {}),
       toolNames: expandSubagentToolGroups([group], options),
     }];

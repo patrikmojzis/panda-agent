@@ -1,4 +1,5 @@
 import type { Briefing, ConnectorRow, EmailRouteRow, Heartbeat, IdentityOptionRow, ScheduledTask, SessionDetail, SessionRow, SkillRow, SubagentRow, WatchRow, WikiBinding } from "@/lib/api"
+import { filterKnownSubagentToolGroups } from "../agent/subagent-options"
 import type {
   BindingFormValues,
   A2ABindingFormValues,
@@ -307,13 +308,14 @@ export function skillToFormValues(skill: SkillRow): SkillFormValues {
 }
 
 export function subagentToFormValues(subagent: SubagentRow): SubagentFormValues {
+  const toolGroups = filterKnownSubagentToolGroups(subagent.toolGroups)
   return {
     description: subagent.description ?? "",
     model: subagent.model ?? "",
     prompt: subagent.prompt ?? "",
     slug: subagent.slug,
     thinking: subagent.thinking ?? "",
-    toolGroups: subagent.toolGroups.length > 0 ? subagent.toolGroups : ["core"],
+    toolGroups: toolGroups.length > 0 ? toolGroups : ["core"],
   }
 }
 

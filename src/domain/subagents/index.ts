@@ -10,7 +10,6 @@ export {
   describeSubagentToolGroups,
   expandSubagentToolGroups,
   isSubagentToolGroup,
-  normalizePersistedSubagentToolGroups,
   normalizeSubagentToolGroups,
   resolveSubagentToolPolicy,
   SUBAGENT_TOOL_GROUP_DEFINITIONS,

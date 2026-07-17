@@ -278,8 +278,8 @@ describe("subagent thread definitions", () => {
     expect(definition.agent.tools.map((tool) => tool.name)).toEqual([]);
   });
 
-  it("strips legacy workspace_read groups from persisted subagent metadata", () => {
-    const metadata = readSubagentSessionMetadata({
+  it("rejects unknown tool groups in persisted subagent metadata", () => {
+    expect(() => readSubagentSessionMetadata({
       subagent: {
         version: 1,
         role: "workspace",
@@ -291,7 +291,7 @@ describe("subagent thread definitions", () => {
           source: "builtin",
           description: "Workspace reader.",
           prompt: "PROFILE PROMPT ONLY",
-          toolGroups: ["core", "workspace_read"],
+          toolGroups: ["core", "bash"],
           transcriptMode: "none",
         },
         resolved: {
@@ -300,9 +300,7 @@ describe("subagent thread definitions", () => {
           toolPolicy: {},
         },
       },
-    });
-
-    expect(metadata?.profile.toolGroups).toEqual(["core"]);
+    })).toThrow('Unknown subagent tool group "bash".');
   });
 
   it("fails closed for malformed subagent metadata", () => {

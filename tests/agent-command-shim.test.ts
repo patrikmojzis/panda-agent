@@ -5534,7 +5534,7 @@ printf '{"ok":true,"output":%s}\\n' "$body"
       "--tool-group",
       "core",
       "--tool-group",
-      "execute",
+      "internet",
       "--credential",
       "BRAVE_API_KEY",
     ], {

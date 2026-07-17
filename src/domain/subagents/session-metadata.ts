@@ -21,7 +21,7 @@ import {
   type SubagentProfileTranscriptMode,
 } from "./types.js";
 import {
-  normalizePersistedSubagentToolGroups,
+  normalizeSubagentToolGroups,
   type SubagentToolGroup,
 } from "./tool-groups.js";
 
@@ -233,7 +233,7 @@ function parseProfileSnapshot(value: unknown): SubagentProfileSnapshot {
     source: parseProfileSource(value.source),
     description: normalizeSubagentProfileDescription(requireMetadataString(value.description, "profile.description")),
     prompt: normalizeSubagentProfilePrompt(requireMetadataString(value.prompt, "profile.prompt")),
-    toolGroups: normalizePersistedSubagentToolGroups(Array.isArray(value.toolGroups)
+    toolGroups: normalizeSubagentToolGroups(Array.isArray(value.toolGroups)
       ? value.toolGroups.filter((entry): entry is string => typeof entry === "string")
       : []),
     model: trimToUndefined(value.model),

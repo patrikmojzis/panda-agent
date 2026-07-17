@@ -41,14 +41,13 @@ validated when the tool call reaches `/exec` or `/jobs/*`.
 
 Subagent tool access is profile driven:
 
-- `core` grants basics plus parent A2A updates.
+- `core` grants basics, shell/background execution, and parent A2A updates.
 - `internet` grants public web and browser inspection.
 - `memory` grants durable memory reads.
-- `execute` grants bash/background execution.
 - `operate` grants operational mutation surfaces.
 
 Workspace inspection uses standard shell commands through the granted runtime
-tools. Add `execute` when the subagent needs shell/background execution.
+tools in `core`.
 
 Nested `panda subagent spawn` is denied for subagent sessions. Environment tools are
 normal operational tools, not a delegation API.

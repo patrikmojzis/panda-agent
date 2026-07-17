@@ -20,7 +20,7 @@ Approved V1 corrections are pinned there and covered by tests:
 - `agent_skill` is not in `core` in PR1 because the raw tool currently supports `load`, `set`, `patch`, and `delete`; adding it to universal raw membership would silently grant skill mutation. The approved long-term intent is operation-level access: load/read broadly, set/patch/delete only for `operate` or a skill-maintainer-equivalent policy.
 - `internet` includes public web/browser commands, including `web.fetch`, `brave.*`, and `openai.web_research`.
 - `operate` includes operational mutation/control tools, including `thinking_set` and the mutating raw `agent_skill` surface.
-- The fixed group keys are `core`, `internet`, `memory`, `execute`, `operate`, and `communicate_human`.
+- The fixed group keys are `core`, `internet`, `memory`, `operate`, and `communicate_human`.
 
 ## Profile foundation
 

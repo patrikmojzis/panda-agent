@@ -25,6 +25,7 @@ import {
   mobileHiddenColumns,
 } from "@/features/control/control-display"
 import {
+  filterKnownSubagentToolGroups,
   subagentSourceFilterOptions,
   subagentToolGroupOptions,
 } from "@/features/control/agent/subagent-options"
@@ -73,7 +74,7 @@ export function SubagentsPanel({ agentKey }: { agentKey: string }) {
       header: renderColumnHeader,
       enableSorting: false,
       cell: ({ row }) => (
-        <TokenBadges values={row.original.toolGroups} className="max-w-64" />
+        <TokenBadges values={filterKnownSubagentToolGroups(row.original.toolGroups)} className="max-w-64" />
       ),
     },
     {
