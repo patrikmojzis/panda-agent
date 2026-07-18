@@ -50,7 +50,7 @@ describe("Panda feature surface", () => {
     const tools = buildDefaultAgentTools();
 
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("<channels_vs_inner_monologue>");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Run `panda commands --json`");
+    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Run `panda commands --output json`");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("No send command means no message is delivered.");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("`panda subagent spawn <task|@file|@-> [--profile <slug>] [--context @-]`");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("`profile=\"browser\"` for browser automation and website inspection.");

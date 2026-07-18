@@ -1,10 +1,10 @@
 {
   "files": [
     {
-      "bytes": 100890,
+      "bytes": 100917,
       "lines": 3367,
       "path": "scripts/agent-command-shim/routes.generated.sh",
-      "sha256": "930de050dc4ff7add9d71d9b9e75e54c1c17dff3405abce62287eeb8087a8bc6"
+      "sha256": "bd4787bf7baf6a9bb861f6772a492de27f8310006c76e58738237dd2bc47b9ac"
     },
     {
       "bytes": 1166,
@@ -19,10 +19,10 @@
       "sha256": "90f5ef6dfaeebf09223f66734e27bc6563b2133246cace59746f129535bf7b40"
     },
     {
-      "bytes": 15318,
-      "lines": 408,
+      "bytes": 15461,
+      "lines": 411,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "65a7c045cf45c87fac506278cbec0b4a01927d9c0588fb3adb85c945d5ce5655"
+      "sha256": "dcf8b756f759b10da90b597b3da6866bf95608777906330d4c865b6b9e3bfc8e"
     },
     {
       "bytes": 12121,
@@ -67,10 +67,10 @@
       "sha256": "c6d98f315f2cfc237bbf5fdd6eb957112e92238bedd6e16956056d0a7939fb56"
     },
     {
-      "bytes": 49547,
-      "lines": 1436,
+      "bytes": 49907,
+      "lines": 1445,
       "path": "src/panda/commands/agent-command-modules.ts",
-      "sha256": "236e017574475a566d2d997dbc5cb28fd6650c4475279e75da92e8e2dc5c2f3e"
+      "sha256": "ae3a4d9ed0c05361c67cc47bdba3004cfd226e04da19434d51a62eb351c6c067"
     },
     {
       "bytes": 572,
@@ -247,10 +247,10 @@
       "sha256": "07e217dbd207459957ef0f6da2a3e15a2b3f1b56a80033271107a149f59277c2"
     },
     {
-      "bytes": 2024,
+      "bytes": 2030,
       "lines": 49,
       "path": "src/prompts/contexts/command-catalog.ts",
-      "sha256": "6b23c3c1773f1ee8978440fafbc2448263935ad0858747dfb711445b7f53fceb"
+      "sha256": "b21907a0413ac1923f73bf352431ee5cdb78f19f7426d6c2aaf14748d984a033"
     },
     {
       "bytes": 310,
@@ -337,10 +337,10 @@
       "sha256": "cad5b2b991230740617070b6e628d49803d08242741e790ee444d5c9635c5df3"
     },
     {
-      "bytes": 14262,
+      "bytes": 14269,
       "lines": 218,
       "path": "src/prompts/runtime/default-agent.ts",
-      "sha256": "52daa74658104afb903ec99c19e6c82275927febe8393c2dd2c800fd4c1c3c8f"
+      "sha256": "a970e1528e55abb09c7a95b57e416f6cffb8be0b80d0b8693848f88839aa3f34"
     },
     {
       "bytes": 1652,

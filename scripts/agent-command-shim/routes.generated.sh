@@ -345,7 +345,7 @@ agent_command_shim_print_root_usage_commands() {
   panda environment show <environment-id>
   panda environment stop <environment-id>
   panda environment logs <environment-id> [--role control|workspace|all] [--tail <n>]
-  panda skill list [--tag <tag>...]
+  panda skill list [--tag <tag>...] [--output keys|json|table]
   panda skill show <skill-key>
   panda skill load <skill-key>
   panda skill set <skill-key> --description <text|@file|@-> --content <text|@file|@-> [--tag <tag>...]

@@ -36,8 +36,8 @@ export function renderCommandCatalogContext(commands: readonly RenderCommandCata
   return [
     "Use `bash` for shell work. Inside dockerized workspaces, use the tiny `panda` CLI for Panda runtime capabilities.",
     "Discovery:",
-    "- `panda commands --json` lists commands allowed by the current session token.",
-    "- `panda commands --json` returns dotted command ids for machines; invoke commands with the spaced CLI paths shown below and in help.",
+    "- `panda commands` lists command keys allowed by the current session token.",
+    "- `panda commands --output json` returns the full machine-readable catalog; invoke commands with the spaced CLI paths shown below and in help.",
     "- `panda <group> <action> --help` shows exact args and examples.",
     "Input/output:",
     "- Prefer `--json @-` for generated JSON or `--json @file` for saved payloads.",

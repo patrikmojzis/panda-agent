@@ -2362,7 +2362,7 @@ describe("agent command shim", () => {
     const server = await startWatchServer();
     const env = shimEnv(server);
     const pipelines = [
-      "\"$1\" commands --json | head -c 1 >/dev/null",
+      "\"$1\" commands --output json | head -c 1 >/dev/null",
       "\"$1\" commands | head -n 1 >/dev/null",
       "\"$1\" time now --json '{}' | head -c 1 >/dev/null",
     ];
@@ -3305,7 +3305,7 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     expect(imageGenerate.stdout).toContain("panda image generate --prompt <text|@file|@-> [--image <path>...] [--model <model>]");
     expect(imageGenerate.stdout).toContain("--format <png|jpeg|webp>");
     expect(imageGenerate.stdout).toContain("--count <n>");
-    expect(skillList.stdout).toContain("panda skill list [--tag <tag>...]");
+    expect(skillList.stdout).toContain("panda skill list [--tag <tag>...] [--output keys|json|table]");
     expect(skillList.stdout).toContain("--tag <tag>");
     expect(skillShow.stdout).toContain("panda skill show <skill-key>");
     expect(skillLoad.stdout).toContain("panda skill load <skill-key>");
@@ -4356,6 +4356,34 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     ], {
       env: shimEnv(server),
     });
+    const listJson = await execFileAsync(shimPath, [
+      "skill",
+      "list",
+      "--tag",
+      "calendar",
+      "--output",
+      "json",
+    ], {env: shimEnv(server)});
+    const listTable = await execFileAsync(shimPath, [
+      "skill",
+      "list",
+      "--output",
+      "table",
+      "--tag",
+      "calendar",
+    ], {env: shimEnv(server)});
+    const listFromJsonInput = await execFileAsync(shimPath, [
+      "skill",
+      "list",
+      "--json",
+      '{"tags":["calendar"]}',
+    ], {env: shimEnv(server)});
+    const emptyList = await execFileAsync(shimPath, [
+      "skill",
+      "list",
+      "--tag",
+      "missing",
+    ], {env: shimEnv(server)});
     const show = await execFileAsync(shimPath, [
       "skill",
       "show",
@@ -4402,7 +4430,10 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     ], {
       env: shimEnv(server),
     });
-    expect(JSON.parse(list.stdout)).toMatchObject({
+    expect(list.stdout).toBe("calendar\n");
+    expect(listFromJsonInput.stdout).toBe("calendar\n");
+    expect(emptyList.stdout).toBe("");
+    expect(JSON.parse(listJson.stdout)).toMatchObject({
       operation: "list",
       agentKey: "panda",
       count: 1,
@@ -4413,6 +4444,11 @@ printf '{"ok":true,"output":%s}\\n' "$body"
         tags: ["calendar", "planning"],
       }],
     });
+    expect(listTable.stdout).toBe([
+      "SKILL KEY\tDESCRIPTION\tTAGS\tCONTENT BYTES",
+      `calendar\tUse this for calendar work.\tcalendar,planning\t${Buffer.byteLength("# Calendar", "utf8")}`,
+      "",
+    ].join("\n"));
     expect(JSON.parse(show.stdout)).toMatchObject({
       operation: "show",
       agentKey: "panda",
@@ -4457,6 +4493,33 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     ])).rejects.toMatchObject({
       stderr: expect.stringContaining("panda skill delete requires --yes or --json @payload.json."),
     });
+  });
+
+  it("uses explicit output modes for command discovery and rejects old output aliases", async () => {
+    const server = await startWatchServer();
+    const keys = await execFileAsync(shimPath, ["commands"], {env: shimEnv(server)});
+    const json = await execFileAsync(shimPath, ["commands", "--output", "json"], {env: shimEnv(server)});
+    const table = await execFileAsync(shimPath, ["commands", "--output", "table"], {env: shimEnv(server)});
+
+    expect(keys.stdout.split("\n")).toContain("skill.list");
+    expect(JSON.parse(json.stdout)).toMatchObject({
+      commands: expect.arrayContaining([expect.objectContaining({name: "skill.list"})]),
+    });
+    expect(table.stdout).toMatch(/^COMMAND\tSUMMARY\tINPUT MODES\tOUTPUT MODES\n/);
+    await expect(execFileAsync("bash", [
+      "-c",
+      'while IFS= read -r skill; do "$1" skill load "$skill" >/dev/null; done < <("$1" skill list)',
+      "bash",
+      shimPath,
+    ], {env: shimEnv(server)})).resolves.toMatchObject({stderr: ""});
+    await expect(execFileAsync(shimPath, ["commands", "--json"]))
+      .rejects.toMatchObject({
+        stderr: expect.stringContaining("panda commands --json was removed; use panda commands --output json."),
+      });
+    await expect(execFileAsync(shimPath, ["skill", "list", "--output", "yaml"]))
+      .rejects.toMatchObject({
+        stderr: expect.stringContaining("panda skill list --output must be keys, json, or table."),
+      });
   });
 
   it("executes readonly postgres JSON payloads through the transport", async () => {

@@ -275,6 +275,46 @@ execute_json_command() {
   return 1
 }
 
+project_skill_list_output() {
+  local output="$1"
+  local response="$2"
+  case "$output" in
+    keys)
+      allow_sigpipe jq -r '.skills[]?.skillKey' <<<"$response"
+      ;;
+    json)
+      allow_sigpipe jq -c '.' <<<"$response"
+      ;;
+    table)
+      allow_sigpipe jq -r '
+        ["SKILL KEY", "DESCRIPTION", "TAGS", "CONTENT BYTES"],
+        (.skills[] | [.skillKey, .description, (.tags | join(",")), (.contentBytes | tostring)])
+        | @tsv
+      ' <<<"$response"
+      ;;
+  esac
+}
+
+project_command_catalog_output() {
+  local output="$1"
+  local response="$2"
+  case "$output" in
+    keys)
+      allow_sigpipe jq -r '.commands[]?.name' <<<"$response"
+      ;;
+    json)
+      allow_sigpipe jq -c '.' <<<"$response"
+      ;;
+    table)
+      allow_sigpipe jq -r '
+        ["COMMAND", "SUMMARY", "INPUT MODES", "OUTPUT MODES"],
+        (.commands[] | [.name, .summary, (.inputModes | join(",")), (.outputModes | join(","))])
+        | @tsv
+      ' <<<"$response"
+      ;;
+  esac
+}
+
 
 mcp_input_error() {
   printf '%s\n' "$1" >&2
@@ -839,6 +879,7 @@ dispatch_generated_json_route() {
         fi
         return $?
       fi
+      [ "$command_name" != "skill.list" ] || return 127
       if [ "${rest[0]:-}" = "--json" ]; then
         [ -n "${rest[1]:-}" ] || die "panda ${command_label} --json requires @file, @-, or inline JSON."
         if execute_json_command "$command_name" "$(read_json_input "${rest[1]}")"; then
@@ -869,21 +910,41 @@ case "${1:-}" in
     if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
       cat <<'USAGE'
 Usage:
-  panda commands
-  panda commands --json
+  panda commands [--output keys|json|table]
 
 Lists agent-facing Panda commands available through the current command lease.
-JSON output is an object shaped like:
+Default output is one command key per line. JSON output is an object shaped like:
   {"commands":[{"name":"time.now", ...}]}
+
+Examples:
+  panda commands
+  panda commands --output json
+  panda commands --output table
 USAGE
       exit 0
     fi
-    if [ "${1:-}" = "--json" ]; then
-      curl_command "$(command_url "/commands")"
-      exit 0
-    fi
+    commands_output="keys"
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --output)
+          [ "$#" -gt 1 ] || die "panda commands --output requires keys, json, or table."
+          commands_output="$2"
+          case "$commands_output" in
+            keys|json|table) ;;
+            *) die "panda commands --output must be keys, json, or table." ;;
+          esac
+          shift 2
+          ;;
+        --json)
+          die "panda commands --json was removed; use panda commands --output json."
+          ;;
+        *)
+          die "Unknown panda commands option: $1"
+          ;;
+      esac
+    done
     commands_response="$(curl_command_raw "$(command_url "/commands")")"
-    allow_sigpipe jq -r '.commands[].name' <<<"$commands_response"
+    project_command_catalog_output "$commands_output" "$commands_response"
     exit 0
     ;;
   time)
@@ -4537,7 +4598,7 @@ Usage:
   panda skill set --help [--json]
   panda skill patch --help [--json]
   panda skill delete --help [--json]
-  panda skill list [--tag <tag>...]
+  panda skill list [--tag <tag>...] [--output keys|json|table]
   panda skill show <skill-key>
   panda skill load <skill-key>
   panda skill set <skill-key> --description <text|@file|@-> --content <text|@file|@-> [--tag <tag>...]
@@ -4578,8 +4639,10 @@ USAGE
 	      curl_command "$(command_url "/commands/${command_name}/help")"
 	      exit 0
 	    fi
-	    if [ "${1:-}" != "--json" ] && [ "$subcommand" = "list" ]; then
+	    if [ "$subcommand" = "list" ]; then
 	      tags_json="[]"
+	      output="keys"
+	      json_input=""
 	      while [ "$#" -gt 0 ]; do
 	        case "$1" in
 	          --tag)
@@ -4587,13 +4650,34 @@ USAGE
 	            tags_json="$(printf '%s' "$tags_json" | jq -c --arg tag "$2" '. + [$tag]')"
 	            shift 2
 	            ;;
+	          --output)
+	            [ "$#" -gt 1 ] || die "panda skill list --output requires keys, json, or table."
+	            output="$2"
+	            case "$output" in
+	              keys|json|table) ;;
+	              *) die "panda skill list --output must be keys, json, or table." ;;
+	            esac
+	            shift 2
+	            ;;
+	          --json)
+	            [ "$#" -gt 1 ] || die "panda skill list --json requires @file, @-, or inline JSON."
+	            [ -z "$json_input" ] || die "panda skill list accepts only one --json input."
+	            json_input="$2"
+	            shift 2
+	            ;;
 	          *)
 	            die "Unknown panda skill list option: $1"
 	            ;;
 	        esac
 	      done
-	      payload="$(jq -n --argjson tags "$tags_json" 'if ($tags | length) > 0 then {tags: $tags} else {} end')"
-	      execute_json_command "$command_name" "$payload"
+	      if [ -n "$json_input" ]; then
+	        [ "$(printf '%s' "$tags_json" | jq 'length')" = "0" ] || die "panda skill list accepts --tag or --json input, not both."
+	        payload="$(read_json_input "$json_input")"
+	      else
+	        payload="$(jq -n --argjson tags "$tags_json" 'if ($tags | length) > 0 then {tags: $tags} else {} end')"
+	      fi
+	      list_response="$(execute_json_command "$command_name" "$payload")"
+	      project_skill_list_output "$output" "$list_response"
 	      exit $?
 	    fi
 	    if [ "${1:-}" != "--json" ] && [ "$subcommand" = "show" ]; then
@@ -5952,7 +6036,7 @@ USAGE
 	  ""|--help|-h)
 	    cat <<'USAGE'
 Usage:
-  panda commands [--json]
+  panda commands [--output keys|json|table]
   panda <command> --help [--json]
 
 Commands:
@@ -5961,7 +6045,7 @@ USAGE
       agent_command_shim_print_root_usage_commands
     else
       cat <<'USAGE'
-  panda commands [--json]
+  panda commands [--output keys|json|table]
 USAGE
     fi
     cat <<'USAGE'

@@ -94,7 +94,7 @@ the agent can run it.
 Use **Tool** and **CLI Tool** when the distinction matters. `bash` is the Tool
 that starts the CLI process; it is not a synonym for the CLI Tools available
 through that process. The operator CLI also contains commands that are not
-agent-facing, while `panda commands --json` in the Agent Command Shim lists only
+agent-facing, while `panda commands --output json` in the Agent Command Shim lists only
 the CLI Tools allowed by the current session lease. See
 [Agent Command Enhancement Plan](./agent-command-enhancement-plan.md) and
 [Execution Environments](./execution-environments.md).

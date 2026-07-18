@@ -4,7 +4,7 @@ Last inspected: 2026-07-05.
 
 Sources used:
 
-- `pnpm --silent dev commands --json`
+- `pnpm --silent dev commands --output json`
 - `src/app/cli.ts`
 - `scripts/agent-command-shim/panda`
 - command modules under `src/domain`, `src/integrations`, and `src/panda/commands`
@@ -351,7 +351,7 @@ Priority:
 
 | Command | Current shape | Enhancement | Priority |
 | --- | --- | --- | --- |
-| `skill.list` | Native `panda skill list [--tag <tag>...]`; `--json` accepts `{tag}` or `{tags}`. | Done. Lists summaries only and filters by execution skill policy plus optional tag filters. | P0 |
+| `skill.list` | Native `panda skill list [--tag <tag>...] [--output keys|json|table]`; `--json` accepts `{tag}` or `{tags}` as structured input only. | Done. Defaults to one key per line; JSON and table output are explicit. | P0 |
 | `skill.show` | Native `panda skill show <skill-key>`; `--json` accepts `{skillKey}`. | Done. Reads the full body without incrementing `loadCount`; `skill.load` remains the active context-load command. | P0 |
 | `skill.load` | Native `panda skill load <skill-key>`; `--json` accepts `{skillKey}`. | Done as preferred command id. Later add `--content-only` only if callers need to avoid metadata. | P0 |
 | `skill.set` | Native `panda skill set <skill-key> --description <text|@file|@-> --content <text|@file|@-> [--tag <tag>...]`; `--json` accepts `{skillKey, description, content, tags}`. | Done for current store capabilities. Later add `--tag-clear`/tag patching only if the store supports it. | P0 |

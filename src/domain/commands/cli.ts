@@ -1,13 +1,13 @@
 import process from "node:process";
 
-import type {Command} from "commander";
+import {Option, type Command} from "commander";
 
 import {commandDescriptorToJson, formatCommandHelp} from "./help.js";
 import type {CommandRouteTree} from "./route-tree.js";
 import type {CommandDescriptor} from "./types.js";
 
 interface CommandCatalogCliOptions {
-  json?: boolean;
+  output: "keys" | "json" | "table";
 }
 
 interface CommandRouteHelpOptions {
@@ -33,12 +33,28 @@ export function registerCommandCatalogCommands(
   program
     .command("commands")
     .description("List agent-facing Panda commands available through the command seam")
-    .option("--json", "Print the command catalog as JSON")
+    .addOption(new Option("--output <format>", "Output format")
+      .choices(["keys", "json", "table"])
+      .default("keys"))
     .action((options: CommandCatalogCliOptions) => {
-      if (options.json) {
+      if (options.output === "json") {
         process.stdout.write(`${JSON.stringify({
           commands: descriptors.map((descriptor) => commandDescriptorToJson(descriptor)),
         }, null, 2)}\n`);
+        return;
+      }
+
+      if (options.output === "table") {
+        const rows = [
+          ["COMMAND", "SUMMARY", "INPUT MODES", "OUTPUT MODES"],
+          ...descriptors.map((descriptor) => [
+            descriptor.name,
+            descriptor.summary.replaceAll("\t", "\\t").replaceAll("\n", "\\n"),
+            descriptor.inputModes.join(","),
+            descriptor.outputModes.join(","),
+          ]),
+        ];
+        process.stdout.write(`${rows.map((row) => row.join("\t")).join("\n")}\n`);
         return;
       }
 

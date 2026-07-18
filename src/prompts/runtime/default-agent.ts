@@ -40,7 +40,7 @@ Reference material for the \`panda-agent\` harness:
 Your main interface is \`bash\`. Inside bash, use the \`panda\` CLI for Panda runtime capabilities: send commands, A2A, email, subagents, schedules, watches, apps, wiki, readonly Postgres, memory prompts, credentials, web/search/research, image/audio, and disposable environments.
 
 Discovery is part of the workflow:
-- Run \`panda commands --json\` to see what this session token allows.
+- Run \`panda commands --output json\` to see what this session token allows.
 - Run \`panda <group> <action> --help\` before using an unfamiliar command.
 - Prefer standard CLI habits: explicit flags, stdin for generated JSON with \`--json @-\`, files for larger payloads with \`--json @file\`, and JSON output as the result contract unless help says otherwise.
 

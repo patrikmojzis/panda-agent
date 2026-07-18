@@ -92,7 +92,7 @@ describe("Panda command CLI discovery", () => {
   it("prints the allowed command catalog as JSON", async () => {
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
-    await createProgram().parseAsync(["commands", "--json"], {from: "user"});
+    await createProgram().parseAsync(["commands", "--output", "json"], {from: "user"});
 
     const payload = JSON.parse(String(write.mock.calls[0]?.[0]));
     expect(payload.commands[0]).toMatchObject({
@@ -123,6 +123,30 @@ describe("Panda command CLI discovery", () => {
     expect(payload.commands.find((command: {name: string}) => command.name === "watch.create")).not.toHaveProperty(
       "schemaCatalog",
     );
+  });
+
+  it("prints command keys by default and a stable table explicitly", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await createProgram().parseAsync(["commands"], {from: "user"});
+    const keys = String(write.mock.calls[0]?.[0]);
+    expect(keys.split("\n")).toContain("skill.list");
+
+    write.mockClear();
+    await createProgram().parseAsync(["commands", "--output", "table"], {from: "user"});
+    expect(String(write.mock.calls[0]?.[0])).toMatch(/^COMMAND\tSUMMARY\tINPUT MODES\tOUTPUT MODES\n/);
+  });
+
+  it("rejects the removed commands --json output alias", async () => {
+    const program = createProgram();
+    program.exitOverride();
+    program.configureOutput({writeErr: vi.fn()});
+    const commands = program.commands.find((command) => command.name() === "commands");
+    commands?.exitOverride();
+    commands?.configureOutput({writeErr: vi.fn()});
+
+    await expect(program.parseAsync(["commands", "--json"], {from: "user"}))
+      .rejects.toMatchObject({code: "commander.unknownOption"});
   });
 
   it("marks file and stdin value sources on descriptor body inputs", () => {
@@ -1915,7 +1939,7 @@ describe("Panda command CLI discovery", () => {
   it("includes descriptor-backed JSON help for session prompt commands", async () => {
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
-    await createProgram().parseAsync(["commands", "--json"], {from: "user"});
+    await createProgram().parseAsync(["commands", "--output", "json"], {from: "user"});
 
     const payload = JSON.parse(String(write.mock.calls[0]?.[0]));
     expect(payload.commands).toEqual(expect.arrayContaining([
@@ -1977,14 +2001,21 @@ describe("Panda command CLI discovery", () => {
   it("includes descriptor-backed JSON help for skill commands", async () => {
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
-    await createProgram().parseAsync(["commands", "--json"], {from: "user"});
+    await createProgram().parseAsync(["commands", "--output", "json"], {from: "user"});
     await createProgram().parseAsync(["skill", "list", "--help", "--json"], {from: "user"});
 
     const payload = JSON.parse(String(write.mock.calls[0]?.[0]));
     expect(payload.commands).toEqual(expect.arrayContaining([
       expect.objectContaining({
         name: "skill.list",
-        usage: "panda skill list [--tag <tag>...]",
+        usage: "panda skill list [--tag <tag>...] [--output keys|json|table]",
+        arguments: expect.arrayContaining([
+          expect.objectContaining({
+            name: "output",
+            enumValues: ["keys", "json", "table"],
+            defaultValue: "keys",
+          }),
+        ]),
       }),
       expect.objectContaining({
         name: "skill.show",
@@ -2012,14 +2043,21 @@ describe("Panda command CLI discovery", () => {
     ]));
     expect(JSON.parse(String(write.mock.calls[1]?.[0]))).toMatchObject({
       name: "skill.list",
-      usage: "panda skill list [--tag <tag>...]",
+      usage: "panda skill list [--tag <tag>...] [--output keys|json|table]",
+      arguments: expect.arrayContaining([
+        expect.objectContaining({
+          name: "output",
+          enumValues: ["keys", "json", "table"],
+          defaultValue: "keys",
+        }),
+      ]),
     });
   });
 
   it("includes descriptor-backed JSON help for readonly postgres query", async () => {
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
-    await createProgram().parseAsync(["commands", "--json"], {from: "user"});
+    await createProgram().parseAsync(["commands", "--output", "json"], {from: "user"});
 
     const payload = JSON.parse(String(write.mock.calls[0]?.[0]));
     expect(payload.commands).toEqual(expect.arrayContaining([

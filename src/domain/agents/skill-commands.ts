@@ -428,13 +428,20 @@ export const skillListCommandDescriptor: CommandDescriptor = {
   name: SKILL_LIST_COMMAND_NAME,
   summary: "List stored skills available to the current agent.",
   description: "Lists agent-scoped skill summaries visible in the current execution environment. Full bodies stay out of list output; use panda skill show <skill-key> when needed.",
-  usage: "panda skill list [--tag <tag>...]",
+  usage: "panda skill list [--tag <tag>...] [--output keys|json|table]",
   inputModes: ["flags", "json", "stdin", "file"],
   outputModes: ["json", "text"],
   arguments: [
     {
       ...SKILL_TAG_OPTION_ARGUMENT,
       description: "Optional repeatable tag filter. A listed skill must contain every supplied tag.",
+    },
+    {
+      name: "output",
+      description: "CLI output format. This controls only native stdout and is not sent to skill.list.",
+      valueType: "string",
+      enumValues: ["keys", "json", "table"],
+      defaultValue: "keys",
     },
     {
       name: "json",
@@ -448,6 +455,9 @@ export const skillListCommandDescriptor: CommandDescriptor = {
   }, {
     description: "Filter by tag",
     command: "panda skill list --tag calendar",
+  }, {
+    description: "Print the complete structured result",
+    command: "panda skill list --output json",
   }],
   requiredCapabilities: [SKILL_LIST_COMMAND_NAME],
   resultShape: {
