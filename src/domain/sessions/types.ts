@@ -127,6 +127,24 @@ export interface DeleteSessionPromptInput {
   slug?: SessionPromptSlug;
 }
 
+export type SessionPromptMutation =
+  | {operation: "append"; text: string}
+  | {operation: "prepend"; text: string}
+  | {operation: "replace"; pattern: string; replacement: string}
+  | {operation: "expression"; expression: string};
+
+export type TransformSessionPromptInput = {
+  sessionId: string;
+  slug?: SessionPromptSlug;
+} & SessionPromptMutation;
+
+export interface TransformSessionPromptResult {
+  record: SessionPromptRecord | null;
+  operation: SessionPromptMutation["operation"];
+  changed: boolean;
+  matchCount?: number;
+}
+
 export function normalizeSessionPromptSlug(value: string): SessionPromptSlug {
   if (SESSION_PROMPT_SLUGS.includes(value as SessionPromptSlug)) {
     return value as SessionPromptSlug;

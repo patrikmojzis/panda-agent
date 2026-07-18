@@ -27,6 +27,8 @@ import type {
     SessionRecord,
     SessionRuntimeConfigRecord,
     SetSessionPromptInput,
+    TransformSessionPromptInput,
+    TransformSessionPromptResult,
     UpdateSessionCurrentThreadInput,
     UpdateSessionHeartbeatConfigInput,
     UpdateSessionLabelInput,
@@ -135,6 +137,37 @@ function normalizeSessionPromptContent(value: string): string {
   }
 
   return value;
+}
+
+function requirePostgresText(value: string, label: string): string {
+  if (value.includes("\0")) {
+    throw new Error(`${label} must not contain a NUL byte.`);
+  }
+  return value;
+}
+
+function applyLiteralSessionPromptMutation(
+  content: string,
+  input: Exclude<TransformSessionPromptInput, {operation: "expression"}>,
+): {content: string; matchCount?: number} {
+  switch (input.operation) {
+    case "append":
+      return {content: content + requirePostgresText(input.text, "Session prompt append text")};
+    case "prepend":
+      return {content: requirePostgresText(input.text, "Session prompt prepend text") + content};
+    case "replace": {
+      const pattern = requirePostgresText(input.pattern, "Session prompt replace pattern");
+      const replacement = requirePostgresText(input.replacement, "Session prompt replacement text");
+      if (!pattern) {
+        throw new Error("Session prompt replace pattern must not be empty.");
+      }
+      const parts = content.split(pattern);
+      return {
+        content: parts.join(replacement),
+        matchCount: parts.length - 1,
+      };
+    }
+  }
 }
 
 function parseSessionPromptRow(row: Record<string, unknown>): SessionPromptRecord {
@@ -715,8 +748,8 @@ export class PostgresSessionStore implements SessionStore {
   }
 
   async transformSessionPrompt(
-    input: {sessionId: string; slug?: SessionPromptSlug; expression: string},
-  ): Promise<SessionPromptRecord | null> {
+    input: TransformSessionPromptInput,
+  ): Promise<TransformSessionPromptResult> {
     const sessionId = requireSessionString("id", input.sessionId);
     const slug = resolveSessionPromptSlug(input.slug);
     return withTransaction(this.pool, async (client) => {
@@ -733,25 +766,44 @@ export class PostgresSessionStore implements SessionStore {
       }
 
       const existingResult = await client.query(`
-        SELECT content
+        SELECT *
         FROM ${this.tables.sessionPrompts}
         WHERE session_id = $1 AND slug = $2
       `, [
         sessionId,
         slug,
       ]);
-      const existingContent = existingResult.rows[0]
-        ? String((existingResult.rows[0] as Record<string, unknown>).content ?? "")
-        : "";
+      const existingRecord = existingResult.rows[0]
+        ? parseSessionPromptRow(existingResult.rows[0] as Record<string, unknown>)
+        : null;
+      const existingContent = existingRecord?.content ?? "";
 
-      const transformedResult = await client.query(`
-        SELECT COALESCE((${input.expression})::text, '') AS content
-        FROM (SELECT $1::text AS content) AS current_prompt
-      `, [
-        existingContent,
-      ]);
-      const transformedContent = String((transformedResult.rows[0] as Record<string, unknown> | undefined)?.content ?? "");
+      let transformedContent: string;
+      let matchCount: number | undefined;
+      if (input.operation === "expression") {
+        requirePostgresText(input.expression, "Session prompt transform expression");
+        const transformedResult = await client.query(`
+          SELECT COALESCE((${input.expression})::text, '') AS content
+          FROM (SELECT $1::text AS content) AS current_prompt
+        `, [
+          existingContent,
+        ]);
+        transformedContent = String((transformedResult.rows[0] as Record<string, unknown> | undefined)?.content ?? "");
+      } else {
+        const transformed = applyLiteralSessionPromptMutation(existingContent, input);
+        transformedContent = transformed.content;
+        matchCount = transformed.matchCount;
+      }
+
       if (!transformedContent.trim()) {
+        if (!existingRecord) {
+          return {
+            record: null,
+            operation: input.operation,
+            changed: false,
+            ...(matchCount === undefined ? {} : {matchCount}),
+          };
+        }
         await client.query(`
           DELETE FROM ${this.tables.sessionPrompts}
           WHERE session_id = $1 AND slug = $2
@@ -759,7 +811,21 @@ export class PostgresSessionStore implements SessionStore {
           sessionId,
           slug,
         ]);
-        return null;
+        return {
+          record: null,
+          operation: input.operation,
+          changed: true,
+          ...(matchCount === undefined ? {} : {matchCount}),
+        };
+      }
+
+      if (transformedContent === existingContent) {
+        return {
+          record: existingRecord,
+          operation: input.operation,
+          changed: false,
+          ...(matchCount === undefined ? {} : {matchCount}),
+        };
       }
 
       const result = await client.query(`
@@ -781,7 +847,12 @@ export class PostgresSessionStore implements SessionStore {
         slug,
         transformedContent,
       ]);
-      return parseSessionPromptRow(result.rows[0] as Record<string, unknown>);
+      return {
+        record: parseSessionPromptRow(result.rows[0] as Record<string, unknown>),
+        operation: input.operation,
+        changed: true,
+        ...(matchCount === undefined ? {} : {matchCount}),
+      };
     });
   }
 

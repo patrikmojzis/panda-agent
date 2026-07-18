@@ -55,6 +55,9 @@ export type {
   UpdateSessionCurrentThreadInput,
   UpdateSessionHeartbeatConfigInput,
   SetSessionPromptInput,
+  SessionPromptMutation,
+  TransformSessionPromptInput,
+  TransformSessionPromptResult,
   UpdateSessionRuntimeConfigInput,
   UpdateSessionLabelInput,
 } from "./types.js";

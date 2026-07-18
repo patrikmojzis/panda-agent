@@ -157,10 +157,8 @@ read_text_input() {
   esac
 }
 
-sql_string_literal() {
-  local value="$1"
-  local escaped="${value//\'/\'\'}"
-  printf "'%s'" "$escaped"
+read_text_input_json() {
+  read_text_input "$1" | jq -Rs .
 }
 
 require_positive_integer() {
@@ -3066,11 +3064,11 @@ USAGE
 	      [ -n "$prompt_slug" ] || die "panda session prompt current transform requires <brief|memory|heartbeat> and one of --append, --prepend, --replace, or --expression."
 	      shift
 	      transform_mode=""
-	      append_value=""
-	      prepend_value=""
-	      expression_value=""
-	      replace_pattern=""
-	      replace_with=""
+	      append_json=""
+	      prepend_json=""
+	      expression_json=""
+	      replace_pattern_json=""
+	      replace_with_json=""
 	      replace_pattern_set=""
 	      replace_with_set=""
 	      while [ "$#" -gt 0 ]; do
@@ -3078,14 +3076,14 @@ USAGE
 	          --append)
 	            [ -z "$transform_mode" ] || die "panda session prompt current transform accepts only one transform mode."
 	            [ "$#" -gt 1 ] || die "panda session prompt current transform --append requires a value."
-	            append_value="$(read_text_input "$2")"
+	            append_json="$(read_text_input_json "$2")"
 	            transform_mode="append"
 	            shift 2
 	            ;;
 	          --prepend)
 	            [ -z "$transform_mode" ] || die "panda session prompt current transform accepts only one transform mode."
 	            [ "$#" -gt 1 ] || die "panda session prompt current transform --prepend requires a value."
-	            prepend_value="$(read_text_input "$2")"
+	            prepend_json="$(read_text_input_json "$2")"
 	            transform_mode="prepend"
 	            shift 2
 	            ;;
@@ -3093,8 +3091,8 @@ USAGE
 	            [ -z "$transform_mode" ] || die "panda session prompt current transform accepts only one transform mode."
 	            [ -z "$replace_pattern_set" ] || die "panda session prompt current transform accepts only one --replace value."
 	            [ "$#" -gt 1 ] || die "panda session prompt current transform --replace requires a value."
-	            replace_pattern="$(read_text_input "$2")"
-	            [ -n "$replace_pattern" ] || die "panda session prompt current transform --replace must not be empty."
+	            replace_pattern_json="$(read_text_input_json "$2")"
+	            [ "$(jq -r 'length' <<<"$replace_pattern_json")" -gt 0 ] || die "panda session prompt current transform --replace must not be empty."
 	            replace_pattern_set="true"
 	            transform_mode="replace"
 	            shift 2
@@ -3102,14 +3100,14 @@ USAGE
 	          --with)
 	            [ -z "$replace_with_set" ] || die "panda session prompt current transform accepts only one --with value."
 	            [ "$#" -gt 1 ] || die "panda session prompt current transform --with requires a value."
-	            replace_with="$(read_text_input "$2")"
+	            replace_with_json="$(read_text_input_json "$2")"
 	            replace_with_set="true"
 	            shift 2
 	            ;;
 	          --expression)
 	            [ -z "$transform_mode" ] || die "panda session prompt current transform accepts only one transform mode."
 	            [ "$#" -gt 1 ] || die "panda session prompt current transform --expression requires a value."
-	            expression_value="$(read_text_input "$2")"
+	            expression_json="$(read_text_input_json "$2")"
 	            transform_mode="expression"
 	            shift 2
 	            ;;
@@ -3124,20 +3122,20 @@ USAGE
 	      fi
 	      case "$transform_mode" in
 	        append)
-	          expression_value="content || $(sql_string_literal "$append_value")"
+	          payload="$(jq -n --arg slug "$prompt_slug" --argjson text "$append_json" '{slug: $slug, operation: "append", text: $text}')"
 	          ;;
 	        prepend)
-	          expression_value="$(sql_string_literal "$prepend_value") || content"
+	          payload="$(jq -n --arg slug "$prompt_slug" --argjson text "$prepend_json" '{slug: $slug, operation: "prepend", text: $text}')"
 	          ;;
 	        replace)
 	          [ "$replace_with_set" = "true" ] || die "panda session prompt current transform --replace requires --with <text|@file|@->."
-	          expression_value="replace(content, $(sql_string_literal "$replace_pattern"), $(sql_string_literal "$replace_with"))"
+	          payload="$(jq -n --arg slug "$prompt_slug" --argjson pattern "$replace_pattern_json" --argjson replacement "$replace_with_json" '{slug: $slug, operation: "replace", pattern: $pattern, replacement: $replacement}')"
 	          ;;
 	        expression)
-	          [ -n "$expression_value" ] || die "panda session prompt current transform --expression must not be empty."
+	          [ "$(jq -r 'length' <<<"$expression_json")" -gt 0 ] || die "panda session prompt current transform --expression must not be empty."
+	          payload="$(jq -n --arg slug "$prompt_slug" --argjson expression "$expression_json" '{slug: $slug, operation: "expression", expression: $expression}')"
 	          ;;
 	      esac
-	      payload="$(jq -n --arg slug "$prompt_slug" --arg expression "$expression_value" '{slug: $slug, expression: $expression}')"
 	      execute_json_command "$command_name" "$payload"
 	      exit $?
 	    fi

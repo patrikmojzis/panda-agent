@@ -16,6 +16,8 @@ import type {
   UpdateSessionHeartbeatConfigInput,
   UpdateSessionLabelInput,
   UpdateSessionRuntimeConfigInput,
+  TransformSessionPromptInput,
+  TransformSessionPromptResult,
 } from "./types.js";
 
 export interface SessionStore {
@@ -33,7 +35,7 @@ export interface SessionStore {
   readSessionPrompt(sessionId: string, slug?: SessionPromptSlug): Promise<SessionPromptRecord | null>;
   listSessionPrompts(sessionId: string): Promise<readonly SessionPromptRecord[]>;
   setSessionPrompt(input: SetSessionPromptInput): Promise<SessionPromptRecord>;
-  transformSessionPrompt(input: {sessionId: string; slug?: SessionPromptSlug; expression: string}): Promise<SessionPromptRecord | null>;
+  transformSessionPrompt(input: TransformSessionPromptInput): Promise<TransformSessionPromptResult>;
   deleteSessionPrompt(input: DeleteSessionPromptInput): Promise<boolean>;
   readSessionTodo(sessionId: string): Promise<SessionTodoRecord | null>;
   replaceSessionTodo(input: ReplaceSessionTodoInput): Promise<SessionTodoRecord | null>;

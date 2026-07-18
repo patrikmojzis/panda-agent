@@ -8,7 +8,9 @@ import {
   SESSION_PROMPT_SLUGS,
   normalizeSessionPromptSlug,
   type SessionPromptRecord,
+  type SessionPromptMutation,
   type SessionPromptSlug,
+  type TransformSessionPromptResult,
 } from "./types.js";
 
 export const SESSION_PROMPT_READ_COMMAND_NAME = "session.prompt.read";
@@ -36,7 +38,13 @@ const SESSION_PROMPT_SLUG_POSITIONAL_ARGUMENT = {
 
 const SESSION_PROMPT_JSON_ARGUMENT = {
   name: "json",
-  description: "Structured JSON object containing slug, plus content or expression when required.",
+  description: "Structured JSON object using the command's canonical typed input shape.",
+  valueType: "json" as const,
+};
+
+const SESSION_PROMPT_TRANSFORM_JSON_ARGUMENT = {
+  name: "json",
+  description: "Typed mutation JSON: {slug, operation:'append'|'prepend', text}, {slug, operation:'replace', pattern, replacement}, or {slug, operation:'expression', expression}.",
   valueType: "json" as const,
 };
 
@@ -63,6 +71,24 @@ function readRequiredString(value: unknown, label: string): string {
   }
 
   return value.trim();
+}
+
+function readLiteralString(value: unknown, label: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`${label} must be a string.`);
+  }
+  if (value.includes("\0")) {
+    throw new Error(`${label} must not contain a NUL byte.`);
+  }
+  return value;
+}
+
+function readRequiredLiteralString(value: unknown, label: string): string {
+  const text = readLiteralString(value, label);
+  if (!text.trim()) {
+    throw new Error(`${label} must not be empty.`);
+  }
+  return text;
 }
 
 function readSessionPromptSlug(value: unknown, commandName: string): SessionPromptSlug {
@@ -135,18 +161,57 @@ function parseSessionPromptSetInput(input: unknown) {
   };
 }
 
-function parseSessionPromptTransformInput(input: unknown) {
+function parseSessionPromptTransformInput(input: unknown): {slug: SessionPromptSlug; mutation: SessionPromptMutation} {
   if (!isRecord(input)) {
     throw new Error("session.prompt.transform input must be a JSON object.");
   }
-  rejectUnknownKeys(input, SESSION_PROMPT_TRANSFORM_COMMAND_NAME, ["slug", "expression"]);
+  if (input.operation === undefined && input.expression !== undefined) {
+    throw new Error(
+      "session.prompt.transform no longer accepts {slug, expression}. Use {\"slug\":\"memory\",\"operation\":\"expression\",\"expression\":\"upper(content)\"}.",
+    );
+  }
 
-  return {
-    slug: readSessionPromptSlug(input.slug, SESSION_PROMPT_TRANSFORM_COMMAND_NAME),
-    expression: validateSessionPromptTransformExpression(
-      readRequiredString(input.expression, "session.prompt.transform expression"),
-    ),
-  };
+  const slug = readSessionPromptSlug(input.slug, SESSION_PROMPT_TRANSFORM_COMMAND_NAME);
+  switch (input.operation) {
+    case "append":
+    case "prepend":
+      rejectUnknownKeys(input, SESSION_PROMPT_TRANSFORM_COMMAND_NAME, ["slug", "operation", "text"]);
+      return {
+        slug,
+        mutation: {
+          operation: input.operation,
+          text: readLiteralString(input.text, `session.prompt.transform ${input.operation} text`),
+        },
+      };
+    case "replace": {
+      rejectUnknownKeys(input, SESSION_PROMPT_TRANSFORM_COMMAND_NAME, ["slug", "operation", "pattern", "replacement"]);
+      const pattern = readLiteralString(input.pattern, "session.prompt.transform replace pattern");
+      if (!pattern) {
+        throw new Error("session.prompt.transform replace pattern must not be empty.");
+      }
+      return {
+        slug,
+        mutation: {
+          operation: "replace",
+          pattern,
+          replacement: readLiteralString(input.replacement, "session.prompt.transform replacement"),
+        },
+      };
+    }
+    case "expression":
+      rejectUnknownKeys(input, SESSION_PROMPT_TRANSFORM_COMMAND_NAME, ["slug", "operation", "expression"]);
+      return {
+        slug,
+        mutation: {
+          operation: "expression",
+          expression: validateSessionPromptTransformExpression(
+            readRequiredLiteralString(input.expression, "session.prompt.transform expression"),
+          ),
+        },
+      };
+    default:
+      throw new Error("session.prompt.transform operation must be append, prepend, replace, or expression.");
+  }
 }
 
 function serializeSessionPromptResult(
@@ -163,6 +228,24 @@ function serializeSessionPromptResult(
     content: record?.content ?? "",
     ...(record ? {updatedAt: record.updatedAt} : {}),
   }, `session.prompt.${operation} result`);
+}
+
+function serializeSessionPromptTransformResult(
+  sessionId: string,
+  slug: SessionPromptSlug,
+  result: TransformSessionPromptResult,
+): JsonObject {
+  return requireCommandJsonObject({
+    sessionId,
+    slug,
+    operation: "transform",
+    transformOperation: result.operation,
+    exists: result.record !== null,
+    changed: result.changed,
+    ...(result.matchCount === undefined ? {} : {matchCount: result.matchCount}),
+    content: result.record?.content ?? "",
+    ...(result.record ? {updatedAt: result.record.updatedAt} : {}),
+  }, "session.prompt.transform result");
 }
 
 export const sessionPromptReadCommandDescriptor: CommandDescriptor = {
@@ -245,7 +328,7 @@ export const sessionPromptSetCommandDescriptor: CommandDescriptor = {
 export const sessionPromptTransformCommandDescriptor: CommandDescriptor = {
   name: SESSION_PROMPT_TRANSFORM_COMMAND_NAME,
   summary: "Transform a prompt for the current session.",
-  description: "Transforms one durable prompt slot with safe append/prepend/replace shorthands, or a restricted SQL-ish expression over the current content value. Scope supplies the session id; do not pass one.",
+  description: "Transforms one durable prompt slot with literal append/prepend/replace operations, or an explicit advanced restricted SQL-ish expression over the current content value. Structured JSON must include operation. Scope supplies the session id; do not pass one.",
   usage: "panda session prompt current transform <brief|memory|heartbeat> (--append <text|@file|@->|--prepend <text|@file|@->|--replace <pattern> --with <text|@file|@->|--expression <expr|@file|@->)",
   inputModes: ["flags", "json", "stdin", "file"],
   outputModes: ["json", "text"],
@@ -285,7 +368,7 @@ export const sessionPromptTransformCommandDescriptor: CommandDescriptor = {
       valueName: "expr|@file|@-",
       valueSources: ["literal", "file", "stdin"] as const,
     },
-    SESSION_PROMPT_JSON_ARGUMENT,
+    SESSION_PROMPT_TRANSFORM_JSON_ARGUMENT,
   ],
   examples: [
     {
@@ -298,7 +381,11 @@ export const sessionPromptTransformCommandDescriptor: CommandDescriptor = {
     },
     {
       description: "Use JSON input",
-      command: "panda session prompt current transform --json '{\"slug\":\"heartbeat\",\"expression\":\"content || ''\\nCheck timers.''\"}'",
+      command: "panda session prompt current transform --json '{\"slug\":\"heartbeat\",\"operation\":\"append\",\"text\":\"\\nCheck timers.\"}'",
+    },
+    {
+      description: "Use the advanced expression mode",
+      command: "panda session prompt current transform --json '{\"slug\":\"memory\",\"operation\":\"expression\",\"expression\":\"upper(content)\"}'",
     },
   ],
   requiredCapabilities: [SESSION_PROMPT_TRANSFORM_COMMAND_NAME],
@@ -306,7 +393,10 @@ export const sessionPromptTransformCommandDescriptor: CommandDescriptor = {
     sessionId: "string",
     slug: "string",
     operation: "transform",
+    transformOperation: "append|prepend|replace|expression",
     exists: "boolean",
+    changed: "boolean",
+    matchCount: "number (replace only)",
     content: "string",
   },
 };
@@ -354,17 +444,21 @@ export function createSessionPromptTransformCommand(store: SessionPromptCommandS
     descriptor: sessionPromptTransformCommandDescriptor,
     async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
       const input = parseSessionPromptTransformInput(request.input);
-      const record = await store.transformSessionPrompt({
+      const result = await store.transformSessionPrompt({
         sessionId: request.scope.sessionId,
         slug: input.slug,
-        expression: input.expression,
+        ...input.mutation,
       });
 
       return {
         ok: true,
         command: SESSION_PROMPT_TRANSFORM_COMMAND_NAME,
-        output: serializeSessionPromptResult(request.scope.sessionId, input.slug, "transform", record),
-        summary: record ? `Transformed session prompt ${input.slug}.` : `Cleared session prompt ${input.slug}.`,
+        output: serializeSessionPromptTransformResult(request.scope.sessionId, input.slug, result),
+        summary: result.changed
+          ? result.record
+            ? `Transformed session prompt ${input.slug}.`
+            : `Cleared session prompt ${input.slug}.`
+          : `Session prompt ${input.slug} was unchanged.`,
       };
     },
   };

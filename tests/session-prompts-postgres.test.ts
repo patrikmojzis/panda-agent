@@ -251,6 +251,7 @@ describe("session prompts in Postgres", () => {
     await expect(sessionStore.transformSessionPrompt({
       sessionId: "session-one",
       slug: "memory",
+      operation: "expression",
       expression: "missing_function(content)",
     })).rejects.toThrow();
     await expect(sessionStore.readSessionPrompt("session-one", "memory")).resolves.toBeNull();
@@ -275,16 +276,148 @@ describe("session prompts in Postgres", () => {
     await expect(sessionStore.transformSessionPrompt({
       sessionId: "session-one",
       slug: "memory",
+      operation: "expression",
       expression: "content || ' second'",
     })).resolves.toMatchObject({
-      content: "first second",
+      operation: "expression",
+      changed: true,
+      record: {content: "first second"},
     });
     await expect(sessionStore.transformSessionPrompt({
       sessionId: "session-one",
       slug: "memory",
+      operation: "expression",
       expression: "content || ' third'",
     })).resolves.toMatchObject({
-      content: "first second third",
+      operation: "expression",
+      changed: true,
+      record: {content: "first second third"},
+    });
+  });
+
+  it("applies literal prompt mutations exactly and skips no-op writes", async () => {
+    const {pool, sessionStore} = await createHarness();
+    pools.push(pool);
+
+    await sessionStore.createSession({
+      id: "session-literal",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-literal",
+    });
+    await sessionStore.setSessionPrompt({
+      sessionId: "session-literal",
+      slug: "memory",
+      content: "old / old",
+    });
+
+    const replaced = await sessionStore.transformSessionPrompt({
+      sessionId: "session-literal",
+      slug: "memory",
+      operation: "replace",
+      pattern: "old",
+      replacement: "$& --json; \"quoted\" O'Reilly -- `code` $(shell) 😀",
+    });
+    expect(replaced).toMatchObject({
+      operation: "replace",
+      changed: true,
+      matchCount: 2,
+      record: {
+        content: "$& --json; \"quoted\" O'Reilly -- `code` $(shell) 😀 / $& --json; \"quoted\" O'Reilly -- `code` $(shell) 😀",
+      },
+    });
+
+    const appended = await sessionStore.transformSessionPrompt({
+      sessionId: "session-literal",
+      slug: "memory",
+      operation: "append",
+      text: "\ntrailing newlines\n\n",
+    });
+    expect(appended.record?.content).toBe(
+      "$& --json; \"quoted\" O'Reilly -- `code` $(shell) 😀 / $& --json; \"quoted\" O'Reilly -- `code` $(shell) 😀\ntrailing newlines\n\n",
+    );
+
+    const prepended = await sessionStore.transformSessionPrompt({
+      sessionId: "session-literal",
+      slug: "memory",
+      operation: "prepend",
+      text: "prefix\n",
+    });
+    expect(prepended.record?.content).toBe(
+      "prefix\n$& --json; \"quoted\" O'Reilly -- `code` $(shell) 😀 / $& --json; \"quoted\" O'Reilly -- `code` $(shell) 😀\ntrailing newlines\n\n",
+    );
+
+    await pool.query(`
+      UPDATE "runtime"."session_prompts"
+      SET updated_at = $3
+      WHERE session_id = $1 AND slug = $2
+    `, ["session-literal", "memory", new Date("2000-01-01T00:00:00.000Z")]);
+    const beforeNoOp = await sessionStore.readSessionPrompt("session-literal", "memory");
+    const noOp = await sessionStore.transformSessionPrompt({
+      sessionId: "session-literal",
+      slug: "memory",
+      operation: "replace",
+      pattern: "not present",
+      replacement: "ignored",
+    });
+    expect(noOp).toMatchObject({
+      operation: "replace",
+      changed: false,
+      matchCount: 0,
+    });
+    expect(noOp.record?.updatedAt).toBe(beforeNoOp?.updatedAt);
+
+    await expect(sessionStore.transformSessionPrompt({
+      sessionId: "session-literal",
+      slug: "memory",
+      operation: "replace",
+      pattern: "",
+      replacement: "anything",
+    })).rejects.toThrow("Session prompt replace pattern must not be empty.");
+    await expect(sessionStore.transformSessionPrompt({
+      sessionId: "session-literal",
+      slug: "memory",
+      operation: "append",
+      text: "contains\0nul",
+    })).rejects.toThrow("Session prompt append text must not contain a NUL byte.");
+  });
+
+  it("clears prompt rows when a literal mutation leaves only whitespace", async () => {
+    const {pool, sessionStore} = await createHarness();
+    pools.push(pool);
+
+    await sessionStore.createSession({
+      id: "session-clear",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-clear",
+    });
+    await sessionStore.setSessionPrompt({
+      sessionId: "session-clear",
+      content: "erase ",
+    });
+
+    await expect(sessionStore.transformSessionPrompt({
+      sessionId: "session-clear",
+      operation: "replace",
+      pattern: "erase",
+      replacement: "",
+    })).resolves.toMatchObject({
+      record: null,
+      operation: "replace",
+      changed: true,
+      matchCount: 1,
+    });
+    await expect(sessionStore.readSessionPrompt("session-clear")).resolves.toBeNull();
+
+    await expect(sessionStore.transformSessionPrompt({
+      sessionId: "session-clear",
+      operation: "append",
+      text: "",
+    })).resolves.toMatchObject({
+      record: null,
+      operation: "append",
+      changed: false,
     });
   });
 

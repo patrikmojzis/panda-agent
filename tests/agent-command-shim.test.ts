@@ -876,12 +876,28 @@ describe("agent command shim", () => {
         createdAt: 1,
         updatedAt: 2,
       })),
-      transformSessionPrompt: vi.fn(async (input: {sessionId: string; slug?: "brief" | "memory" | "heartbeat"; expression: string}) => ({
-        sessionId: input.sessionId,
-        slug: input.slug ?? "brief",
-        content: `${input.expression} result`,
-        createdAt: 1,
-        updatedAt: 2,
+      transformSessionPrompt: vi.fn(async (input: {
+        sessionId: string;
+        slug?: "brief" | "memory" | "heartbeat";
+      } & (
+        | {operation: "append" | "prepend"; text: string}
+        | {operation: "replace"; pattern: string; replacement: string}
+        | {operation: "expression"; expression: string}
+      )) => ({
+        record: {
+          sessionId: input.sessionId,
+          slug: input.slug ?? "brief",
+          content: input.operation === "expression"
+            ? `${input.expression} result`
+            : input.operation === "replace"
+              ? `${input.pattern}=>${input.replacement}`
+              : input.text,
+          createdAt: 1,
+          updatedAt: 2,
+        },
+        operation: input.operation,
+        changed: true,
+        ...(input.operation === "replace" ? {matchCount: 1} : {}),
       })),
       listAgentSkills: vi.fn(async (agentKey: string) => [
         {
@@ -5161,7 +5177,7 @@ printf '{"ok":true,"output":%s}\\n' "$body"
       "current",
       "transform",
       "--json",
-      "{\"slug\":\"heartbeat\",\"expression\":\"concat(content, '\\nPing.')\"}",
+      "{\"slug\":\"heartbeat\",\"operation\":\"expression\",\"expression\":\"concat(content, '\\nPing.')\"}",
     ], {
       env: shimEnv(server),
     });
@@ -5183,8 +5199,29 @@ printf '{"ok":true,"output":%s}\\n' "$body"
       sessionId: "session-main",
       slug: "heartbeat",
       operation: "transform",
+      transformOperation: "expression",
+      changed: true,
       content: "concat(content, '\nPing.') result",
     });
+  });
+
+  it("rejects the removed session prompt expression JSON shape", async () => {
+    const server = await startWatchServer();
+
+    const result = await execFileAsync(shimPath, [
+      "session",
+      "prompt",
+      "current",
+      "transform",
+      "--json",
+      '{"slug":"memory","expression":"upper(content)"}',
+    ], {
+      env: shimEnv(server),
+    });
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain(
+      'session.prompt.transform no longer accepts {slug, expression}. Use {"slug":"memory","operation":"expression","expression":"upper(content)"}.',
+    );
   });
 
   it("executes session prompt read through native args", async () => {
@@ -5306,7 +5343,7 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     const directory = await mkdtemp(path.join(os.tmpdir(), "panda-session-prompt-transform-shim-"));
     directories.push(directory);
     const notePath = path.join(directory, "heartbeat-note.md");
-    await writeFile(notePath, " O'Reilly check.\n", "utf8");
+    await writeFile(notePath, " --json; \"quoted\" O'Reilly -- note `code` $(shell) 😀\n\n", "utf8");
 
     const append = await execFileAsync(shimPath, [
       "session",
@@ -5332,13 +5369,16 @@ printf '{"ok":true,"output":%s}\\n' "$body"
       sessionId: "session-main",
       slug: "heartbeat",
       operation: "transform",
-      content: "content || ' O''Reilly check.' result",
+      transformOperation: "append",
+      content: " --json; \"quoted\" O'Reilly -- note `code` $(shell) 😀\n\n",
     });
     expect(JSON.parse(replace.stdout)).toMatchObject({
       sessionId: "session-main",
       slug: "memory",
       operation: "transform",
-      content: "replace(content, 'old', 'new value') result",
+      transformOperation: "replace",
+      matchCount: 1,
+      content: "old=>new value",
     });
   });
 

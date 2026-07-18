@@ -1948,7 +1948,16 @@ describe("Panda command CLI discovery", () => {
         expect.objectContaining({name: "replace", valueName: "pattern"}),
         expect.objectContaining({name: "with", valueName: "text|@file|@-"}),
         expect.objectContaining({name: "expression", valueName: "expr|@file|@-"}),
+        expect.objectContaining({
+          name: "json",
+          description: expect.stringContaining("operation:'replace'"),
+        }),
       ]),
+      resultShape: expect.objectContaining({
+        transformOperation: "append|prepend|replace|expression",
+        changed: "boolean",
+        matchCount: "number (replace only)",
+      }),
     });
   });
 
