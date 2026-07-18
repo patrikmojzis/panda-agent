@@ -530,6 +530,36 @@ export type ModelCallTraceDetail = ModelCallTraceSummary & {
   response: unknown | null
 }
 
+export type ModelCallUsageTotals = {
+  calls: number
+  cacheHits: number
+  usageCalls: number
+  failures: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  totalTokens: number
+  totalCost: number
+  cacheReadCost: number
+  cacheHitRate: number
+  cacheReadRate: number
+}
+
+export type ModelCallUsageBucket = ModelCallUsageTotals & {
+  startedAt: string
+}
+
+export type ModelCallUsage = {
+  buckets: ModelCallUsageBucket[]
+  range: {
+    bucketMinutes: number
+    from: string
+    to: string
+  }
+  summary: ModelCallUsageTotals
+}
+
 export type ScheduledTaskRun = {
   id: string
   status: "queued" | "running" | "completed" | "failed" | "cancelled" | string
@@ -1032,6 +1062,10 @@ export const controlApi = {
   modelCallTrace: (traceId: string) =>
     apiGet<{ modelCallTrace: ModelCallTraceDetail }>(
       `/model-call-traces/${encodeURIComponent(traceId)}`
+    ),
+  modelCallUsage: (params: TableParams = {}) =>
+    apiGet<{ modelCallUsage: ModelCallUsage }>(
+      `/model-call-usage${qs(params)}`
     ),
   scheduledTasks: (agentKey: string, sessionId: string, params: TableParams = {}) =>
     apiGet<{ scheduledTasks: ScheduledTasks }>(

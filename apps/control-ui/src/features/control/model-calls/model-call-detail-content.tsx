@@ -6,6 +6,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Copy,
+  DatabaseZap,
   Filter,
   GitCompareArrows,
   RefreshCw,
@@ -34,6 +35,7 @@ import type {
 
 import { TraceContext } from "./model-call-context"
 import {
+  bashExecutionHeadline,
   buildDebugReport,
   extractBashExecutionDetails,
   modelCallDetailPath,
@@ -42,6 +44,7 @@ import {
   traceDebugFindings,
   traceErrorSummary,
   usageSummary,
+  usageBreakdown,
   usageTokenCounts,
 } from "./model-call-display"
 import {
@@ -59,14 +62,15 @@ import {
 const PROMPT_CACHE_REDACTION_PATTERN = /^\[redacted:([^:]+):sha256:([a-f0-9]{16})\]$/
 const FILTERS: Array<{ label: string; value: SpanFilter }> = [
   { label: "All", value: "all" },
-  { label: "Attention", value: "attention" },
+  { label: "Actions", value: "actions" },
   { label: "Tools", value: "tools" },
-  { label: "Errors", value: "errors" },
   { label: "Messages", value: "messages" },
+  { label: "Attention", value: "attention" },
+  { label: "Errors", value: "errors" },
   { label: "Context", value: "context" },
 ]
 
-type SpanFilter = "all" | "attention" | "tools" | "errors" | "messages" | "context"
+type SpanFilter = "actions" | "all" | "attention" | "tools" | "errors" | "messages" | "context"
 type TraceView = "timeline" | "input" | "diff"
 type TraceNavigation = {
   next: ModelCallTraceSummary | null
@@ -129,7 +133,7 @@ export function ModelCallTraceDebugger({
   }
 
   function setFilter(nextFilter: SpanFilter) {
-    const selected = viewModel.spans.find((span) => span.id === selectedSpanId)
+    const selected = viewModel.spans.find((span) => span.id === selectedSpanParam)
     updateTraceParams({
       filter: nextFilter === "all" ? null : nextFilter,
       span: selected && spanMatches(selected, nextFilter, query) ? selected.id : null,
@@ -137,7 +141,7 @@ export function ModelCallTraceDebugger({
   }
 
   function setQuery(nextQuery: string) {
-    const selected = viewModel.spans.find((span) => span.id === selectedSpanId)
+    const selected = viewModel.spans.find((span) => span.id === selectedSpanParam)
     updateTraceParams({
       q: nextQuery.trim() ? nextQuery : null,
       span: selected && spanMatches(selected, filter, nextQuery) ? selected.id : null,
@@ -193,6 +197,8 @@ export function ModelCallTraceDebugger({
         refreshing={refreshing}
         onRefresh={onRefresh}
       />
+      <CacheUsageOverview usage={trace.usage} />
+      <ModelOutcomePanel viewModel={viewModel} onSelectSpan={selectSpan} />
       <TraceDebugOverview
         trace={trace}
         viewModel={viewModel}
@@ -317,7 +323,7 @@ function TraceStickyHeader({
 
   return (
     <div className="sticky top-14 z-10 -mx-3 border-b bg-background/95 px-3 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/85 md:-mx-5 md:px-5">
-      <div className="flex min-w-0 flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+      <div className="grid min-w-0 gap-3">
         <div className="min-w-0">
           <div className="mb-1 flex min-w-0 flex-wrap items-center gap-1 text-xs text-muted-foreground uppercase">
             <Link to={listPath} className="hover:text-foreground">
@@ -340,7 +346,7 @@ function TraceStickyHeader({
             <span className="min-w-0 break-all">Trace <code>{trace.id}</code></span>
           </div>
         </div>
-        <div className="flex shrink-0 flex-wrap gap-2">
+        <div className="flex min-w-0 flex-wrap gap-2">
           <TraceNavButton
             path={previousPath}
             label="Prev"
@@ -508,11 +514,7 @@ function TraceDebugOverview({
               : "No step timing"
           }
         />
-        <OverviewMetric
-          label="Usage"
-          value={usageSummary(trace.usage)}
-          detail="Provider tokens/cost"
-        />
+        <OverviewMetric label="Tokens / cost" value={usageSummary(trace.usage)} detail="Provider-reported totals" />
         <OverviewMetric
           label="Model"
           value={trace.provider}
@@ -546,6 +548,126 @@ function TraceDebugOverview({
         </div>
       </div>
     </section>
+  )
+}
+
+function ModelOutcomePanel({
+  onSelectSpan,
+  viewModel,
+}: {
+  onSelectSpan: (spanId: string, options?: { filter?: SpanFilter; clearQuery?: boolean }) => void
+  viewModel: ModelCallTraceViewModel
+}) {
+  const modelOutputs = viewModel.spans.filter(
+    (span) => span.kind === "response" || span.source === "Requested by model response"
+  )
+  const recentTools = viewModel.spans
+    .filter((span) => span.kind === "tool" && span.source !== "Requested by model response")
+    .slice(-5)
+  const primaryOutput = modelOutputs[0] ?? null
+
+  return (
+    <section className="grid min-w-0 border bg-background lg:grid-cols-[minmax(0,1.25fr)_minmax(20rem,0.75fr)]">
+      <div className="grid min-w-0 gap-3 p-4 lg:border-r">
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <div>
+            <div className="text-xs font-medium text-muted-foreground uppercase">What the model did</div>
+            <h2 className="text-base font-semibold">Current call outcome</h2>
+          </div>
+          {primaryOutput ? <SpanStatusBadge status={primaryOutput.status} /> : null}
+        </div>
+        {primaryOutput ? (
+          <button
+            type="button"
+            onClick={() => onSelectSpan(primaryOutput.id, { filter: "actions", clearQuery: true })}
+            className="grid min-w-0 gap-2 border border-l-4 border-l-primary bg-primary/5 p-3 text-left transition-colors hover:bg-primary/10 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          >
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <Badge variant="secondary">{kindLabel(primaryOutput.kind)}</Badge>
+              <span className="min-w-0 break-words text-sm font-medium">{primaryOutput.title}</span>
+            </div>
+            {primaryOutput.preview ? <ReadablePreview value={primaryOutput.preview} /> : null}
+            {primaryOutput.tool ? <ToolPairPreview span={primaryOutput} /> : null}
+          </button>
+        ) : (
+          <div className="border bg-muted/20 p-3 text-sm text-muted-foreground">
+            No assistant text or tool request was captured in the model response.
+          </div>
+        )}
+      </div>
+      <div className="grid min-w-0 content-start gap-3 border-t bg-muted/10 p-4 lg:border-t-0">
+        <div>
+          <div className="text-xs font-medium text-muted-foreground uppercase">Recent tool path</div>
+          <div className="text-sm text-muted-foreground">Last actions projected into this call</div>
+        </div>
+        {recentTools.length > 0 ? (
+          <div className="grid min-w-0 gap-1">
+            {recentTools.map((span) => (
+              <button
+                key={span.id}
+                type="button"
+                onClick={() => onSelectSpan(span.id, { filter: "actions", clearQuery: true })}
+                className="flex min-w-0 items-center gap-2 border bg-background/70 px-2.5 py-2 text-left text-xs transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+              >
+                <Badge variant="outline" className="shrink-0 tabular-nums">#{span.order}</Badge>
+                <SpanStatusBadge status={span.status} />
+                <span className="min-w-0 flex-1 truncate font-medium">{span.title}</span>
+                {span.durationMs !== null ? (
+                  <span className="shrink-0 text-muted-foreground">{formatDuration(span.durationMs)}</span>
+                ) : null}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="text-xs text-muted-foreground">No prior tool actions in the projected context.</div>
+        )}
+      </div>
+    </section>
+  )
+}
+
+function CacheUsageOverview({ usage }: { usage: unknown }) {
+  const breakdown = usageBreakdown(usage)
+  if (!breakdown.hasUsage) {
+    return (
+      <div className="grid min-w-0 gap-1 border bg-muted/20 p-3">
+        <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground uppercase">
+          <DatabaseZap className="size-4" /> Prompt cache
+        </div>
+        <div className="text-base font-semibold">No usage captured</div>
+      </div>
+    )
+  }
+  const percent = breakdown.cacheReadRate * 100
+  return (
+    <div className="grid min-w-0 gap-2 border border-primary/30 bg-primary/5 p-3">
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground uppercase">
+          <DatabaseZap className="size-4" /> Prompt cache
+        </div>
+        <Badge variant={breakdown.cacheRead > 0 ? "default" : "outline"}>
+          {breakdown.cacheRead > 0 ? "Cache hit" : "No cache read"}
+        </Badge>
+      </div>
+      <div className="flex min-w-0 flex-wrap items-end justify-between gap-2">
+        <div>
+          <div className="text-2xl font-semibold tabular-nums">{percent.toFixed(percent >= 10 ? 0 : 1)}%</div>
+          <div className="text-xs text-muted-foreground">of prompt tokens served from cache</div>
+        </div>
+        <div className="text-right text-xs text-muted-foreground">
+          <div><span className="font-medium text-foreground">{formatNumberCompact(breakdown.cacheRead)}</span> cached</div>
+          <div>{formatNumberCompact(breakdown.promptTokens)} prompt tokens</div>
+        </div>
+      </div>
+      <div className="h-2 overflow-hidden bg-muted" aria-label={`${percent.toFixed(1)}% cache coverage`}>
+        <div className="h-full bg-primary" style={{ width: `${Math.min(100, percent)}%` }} />
+      </div>
+      <div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        <span>{formatNumberCompact(breakdown.input)} fresh input</span>
+        <span>{formatNumberCompact(breakdown.cacheWrite)} cache write</span>
+        <span>{formatUsdValue(breakdown.cacheReadCost)} cache-read cost</span>
+      </div>
+    </div>
   )
 }
 
@@ -1357,6 +1479,10 @@ function TimelineSpanCard({
   selected: boolean
   onSelect: () => void
 }) {
+  const visibleMetrics = span.tool?.name.toLowerCase() === "bash"
+    ? []
+    : span.metrics.filter((metric) => metric.label !== "Duration" && metric.label !== "Args").slice(0, 1)
+
   return (
     <button
       type="button"
@@ -1375,7 +1501,7 @@ function TimelineSpanCard({
             <Badge variant="secondary">{kindLabel(span.kind)}</Badge>
             <span className="min-w-0 break-words text-sm font-medium">{span.title}</span>
           </div>
-          {span.subtitle ? (
+          {span.subtitle && !span.tool ? (
             <div className="mt-1 min-w-0 break-words text-xs text-muted-foreground">
               {span.subtitle}
             </div>
@@ -1383,14 +1509,14 @@ function TimelineSpanCard({
         </div>
         <div className="flex shrink-0 flex-wrap justify-end gap-1">
           {span.durationMs !== null ? <Badge variant="outline">{formatDuration(span.durationMs)}</Badge> : null}
-          {span.metrics.slice(0, 2).map((metric) => (
+          {visibleMetrics.map((metric) => (
             <Badge key={`${metric.label}:${metric.value}`} variant="outline">
-              {metric.value}
+              {metric.label} {metric.value}
             </Badge>
           ))}
         </div>
       </div>
-      {span.preview ? <ReadablePreview value={span.preview} /> : null}
+      {span.preview && !span.tool ? <ReadablePreview value={span.preview} /> : null}
       {span.tool ? <ToolPairPreview span={span} /> : null}
       {span.badges.length > 0 ? (
         <div className="flex min-w-0 flex-wrap gap-1">
@@ -1408,6 +1534,9 @@ function TimelineSpanCard({
 function ToolPairPreview({ span }: { span: TraceSpan }) {
   const tool = span.tool
   if (!tool) return null
+  const bash = bashExecutionDetailsForSpan(span)
+  if (bash.looksLikeBash) return <BashToolPreview details={bash} span={span} />
+
   return (
     <div className="grid min-w-0 gap-2 md:grid-cols-2">
       <MiniPayloadPreview
@@ -1426,6 +1555,106 @@ function ToolPairPreview({ span }: { span: TraceSpan }) {
   )
 }
 
+function BashToolPreview({
+  details,
+  span,
+}: {
+  details: ReturnType<typeof extractBashExecutionDetails>
+  span: TraceSpan
+}) {
+  const failed = span.status === "failed"
+  const pending = span.status === "pending"
+  const outputs = failed
+    ? [["stderr", details.stderr], ["stdout", details.stdout]] as const
+    : [["stdout", details.stdout], ["stderr", details.stderr]] as const
+  const visibleOutputs = outputs.filter((entry): entry is readonly ["stderr" | "stdout", string] => Boolean(entry[1]))
+
+  return (
+    <div className={cn(
+      "grid min-w-0 gap-2 border-l-4 p-3",
+      failed ? "border-l-destructive bg-destructive/5" : pending ? "border-l-muted-foreground bg-muted/20" : "border-l-primary bg-primary/5"
+    )}>
+      {failed || pending ? (
+        <div className="flex min-w-0 flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="text-xs font-medium text-muted-foreground uppercase">Shell execution</div>
+            <div className={cn("mt-0.5 break-words text-sm font-semibold", failed && "text-destructive")}>
+              {sanitizeDisplayString(bashExecutionHeadline(details))}
+            </div>
+          </div>
+          <div className="flex shrink-0 flex-wrap gap-1">
+            {failed && details.exitCode !== null ? (
+              <Badge variant="destructive">exit {String(details.exitCode)}</Badge>
+            ) : null}
+            {details.timedOut ? <Badge variant="destructive">Interrupted</Badge> : null}
+          </div>
+        </div>
+      ) : null}
+
+      {details.command ? (
+        <div className="grid min-w-0 max-w-[110ch] gap-0.5">
+          <span className="text-xs text-muted-foreground">Command</span>
+          <code className="max-h-24 overflow-auto whitespace-pre-wrap break-words border bg-background/70 px-2.5 py-1.5 text-xs leading-relaxed [overflow-wrap:anywhere]">
+            {sanitizeDisplayString(details.command)}
+          </code>
+        </div>
+      ) : null}
+
+      {visibleOutputs.length > 0 ? (
+        <div className="grid min-w-0 gap-2 xl:grid-cols-2">
+          {visibleOutputs.map(([label, value]) => (
+            <BashOutputPreview
+              key={label}
+              failed={failed}
+              label={label}
+              truncated={label === "stderr" ? details.stderrTruncated : details.stdoutTruncated}
+              value={value}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="text-xs text-muted-foreground">
+          {pending ? "No paired result is present in this trace." : "Command produced no stdout or stderr."}
+        </div>
+      )}
+
+      {details.cwd && failed ? (
+        <div className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+          <span className="shrink-0">cwd</span>
+          <code className="min-w-0 truncate text-foreground/80">{sanitizeDisplayString(details.cwd)}</code>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function BashOutputPreview({
+  failed,
+  label,
+  truncated,
+  value,
+}: {
+  failed: boolean
+  label: "stderr" | "stdout"
+  truncated: boolean
+  value: string
+}) {
+  return (
+    <div className="grid min-w-0 gap-1 border bg-background/70 p-2.5">
+      <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-muted-foreground">
+        <span>{label}</span>
+        {truncated ? <Badge variant="secondary">Output truncated</Badge> : null}
+      </div>
+      <pre className={cn(
+        "max-w-[110ch] overflow-hidden whitespace-pre-wrap break-words font-mono text-xs leading-relaxed [overflow-wrap:anywhere]",
+        failed ? "max-h-32" : "max-h-12"
+      )}>
+        {sanitizeDisplayString(value)}
+      </pre>
+    </div>
+  )
+}
+
 function SpanInspectorSheet({
   onClose,
   span,
@@ -1437,7 +1666,7 @@ function SpanInspectorSheet({
 }) {
   return (
     <Sheet open={Boolean(span)} onOpenChange={(open) => !open && onClose()}>
-      <SheetContent className="min-w-0 gap-0 overflow-x-hidden data-[side=right]:w-full data-[side=right]:sm:max-w-2xl">
+      <SheetContent className="min-w-0 gap-0 overflow-x-hidden data-[side=right]:w-full data-[side=right]:sm:max-w-4xl data-[side=right]:xl:max-w-5xl">
         <SheetHeader className="shrink-0 border-b pr-12">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <SheetTitle>Inspector</SheetTitle>
@@ -1465,7 +1694,6 @@ function SpanInspectorSheet({
                 {span.subtitle ? (
                   <div className="text-sm text-muted-foreground">{span.subtitle}</div>
                 ) : null}
-                {span.preview ? <ReadablePreview value={span.preview} className="max-h-40" /> : null}
               </div>
               <div className="grid gap-2 sm:grid-cols-2">
                 <DetailField label="Span id" value={<CodeValue value={span.id} />} />
@@ -1497,15 +1725,16 @@ function SpanInspectorSheet({
 function ToolInspectorSections({ span }: { span: TraceSpan }) {
   const tool = span.tool
   if (!tool) return null
+  const bash = bashExecutionDetailsForSpan(span)
   return (
     <div className="grid min-w-0 gap-3">
+      {bash.looksLikeBash ? <BashToolDetails span={span} /> : null}
       <PayloadSection title="Arguments" value={tool.arguments} emptyLabel="No arguments captured." json />
       <PayloadSection
         title={tool.isError ? "Result error" : "Result"}
         value={tool.result}
         emptyLabel="No paired result is present in this trace."
       />
-      <BashToolDetails span={span} />
       <div className="grid min-w-0 gap-2 border bg-muted/20 p-3 text-xs text-muted-foreground">
         <div className="font-medium text-foreground">Pairing</div>
         <div>
@@ -1525,18 +1754,7 @@ function ToolInspectorSections({ span }: { span: TraceSpan }) {
 }
 
 function BashToolDetails({ span }: { span: TraceSpan }) {
-  const tool = span.tool
-  const raw = asRecord(span.raw)
-  const call = asRecord(tool?.call) ?? asRecord(raw?.call)
-  const result = asRecord(raw?.result)
-  const args = asRecord(tool?.arguments) ?? asRecord(call?.arguments)
-  const details = extractBashExecutionDetails({
-    call,
-    result,
-    resultPayload: tool?.result,
-    toolArguments: args,
-    toolName: tool?.name,
-  })
+  const details = bashExecutionDetailsForSpan(span)
 
   if (!details.looksLikeBash) return null
 
@@ -1580,6 +1798,21 @@ function BashToolDetails({ span }: { span: TraceSpan }) {
       </div>
     </section>
   )
+}
+
+function bashExecutionDetailsForSpan(span: TraceSpan) {
+  const tool = span.tool
+  const raw = asRecord(span.raw)
+  const call = asRecord(tool?.call) ?? asRecord(raw?.call)
+  const result = asRecord(raw?.result)
+  const args = asRecord(tool?.arguments) ?? asRecord(call?.arguments)
+  return extractBashExecutionDetails({
+    call,
+    result,
+    resultPayload: tool?.result,
+    toolArguments: args,
+    toolName: tool?.name,
+  })
 }
 
 function OutputPane({
@@ -1640,13 +1873,7 @@ function PayloadSection({
         <h3 className="text-sm font-medium">{title}</h3>
         <Badge variant="outline">{formatBytes(new TextEncoder().encode(formatSanitizedJson(value)).length)}</Badge>
       </div>
-      {json ? <SanitizedJsonBlock value={value} compact /> : <ReadablePreview value={preview} className="max-h-32" />}
-      <details className="grid min-w-0 gap-2">
-        <summary className="cursor-pointer select-none text-xs text-muted-foreground">
-          Expand full sanitized payload
-        </summary>
-        {json ? <SanitizedJsonBlock value={value} /> : <ReadableFullValue value={value} />}
-      </details>
+      {json ? <SanitizedJsonBlock value={value} /> : <ReadableFullValue value={value} />}
     </section>
   )
 }
@@ -1745,7 +1972,7 @@ function ReadablePreview({ value, className }: { value: string; className?: stri
 function ReadableFullValue({ value }: { value: unknown }) {
   if (typeof value === "string") {
     return (
-      <div className="max-h-80 max-w-full overflow-auto whitespace-pre-wrap break-words border bg-background/60 p-3 text-sm leading-relaxed [overflow-wrap:anywhere]">
+      <div className="max-h-[min(60vh,48rem)] max-w-full overflow-auto whitespace-pre-wrap break-words border bg-background/60 p-3 text-sm leading-relaxed [overflow-wrap:anywhere]">
         {sanitizeDisplayString(value)}
       </div>
     )
@@ -1763,7 +1990,7 @@ function SanitizedJsonBlock({
   return (
     <pre className={cn(
       "max-w-full overflow-auto whitespace-pre-wrap break-words border bg-background/60 p-3 font-mono text-xs leading-relaxed [overflow-wrap:anywhere]",
-      compact ? "max-h-40" : "max-h-96",
+      compact ? "max-h-40" : "max-h-[min(60vh,48rem)]",
     )}>
       {formatSanitizedJson(value)}
     </pre>
@@ -1957,6 +2184,7 @@ function hasRenderableValue(value: unknown) {
 
 function spanFilterCounts(spans: TraceSpan[]): Record<SpanFilter, number> {
   return {
+    actions: spans.filter(spanIsAction).length,
     all: spans.length,
     attention: spans.filter(spanNeedsAttention).length,
     context: spans.filter((span) => span.kind === "context" || span.kind === "metadata").length,
@@ -1967,6 +2195,7 @@ function spanFilterCounts(spans: TraceSpan[]): Record<SpanFilter, number> {
 }
 
 function spanMatches(span: TraceSpan, filter: SpanFilter, query: string) {
+  if (filter === "actions" && !spanIsAction(span)) return false
   if (filter === "attention" && !spanNeedsAttention(span)) return false
   if (filter === "tools" && span.kind !== "tool") return false
   if (filter === "errors" && span.status !== "failed") return false
@@ -1975,6 +2204,10 @@ function spanMatches(span: TraceSpan, filter: SpanFilter, query: string) {
   const normalizedQuery = query.trim().toLowerCase()
   if (!normalizedQuery) return true
   return spanSearchText(span).includes(normalizedQuery)
+}
+
+function spanIsAction(span: TraceSpan) {
+  return span.kind === "tool" || span.kind === "response" || span.kind === "error"
 }
 
 function spanSearchText(span: TraceSpan) {
@@ -2008,6 +2241,16 @@ function spanNeedsAttention(span: TraceSpan) {
 
 function formatNumberCompact(value: number) {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value)
+}
+
+function formatUsdValue(value: number) {
+  const maximumFractionDigits = Math.abs(value) > 0 && Math.abs(value) < 0.01 ? 6 : 2
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits,
+  }).format(value)
 }
 
 function sanitizedPayloadSize(value: unknown) {

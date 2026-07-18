@@ -39,6 +39,17 @@ export interface ModelCallTraceFailureGroupRecord {
   summary: string;
 }
 
+export interface ModelCallUsageSample {
+  startedAt: number;
+  status: ModelCallTraceStatus;
+  usageJson?: JsonValue;
+}
+
+export interface ModelCallUsageSampleInput {
+  from: number;
+  to: number;
+}
+
 export interface PostgresModelCallTraceStoreOptions {
   pool: PgQueryable;
   retentionDays?: number;
@@ -118,6 +129,15 @@ function parseTraceRow(row: Record<string, unknown>): ModelCallTraceRecord {
     ...(errorJson !== undefined ? {errorJson} : {}),
     ...(usageJson !== undefined ? {usageJson} : {}),
     expiresAt: requireTimestampMillis(row.expires_at, "Model call trace expires_at must be a valid timestamp."),
+  };
+}
+
+function parseUsageSampleRow(row: Record<string, unknown>): ModelCallUsageSample {
+  const usageJson = optionalJsonValue(row.usage_json, "Model call trace usage_json");
+  return {
+    startedAt: requireTimestampMillis(row.started_at, "Model call trace started_at must be a valid timestamp."),
+    status: row.status === "failed" ? "failed" : "completed",
+    ...(usageJson !== undefined ? {usageJson} : {}),
   };
 }
 
@@ -403,6 +423,20 @@ export class PostgresModelCallTraceStore implements ModelCallTraceRecorder {
     }
 
     return groups;
+  }
+
+  async listUsageSamples(input: ModelCallUsageSampleInput): Promise<ModelCallUsageSample[]> {
+    if (!Number.isFinite(input.from) || !Number.isFinite(input.to) || input.from >= input.to) {
+      throw new Error("Model call usage range must have valid ascending timestamps.");
+    }
+    const result = await this.pool.query(`
+      SELECT started_at, status, usage_json
+      FROM ${this.tables.traces}
+      WHERE started_at >= $1
+        AND started_at < $2
+      ORDER BY started_at ASC, id ASC
+    `, [new Date(input.from), new Date(input.to)]);
+    return result.rows.map((row) => parseUsageSampleRow(row as Record<string, unknown>));
   }
 
   async getTrace(id: string): Promise<ModelCallTraceRecord | null> {

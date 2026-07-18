@@ -35,6 +35,19 @@ export type ModelCallUsageTokenCounts = {
   total: number | null
 }
 
+export type ModelCallUsageBreakdown = {
+  cacheRead: number
+  cacheReadCost: number
+  cacheReadRate: number
+  cacheWrite: number
+  hasUsage: boolean
+  input: number
+  output: number
+  promptTokens: number
+  total: number
+  totalCost: number
+}
+
 export function modelCallDetailPath(traceId: string) {
   return `/model-calls/${encodeURIComponent(traceId)}`
 }
@@ -86,6 +99,49 @@ export function usageSummary(value: unknown) {
     cost,
   ].filter(Boolean)
   return parts.length > 0 ? parts.join(" · ") : "-"
+}
+
+export function usageBreakdown(value: unknown): ModelCallUsageBreakdown {
+  const usage = asRecord(value)
+  if (!usage) {
+    return {
+      cacheRead: 0,
+      cacheReadCost: 0,
+      cacheReadRate: 0,
+      cacheWrite: 0,
+      hasUsage: false,
+      input: 0,
+      output: 0,
+      promptTokens: 0,
+      total: 0,
+      totalCost: 0,
+    }
+  }
+  const input = firstNumber(usage, ["input", "inputTokens", "input_tokens", "promptTokens", "prompt_tokens"]) ?? 0
+  const output = firstNumber(usage, ["output", "outputTokens", "output_tokens", "completionTokens", "completion_tokens"]) ?? 0
+  const cacheRead = firstNumber(usage, ["cacheRead", "cache_read", "cachedInputTokens", "cached_input_tokens"]) ?? 0
+  const cacheWrite = firstNumber(usage, ["cacheWrite", "cache_write", "cacheCreationInputTokens", "cache_creation_input_tokens"]) ?? 0
+  const promptTokens = input + cacheRead + cacheWrite
+  const total = firstNumber(usage, ["totalTokens", "total_tokens", "total", "tokens"])
+    ?? promptTokens + output
+  const cost = asRecord(usage.cost)
+  const cacheReadCost = firstNumber(cost, ["cacheRead", "cache_read"]) ?? 0
+  const componentCost = ["input", "output", "cacheRead", "cacheWrite"]
+    .map((key) => firstNumber(cost, [key]) ?? 0)
+    .reduce((sum, entry) => sum + entry, 0)
+  const totalCost = firstNumber(cost, ["total"]) ?? componentCost
+  return {
+    cacheRead,
+    cacheReadCost,
+    cacheReadRate: promptTokens > 0 ? cacheRead / promptTokens : 0,
+    cacheWrite,
+    hasUsage: true,
+    input,
+    output,
+    promptTokens,
+    total,
+    totalCost,
+  }
 }
 
 export function usageTokenCounts(value: unknown): ModelCallUsageTokenCounts {
@@ -203,6 +259,22 @@ export function extractBashExecutionDetails(input: {
     stdoutTruncated,
     timedOut,
   }
+}
+
+/** Returns the operator-facing outcome for a bash execution without exposing its wire payload. */
+export function bashExecutionHeadline(details: BashExecutionDetails): string {
+  if (details.timedOut) return "Timed out"
+
+  const exitCode = details.exitCode
+  if (exitCode !== null && String(exitCode) !== "0") {
+    const failure = firstShellOutputLine(details.stderr) ?? firstShellOutputLine(details.stdout)
+    return failure ? `Exit ${String(exitCode)} · ${failure}` : `Exited with code ${String(exitCode)}`
+  }
+  if (exitCode !== null && String(exitCode) === "0") return "Completed successfully"
+
+  if (details.status === false || isFailureStatus(details.status)) return "Command failed"
+  if (details.status === true || isSuccessStatus(details.status)) return "Completed successfully"
+  return "Waiting for result"
 }
 
 export function traceDebugFindings(viewModel: ModelCallTraceViewModel) {
@@ -347,6 +419,23 @@ function bashDetailsRecord(value: unknown): Record<string, unknown> | null {
 
   if (hasBashDetailFields(record)) return record
   return null
+}
+
+function firstShellOutputLine(value: string | null): string | null {
+  if (!value) return null
+  const line = value.split(/\r?\n/).map((entry) => entry.trim()).find(Boolean)
+  if (!line) return null
+  return line
+    .replace(/^(?:zsh|bash|sh):(?:\s*line\s*)?\d+:\s*/i, "")
+    .slice(0, 160)
+}
+
+function isFailureStatus(value: boolean | number | string | null): boolean {
+  return typeof value === "string" && ["error", "failed", "failure"].includes(value.toLowerCase())
+}
+
+function isSuccessStatus(value: boolean | number | string | null): boolean {
+  return typeof value === "string" && ["ok", "completed", "success", "succeeded"].includes(value.toLowerCase())
 }
 
 function hasBashDetailFields(record: Record<string, unknown>): boolean {

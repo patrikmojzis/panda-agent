@@ -448,12 +448,10 @@ function toolSpan(input: {
   const redacted = containsRedaction(call) || containsRedaction(result)
   const durationMs = durationFrom(result) ?? durationFrom(call)
   const argumentsPreview = args === undefined ? undefined : previewForValue(args)
-  const resultPreview = resultPayload === undefined ? undefined : previewForValue(resultPayload)
+  const resultPreview = resultPayload === undefined ? undefined : toolResultPreview(resultPayload)
   const badges = [
-    input.source,
     truncated ? "Truncated" : null,
     redacted ? "Redacted" : null,
-    callId ? `id ${shortId(callId)}` : null,
   ].filter(isPresent)
 
   return {
@@ -559,6 +557,18 @@ function toolResultPayload(record: Record<string, unknown>): unknown {
   return record
 }
 
+function toolResultPreview(value: unknown): string | null {
+  if (Array.isArray(value)) {
+    const text = value
+      .map((entry) => firstString(asRecord(entry) ?? {}, ["text", "content", "message"]))
+      .filter(isPresent)
+    if (text.length > 0) return previewForValue(text.join("\n"))
+  }
+  const record = asRecord(value)
+  const text = record ? firstString(record, ["text", "content", "message"]) : null
+  return text ? previewForValue(text) : previewForValue(value)
+}
+
 function durationFrom(value: unknown): number | null {
   const record = asRecord(value)
   if (!record) return null
@@ -642,7 +652,7 @@ function containsRedaction(value: unknown): boolean {
 function containsTruncation(value: unknown): boolean {
   if (Array.isArray(value)) return value.some(containsTruncation)
   const record = asRecord(value)
-  if (!record) return typeof value === "string" && /truncat/i.test(value)
+  if (!record) return typeof value === "string" && /\btruncated\b/i.test(value)
   return Object.entries(record).some(([key, entry]) => {
     if (/truncat/i.test(key) && entry !== false && entry !== null && entry !== undefined) return true
     return containsTruncation(entry)
@@ -739,10 +749,6 @@ function humanize(value: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .replace(/\b\w/g, (letter) => letter.toUpperCase())
-}
-
-function shortId(value: string): string {
-  return value.length > 18 ? `${value.slice(0, 10)}…${value.slice(-4)}` : value
 }
 
 function triageItemForSpan(span: TraceSpan): TraceTriageItem | null {

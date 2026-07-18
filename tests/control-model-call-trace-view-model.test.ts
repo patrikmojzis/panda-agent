@@ -7,9 +7,11 @@ import {
   sanitizeDisplayString,
 } from "../apps/control-ui/src/features/control/model-calls/model-call-trace-view-model.ts";
 import {
+  bashExecutionHeadline,
   buildDebugReport,
   extractBashExecutionDetails,
   modelCallFailureGroups,
+  usageBreakdown,
   usageSummary,
   usageTokenCounts,
 } from "../apps/control-ui/src/features/control/model-calls/model-call-display.ts";
@@ -96,7 +98,7 @@ describe("Control model call trace view model", () => {
       tool: {
         callId: "call_shell_1234567890",
         argumentsPreview: expect.stringContaining("git status --short"),
-        resultPreview: expect.stringContaining("## main"),
+        resultPreview: "## main",
       },
     });
     expect(toolSpan?.subtitle).toContain("paired with result");
@@ -434,6 +436,58 @@ describe("Control model call trace view model", () => {
     expect(details.stderrChars).toBe(39);
   });
 
+  it("turns a failed bash payload into an operator-readable outcome", () => {
+    const details = extractBashExecutionDetails({
+      toolName: "bash",
+      toolArguments: {command: "panda mcp --help", timeoutMs: 10000},
+      result: {
+        details: {
+          command: "panda mcp --help",
+          cwd: "/workspace/panda-agent",
+          durationMs: 15,
+          exitCode: 127,
+          stderr: "zsh:1: command not found: panda\n",
+          stdout: "",
+          timedOut: false,
+        },
+        isError: true,
+      },
+    });
+
+    expect(bashExecutionHeadline(details)).toBe("Exit 127 · command not found: panda");
+  });
+
+  it("does not report truncation when embedded bash flags are false", () => {
+    const model = buildModelCallTraceViewModel({
+      id: "trace-complete-bash-output",
+      request: {
+        messages: [
+          {
+            role: "assistant",
+            content: [{
+              type: "toolCall",
+              id: "call_complete",
+              name: "bash",
+              arguments: {command: "printf ok"},
+            }],
+          },
+          {
+            role: "toolResult",
+            toolCallId: "call_complete",
+            toolName: "bash",
+            content: [{
+              type: "text",
+              text: '{"stdout":"ok","stdoutTruncated":false,"stderrTruncated":false}',
+            }],
+            details: {stdout: "ok", stdoutTruncated: false, stderrTruncated: false, exitCode: 0},
+          },
+        ],
+      },
+    });
+
+    expect(model.summary.truncatedSpans).toBe(0);
+  });
+
   it("summarizes provider-style usage token fields", () => {
     expect(usageSummary({
       input_tokens: 1200,
@@ -451,6 +505,28 @@ describe("Control model call trace view model", () => {
       input: 1200,
       output: 42,
       total: 1242,
+    });
+  });
+
+  it("shows the cached share of prompt tokens for one model call", () => {
+    expect(usageBreakdown({
+      input: 100,
+      output: 20,
+      cacheRead: 300,
+      cacheWrite: 50,
+      totalTokens: 470,
+      cost: {input: 0.01, output: 0.02, cacheRead: 0.003, cacheWrite: 0.004, total: 0.037},
+    })).toEqual({
+      cacheRead: 300,
+      cacheReadCost: 0.003,
+      cacheReadRate: 300 / 450,
+      cacheWrite: 50,
+      hasUsage: true,
+      input: 100,
+      output: 20,
+      promptTokens: 450,
+      total: 470,
+      totalCost: 0.037,
     });
   });
 

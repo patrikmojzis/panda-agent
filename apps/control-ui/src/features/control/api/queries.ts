@@ -30,6 +30,11 @@ type ModelCallTraceParams = TableParams & {
   status?: string
 }
 
+type ModelCallUsageParams = {
+  bucket_minutes: number
+  range_hours: number
+}
+
 export function keepPrevious<T>(previous: T | undefined) {
   return previous
 }
@@ -479,6 +484,19 @@ export function useModelCallTrace(traceId: string, options?: QueryFlags) {
     queryKey: controlKeys.modelCallTraces.detail(traceId),
     queryFn: () => controlApi.modelCallTrace(traceId),
     enabled: options?.enabled ?? Boolean(traceId),
+    staleTime: options?.staleTime,
+  })
+}
+
+export function useModelCallUsage(
+  params: ModelCallUsageParams,
+  options?: QueryFlags
+) {
+  return useQuery({
+    queryKey: controlKeys.modelCallTraces.usage(params),
+    queryFn: () => controlApi.modelCallUsage(params),
+    enabled: options?.enabled,
+    placeholderData: keepPrevious,
     staleTime: options?.staleTime,
   })
 }

@@ -594,6 +594,13 @@ function parseModelCallTraceTableInput(params: URLSearchParams) {
   };
 }
 
+function parseModelCallUsageInput(params: URLSearchParams) {
+  return {
+    rangeHours: parsePositiveInt(params.get("range_hours")),
+    bucketMinutes: parsePositiveInt(params.get("bucket_minutes")),
+  };
+}
+
 function parseScheduledTaskStatus(value: string | null): ControlScheduledTaskLifecycleStatus | undefined {
   if (value === null || value.trim() === "") return undefined;
   if (value === "scheduled" || value === "disabled" || value === "running" || value === "completed" || value === "cancelled") return value;
@@ -1056,6 +1063,18 @@ export async function startControlServer(options: StartControlServerOptions): Pr
           const message = error instanceof Error ? error.message : "Control model call trace read failed.";
           if (message === "Control model call traces require admin access.") throw new ControlHttpError(403, message);
           if (message.includes("model call trace") || message.includes("pagination")) throw new ControlHttpError(400, message);
+          throw error;
+        }
+        return;
+      }
+      if (request.method === "GET" && path === "/model-call-usage") {
+        try {
+          const usage = await options.modelCallTraces.getModelCallUsage(session, parseModelCallUsageInput(url.searchParams));
+          writeJsonResponse(response, 200, {modelCallUsage: usage});
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Control model call usage read failed.";
+          if (message === "Control model call traces require admin access.") throw new ControlHttpError(403, message);
+          if (message.includes("model call usage")) throw new ControlHttpError(400, message);
           throw error;
         }
         return;

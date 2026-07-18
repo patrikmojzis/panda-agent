@@ -1,6 +1,7 @@
 import type { LucideIcon } from "lucide-react"
 import {
   Activity,
+  ChartArea,
   BookOpen,
   Bot,
   CalendarClock,
@@ -26,7 +27,7 @@ import type { AgentDetail } from "@/lib/api"
 export type ConsoleNavItem = {
   adminOnly?: boolean
   icon: LucideIcon
-  id: "home" | "agents" | "identities" | "model-calls"
+  id: "home" | "agents" | "identities" | "model-calls" | "usage"
   label: string
   path: string
 }
@@ -48,6 +49,7 @@ export const CONSOLE_NAVIGATION: ConsoleNavItem[] = [
   { id: "agents", path: "/agents", label: "Agents", icon: Bot },
   { id: "identities", path: "/identities", label: "Identities", icon: UserCheck },
   { id: "model-calls", path: "/model-calls", label: "Model Calls", icon: Activity, adminOnly: true },
+  { id: "usage", path: "/usage", label: "Usage", icon: ChartArea, adminOnly: true },
 ]
 
 export const AGENT_RESOURCE_TABS: ControlTabDefinition[] = [

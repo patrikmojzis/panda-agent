@@ -3393,6 +3393,61 @@ describe("Control Model Call Traces HTTP", () => {
     ]) expect(apiText).toContain(sentinel);
   });
 
+  it("serves gap-free model usage analytics only to admins", async () => {
+    const harness = await createHarness();
+    const now = Date.now();
+    await harness.pool.query(`
+      INSERT INTO "runtime"."model_call_traces" (
+        id, provider, model, mode, status, started_at, finished_at,
+        duration_ms, request_json, usage_json, expires_at
+      ) VALUES
+        ($1, 'openai', 'gpt-test', 'complete', 'completed', $2, $3, 100, '{}'::jsonb, $4::jsonb, $5),
+        ($6, 'openai', 'gpt-test', 'complete', 'completed', $7, $8, 100, '{}'::jsonb, $9::jsonb, $10)
+    `, [
+      "00000000-0000-0000-0000-000000000721",
+      new Date(now - 45 * 60_000),
+      new Date(now - 45 * 60_000 + 100),
+      JSON.stringify({input: 10, output: 4, cacheRead: 30, cacheWrite: 5, totalTokens: 49, cost: {input: 0.01, output: 0.02, cacheRead: 0.003, cacheWrite: 0.004, total: 0.037}}),
+      new Date(now + 7 * 24 * 60 * 60_000),
+      "00000000-0000-0000-0000-000000000722",
+      new Date(now - 15 * 60_000),
+      new Date(now - 15 * 60_000 + 100),
+      JSON.stringify({input: 20, output: 6, cacheRead: 0, cacheWrite: 0, totalTokens: 26, cost: {input: 0.02, output: 0.03, cacheRead: 0, cacheWrite: 0, total: 0.05}}),
+      new Date(now + 7 * 24 * 60 * 60_000),
+    ]);
+
+    const base = await startHarnessServer(harness);
+    const admin = await login(base, harness, "admin");
+    const scoped = await login(base, harness, "scoped");
+
+    expect((await fetch(`${base}/api/control/model-call-usage?range_hours=24&bucket_minutes=60`)).status).toBe(401);
+    expect((await fetch(`${base}/api/control/model-call-usage?range_hours=24&bucket_minutes=60`, {headers: {cookie: scoped.cookies}})).status).toBe(403);
+
+    const response = await fetch(`${base}/api/control/model-call-usage?range_hours=24&bucket_minutes=60`, {headers: {cookie: admin.cookies}});
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      modelCallUsage: {
+        buckets: Array<{calls: number}>;
+        range: {bucketMinutes: number};
+        summary: Record<string, number>;
+      };
+    };
+    expect(body.modelCallUsage.range.bucketMinutes).toBe(60);
+    expect(body.modelCallUsage.buckets.length).toBeGreaterThanOrEqual(24);
+    expect(body.modelCallUsage.buckets.length).toBeLessThanOrEqual(25);
+    expect(body.modelCallUsage.buckets.reduce((sum, bucket) => sum + bucket.calls, 0)).toBe(2);
+    expect(body.modelCallUsage.summary).toMatchObject({
+      calls: 2,
+      cacheHits: 1,
+      usageCalls: 2,
+      cacheReadTokens: 30,
+      totalTokens: 75,
+      totalCost: 0.087,
+      cacheHitRate: 0.5,
+      cacheReadRate: 30 / 65,
+    });
+  });
+
   it("returns failure groups across all matching model calls, not just the current page", async () => {
     const harness = await createHarness();
     await seedFailedTrace(harness, {

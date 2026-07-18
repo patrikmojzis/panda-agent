@@ -1,6 +1,11 @@
 import {isJsonObject, type JsonObject, type JsonValue} from "../../lib/json.js";
 import type {PgQueryable} from "../../lib/postgres-query.js";
-import {PostgresModelCallTraceStore, type ModelCallTraceFailureGroupRecord, type ModelCallTraceListInput} from "../model-call-traces/postgres.js";
+import {
+  PostgresModelCallTraceStore,
+  type ModelCallTraceFailureGroupRecord,
+  type ModelCallTraceListInput,
+  type ModelCallUsageSample,
+} from "../model-call-traces/postgres.js";
 import {buildSessionTableNames, type SessionTableNames} from "../sessions/postgres-shared.js";
 import {sanitizePromptCacheKey, sanitizeTraceJson, sanitizeTraceRequestJson} from "../model-call-traces/redaction.js";
 import type {ModelCallTraceMode, ModelCallTraceRecord, ModelCallTraceStatus} from "../model-call-traces/types.js";
@@ -68,6 +73,48 @@ export interface ControlModelCallTraceFailureGroup {
   representative: ControlModelCallTraceSummary;
   summary: string;
 }
+
+export interface ControlModelCallUsageInput {
+  bucketMinutes?: number;
+  rangeHours?: number;
+}
+
+export interface ControlModelCallUsageTotals {
+  calls: number;
+  cacheHits: number;
+  usageCalls: number;
+  failures: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  totalTokens: number;
+  totalCost: number;
+  cacheReadCost: number;
+  cacheHitRate: number;
+  cacheReadRate: number;
+}
+
+export interface ControlModelCallUsageBucket extends ControlModelCallUsageTotals {
+  startedAt: string;
+}
+
+export interface ControlModelCallUsageResult {
+  buckets: readonly ControlModelCallUsageBucket[];
+  range: {
+    bucketMinutes: number;
+    from: string;
+    to: string;
+  };
+  summary: ControlModelCallUsageTotals;
+}
+
+const DEFAULT_USAGE_RANGE_HOURS = 7 * 24;
+const DEFAULT_USAGE_BUCKET_MINUTES = 6 * 60;
+const MAX_USAGE_RANGE_HOURS = 90 * 24;
+const MAX_USAGE_BUCKETS = 1_000;
+
+type MutableUsageTotals = Omit<ControlModelCallUsageTotals, "cacheHitRate" | "cacheReadRate">;
 
 function iso(value: number): string {
   return new Date(value).toISOString();
@@ -177,6 +224,126 @@ function publicFailureGroup(
   };
 }
 
+function emptyUsageTotals(): MutableUsageTotals {
+  return {
+    calls: 0,
+    cacheHits: 0,
+    usageCalls: 0,
+    failures: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    totalTokens: 0,
+    totalCost: 0,
+    cacheReadCost: 0,
+  };
+}
+
+function usageNumber(value: JsonObject, key: string): number {
+  const entry = value[key];
+  return typeof entry === "number" && Number.isFinite(entry) && entry >= 0 ? entry : 0;
+}
+
+function addUsageSample(total: MutableUsageTotals, sample: ModelCallUsageSample): void {
+  total.calls += 1;
+  if (sample.status === "failed") total.failures += 1;
+  if (!isJsonObject(sample.usageJson)) return;
+
+  const usage = sample.usageJson;
+  const inputTokens = usageNumber(usage, "input");
+  const outputTokens = usageNumber(usage, "output");
+  const cacheReadTokens = usageNumber(usage, "cacheRead");
+  const cacheWriteTokens = usageNumber(usage, "cacheWrite");
+  const summedTokens = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
+  const totalTokens = usageNumber(usage, "totalTokens") || summedTokens;
+  const cost = isJsonObject(usage.cost) ? usage.cost : {};
+  const componentCost = usageNumber(cost, "input")
+    + usageNumber(cost, "output")
+    + usageNumber(cost, "cacheRead")
+    + usageNumber(cost, "cacheWrite");
+
+  total.usageCalls += 1;
+  if (cacheReadTokens > 0) total.cacheHits += 1;
+  total.inputTokens += inputTokens;
+  total.outputTokens += outputTokens;
+  total.cacheReadTokens += cacheReadTokens;
+  total.cacheWriteTokens += cacheWriteTokens;
+  total.totalTokens += totalTokens;
+  total.totalCost += usageNumber(cost, "total") || componentCost;
+  total.cacheReadCost += usageNumber(cost, "cacheRead");
+}
+
+function publicUsageTotals(total: MutableUsageTotals): ControlModelCallUsageTotals {
+  const promptTokens = total.inputTokens + total.cacheReadTokens + total.cacheWriteTokens;
+  return {
+    ...total,
+    cacheHitRate: total.usageCalls > 0 ? total.cacheHits / total.usageCalls : 0,
+    cacheReadRate: promptTokens > 0 ? total.cacheReadTokens / promptTokens : 0,
+  };
+}
+
+function usageWindow(input: ControlModelCallUsageInput, now: number) {
+  const rangeHours = input.rangeHours ?? DEFAULT_USAGE_RANGE_HOURS;
+  const bucketMinutes = input.bucketMinutes ?? DEFAULT_USAGE_BUCKET_MINUTES;
+  if (!Number.isInteger(rangeHours) || rangeHours < 1 || rangeHours > MAX_USAGE_RANGE_HOURS) {
+    throw new Error(`Control model call usage range_hours must be between 1 and ${MAX_USAGE_RANGE_HOURS}.`);
+  }
+  if (!Number.isInteger(bucketMinutes) || bucketMinutes < 5 || bucketMinutes > 24 * 60) {
+    throw new Error("Control model call usage bucket_minutes must be between 5 and 1440.");
+  }
+  const bucketCount = Math.ceil((rangeHours * 60) / bucketMinutes);
+  if (bucketCount > MAX_USAGE_BUCKETS) {
+    throw new Error(`Control model call usage range may contain at most ${MAX_USAGE_BUCKETS} buckets.`);
+  }
+  const bucketMs = bucketMinutes * 60_000;
+  return {
+    bucketMinutes,
+    bucketMs,
+    from: now - rangeHours * 60 * 60_000,
+    to: now,
+  };
+}
+
+/** Builds gap-free usage buckets for the Control analytics charts. */
+export function buildModelCallUsageAnalytics(
+  samples: readonly ModelCallUsageSample[],
+  input: ControlModelCallUsageInput = {},
+  now = Date.now(),
+): ControlModelCallUsageResult {
+  if (!Number.isFinite(now)) throw new Error("Control model call usage current time must be finite.");
+  const window = usageWindow(input, now);
+  const firstBucket = Math.floor(window.from / window.bucketMs) * window.bucketMs;
+  const lastBucket = Math.floor((window.to - 1) / window.bucketMs) * window.bucketMs;
+  const totals = emptyUsageTotals();
+  const bucketTotals = new Map<number, MutableUsageTotals>();
+
+  for (let startedAt = firstBucket; startedAt <= lastBucket; startedAt += window.bucketMs) {
+    bucketTotals.set(startedAt, emptyUsageTotals());
+  }
+  for (const sample of samples) {
+    if (sample.startedAt < window.from || sample.startedAt >= window.to) continue;
+    const bucketStartedAt = Math.floor(sample.startedAt / window.bucketMs) * window.bucketMs;
+    const bucket = bucketTotals.get(bucketStartedAt);
+    if (!bucket) continue;
+    addUsageSample(bucket, sample);
+    addUsageSample(totals, sample);
+  }
+
+  return {
+    buckets: [...bucketTotals.entries()].map(([startedAt, total]) => ({
+      startedAt: iso(startedAt),
+      ...publicUsageTotals(total),
+    })),
+    range: {
+      bucketMinutes: window.bucketMinutes,
+      from: iso(window.from),
+      to: iso(window.to),
+    },
+    summary: publicUsageTotals(totals),
+  };
+}
+
 export class ControlModelCallTraceService {
   private readonly pool: PgQueryable;
   private readonly store: PostgresModelCallTraceStore;
@@ -250,5 +417,16 @@ export class ControlModelCallTraceService {
     if (!trace) return null;
     const sessionMetadata = await this.readSessionMetadata([trace]);
     return publicDetail(trace, trace.sessionId && trace.agentKey ? sessionMetadata.get(sessionMetadataKey(trace.agentKey, trace.sessionId)) : undefined);
+  }
+
+  async getModelCallUsage(
+    session: ControlSessionRecord,
+    input: ControlModelCallUsageInput = {},
+    now = Date.now(),
+  ): Promise<ControlModelCallUsageResult> {
+    this.assertAdmin(session);
+    const window = usageWindow(input, now);
+    const samples = await this.store.listUsageSamples({from: window.from, to: window.to});
+    return buildModelCallUsageAnalytics(samples, input, now);
   }
 }

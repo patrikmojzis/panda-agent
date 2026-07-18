@@ -127,9 +127,16 @@ export const controlKeys = {
       [...controlKeys.modelCallTraces.all(), "list", params] as const,
     detail: (traceId: string) =>
       [...controlKeys.modelCallTraces.all(), "detail", traceId] as const,
+    usage: (params: ModelCallUsageParams) =>
+      [...controlKeys.modelCallTraces.all(), "usage", params] as const,
   },
   audit: {
     list: (params: AuditParams) =>
       [...controlKeys.all, "audit-events", params] as const,
   },
+}
+
+type ModelCallUsageParams = {
+  bucket_minutes: number
+  range_hours: number
 }
