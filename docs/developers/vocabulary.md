@@ -79,6 +79,26 @@ bash runs and which cwd/root, credentials, and tool policy apply.
 A runner can serve or use an environment, but it is not the environment itself.
 See [Execution Environments](./execution-environments.md).
 
+## Tool vs CLI Tool
+
+A **Tool** is a model-facing callable registered directly on the thread, such as
+`bash`, `background_job_wait`, `view_media`, `thinking_set`, or the policy-gated
+`browser`. It participates directly in the model tool-call loop.
+
+A **CLI Tool** is an agent-facing Panda capability invoked as `panda ...`,
+usually through `bash`. Internally, CLI Tools are backed by the Panda Command
+catalog: the command module is the deep operation, while the host CLI and Agent
+Command Shim are adapters to it. A CLI Tool does not become a Tool just because
+the agent can run it.
+
+Use **Tool** and **CLI Tool** when the distinction matters. `bash` is the Tool
+that starts the CLI process; it is not a synonym for the CLI Tools available
+through that process. The operator CLI also contains commands that are not
+agent-facing, while `panda commands --json` in the Agent Command Shim lists only
+the CLI Tools allowed by the current session lease. See
+[Agent Command Enhancement Plan](./agent-command-enhancement-plan.md) and
+[Execution Environments](./execution-environments.md).
+
 ## Worker vs subagent
 
 A **subagent** is the product/delegation noun for scoped delegated agent work.
