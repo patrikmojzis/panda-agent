@@ -8,6 +8,7 @@ import type {
   RegisteredCommand,
 } from "../../domain/commands/types.js";
 import type {ExecutionSkillPolicy} from "../../domain/execution-environments/types.js";
+import {READONLY_SESSION_VIEW_BASENAMES} from "../../domain/threads/runtime/postgres-readonly.js";
 import {isRecord} from "../../lib/records.js";
 import {truncateText} from "../../lib/strings.js";
 
@@ -18,26 +19,6 @@ const MAX_STRING_CHARS = 4_000;
 const STATEMENT_TIMEOUT_MS = 5_000;
 const LOCK_TIMEOUT_MS = 500;
 const IDLE_TX_TIMEOUT_MS = 5_000;
-const READONLY_SESSION_VIEWS = [
-  "session.agent_sessions",
-  "session.threads",
-  "session.messages",
-  "session.messages_raw",
-  "session.tool_results",
-  "session.inputs",
-  "session.runs",
-  "session.todos",
-  "session.subagent_history",
-  "session.scheduled_tasks",
-  "session.scheduled_task_runs",
-  "session.watches",
-  "session.watch_runs",
-  "session.watch_events",
-  "session.prompts",
-  "session.agent_pairings",
-  "session.agent_skills",
-] as const;
-
 type PgPoolResolver = () => Promise<PgPoolLike> | PgPoolLike;
 
 const READONLY_VIEW_GUIDANCE = [
@@ -94,26 +75,84 @@ const POSTGRES_JSON_ARGUMENT = {
   valueType: "json" as const,
 };
 
-function buildReadonlySchemaHelp(): JsonObject {
-  return {
-    operation: "schema_help",
-    guidance: READONLY_VIEW_GUIDANCE,
-    views: READONLY_SESSION_VIEWS.map((name) => ({name})),
-    examples: [
-      {
-        description: "Inspect columns for a session-scoped view",
-        sql: "select column_name, data_type from information_schema.columns where table_schema = 'session' and table_name = 'messages' order by ordinal_position",
-      },
-      {
-        description: "Read recent messages without pulling large blobs",
-        sql: "select id, role, left(content, 500) as excerpt, created_at from session.messages order by created_at desc limit 10",
-      },
-      {
-        description: "Find recent watch runs",
-        sql: "select watch_id, status, scheduled_for, error from session.watch_runs order by created_at desc limit 10",
-      },
-    ],
-  };
+export const POSTGRES_READONLY_QUERY_EXAMPLES = [
+  {
+    description: "Inspect columns for a session-scoped view",
+    sql: "select column_name, data_type from information_schema.columns where table_schema = 'session' and table_name = 'messages' order by ordinal_position",
+  },
+  {
+    description: "Read recent messages without pulling large blobs",
+    sql: "select id, role, left(text, 500) as excerpt, created_at from session.messages order by created_at desc limit 10",
+  },
+  {
+    description: "Find recent watch runs",
+    sql: "select watch_id, status, scheduled_for, error from session.watch_runs order by created_at desc limit 10",
+  },
+] as const;
+
+async function buildReadonlySchemaHelp(getPool: PgPoolResolver): Promise<JsonObject> {
+  const pool = await getPool();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN READ ONLY");
+    await client.query(`SET LOCAL statement_timeout = '${STATEMENT_TIMEOUT_MS}ms'`);
+    const result = await client.query(`
+      SELECT table_name, column_name, data_type, ordinal_position
+      FROM information_schema.columns
+      WHERE table_schema = 'session'
+        AND table_name = ANY($1::text[])
+      ORDER BY table_name, ordinal_position
+    `, [READONLY_SESSION_VIEW_BASENAMES]);
+
+    const columnsByView = new Map<string, Array<{name: string; type: string}>>(
+      READONLY_SESSION_VIEW_BASENAMES.map((name) => [name, []]),
+    );
+    for (const rawRow of result.rows) {
+      const row = rawRow as Record<string, unknown>;
+      if (
+        typeof row.table_name !== "string"
+        || typeof row.column_name !== "string"
+        || typeof row.data_type !== "string"
+      ) {
+        throw new Error("Readonly schema introspection returned an invalid column row.");
+      }
+      columnsByView.get(row.table_name)?.push({
+        name: row.column_name,
+        type: row.data_type,
+      });
+    }
+
+    const missing = READONLY_SESSION_VIEW_BASENAMES.filter((name) => columnsByView.get(name)?.length === 0);
+    if (missing.length > 0) {
+      const expected = missing.map((name) => `session.${name}`).join(", ");
+      throw new Error(`Readonly schema is incomplete: expected ${expected} but ${missing.length === 1 ? "it is" : "they are"} unavailable.`);
+    }
+
+    await client.query("COMMIT");
+    return {
+      operation: "schema_help",
+      guidance: READONLY_VIEW_GUIDANCE,
+      views: READONLY_SESSION_VIEW_BASENAMES.map((name) => ({
+        name: `session.${name}`,
+        columns: columnsByView.get(name) ?? [],
+      })),
+      examples: [...POSTGRES_READONLY_QUERY_EXAMPLES],
+    };
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // Keep the schema failure as the useful error.
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw new ToolError(
+      message.startsWith("Readonly schema is incomplete:")
+        ? message
+        : "Readonly schema introspection failed.",
+    );
+  } finally {
+    client.release();
+  }
 }
 
 function trimSql(value: string): string {
@@ -813,7 +852,7 @@ export const postgresReadonlyQueryCommandDescriptor: CommandDescriptor = {
     },
     {
       name: "schema-help",
-      description: "Return scoped readonly view guidance and example schema-inspection queries without opening a database connection.",
+      description: "Introspect the live scoped readonly views, columns, PostgreSQL types, and executable query examples.",
       valueType: "boolean",
     },
     POSTGRES_JSON_ARGUMENT,
@@ -845,6 +884,8 @@ export const postgresReadonlyQueryCommandDescriptor: CommandDescriptor = {
     truncationReasons: ["string"],
     elapsedMs: "number",
     rows: ["object"],
+    views: [{name: "string", columns: [{name: "string", type: "string"}]}],
+    examples: [{description: "string", sql: "string"}],
   },
 };
 
@@ -860,7 +901,7 @@ export function createPostgresReadonlyQueryCommand(
         return {
           ok: true,
           command: POSTGRES_READONLY_QUERY_COMMAND_NAME,
-          output: buildReadonlySchemaHelp(),
+          output: await buildReadonlySchemaHelp(execution.getPool),
           summary: "Returned readonly Postgres schema help.",
         };
       }

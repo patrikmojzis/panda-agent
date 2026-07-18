@@ -7,6 +7,7 @@ import {
 } from "../src/integrations/postgres/readonly-query-command.js";
 import {ToolError} from "../src/kernel/agent/exceptions.js";
 import {readDatabaseUsername} from "../src/domain/threads/runtime/index.js";
+import {READONLY_SESSION_VIEW_BASENAMES} from "../src/domain/threads/runtime/postgres-readonly.js";
 
 interface RecordedQuery {
   text: string;
@@ -87,6 +88,28 @@ function inputRequest(input: Record<string, unknown>) {
       skillPolicy: {mode: "all_agent" as const},
     },
   };
+}
+
+function readonlySchemaRows(excludedView?: string): Array<Record<string, unknown>> {
+  return READONLY_SESSION_VIEW_BASENAMES
+    .filter((view) => view !== excludedView)
+    .flatMap((view) => {
+      const columns = view === "messages"
+        ? [
+            ["id", "uuid"],
+            ["thread_id", "uuid"],
+            ["role", "text"],
+            ["text", "text"],
+            ["created_at", "timestamp with time zone"],
+          ]
+        : [["id", "uuid"]];
+      return columns.map(([columnName, dataType], index) => ({
+        table_name: view,
+        column_name: columnName,
+        data_type: dataType,
+        ordinal_position: index + 1,
+      }));
+    });
 }
 
 describe("postgres readonly query command", () => {
@@ -218,29 +241,60 @@ describe("postgres readonly query command", () => {
     }))).rejects.toThrow("postgres.readonly.query maxRows must be between 1 and 3.");
   });
 
-  it("returns schema help without opening a database connection", async () => {
-    const pool = new FakeReadonlyPool([{id: 1}]);
+  it("returns live schema help for every canonical readonly view", async () => {
+    const pool = new FakeReadonlyPool(readonlySchemaRows());
     const command = createCommand(pool);
 
     const result = await command.execute(inputRequest({schemaHelp: true}));
 
-    expect(pool.connectCalls).toBe(0);
+    expect(pool.connectCalls).toBe(1);
     expect(result.output).toMatchObject({
       operation: "schema_help",
       views: expect.arrayContaining([
-        expect.objectContaining({name: "session.messages"}),
+        expect.objectContaining({
+          name: "session.messages",
+          columns: expect.arrayContaining([
+            {name: "text", type: "text"},
+          ]),
+        }),
+        expect.objectContaining({name: "session.runtime_config"}),
         expect.objectContaining({name: "session.watch_runs"}),
+        expect.objectContaining({name: "session.email_messages"}),
       ]),
       examples: expect.arrayContaining([
         expect.objectContaining({
           sql: expect.stringContaining("information_schema.columns"),
         }),
+        expect.objectContaining({
+          sql: expect.stringContaining("left(text, 500)"),
+        }),
       ]),
     });
+    expect((result.output.views as Array<{name: string}>).map((view) => view.name)).toEqual(
+      READONLY_SESSION_VIEW_BASENAMES.map((name) => `session.${name}`),
+    );
+    expect(JSON.stringify(result.output)).not.toContain("runtime.");
+    expect(pool.client.queries.map((query) => query.text.trim())).toEqual([
+      "BEGIN READ ONLY",
+      "SET LOCAL statement_timeout = '5000ms'",
+      expect.stringContaining("FROM information_schema.columns"),
+      "COMMIT",
+    ]);
+    expect(pool.client.queries[2]?.values).toEqual([READONLY_SESSION_VIEW_BASENAMES]);
     await expect(command.execute(inputRequest({
       schemaHelp: true,
       sql: "select 1",
     }))).rejects.toThrow("schemaHelp cannot be combined");
+  });
+
+  it("fails closed when a canonical readonly view is missing", async () => {
+    const pool = new FakeReadonlyPool(readonlySchemaRows("messages"));
+    const command = createCommand(pool);
+
+    await expect(command.execute(inputRequest({schemaHelp: true}))).rejects.toThrow(
+      "Readonly schema is incomplete: expected session.messages but it is unavailable.",
+    );
+    expect(pool.client.queries.at(-1)?.text).toBe("ROLLBACK");
   });
 
   it("replaces oversized object values with placeholders", async () => {

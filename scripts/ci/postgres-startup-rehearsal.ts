@@ -19,6 +19,7 @@ import {RuntimeRequestRepo} from "../../src/domain/threads/requests/index.js";
 import {
   ensureReadonlySessionQuerySchema,
   PostgresThreadRuntimeStore,
+  READONLY_SESSION_VIEW_BASENAMES,
 } from "../../src/domain/threads/runtime/index.js";
 import {PostgresWatchStore} from "../../src/domain/watches/index.js";
 import {PostgresWikiBindingStore} from "../../src/domain/wiki/postgres.js";
@@ -26,6 +27,10 @@ import {recreateSmokeDatabase} from "../../src/app/smoke/database.js";
 import {createPostgresPool} from "../../src/app/runtime/database.js";
 import {ensureSchemas} from "../../src/app/runtime/postgres-bootstrap.js";
 import {DaemonStateRepo} from "../../src/app/runtime/state/repo.js";
+import {
+  createPostgresReadonlyQueryCommand,
+  POSTGRES_READONLY_QUERY_EXAMPLES,
+} from "../../src/integrations/postgres/readonly-query-command.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const fixtureDir = path.join(repoRoot, "scripts/ci/postgres-fixtures");
@@ -157,11 +162,37 @@ async function assertCoreRelations(pool: ReturnType<typeof createPostgresPool>):
     "runtime.tool_jobs",
     "runtime.session_routes",
     "runtime.credentials",
-    "session.agent_sessions",
-    "session.messages",
-    "session.tool_results",
-    "session.subagent_history",
+    ...READONLY_SESSION_VIEW_BASENAMES.map((name) => `session.${name}`),
   ]);
+}
+
+async function assertReadonlyExamplesExecute(pool: ReturnType<typeof createPostgresPool>): Promise<void> {
+  const command = createPostgresReadonlyQueryCommand({pool});
+  const scope = {
+    agentKey: "panda",
+    sessionId: "startup-rehearsal",
+    skillPolicy: {mode: "all_agent" as const},
+  };
+  const schemaHelp = await command.execute({
+    command: "postgres.readonly.query",
+    input: {schemaHelp: true},
+    scope,
+  });
+  const messagesView = (schemaHelp.output.views as Array<{
+    name: string;
+    columns: Array<{name: string}>;
+  }>).find((view) => view.name === "session.messages");
+  if (!messagesView?.columns.some((column) => column.name === "text")) {
+    throw new Error("Expected live readonly schema help to expose session.messages.text.");
+  }
+
+  for (const example of POSTGRES_READONLY_QUERY_EXAMPLES) {
+    await command.execute({
+      command: "postgres.readonly.query",
+      input: {sql: example.sql},
+      scope,
+    });
+  }
 }
 
 async function runScenario(name: string, fixturePath?: string): Promise<void> {
@@ -181,6 +212,7 @@ async function runScenario(name: string, fixturePath?: string): Promise<void> {
     await ensureRuntimeStartupSchemas(pool, stores);
     await assertCoreRelations(pool);
     await assertLegacyThreadContextColumnDropped(pool);
+    await assertReadonlyExamplesExecute(pool);
     process.stdout.write(`Postgres startup rehearsal passed: ${name}\n`);
   } finally {
     await pool.end();

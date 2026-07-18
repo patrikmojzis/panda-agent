@@ -36,6 +36,35 @@ export interface ReadonlySessionViewNames {
   emailAttachments: string;
 }
 
+export const READONLY_SESSION_VIEW_DEFINITIONS = {
+  agentSessions: "agent_sessions",
+  todos: "todos",
+  runtimeConfig: "runtime_config",
+  threads: "threads",
+  messages: "messages",
+  messagesRaw: "messages_raw",
+  toolResults: "tool_results",
+  inputs: "inputs",
+  runs: "runs",
+  prompts: "prompts",
+  agentPairings: "agent_pairings",
+  agentSkills: "agent_skills",
+  subagentHistory: "subagent_history",
+  scheduledTasks: "scheduled_tasks",
+  scheduledTaskRuns: "scheduled_task_runs",
+  watches: "watches",
+  watchRuns: "watch_runs",
+  watchEvents: "watch_events",
+  emailAccounts: "email_accounts",
+  emailAllowedRecipients: "email_allowed_recipients",
+  emailRoutes: "email_routes",
+  emailMessages: "email_messages",
+  emailMessageRecipients: "email_message_recipients",
+  emailAttachments: "email_attachments",
+} as const satisfies Record<keyof ReadonlySessionViewNames, string>;
+
+export const READONLY_SESSION_VIEW_BASENAMES = Object.freeze(Object.values(READONLY_SESSION_VIEW_DEFINITIONS));
+
 export interface EnsureReadonlySessionQuerySchemaOptions {
   queryable: PgQueryable;
   readonlyRole?: string | null;
@@ -66,58 +95,7 @@ export async function ensureReadonlySessionQuerySchema(
   const watchTables = buildWatchTableNames();
   const emailTables = buildEmailTableNames();
   const environmentTables = buildExecutionEnvironmentTableNames();
-  const { agentSessions, todos, runtimeConfig, threads, messages, messagesRaw, toolResults, inputs, runs, prompts, agentPairings, agentSkills, subagentHistory, scheduledTasks, scheduledTaskRuns, watches, watchRuns, watchEvents, emailAccounts, emailAllowedRecipients, emailRoutes, emailMessages, emailMessageRecipients, emailAttachments } = buildSessionRelationNames({
-    agentSessions: "agent_sessions",
-    todos: "todos",
-    runtimeConfig: "runtime_config",
-    threads: "threads",
-    messages: "messages",
-    messagesRaw: "messages_raw",
-    toolResults: "tool_results",
-    inputs: "inputs",
-    runs: "runs",
-    prompts: "prompts",
-    agentPairings: "agent_pairings",
-    agentSkills: "agent_skills",
-    subagentHistory: "subagent_history",
-    scheduledTasks: "scheduled_tasks",
-    scheduledTaskRuns: "scheduled_task_runs",
-    watches: "watches",
-    watchRuns: "watch_runs",
-    watchEvents: "watch_events",
-    emailAccounts: "email_accounts",
-    emailAllowedRecipients: "email_allowed_recipients",
-    emailRoutes: "email_routes",
-    emailMessages: "email_messages",
-    emailMessageRecipients: "email_message_recipients",
-    emailAttachments: "email_attachments",
-  });
-  const views: ReadonlySessionViewNames = {
-    agentSessions,
-    todos,
-    runtimeConfig,
-    threads,
-    messages,
-    messagesRaw,
-    toolResults,
-    inputs,
-    runs,
-    prompts,
-    agentPairings,
-    agentSkills,
-    subagentHistory,
-    scheduledTasks,
-    scheduledTaskRuns,
-    watches,
-    watchRuns,
-    watchEvents,
-    emailAccounts,
-    emailAllowedRecipients,
-    emailRoutes,
-    emailMessages,
-    emailMessageRecipients,
-    emailAttachments,
-  };
+  const {prefix: _sessionSchema, ...views} = buildSessionRelationNames(READONLY_SESSION_VIEW_DEFINITIONS);
   const messageTextSql = `
     CASE
       WHEN jsonb_typeof(m.message->'content') = 'string' THEN m.message->>'content'
@@ -774,7 +752,7 @@ export async function ensureReadonlySessionQuerySchema(
     const readonlyRole = quoteIdentifier(options.readonlyRole);
     await options.queryable.query(`
       GRANT USAGE ON SCHEMA ${quoteIdentifier(SESSION_SCHEMA)} TO ${readonlyRole};
-      GRANT SELECT ON ${views.agentSessions}, ${views.todos}, ${views.runtimeConfig}, ${views.threads}, ${views.messages}, ${views.messagesRaw}, ${views.toolResults}, ${views.inputs}, ${views.runs}, ${views.prompts}, ${views.agentPairings}, ${views.agentSkills}, ${views.subagentHistory}, ${views.scheduledTasks}, ${views.scheduledTaskRuns}, ${views.watches}, ${views.watchRuns}, ${views.watchEvents}, ${views.emailAccounts}, ${views.emailAllowedRecipients}, ${views.emailRoutes}, ${views.emailMessages}, ${views.emailMessageRecipients}, ${views.emailAttachments} TO ${readonlyRole};
+      GRANT SELECT ON ${Object.values(views).join(", ")} TO ${readonlyRole};
     `);
   }
 

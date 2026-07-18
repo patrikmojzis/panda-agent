@@ -8,6 +8,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 
 import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
+import {READONLY_SESSION_VIEW_BASENAMES} from "../src/domain/threads/runtime/postgres-readonly.js";
 import {
   createA2AHistoryCommand,
   createA2AInspectCommand,
@@ -190,6 +191,16 @@ class FakeReadonlyClient {
     }
     if (/^(BEGIN READ ONLY|SET LOCAL|COMMIT|ROLLBACK)$/m.test(text) || text.startsWith("SET LOCAL")) {
       return {rows: []};
+    }
+    if (text.includes("FROM information_schema.columns")) {
+      return {
+        rows: READONLY_SESSION_VIEW_BASENAMES.map((tableName, index) => ({
+          table_name: tableName,
+          column_name: tableName === "messages" ? "text" : "id",
+          data_type: "text",
+          ordinal_position: index + 1,
+        })),
+      };
     }
 
     return {

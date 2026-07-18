@@ -14,6 +14,8 @@ export {
 } from "./postgres-lease.js";
 export {
   ensureReadonlySessionQuerySchema,
+  READONLY_SESSION_VIEW_BASENAMES,
+  READONLY_SESSION_VIEW_DEFINITIONS,
   readDatabaseUsername,
 } from "./postgres-readonly.js";
 export type { ReadonlySessionViewNames } from "./postgres-readonly.js";

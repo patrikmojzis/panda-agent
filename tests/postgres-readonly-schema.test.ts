@@ -1,7 +1,10 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
-import {ensureReadonlySessionQuerySchema} from "../src/domain/threads/runtime/index.js";
+import {
+  ensureReadonlySessionQuerySchema,
+  READONLY_SESSION_VIEW_BASENAMES,
+} from "../src/domain/threads/runtime/index.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/index.js";
 import {PostgresWatchStore} from "../src/domain/watches/index.js";
 import {createSessionWithInitialThread} from "../src/domain/sessions/lifecycle.js";
@@ -350,6 +353,9 @@ describe("ensureReadonlySessionQuerySchema", () => {
       emailMessageRecipients: "\"session\".\"email_message_recipients\"",
       emailAttachments: "\"session\".\"email_attachments\"",
     });
+    expect(Object.values(views)).toEqual(
+      READONLY_SESSION_VIEW_BASENAMES.map((name) => `"session"."${name}"`),
+    );
 
     expect(queryable.queries).toHaveLength(2);
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_sessions\"");
@@ -388,6 +394,9 @@ describe("ensureReadonlySessionQuerySchema", () => {
     expect(queryable.queries[0]).toContain("pairing.agent_key = current_setting('runtime.agent_key', true)");
     expect(queryable.queries[0]).toContain("skill.agent_key = current_setting('runtime.agent_key', true)");
     expect(queryable.queries[1]).toContain("GRANT SELECT ON \"session\".\"agent_sessions\", \"session\".\"todos\", \"session\".\"runtime_config\", \"session\".\"threads\", \"session\".\"messages\", \"session\".\"messages_raw\", \"session\".\"tool_results\", \"session\".\"inputs\", \"session\".\"runs\", \"session\".\"prompts\", \"session\".\"agent_pairings\", \"session\".\"agent_skills\", \"session\".\"subagent_history\", \"session\".\"scheduled_tasks\", \"session\".\"scheduled_task_runs\", \"session\".\"watches\", \"session\".\"watch_runs\", \"session\".\"watch_events\"");
+    for (const name of READONLY_SESSION_VIEW_BASENAMES) {
+      expect(queryable.queries[1]).toContain(`\"session\".\"${name}\"`);
+    }
   });
 
   it("keeps readonly subagent history scoped and bounded", async () => {

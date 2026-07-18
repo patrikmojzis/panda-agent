@@ -40,6 +40,8 @@ Do not debug the read-only role before the main app role works.
 The `panda postgres readonly query` command is read-only.
 It is not view-only by itself.
 
+`panda postgres readonly query --help` is static command documentation. `--schema-help` connects through the readonly pool and introspects the live canonical `session.*` views, including their ordered columns and PostgreSQL types. An incomplete deployed view set is reported as an error instead of partial help.
+
 Privacy does not come from the prompt or from the tool description.
 Privacy comes from the database role you give that command.
 
