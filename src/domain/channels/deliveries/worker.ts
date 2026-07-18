@@ -132,6 +132,11 @@ export class ChannelOutboundDeliveryWorker {
           id: delivery.id,
           error: error instanceof Error ? error.message : String(error),
         });
+        try {
+          await this.adapter.onTerminalFailure?.(toRequest(delivery));
+        } catch (cleanupError) {
+          await this.onError?.(cleanupError, delivery.id);
+        }
         await this.onError?.(error, delivery.id);
       }
     }

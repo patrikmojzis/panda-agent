@@ -4,6 +4,8 @@ import type {OutboundRequest, OutboundResult} from "./types.js";
 export interface ChannelOutboundAdapter {
   channel: string;
   send(request: OutboundRequest): Promise<OutboundResult>;
+  /** Releases resources that must survive retries once a delivery becomes terminal. */
+  onTerminalFailure?(request: OutboundRequest): Promise<void>;
 }
 
 function requireTrimmedChannel(value: string): string {

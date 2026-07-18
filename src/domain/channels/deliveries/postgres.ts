@@ -191,6 +191,25 @@ function parseItems(value: unknown): readonly OutboundItem[] {
         const filename = readOptionalString(item.filename, "file item filename");
         const caption = readOptionalString(item.caption, "file item caption");
         const mimeType = readOptionalString(item.mimeType, "file item MIME type");
+        if (item.uploadRef !== undefined) {
+          if (item.path !== undefined) {
+            throw new Error("Outbound delivery file item cannot contain both path and uploadRef.");
+          }
+          const sizeBytes = typeof item.sizeBytes === "number" && Number.isInteger(item.sizeBytes) && item.sizeBytes >= 0
+            ? item.sizeBytes
+            : null;
+          if (!filename || !mimeType || sizeBytes === null) {
+            throw new Error("Outbound delivery uploaded file metadata is incomplete.");
+          }
+          return {
+            type: "file",
+            uploadRef: requireNonEmptyString(item.uploadRef, "Outbound delivery file uploadRef must not be empty."),
+            filename,
+            mimeType,
+            sizeBytes,
+            ...(caption ? {caption} : {}),
+          };
+        }
         return {
           type: "file",
           path: requireNonEmptyString(item.path, "Outbound delivery file item path must not be empty."),

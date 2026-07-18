@@ -49,7 +49,7 @@ export interface DaemonChannelCommandDependenciesInput {
 }
 
 export interface DaemonA2ACommandDependenciesInput {
-  commandFileResolver: RequiredCommandDependency<"commandFileResolver">;
+  commandUploads: RequiredCommandDependency<"commandUploads">;
   a2aMessaging: RequiredCommandDependency<"a2aMessaging">;
   a2aDeliveries: RequiredCommandDependency<"a2aDeliveries">;
 }
@@ -123,7 +123,7 @@ export function buildDaemonA2ACommandDependencies(
   input: DaemonA2ACommandDependenciesInput,
 ): AgentCommandModuleDependencies {
   return {
-    commandFileResolver: input.commandFileResolver,
+    commandUploads: input.commandUploads,
     a2aMessaging: input.a2aMessaging,
     a2aDeliveries: input.a2aDeliveries,
   };

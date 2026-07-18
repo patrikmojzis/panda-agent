@@ -7,6 +7,7 @@ import {promisify} from "node:util";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 
 import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
+import {FileSystemCommandUploadStore} from "../src/integrations/commands/file-uploads.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {READONLY_SESSION_VIEW_BASENAMES} from "../src/domain/threads/runtime/postgres-readonly.js";
 import {
@@ -298,6 +299,11 @@ describe("agent command shim", () => {
     };
     const emailAttachmentDir = await mkdtemp(path.join(os.tmpdir(), "panda-email-attachment-shim-"));
     directories.push(emailAttachmentDir);
+    const commandUploadDataDir = await mkdtemp(path.join(os.tmpdir(), "panda-command-upload-shim-"));
+    directories.push(commandUploadDataDir);
+    const commandUploads = new FileSystemCommandUploadStore({
+      env: {...process.env, DATA_DIR: commandUploadDataDir},
+    });
     const emailAttachmentSource = path.join(emailAttachmentDir, "invoice-source.pdf");
     await writeFile(emailAttachmentSource, "invoice-pdf", "utf8");
     const telegramMediaDir = await mkdtemp(path.join(os.tmpdir(), "panda-telegram-media-shim-"));
@@ -2167,14 +2173,7 @@ describe("agent command shim", () => {
             },
           }),
           createTelegramReactCommand(store),
-          createA2ASendCommand(store, {
-            async resolveReadablePath({file}) {
-              return {
-                path: file.path,
-                displayPath: file.path,
-              };
-            },
-          }),
+          createA2ASendCommand(store, commandUploads),
           createA2AInspectCommand(store),
           createA2AHistoryCommand(store),
           createEmailSendCommand({
@@ -2228,6 +2227,7 @@ describe("agent command shim", () => {
         }],
       ]),
       ...(options.socketPath ? {socketPath: options.socketPath} : {}),
+      fileUploads: commandUploads,
     });
     servers.push(server);
     return server;
@@ -2881,8 +2881,10 @@ describe("agent command shim", () => {
   it("executes commands through a Unix socket transport", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "panda-command-socket-"));
     directories.push(directory);
+    const queuedMessages: unknown[] = [];
     const server = await startWatchServer({
       socketPath: path.join(directory, "command.sock"),
+      onA2AQueueMessage: (input) => queuedMessages.push(input),
     });
 
     const {stdout} = await execFileAsync(shimPath, ["time", "now", "--json", "{}"], {
@@ -2892,6 +2894,27 @@ describe("agent command shim", () => {
     expect(JSON.parse(stdout)).toMatchObject({
       isoTimestamp: "2026-06-24T12:34:56.000Z",
     });
+
+    const attachmentPath = path.join(directory, "socket-attachment.txt");
+    await writeFile(attachmentPath, "socket attachment", "utf8");
+    await execFileAsync(shimPath, [
+      "a2a",
+      "send",
+      "--to-session",
+      "session-b",
+      "--file",
+      attachmentPath,
+    ], {env: shimEnv(server)});
+    expect(queuedMessages).toEqual([
+      expect.objectContaining({
+        items: [expect.objectContaining({
+          type: "file",
+          uploadRef: expect.stringMatching(/^upl_[a-f0-9]{32}$/),
+          filename: "socket-attachment.txt",
+          sizeBytes: 17,
+        })],
+      }),
+    ]);
   });
 
   it("prefers command access file credentials over stale static environment credentials", async () => {
@@ -5627,7 +5650,10 @@ printf '{"ok":true,"output":%s}\\n' "$body"
   });
 
   it("executes a2a.send flag payloads with generic file attachments", async () => {
-    const server = await startWatchServer();
+    const queuedMessages: Array<{items?: readonly Record<string, unknown>[]}> = [];
+    const server = await startWatchServer({
+      onA2AQueueMessage: (input) => queuedMessages.push(input as {items?: readonly Record<string, unknown>[]}),
+    });
     const directory = await mkdtemp(path.join(os.tmpdir(), "panda-a2a-shim-"));
     directories.push(directory);
     const reportPath = path.join(directory, "report.md");
@@ -5654,6 +5680,14 @@ printf '{"ok":true,"output":%s}\\n' "$body"
       targetSessionId: "session-b",
       messageId: "a2a:shim",
     });
+    expect(queuedMessages[0]?.items?.[1]).toMatchObject({
+      type: "file",
+      uploadRef: expect.stringMatching(/^upl_[a-f0-9]{32}$/),
+      filename: "report.md",
+      mimeType: "application/octet-stream",
+      sizeBytes: 5,
+    });
+    expect(queuedMessages[0]?.items?.[1]).not.toHaveProperty("path");
   });
 
   it("executes a2a.send text bodies from literal values and @file", async () => {

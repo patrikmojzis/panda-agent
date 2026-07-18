@@ -209,6 +209,9 @@ async function buildImageFile(item: OutboundImageItem): Promise<DiscordCreateMes
 }
 
 async function buildDocumentFile(item: OutboundFileItem): Promise<DiscordCreateMessageFile> {
+  if (!("path" in item)) {
+    throw new Error("Discord outbound does not accept command upload references.");
+  }
   const filePath = requireNonEmptyString(item.path, "Discord outbound file path must not be empty.");
   return {
     filename: requireNonEmptyString(

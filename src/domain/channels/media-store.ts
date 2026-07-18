@@ -36,6 +36,10 @@ export interface WriteMediaInput {
   metadata?: JsonValue;
 }
 
+export interface WriteMediaFileInput extends Omit<WriteMediaInput, "bytes"> {
+  path: string;
+}
+
 export interface FileSystemMediaStoreOptions {
   rootDir: string;
   now?: () => Date;
@@ -248,6 +252,43 @@ export class FileSystemMediaStore {
       connectorKey,
       mimeType,
       sizeBytes,
+      localPath,
+      originalFilename,
+      metadata: input.metadata,
+      createdAt,
+    };
+  }
+
+  async writeMediaFile(input: WriteMediaFileInput): Promise<MediaDescriptor> {
+    const source = requireTrimmedValue("source", input.source);
+    const connectorKey = requireTrimmedValue("connector key", input.connectorKey);
+    const mimeType = requireTrimmedValue("mime type", input.mimeType).toLowerCase();
+    const originalFilename = sanitizeOriginalFilename(input.hintFilename);
+    const sourcePath = path.resolve(requireTrimmedValue("source path", input.path));
+    const sourceStat = await fs.stat(sourcePath);
+    if (!sourceStat.isFile()) {
+      throw new Error("Media source path must be a file.");
+    }
+    if (input.sizeBytes !== undefined && input.sizeBytes !== sourceStat.size) {
+      throw new Error(`Media sizeBytes ${input.sizeBytes} does not match source file size ${sourceStat.size}.`);
+    }
+
+    const createdAtDate = this.now();
+    const createdAt = createdAtDate.getTime();
+    const id = randomUUID();
+    const relativeDirectory = buildRelativeMediaDirectory(source, connectorKey, createdAtDate);
+    const absoluteDirectory = path.join(this.rootDir, relativeDirectory);
+    const localPath = path.join(absoluteDirectory, `${id}${inferExtension(mimeType, originalFilename)}`);
+    assertPathWithinRoot(this.rootDir, localPath);
+    await fs.mkdir(absoluteDirectory, {recursive: true});
+    await fs.copyFile(sourcePath, localPath, fs.constants.COPYFILE_EXCL);
+
+    return {
+      id,
+      source,
+      connectorKey,
+      mimeType,
+      sizeBytes: sourceStat.size,
       localPath,
       originalFilename,
       metadata: input.metadata,

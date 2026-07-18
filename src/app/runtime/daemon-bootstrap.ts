@@ -38,6 +38,7 @@ import {WHATSAPP_SOURCE} from "../../integrations/channels/whatsapp/config.js";
 import {resolveAgentMediaDir} from "./data-dir.js";
 import {readPositiveIntegerEnv} from "./database.js";
 import {trimToNull} from "../../lib/strings.js";
+import {FileSystemCommandUploadStore} from "../../integrations/commands/file-uploads.js";
 
 interface DaemonContext {
   fallbackContext: {cwd: string};
@@ -294,6 +295,7 @@ export async function bootstrapDaemonContext(
       daemonState,
     ]);
 
+    const commandUploads = new FileSystemCommandUploadStore();
     a2aMessagingService = new A2AMessagingService({
       bindings: a2aBindings,
       outboundDeliveries,
@@ -302,7 +304,7 @@ export async function bootstrapDaemonContext(
     });
     runtime.commandExecutor.registerCommands(runtime.commandCatalog.createCommands(
       buildDaemonA2ACommandDependencies({
-        commandFileResolver: runtime.commandFileResolver,
+        commandUploads,
         a2aMessaging: a2aMessagingService,
         a2aDeliveries: a2aBindings,
       }),
@@ -316,6 +318,7 @@ export async function bootstrapDaemonContext(
         sessionStore: runtime.sessionStore,
         createMediaStore: (rootDir) => new FileSystemMediaStore({rootDir}),
         resolveAgentMediaDir: (agentKey) => resolveAgentMediaDir(agentKey),
+        commandUploads,
       }),
       connectorKey: A2A_CONNECTOR_KEY,
       onError: (error, deliveryId) => {

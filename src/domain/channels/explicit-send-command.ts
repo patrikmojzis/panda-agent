@@ -150,6 +150,9 @@ async function resolveItemPath<TItem extends OutboundImageItem | OutboundFileIte
   request: CommandRequest,
   fileResolver: CommandFileResolver,
 ): Promise<TItem> {
+  if (!("path" in item)) {
+    throw new Error("Uploaded file references are only supported by a2a.send.");
+  }
   const resolved = await fileResolver.resolveReadablePath({
     request,
     file: {

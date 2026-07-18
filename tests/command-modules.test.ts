@@ -220,6 +220,7 @@ function defaultModuleDependencies(): AgentCommandModuleDependencies {
     email: {} as AgentCommandModuleDependencies["email"],
     a2aMessaging: {} as AgentCommandModuleDependencies["a2aMessaging"],
     a2aDeliveries: {} as AgentCommandModuleDependencies["a2aDeliveries"],
+    commandUploads: {} as AgentCommandModuleDependencies["commandUploads"],
     commandFileResolver: {
       async resolveReadablePath({file}) {
         return {

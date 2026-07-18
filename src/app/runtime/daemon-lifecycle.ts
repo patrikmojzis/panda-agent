@@ -30,6 +30,7 @@ import {DAEMON_HEARTBEAT_INTERVAL_MS, type DaemonServices} from "./daemon-shared
 import {RuntimeRequestDrain, type RuntimeRequestDrainStore} from "./request-drain.js";
 import type {RuntimeServices} from "./create-runtime.js";
 import {formatOrphanedRunRecoveryReason} from "../../domain/threads/runtime/coordinator.js";
+import {FileSystemCommandUploadStore} from "../../integrations/commands/file-uploads.js";
 
 const DAEMON_HEALTH_STALE_AFTER_MS = DAEMON_HEARTBEAT_INTERVAL_MS * 3;
 const DAEMON_HEALTH_POOL_WAITING_STALE_AFTER_MS = 60_000;
@@ -431,6 +432,7 @@ export function createDaemonLifecycle(input: {
             socketPath: binding.socketPath,
             executor: input.context.runtime.commandExecutor,
             leaseVerifier: input.context.runtime.commandLeases,
+            fileUploads: new FileSystemCommandUploadStore(),
           });
         })();
         await heartbeat();

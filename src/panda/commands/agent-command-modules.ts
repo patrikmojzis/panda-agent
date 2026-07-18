@@ -41,6 +41,7 @@ import {
   createAppViewCommand,
 } from "../../domain/apps/commands.js";
 import type {CommandFileResolver, CommandWritableFileResolver} from "../../domain/commands/files.js";
+import type {CommandUploadStore} from "../../domain/commands/uploads.js";
 import type {
   CommandCatalogModule,
   CommandDescriptor,
@@ -343,6 +344,7 @@ export interface AgentCommandModuleDependencies {
   env?: NodeJS.ProcessEnv;
   backgroundJobService?: BackgroundToolJobService;
   commandFileResolver?: AgentCommandFileResolver;
+  commandUploads?: CommandUploadStore;
   watchStore?: WatchStore;
   watchMutations?: WatchMutationService;
   scheduledTasks?: ScheduledTaskStore;
@@ -446,6 +448,13 @@ function requireCommandFileResolver(dependencies: AgentCommandModuleDependencies
   }
 
   return dependencies.commandFileResolver;
+}
+
+function requireCommandUploads(dependencies: AgentCommandModuleDependencies): CommandUploadStore {
+  if (!dependencies.commandUploads) {
+    throw new Error("Agent command module requires commandUploads.");
+  }
+  return dependencies.commandUploads;
 }
 
 function requireWatchStore(dependencies: AgentCommandModuleDependencies): WatchStore {
@@ -1048,7 +1057,7 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
     agentCommandPolicy(["core"]),
     (dependencies) => createA2ASendCommand(
       requireA2AMessaging(dependencies),
-      requireCommandFileResolver(dependencies),
+      requireCommandUploads(dependencies),
     ),
   ),
   daemonA2ACommandModule(

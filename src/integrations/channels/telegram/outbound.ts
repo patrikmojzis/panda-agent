@@ -120,6 +120,9 @@ export function createTelegramOutboundAdapter(
             break;
           }
           case "file": {
+            if (!("path" in item)) {
+              throw new Error("Telegram outbound does not accept command upload references.");
+            }
             const filename = item.filename?.trim() || path.basename(item.path);
             const createDocument = () => new InputFile(item.path, filename);
             const message = item.caption

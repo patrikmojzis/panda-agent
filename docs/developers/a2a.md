@@ -60,7 +60,8 @@ transports them the same way.
 ## JSON Command Contract
 
 `panda a2a send --json` accepts the new command shape. Attachments are files;
-use `type: "file"` for images too.
+use `type: "file"` for images too. Raw JSON callers must upload the bytes first;
+they cannot name a server-local path.
 
 ```ts
 {
@@ -68,7 +69,7 @@ use `type: "file"` for images too.
   sessionId?: string;
   items: Array<
     | {type: "text"; text: string}
-    | {type: "file"; path: string; filename?: string; caption?: string; mimeType?: string}
+    | {type: "file"; uploadRef: string; filename?: string; caption?: string; mimeType?: string}
   >;
 }
 ```
@@ -105,18 +106,21 @@ V1 supports:
 Attachment rules in the tool layer:
 
 - max `10` items per send
-- max `20 MB` per attachment
-- max `50 MB` total attachment bytes per send
-- paths are resolved from the runtime working directory/context
+- max `60 MiB` per attachment
+- max `150 MiB` total attachment bytes per send
+- native `--file` paths are read by the CLI process and uploaded immediately
+- JSON file items accept only sender-scoped `uploadRef`; public `path` input is rejected
 
 Attachment transfer is receiver-side durable media ingestion:
 
-1. the sender tool validates and resolves paths
-2. the A2A outbound adapter reads bytes from those sender-local paths
-3. the adapter writes media into the recipient agent's media store
+1. the native CLI streams client-local bytes into sender-owned durable staging
+2. the queued delivery retains an opaque sender/session-scoped upload reference
+3. the A2A outbound adapter copies staged bytes into the recipient media store
 4. the runtime request carries receiver-local `MediaDescriptor` values
+5. staging is removed after success or terminal failure; abandoned uploads expire
 
-Raw sender paths do not cross the session boundary as the durable contract.
+Client-local and server-local paths are never part of the public or queued A2A contract.
+Neither sender nor recipient needs an execution workspace.
 
 For isolated subagents, `a2a.send` also carries a small sender environment
 snapshot in delivery metadata. It includes safe parent-runner paths such as
@@ -168,7 +172,7 @@ Notes:
 
 ## Send Path
 
-1. `a2a.send` validates schema and resolves attachment paths
+1. `a2a.send` validates schema and sender-scoped upload references
 2. `A2AMessagingService` resolves the target session
 3. same-session send is blocked
 4. the directional allowlist is checked

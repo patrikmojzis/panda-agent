@@ -1283,6 +1283,9 @@ async function resolveTelegramSendItemPath<TItem extends OutboundImageItem | Out
   request: CommandRequest,
   fileResolver: CommandFileResolver,
 ): Promise<TItem> {
+  if (!("path" in item)) {
+    throw new Error("Telegram send does not accept command upload references.");
+  }
   const resolved = await fileResolver.resolveReadablePath({
     request,
     file: {

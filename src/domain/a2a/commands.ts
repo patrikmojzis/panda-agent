@@ -1,9 +1,7 @@
-import {access, stat} from "node:fs/promises";
-
 import type {JsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
-import type {OutboundFileItem, OutboundItem} from "../channels/types.js";
-import type {CommandFileResolver} from "../commands/files.js";
+import type {OutboundItem} from "../channels/types.js";
+import type {CommandUploadStore} from "../commands/uploads.js";
 import type {CommandDescriptor, CommandRequest, CommandSuccess, RegisteredCommand} from "../commands/types.js";
 import {readExecutionEnvironmentFilesystemMetadata} from "../execution-environments/filesystem.js";
 import type {A2AEnvironmentPathHints, A2ASenderEnvironmentSnapshot} from "../threads/requests/types.js";
@@ -13,8 +11,8 @@ export const A2A_SEND_COMMAND_NAME = "a2a.send";
 export const A2A_INSPECT_COMMAND_NAME = "a2a.inspect";
 export const A2A_HISTORY_COMMAND_NAME = "a2a.history";
 
-const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
-const MAX_TOTAL_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+export const MAX_A2A_ATTACHMENT_BYTES = 60 * 1024 * 1024;
+export const MAX_A2A_TOTAL_ATTACHMENT_BYTES = 150 * 1024 * 1024;
 const MAX_ITEMS = 10;
 const DEFAULT_HISTORY_LIMIT = 10;
 const MAX_HISTORY_LIMIT = 50;
@@ -148,13 +146,18 @@ function parseA2AHistoryInput(input: unknown): {
   };
 }
 
-function parseMessageAgentItem(value: unknown, label: string): OutboundItem {
+type ParsedMessageAgentItem =
+  | {type: "text"; text: string}
+  | {type: "file"; uploadRef: string; caption?: string};
+
+function parseMessageAgentItem(value: unknown, label: string): ParsedMessageAgentItem {
   if (!isRecord(value)) {
     throw new Error(`${label} must be a JSON object.`);
   }
 
   switch (value.type) {
     case "text":
+      rejectUnexpectedKeys(value, label, ["type", "text"]);
       return {
         type: "text",
         text: readRequiredString(value.text, `${label}.text`),
@@ -163,15 +166,15 @@ function parseMessageAgentItem(value: unknown, label: string): OutboundItem {
       throw new Error(`${label}.type image is not accepted; use type=file for A2A attachments.`);
     }
     case "file": {
-      const filename = readOptionalString(value.filename, `${label}.filename`);
+      if (value.path !== undefined) {
+        throw new Error(`${label} does not accept path; upload the client-local file and pass uploadRef.`);
+      }
+      rejectUnexpectedKeys(value, label, ["type", "uploadRef", "filename", "caption", "mimeType"]);
       const caption = readOptionalString(value.caption, `${label}.caption`);
-      const mimeType = readOptionalString(value.mimeType, `${label}.mimeType`);
       return {
         type: "file",
-        path: readRequiredString(value.path, `${label}.path`),
-        ...(filename ? {filename} : {}),
+        uploadRef: readRequiredString(value.uploadRef, `${label}.uploadRef`),
         ...(caption ? {caption} : {}),
-        ...(mimeType ? {mimeType} : {}),
       };
     }
     default:
@@ -182,7 +185,7 @@ function parseMessageAgentItem(value: unknown, label: string): OutboundItem {
 function parseMessageAgentSendCommandInput(input: unknown, commandLabel: string): {
   agentKey?: string;
   sessionId?: string;
-  items: readonly OutboundItem[];
+  items: readonly ParsedMessageAgentItem[];
 } {
   const object = requireInputObject(input, commandLabel);
   const agentKey = readOptionalString(object.agentKey, `${commandLabel} agentKey`);
@@ -202,62 +205,10 @@ function parseMessageAgentSendCommandInput(input: unknown, commandLabel: string)
   };
 }
 
-async function ensureReadableFile(filePath: string, displayPath: string): Promise<{sizeBytes: number}> {
-  try {
-    const file = await stat(filePath);
-    if (!file.isFile()) {
-      throw new Error(`Expected a file at ${displayPath}`);
-    }
-
-    return {
-      sizeBytes: file.size,
-    };
-  } catch (error) {
-    if (error instanceof Error && error.message === `Expected a file at ${displayPath}`) {
-      throw error;
-    }
-
-    try {
-      await access(filePath);
-    } catch {
-      throw new Error(`No readable file found at ${displayPath}`);
-    }
-
-    throw new Error(`Failed to inspect file at ${displayPath}`);
-  }
-}
-
-async function resolveItemPath<TItem extends OutboundFileItem>(
-  item: TItem,
-  request: CommandRequest,
-  fileResolver: CommandFileResolver,
-): Promise<{item: TItem; sizeBytes: number}> {
-  const resolved = await fileResolver.resolveReadablePath({
-    request,
-    file: {
-      path: item.path,
-    },
-  });
-  const {sizeBytes} = await ensureReadableFile(resolved.path, resolved.displayPath);
-  if (sizeBytes > MAX_ATTACHMENT_BYTES) {
-    throw new Error(
-      `Attachment ${resolved.displayPath} is too large (${sizeBytes} bytes). Max per item is ${MAX_ATTACHMENT_BYTES} bytes.`,
-    );
-  }
-
-  return {
-    item: {
-      ...item,
-      path: resolved.path,
-    },
-    sizeBytes,
-  };
-}
-
 async function resolveOutboundItems(
-  items: readonly OutboundItem[],
+  items: readonly ParsedMessageAgentItem[],
   request: CommandRequest,
-  fileResolver: CommandFileResolver,
+  uploads: CommandUploadStore,
 ): Promise<readonly OutboundItem[]> {
   const resolved: OutboundItem[] = [];
   let totalAttachmentBytes = 0;
@@ -267,21 +218,31 @@ async function resolveOutboundItems(
       case "text":
         resolved.push(item);
         break;
-      case "image": {
-        throw new Error("a2a.send does not accept image items; use type=file for A2A attachments.");
-      }
       case "file": {
-        const next = await resolveItemPath(item, request, fileResolver);
-        totalAttachmentBytes += next.sizeBytes;
-        resolved.push(next.item);
+        const upload = await uploads.inspect({
+          agentKey: request.scope.agentKey,
+          sessionId: request.scope.sessionId,
+        }, item.uploadRef);
+        if (upload.sizeBytes > MAX_A2A_ATTACHMENT_BYTES) {
+          throw new Error(`A2A attachment exceeds the ${MAX_A2A_ATTACHMENT_BYTES} byte per-file limit.`);
+        }
+        totalAttachmentBytes += upload.sizeBytes;
+        resolved.push({
+          type: "file",
+          uploadRef: upload.uploadRef,
+          filename: upload.filename,
+          mimeType: upload.mimeType,
+          sizeBytes: upload.sizeBytes,
+          ...(item.caption ? {caption: item.caption} : {}),
+        });
         break;
       }
     }
   }
 
-  if (totalAttachmentBytes > MAX_TOTAL_ATTACHMENT_BYTES) {
+  if (totalAttachmentBytes > MAX_A2A_TOTAL_ATTACHMENT_BYTES) {
     throw new Error(
-      `Total attachment size is too large (${totalAttachmentBytes} bytes). Max per send is ${MAX_TOTAL_ATTACHMENT_BYTES} bytes.`,
+      `Total A2A attachment size exceeds the ${MAX_A2A_TOTAL_ATTACHMENT_BYTES} byte per-send limit.`,
     );
   }
 
@@ -464,7 +425,7 @@ export const a2aHistoryCommandDescriptor: CommandDescriptor = {
 export const a2aSendCommandDescriptor: CommandDescriptor = {
   name: A2A_SEND_COMMAND_NAME,
   summary: "Send an A2A message to another Panda session.",
-  description: "Queues a fire-and-forget Panda-to-Panda message with optional generic file attachments resolved from the current workspace.",
+  description: "Queues a fire-and-forget Panda-to-Panda message. Native --file paths are uploaded from the CLI filesystem before enqueue; JSON file items require uploadRef.",
   usage: "panda a2a send (--to-session <session-id>|--to-agent <agent-key>) (--text <text|@file|@->|--stdin|--file <path>)...",
   inputModes: ["flags", "json", "stdin", "file"],
   outputModes: ["json", "text"],
@@ -498,14 +459,14 @@ export const a2aSendCommandDescriptor: CommandDescriptor = {
     },
     {
       name: "file",
-      description: "Repeatable workspace attachment path. Images are sent with --file too.",
+      description: "Repeatable client-local attachment path. Images are sent with --file too.",
       valueType: "string",
       valueName: "path",
       repeatable: true,
     },
     {
       name: "json",
-      description: "Structured JSON object containing agentKey or sessionId, plus text/file items.",
+      description: "Structured JSON object containing agentKey or sessionId; file items require uploadRef and never accept path.",
       valueType: "json",
     },
   ],
@@ -515,7 +476,7 @@ export const a2aSendCommandDescriptor: CommandDescriptor = {
       command: "panda a2a send --to-session session-b --text \"done\"",
     },
     {
-      description: "Send a workspace file",
+      description: "Upload and send a client-local file",
       command: "panda a2a send --to-session session-b --text \"see attached\" --file ./report.md",
     },
     {
@@ -536,7 +497,7 @@ export const a2aSendCommandDescriptor: CommandDescriptor = {
 
 function createMessageSendCommand(
   queue: MessageAgentCommandQueue,
-  fileResolver: CommandFileResolver,
+  uploads: CommandUploadStore,
 ): RegisteredCommand {
   return {
     descriptor: a2aSendCommandDescriptor,
@@ -546,7 +507,7 @@ function createMessageSendCommand(
       }
 
       const input = parseMessageAgentSendCommandInput(request.input, A2A_SEND_COMMAND_NAME);
-      const items = await resolveOutboundItems(input.items, request, fileResolver);
+      const items = await resolveOutboundItems(input.items, request, uploads);
       const senderEnvironment = buildSenderEnvironmentSnapshot(request.scope.executionEnvironment);
       const queued = await queue.queueMessage({
         senderAgentKey: request.scope.agentKey,
@@ -576,9 +537,9 @@ function createMessageSendCommand(
 
 export function createA2ASendCommand(
   queue: MessageAgentCommandQueue,
-  fileResolver: CommandFileResolver,
+  uploads: CommandUploadStore,
 ): RegisteredCommand {
-  return createMessageSendCommand(queue, fileResolver);
+  return createMessageSendCommand(queue, uploads);
 }
 
 export function createA2AInspectCommand(reader: A2ADeliveryReader): RegisteredCommand {

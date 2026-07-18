@@ -1,18 +1,32 @@
-import {mkdtemp, mkdir, realpath, rm, writeFile} from "node:fs/promises";
+import {mkdtemp, rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
 
-import {RuntimeCommandFileResolver} from "../src/app/runtime/command-files.js";
 import {
   A2A_HISTORY_COMMAND_NAME,
   A2A_INSPECT_COMMAND_NAME,
   A2A_SEND_COMMAND_NAME,
+  MAX_A2A_ATTACHMENT_BYTES,
+  MAX_A2A_TOTAL_ATTACHMENT_BYTES,
   createA2AHistoryCommand,
   createA2AInspectCommand,
   createA2ASendCommand,
 } from "../src/domain/a2a/commands.js";
+
+function createUploadStore() {
+  return {
+    inspect: vi.fn(async (_scope: unknown, uploadRef: string) => ({
+      uploadRef,
+      filename: "report.txt",
+      mimeType: "text/plain",
+      sizeBytes: 5,
+    })),
+    resolve: vi.fn(),
+    remove: vi.fn(),
+  };
+}
 
 function createEnvironmentMetadata(root: string) {
   return {
@@ -52,14 +66,9 @@ describe("a2a command", () => {
     directories.clear();
   });
 
-  it("resolves workspace attachments through the command file resolver", async () => {
+  it("resolves sender-scoped upload references without a workspace path", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "panda-message-agent-command-"));
     directories.add(root);
-    const workspaceNested = path.join(root, "workspace", "nested");
-    const reportPath = path.join(workspaceNested, "report.txt");
-    await mkdir(workspaceNested, {recursive: true});
-    await writeFile(reportPath, "hello", "utf8");
-    const resolvedReportPath = await realpath(reportPath);
 
     const queueMessage = vi.fn(async (input) => ({
       delivery: {
@@ -71,7 +80,7 @@ describe("a2a command", () => {
     }));
     const command = createA2ASendCommand({
       queueMessage,
-    }, new RuntimeCommandFileResolver());
+    }, createUploadStore());
 
     const result = await command.execute({
       command: A2A_SEND_COMMAND_NAME,
@@ -79,7 +88,7 @@ describe("a2a command", () => {
         sessionId: "session-b",
         items: [
           {type: "text", text: "see attached"},
-          {type: "file", path: "report.txt", filename: "report.txt"},
+          {type: "file", uploadRef: "upl_1234567890abcdef1234567890abcdef", filename: "spoofed.txt"},
         ],
       },
       workingDirectory: "/workspace/nested",
@@ -124,7 +133,13 @@ describe("a2a command", () => {
       },
       items: [
         {type: "text", text: "see attached"},
-        {type: "file", path: resolvedReportPath, filename: "report.txt"},
+        {
+          type: "file",
+          uploadRef: "upl_1234567890abcdef1234567890abcdef",
+          filename: "report.txt",
+          mimeType: "text/plain",
+          sizeBytes: 5,
+        },
       ],
     });
     expect(result.output).toEqual({
@@ -148,7 +163,7 @@ describe("a2a command", () => {
     }));
     const command = createA2ASendCommand({
       queueMessage,
-    }, new RuntimeCommandFileResolver());
+    }, createUploadStore());
 
     const result = await command.execute({
       command: A2A_SEND_COMMAND_NAME,
@@ -176,7 +191,7 @@ describe("a2a command", () => {
     const queueMessage = vi.fn();
     const command = createA2ASendCommand({
       queueMessage,
-    }, new RuntimeCommandFileResolver());
+    }, createUploadStore());
 
     await expect(command.execute({
       command: A2A_SEND_COMMAND_NAME,
@@ -193,11 +208,77 @@ describe("a2a command", () => {
     expect(queueMessage).not.toHaveBeenCalled();
   });
 
+  it("hard-rejects server-local paths before inspecting or queueing", async () => {
+    const queueMessage = vi.fn();
+    const uploads = createUploadStore();
+    const command = createA2ASendCommand({queueMessage}, uploads);
+
+    await expect(command.execute({
+      command: A2A_SEND_COMMAND_NAME,
+      input: {
+        sessionId: "session-b",
+        items: [{type: "file", path: "/tmp/report.txt"}],
+      },
+      scope: {
+        agentKey: "panda",
+        sessionId: "session-a",
+        threadId: "thread-a",
+      },
+    })).rejects.toThrow(
+      "a2a.send items[0] does not accept path; upload the client-local file and pass uploadRef.",
+    );
+    expect(uploads.inspect).not.toHaveBeenCalled();
+    expect(queueMessage).not.toHaveBeenCalled();
+  });
+
+  it("enforces 60 MiB per upload and 150 MiB across server-observed sizes", async () => {
+    const queueMessage = vi.fn(async () => ({
+      delivery: {id: "delivery-1"},
+      targetAgentKey: "koala",
+      targetSessionId: "session-b",
+      messageId: "a2a:123",
+    }));
+    const sizes = new Map<string, number>();
+    const uploads = createUploadStore();
+    uploads.inspect.mockImplementation(async (_scope: unknown, uploadRef: string) => ({
+      uploadRef,
+      filename: `${uploadRef}.bin`,
+      mimeType: "application/octet-stream",
+      sizeBytes: sizes.get(uploadRef) ?? 0,
+    }));
+    const command = createA2ASendCommand({queueMessage}, uploads);
+    const execute = (refs: string[]) => command.execute({
+      command: A2A_SEND_COMMAND_NAME,
+      input: {
+        sessionId: "session-b",
+        items: refs.map((uploadRef) => ({type: "file", uploadRef})),
+      },
+      scope: {
+        agentKey: "panda",
+        sessionId: "session-a",
+        threadId: "thread-a",
+      },
+    });
+
+    sizes.set("oversized", MAX_A2A_ATTACHMENT_BYTES + 1);
+    await expect(execute(["oversized"]))
+      .rejects.toThrow(`${MAX_A2A_ATTACHMENT_BYTES} byte per-file limit`);
+
+    sizes.set("part-a", 50 * 1024 * 1024);
+    sizes.set("part-b", 50 * 1024 * 1024);
+    sizes.set("part-c", 50 * 1024 * 1024);
+    sizes.set("extra", 1);
+    await expect(execute(["part-a", "part-b", "part-c"]))
+      .resolves.toMatchObject({ok: true});
+    await expect(execute(["part-a", "part-b", "part-c", "extra"]))
+      .rejects.toThrow(`${MAX_A2A_TOTAL_ATTACHMENT_BYTES} byte per-send limit`);
+  });
+
   it("requires current-thread scope before queueing", async () => {
     const queueMessage = vi.fn();
     const command = createA2ASendCommand({
       queueMessage,
-    }, new RuntimeCommandFileResolver());
+    }, createUploadStore());
 
     await expect(command.execute({
       command: A2A_SEND_COMMAND_NAME,

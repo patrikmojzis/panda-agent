@@ -64,6 +64,9 @@ export function createWhatsAppOutboundAdapter(
             break;
           }
           case "file": {
+            if (!("path" in item)) {
+              throw new Error("WhatsApp outbound does not accept command upload references.");
+            }
             const document = await readFile(item.path);
             const message = await socket.sendMessage(jid, {
               document,

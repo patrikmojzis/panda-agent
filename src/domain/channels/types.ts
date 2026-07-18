@@ -58,13 +58,24 @@ export interface OutboundImageItem {
   caption?: string;
 }
 
-export interface OutboundFileItem {
+export interface OutboundPathFileItem {
   type: "file";
   path: string;
   filename?: string;
   caption?: string;
   mimeType?: string;
 }
+
+export interface OutboundUploadFileItem {
+  type: "file";
+  uploadRef: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  caption?: string;
+}
+
+export type OutboundFileItem = OutboundPathFileItem | OutboundUploadFileItem;
 
 export type OutboundItem =
   | OutboundTextItem

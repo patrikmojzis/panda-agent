@@ -65,6 +65,7 @@ describe("connector worker runtime", () => {
         lastError: input.error,
       })),
     };
+    const onTerminalFailure = vi.fn(async () => undefined);
     const worker = createConnectorOutboundWorker({
       store,
       adapter: {
@@ -72,6 +73,7 @@ describe("connector worker runtime", () => {
         send: vi.fn(async () => {
           throw new Error("send failed");
         }),
+        onTerminalFailure,
       },
       connectorKey: "telegram-bot",
       log,
@@ -85,6 +87,10 @@ describe("connector worker runtime", () => {
       id: "delivery-1",
       error: "send failed",
     });
+    expect(onTerminalFailure).toHaveBeenCalledWith(expect.objectContaining({
+      deliveryId: "delivery-1",
+      channel: "telegram",
+    }));
     expect(log).toHaveBeenCalledWith("outbound_delivery_failed", {
       connectorKey: "telegram-bot",
       deliveryId: "delivery-1",

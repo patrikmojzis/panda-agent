@@ -98,7 +98,7 @@ describe("command dependency builders", () => {
 
   it("builds daemon A2A command dependencies for Panda-to-Panda commands", () => {
     const deps = {
-      commandFileResolver: fakeDependency("commandFileResolver"),
+      commandUploads: fakeDependency("commandUploads"),
       a2aMessaging: fakeDependency("a2aMessaging"),
       a2aDeliveries: fakeDependency("a2aDeliveries"),
     };

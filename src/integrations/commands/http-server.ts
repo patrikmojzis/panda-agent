@@ -9,6 +9,7 @@ import {isJsonObject, type JsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToNull} from "../../lib/strings.js";
 import {readJsonHttpBody} from "../http-body.js";
+import {CommandUploadError, type FileSystemCommandUploadStore} from "./file-uploads.js";
 
 const MAX_COMMAND_HTTP_BODY_BYTES = 2 * 1024 * 1024;
 const DEFAULT_COMMAND_HTTP_HOST = "127.0.0.1";
@@ -25,6 +26,7 @@ export interface CommandHttpServerOptions {
   host?: string;
   port?: number;
   socketPath?: string;
+  fileUploads?: Pick<FileSystemCommandUploadStore, "stage">;
 }
 
 export interface CommandHttpServer {
@@ -170,6 +172,36 @@ async function handleRequest(
   }
 
   const scope = await readCommandScope(request, options.leaseVerifier);
+
+  if (method === "POST" && url.pathname === "/commands/files") {
+    if (url.searchParams.get("for") !== "a2a.send") {
+      throw new CommandHttpError(400, "Command file upload requires for=a2a.send.");
+    }
+    if (!options.fileUploads) {
+      throw new CommandHttpError(404, "Command file upload is unavailable.");
+    }
+    const descriptor = findDescriptor(await listDescriptors(options.executor, scope), "a2a.send");
+    if (!descriptor) {
+      throw new CommandHttpError(403, "Command lease does not permit a2a.send uploads.");
+    }
+    const filenameHeader = request.headers["x-panda-filename"];
+    const filename = Array.isArray(filenameHeader) ? filenameHeader[0] : filenameHeader;
+    try {
+      const uploaded = await options.fileUploads.stage({
+        scope: {agentKey: scope.agentKey, sessionId: scope.sessionId},
+        filename,
+        mimeType: request.headers["content-type"],
+        chunks: request,
+      });
+      writeJsonResponse(response, 201, uploaded);
+      return;
+    } catch (error) {
+      if (error instanceof CommandUploadError) {
+        throw new CommandHttpError(error.statusCode, error.message);
+      }
+      throw error;
+    }
+  }
 
   if (method === "GET" && url.pathname === "/commands") {
     const descriptors = await listDescriptors(options.executor, scope);

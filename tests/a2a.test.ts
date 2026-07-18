@@ -17,6 +17,7 @@ import {
 import {handleA2AMessageRequest} from "../src/integrations/channels/a2a/request-handler.js";
 import type {SessionRecord} from "../src/domain/sessions/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
+import {FileSystemCommandUploadStore} from "../src/integrations/commands/file-uploads.js";
 
 function createDisposableSenderEnvironment(id = "worker:session-a") {
   return {
@@ -622,6 +623,30 @@ describe("createA2AOutboundAdapter", () => {
     const filePath = path.join(tempDir, "report.txt");
     await writeFile(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
     await writeFile(filePath, "hi from panda", "utf8");
+    const commandUploads = new FileSystemCommandUploadStore({
+      env: {...process.env, DATA_DIR: path.join(tempDir, "sender-data")},
+    });
+    const sender = {agentKey: "panda", sessionId: "session-a"};
+    const imageUpload = await commandUploads.stage({
+      scope: sender,
+      filename: "photo.png",
+      mimeType: "image/png",
+      chunks: (async function* () { yield await readFile(imagePath); })(),
+    });
+    const fileUpload = await commandUploads.stage({
+      scope: sender,
+      filename: "report.txt",
+      mimeType: "text/plain",
+      chunks: (async function* () { yield await readFile(filePath); })(),
+    });
+    const imageCopyUpload = await commandUploads.stage({
+      scope: sender,
+      filename: "photo-copy.png",
+      mimeType: "image/png",
+      chunks: (async function* () { yield await readFile(imagePath); })(),
+    });
+    await rm(imagePath);
+    await rm(filePath);
 
     const enqueueRequest: CreateA2AOutboundAdapterOptions["requests"]["enqueueRequest"] = vi.fn(async (input) => ({
       id: "request-1",
@@ -651,6 +676,7 @@ describe("createA2AOutboundAdapter", () => {
         now: () => new Date("2026-04-08T12:00:00.000Z"),
       }),
       resolveAgentMediaDir: () => receiverDir,
+      commandUploads,
     });
 
     const result = await adapter.send({
@@ -663,9 +689,9 @@ describe("createA2AOutboundAdapter", () => {
       },
       items: [
         {type: "text", text: "hello"},
-        {type: "image", path: imagePath, caption: "photo"},
-        {type: "file", path: filePath, filename: "report.txt", mimeType: "text/plain", caption: "report"},
-        {type: "file", path: imagePath, filename: "photo-copy.png", caption: "photo file"},
+        {type: "file", ...imageUpload, caption: "photo"},
+        {type: "file", ...fileUpload, caption: "report"},
+        {type: "file", ...imageCopyUpload, caption: "photo file"},
       ],
       metadata: {
         a2a: {
@@ -700,8 +726,9 @@ describe("createA2AOutboundAdapter", () => {
       text: "hello",
     });
     expect(payload.items[1]).toMatchObject({
-      type: "image",
+      type: "file",
       caption: "photo",
+      filename: "photo.png",
       media: {
         source: "a2a",
         connectorKey: "local",
@@ -746,11 +773,60 @@ describe("createA2AOutboundAdapter", () => {
       },
       sent: [
         {type: "text", externalMessageId: "a2a:123"},
-        {type: "image", externalMessageId: "a2a:123"},
+        {type: "file", externalMessageId: "a2a:123"},
         {type: "file", externalMessageId: "a2a:123"},
         {type: "file", externalMessageId: "a2a:123"},
       ],
     });
+    await expect(commandUploads.resolve(sender, fileUpload.uploadRef)).rejects.toThrow("unknown or not available");
+  });
+
+  it("cleans staged uploads only after a delivery becomes terminal", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "panda-a2a-terminal-"));
+    directories.add(tempDir);
+    const commandUploads = new FileSystemCommandUploadStore({
+      env: {...process.env, DATA_DIR: path.join(tempDir, "sender-data")},
+    });
+    const sender = {agentKey: "panda", sessionId: "session-a"};
+    const upload = await commandUploads.stage({
+      scope: sender,
+      filename: "retry-source.txt",
+      mimeType: "text/plain",
+      chunks: (async function* () { yield Buffer.from("retry me"); })(),
+    });
+    const adapter = createA2AOutboundAdapter({
+      requests: {enqueueRequest: vi.fn()},
+      sessionStore: {getSession: vi.fn()},
+      createMediaStore: (rootDir) => new FileSystemMediaStore({rootDir}),
+      resolveAgentMediaDir: () => path.join(tempDir, "receiver-media"),
+      commandUploads,
+    });
+    const request = {
+      channel: "a2a",
+      target: {
+        source: "a2a",
+        connectorKey: "local",
+        externalConversationId: "session-b",
+      },
+      items: [{type: "file" as const, ...upload}],
+      metadata: {
+        a2a: {
+          messageId: "a2a:terminal",
+          fromAgentKey: "panda",
+          fromSessionId: "session-a",
+          fromThreadId: "thread-a",
+          toAgentKey: "koala",
+          toSessionId: "session-b",
+          sentAt: 1,
+        },
+      },
+    };
+
+    await expect(commandUploads.resolve(sender, upload.uploadRef)).resolves.toMatchObject({
+      uploadRef: upload.uploadRef,
+    });
+    await adapter.onTerminalFailure?.(request);
+    await expect(commandUploads.resolve(sender, upload.uploadRef)).rejects.toThrow("unknown or not available");
   });
 });
 

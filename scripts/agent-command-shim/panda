@@ -161,6 +161,24 @@ read_text_input_json() {
   read_text_input "$1" | jq -Rs .
 }
 
+upload_a2a_file() {
+  local file_path="$1"
+  local filename response
+  [ -f "$file_path" ] && [ -r "$file_path" ] || die "panda a2a send --file requires a readable client-local file."
+  filename="$(basename -- "$file_path" | tr -d '\r\n')"
+  response="$(curl_command_raw \
+    -H "content-type: application/octet-stream" \
+    -H "x-panda-filename: ${filename}" \
+    -X POST \
+    --data-binary "@${file_path}" \
+    "$(command_url "/commands/files?for=a2a.send")")" || die "panda a2a file upload failed."
+  if ! printf '%s' "$response" | jq -e '.uploadRef | type == "string"' >/dev/null 2>&1; then
+    printf '%s\n' "$response" | jq -r '.error // "panda a2a file upload failed."' >&2 2>/dev/null || true
+    return 1
+  fi
+  printf '%s' "$response"
+}
+
 require_positive_integer() {
   local value="$1"
   local label="$2"
@@ -4057,7 +4075,8 @@ USAGE
           [ "$#" -gt 0 ] || die "panda a2a send --file requires a path."
           file_path="$1"
           shift
-          items_json="$(printf '%s' "$items_json" | jq -c --arg path "$file_path" '. + [{type: "file", path: $path}]')"
+          upload_json="$(upload_a2a_file "$file_path")"
+          items_json="$(printf '%s' "$items_json" | jq -c --argjson upload "$upload_json" '. + [{type: "file", uploadRef: $upload.uploadRef, filename: $upload.filename, mimeType: $upload.mimeType}]')"
           ;;
         --image)
           die "panda a2a send uses --file for all attachments, including images."

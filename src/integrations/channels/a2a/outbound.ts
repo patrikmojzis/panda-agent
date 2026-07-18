@@ -1,5 +1,4 @@
-import {basename, extname} from "node:path";
-import {readFile} from "node:fs/promises";
+import {extname} from "node:path";
 
 import type {JsonValue} from "../../../lib/json.js";
 import {isRecord} from "../../../lib/records.js";
@@ -21,6 +20,7 @@ import type {ExecutionEnvironmentKind} from "../../../domain/execution-environme
 import {A2A_CONNECTOR_KEY, A2A_SOURCE} from "../../../domain/a2a/constants.js";
 import {requireA2AString} from "../../../domain/a2a/shared.js";
 import type {SessionStore} from "../../../domain/sessions/store.js";
+import type {CommandUploadStore} from "../../../domain/commands/uploads.js";
 
 const IMAGE_MIME_BY_EXTENSION = new Map<string, string>([
   [".png", "image/png"],
@@ -54,6 +54,7 @@ export interface CreateA2AOutboundAdapterOptions {
   sessionStore: Pick<SessionStore, "getSession">;
   createMediaStore(rootDir: string): FileSystemMediaStore;
   resolveAgentMediaDir(agentKey: string): string;
+  commandUploads: CommandUploadStore;
 }
 
 const EXECUTION_ENVIRONMENT_KINDS = new Set<ExecutionEnvironmentKind>([
@@ -151,15 +152,6 @@ function requireMetadata(value: JsonValue | undefined): A2ADeliveryMetadata["a2a
   };
 }
 
-function inferImageMimeType(filePath: string): string {
-  const mimeType = IMAGE_MIME_BY_EXTENSION.get(extname(filePath).toLowerCase());
-  if (!mimeType) {
-    throw new Error(`Unsupported image extension for A2A media: ${filePath}`);
-  }
-
-  return mimeType;
-}
-
 function inferFileMimeType(filePath: string): string {
   return IMAGE_MIME_BY_EXTENSION.get(extname(filePath).toLowerCase()) ?? "application/octet-stream";
 }
@@ -167,8 +159,11 @@ function inferFileMimeType(filePath: string): string {
 async function buildInboundItems(
   request: OutboundRequest,
   mediaStore: FileSystemMediaStore,
-): Promise<readonly A2AMessageItem[]> {
+  uploads: CommandUploadStore,
+  sender: {agentKey: string; sessionId: string},
+): Promise<{items: readonly A2AMessageItem[]; uploadRefs: readonly string[]}> {
   const items: A2AMessageItem[] = [];
+  const uploadRefs: string[] = [];
 
   for (const item of request.items) {
     switch (item.type) {
@@ -179,44 +174,52 @@ async function buildInboundItems(
         });
         break;
       case "image": {
-        const bytes = await readFile(item.path);
-        const media = await mediaStore.writeMedia({
-          bytes,
-          source: A2A_SOURCE,
-          connectorKey: A2A_CONNECTOR_KEY,
-          mimeType: inferImageMimeType(item.path),
-          hintFilename: basename(item.path),
-        });
-        items.push({
-          type: "image",
-          media,
-          caption: item.caption,
-        });
-        break;
+        throw new Error("A2A queued image items are invalid; use an uploaded file item.");
       }
       case "file": {
-        const bytes = await readFile(item.path);
-        const filename = item.filename?.trim() || basename(item.path);
-        const media = await mediaStore.writeMedia({
-          bytes,
+        if (!("uploadRef" in item)) {
+          throw new Error("A2A queued file items require uploadRef.");
+        }
+        const upload = await uploads.resolve(sender, item.uploadRef);
+        if (upload.sizeBytes !== item.sizeBytes) {
+          throw new Error("A2A staged upload size changed after enqueue.");
+        }
+        const media = await mediaStore.writeMediaFile({
+          path: upload.path,
           source: A2A_SOURCE,
           connectorKey: A2A_CONNECTOR_KEY,
-          mimeType: item.mimeType?.trim() || inferFileMimeType(item.path),
-          hintFilename: filename,
+          mimeType: upload.mimeType || inferFileMimeType(upload.filename),
+          hintFilename: upload.filename,
+          sizeBytes: upload.sizeBytes,
         });
         items.push({
           type: "file",
           media,
-          filename,
+          filename: upload.filename,
           caption: item.caption,
-          mimeType: item.mimeType,
+          mimeType: upload.mimeType,
         });
+        uploadRefs.push(upload.uploadRef);
         break;
       }
     }
   }
 
-  return items;
+  return {items, uploadRefs};
+}
+
+async function cleanupUploadRefs(
+  request: OutboundRequest,
+  uploads: CommandUploadStore,
+): Promise<void> {
+  const a2a = requireMetadata(request.metadata);
+  const uploadRefs = request.items.flatMap((item) =>
+    item.type === "file" && "uploadRef" in item ? [item.uploadRef] : []
+  );
+  await Promise.allSettled(uploadRefs.map((uploadRef) => uploads.remove({
+    agentKey: a2a.fromAgentKey,
+    sessionId: a2a.fromSessionId,
+  }, uploadRef)));
 }
 
 function sentItem(type: OutboundSentItem["type"], externalMessageId: string): OutboundSentItem {
@@ -244,7 +247,10 @@ export function createA2AOutboundAdapter(
       }
 
       const mediaStore = options.createMediaStore(options.resolveAgentMediaDir(session.agentKey));
-      const items = await buildInboundItems(request, mediaStore);
+      const inbound = await buildInboundItems(request, mediaStore, options.commandUploads, {
+        agentKey: a2a.fromAgentKey,
+        sessionId: a2a.fromSessionId,
+      });
       const payload: A2AMessageRequestPayload = {
         connectorKey: A2A_CONNECTOR_KEY,
         externalMessageId: a2a.messageId,
@@ -256,13 +262,17 @@ export function createA2AOutboundAdapter(
         toSessionId: a2a.toSessionId,
         sentAt: a2a.sentAt,
         ...(a2a.senderEnvironment ? {senderEnvironment: a2a.senderEnvironment} : {}),
-        items,
+        items: inbound.items,
       };
 
       await options.requests.enqueueRequest({
         kind: "a2a_message",
         payload,
       });
+      await Promise.allSettled(inbound.uploadRefs.map((uploadRef) => options.commandUploads.remove({
+        agentKey: a2a.fromAgentKey,
+        sessionId: a2a.fromSessionId,
+      }, uploadRef)));
 
       return {
         ok: true,
@@ -270,6 +280,9 @@ export function createA2AOutboundAdapter(
         target: request.target,
         sent: request.items.map((item) => sentItem(item.type, a2a.messageId)),
       };
+    },
+    async onTerminalFailure(request: OutboundRequest): Promise<void> {
+      await cleanupUploadRefs(request, options.commandUploads);
     },
   };
 }
