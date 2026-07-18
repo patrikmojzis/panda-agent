@@ -126,6 +126,8 @@ describe("postgres readonly query command", () => {
       expect.objectContaining({
         name: "max-rows",
         valueName: "n",
+        minimum: 1,
+        maximum: 50,
       }),
       expect.objectContaining({
         name: "schema-help",
@@ -173,7 +175,9 @@ describe("postgres readonly query command", () => {
     expect(result.output.sql).toBeUndefined();
     expect(result.output.views).toBeUndefined();
     expect(result.output.operation).toBe("query");
+    expect(result.output.requestedMaxRows).toBe(50);
     expect(result.output.maxRows).toBe(50);
+    expect(result.output.maxRowsCapped).toBe(false);
     expect(result.output.truncated).toBe(true);
     expect(result.output.truncationReasons).toEqual(["cell_cap"]);
 
@@ -215,7 +219,7 @@ describe("postgres readonly query command", () => {
     expect(result.output.rowCount).toBe(2);
   });
 
-  it("uses per-query maxRows without raising the configured cap", async () => {
+  it("uses per-query maxRows and safely caps oversized requests", async () => {
     const pool = new FakeReadonlyPool([{id: 1}, {id: 2}, {id: 3}]);
     const command = createCommand(pool, {maxRows: 3});
 
@@ -226,7 +230,9 @@ describe("postgres readonly query command", () => {
 
     expect(result.output).toMatchObject({
       operation: "query",
+      requestedMaxRows: 1,
       maxRows: 1,
+      maxRowsCapped: false,
       rowCount: 1,
       truncated: true,
       truncationReasons: ["row_cap"],
@@ -235,10 +241,36 @@ describe("postgres readonly query command", () => {
     expect(pool.client.queries.map((query) => query.text)).toContain(
       "SELECT * FROM (select * from session.threads order by updated_at desc limit 10) AS runtime_readonly_query LIMIT 2",
     );
-    await expect(command.execute(inputRequest({
+    const cappedWithoutTruncation = await command.execute(inputRequest({
       sql: "select * from session.threads",
       maxRows: 4,
-    }))).rejects.toThrow("postgres.readonly.query maxRows must be between 1 and 3.");
+    }));
+    expect(cappedWithoutTruncation.output).toMatchObject({
+      requestedMaxRows: 4,
+      maxRows: 3,
+      maxRowsCapped: true,
+      rowCount: 3,
+      truncated: false,
+      truncationReasons: [],
+    });
+
+    const cappedPool = new FakeReadonlyPool([{id: 1}, {id: 2}, {id: 3}, {id: 4}]);
+    const cappedCommand = createCommand(cappedPool, {maxRows: 3});
+    const cappedWithTruncation = await cappedCommand.execute(inputRequest({
+      sql: "select * from session.threads",
+      maxRows: 100,
+    }));
+    expect(cappedWithTruncation.output).toMatchObject({
+      requestedMaxRows: 100,
+      maxRows: 3,
+      maxRowsCapped: true,
+      rowCount: 3,
+      truncated: true,
+      truncationReasons: ["row_cap"],
+    });
+    expect(cappedPool.client.queries.map((query) => query.text)).toContain(
+      "SELECT * FROM (select * from session.threads) AS runtime_readonly_query LIMIT 4",
+    );
   });
 
   it("returns live schema help for every canonical readonly view", async () => {

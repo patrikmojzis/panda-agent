@@ -19,6 +19,8 @@ export interface CommandArgumentDescriptor {
   conflictsWith?: readonly string[];
   requires?: readonly string[];
   defaultValue?: string | number | boolean;
+  minimum?: number;
+  maximum?: number;
 }
 
 export interface CommandExample {

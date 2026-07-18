@@ -2035,6 +2035,8 @@ describe("Panda command CLI discovery", () => {
           expect.objectContaining({
             name: "max-rows",
             valueName: "n",
+            minimum: 1,
+            maximum: 50,
           }),
           expect.objectContaining({
             name: "schema-help",
@@ -2043,6 +2045,8 @@ describe("Panda command CLI discovery", () => {
         ]),
         resultShape: expect.objectContaining({
           operation: "query|schema_help",
+          requestedMaxRows: "number|absent for schema_help",
+          maxRowsCapped: "boolean|absent for schema_help",
           rows: ["object"],
         }),
       }),

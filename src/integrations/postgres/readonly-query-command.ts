@@ -708,7 +708,7 @@ function resolvePoolResolver(options: Pick<PostgresReadonlyQueryCommandOptions, 
 function buildExecutionOptions(options: PostgresReadonlyQueryCommandOptions): PostgresReadonlyQueryExecutionOptions {
   return {
     getPool: resolvePoolResolver(options),
-    maxRows: options.maxRows ?? MAX_ROWS,
+    maxRows: Math.min(options.maxRows ?? MAX_ROWS, MAX_ROWS),
     maxOutputBytes: options.maxOutputBytes ?? MAX_OUTPUT_BYTES,
     maxStringChars: options.maxStringChars ?? MAX_STRING_CHARS,
   };
@@ -719,10 +719,9 @@ async function executePostgresReadonlyQuery(
   input: PostgresReadonlyQueryExecutionInput,
 ): Promise<JsonObject> {
   const sql = assertReadonlySql(input.sql);
-  if (input.maxRows !== undefined && input.maxRows > options.maxRows) {
-    throw new ToolError(`postgres.readonly.query maxRows must be between 1 and ${options.maxRows}.`);
-  }
-  const maxRows = input.maxRows ?? options.maxRows;
+  const requestedMaxRows = input.maxRows ?? options.maxRows;
+  const maxRows = Math.min(requestedMaxRows, options.maxRows);
+  const maxRowsCapped = requestedMaxRows !== maxRows;
   const limitedSql = `SELECT * FROM (${sql}) AS runtime_readonly_query LIMIT ${maxRows + 1}`;
   const pool = await options.getPool();
   const client = await pool.connect();
@@ -760,7 +759,9 @@ async function executePostgresReadonlyQuery(
 
     return {
       operation: "query",
+      requestedMaxRows,
       maxRows,
+      maxRowsCapped,
       rowCount: Math.min(result.rows.length, maxRows),
       truncated: truncationReasons.length > 0,
       truncationReasons,
@@ -846,9 +847,11 @@ export const postgresReadonlyQueryCommandDescriptor: CommandDescriptor = {
     POSTGRES_SQL_ARGUMENT,
     {
       name: "max-rows",
-      description: `Maximum rows to return, capped by server policy. Defaults to ${MAX_ROWS}.`,
+      description: `Maximum rows to return, 1-${MAX_ROWS}. Larger values are safely capped to ${MAX_ROWS}.`,
       valueType: "number",
       valueName: "n",
+      minimum: 1,
+      maximum: MAX_ROWS,
     },
     {
       name: "schema-help",
@@ -878,7 +881,9 @@ export const postgresReadonlyQueryCommandDescriptor: CommandDescriptor = {
   requiredCapabilities: [POSTGRES_READONLY_QUERY_COMMAND_NAME],
   resultShape: {
     operation: "query|schema_help",
+    requestedMaxRows: "number|absent for schema_help",
     maxRows: "number|absent for schema_help",
+    maxRowsCapped: "boolean|absent for schema_help",
     rowCount: "number",
     truncated: "boolean",
     truncationReasons: ["string"],

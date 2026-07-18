@@ -4542,7 +4542,7 @@ printf '{"ok":true,"output":%s}\\n' "$body"
       "--sql",
       "select 42 as answer",
       "--max-rows",
-      "1",
+      "100",
     ], {
       env: shimEnv(server),
     });
@@ -4557,7 +4557,9 @@ printf '{"ok":true,"output":%s}\\n' "$body"
 
     expect(JSON.parse(query.stdout)).toMatchObject({
       operation: "query",
-      maxRows: 1,
+      requestedMaxRows: 100,
+      maxRows: 50,
+      maxRowsCapped: true,
       rowCount: 1,
       rows: [{answer: 42}],
     });

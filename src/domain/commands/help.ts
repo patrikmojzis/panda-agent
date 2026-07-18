@@ -13,6 +13,9 @@ function formatArgumentMetadata(argument: CommandDescriptor["arguments"][number]
   if (argument.defaultValue !== undefined) {
     metadata.push(`default: ${String(argument.defaultValue)}`);
   }
+  if (argument.minimum !== undefined || argument.maximum !== undefined) {
+    metadata.push(`range: ${argument.minimum ?? "-∞"}..${argument.maximum ?? "∞"}`);
+  }
   if (argument.valueSources?.length) {
     metadata.push(`sources: ${argument.valueSources.join(", ")}`);
   }
@@ -92,6 +95,8 @@ export function commandDescriptorToJson(
       ...(argument.conflictsWith ? {conflictsWith: [...argument.conflictsWith]} : {}),
       ...(argument.requires ? {requires: [...argument.requires]} : {}),
       ...(argument.defaultValue !== undefined ? {defaultValue: argument.defaultValue} : {}),
+      ...(argument.minimum !== undefined ? {minimum: argument.minimum} : {}),
+      ...(argument.maximum !== undefined ? {maximum: argument.maximum} : {}),
     })),
     examples: descriptor.examples.map((example) => ({
       description: example.description,
