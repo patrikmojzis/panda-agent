@@ -57,7 +57,7 @@ function createRuntimeTranscriptRecord(
 }
 
 describe("createThreadDefinition inference projection defaults", () => {
-  it("applies Panda's global inference projection by default without age-dropping messages", () => {
+  it("does not project the transcript by default", () => {
     const definition = createThreadDefinition({
       thread: createThread(),
       session: {
@@ -69,11 +69,7 @@ describe("createThreadDefinition inference projection defaults", () => {
       },
     });
 
-    expect(DEFAULT_INFERENCE_PROJECTION).toEqual({
-      dropThinking: {
-        preserveRecentUserTurns: 20,
-      },
-    });
+    expect(DEFAULT_INFERENCE_PROJECTION).toEqual({});
     expect(definition.inferenceProjection).toEqual(DEFAULT_INFERENCE_PROJECTION);
     expect(DEFAULT_INFERENCE_PROJECTION).not.toHaveProperty("dropMessages");
     expect(DEFAULT_INFERENCE_PROJECTION).not.toHaveProperty("dropToolCalls");
@@ -97,10 +93,13 @@ describe("createThreadDefinition inference projection defaults", () => {
     expect(projected.map((record) => record.sequence)).toEqual([1, 2]);
   });
 
-  it("keeps old tool calls, tool results, and images in Panda's default projection", () => {
+  it("keeps old thinking, tool calls, tool results, and images in Panda's default projection", () => {
     const toolCall: AssistantMessage = {
       role: "assistant",
-      content: [{type: "toolCall", id: "call-1", name: "inspect", arguments: {}}],
+      content: [
+        {type: "thinking", thinking: "inspect the artifact"},
+        {type: "toolCall", id: "call-1", name: "inspect", arguments: {}},
+      ],
       api: "openai-responses",
       provider: "openai",
       model: "openai/gpt-5.1",
@@ -167,7 +166,6 @@ describe("createThreadDefinition inference projection defaults", () => {
         preserveRecentUserTurns: 1,
       },
       dropThinking: {
-        ...DEFAULT_INFERENCE_PROJECTION.dropThinking,
         olderThanMs: 60_000,
       },
     });

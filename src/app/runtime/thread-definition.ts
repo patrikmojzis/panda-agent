@@ -43,11 +43,7 @@ const SUBAGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = 
   "todo_context",
 ];
 
-export const DEFAULT_INFERENCE_PROJECTION: InferenceProjection = {
-  dropThinking: {
-    preserveRecentUserTurns: 20,
-  },
-};
+export const DEFAULT_INFERENCE_PROJECTION: InferenceProjection = {};
 
 export interface CreateThreadDefinitionOptions {
   thread: ThreadRecord;
