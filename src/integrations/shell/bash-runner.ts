@@ -35,12 +35,35 @@ import {buildSafeCommandEnv, SAFE_SHELL} from "./environment.js";
 const DEFAULT_RUNNER_PORT = 8080;
 const BACKGROUND_JOB_WATCH_WAIT_MS = 300_000;
 const BACKGROUND_JOB_WATCH_IDLE_MS = 1_000;
+// Core allows a 60s wait plus a 5s HTTP buffer; 90s adds bounded scheduling grace.
+const BACKGROUND_JOB_TERMINAL_RETENTION_MS = 90_000;
+const CLOSE_JOB_WAIT_MS = 1_000;
 const DEFAULT_BACKGROUND_JOB_CANCEL_WAIT_MS = 5_000;
 const DEFAULT_RUNNER_HOST = "0.0.0.0";
 const MAX_BASH_RUNNER_JSON_BODY_BYTES = 8 * 1024 * 1024;
 
 interface ActiveRunnerRequest {
   controller: AbortController;
+}
+
+interface RunningBackgroundJobState {
+  kind: "running";
+  token: symbol;
+  job: CommandExecutorJob;
+  wakeWatcherIdle?: () => void;
+}
+
+interface TerminalBackgroundJobState {
+  kind: "terminal";
+  token: symbol;
+  snapshot: BashJobSnapshot;
+  expiryTimer: NodeJS.Timeout;
+}
+
+type BackgroundJobState = RunningBackgroundJobState | TerminalBackgroundJobState;
+
+interface PendingBackgroundJobStart {
+  promise?: Promise<CommandExecutorJob>;
 }
 
 export interface CommandExecutorExecInput {
@@ -560,34 +583,144 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
   const allowedRoots = await resolveAllowedRoots(options.allowedRoots);
   const activeRequests = new Map<string, ActiveRunnerRequest>();
   const commandExecutor = options.commandExecutor ?? new LocalCommandExecutor({env, shell, outputDirectory});
-  const backgroundJobs = new Map<string, CommandExecutorJob>();
+  const backgroundJobs = new Map<string, BackgroundJobState>();
+  const pendingJobStarts = new Map<string, PendingBackgroundJobStart>();
+  const backgroundWatchers = new Set<Promise<void>>();
+  const closingJobCancellations = new Map<CommandExecutorJob, Promise<void>>();
   const pendingAborts = new Map<string, NodeJS.Timeout>();
+  let closing = false;
+  let closePromise: Promise<void> | null = null;
 
-  const evictTerminalJob = (jobId: string, snapshot: { status: string }): void => {
-    if (snapshot.status !== "running") {
-      backgroundJobs.delete(jobId);
+  const deleteBackgroundJob = (jobId: string, state: BackgroundJobState): boolean => {
+    if (backgroundJobs.get(jobId) !== state) {
+      return false;
     }
+
+    backgroundJobs.delete(jobId);
+    if (state.kind === "terminal") {
+      clearTimeout(state.expiryTimer);
+    } else {
+      state.wakeWatcherIdle?.();
+    }
+    return true;
   };
 
-  const watchBackgroundJob = (jobId: string, job: CommandExecutorJob): void => {
-    void (async () => {
-      while (backgroundJobs.get(jobId) === job) {
+  const immutableTerminalSnapshot = (snapshot: BashJobSnapshot): BashJobSnapshot => {
+    const immutable: BashJobSnapshot = {
+      ...snapshot,
+      trackedEnvKeys: [...snapshot.trackedEnvKeys],
+    };
+    Object.freeze(immutable.trackedEnvKeys);
+    return Object.freeze(immutable);
+  };
+
+  const retainTerminalJob = (
+    jobId: string,
+    state: RunningBackgroundJobState,
+    snapshot: BashJobSnapshot,
+  ): TerminalBackgroundJobState | undefined => {
+    if (closing || snapshot.status === "running" || backgroundJobs.get(jobId) !== state) {
+      return undefined;
+    }
+
+    let terminalState!: TerminalBackgroundJobState;
+    const expiryTimer = setTimeout(() => {
+      deleteBackgroundJob(jobId, terminalState);
+    }, BACKGROUND_JOB_TERMINAL_RETENTION_MS);
+    expiryTimer.unref();
+    terminalState = {
+      kind: "terminal",
+      token: state.token,
+      snapshot: immutableTerminalSnapshot(snapshot),
+      expiryTimer,
+    };
+    backgroundJobs.set(jobId, terminalState);
+    return terminalState;
+  };
+
+  const consumeTerminalJob = (
+    jobId: string,
+    state: BackgroundJobState,
+    snapshot: BashJobSnapshot,
+  ): BashJobSnapshot | undefined => {
+    const current = backgroundJobs.get(jobId);
+    if (!current || current.token !== state.token) {
+      return undefined;
+    }
+
+    const consumed = current.kind === "terminal"
+      ? current.snapshot
+      : immutableTerminalSnapshot(snapshot);
+    deleteBackgroundJob(jobId, current);
+    return consumed;
+  };
+
+  const waitForWatcherIdle = async (jobId: string, state: RunningBackgroundJobState): Promise<void> => {
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        state.wakeWatcherIdle = undefined;
+        resolve();
+      };
+      const timer = setTimeout(finish, BACKGROUND_JOB_WATCH_IDLE_MS);
+      timer.unref();
+      state.wakeWatcherIdle = finish;
+      if (closing || backgroundJobs.get(jobId) !== state) {
+        finish();
+      }
+    });
+  };
+
+  const watchBackgroundJob = (jobId: string, state: RunningBackgroundJobState): void => {
+    const watcher = (async () => {
+      while (!closing && backgroundJobs.get(jobId) === state) {
         let snapshot: BashJobSnapshot;
         try {
-          snapshot = await job.wait(BACKGROUND_JOB_WATCH_WAIT_MS);
+          snapshot = await state.job.wait(BACKGROUND_JOB_WATCH_WAIT_MS);
         } catch {
           // Keep the job queryable for explicit status/wait/cancel calls if background polling fails.
           return;
         }
-        if (backgroundJobs.get(jobId) !== job) return;
+        if (closing || backgroundJobs.get(jobId) !== state) return;
         if (snapshot.status !== "running") {
-          backgroundJobs.delete(jobId);
+          retainTerminalJob(jobId, state, snapshot);
           return;
         }
-        await new Promise((resolve) => setTimeout(resolve, BACKGROUND_JOB_WATCH_IDLE_MS));
+        await waitForWatcherIdle(jobId, state);
       }
     })();
+    backgroundWatchers.add(watcher);
+    void watcher.then(
+      () => backgroundWatchers.delete(watcher),
+      () => backgroundWatchers.delete(watcher),
+    );
   };
+
+  const drainJob = async (job: CommandExecutorJob): Promise<void> => {
+    let snapshot = await job.cancel(CLOSE_JOB_WAIT_MS);
+    while (snapshot.status === "running") {
+      snapshot = await job.wait(CLOSE_JOB_WAIT_MS);
+    }
+  };
+
+  const cancelJobForClose = (job: CommandExecutorJob): Promise<void> => {
+    const existing = closingJobCancellations.get(job);
+    if (existing) {
+      return existing;
+    }
+
+    const cancellation = drainJob(job);
+    closingJobCancellations.set(job, cancellation);
+    void cancellation.catch(() => undefined);
+    return cancellation;
+  };
+
+  const runnerClosingError = (): ToolError => new ToolError("Runner is closing.", {
+    details: {statusCode: 503},
+  });
 
   const consumePendingAbort = (requestId: string): boolean => {
     const timer = pendingAborts.get(requestId);
@@ -628,7 +761,13 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       if (request.method === "POST" && matchesEndpoint(request.url, "abort")) {
         requireRunnerAuthorization(request, sharedSecret);
         validateRunnerRequestTarget(request, agentKey, "abort");
+        if (closing) {
+          throw runnerClosingError();
+        }
         const parsed = validateAbortRequest(await readJsonBody(request));
+        if (closing) {
+          throw runnerClosingError();
+        }
         const active = activeRequests.get(parsed.requestId);
         if (active) {
           active.controller.abort(new Error("Command aborted."));
@@ -650,7 +789,13 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       if (request.method === "POST" && matchesEndpoint(request.url, "exec")) {
         requireRunnerAuthorization(request, sharedSecret);
         validateRunnerRequestTarget(request, agentKey, "exec");
+        if (closing) {
+          throw runnerClosingError();
+        }
         const parsed = validateExecRequest(await readJsonBody(request));
+        if (closing) {
+          throw runnerClosingError();
+        }
         const resolvedCwd = await resolveRequestCwd(parsed.cwd, allowedRoots);
         const spawnFailure = await readBashSpawnPreflightFailure({
           cwd: resolvedCwd,
@@ -659,6 +804,9 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
         });
         if (spawnFailure) {
           throw new ToolError(spawnFailure.message, { details: spawnFailure.details });
+        }
+        if (closing) {
+          throw runnerClosingError();
         }
 
         if (consumePendingAbort(parsed.requestId)) {
@@ -707,43 +855,105 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       if (request.method === "POST" && matchesEndpoint(request.url, "jobs/start")) {
         requireRunnerAuthorization(request, sharedSecret);
         validateRunnerRequestTarget(request, agentKey, "jobs/start");
+        if (closing) {
+          throw runnerClosingError();
+        }
         const parsed = validateJobStartRequest(await readJsonBody(request));
-        if (backgroundJobs.has(parsed.jobId)) {
+        if (closing) {
+          throw runnerClosingError();
+        }
+        if (backgroundJobs.has(parsed.jobId) || pendingJobStarts.has(parsed.jobId)) {
           throw new ToolError(`Background job ${parsed.jobId} already exists.`);
         }
 
-        const resolvedCwd = await resolveRequestCwd(parsed.cwd, allowedRoots);
-        const spawnFailure = await readBashSpawnPreflightFailure({
-          cwd: resolvedCwd,
-          shell,
-          scope: "remote",
-        });
-        if (spawnFailure) {
-          throw new ToolError(spawnFailure.message, { details: spawnFailure.details });
+        const reservation: PendingBackgroundJobStart = {};
+        pendingJobStarts.set(parsed.jobId, reservation);
+        let ownsReservation = true;
+        let job: CommandExecutorJob | undefined;
+        let transferred = false;
+        const releaseReservation = (): void => {
+          if (!ownsReservation) return;
+          ownsReservation = false;
+          if (pendingJobStarts.get(parsed.jobId) === reservation) {
+            pendingJobStarts.delete(parsed.jobId);
+          }
+        };
+
+        try {
+          const resolvedCwd = await resolveRequestCwd(parsed.cwd, allowedRoots);
+          const spawnFailure = await readBashSpawnPreflightFailure({
+            cwd: resolvedCwd,
+            shell,
+            scope: "remote",
+          });
+          if (spawnFailure) {
+            throw new ToolError(spawnFailure.message, { details: spawnFailure.details });
+          }
+          if (closing) {
+            throw runnerClosingError();
+          }
+
+          const startPromise = commandExecutor.startJob({
+            request: parsed,
+            cwd: resolvedCwd,
+          });
+          reservation.promise = startPromise;
+          job = await startPromise;
+          if (closing) {
+            await cancelJobForClose(job);
+            throw runnerClosingError();
+          }
+
+          const snapshot = await job.snapshot();
+          if (closing) {
+            await cancelJobForClose(job);
+            throw runnerClosingError();
+          }
+
+          const state: RunningBackgroundJobState = {
+            kind: "running",
+            token: Symbol(parsed.jobId),
+            job,
+          };
+          backgroundJobs.set(parsed.jobId, state);
+          transferred = true;
+          releaseReservation();
+          const retainedState = retainTerminalJob(parsed.jobId, state, snapshot);
+
+          writeJsonResponse(response, 200, {
+            ok: true,
+            ...(retainedState?.snapshot ?? snapshot),
+          });
+          if (snapshot.status === "running") {
+            watchBackgroundJob(parsed.jobId, state);
+          }
+          return;
+        } catch (error) {
+          if (job && !transferred && !closing) {
+            try {
+              await drainJob(job);
+            } catch (cleanupError) {
+              throw new AggregateError([error, cleanupError], "Background job start and cleanup failed.");
+            }
+          }
+          throw error;
+        } finally {
+          releaseReservation();
         }
-
-        const job = await commandExecutor.startJob({
-          request: parsed,
-          cwd: resolvedCwd,
-        });
-        backgroundJobs.set(parsed.jobId, job);
-        watchBackgroundJob(parsed.jobId, job);
-        const snapshot = await job.snapshot();
-        evictTerminalJob(parsed.jobId, snapshot);
-
-        writeJsonResponse(response, 200, {
-          ok: true,
-          ...snapshot,
-        });
-        return;
       }
 
       if (request.method === "POST" && matchesEndpoint(request.url, "jobs/status")) {
         requireRunnerAuthorization(request, sharedSecret);
         validateRunnerRequestTarget(request, agentKey, "jobs/status");
+        if (closing) {
+          throw runnerClosingError();
+        }
         const parsed = validateJobQueryRequest(await readJsonBody(request));
-        const job = backgroundJobs.get(parsed.jobId);
-        if (!job) {
+        if (closing) {
+          throw runnerClosingError();
+        }
+        const state = backgroundJobs.get(parsed.jobId);
+        if (!state) {
           writeJsonResponse(response, 404, {
             ok: false,
             error: `Unknown background job ${parsed.jobId}.`,
@@ -751,12 +961,14 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
           return;
         }
 
-        const snapshot = await job.snapshot();
-        evictTerminalJob(parsed.jobId, snapshot);
+        const snapshot = state.kind === "terminal" ? state.snapshot : await state.job.snapshot();
+        const retainedState = state.kind === "running"
+          ? retainTerminalJob(parsed.jobId, state, snapshot)
+          : state;
 
         writeJsonResponse(response, 200, {
           ok: true,
-          ...snapshot,
+          ...(retainedState?.snapshot ?? snapshot),
         });
         return;
       }
@@ -764,9 +976,15 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       if (request.method === "POST" && matchesEndpoint(request.url, "jobs/wait")) {
         requireRunnerAuthorization(request, sharedSecret);
         validateRunnerRequestTarget(request, agentKey, "jobs/wait");
+        if (closing) {
+          throw runnerClosingError();
+        }
         const parsed = validateJobWaitRequest(await readJsonBody(request));
-        const job = backgroundJobs.get(parsed.jobId);
-        if (!job) {
+        if (closing) {
+          throw runnerClosingError();
+        }
+        const state = backgroundJobs.get(parsed.jobId);
+        if (!state) {
           writeJsonResponse(response, 404, {
             ok: false,
             error: `Unknown background job ${parsed.jobId}.`,
@@ -774,8 +992,20 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
           return;
         }
 
-        const snapshot = await job.wait(parsed.timeoutMs ?? 15_000);
-        evictTerminalJob(parsed.jobId, snapshot);
+        let snapshot = state.kind === "terminal"
+          ? state.snapshot
+          : await state.job.wait(parsed.timeoutMs ?? 15_000);
+        if (snapshot.status !== "running") {
+          const consumed = consumeTerminalJob(parsed.jobId, state, snapshot);
+          if (!consumed) {
+            writeJsonResponse(response, 404, {
+              ok: false,
+              error: `Unknown background job ${parsed.jobId}.`,
+            });
+            return;
+          }
+          snapshot = consumed;
+        }
 
         writeJsonResponse(response, 200, {
           ok: true,
@@ -787,9 +1017,15 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       if (request.method === "POST" && matchesEndpoint(request.url, "jobs/cancel")) {
         requireRunnerAuthorization(request, sharedSecret);
         validateRunnerRequestTarget(request, agentKey, "jobs/cancel");
+        if (closing) {
+          throw runnerClosingError();
+        }
         const parsed = validateJobWaitRequest(await readJsonBody(request));
-        const job = backgroundJobs.get(parsed.jobId);
-        if (!job) {
+        if (closing) {
+          throw runnerClosingError();
+        }
+        const state = backgroundJobs.get(parsed.jobId);
+        if (!state) {
           writeJsonResponse(response, 404, {
             ok: false,
             error: `Unknown background job ${parsed.jobId}.`,
@@ -797,8 +1033,20 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
           return;
         }
 
-        const snapshot = await job.cancel(parsed.timeoutMs ?? DEFAULT_BACKGROUND_JOB_CANCEL_WAIT_MS);
-        evictTerminalJob(parsed.jobId, snapshot);
+        let snapshot = state.kind === "terminal"
+          ? state.snapshot
+          : await state.job.cancel(parsed.timeoutMs ?? DEFAULT_BACKGROUND_JOB_CANCEL_WAIT_MS);
+        if (snapshot.status !== "running") {
+          const consumed = consumeTerminalJob(parsed.jobId, state, snapshot);
+          if (!consumed) {
+            writeJsonResponse(response, 404, {
+              ok: false,
+              error: `Unknown background job ${parsed.jobId}.`,
+            });
+            return;
+          }
+          snapshot = consumed;
+        }
 
         writeJsonResponse(response, 200, {
           ok: true,
@@ -846,30 +1094,82 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
   }
   const port = address.port;
 
+  const closeRunner = async (): Promise<void> => {
+    const serverClosed = new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+
+    for (const timer of pendingAborts.values()) {
+      clearTimeout(timer);
+    }
+    pendingAborts.clear();
+    for (const active of activeRequests.values()) {
+      active.controller.abort(new Error("Runner is closing."));
+    }
+
+    const pendingStarts = await Promise.allSettled(
+      [...pendingJobStarts.values()].flatMap((reservation) => (
+        reservation.promise ? [reservation.promise] : []
+      )),
+    );
+    for (const result of pendingStarts) {
+      if (result.status === "fulfilled") {
+        void cancelJobForClose(result.value);
+      }
+    }
+
+    const watchers = [...backgroundWatchers];
+    for (const [jobId, state] of backgroundJobs) {
+      deleteBackgroundJob(jobId, state);
+      if (state.kind === "running") {
+        void cancelJobForClose(state.job);
+      }
+    }
+
+    const results = await Promise.allSettled([
+      serverClosed,
+      ...closingJobCancellations.values(),
+      ...watchers,
+    ]);
+    const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+
+    backgroundJobs.clear();
+    backgroundWatchers.clear();
+    closingJobCancellations.clear();
+    pendingJobStarts.clear();
+    activeRequests.clear();
+    if (failure) {
+      throw failure.reason;
+    }
+  };
+
+  const close = (): Promise<void> => {
+    if (closePromise) {
+      return closePromise;
+    }
+
+    let resolveClose!: () => void;
+    let rejectClose!: (reason: unknown) => void;
+    closePromise = new Promise<void>((resolve, reject) => {
+      resolveClose = resolve;
+      rejectClose = reject;
+    });
+    closing = true;
+    void closeRunner().then(resolveClose, rejectClose);
+    return closePromise;
+  };
+
   return {
     agentKey,
     port,
     host,
     server,
-    close: async () => {
-      for (const timer of pendingAborts.values()) {
-        clearTimeout(timer);
-      }
-      pendingAborts.clear();
-      await Promise.all(
-        [...backgroundJobs.values()].map((job) => job.cancel(100).catch(() => undefined)),
-      );
-      backgroundJobs.clear();
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => {
-          if (error) {
-            reject(error);
-            return;
-          }
-
-          resolve();
-        });
-      });
-    },
+    close,
   };
 }

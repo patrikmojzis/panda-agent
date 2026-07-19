@@ -1,6 +1,9 @@
+import {execFile} from "node:child_process";
 import {mkdir, mkdtemp, readFile, realpath, rm} from "node:fs/promises";
+import {request as httpRequest} from "node:http";
 import {tmpdir} from "node:os";
 import path from "node:path";
+import {promisify} from "node:util";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
@@ -38,6 +41,8 @@ import {
 } from "../src/integrations/shell/bash-protocol.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
+
+const execFileAsync = promisify(execFile);
 
 function createAgent() {
   return new Agent({
@@ -86,6 +91,9 @@ describe("remote bash runner", () => {
   const pools: Array<{end(): Promise<void>}> = [];
 
   afterEach(async () => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+
     while (runners.length > 0) {
       await runners.pop()?.close();
     }
@@ -664,6 +672,866 @@ describe("remote bash runner", () => {
       ...(finished ? {finishedAt: 456, durationMs: 333, exitCode: 0, signal: null, finalCwd: input.cwd} : {}),
     };
   }
+
+  async function requestDirectRunnerJob(
+    runner: BashRunner,
+    endpoint: "start" | "status" | "wait" | "cancel",
+    body: Record<string, unknown>,
+    options: {sharedSecret?: string} = {},
+  ): Promise<Response> {
+    return fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/${endpoint}`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda", options),
+      body: JSON.stringify(body),
+    });
+  }
+
+  function directJobStartRequest(jobId: string, cwd: string, command = "printf fake-job-done") {
+    return {
+      jobId,
+      command,
+      cwd,
+      maxRuntimeMs: 1_000,
+      trackedEnvKeys: [],
+      maxOutputChars: 8_000,
+      persistOutputThresholdChars: 8_000,
+    };
+  }
+
+  function createControlledBackgroundExecutor(
+    terminalStatus: BashJobSnapshot["status"] = "completed",
+  ): {
+    commandExecutor: CommandExecutor;
+    complete(): void;
+    watcherReturned: Promise<void>;
+    waitTimeouts: Array<number | undefined>;
+    cancelCalls(): number;
+  } {
+    let status: BashJobSnapshot["status"] = "running";
+    let releaseCompletion!: () => void;
+    let markWatcherReturned!: () => void;
+    let cancelCallCount = 0;
+    const completion = new Promise<void>((resolve) => {
+      releaseCompletion = resolve;
+    });
+    const watcherReturned = new Promise<void>((resolve) => {
+      markWatcherReturned = resolve;
+    });
+    const waitTimeouts: Array<number | undefined> = [];
+
+    return {
+      commandExecutor: {
+        execute: async () => {
+          throw new Error("unexpected exec");
+        },
+        startJob: async (input) => ({
+          snapshot: () => fakeJobSnapshot(input, status),
+          wait: async (timeoutMs) => {
+            waitTimeouts.push(timeoutMs);
+            await completion;
+            status = terminalStatus;
+            markWatcherReturned();
+            return fakeJobSnapshot(input, status);
+          },
+          cancel: async () => {
+            cancelCallCount += 1;
+            status = "cancelled";
+            return fakeJobSnapshot(input, status);
+          },
+        }),
+      },
+      complete: releaseCompletion,
+      watcherReturned,
+      waitTimeouts,
+      cancelCalls: () => cancelCallCount,
+    };
+  }
+
+  it("retains watcher-completed output through status until the first terminal wait consumes it", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const controlled = createControlledBackgroundExecutor();
+    const runner = await createRunner("panda", {commandExecutor: controlled.commandExecutor});
+
+    const startResponse = await requestDirectRunnerJob(runner, "start", {
+      jobId: "job-retained-terminal",
+      command: "printf fake-job-done",
+      cwd: agentHome,
+      maxRuntimeMs: 1_000,
+      trackedEnvKeys: [],
+      maxOutputChars: 8_000,
+      persistOutputThresholdChars: 8_000,
+    });
+    expect(startResponse.status).toBe(200);
+    await expect(startResponse.json()).resolves.toMatchObject({status: "running"});
+
+    controlled.complete();
+    await controlled.watcherReturned;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const statusResponse = await requestDirectRunnerJob(runner, "status", {jobId: "job-retained-terminal"});
+    expect(statusResponse.status).toBe(200);
+    await expect(statusResponse.json()).resolves.toMatchObject({status: "completed", stdout: "fake-job-done"});
+
+    const duplicateStart = await requestDirectRunnerJob(runner, "start", {
+      jobId: "job-retained-terminal",
+      command: "printf replacement",
+      cwd: agentHome,
+      maxRuntimeMs: 1_000,
+      trackedEnvKeys: [],
+      maxOutputChars: 8_000,
+      persistOutputThresholdChars: 8_000,
+    });
+    expect(duplicateStart.status).toBe(400);
+
+    const waitResponse = await requestDirectRunnerJob(runner, "wait", {
+      jobId: "job-retained-terminal",
+      timeoutMs: 1_000,
+    });
+    expect(waitResponse.status).toBe(200);
+    await expect(waitResponse.json()).resolves.toMatchObject({status: "completed", stdout: "fake-job-done"});
+    expect(controlled.waitTimeouts).toEqual([300_000]);
+
+    const repeatedWait = await requestDirectRunnerJob(runner, "wait", {
+      jobId: "job-retained-terminal",
+      timeoutMs: 1_000,
+    });
+    expect(repeatedWait.status).toBe(404);
+  });
+
+  it("retains a complete immutable terminal snapshot observed before the start response", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    let snapshotCalls = 0;
+    let waitCalls = 0;
+    let cancelCalls = 0;
+    let terminalSnapshot: BashJobSnapshot | undefined;
+    const runner = await createRunner("panda", {
+      commandExecutor: {
+        execute: async () => {
+          throw new Error("unexpected exec");
+        },
+        startJob: async (input) => {
+          terminalSnapshot = fakeJobSnapshot(input, "completed");
+          return {
+            snapshot: () => {
+              snapshotCalls += 1;
+              return terminalSnapshot!;
+            },
+            wait: async () => {
+              waitCalls += 1;
+              throw new Error("terminal snapshot should not call executor wait");
+            },
+            cancel: async () => {
+              cancelCalls += 1;
+              throw new Error("terminal snapshot should not call executor cancel");
+            },
+          };
+        },
+      },
+    });
+
+    const startResponse = await requestDirectRunnerJob(
+      runner,
+      "start",
+      directJobStartRequest("job-terminal-at-start", agentHome),
+    );
+    expect(startResponse.status).toBe(200);
+    await expect(startResponse.json()).resolves.toMatchObject({
+      status: "completed",
+      stdout: "fake-job-done",
+      maxRuntimeMs: 1_000,
+      expiresAt: 1_123,
+      finishedAt: 456,
+      durationMs: 333,
+      exitCode: 0,
+      signal: null,
+    });
+
+    terminalSnapshot!.stdout = "mutated-after-publication";
+    terminalSnapshot!.trackedEnvKeys.push("MUTATED");
+    const statusResponse = await requestDirectRunnerJob(runner, "status", {jobId: "job-terminal-at-start"});
+    expect(statusResponse.status).toBe(200);
+    await expect(statusResponse.json()).resolves.toMatchObject({
+      status: "completed",
+      stdout: "fake-job-done",
+      trackedEnvKeys: [],
+    });
+
+    const waitResponse = await requestDirectRunnerJob(runner, "wait", {jobId: "job-terminal-at-start"});
+    expect(waitResponse.status).toBe(200);
+    await expect(waitResponse.json()).resolves.toMatchObject({status: "completed", stdout: "fake-job-done"});
+    expect({snapshotCalls, waitCalls, cancelCalls}).toEqual({snapshotCalls: 1, waitCalls: 0, cancelCalls: 0});
+  });
+
+  it.each(["failed", "cancelled"] as const)(
+    "retains a %s watcher result until terminal wait consumes it",
+    async (terminalStatus) => {
+      const agentHome = await createWorkspace("runtime-agent-home-");
+      const controlled = createControlledBackgroundExecutor(terminalStatus);
+      const runner = await createRunner("panda", {commandExecutor: controlled.commandExecutor});
+      const jobId = `job-retained-${terminalStatus}`;
+
+      const startResponse = await requestDirectRunnerJob(
+        runner,
+        "start",
+        directJobStartRequest(jobId, agentHome, "exit 1"),
+      );
+      expect(startResponse.status).toBe(200);
+      controlled.complete();
+      await controlled.watcherReturned;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      const statusResponse = await requestDirectRunnerJob(runner, "status", {jobId});
+      expect(statusResponse.status).toBe(200);
+      await expect(statusResponse.json()).resolves.toMatchObject({
+        status: terminalStatus,
+        maxRuntimeMs: 1_000,
+        expiresAt: 1_123,
+      });
+      const waitResponse = await requestDirectRunnerJob(runner, "wait", {jobId, timeoutMs: 1_000});
+      expect(waitResponse.status).toBe(200);
+      await expect(waitResponse.json()).resolves.toMatchObject({status: terminalStatus});
+      expect((await requestDirectRunnerJob(runner, "wait", {jobId})).status).toBe(404);
+    },
+  );
+
+  it("retains through the 65-second client envelope and expires at the 90-second boundary", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const controlled = createControlledBackgroundExecutor();
+    const runner = await createRunner("panda", {commandExecutor: controlled.commandExecutor});
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+
+    const startResponse = await requestDirectRunnerJob(
+      runner,
+      "start",
+      directJobStartRequest("job-terminal-expiry", agentHome),
+    );
+    expect(startResponse.status).toBe(200);
+    controlled.complete();
+    await controlled.watcherReturned;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const timerCallIndex = setTimeoutSpy.mock.calls.findIndex((call) => call[1] === 90_000);
+    expect(timerCallIndex).toBeGreaterThanOrEqual(0);
+    expect(90_000).toBeGreaterThan(65_000);
+    const retained = await requestDirectRunnerJob(runner, "status", {jobId: "job-terminal-expiry"});
+    expect(retained.status).toBe(200);
+
+    const expiryCallback = setTimeoutSpy.mock.calls[timerCallIndex]?.[0];
+    if (typeof expiryCallback !== "function") throw new Error("Expected terminal expiry callback.");
+    expiryCallback();
+    expect((await requestDirectRunnerJob(runner, "status", {jobId: "job-terminal-expiry"})).status).toBe(404);
+  });
+
+  it("unrefs terminal retention and clears retained state on runner close", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const controlled = createControlledBackgroundExecutor();
+    const runner = await createRunner("panda", {commandExecutor: controlled.commandExecutor});
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+
+    expect((await requestDirectRunnerJob(
+      runner,
+      "start",
+      directJobStartRequest("job-terminal-close", agentHome),
+    )).status).toBe(200);
+    controlled.complete();
+    await controlled.watcherReturned;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const timerCallIndex = setTimeoutSpy.mock.calls.findIndex((call) => call[1] === 90_000);
+    expect(timerCallIndex).toBeGreaterThanOrEqual(0);
+    const retentionTimer = setTimeoutSpy.mock.results[timerCallIndex]?.value as NodeJS.Timeout;
+    expect(retentionTimer.hasRef()).toBe(false);
+
+    await runner.close();
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(retentionTimer);
+    expect(controlled.cancelCalls()).toBe(0);
+    expect(runner.server.listening).toBe(false);
+  });
+
+  it("releases a credential-shaped executor job after retaining its terminal snapshot", async () => {
+    const script = `
+      import {startBashRunner} from "./src/integrations/shell/bash-runner.ts";
+      let releaseCompletion;
+      let markWatcherReturned;
+      let jobReference;
+      const completion = new Promise((resolve) => { releaseCompletion = resolve; });
+      const watcherReturned = new Promise((resolve) => { markWatcherReturned = resolve; });
+      const snapshot = (input, status) => ({
+        jobId: input.request.jobId,
+        status,
+        command: input.request.command,
+        initialCwd: input.cwd,
+        maxRuntimeMs: input.request.maxRuntimeMs,
+        expiresAt: 1001,
+        startedAt: 1,
+        timedOut: false,
+        stdout: status === "completed" ? "done" : "",
+        stderr: "",
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        stdoutChars: status === "completed" ? 4 : 0,
+        stderrChars: 0,
+        stdoutPersisted: false,
+        stderrPersisted: false,
+        trackedEnvKeys: [],
+        ...(status === "running" ? {} : {finishedAt: 2, durationMs: 1, exitCode: 0, signal: null}),
+      });
+      const runner = await startBashRunner({
+        agentKey: "panda",
+        host: "127.0.0.1",
+        port: 0,
+        commandExecutor: {
+          execute: async () => { throw new Error("unexpected exec"); },
+          startJob: async (input) => {
+            let status = "running";
+            const job = {
+              credentialShapedEnv: {OPENAI_API_KEY: "sk-shaped-not-a-real-secret"},
+              snapshot: () => snapshot(input, status),
+              wait: async () => {
+                await completion;
+                status = "completed";
+                markWatcherReturned();
+                return snapshot(input, status);
+              },
+              cancel: async () => {
+                status = "cancelled";
+                return snapshot(input, status);
+              },
+            };
+            jobReference = new WeakRef(job);
+            return job;
+          },
+        },
+      });
+      try {
+        const response = await fetch("http://127.0.0.1:" + runner.port + "/agents/panda/jobs/start", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-runtime-agent-key": "panda",
+            "x-runtime-agent-path-scoped": "1",
+            "x-runtime-expected-path": "/agents/panda",
+          },
+          body: JSON.stringify({
+            jobId: "job-weak-reference",
+            command: "printf done",
+            cwd: process.cwd(),
+            maxRuntimeMs: 1_000,
+            trackedEnvKeys: [],
+            maxOutputChars: 8_000,
+            persistOutputThresholdChars: 8_000,
+          }),
+        });
+        if (response.status !== 200) throw new Error("start failed: " + response.status);
+        await response.json();
+        releaseCompletion();
+        await watcherReturned;
+        await new Promise((resolve) => setImmediate(resolve));
+        for (let index = 0; index < 20; index += 1) {
+          global.gc();
+          await new Promise((resolve) => setImmediate(resolve));
+          if (!jobReference.deref()) break;
+        }
+        if (jobReference.deref()) throw new Error("terminal state retained the credential-shaped executor job");
+        process.stdout.write("executor-job-released");
+      } finally {
+        await runner.close();
+      }
+    `;
+
+    const result = await execFileAsync(process.execPath, [
+      "--expose-gc",
+      "--import",
+      "tsx",
+      "--input-type=module",
+      "--eval",
+      script,
+    ], {cwd: path.resolve("."), timeout: 10_000});
+    expect(result.stdout).toBe("executor-job-released");
+  }, 15_000);
+
+  it("allows only one of two concurrent waits to consume a running job's terminal result", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const controlled = createControlledBackgroundExecutor();
+    const runner = await createRunner("panda", {commandExecutor: controlled.commandExecutor});
+    expect((await requestDirectRunnerJob(
+      runner,
+      "start",
+      directJobStartRequest("job-concurrent-waits", agentHome),
+    )).status).toBe(200);
+
+    const waits = [
+      requestDirectRunnerJob(runner, "wait", {jobId: "job-concurrent-waits", timeoutMs: 1_000}),
+      requestDirectRunnerJob(runner, "wait", {jobId: "job-concurrent-waits", timeoutMs: 1_000}),
+    ];
+    await vi.waitFor(() => {
+      expect(controlled.waitTimeouts.filter((timeoutMs) => timeoutMs === 1_000)).toHaveLength(2);
+    });
+    controlled.complete();
+
+    const responses = await Promise.all(waits);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 404]);
+    const bodies = await Promise.all(responses.map((response) => response.json())) as Array<Record<string, unknown>>;
+    expect(bodies).toContainEqual(expect.objectContaining({status: "completed", stdout: "fake-job-done"}));
+    expect(bodies).toContainEqual(expect.objectContaining({error: "Unknown background job job-concurrent-waits."}));
+  });
+
+  it("lets cancel consume while an earlier wait finishes with the unknown-job contract", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const controlled = createControlledBackgroundExecutor();
+    const runner = await createRunner("panda", {commandExecutor: controlled.commandExecutor});
+    expect((await requestDirectRunnerJob(
+      runner,
+      "start",
+      directJobStartRequest("job-wait-cancel-race", agentHome, "sleep 1"),
+    )).status).toBe(200);
+
+    const waitResponsePromise = requestDirectRunnerJob(runner, "wait", {
+      jobId: "job-wait-cancel-race",
+      timeoutMs: 1_000,
+    });
+    await vi.waitFor(() => expect(controlled.waitTimeouts).toContain(1_000));
+
+    const cancelResponse = await requestDirectRunnerJob(runner, "cancel", {jobId: "job-wait-cancel-race"});
+    expect(cancelResponse.status).toBe(200);
+    await expect(cancelResponse.json()).resolves.toMatchObject({status: "cancelled"});
+    controlled.complete();
+
+    const waitResponse = await waitResponsePromise;
+    expect(waitResponse.status).toBe(404);
+    await expect(waitResponse.json()).resolves.toMatchObject({error: "Unknown background job job-wait-cancel-race."});
+    expect(controlled.cancelCalls()).toBe(1);
+  });
+
+  it("allows an accepted status read to finish while concurrent cancel consumes the job", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    let status: BashJobSnapshot["status"] = "running";
+    let snapshotCalls = 0;
+    let releaseStatus!: () => void;
+    let markStatusStarted!: () => void;
+    let releaseWatcher!: () => void;
+    const statusGate = new Promise<void>((resolve) => { releaseStatus = resolve; });
+    const statusStarted = new Promise<void>((resolve) => { markStatusStarted = resolve; });
+    const watcherGate = new Promise<void>((resolve) => { releaseWatcher = resolve; });
+    const runner = await createRunner("panda", {
+      commandExecutor: {
+        execute: async () => { throw new Error("unexpected exec"); },
+        startJob: async (input) => ({
+          snapshot: async () => {
+            snapshotCalls += 1;
+            if (snapshotCalls > 1) {
+              markStatusStarted();
+              await statusGate;
+            }
+            return fakeJobSnapshot(input, status);
+          },
+          wait: async () => {
+            await watcherGate;
+            return fakeJobSnapshot(input, status);
+          },
+          cancel: async (timeoutMs) => {
+            expect(timeoutMs).toBe(5_000);
+            status = "cancelled";
+            releaseWatcher();
+            return fakeJobSnapshot(input, status);
+          },
+        }),
+      },
+    });
+    expect((await requestDirectRunnerJob(
+      runner,
+      "start",
+      directJobStartRequest("job-status-cancel-race", agentHome, "sleep 1"),
+    )).status).toBe(200);
+
+    const statusResponsePromise = requestDirectRunnerJob(runner, "status", {jobId: "job-status-cancel-race"});
+    await statusStarted;
+    const cancelResponse = await requestDirectRunnerJob(runner, "cancel", {jobId: "job-status-cancel-race"});
+    expect(cancelResponse.status).toBe(200);
+    releaseStatus();
+
+    const statusResponse = await statusResponsePromise;
+    expect(statusResponse.status).toBe(200);
+    await expect(statusResponse.json()).resolves.toMatchObject({status: "cancelled"});
+    expect((await requestDirectRunnerJob(runner, "wait", {jobId: "job-status-cancel-race"})).status).toBe(404);
+  });
+
+  it("does not let a consumed result's stale expiry delete a replacement with the same job id", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const jobs: Array<{complete(status?: BashJobSnapshot["status"]): void; watcherReturned: Promise<void>}> = [];
+    const runner = await createRunner("panda", {
+      commandExecutor: {
+        execute: async () => { throw new Error("unexpected exec"); },
+        startJob: async (input) => {
+          let status: BashJobSnapshot["status"] = "running";
+          let release!: () => void;
+          let markWatcherReturned!: () => void;
+          const completion = new Promise<void>((resolve) => { release = resolve; });
+          const watcherReturned = new Promise<void>((resolve) => { markWatcherReturned = resolve; });
+          jobs.push({
+            complete: (nextStatus = "completed") => {
+              status = nextStatus;
+              release();
+            },
+            watcherReturned,
+          });
+          return {
+            snapshot: () => fakeJobSnapshot(input, status),
+            wait: async () => {
+              await completion;
+              markWatcherReturned();
+              return fakeJobSnapshot(input, status);
+            },
+            cancel: async () => {
+              status = "cancelled";
+              release();
+              return fakeJobSnapshot(input, status);
+            },
+          };
+        },
+      },
+    });
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const jobId = "job-reused-after-consume";
+
+    expect((await requestDirectRunnerJob(runner, "start", directJobStartRequest(jobId, agentHome, "printf first"))).status)
+      .toBe(200);
+    jobs[0]!.complete();
+    await jobs[0]!.watcherReturned;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const timerCall = setTimeoutSpy.mock.calls.findIndex((call) => call[1] === 90_000);
+    const staleExpiry = setTimeoutSpy.mock.calls[timerCall]?.[0];
+    if (typeof staleExpiry !== "function") throw new Error("Expected terminal expiry callback.");
+
+    expect((await requestDirectRunnerJob(runner, "wait", {jobId})).status).toBe(200);
+    expect((await requestDirectRunnerJob(runner, "start", directJobStartRequest(jobId, agentHome, "sleep 1"))).status)
+      .toBe(200);
+    staleExpiry();
+
+    const replacementStatus = await requestDirectRunnerJob(runner, "status", {jobId});
+    expect(replacementStatus.status).toBe(200);
+    await expect(replacementStatus.json()).resolves.toMatchObject({status: "running", command: "sleep 1"});
+    await requestDirectRunnerJob(runner, "cancel", {jobId, timeoutMs: 1_000});
+  });
+
+  it("publishes one close promise and drains a job that resolves after close starts", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    let resolveStart!: (job: CommandExecutorJob) => void;
+    let markStartCalled!: () => void;
+    let cancelCalls = 0;
+    let startCalls = 0;
+    const startGate = new Promise<CommandExecutorJob>((resolve) => { resolveStart = resolve; });
+    const startCalled = new Promise<void>((resolve) => { markStartCalled = resolve; });
+    const runner = await createRunner("panda", {
+      commandExecutor: {
+        execute: async () => { throw new Error("unexpected exec"); },
+        startJob: async () => {
+          startCalls += 1;
+          markStartCalled();
+          return startGate;
+        },
+      },
+    });
+    const input = {
+      request: directJobStartRequest("job-close-during-start", agentHome, "sleep 1"),
+      cwd: agentHome,
+    } satisfies CommandExecutorJobStartInput;
+    const job: CommandExecutorJob = {
+      snapshot: () => fakeJobSnapshot(input, "running"),
+      wait: async () => fakeJobSnapshot(input, "cancelled"),
+      cancel: async () => {
+        cancelCalls += 1;
+        return fakeJobSnapshot(input, "cancelled");
+      },
+    };
+
+    const startResponsePromise = requestDirectRunnerJob(runner, "start", input.request);
+    await startCalled;
+    const firstClose = runner.close();
+    const secondClose = runner.close();
+    expect(firstClose).toBe(secondClose);
+    resolveStart(job);
+
+    const startResponse = await startResponsePromise;
+    expect(startResponse.status).toBe(503);
+    await expect(startResponse.json()).resolves.toMatchObject({ok: false, error: "Runner is closing."});
+    await firstClose;
+    expect(cancelCalls).toBe(1);
+    expect(startCalls).toBe(1);
+    expect(runner.server.listening).toBe(false);
+    expect(runner.close()).toBe(firstClose);
+  });
+
+  it("drains a watcher completing during close without resurrecting terminal state or timers", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    let status: BashJobSnapshot["status"] = "running";
+    let releaseCompletion!: () => void;
+    let markWatcherReturned!: () => void;
+    let cancelCalls = 0;
+    const completion = new Promise<void>((resolve) => { releaseCompletion = resolve; });
+    const watcherReturned = new Promise<void>((resolve) => { markWatcherReturned = resolve; });
+    const runner = await createRunner("panda", {
+      commandExecutor: {
+        execute: async () => { throw new Error("unexpected exec"); },
+        startJob: async (input) => ({
+          snapshot: () => fakeJobSnapshot(input, status),
+          wait: async () => {
+            await completion;
+            markWatcherReturned();
+            return fakeJobSnapshot(input, status);
+          },
+          cancel: async () => {
+            cancelCalls += 1;
+            status = "cancelled";
+            releaseCompletion();
+            return fakeJobSnapshot(input, status);
+          },
+        }),
+      },
+    });
+    expect((await requestDirectRunnerJob(
+      runner,
+      "start",
+      directJobStartRequest("job-close-during-watch", agentHome, "sleep 1"),
+    )).status).toBe(200);
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+
+    const firstClose = runner.close();
+    expect(runner.close()).toBe(firstClose);
+    await firstClose;
+    await watcherReturned;
+
+    expect(cancelCalls).toBe(1);
+    expect(setTimeoutSpy.mock.calls.some((call) => call[1] === 90_000)).toBe(false);
+    expect(runner.server.listening).toBe(false);
+  });
+
+  it("leaves no local process-group residue after runner close", async () => {
+    if (process.platform === "win32") return;
+
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const markerPath = path.join(agentHome, "close-processes.txt");
+    const runner = await createRunner("panda");
+    const startResponse = await requestDirectRunnerJob(runner, "start", {
+      ...directJobStartRequest(
+        "job-close-process-residue",
+        agentHome,
+        `(sleep 30) & child=$!; printf '%s %s' "$$" "$child" > ${JSON.stringify(markerPath)}; wait`,
+      ),
+      maxRuntimeMs: 60_000,
+    });
+    expect(startResponse.status).toBe(200);
+    await waitFor(async () => {
+      try {
+        return (await readFile(markerPath, "utf8")).trim().split(" ").length === 2;
+      } catch {
+        return false;
+      }
+    });
+    const pids = (await readFile(markerPath, "utf8")).trim().split(" ").map(Number);
+
+    await runner.close();
+    for (const pid of pids) {
+      expect(() => process.kill(pid, 0)).toThrow();
+    }
+  });
+
+  it("reserves a job id before a deferred start and allows reuse only after consumption", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const pendingStarts: Array<{
+      input: CommandExecutorJobStartInput;
+      resolve(job: CommandExecutorJob): void;
+    }> = [];
+    const createJob = (input: CommandExecutorJobStartInput): CommandExecutorJob => {
+      let status: BashJobSnapshot["status"] = "running";
+      let release!: () => void;
+      const completion = new Promise<void>((resolve) => { release = resolve; });
+      return {
+        snapshot: () => fakeJobSnapshot(input, status),
+        wait: async () => {
+          await completion;
+          return fakeJobSnapshot(input, status);
+        },
+        cancel: async () => {
+          status = "cancelled";
+          release();
+          return fakeJobSnapshot(input, status);
+        },
+      };
+    };
+    const runner = await createRunner("panda", {
+      commandExecutor: {
+        execute: async () => { throw new Error("unexpected exec"); },
+        startJob: (input) => new Promise<CommandExecutorJob>((resolve) => {
+          pendingStarts.push({input, resolve});
+        }),
+      },
+    });
+    const request = directJobStartRequest("job-deferred-duplicate", agentHome, "sleep 1");
+
+    const firstStart = requestDirectRunnerJob(runner, "start", request);
+    await waitFor(() => pendingStarts.length === 1);
+    const secondResponse = await requestDirectRunnerJob(runner, "start", request);
+    expect(secondResponse.status).toBe(400);
+    await expect(secondResponse.json()).resolves.toMatchObject({
+      error: "Background job job-deferred-duplicate already exists.",
+    });
+    expect(pendingStarts).toHaveLength(1);
+
+    pendingStarts[0]!.resolve(createJob(pendingStarts[0]!.input));
+    expect((await firstStart).status).toBe(200);
+    expect((await requestDirectRunnerJob(runner, "cancel", {jobId: request.jobId})).status).toBe(200);
+
+    const reusedStart = requestDirectRunnerJob(runner, "start", {...request, command: "printf reused"});
+    await waitFor(() => pendingStarts.length === 2);
+    pendingStarts[1]!.resolve(createJob(pendingStarts[1]!.input));
+    expect((await reusedStart).status).toBe(200);
+    expect((await requestDirectRunnerJob(runner, "cancel", {jobId: request.jobId})).status).toBe(200);
+    expect(pendingStarts).toHaveLength(2);
+  });
+
+  it("drains a created job when snapshot publication fails before ownership transfer", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const cleanupCalls: string[] = [];
+    let startCalls = 0;
+    const runner = await createRunner("panda", {
+      commandExecutor: {
+        execute: async () => { throw new Error("unexpected exec"); },
+        startJob: async (input) => {
+          startCalls += 1;
+          if (startCalls === 1) {
+            return {
+              snapshot: () => { throw new Error("snapshot failed"); },
+              cancel: async () => {
+                cleanupCalls.push("cancel");
+                return fakeJobSnapshot(input, "running");
+              },
+              wait: async () => {
+                cleanupCalls.push("wait");
+                return fakeJobSnapshot(input, "cancelled");
+              },
+            };
+          }
+          return {
+            snapshot: () => fakeJobSnapshot(input, "completed"),
+            wait: async () => fakeJobSnapshot(input, "completed"),
+            cancel: async () => fakeJobSnapshot(input, "completed"),
+          };
+        },
+      },
+    });
+    const request = directJobStartRequest("job-snapshot-publication-failure", agentHome);
+
+    expect((await requestDirectRunnerJob(runner, "start", request)).status).toBe(500);
+    expect(cleanupCalls).toEqual(["cancel", "wait"]);
+    expect((await requestDirectRunnerJob(runner, "start", request)).status).toBe(200);
+    expect((await requestDirectRunnerJob(runner, "wait", {jobId: request.jobId})).status).toBe(200);
+  });
+
+  it("releases a reserved job id when executor start fails", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    let startCalls = 0;
+    const runner = await createRunner("panda", {
+      commandExecutor: {
+        execute: async () => { throw new Error("unexpected exec"); },
+        startJob: async (input) => {
+          startCalls += 1;
+          if (startCalls === 1) throw new Error("deferred start failed");
+          return {
+            snapshot: () => fakeJobSnapshot(input, "completed"),
+            wait: async () => fakeJobSnapshot(input, "completed"),
+            cancel: async () => fakeJobSnapshot(input, "completed"),
+          };
+        },
+      },
+    });
+    const request = directJobStartRequest("job-reuse-after-start-failure", agentHome);
+
+    expect((await requestDirectRunnerJob(runner, "start", request)).status).toBe(500);
+    expect((await requestDirectRunnerJob(runner, "start", request)).status).toBe(200);
+    expect((await requestDirectRunnerJob(runner, "wait", {jobId: request.jobId})).status).toBe(200);
+    expect(startCalls).toBe(2);
+  });
+
+  it("does not recreate an abort timer when close races an accepted slow body", async () => {
+    const runner = await createRunner("panda");
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    let closeStarted: Promise<void> | undefined;
+    const response = new Promise<{statusCode: number; body: string}>((resolve, reject) => {
+      const clientRequest = httpRequest({
+        host: "127.0.0.1",
+        port: runner.port,
+        path: "/agents/panda/abort",
+        method: "POST",
+        headers: {
+          ...buildDirectRunnerHeaders("panda"),
+          connection: "close",
+        },
+      }, (clientResponse) => {
+        const chunks: Buffer[] = [];
+        clientResponse.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        clientResponse.once("end", () => resolve({
+          statusCode: clientResponse.statusCode ?? 0,
+          body: Buffer.concat(chunks).toString("utf8"),
+        }));
+      });
+      clientRequest.once("error", reject);
+      const connected = new Promise<void>((connectedResolve) => {
+        clientRequest.once("socket", (socket) => {
+          if (socket.connecting) socket.once("connect", connectedResolve);
+          else connectedResolve();
+        });
+      });
+      clientRequest.write('{"requestId":"slow');
+      void connected.then(async () => {
+        await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+        closeStarted = runner.close();
+        clientRequest.end('-abort"}');
+        await closeStarted;
+      }).catch(reject);
+    });
+
+    const result = await response;
+    await closeStarted;
+    expect(result.statusCode).toBe(503);
+    expect(JSON.parse(result.body)).toMatchObject({ok: false, error: "Runner is closing."});
+    expect(setTimeoutSpy.mock.calls.filter((call) => call[1] === 30_000)).toHaveLength(0);
+  });
+
+  it("loses zero authenticated first waits after accepted running starts", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const sharedSecret = "runner-retention-stress-secret";
+    const runner = await createRunner("panda", {sharedSecret});
+    const attempts = 100;
+    let acceptedRunning = 0;
+    let lostFirstWaits = 0;
+
+    for (let index = 0; index < attempts; index += 1) {
+      const jobId = `job-retention-stress-${index}`;
+      const startResponse = await requestDirectRunnerJob(runner, "start", {
+        ...directJobStartRequest(jobId, agentHome, "sleep 0.01; printf done"),
+        maxRuntimeMs: 2_000,
+      }, {sharedSecret});
+      expect(startResponse.status).toBe(200);
+      const started = await startResponse.json() as Record<string, unknown>;
+      expect(started.status).toBe("running");
+      acceptedRunning += 1;
+
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      const waitResponse = await requestDirectRunnerJob(
+        runner,
+        "wait",
+        {jobId, timeoutMs: 1_000},
+        {sharedSecret},
+      );
+      if (waitResponse.status === 404) lostFirstWaits += 1;
+      expect(waitResponse.status).toBe(200);
+      await expect(waitResponse.json()).resolves.toMatchObject({status: "completed", stdout: "done"});
+    }
+
+    expect({acceptedRunning, lostFirstWaits}).toEqual({acceptedRunning: attempts, lostFirstWaits: 0});
+  }, 30_000);
 
   it("serves /exec through the command executor seam without changing the runner protocol", async () => {
     const agentHome = await createWorkspace("runtime-agent-home-");
