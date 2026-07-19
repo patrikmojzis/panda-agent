@@ -416,3 +416,33 @@ Run:
 ./scripts/docker-stack.sh up --build
 ./scripts/docker-stack.sh logs gateway
 ```
+
+### Tailscale-Only Docker Stack
+
+For private deployments, expose gateway through Tailscale Serve instead of the
+public Caddy edge:
+
+```bash
+PANDA_TAILNET_SERVE_ENABLED=true
+PANDA_GATEWAY_BASE_URL=https://mac-mini.your-tailnet.ts.net/gateway
+GATEWAY_IP_ALLOWLIST=100.64.0.0/10,127.0.0.1/32,::1/128
+GATEWAY_GUARD_MODEL=openai-codex/gpt-5.5
+```
+
+Then run:
+
+```bash
+./scripts/docker-stack.sh up --build
+tailscale serve --bg --set-path=/gateway http://127.0.0.1:8094
+```
+
+In tailnet mode, `scripts/docker-stack.sh` publishes gateway on host loopback,
+does not generate Caddy, and defaults `GATEWAY_PATH_PREFIX=/gateway`. Gateway
+clients should call:
+
+```text
+https://mac-mini.your-tailnet.ts.net/gateway/oauth/token
+https://mac-mini.your-tailnet.ts.net/gateway/v1/events
+https://mac-mini.your-tailnet.ts.net/gateway/v2/attachments
+https://mac-mini.your-tailnet.ts.net/gateway/v2/events
+```

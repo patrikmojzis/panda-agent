@@ -1,4 +1,5 @@
 import {AgentAppRequestError} from "./http-errors.js";
+import {stripHttpPathPrefix} from "../../lib/http-path-prefix.js";
 
 function readRawRequestPathname(requestTarget: string): string {
   const withoutFragment = requestTarget.split("#", 1)[0] ?? "";
@@ -45,12 +46,29 @@ function splitPathname(pathname: string): string[] {
   }
 }
 
-export function parseAgentAppRequestTarget(requestTarget: string): {
+function isKnownAgentAppPath(pathname: string, parts: readonly string[]): boolean {
+  return pathname === "/health"
+    || pathname === "/panda-app-sdk.js"
+    || (parts[0] === "apps" && parts[1] === "open")
+    || Boolean(parseAgentAppUiPath(parts))
+    || (parts[0] === "api" && parts[1] === "apps" && parts.length >= 5);
+}
+
+export function parseAgentAppRequestTarget(requestTarget: string, options: {pathPrefix?: string} = {}): {
   parts: string[];
   requestUrl: URL;
 } {
   assertNoRawPathDotSegments(requestTarget);
   const requestUrl = new URL(requestTarget, "http://apps.local");
+  const strippedPathname = stripHttpPathPrefix(requestUrl.pathname, options.pathPrefix ?? "");
+  const strippedParts = splitPathname(strippedPathname);
+  if (strippedPathname !== requestUrl.pathname && isKnownAgentAppPath(strippedPathname, strippedParts)) {
+    requestUrl.pathname = strippedPathname;
+    return {
+      parts: strippedParts,
+      requestUrl,
+    };
+  }
 
   return {
     parts: splitPathname(requestUrl.pathname),

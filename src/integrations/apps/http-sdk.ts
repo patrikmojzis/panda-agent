@@ -1,16 +1,22 @@
 export function buildAgentAppSdkScript(input: {
   csrfHeaderName: string;
+  pathPrefix?: string;
 }): string {
+  const pathPrefix = input.pathPrefix ?? "";
   return `(() => {
   const trim = (value) => typeof value === "string" && value.trim() ? value.trim() : undefined;
+  const pathPrefix = ${JSON.stringify(pathPrefix)};
   const cookieSuffix = (agentKey, appSlug) => \`\${agentKey.length}_\${agentKey}_\${appSlug.length}_\${appSlug}\`.replace(/[^A-Za-z0-9_-]/g, "_");
   const readCookie = (name) => {
     const prefix = \`\${name}=\`;
     const match = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(prefix));
     return match ? decodeURIComponent(match.slice(prefix.length)) : undefined;
   };
+  const stripPrefix = (pathname) => pathPrefix && (pathname === pathPrefix || pathname.startsWith(\`\${pathPrefix}/\`))
+    ? pathname.slice(pathPrefix.length) || "/"
+    : pathname;
   const url = new URL(window.location.href);
-  const parts = url.pathname.split("/").filter(Boolean).map((segment) => decodeURIComponent(segment));
+  const parts = stripPrefix(url.pathname).split("/").filter(Boolean).map((segment) => decodeURIComponent(segment));
   const route = parts[0] === "apps" && parts[1] && parts[2]
     ? {agentKey: parts[1], appSlug: parts[2]}
     : parts[1] === "apps" && parts[0] && parts[2]
@@ -20,7 +26,7 @@ export function buildAgentAppSdkScript(input: {
     return;
   }
 
-  const apiBase = \`/api/apps/\${encodeURIComponent(route.agentKey)}/\${encodeURIComponent(route.appSlug)}\`;
+  const apiBase = \`\${pathPrefix}/api/apps/\${encodeURIComponent(route.agentKey)}/\${encodeURIComponent(route.appSlug)}\`;
   const csrfCookieName = \`panda_app_csrf_\${cookieSuffix(route.agentKey, route.appSlug)}\`;
   let context = {
     identityId: trim(url.searchParams.get("identityId")),

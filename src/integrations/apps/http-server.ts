@@ -15,6 +15,7 @@ import {
   resolveAgentAppAuthMode,
   resolveCookieSecure,
   resolveRateLimitPerMinute,
+  readPublicAppsPathPrefix,
   resolveSessionTtlMs,
   type AgentAppServerBinding,
 } from "./http-config.js";
@@ -99,9 +100,21 @@ function readAgentAppErrorResponse(error: unknown): {
   };
 }
 
+function rewriteAgentAppHtmlForPrefix(bytes: Buffer, contentType: string, pathPrefix: string): Buffer {
+  if (!pathPrefix || !contentType.toLowerCase().startsWith("text/html")) {
+    return bytes;
+  }
+
+  return Buffer.from(
+    bytes.toString("utf8").replaceAll("\"/panda-app-sdk.js\"", `"${pathPrefix}/panda-app-sdk.js"`),
+    "utf8",
+  );
+}
+
 export async function startAgentAppServer(options: AgentAppServerOptions): Promise<AgentAppServer> {
   const env = options.env ?? process.env;
   assertSafePublicAppsBaseUrl(env);
+  const pathPrefix = readPublicAppsPathPrefix(env);
   const authMode = options.authMode ?? resolveAgentAppAuthMode(env);
   if (authMode === "required" && !options.auth) {
     throw new Error("PANDA_APPS_AUTH requires an app auth service.");
@@ -116,7 +129,7 @@ export async function startAgentAppServer(options: AgentAppServerOptions): Promi
       if (!rateLimitAllows(readAgentAppRateLimitKey(request))) {
         throw new AgentAppRequestError(429, "Too many app requests. Try again in a minute.");
       }
-      const {parts, requestUrl} = parseAgentAppRequestTarget(request.url ?? "/");
+      const {parts, requestUrl} = parseAgentAppRequestTarget(request.url ?? "/", {pathPrefix});
 
       if (request.method === "GET" && requestUrl.pathname === "/health") {
         writeJsonResponse(response, 200, {ok: true});
@@ -125,7 +138,7 @@ export async function startAgentAppServer(options: AgentAppServerOptions): Promi
 
       if (request.method === "GET" && requestUrl.pathname === "/panda-app-sdk.js") {
         response.writeHead(200, {"content-type": "text/javascript; charset=utf-8"});
-        response.end(buildAgentAppSdkScript({csrfHeaderName: APP_CSRF_HEADER}));
+        response.end(buildAgentAppSdkScript({csrfHeaderName: APP_CSRF_HEADER, pathPrefix}));
         return;
       }
 
@@ -134,6 +147,7 @@ export async function startAgentAppServer(options: AgentAppServerOptions): Promi
           auth: options.auth,
           cookieSecure,
           method: request.method,
+          pathPrefix,
           requestUrl,
           response,
           service: options.service,
@@ -155,7 +169,7 @@ export async function startAgentAppServer(options: AgentAppServerOptions): Promi
         const app = await options.service.getApp(agentKey, appSlug);
         const asset = await readAgentAppStaticAsset(app, relativeAssetPath);
         response.writeHead(200, {"content-type": asset.contentType});
-        response.end(asset.bytes);
+        response.end(rewriteAgentAppHtmlForPrefix(asset.bytes, asset.contentType, pathPrefix));
         return;
       }
 

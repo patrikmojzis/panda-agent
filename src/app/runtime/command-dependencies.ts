@@ -5,7 +5,7 @@ import type {
   OutboundDeliveryRecord,
   OutboundDeliveryTargetHistoryFilter,
 } from "../../domain/channels/deliveries/types.js";
-import {buildAgentAppOpenPath, resolveAgentAppUrls} from "../../integrations/apps/http-config.js";
+import {buildAgentAppOpenPath, readPublicAppsPathPrefix, resolveAgentAppUrls} from "../../integrations/apps/http-config.js";
 
 type RequiredCommandDependency<K extends keyof AgentCommandModuleDependencies> =
   NonNullable<AgentCommandModuleDependencies[K]>;
@@ -71,9 +71,10 @@ export function buildRuntimeCommandDependencies(
     resolveAppUrls: (appInput) => resolveAgentAppUrls({...appInput, env: input.env}),
     resolveAppLaunchUrls: ({agentKey, appSlug, token}) => {
       const urls = resolveAgentAppUrls({agentKey, appSlug, env: input.env});
+      const pathPrefix = readPublicAppsPathPrefix(input.env);
       return {
         ...urls,
-        openUrl: new URL(buildAgentAppOpenPath(token), urls.appUrl).toString(),
+        openUrl: new URL(buildAgentAppOpenPath(token, pathPrefix), urls.appUrl).toString(),
       };
     },
     agentSkills: input.agentSkills,

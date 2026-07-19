@@ -1433,6 +1433,54 @@ exit 42
     expect(await readFile(logPath, "utf8")).toContain("logs -f panda-gateway");
   });
 
+  it("renders tailnet serve loopback ports without caddy", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_TAILNET_SERVE_ENABLED=true",
+      "PANDA_APPS_BASE_URL=https://mac-mini.tailnet.ts.net/apps",
+      "PANDA_GATEWAY_BASE_URL=https://mac-mini.tailnet.ts.net/gateway",
+      "GATEWAY_IP_ALLOWLIST=100.64.0.0/10,127.0.0.1/32",
+      "GATEWAY_GUARD_MODEL=openai-codex/gpt-5.5",
+      "PANDA_AGENTS=",
+    ].join("\n"));
+
+    const homeDir = await makeTempDir("panda-home-");
+    const upResult = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+
+    expect(upResult.exitCode).toBe(0);
+    const logContents = await readFile(logPath, "utf8");
+    expect(logContents).not.toContain("docker-compose.apps-edge.yml");
+    const generatedCompose = await readFile(generatedComposePath, "utf8");
+    expect(generatedCompose).toContain("PANDA_APPS_AUTH: required");
+    expect(generatedCompose).toContain("PANDA_APPS_BASE_URL: ${PANDA_APPS_BASE_URL}");
+    expect(generatedCompose).toContain('${PANDA_APPS_PUBLISH_HOST:-127.0.0.1}:${PANDA_APPS_PUBLISH_PORT:-${PANDA_APPS_PORT:-8092}}:${PANDA_APPS_PORT:-8092}');
+    expect(generatedCompose).toContain("panda-gateway:");
+    expect(generatedCompose).toContain("GATEWAY_PATH_PREFIX: ${GATEWAY_PATH_PREFIX:-/gateway}");
+    expect(generatedCompose).toContain('${GATEWAY_PUBLISH_HOST:-127.0.0.1}:${GATEWAY_PUBLISH_PORT:-${GATEWAY_PORT:-8094}}:${GATEWAY_PORT:-8094}');
+    expect(generatedCompose).not.toContain("  caddy:");
+    expect(generatedCompose).not.toContain("apps_edge_net");
+    expect(generatedCompose).not.toContain("gateway_edge_net");
+    expect(await readFile(generatedPublicCaddyfilePath, "utf8")).toContain("Public edge is disabled");
+    expect(upResult.stdout).toContain("tailscale serve --bg --set-path=/apps http://127.0.0.1:8092");
+    expect(upResult.stdout).toContain("tailscale serve --bg --set-path=/gateway http://127.0.0.1:8094");
+
+    const logsResult = await runScript(["logs", "apps"], {
+      envFile,
+      dockerBin,
+      homeDir,
+    });
+    expect(logsResult.exitCode).toBe(0);
+    expect(await readFile(logPath, "utf8")).toContain("logs -f panda-core");
+  });
+
   it("keeps gateway and caddy off disposable environment networks", async () => {
     const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
     const dockerBin = await createDockerStub(logPath);

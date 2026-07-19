@@ -19,8 +19,8 @@ interface AgentAppLaunchLookup {
   getApp(agentKey: string, appSlug: string): Promise<AgentAppDefinition>;
 }
 
-function renderLaunchInterstitial(token: string): string {
-  const action = escapeAgentAppHtml(buildAgentAppOpenPath(token));
+function renderLaunchInterstitial(token: string, pathPrefix: string): string {
+  const action = escapeAgentAppHtml(buildAgentAppOpenPath(token, pathPrefix));
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -60,6 +60,7 @@ export async function writeAgentAppLaunchResponse(input: {
   cookieSecure: boolean;
   method?: string;
   requestUrl: URL;
+  pathPrefix?: string;
   response: ServerResponse;
   service: AgentAppLaunchLookup;
   sessionTtlMs: number;
@@ -78,7 +79,7 @@ export async function writeAgentAppLaunchResponse(input: {
       "cache-control": "no-store",
       "content-type": "text/html; charset=utf-8",
     });
-    input.response.end(renderLaunchInterstitial(token));
+    input.response.end(renderLaunchInterstitial(token, input.pathPrefix ?? ""));
     return;
   }
 
@@ -101,7 +102,7 @@ export async function writeAgentAppLaunchResponse(input: {
   const cookieNames = buildAgentAppCookieNames(app.agentKey, app.slug);
   input.response.writeHead(302, {
     "cache-control": "no-store",
-    "location": buildAgentAppPath(app.agentKey, app.slug),
+    "location": buildAgentAppPath(app.agentKey, app.slug, input.pathPrefix),
     "set-cookie": [
       serializeCookie({
         name: cookieNames.session,
@@ -113,7 +114,7 @@ export async function writeAgentAppLaunchResponse(input: {
       }),
       serializeCookie({
         name: cookieNames.csrf,
-        path: buildAgentAppCookiePath(app.agentKey, app.slug),
+        path: buildAgentAppCookiePath(app.agentKey, app.slug, input.pathPrefix),
         value: redeemed.csrfToken,
         expiresAt: redeemed.session.expiresAt,
         httpOnly: false,

@@ -197,6 +197,48 @@ describe("Panda gateway", () => {
     expect(event.status).toBe(status);
   }
 
+  it("accepts gateway routes below a configured path prefix", async () => {
+    const harness = await createHarness({
+      env: {
+        PANDA_GATEWAY_BASE_URL: "https://mac-mini.example.ts.net/gateway",
+      },
+    });
+    try {
+      const health = await fetch(`${harness.baseUrl}/gateway/health`);
+      expect(health.status).toBe(200);
+
+      const tokenResponse = await fetch(`${harness.baseUrl}/gateway/oauth/token`, {
+        method: "POST",
+        headers: {"content-type": "application/x-www-form-urlencoded"},
+        body: new URLSearchParams({
+          grant_type: "client_credentials",
+          client_id: harness.clientId,
+          client_secret: harness.clientSecret,
+        }),
+      });
+      expect(tokenResponse.status).toBe(200);
+      const tokenBody = await tokenResponse.json() as {access_token?: string};
+      expect(tokenBody.access_token).toMatch(/^pga_[A-Za-z0-9_-]+$/);
+
+      const event = await fetch(`${harness.baseUrl}/gateway/v1/events`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${tokenBody.access_token}`,
+          "content-type": "application/json",
+          "idempotency-key": "prefixed-event-1",
+        },
+        body: JSON.stringify({
+          type: "meeting.transcript",
+          delivery: "wake",
+          text: "Meeting transcript text.",
+        }),
+      });
+      expect(event.status).toBe(202);
+    } finally {
+      await closeHarness(harness);
+    }
+  });
+
   it("accepts OAuth client-credential events and delivers wrapped raw text to Panda", async () => {
     const harness = await createHarness();
     try {

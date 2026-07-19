@@ -5,6 +5,7 @@ import {
   GatewayAttachmentConflictError,
   GatewayEventConflictError,
 } from "../../domain/gateway/postgres.js";
+import {stripHttpPathPrefix} from "../../lib/http-path-prefix.js";
 import {writeJsonResponse} from "../../lib/http.js";
 import {acceptGatewayAttachmentUploadRequest} from "./attachment-acceptance.js";
 import {acceptGatewayDeviceCommandRequest} from "./device-commands.js";
@@ -26,6 +27,7 @@ import {
   DEFAULT_GATEWAY_PORT,
   DEFAULT_GATEWAY_RATE_LIMIT_PER_MINUTE,
   DEFAULT_GATEWAY_TEXT_BYTES_PER_HOUR,
+  resolveGatewayPathPrefix,
   type GatewayServerOptions,
 } from "./http-config.js";
 import {resolveGatewayNetworkControls} from "./network-controls.js";
@@ -67,6 +69,7 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
   const attachmentRetentionMs = options.attachmentRetentionMs ?? DEFAULT_GATEWAY_ATTACHMENT_RETENTION_MS;
   const deviceCommandMaxWaitMs = options.deviceCommandMaxWaitMs ?? DEFAULT_GATEWAY_DEVICE_COMMAND_MAX_WAIT_MS;
   const attachmentAllowedMimeTypes = options.attachmentAllowedMimeTypes ?? DEFAULT_GATEWAY_ATTACHMENT_ALLOWED_MIME_TYPES;
+  const pathPrefix = options.pathPrefix ?? resolveGatewayPathPrefix(env);
   const network = resolveGatewayNetworkControls({env, host});
 
   const server = createServer(async (request, response) => {
@@ -79,6 +82,7 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
       });
 
       const requestUrl = new URL(request.url ?? "/", `http://${request.headers.host ?? "gateway.local"}`);
+      requestUrl.pathname = stripHttpPathPrefix(requestUrl.pathname, pathPrefix);
       if (request.method === "GET" && requestUrl.pathname === "/health") {
         writeJsonResponse(response, 200, {ok: true});
         return;

@@ -1,4 +1,5 @@
 import type {PostgresGatewayStore} from "../../domain/gateway/postgres.js";
+import {normalizeHttpPathPrefix} from "../../lib/http-path-prefix.js";
 import {readTcpPort} from "../../lib/numbers.js";
 import {trimToNull} from "../../lib/strings.js";
 import type {GatewayWorker} from "./worker.js";
@@ -49,6 +50,7 @@ export interface GatewayServerOptions {
   maxEventAttachmentBytes?: number;
   maxPendingAttachmentsPerSource?: number;
   maxTextBytes?: number;
+  pathPrefix?: string;
   port?: number;
   rateLimitPerMinute?: number;
   store: PostgresGatewayStore;
@@ -95,6 +97,31 @@ function parseMimeAllowlist(value: string | null): readonly string[] {
   return parsed;
 }
 
+export function resolveGatewayPathPrefix(env: NodeJS.ProcessEnv = process.env): string {
+  const explicit = trimToNull(env.GATEWAY_PATH_PREFIX);
+  if (explicit) {
+    return normalizeHttpPathPrefix(explicit, "GATEWAY_PATH_PREFIX");
+  }
+
+  const baseUrl = trimToNull(env.PANDA_GATEWAY_BASE_URL);
+  if (!baseUrl) {
+    return "";
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid PANDA_GATEWAY_BASE_URL value: ${message}`);
+  }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error("PANDA_GATEWAY_BASE_URL must not include username, password, query, or fragment components.");
+  }
+
+  return normalizeHttpPathPrefix(parsed.pathname, "PANDA_GATEWAY_BASE_URL path");
+}
+
 /**
  * Resolves gateway HTTP server knobs from env without mixing env parsing into
  * the public request dispatcher.
@@ -103,6 +130,7 @@ export function resolveGatewayHttpConfig(env: NodeJS.ProcessEnv = process.env): 
   return {
     env,
     host: trimToNull(env.GATEWAY_HOST) ?? DEFAULT_GATEWAY_HOST,
+    pathPrefix: resolveGatewayPathPrefix(env),
     port: parsePort(trimToNull(env.GATEWAY_PORT), DEFAULT_GATEWAY_PORT),
     tokenTtlMs: readPositiveInteger(trimToNull(env.GATEWAY_ACCESS_TOKEN_TTL_MS), DEFAULT_GATEWAY_ACCESS_TOKEN_TTL_MS),
     maxActiveTokensPerSource: readPositiveInteger(

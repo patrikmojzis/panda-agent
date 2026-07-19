@@ -343,7 +343,8 @@ Set:
 - optional `PANDA_APPS_COOKIE_SECURE=false` only for local HTTP debugging
 
 When `PANDA_APPS_BASE_URL` is set, Panda requires app auth by default unless you explicitly set `PANDA_APPS_AUTH=off`.
-`PANDA_APPS_BASE_URL` should be a plain origin, like `https://your-domain.example`, with no path, query, fragment, username, or password.
+For the public Caddy edge, `PANDA_APPS_BASE_URL` should be a plain origin, like `https://your-domain.example`, with no path, query, fragment, username, or password.
+The Tailscale-only mode below intentionally uses the `/apps` path prefix.
 For non-local hosts, `PANDA_APPS_BASE_URL` must use `https://`.
 For non-local hosts, Panda refuses `PANDA_APPS_COOKIE_SECURE=false`.
 Set `PANDA_PUBLIC_BIND_IP` when the host has another listener on port 80 or 443 on a different interface.
@@ -383,6 +384,32 @@ Caddy joins a small `apps_edge_net` shared only with `panda-core`.
 The rendered Caddyfile lives at `.generated/Caddyfile.public-edge`.
 Caddy also runs with a read-only root filesystem, no-new-privileges, and only `NET_BIND_SERVICE`.
 Do not add a host port publish for `8092`.
+
+### Tailscale-Only App Links
+
+For private Mac mini style deployments, prefer Tailscale Serve instead of the
+public Caddy edge. Set a path-prefixed base URL and enable tailnet serve mode:
+
+```bash
+PANDA_TAILNET_SERVE_ENABLED=true
+PANDA_APPS_BASE_URL=https://mac-mini.your-tailnet.ts.net/apps
+PANDA_APPS_AUTH=required
+```
+
+Then start the stack and expose the loopback app server through Tailscale:
+
+```bash
+./scripts/docker-stack.sh up --build
+tailscale serve --bg --set-path=/apps http://127.0.0.1:8092
+```
+
+In this mode, do not set `PANDA_APPS_PUBLIC_HOST` or `PANDA_PUBLIC_BIND_IP`.
+`scripts/docker-stack.sh` publishes `panda-core` on host loopback only and does
+not generate the Caddy edge compose. App URLs become:
+
+```text
+https://mac-mini.your-tailnet.ts.net/apps/<agent>/apps/<app>/
+```
 
 Security notes:
 

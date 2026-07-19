@@ -1,5 +1,6 @@
 import {DEFAULT_APP_SESSION_TTL_MS} from "../../domain/apps/auth.js";
 import {isLoopbackHttpHostname, normalizeHttpHostname} from "../../lib/http.js";
+import {normalizeHttpPathPrefix, prependHttpPathPrefix} from "../../lib/http-path-prefix.js";
 import {readTcpPort} from "../../lib/numbers.js";
 import {trimToNull} from "../../lib/strings.js";
 import type {AgentAppAuthMode} from "./http-auth.js";
@@ -67,25 +68,33 @@ export function assertSafePublicAppsBaseUrl(env: NodeJS.ProcessEnv): void {
     || publicBaseUrl.password
     || publicBaseUrl.search
     || publicBaseUrl.hash
-    || publicBaseUrl.pathname !== "/"
   ) {
-    throw new Error("PANDA_APPS_BASE_URL must be a plain origin like https://apps.example.com.");
+    throw new Error("PANDA_APPS_BASE_URL must be a plain URL like https://apps.example.com or https://host.example/apps.");
   }
+  readPublicAppsPathPrefix(env);
   if (publicBaseUrl.protocol !== "https:" && !isLocalAppsHostname(publicBaseUrl.hostname)) {
     throw new Error("PANDA_APPS_BASE_URL must use https:// for non-local app hosts.");
   }
 }
 
-export function buildAgentAppPath(agentKey: string, appSlug: string): string {
-  return `/${encodeURIComponent(agentKey)}/apps/${encodeURIComponent(appSlug)}/`;
+export function readPublicAppsPathPrefix(env: NodeJS.ProcessEnv): string {
+  const publicBaseUrl = readPublicAppsBaseUrl(env);
+  return normalizeHttpPathPrefix(publicBaseUrl?.pathname, "PANDA_APPS_BASE_URL path");
 }
 
-export function buildAgentAppOpenPath(token: string): string {
-  return `/apps/open?token=${encodeURIComponent(token)}`;
+export function buildAgentAppPath(agentKey: string, appSlug: string, pathPrefix = ""): string {
+  return prependHttpPathPrefix(
+    `/${encodeURIComponent(agentKey)}/apps/${encodeURIComponent(appSlug)}/`,
+    pathPrefix,
+  );
 }
 
-export function buildAgentAppCookiePath(agentKey: string, appSlug: string): string {
-  return buildAgentAppPath(agentKey, appSlug).replace(/\/$/, "") || "/";
+export function buildAgentAppOpenPath(token: string, pathPrefix = ""): string {
+  return `${prependHttpPathPrefix("/apps/open", pathPrefix)}?token=${encodeURIComponent(token)}`;
+}
+
+export function buildAgentAppCookiePath(agentKey: string, appSlug: string, pathPrefix = ""): string {
+  return buildAgentAppPath(agentKey, appSlug, pathPrefix).replace(/\/$/, "") || "/";
 }
 
 export function resolveAgentAppAuthMode(env: NodeJS.ProcessEnv = process.env): AgentAppAuthMode {

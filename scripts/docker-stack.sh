@@ -27,6 +27,7 @@ Notes:
   - Wiki.js is part of the stack.
   - Wiki bootstrap follows PANDA_AGENTS.
   - Public Caddy edge is auto-enabled when PANDA_APPS_BASE_URL or PANDA_GATEWAY_BASE_URL is set.
+  - Set PANDA_TAILNET_SERVE_ENABLED=true to expose apps/gateway on host loopback for Tailscale Serve instead of Caddy.
   - Panda Trace collector integration is labels-only and opt-in via PANDA_TRACE_COLLECTOR_ENABLED=true.
 EOF
 }
@@ -197,6 +198,7 @@ generated_public_caddyfile="$generated_dir/Caddyfile.public-edge"
 command_socket_container_dir="/run/panda-command"
 command_socket_container_path="$command_socket_container_dir/command.sock"
 docker_bin="${PANDA_DOCKER_BIN:-docker}"
+docker_compose_bin="${PANDA_DOCKER_COMPOSE_BIN:-}"
 wiki_local_script="${PANDA_WIKI_LOCAL_SCRIPT:-$repo_root/scripts/wiki-local.sh}"
 wait_timeout_sec="${PANDA_STACK_WAIT_TIMEOUT_SEC:-120}"
 env_loader="$script_dir/lib/load-env-file.sh"
@@ -204,7 +206,42 @@ env_loader="$script_dir/lib/load-env-file.sh"
 [[ -f "$env_file" ]] || die "env file not found: $env_file"
 [[ -f "$base_compose" ]] || die "base compose file not found: $base_compose"
 [[ -f "$env_loader" ]] || die "env loader not found: $env_loader"
-command -v "$docker_bin" >/dev/null 2>&1 || die "$docker_bin is not installed or not on PATH."
+if ! command -v "$docker_bin" >/dev/null 2>&1; then
+  if [[ "$docker_bin" == "docker" && -x /Applications/OrbStack.app/Contents/MacOS/xbin/docker ]]; then
+    docker_bin="/Applications/OrbStack.app/Contents/MacOS/xbin/docker"
+  else
+    die "$docker_bin is not installed or not on PATH."
+  fi
+fi
+
+resolve_docker_compose_command() {
+  if [[ -n "$docker_compose_bin" ]]; then
+    command -v "$docker_compose_bin" >/dev/null 2>&1 \
+      || [[ -x "$docker_compose_bin" ]] \
+      || die "$docker_compose_bin is not installed or not executable."
+    printf '%s\n' "$docker_compose_bin"
+    return 0
+  fi
+
+  if "$docker_bin" compose version >/dev/null 2>&1; then
+    printf '%s\n' "$docker_bin compose"
+    return 0
+  fi
+
+  if command -v docker-compose >/dev/null 2>&1; then
+    printf '%s\n' "docker-compose"
+    return 0
+  fi
+
+  if [[ -x /Applications/OrbStack.app/Contents/MacOS/xbin/docker-compose ]]; then
+    printf '%s\n' "/Applications/OrbStack.app/Contents/MacOS/xbin/docker-compose"
+    return 0
+  fi
+
+  die "Docker Compose is not installed or not on PATH."
+}
+
+read -r -a docker_compose_command <<< "$(resolve_docker_compose_command)"
 
 env_file="$(cd "$(dirname "$env_file")" && pwd -P)/$(basename "$env_file")"
 export PANDA_STACK_SERVICE_ENV_FILE="$env_file"
@@ -494,7 +531,7 @@ validate_trace_collector_config() {
   fi
 
   for service in "${panda_trace_services[@]}"; do
-    if [[ "$service" == "panda-gateway" ]] && (( ! enable_gateway_edge )); then
+    if [[ "$service" == "panda-gateway" ]] && (( ! enable_gateway_service )); then
       die "PANDA_TRACE_COLLECTOR_SERVICES includes gateway, but panda-gateway is generated only when PANDA_GATEWAY_ENABLED=true or PANDA_GATEWAY_BASE_URL is set."
     fi
     if [[ "$service" == "caddy" ]] && (( ! enable_apps_edge && ! enable_gateway_edge )); then
@@ -525,13 +562,13 @@ EOF
 trace_service_has_generated_section() {
   case "$1" in
     panda-core)
-      (( enable_apps_edge || enable_disposable_environments || enable_control ))
+      (( enable_apps_edge || enable_apps_tailnet || enable_disposable_environments || enable_control ))
       ;;
     panda-browser-runner)
       (( enable_disposable_environments ))
       ;;
     panda-gateway)
-      (( enable_gateway_edge ))
+      (( enable_gateway_service ))
       ;;
     panda-environment-manager)
       (( enable_disposable_environments ))
@@ -578,6 +615,26 @@ extract_https_url_host() {
   printf '%s\n' "$host"
 }
 
+extract_https_url_path() {
+  local value without_scheme host path
+  value="$(trim "$1")"
+  [[ "$value" == https://* ]] || return 1
+  without_scheme="${value#https://}"
+  [[ "$without_scheme" != *"@"* ]] || return 1
+  [[ "$without_scheme" != *"?"* ]] || return 1
+  [[ "$without_scheme" != *"#"* ]] || return 1
+  host="${without_scheme%%/*}"
+  [[ -n "$host" ]] || return 1
+  if [[ "$without_scheme" == "$host" ]]; then
+    printf '/\n'
+    return
+  fi
+  path="/${without_scheme#*/}"
+  path="${path%/}"
+  [[ -n "$path" ]] || path="/"
+  printf '%s\n' "$path"
+}
+
 validate_apps_edge_config() {
   local base_url public_host base_host
   if (( ! enable_apps_edge )); then
@@ -592,6 +649,19 @@ validate_apps_edge_config() {
     || die "PANDA_APPS_PUBLIC_HOST is required when exposing public apps."
   [[ "$base_host" == "$public_host" ]] \
     || die "PANDA_APPS_PUBLIC_HOST must match PANDA_APPS_BASE_URL host ($base_host)."
+}
+
+validate_apps_tailnet_config() {
+  local base_url base_path
+  if (( ! enable_apps_tailnet )); then
+    return
+  fi
+
+  base_url="$(trim "${PANDA_APPS_BASE_URL:-}")"
+  base_path="$(extract_https_url_path "$base_url")" \
+    || die "PANDA_APPS_BASE_URL must be a plain https:// URL when PANDA_TAILNET_SERVE_ENABLED=true."
+  [[ "$base_path" == "/apps" ]] \
+    || die "PANDA_APPS_BASE_URL path must be /apps when PANDA_TAILNET_SERVE_ENABLED=true."
 }
 
 validate_gateway_edge_config() {
@@ -627,6 +697,25 @@ validate_gateway_edge_config() {
   if [[ -z "$(trim "${PANDA_GATEWAY_EDGE_SUBNET:-}")" ]]; then
     export PANDA_GATEWAY_EDGE_SUBNET="$edge_subnet"
   fi
+}
+
+validate_gateway_tailnet_config() {
+  local base_url base_path allowlist guard_model
+  if (( ! enable_gateway_tailnet )); then
+    return
+  fi
+
+  base_url="$(trim "${PANDA_GATEWAY_BASE_URL:-}")"
+  allowlist="$(trim "${GATEWAY_IP_ALLOWLIST:-}")"
+  guard_model="$(trim "${GATEWAY_GUARD_MODEL:-}")"
+  base_path="$(extract_https_url_path "$base_url")" \
+    || die "PANDA_GATEWAY_BASE_URL must be a plain https:// URL when PANDA_TAILNET_SERVE_ENABLED=true."
+  [[ "$base_path" == "/gateway" ]] \
+    || die "PANDA_GATEWAY_BASE_URL path must be /gateway when PANDA_TAILNET_SERVE_ENABLED=true."
+  [[ -n "$allowlist" ]] \
+    || die "GATEWAY_IP_ALLOWLIST is required when exposing gateway through Tailscale Serve."
+  [[ -n "$guard_model" ]] \
+    || die "GATEWAY_GUARD_MODEL is required when exposing gateway through Tailscale Serve."
 }
 
 validate_public_edge_config() {
@@ -722,13 +811,36 @@ if is_truthy "${DISCORD_ENABLED:-}"; then
   enable_discord_profile=1
 fi
 
+enable_tailnet_serve=0
+if is_truthy "${PANDA_TAILNET_SERVE_ENABLED:-}"; then
+  enable_tailnet_serve=1
+fi
+
+enable_apps_tailnet=0
+if (( enable_tailnet_serve )) && [[ -n "$(trim "${PANDA_APPS_BASE_URL:-}")" ]]; then
+  enable_apps_tailnet=1
+fi
+
+enable_gateway_tailnet=0
+if (( enable_tailnet_serve )); then
+  if [[ -n "$(trim "${PANDA_GATEWAY_BASE_URL:-}")" ]] || is_truthy "${PANDA_GATEWAY_ENABLED:-}"; then
+    enable_gateway_tailnet=1
+  fi
+fi
+
 enable_apps_edge=0
-if [[ -n "$(trim "${PANDA_APPS_BASE_URL:-}")" ]]; then
+if (( ! enable_tailnet_serve )) && [[ -n "$(trim "${PANDA_APPS_BASE_URL:-}")" ]]; then
   enable_apps_edge=1
 fi
 enable_gateway_edge=0
-if [[ -n "$(trim "${PANDA_GATEWAY_BASE_URL:-}")" ]] || is_truthy "${PANDA_GATEWAY_ENABLED:-}"; then
-  enable_gateway_edge=1
+if (( ! enable_tailnet_serve )); then
+  if [[ -n "$(trim "${PANDA_GATEWAY_BASE_URL:-}")" ]] || is_truthy "${PANDA_GATEWAY_ENABLED:-}"; then
+    enable_gateway_edge=1
+  fi
+fi
+enable_gateway_service=0
+if (( enable_gateway_edge || enable_gateway_tailnet )); then
+  enable_gateway_service=1
 fi
 
 enable_control=0
@@ -802,13 +914,15 @@ validate_disposable_environment_config() {
 
 configure_disposable_environment_defaults
 validate_apps_edge_config
+validate_apps_tailnet_config
 validate_gateway_edge_config
+validate_gateway_tailnet_config
 validate_public_edge_config
 validate_trace_collector_config
 render_generated_wiki_compose
 
 compose_args=(
-  "$docker_bin" compose
+  "${docker_compose_command[@]}"
   --env-file "$env_file"
   -f "$base_compose"
   -f "$generated_compose"
@@ -992,7 +1106,7 @@ render_generated_compose() {
   if (( enable_disposable_environments )); then
     workspace_image_default="$(workspace_default_image)"
   fi
-  if ! agents_declared && (( ! enable_apps_edge && ! enable_gateway_edge && ! enable_disposable_environments && ! enable_control && ! enable_trace_collector )) && [[ "$command_transport" != "socket" ]]; then
+  if ! agents_declared && (( ! enable_apps_edge && ! enable_apps_tailnet && ! enable_gateway_service && ! enable_disposable_environments && ! enable_control && ! enable_trace_collector )) && [[ "$command_transport" != "socket" ]]; then
     cat > "$generated_compose" <<'EOF'
 services: {}
 EOF
@@ -1001,17 +1115,17 @@ EOF
 
   {
     printf 'services:\n'
-    if (( enable_apps_edge || enable_disposable_environments || enable_control )) || [[ "$command_transport" == "socket" ]]; then
+    if (( enable_apps_edge || enable_apps_tailnet || enable_disposable_environments || enable_control )) || [[ "$command_transport" == "socket" ]]; then
       cat <<EOF
   panda-core:
 EOF
       render_trace_labels "panda-core" "    "
-      if (( enable_apps_edge || enable_disposable_environments || enable_control )) || [[ "$command_transport" == "socket" ]]; then
+      if (( enable_apps_edge || enable_apps_tailnet || enable_disposable_environments || enable_control )) || [[ "$command_transport" == "socket" ]]; then
         cat <<EOF
     environment:
 EOF
       fi
-      if (( enable_apps_edge )); then
+      if (( enable_apps_edge || enable_apps_tailnet )); then
         cat <<EOF
       PANDA_APPS_AUTH: required
       PANDA_APPS_BASE_URL: \${PANDA_APPS_BASE_URL}
@@ -1048,10 +1162,19 @@ EOF
       - "$command_socket_host_dir:$command_socket_container_dir"
 EOF
       fi
-      if (( enable_control )); then
+      if (( enable_control || enable_apps_tailnet )); then
         cat <<EOF
     ports:
+EOF
+      fi
+      if (( enable_control )); then
+        cat <<EOF
       - "\${PANDA_CONTROL_PUBLISH_HOST:-127.0.0.1}:\${PANDA_CONTROL_PUBLISH_PORT:-\${PANDA_CONTROL_PORT:-4767}}:\${PANDA_CONTROL_PORT:-4767}"
+EOF
+      fi
+      if (( enable_apps_tailnet )); then
+        cat <<EOF
+      - "\${PANDA_APPS_PUBLISH_HOST:-127.0.0.1}:\${PANDA_APPS_PUBLISH_PORT:-\${PANDA_APPS_PORT:-8092}}:\${PANDA_APPS_PORT:-8092}"
 EOF
       fi
       if (( use_managed_environment_manager )); then
@@ -1147,7 +1270,7 @@ EOF
 EOF
     fi
 
-    if (( enable_gateway_edge )); then
+    if (( enable_gateway_service )); then
       cat <<EOF
   panda-gateway:
 EOF
@@ -1171,6 +1294,17 @@ EOF
       DATA_DIR: /root/.panda
       GATEWAY_HOST: 0.0.0.0
       GATEWAY_PORT: \${GATEWAY_PORT:-8094}
+EOF
+      if (( enable_gateway_tailnet )); then
+        cat <<EOF
+      GATEWAY_PATH_PREFIX: \${GATEWAY_PATH_PREFIX:-/gateway}
+EOF
+      else
+        cat <<EOF
+      GATEWAY_PATH_PREFIX: \${GATEWAY_PATH_PREFIX:-}
+EOF
+      fi
+      cat <<EOF
       GATEWAY_IP_ALLOWLIST: \${GATEWAY_IP_ALLOWLIST}
       GATEWAY_TRUSTED_PROXY_IPS: \${GATEWAY_TRUSTED_PROXY_IPS}
       GATEWAY_ALLOW_PUBLIC_WITHOUT_IP_ALLOWLIST: ""
@@ -1205,8 +1339,20 @@ EOF
       - \${CODEX_HOST_HOME:-\${HOME}/.codex}:/root/.codex:ro
       - \${HOME}/.panda/agents:/root/.panda/agents
       - /etc/ssl/certs/panda-postgres-ca.crt:/etc/ssl/certs/panda-postgres-ca.crt:ro
+EOF
+      if (( enable_gateway_tailnet )); then
+        cat <<EOF
+    ports:
+      - "\${GATEWAY_PUBLISH_HOST:-127.0.0.1}:\${GATEWAY_PUBLISH_PORT:-\${GATEWAY_PORT:-8094}}:\${GATEWAY_PORT:-8094}"
+EOF
+      fi
+      if (( enable_gateway_edge )); then
+        cat <<EOF
     networks:
       - gateway_edge_net
+EOF
+      fi
+      cat <<EOF
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:${gateway_port}/health"]
       interval: 30s
@@ -1362,7 +1508,15 @@ resolve_service_name() {
       printf 'wiki\n'
       return
       ;;
-    apps|app|edge|caddy)
+    apps|app)
+      if (( enable_public_edge )); then
+        printf 'caddy\n'
+      else
+        printf 'panda-core\n'
+      fi
+      return
+      ;;
+    edge|caddy)
       printf 'caddy\n'
       return
       ;;
@@ -1444,6 +1598,7 @@ wiki_host_http_configured() {
 }
 
 bootstrap_wiki_if_configured() {
+  local host_env_file
   if [[ -z "$(trim "${WIKI_ADMIN_EMAIL:-}")" ]] || [[ -z "$(trim "${WIKI_ADMIN_PASSWORD:-}")" ]]; then
     printf 'Wiki.js is running but not bootstrapped yet.\n'
     printf 'Set WIKI_ADMIN_EMAIL and WIKI_ADMIN_PASSWORD in %s, then run:\n' "$env_file"
@@ -1463,9 +1618,13 @@ bootstrap_wiki_if_configured() {
     return
   fi
 
+  host_env_file="$generated_dir/wiki-host.env"
+  mkdir -p "$generated_dir"
+  sed 's/host[.]docker[.]internal/127.0.0.1/g' "$env_file" > "$host_env_file"
+
   (
     cd "$repo_root"
-    WIKI_ENV_FILE="$env_file" "$wiki_local_script" bootstrap "${normalized_agents[@]}"
+    WIKI_ENV_FILE="$host_env_file" "$wiki_local_script" bootstrap "${normalized_agents[@]}"
   )
 }
 
@@ -1485,14 +1644,23 @@ print_up_summary() {
     printf '  ./scripts/docker-stack.sh logs environment-manager\n'
   fi
   printf '  ./scripts/docker-stack.sh logs wiki\n'
-  if (( enable_apps_edge )); then
+  if (( enable_apps_edge || enable_apps_tailnet )); then
     printf '  ./scripts/docker-stack.sh logs apps\n'
   fi
   if (( enable_control )); then
     printf '  Control: http://%s:%s (host bind; set PANDA_CONTROL_PUBLISH_HOST to your Tailscale IP when needed)\n' "${PANDA_CONTROL_PUBLISH_HOST:-127.0.0.1}" "${PANDA_CONTROL_PUBLISH_PORT:-${PANDA_CONTROL_PORT:-4767}}"
   fi
-  if (( enable_gateway_edge )); then
+  if (( enable_gateway_service )); then
     printf '  ./scripts/docker-stack.sh logs gateway\n'
+  fi
+  if (( enable_apps_tailnet || enable_gateway_tailnet )); then
+    printf 'Tailscale Serve:\n'
+    if (( enable_apps_tailnet )); then
+      printf '  tailscale serve --bg --set-path=/apps http://127.0.0.1:%s\n' "${PANDA_APPS_PUBLISH_PORT:-${PANDA_APPS_PORT:-8092}}"
+    fi
+    if (( enable_gateway_tailnet )); then
+      printf '  tailscale serve --bg --set-path=/gateway http://127.0.0.1:%s\n' "${GATEWAY_PUBLISH_PORT:-${GATEWAY_PORT:-8094}}"
+    fi
   fi
   if (( enable_telegram_profile )); then
     printf '  ./scripts/docker-stack.sh logs telegram\n'

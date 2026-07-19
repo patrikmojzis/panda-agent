@@ -105,13 +105,24 @@ describe("agent app server", () => {
       },
     })).toThrow("PANDA_APPS_BASE_URL must use https://");
 
+    expect(resolveAgentAppUrls({
+      agentKey: "panda",
+      appSlug: "period-tracker",
+      env: {
+        PANDA_APPS_BASE_URL: "https://panda.example.com/apps",
+      },
+    })).toMatchObject({
+      appUrl: "https://panda.example.com/apps/panda/apps/period-tracker/",
+      publicAppUrl: "https://panda.example.com/apps/panda/apps/period-tracker/",
+    });
+
     expect(() => resolveAgentAppUrls({
       agentKey: "panda",
       appSlug: "period-tracker",
       env: {
-        PANDA_APPS_BASE_URL: "https://panda.example.com/nested",
+        PANDA_APPS_BASE_URL: "https://panda.example.com/apps/%2Fbad",
       },
-    })).toThrow("PANDA_APPS_BASE_URL must be a plain origin");
+    })).toThrow("PANDA_APPS_BASE_URL path contains an unsafe path segment");
 
     const fixture = await createAgentAppFixture();
     fixtures.push(fixture);
@@ -674,6 +685,10 @@ describe("agent app server", () => {
       auth,
       authMode: "required",
       cookieSecure: false,
+      env: {
+        PANDA_APPS_BASE_URL: "http://127.0.0.1/apps",
+        PANDA_APPS_COOKIE_SECURE: "false",
+      },
       sessionStore: {
         getMainSession: async () => ({
           id: "session-main",
@@ -696,22 +711,27 @@ describe("agent app server", () => {
     servers.push(server);
 
     const baseUrl = `http://${server.host}:${server.port}`;
-    const appPath = `/${fixture.agentKey}/apps/${fixture.appSlug}/`;
+    const appPath = `/apps/${fixture.agentKey}/apps/${fixture.appSlug}/`;
     const cookieNames = buildAgentAppCookieNames(fixture.agentKey, fixture.appSlug);
     const otherCookieNames = buildAgentAppCookieNames(otherFixture.agentKey, otherFixture.appSlug);
 
     const denied = await fetch(`${baseUrl}${appPath}`);
     expect(denied.status).toBe(401);
 
-    const preview = await fetch(`${baseUrl}/apps/open?token=launch-token`, {
+    const preview = await fetch(`${baseUrl}/apps/apps/open?token=launch-token`, {
       redirect: "manual",
     });
     expect(preview.status).toBe(200);
     expect(await preview.text()).toContain("Open Panda app");
+    expect(await (await fetch(`${baseUrl}/apps/panda-app-sdk.js`)).text()).toContain("const pathPrefix = \"/apps\"");
     expect(auth.redeemLaunchToken).not.toHaveBeenCalled();
+    const strippedPreview = await fetch(`${baseUrl}/apps/open?token=launch-token`, {
+      redirect: "manual",
+    });
+    expect(strippedPreview.status).toBe(200);
 
     auth.redeemLaunchToken.mockRejectedValueOnce(new Error("App launch link is invalid, expired, or already used."));
-    const invalidOpen = await fetch(`${baseUrl}/apps/open?token=bad-launch-token`, {
+    const invalidOpen = await fetch(`${baseUrl}/apps/apps/open?token=bad-launch-token`, {
       method: "POST",
       redirect: "manual",
     });
@@ -721,7 +741,7 @@ describe("agent app server", () => {
       error: "App launch link is invalid, expired, or already used.",
     });
 
-    const opened = await fetch(`${baseUrl}/apps/open?token=launch-token`, {
+    const opened = await fetch(`${baseUrl}/apps/apps/open?token=launch-token`, {
       method: "POST",
       redirect: "manual",
     });
@@ -729,7 +749,7 @@ describe("agent app server", () => {
     expect(opened.headers.get("location")).toBe(appPath);
     expect(opened.headers.get("set-cookie")).toContain(cookieNames.session);
     expect(opened.headers.get("set-cookie")).toContain(cookieNames.csrf);
-    expect(opened.headers.get("set-cookie")).toContain(`Path=/${fixture.agentKey}/apps/${fixture.appSlug}`);
+    expect(opened.headers.get("set-cookie")).toContain(`Path=/apps/${fixture.agentKey}/apps/${fixture.appSlug}`);
     expect(auth.redeemLaunchToken).toHaveBeenCalledTimes(2);
 
     const cookie = `${cookieNames.session}=session-token; ${cookieNames.csrf}=csrf-token`;
@@ -738,12 +758,14 @@ describe("agent app server", () => {
     });
     expect(html.status).toBe(200);
 
-    const missingBootstrapCsrf = await fetch(`${baseUrl}/api/apps/${fixture.agentKey}/${fixture.appSlug}/bootstrap`, {
+    expect(await html.text()).toContain("/apps/panda-app-sdk.js");
+
+    const missingBootstrapCsrf = await fetch(`${baseUrl}/apps/api/apps/${fixture.agentKey}/${fixture.appSlug}/bootstrap`, {
       headers: {cookie},
     });
     expect(missingBootstrapCsrf.status).toBe(403);
 
-    const bootstrap = await fetch(`${baseUrl}/api/apps/${fixture.agentKey}/${fixture.appSlug}/bootstrap`, {
+    const bootstrap = await fetch(`${baseUrl}/apps/api/apps/${fixture.agentKey}/${fixture.appSlug}/bootstrap`, {
       headers: {
         "x-panda-app-csrf": "csrf-token",
         cookie,
@@ -759,7 +781,7 @@ describe("agent app server", () => {
       },
     });
 
-    const missingCsrf = await fetch(`${baseUrl}/api/apps/${fixture.agentKey}/${fixture.appSlug}/actions/increment`, {
+    const missingCsrf = await fetch(`${baseUrl}/apps/api/apps/${fixture.agentKey}/${fixture.appSlug}/actions/increment`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -772,7 +794,7 @@ describe("agent app server", () => {
     expect(missingCsrf.status).toBe(403);
 
     const crossAppCookie = `${cookie}; ${otherCookieNames.session}=other-session-token`;
-    const crossAppView = await fetch(`${baseUrl}/api/apps/${otherFixture.agentKey}/${otherFixture.appSlug}/views/summary`, {
+    const crossAppView = await fetch(`${baseUrl}/apps/api/apps/${otherFixture.agentKey}/${otherFixture.appSlug}/views/summary`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -783,7 +805,7 @@ describe("agent app server", () => {
     });
     expect(crossAppView.status).toBe(403);
 
-    const otherView = await fetch(`${baseUrl}/api/apps/${otherFixture.agentKey}/${otherFixture.appSlug}/views/summary`, {
+    const otherView = await fetch(`${baseUrl}/apps/api/apps/${otherFixture.agentKey}/${otherFixture.appSlug}/views/summary`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -794,7 +816,7 @@ describe("agent app server", () => {
     });
     expect(otherView.status).toBe(200);
 
-    const action = await fetch(`${baseUrl}/api/apps/${fixture.agentKey}/${fixture.appSlug}/actions/increment`, {
+    const action = await fetch(`${baseUrl}/apps/api/apps/${fixture.agentKey}/${fixture.appSlug}/actions/increment`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
