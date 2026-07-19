@@ -19,6 +19,10 @@ function resolveDefaultModelProvider(env: NodeJS.ProcessEnv = process.env): Prov
     return "kimi-coding";
   }
 
+  if (env.ZAI_API_KEY && !env.OPENAI_API_KEY) {
+    return "zai";
+  }
+
   return "openai";
 }
 

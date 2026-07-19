@@ -20,13 +20,14 @@ describe("model selector", () => {
   it("parses supported provider names", () => {
     expect(parseProviderName(" openai-codex ")).toBe("openai-codex");
     expect(parseProviderName(" kimi-coding ")).toBe("kimi-coding");
+    expect(parseProviderName(" zai ")).toBe("zai");
     expect(parseProviderName("open-ai")).toBeNull();
   });
 
   it("throws a configuration error for unsupported providers", () => {
     expect(() => assertProviderName("open-ai")).toThrowError(ConfigurationError);
     expect(() => assertProviderName("open-ai")).toThrowError(
-      'Unsupported provider "open-ai". Expected one of `openai`, `openai-codex`, `anthropic`, `anthropic-oauth`, `kimi-coding`.',
+      'Unsupported provider "open-ai". Expected one of `openai`, `openai-codex`, `anthropic`, `anthropic-oauth`, `kimi-coding`, `zai`.',
     );
   });
 
@@ -94,6 +95,12 @@ describe("model selector", () => {
       KIMI_MODEL: "k3",
       CODEX_HOME: "/tmp/panda-empty-codex-home",
     })).toBe("kimi-coding/k3");
+
+    expect(resolveDefaultAgentModelSelector({
+      ZAI_API_KEY: "zai-api-key",
+      ZAI_MODEL: "glm-5.2",
+      CODEX_HOME: "/tmp/panda-empty-codex-home",
+    })).toBe("zai/glm-5.2");
   });
 
   it("resolves Kimi Code membership auth", () => {
@@ -101,6 +108,11 @@ describe("model selector", () => {
       "kimi-api-key",
     );
     expect(resolveProviderApiKey("kimi-coding", {})).toBeUndefined();
+  });
+
+  it("resolves Z.AI coding-plan auth", () => {
+    expect(resolveProviderApiKey("zai", {ZAI_API_KEY: " zai-api-key "})).toBe("zai-api-key");
+    expect(resolveProviderApiKey("zai", {})).toBeUndefined();
   });
 
   it("uses the environment default when a thread has no explicit model", () => {
@@ -157,6 +169,22 @@ describe("model selector", () => {
       api: "anthropic-messages",
       baseUrl: "https://api.kimi.com/coding",
       contextWindow: 1_048_576,
+    });
+  });
+
+  it("resolves the pi-ai Z.AI GLM-5.2 catalog model", () => {
+    expect(resolveModelSelector("zai/glm-5.2")).toEqual({
+      canonical: "zai/glm-5.2",
+      providerName: "zai",
+      modelId: "glm-5.2",
+    });
+    expect(resolveProviderModel("zai", "glm-5.2")).toMatchObject({
+      id: "glm-5.2",
+      provider: "zai",
+      api: "openai-completions",
+      baseUrl: "https://api.z.ai/api/coding/paas/v4",
+      contextWindow: 1_000_000,
+      maxTokens: 131_072,
     });
   });
 

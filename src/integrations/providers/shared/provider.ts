@@ -1,12 +1,13 @@
 import {ConfigurationError} from "../../../kernel/agent/exceptions.js";
 
-type RuntimeProviderName = "openai" | "openai-codex" | "anthropic" | "kimi-coding";
+type RuntimeProviderName = "openai" | "openai-codex" | "anthropic" | "kimi-coding" | "zai";
 export type ProviderAuthKind =
   | "openai-api-key"
   | "openai-codex-oauth"
   | "anthropic-api-key-or-oauth"
   | "anthropic-oauth"
-  | "kimi-api-key";
+  | "kimi-api-key"
+  | "zai-api-key";
 
 interface ProviderConfig {
   runtimeProvider: RuntimeProviderName;
@@ -53,6 +54,13 @@ const PROVIDER_CONFIGS = {
     defaultModelEnvVar: "KIMI_MODEL",
     defaultModel: "k3",
     missingApiKeyMessage: "Missing KIMI_API_KEY.",
+  },
+  zai: {
+    runtimeProvider: "zai",
+    authKind: "zai-api-key",
+    defaultModelEnvVar: "ZAI_MODEL",
+    defaultModel: "glm-5.2",
+    missingApiKeyMessage: "Missing ZAI_API_KEY.",
   },
 } as const satisfies Record<string, ProviderConfig>;
 

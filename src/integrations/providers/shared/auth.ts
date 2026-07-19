@@ -124,6 +124,7 @@ const AUTH_RESOLVERS: Record<ProviderAuthKind, (env: NodeJS.ProcessEnv) => strin
   },
   "anthropic-oauth": (env) => resolveAnthropicAccessToken(env) ?? undefined,
   "kimi-api-key": (env) => trimToUndefined(env.KIMI_API_KEY),
+  "zai-api-key": (env) => trimToUndefined(env.ZAI_API_KEY),
 };
 
 export function resolveProviderApiKey(
