@@ -173,6 +173,8 @@ export class RuntimeCommandDispatcher implements CommandExecutor {
     return this.auditStore.createToolJob({
       id: randomUUID(),
       threadId: request.scope.threadId,
+      runId: request.scope.runId,
+      parentToolCallId: request.scope.parentToolCallId,
       kind: "command",
       summary: request.command,
       startedAt,
@@ -204,14 +206,13 @@ export class RuntimeCommandDispatcher implements CommandExecutor {
           ? {
             command: result.command,
             ok: true,
-            ...(result.summary ? {summary: result.summary} : {}),
           }
           : {
             command: result.command,
             ok: false,
             code: result.error.code,
           },
-        ...(result.ok ? {error: null} : {error: result.error.message}),
+        error: null,
       });
     } catch {
       // The command already ran; leave the started audit row for orphan/lost-job recovery.

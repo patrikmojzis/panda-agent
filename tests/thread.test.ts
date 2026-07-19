@@ -95,6 +95,20 @@ class ProgressTool extends Tool<typeof ProgressTool.schema> {
   }
 }
 
+class ToolCallIdTool extends Tool<typeof ToolCallIdTool.schema> {
+  name = "tool-call-id";
+  description = "Return the current tool call id";
+  static schema = z.object({});
+  schema = ToolCallIdTool.schema;
+
+  async handle(
+    _args: z.output<typeof ToolCallIdTool.schema>,
+    run: RunContext,
+  ): Promise<{toolCallId: string | null}> {
+    return {toolCallId: run.toolCallId ?? null};
+  }
+}
+
 class AdjustThinkingTool extends Tool<typeof AdjustThinkingTool.schema> {
   name = "adjust-thinking";
   description = "Adjust the live thinking level";
@@ -852,6 +866,37 @@ describe("Thread", () => {
       "end",
       "postflight",
     ]);
+  });
+
+  it("exposes the provider tool call id only on the per-tool run context", async () => {
+    const thread = new Thread({
+      agent: new Agent({
+        name: "tool-call-context-agent",
+        instructions: "Read the current tool call id.",
+        tools: [new ToolCallIdTool()],
+      }),
+      model: "openai/gpt-4o-mini",
+      messages: [stringToUserMessage("read it")],
+      runtime: createMockRuntime(
+        createAssistantMessage([{
+          type: "toolCall",
+          id: "call_lineage_260",
+          name: "tool-call-id",
+          arguments: {},
+        }]),
+        message("done"),
+      ),
+    });
+
+    const outputs: ThreadRunEvent[] = [];
+    for await (const output of thread.run()) {
+      outputs.push(output);
+    }
+
+    expect(outputs[1]).toMatchObject({
+      role: "toolResult",
+      details: {toolCallId: "call_lineage_260"},
+    });
   });
 
   it("can start background bash, do more work, then wait on it", async () => {

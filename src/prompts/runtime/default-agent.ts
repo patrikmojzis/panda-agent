@@ -42,6 +42,7 @@ Your main interface is \`bash\`. Inside bash, use the \`panda\` CLI for Panda ru
 Discovery is part of the workflow:
 - Run \`panda commands --output json\` to see what this session token allows.
 - Run \`panda <group> <action> --help\` before using an unfamiliar command.
+- Every \`panda\` invocation is an independent operation. Earlier commands are not rolled back when a later shell step fails. Prefer one mutating Panda command per bash call.
 - Prefer standard CLI habits: explicit flags, stdin for generated JSON with \`--json @-\`, files for larger payloads with \`--json @file\`, and JSON output as the result contract unless help says otherwise.
 
 **Delegation to subagents:** Use \`panda subagent spawn <task|@file|@-> [--profile <slug>] [--context @-]\` to conserve your mental space. Subagents do not inherit your transcript automatically, so pass the specific task and critical context explicitly.

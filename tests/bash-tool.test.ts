@@ -21,6 +21,7 @@ import type {ThreadToolJobRecord} from "../src/domain/threads/runtime/types.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 import type {BashExecutor, BashExecutorOptions} from "../src/integrations/shell/bash-executor.js";
 import type {BashExecutionResult} from "../src/integrations/shell/bash-protocol.js";
+import type {PandaCommandExecution} from "../src/panda/tools/bash-command-summary.js";
 
 function createAgent() {
   return new Agent({
@@ -31,10 +32,15 @@ function createAgent() {
 
 function createRunContext(
   context: DefaultAgentSessionContext,
-  options: { signal?: AbortSignal; onToolProgress?: (progress: JsonObject) => void } = {},
+  options: {
+    signal?: AbortSignal;
+    toolCallId?: string;
+    onToolProgress?: (progress: JsonObject) => void;
+  } = {},
 ): RunContext<DefaultAgentSessionContext> {
   return new RunContext({
     agent: createAgent(),
+    toolCallId: options.toolCallId,
     turn: 1,
     maxTurns: 5,
     messages: [],
@@ -164,17 +170,22 @@ afterAll(() => {
   }
 });
 
-async function createBackgroundHarness(workspace: string) {
+async function createBackgroundHarness(
+  workspace: string,
+  options: ConstructorParameters<typeof BashTool>[0] = {},
+) {
   const store = new TestThreadRuntimeStore();
   const sessionId = "session-bg";
   await store.createThread({
     id: "thread-bg",
     sessionId,
   });
+  const run = await store.createRun("thread-bg");
   const service = new BackgroundToolJobService({
     store,
   });
   const bash = new BashTool({
+    ...options,
     outputDirectory: path.join(workspace, "tool-results"),
     jobService: service,
   });
@@ -191,6 +202,7 @@ async function createBackgroundHarness(workspace: string) {
     sessionId,
     agentKey: "panda",
     threadId: "thread-bg",
+    runId: run.id,
     cwd: workspace,
     shell: {
       cwd: workspace,
@@ -350,6 +362,7 @@ describe("BashTool", () => {
         agentKey: "panda",
         sessionId: "session-refresh",
         threadId: "thread-refresh",
+        runId: "run-refresh",
         cwd: workspace,
         currentInput: {
           messageId: "message-current",
@@ -387,7 +400,7 @@ describe("BashTool", () => {
           PANDA_COMMAND_URL: "http://stale.invalid",
           PANDA_COMMAND_TOKEN: "stale-token",
         },
-      }, createRunContext(context));
+      }, createRunContext(context, {toolCallId: "bash-call-refresh"}));
 
       expect(refreshCalls).toEqual([{
         executionEnvironment: expect.objectContaining({
@@ -398,7 +411,183 @@ describe("BashTool", () => {
           source: "tui",
           identityId: "identity-current",
         },
+        runId: "run-refresh",
+        parentToolCallId: "bash-call-refresh",
       }]);
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
+  it("reports completed Panda commands when a later command or shell step fails", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-partial-command-"));
+    try {
+      const reads: Array<{threadId: string; runId: string; parentToolCallId: string}> = [];
+      const tool = new BashTool({
+        executor: {
+          async execute(options) {
+            return successfulBashResult({
+              finalCwd: options.cwd,
+              success: false,
+              exitCode: 1,
+              stderr: "later shell step failed",
+            });
+          },
+        },
+        commandExecutionReader: async (input) => {
+          reads.push(input);
+          return [
+            {
+              ordinal: 1,
+              command: "schedule.create",
+              status: "completed",
+            },
+            {
+              ordinal: 2,
+              command: "a2a.history",
+              status: "failed",
+              code: "invalid_input",
+            },
+          ];
+        },
+      });
+      const context: DefaultAgentSessionContext = {
+        agentKey: "panda",
+        sessionId: "session-partial",
+        threadId: "thread-partial",
+        runId: "run-partial",
+        cwd: workspace,
+      };
+
+      const error = await tool.run(
+        {command: "panda schedule create ... && panda a2a history ..."},
+        createRunContext(context, {toolCallId: "bash-call-partial"}),
+      ).then(() => undefined, (caught) => caught);
+
+      expect(error).toBeInstanceOf(ToolError);
+      expect(asObject((error as ToolError).details)).toMatchObject({
+        exitCode: 1,
+        partialExecution: true,
+        pandaCommands: [
+          {ordinal: 1, command: "schedule.create", status: "completed"},
+          {ordinal: 2, command: "a2a.history", status: "failed", code: "invalid_input"},
+        ],
+        remainingShellSteps: "unknown",
+        warning: "Earlier Panda commands completed and were not rolled back.",
+      });
+      expect(reads).toEqual([{
+        threadId: "thread-partial",
+        runId: "run-partial",
+        parentToolCallId: "bash-call-partial",
+      }]);
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
+  it("surfaces one completed Panda mutation before an unrelated shell failure", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-partial-shell-"));
+    try {
+      const tool = new BashTool({
+        executor: {
+          async execute(options) {
+            return successfulBashResult({
+              finalCwd: options.cwd,
+              success: false,
+              exitCode: 7,
+              stderr: "unrelated command failed",
+            });
+          },
+        },
+        commandExecutionReader: async () => [{
+          ordinal: 1,
+          command: "schedule.create",
+          status: "completed",
+        }],
+      });
+
+      const error = await tool.run(
+        {command: "panda schedule create ... && false"},
+        createRunContext({
+          agentKey: "panda",
+          sessionId: "session-shell-failure",
+          threadId: "thread-shell-failure",
+          runId: "run-shell-failure",
+          cwd: workspace,
+        }, {toolCallId: "bash-call-shell-failure"}),
+      ).then(() => undefined, (caught) => caught);
+
+      expect(asObject((error as ToolError).details)).toMatchObject({
+        partialExecution: true,
+        pandaCommands: [{ordinal: 1, command: "schedule.create", status: "completed"}],
+        remainingShellSteps: "unknown",
+      });
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
+  it("keeps one successful Panda command compact and orders multiple successful commands", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-command-summary-"));
+    try {
+      let commands: PandaCommandExecution[] = [{
+        ordinal: 1,
+        command: "watch.list",
+        status: "completed" as const,
+      }];
+      const tool = new BashTool({
+        executor: new RecordingBashExecutor(),
+        commandExecutionReader: async () => commands,
+      });
+      const context: DefaultAgentSessionContext = {
+        agentKey: "panda",
+        sessionId: "session-summary",
+        threadId: "thread-summary",
+        runId: "run-summary",
+        cwd: workspace,
+      };
+
+      const single = asObject(await tool.run(
+        {command: "panda watch list"},
+        createRunContext(context, {toolCallId: "bash-call-single"}),
+      ));
+      expect(single).not.toHaveProperty("pandaCommands");
+      expect(single).not.toHaveProperty("partialExecution");
+
+      commands = [
+        {ordinal: 2, command: "watch.show", status: "completed"},
+        {ordinal: 1, command: "watch.list", status: "completed"},
+      ];
+      const multiple = asObject(await tool.run(
+        {command: "panda watch list; panda watch show ..."},
+        createRunContext(context, {toolCallId: "bash-call-multiple"}),
+      ));
+      expect(multiple).toMatchObject({
+        partialExecution: false,
+        pandaCommands: [
+          {ordinal: 1, command: "watch.list", status: "completed"},
+          {ordinal: 2, command: "watch.show", status: "completed"},
+        ],
+        remainingShellSteps: "unknown",
+      });
+      expect(multiple).not.toHaveProperty("warning");
+
+      commands = [
+        {ordinal: 1, command: "watch.show", status: "failed", code: "invalid_input"},
+        {ordinal: 2, command: "watch.list", status: "completed"},
+      ];
+      const continued = asObject(await tool.run(
+        {command: "panda watch show ...; panda watch list"},
+        createRunContext(context, {toolCallId: "bash-call-continued"}),
+      ));
+      expect(continued).toMatchObject({
+        partialExecution: true,
+        pandaCommands: [
+          {ordinal: 1, command: "watch.show", status: "failed", code: "invalid_input"},
+          {ordinal: 2, command: "watch.list", status: "completed"},
+        ],
+        warning: "Earlier Panda commands completed and were not rolled back.",
+      });
     } finally {
       await rm(workspace, {recursive: true, force: true});
     }
@@ -1847,6 +2036,49 @@ describe("BashTool", () => {
       expect(finishedOutput.sessionStateIsolated).toBe(true);
     } finally {
       await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("exposes the final Panda command summary through background wait and status", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-bg-command-summary-"));
+    try {
+      const {bash, wait, status, context} = await createBackgroundHarness(workspace, {
+        commandExecutionReader: async () => [
+          {ordinal: 2, command: "watch.show", status: "completed"},
+          {ordinal: 1, command: "watch.list", status: "completed"},
+        ],
+      });
+      const started = asObject(await bash.run(
+        {command: "printf done", background: true},
+        createRunContext(context, {toolCallId: "bash-call-background-summary"}),
+      ));
+      const jobId = String(started.jobId);
+
+      const finished = asObject(await wait.run(
+        {jobId, timeoutMs: 1_000},
+        createRunContext(context),
+      ));
+      expect(finished).toMatchObject({
+        status: "completed",
+        partialExecution: false,
+        pandaCommands: [
+          {ordinal: 1, command: "watch.list", status: "completed"},
+          {ordinal: 2, command: "watch.show", status: "completed"},
+        ],
+        remainingShellSteps: "unknown",
+      });
+
+      await expect(status.run(
+        {jobId},
+        createRunContext(context),
+      )).resolves.toMatchObject({
+        pandaCommands: [
+          {ordinal: 1, command: "watch.list"},
+          {ordinal: 2, command: "watch.show"},
+        ],
+      });
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
     }
   });
 

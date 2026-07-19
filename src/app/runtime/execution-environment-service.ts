@@ -87,6 +87,8 @@ export interface RefreshSessionCommandAccessInput {
   >;
   identityId?: string;
   inputMessageId?: string;
+  runId?: string;
+  parentToolCallId?: string;
   ttlMs?: number;
 }
 
@@ -253,6 +255,8 @@ export class ExecutionEnvironmentLifecycleService {
       credentialMutationAllowed: input.executionEnvironment.source === "fallback",
       ...(input.identityId ? {identityId: input.identityId} : {}),
       ...(input.inputMessageId ? {inputMessageId: input.inputMessageId} : {}),
+      ...(input.runId ? {runId: input.runId} : {}),
+      ...(input.parentToolCallId ? {parentToolCallId: input.parentToolCallId} : {}),
       socketAccessAllowed,
       ...(input.ttlMs === undefined ? {} : {ttlMs: input.ttlMs}),
     });

@@ -886,6 +886,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
 
       const toolRunContext = new RunContext({
         agent: runContext.agent,
+        toolCallId: call.id,
         turn: runContext.turn,
         maxTurns: runContext.maxTurns,
         messages: runContext.messages,

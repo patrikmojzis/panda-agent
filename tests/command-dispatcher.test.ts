@@ -1,6 +1,7 @@
 import {describe, expect, it} from "vitest";
 
 import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
+import {createBashCommandExecutionReader} from "../src/app/runtime/bash-command-summary-reader.js";
 import type {RegisteredCommand} from "../src/domain/commands/types.js";
 import type {CreateThreadToolJobInput, ThreadToolJobRecord, ThreadToolJobUpdate} from "../src/domain/threads/runtime/types.js";
 
@@ -17,6 +18,10 @@ function createAuditStore() {
           id: input.id,
           threadId: input.threadId,
           runId: input.runId,
+          parentToolCallId: input.parentToolCallId,
+          commandOrdinal: input.parentToolCallId
+            ? jobs.filter((job) => job.parentToolCallId === input.parentToolCallId).length + 1
+            : undefined,
           kind: input.kind,
           status: input.status ?? "running",
           summary: input.summary ?? "",
@@ -37,6 +42,19 @@ function createAuditStore() {
         }
         Object.assign(job, update);
         return job;
+      },
+      async listCommandToolJobsByParent(
+        threadId: string,
+        runId: string,
+        parentToolCallId: string,
+      ): Promise<readonly ThreadToolJobRecord[]> {
+        return jobs
+          .filter((job) => (
+            job.threadId === threadId
+            && job.runId === runId
+            && job.parentToolCallId === parentToolCallId
+          ))
+          .sort((left, right) => (left.commandOrdinal ?? 0) - (right.commandOrdinal ?? 0));
       },
     },
   };
@@ -220,6 +238,8 @@ describe("RuntimeCommandDispatcher", () => {
       resolveScope: (inputScope) => ({
         ...inputScope,
         threadId: "thread-current",
+        runId: "run-current",
+        parentToolCallId: "bash-call-current",
       }),
     });
 
@@ -237,6 +257,9 @@ describe("RuntimeCommandDispatcher", () => {
 
     expect(audit.jobs).toMatchObject([{
       threadId: "thread-current",
+      runId: "run-current",
+      parentToolCallId: "bash-call-current",
+      commandOrdinal: 1,
       kind: "command",
       status: "completed",
       summary: "test.echo",
@@ -252,11 +275,76 @@ describe("RuntimeCommandDispatcher", () => {
       result: {
         command: "test.echo",
         ok: true,
-        summary: "Echoed command.",
       },
     });
     expect(JSON.stringify(audit.jobs)).not.toContain("do-not-persist");
     expect(JSON.stringify(audit.updates)).not.toContain("do-not-persist");
+    expect(JSON.stringify(audit.jobs)).not.toContain("Echoed command.");
+  });
+
+  it("assigns stable parent ordinals and persists only sanitized terminal metadata", async () => {
+    const audit = createAuditStore();
+    const dispatcher = new RuntimeCommandDispatcher({
+      commands: [createEchoCommand()],
+      auditStore: audit.store,
+    });
+    const parentScope = {
+      ...scope,
+      threadId: "thread-lineage",
+      runId: "run-lineage",
+      parentToolCallId: "bash-call-lineage",
+    };
+
+    await Promise.all([
+      dispatcher.execute({
+        command: "test.echo",
+        input: {secret: "lineage-secret"},
+        scope: parentScope,
+      }),
+      dispatcher.execute({
+        command: "test.missing",
+        input: {secret: "second-lineage-secret"},
+        scope: parentScope,
+      }),
+    ]);
+
+    expect(audit.jobs.map((job) => ({
+      runId: job.runId,
+      parentToolCallId: job.parentToolCallId,
+      commandOrdinal: job.commandOrdinal,
+      status: job.status,
+    }))).toEqual([
+      {
+        runId: "run-lineage",
+        parentToolCallId: "bash-call-lineage",
+        commandOrdinal: 1,
+        status: "completed",
+      },
+      {
+        runId: "run-lineage",
+        parentToolCallId: "bash-call-lineage",
+        commandOrdinal: 2,
+        status: "failed",
+      },
+    ]);
+    expect(audit.updates.find(({update}) => update.result?.command === "test.missing")?.update).toMatchObject({
+      status: "failed",
+      error: null,
+      result: {
+        command: "test.missing",
+        ok: false,
+        code: "unknown_command",
+      },
+    });
+    expect(JSON.stringify({jobs: audit.jobs, updates: audit.updates})).not.toContain("lineage-secret");
+    await expect(createBashCommandExecutionReader(audit.store)({
+      threadId: "thread-lineage",
+      runId: "run-lineage",
+      parentToolCallId: "bash-call-lineage",
+    })).resolves.toEqual([
+      {ordinal: 1, command: "test.echo", status: "completed"},
+      {ordinal: 2, command: "test.missing", status: "failed", code: "unknown_command"},
+    ]);
   });
 
   it("records forbidden command attempts without executing the handler", async () => {

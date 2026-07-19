@@ -40,6 +40,11 @@ import type {
   ResolvedExecutionEnvironment
 } from "../../domain/execution-environments/types.js";
 import {buildBackgroundJobPayload, formatBackgroundJobResult} from "./background-job-tools.js";
+import {
+  attachBashCommandExecutionSummary,
+  buildBashCommandExecutionSummary,
+  type BashCommandExecutionReader,
+} from "./bash-command-summary.js";
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 40_000;
@@ -299,6 +304,7 @@ export interface BashToolOptions {
   credentialResolver?: BashCredentialResolver;
   jobService?: BackgroundToolJobService;
   shellStateStore?: ThreadShellStateStore;
+  commandExecutionReader?: BashCommandExecutionReader;
 }
 
 export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof BashTool.schema, TContext> {
@@ -313,7 +319,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
 
   name = "bash";
   description =
-    "Run a shell command. Foreground bash mutates the shared shell cwd and simple export/unset env state across calls. Background bash starts an isolated snapshot job, returns immediately, never mutates the shared shell session, and may later surface as a machine-generated runtime event; use background_job_status, background_job_wait, and background_job_cancel for follow-up.";
+    "Run a shell command. Every panda invocation is an independent operation: earlier commands are not rolled back when a later shell step fails, so prefer one mutating Panda command per bash call. Foreground bash mutates the shared shell cwd and simple export/unset env state across calls. Background bash starts an isolated snapshot job, returns immediately, never mutates the shared shell session, and may later surface as a machine-generated runtime event; use background_job_status, background_job_wait, and background_job_cancel for follow-up.";
   schema = BashTool.schema;
 
   private readonly defaultTimeoutMs: number;
@@ -329,6 +335,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
   private readonly credentialResolver?: BashCredentialResolver;
   private readonly jobService?: BackgroundToolJobService;
   private readonly shellStateStore?: ThreadShellStateStore;
+  private readonly commandExecutionReader?: BashCommandExecutionReader;
 
   constructor(options: BashToolOptions = {}) {
     super();
@@ -346,6 +353,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
     this.credentialResolver = options.credentialResolver;
     this.jobService = options.jobService;
     this.shellStateStore = options.shellStateStore;
+    this.commandExecutionReader = options.commandExecutionReader;
     this.executor = options.executor;
   }
 
@@ -421,6 +429,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
 
     return new RunContext({
       agent: run.agent,
+      toolCallId: run.toolCallId,
       turn: run.turn,
       maxTurns: run.maxTurns,
       messages: run.messages,
@@ -428,6 +437,31 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
       signal: run.signal,
       onToolProgress: (progress) => run.emitToolProgress(progress),
     });
+  }
+
+  private async readCommandExecutionSummary(input: {
+    context: DefaultAgentSessionContext | undefined;
+    parentToolCallId: string | undefined;
+    shellSucceeded: boolean;
+  }): Promise<JsonObject | undefined> {
+    if (!this.commandExecutionReader || !input.context?.threadId || !input.context.runId || !input.parentToolCallId) {
+      return undefined;
+    }
+
+    try {
+      const commands = await this.commandExecutionReader({
+        threadId: input.context.threadId,
+        runId: input.context.runId,
+        parentToolCallId: input.parentToolCallId,
+      });
+      return buildBashCommandExecutionSummary({
+        commands,
+        shellSucceeded: input.shellSucceeded,
+      });
+    } catch {
+      // Command execution has already settled. Audit-read failure must not replay or mask it.
+      return undefined;
+    }
   }
 
   async handle(
@@ -446,6 +480,8 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
       const refreshed = await context.refreshCommandAccess({
         executionEnvironment,
         currentInput: context.currentInput,
+        runId: context.runId,
+        parentToolCallId: run.toolCallId,
       });
       commandAccessEnv = buildCommandAccessEnv(refreshed.commandAccess);
     }
@@ -484,29 +520,38 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
         runId: context?.runId,
         kind: "bash",
         summary: redactSecretsInString(args.command, secretInventory.redactionValues),
-        start: ({jobId}) => startBashBackgroundJob({
-          jobId,
-          command: args.command,
-          cwd,
-          timeoutMs,
-          trackedEnvKeys,
-          maxOutputChars: this.maxOutputChars,
-          persistOutputThresholdChars: this.persistOutputThresholdChars,
-          outputDirectory: this.outputDirectory,
-          env: {
-            ...(args.env ?? {}),
-            ...(commandAccessEnv ?? {}),
-          },
-          resolvedEnv: resolvedCredentialEnv,
-          shellEnv,
-          executionEnvironment,
-          redactionValues: secretInventory.redactionValues,
-          persistOutputFiles,
-          context,
-          processEnv: this.env,
-          shell: this.shell,
-          fetchImpl: this.fetchImpl,
-        }),
+        start: async ({jobId}) => {
+          const handle = await startBashBackgroundJob({
+            jobId,
+            command: args.command,
+            cwd,
+            timeoutMs,
+            trackedEnvKeys,
+            maxOutputChars: this.maxOutputChars,
+            persistOutputThresholdChars: this.persistOutputThresholdChars,
+            outputDirectory: this.outputDirectory,
+            env: {
+              ...(args.env ?? {}),
+              ...(commandAccessEnv ?? {}),
+            },
+            resolvedEnv: resolvedCredentialEnv,
+            shellEnv,
+            executionEnvironment,
+            redactionValues: secretInventory.redactionValues,
+            persistOutputFiles,
+            context,
+            processEnv: this.env,
+            shell: this.shell,
+            fetchImpl: this.fetchImpl,
+          });
+          return attachBashCommandExecutionSummary(handle, (shellSucceeded) => (
+            this.readCommandExecutionSummary({
+              context,
+              parentToolCallId: run.toolCallId,
+              shellSucceeded,
+            })
+          ));
+        },
       });
 
       return buildBackgroundJobPayload(job);
@@ -604,23 +649,31 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
       ? redactSecretsInJsonObject(payload, resultSecretInventory.redactionValues)
       : payload;
     const sanitizedPayload = sanitizeBashPayloadOutputFields(redactedPayload);
+    const commandSummary = await this.readCommandExecutionSummary({
+      context,
+      parentToolCallId: run.toolCallId,
+      shellSucceeded: result.success,
+    });
+    const finalPayload: JsonObject = commandSummary
+      ? {...sanitizedPayload, ...commandSummary}
+      : sanitizedPayload;
 
     if (result.timedOut) {
-      throw new ToolError(`Command timed out after ${timeoutMs}ms`, { details: sanitizedPayload });
+      throw new ToolError(`Command timed out after ${timeoutMs}ms`, { details: finalPayload });
     }
 
     if (result.aborted) {
-      throw new ToolError(result.abortReason ?? "Command aborted.", { details: sanitizedPayload });
+      throw new ToolError(result.abortReason ?? "Command aborted.", { details: finalPayload });
     }
 
     if (result.exitCode !== 0 || result.signal !== null) {
       const message = result.signal !== null
         ? `Command exited with signal ${result.signal}`
         : `Command exited with code ${String(result.exitCode)}`;
-      throw new ToolError(message, { details: sanitizedPayload });
+      throw new ToolError(message, { details: finalPayload });
     }
 
-    return sanitizedPayload;
+    return finalPayload;
   }
 
   private resolveExecutor(executionEnvironment: ResolvedExecutionEnvironment | undefined): BashExecutor {

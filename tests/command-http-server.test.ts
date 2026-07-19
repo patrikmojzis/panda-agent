@@ -3,7 +3,7 @@ import http from "node:http";
 import {tmpdir} from "node:os";
 import path from "node:path";
 
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
 import type {RegisteredCommand} from "../src/domain/commands/types.js";
@@ -232,6 +232,59 @@ describe("command HTTP server", () => {
         message: "hello",
         workingDirectory: "/workspace/nested",
       },
+    });
+  });
+
+  it("ignores client-supplied parent lineage and uses only the verified lease scope", async () => {
+    const execute = vi.fn(async (request) => ({
+      ok: true as const,
+      command: request.command,
+      output: {},
+    }));
+    const server = await startCommandHttpServer({
+      executor: {execute},
+      leaseVerifier: createTestCommandLeaseVerifier([
+        ["lineage-token", {
+          agentKey: "panda",
+          sessionId: "session-main",
+          threadId: "thread-trusted",
+          runId: "run-trusted",
+          parentToolCallId: "bash-call-trusted",
+          allowedCommands: ["test.echo"],
+        }],
+      ]),
+    });
+    servers.push(server);
+
+    const response = await fetch(`${server.url}/commands/execute`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer lineage-token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        command: "test.echo",
+        input: {message: "hello"},
+        scope: {
+          threadId: "thread-forged",
+          runId: "run-forged",
+          parentToolCallId: "bash-call-forged",
+        },
+        runId: "run-forged",
+        parentToolCallId: "bash-call-forged",
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(execute).toHaveBeenCalledOnce();
+    expect(execute.mock.calls[0]?.[0].scope).toMatchObject({
+      threadId: "thread-trusted",
+      runId: "run-trusted",
+      parentToolCallId: "bash-call-trusted",
+    });
+    expect(execute.mock.calls[0]?.[0].scope).not.toMatchObject({
+      runId: "run-forged",
+      parentToolCallId: "bash-call-forged",
     });
   });
 

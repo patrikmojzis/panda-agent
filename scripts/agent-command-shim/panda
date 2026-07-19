@@ -887,9 +887,7 @@ dispatch_generated_json_route() {
         if [ "$command_name" = "web.fetch" ] && printf '%s' "$json_payload" | jq -e 'type == "object" and (has("maxContentChars") or has("maxChars") or has("max_chars"))' >/dev/null; then
           die "panda web fetch maxContentChars was removed; use chunkChars."
         fi
-        if execute_json_command "$command_name" "$json_payload"; then
-          return 0
-        fi
+        execute_json_command "$command_name" "$json_payload"
         return $?
       fi
       return 127

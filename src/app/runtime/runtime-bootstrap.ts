@@ -49,6 +49,7 @@ import {AgentAppService} from "../../integrations/apps/sqlite-service.js";
 import {WikiRuntimeCommandService} from "../../integrations/wiki/command-service.js";
 import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
 import {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
+import {createBashCommandExecutionReader} from "./bash-command-summary-reader.js";
 import {
     buildObservedPoolConfig,
     createPostgresPool,
@@ -688,6 +689,7 @@ export async function bootstrapRuntime(
         jobService: backgroundJobService,
         credentialResolver,
         shellStateStore: store,
+        commandExecutionReader: createBashCommandExecutionReader(store),
       },
       browser: {
         service: resolvedBrowserService,

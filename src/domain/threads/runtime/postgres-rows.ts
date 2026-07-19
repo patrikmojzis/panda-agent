@@ -234,6 +234,8 @@ export function parseToolJobRow(row: Record<string, unknown>): ThreadToolJobReco
     id: parseRequiredString(row.id, "tool job id"),
     threadId: parseRequiredString(row.thread_id, "thread id"),
     runId: parseOptionalString(row.run_id),
+    parentToolCallId: parseOptionalString(row.parent_tool_call_id),
+    commandOrdinal: parseOptionalBigintNumber(row.command_ordinal, "command ordinal"),
     kind: parseToolJobKind(row.kind),
     status: parseToolJobStatus(row.status),
     summary: parseToolJobSummary(row.summary),

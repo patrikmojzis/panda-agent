@@ -196,12 +196,14 @@ export async function bootstrapDaemonContext(
         extraContext: {
           ...(Object.keys(shellSessions).length > 0 ? {shellSessions} : {}),
           resolveExecutionTarget: (target) => executionEnvironmentResolver.resolve(session, target),
-          refreshCommandAccess: async ({executionEnvironment, currentInput}) => {
+          refreshCommandAccess: async ({executionEnvironment, currentInput, runId, parentToolCallId}) => {
             return runtime.executionEnvironmentService.refreshSessionCommandAccess({
               session,
               executionEnvironment,
               ...(currentInput?.identityId ? {identityId: currentInput.identityId} : {}),
               ...(currentInput?.messageId ? {inputMessageId: currentInput.messageId} : {}),
+              ...(runId ? {runId} : {}),
+              ...(parentToolCallId ? {parentToolCallId} : {}),
             });
           },
           routeMemory: {

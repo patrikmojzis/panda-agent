@@ -1078,6 +1078,8 @@ describe("PostgresExecutionEnvironmentStore", () => {
       },
       identityId: "identity-current",
       inputMessageId: "message-current",
+      runId: "run-current",
+      parentToolCallId: "bash-call-current",
     });
 
     expect(refresh).toMatchObject({
@@ -1102,6 +1104,8 @@ describe("PostgresExecutionEnvironmentStore", () => {
       environmentId: "env-worker",
       identityId: "identity-current",
       inputMessageId: "message-current",
+      runId: "run-current",
+      parentToolCallId: "bash-call-current",
       credentialPolicy: {mode: "allowlist", envKeys: ["MCP_TOKEN"]},
       allowedCommands: ["micro-app.link.create", "micro-app.view"],
     });

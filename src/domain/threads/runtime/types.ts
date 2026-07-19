@@ -144,6 +144,8 @@ export interface ThreadToolJobRecord {
   id: string;
   threadId: string;
   runId?: string;
+  parentToolCallId?: string;
+  commandOrdinal?: number;
   kind: ThreadToolJobKind;
   status: ThreadToolJobStatus;
   summary: string;
@@ -160,6 +162,7 @@ export interface CreateThreadToolJobInput {
   id: string;
   threadId: string;
   runId?: string;
+  parentToolCallId?: string;
   kind: ThreadToolJobKind;
   status?: ThreadToolJobStatus;
   summary?: string;
@@ -171,7 +174,7 @@ export interface CreateThreadToolJobInput {
 }
 
 export type ThreadToolJobUpdate = Partial<
-  Omit<CreateThreadToolJobInput, "id" | "threadId" | "kind" | "result" | "error" | "statusReason" | "progress">
+  Omit<CreateThreadToolJobInput, "id" | "threadId" | "runId" | "parentToolCallId" | "kind" | "result" | "error" | "statusReason" | "progress">
 > & {
   finishedAt?: number | null;
   durationMs?: number | null;

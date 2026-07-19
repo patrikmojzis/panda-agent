@@ -4,6 +4,7 @@ import type {JsonObject} from "./types.js";
 
 export interface RunContextOptions<TContext = unknown> {
   agent: Agent;
+  toolCallId?: string;
   turn: number;
   maxTurns: number;
   messages: Message[];
@@ -16,6 +17,7 @@ export interface RunContextOptions<TContext = unknown> {
 
 export class RunContext<TContext = unknown> {
   readonly agent: Agent;
+  readonly toolCallId?: string;
   readonly turn: number;
   readonly maxTurns: number;
   readonly messages: Message[];
@@ -27,6 +29,7 @@ export class RunContext<TContext = unknown> {
 
   constructor(options: RunContextOptions<TContext>) {
     this.agent = options.agent;
+    this.toolCallId = options.toolCallId;
     this.turn = options.turn;
     this.maxTurns = options.maxTurns;
     this.messages = options.messages;

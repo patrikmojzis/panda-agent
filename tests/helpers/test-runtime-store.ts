@@ -687,10 +687,29 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
       throw new Error(`Tool job ${input.id} already exists.`);
     }
 
+    if (input.parentToolCallId && (!input.runId || input.kind !== "command")) {
+      throw new Error("Parent Panda tool calls require a command job and originating run id.");
+    }
+    const parentRun = input.runId ? this.runs.get(input.runId) : undefined;
+    if (input.parentToolCallId && parentRun?.threadId !== input.threadId) {
+      throw new Error(`Run ${input.runId} does not belong to thread ${input.threadId}.`);
+    }
+    const commandOrdinal = input.parentToolCallId
+      ? Math.max(0, ...[...this.toolJobs.values()]
+        .filter((job) => (
+          job.threadId === input.threadId
+          && job.runId === input.runId
+          && job.parentToolCallId === input.parentToolCallId
+        ))
+        .map((job) => job.commandOrdinal ?? 0)) + 1
+      : undefined;
+
     const record: ThreadToolJobRecord = {
       id: input.id,
       threadId: input.threadId,
       runId: input.runId,
+      parentToolCallId: input.parentToolCallId,
+      commandOrdinal,
       kind: input.kind,
       status: input.status ?? "running",
       summary: input.summary ?? "",
@@ -723,6 +742,26 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     return [...this.toolJobs.values()]
       .filter((job) => job.threadId === threadId)
       .sort((left, right) => left.startedAt - right.startedAt)
+      .map((job) => cloneRecord(job));
+  }
+
+  async listCommandToolJobsByParent(
+    threadId: string,
+    runId: string,
+    parentToolCallId: string,
+  ): Promise<readonly ThreadToolJobRecord[]> {
+    if (!this.threads.has(threadId)) {
+      throw missingThreadError(threadId);
+    }
+
+    return [...this.toolJobs.values()]
+      .filter((job) => (
+        job.threadId === threadId
+        && job.runId === runId
+        && job.kind === "command"
+        && job.parentToolCallId === parentToolCallId
+      ))
+      .sort((left, right) => (left.commandOrdinal ?? 0) - (right.commandOrdinal ?? 0))
       .map((job) => cloneRecord(job));
   }
 

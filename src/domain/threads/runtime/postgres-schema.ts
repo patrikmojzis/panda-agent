@@ -437,6 +437,8 @@ export function buildThreadRuntimeSchemaSql(
       thread_id TEXT NOT NULL REFERENCES ${tables.threads}(id) ON DELETE CASCADE,
       run_id UUID REFERENCES ${tables.runs}(id) ON DELETE SET NULL,
       run_thread_id TEXT,
+      parent_tool_call_id TEXT,
+      command_ordinal BIGINT,
       kind TEXT NOT NULL,
       status TEXT NOT NULL,
       summary TEXT NOT NULL DEFAULT '',
@@ -452,11 +454,21 @@ export function buildThreadRuntimeSchemaSql(
     ALTER TABLE ${tables.toolJobs}
     ADD COLUMN IF NOT EXISTS run_thread_id TEXT;
 
+    ALTER TABLE ${tables.toolJobs}
+    ADD COLUMN IF NOT EXISTS parent_tool_call_id TEXT;
+
+    ALTER TABLE ${tables.toolJobs}
+    ADD COLUMN IF NOT EXISTS command_ordinal BIGINT;
+
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_tool_jobs_thread_started_idx`)}
     ON ${tables.toolJobs} (thread_id, started_at);
 
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_tool_jobs_status_idx`)}
     ON ${tables.toolJobs} (status, started_at);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_tool_jobs_parent_ordinal_idx`)}
+    ON ${tables.toolJobs} (thread_id, run_id, parent_tool_call_id, command_ordinal)
+    WHERE parent_tool_call_id IS NOT NULL;
 
     CREATE TABLE IF NOT EXISTS ${tables.bashJobs} (
       id UUID PRIMARY KEY,
@@ -716,6 +728,22 @@ export async function ensurePostgresThreadRuntimeSchema(pool: PgPoolLike): Promi
     FOREIGN KEY (run_thread_id, run_id)
     REFERENCES ${tables.runs}(thread_id, id)
     ON DELETE SET NULL
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.toolJobs}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_tool_jobs_command_lineage_check`)}
+    CHECK (
+      (
+        parent_tool_call_id IS NULL
+        AND command_ordinal IS NULL
+      ) OR (
+        parent_tool_call_id IS NOT NULL
+        AND command_ordinal IS NOT NULL
+        AND command_ordinal > 0
+        AND kind = 'command'
+        AND run_id IS NOT NULL
+      )
+    )
   `);
   await addConstraint(pool, `
     ALTER TABLE ${tables.bashJobs}

@@ -71,6 +71,7 @@ export interface CommandScope {
   sessionId: string;
   threadId?: string;
   runId?: string;
+  parentToolCallId?: string;
   identityId?: string;
   inputMessageId?: string;
   environmentId?: string;

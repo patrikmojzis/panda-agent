@@ -61,6 +61,11 @@ export interface ThreadRuntimeStore {
   createToolJob(input: CreateThreadToolJobInput): Promise<ThreadToolJobRecord>;
   getToolJob(jobId: string): Promise<ThreadToolJobRecord>;
   listToolJobs(threadId: string): Promise<readonly ThreadToolJobRecord[]>;
+  listCommandToolJobsByParent(
+    threadId: string,
+    runId: string,
+    parentToolCallId: string,
+  ): Promise<readonly ThreadToolJobRecord[]>;
   updateToolJob(jobId: string, update: ThreadToolJobUpdate): Promise<ThreadToolJobRecord>;
   markRunningToolJobsLost(reason?: string): Promise<number>;
   listPendingInputs(threadId: string): Promise<readonly ThreadInputRecord[]>;

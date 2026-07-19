@@ -78,6 +78,8 @@ export interface DefaultAgentSessionContext extends ShellExecutionContext {
   refreshCommandAccess?: (input: {
     executionEnvironment: ResolvedExecutionEnvironment;
     currentInput?: DefaultAgentCurrentInputContext;
+    runId?: string;
+    parentToolCallId?: string;
   }) => Promise<{
     refreshed: boolean;
     reason?: string;

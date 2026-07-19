@@ -5222,6 +5222,20 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     });
   });
 
+  it("preserves remote command failure status in shell chains", async () => {
+    const server = await startWatchServer();
+
+    await expect(execFileAsync("/bin/zsh", [
+      "-c",
+      `"${shimPath}" todo show --json '{"index":0}' && printf 'continued\\n'`,
+    ], {
+      env: shimEnv(server),
+    })).rejects.toMatchObject({
+      stdout: "",
+      stderr: expect.stringContaining("todo.show index must be a positive integer."),
+    });
+  });
+
   it("executes todo.done and todo.block through native indexes", async () => {
     const server = await startWatchServer();
 
@@ -5353,7 +5367,7 @@ printf '{"ok":true,"output":%s}\\n' "$body"
   it("rejects the removed session prompt expression JSON shape", async () => {
     const server = await startWatchServer();
 
-    const result = await execFileAsync(shimPath, [
+    await expect(execFileAsync(shimPath, [
       "session",
       "prompt",
       "current",
@@ -5362,11 +5376,12 @@ printf '{"ok":true,"output":%s}\\n' "$body"
       '{"slug":"memory","expression":"upper(content)"}',
     ], {
       env: shimEnv(server),
+    })).rejects.toMatchObject({
+      stdout: "",
+      stderr: expect.stringContaining(
+        'session.prompt.transform no longer accepts {slug, expression}. Use {"slug":"memory","operation":"expression","expression":"upper(content)"}.',
+      ),
     });
-    expect(result.stdout).toBe("");
-    expect(result.stderr).toContain(
-      'session.prompt.transform no longer accepts {slug, expression}. Use {"slug":"memory","operation":"expression","expression":"upper(content)"}.',
-    );
   });
 
   it("executes session prompt read through native args", async () => {

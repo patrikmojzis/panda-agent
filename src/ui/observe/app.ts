@@ -101,6 +101,9 @@ function renderCommandToolJobBody(job: ThreadToolJobRecord): string {
   const command = readStringField(result, "command") ?? job.summary;
   const details = [
     job.id,
+    job.parentToolCallId && job.commandOrdinal !== undefined
+      ? `parent ${job.parentToolCallId} #${String(job.commandOrdinal)}`
+      : undefined,
     job.status,
     command,
     readStringField(result, "summary"),

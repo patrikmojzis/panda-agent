@@ -28,6 +28,8 @@ export interface IssueCommandLeaseInput {
   environmentId?: string;
   identityId?: string;
   inputMessageId?: string;
+  runId?: string;
+  parentToolCallId?: string;
   toolPolicy?: ExecutionToolPolicy;
   skillPolicy?: ExecutionSkillPolicy;
   credentialPolicy?: ExecutionCredentialPolicy;
@@ -91,6 +93,10 @@ export class RuntimeCommandLeaseService implements CommandLeaseVerifier, Command
   }
 
   issueCommandLease(input: IssueCommandLeaseInput): IssuedCommandLease | null {
+    if (input.parentToolCallId && !input.runId) {
+      throw new Error("A parent Panda tool call requires its originating run id.");
+    }
+
     const socketPath = input.socketAccessAllowed === false ? undefined : this.socketPath;
     if (!this.baseUrl && !socketPath) {
       return null;
@@ -116,6 +122,8 @@ export class RuntimeCommandLeaseService implements CommandLeaseVerifier, Command
       ...(input.environmentId ? {environmentId: input.environmentId} : {}),
       ...(input.identityId ? {identityId: input.identityId} : {}),
       ...(input.inputMessageId ? {inputMessageId: input.inputMessageId} : {}),
+      ...(input.runId ? {runId: input.runId} : {}),
+      ...(input.parentToolCallId ? {parentToolCallId: input.parentToolCallId} : {}),
       allowedCommands,
       expiresAt,
       credentialMutationAllowed: input.credentialMutationAllowed === true,

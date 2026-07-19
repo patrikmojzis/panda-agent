@@ -1522,6 +1522,115 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(await store.listToolJobs("pg-thread-bash-job")).toHaveLength(1);
   });
 
+  it("persists trusted command lineage with parent-scoped ordinals and same-thread runs", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const {threadStore: store} = await createRuntimeStores(pool);
+    await seedSession(pool, {
+      sessionId: "session-command-lineage",
+      threadId: "pg-thread-command-lineage",
+    });
+    await store.createThread({
+      id: "pg-thread-command-lineage",
+      sessionId: "session-command-lineage",
+    });
+    await store.createThread({
+      id: "pg-thread-command-lineage-other",
+      sessionId: "session-command-lineage",
+    });
+    const run = await store.createRun("pg-thread-command-lineage");
+
+    const first = await store.createToolJob({
+        id: "00000000-0000-4000-8000-000000000260",
+        threadId: "pg-thread-command-lineage",
+        runId: run.id,
+        parentToolCallId: "bash-call-260",
+        kind: "command",
+        summary: "schedule.create",
+      });
+    const second = await store.createToolJob({
+        id: "00000000-0000-4000-8000-000000000261",
+        threadId: "pg-thread-command-lineage",
+        runId: run.id,
+        parentToolCallId: "bash-call-260",
+        kind: "command",
+        summary: "a2a.history",
+      });
+
+    expect([first.commandOrdinal, second.commandOrdinal].sort()).toEqual([1, 2]);
+    await expect(store.listCommandToolJobsByParent(
+      "pg-thread-command-lineage",
+      run.id,
+      "bash-call-260",
+    )).resolves.toMatchObject([
+      {
+        runId: run.id,
+        parentToolCallId: "bash-call-260",
+        commandOrdinal: 1,
+      },
+      {
+        runId: run.id,
+        parentToolCallId: "bash-call-260",
+        commandOrdinal: 2,
+      },
+    ]);
+
+    const nextRun = await store.createRun("pg-thread-command-lineage");
+    const reusedParentId = await store.createToolJob({
+      id: "00000000-0000-4000-8000-000000000264",
+      threadId: "pg-thread-command-lineage",
+      runId: nextRun.id,
+      parentToolCallId: "bash-call-260",
+      kind: "command",
+      summary: "watch.list",
+    });
+    expect(reusedParentId.commandOrdinal).toBe(1);
+    await expect(store.listCommandToolJobsByParent(
+      "pg-thread-command-lineage",
+      nextRun.id,
+      "bash-call-260",
+    )).resolves.toMatchObject([{commandOrdinal: 1, runId: nextRun.id}]);
+
+    await expect(store.createToolJob({
+      id: "00000000-0000-4000-8000-000000000262",
+      threadId: "pg-thread-command-lineage-other",
+      runId: run.id,
+      parentToolCallId: "bash-call-forged-thread",
+      kind: "command",
+      summary: "watch.list",
+    })).rejects.toThrow("does not belong to thread pg-thread-command-lineage-other");
+
+    await expect(pool.query(`
+      INSERT INTO "runtime"."tool_jobs" (
+        id,
+        thread_id,
+        parent_tool_call_id,
+        command_ordinal,
+        kind,
+        status,
+        summary,
+        started_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+    `, [
+      "00000000-0000-4000-8000-000000000263",
+      "pg-thread-command-lineage",
+      "bash-call-invalid",
+      1,
+      "command",
+      "running",
+      "watch.list",
+    ])).rejects.toThrow();
+  });
+
   it("marks orphaned running background bash jobs as lost", async () => {
     const db = newDb();
     db.public.registerFunction({

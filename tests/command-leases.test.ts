@@ -45,6 +45,28 @@ function defaultCommandNamesWhere(
 }
 
 describe("RuntimeCommandLeaseService", () => {
+  it("binds trusted bash run and tool-call lineage into the lease scope", async () => {
+    const service = createLeaseService({baseUrl: "http://127.0.0.1:8096"});
+    const lease = service.issueCommandLease({
+      agentKey: "panda",
+      sessionId: "session-main",
+      runId: "run-current",
+      parentToolCallId: "bash-call-current",
+      toolPolicy: {allowedTools: ["watch.list"]},
+    });
+
+    await expect(service.verify(lease!.token)).resolves.toMatchObject({
+      runId: "run-current",
+      parentToolCallId: "bash-call-current",
+    });
+    expect(() => service.issueCommandLease({
+      agentKey: "panda",
+      sessionId: "session-main",
+      parentToolCallId: "forged-parent-without-run",
+      toolPolicy: {allowedTools: ["watch.list"]},
+    })).toThrow("requires its originating run id");
+  });
+
   it("mints command leases from tool policy without identity-scoped app links", async () => {
     const service = createLeaseService({
       baseUrl: "http://127.0.0.1:8096",

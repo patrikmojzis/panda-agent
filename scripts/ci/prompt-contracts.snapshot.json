@@ -19,10 +19,10 @@
       "sha256": "90f5ef6dfaeebf09223f66734e27bc6563b2133246cace59746f129535bf7b40"
     },
     {
-      "bytes": 15461,
-      "lines": 411,
+      "bytes": 15590,
+      "lines": 413,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "dcf8b756f759b10da90b597b3da6866bf95608777906330d4c865b6b9e3bfc8e"
+      "sha256": "98c6e5eb24b0e18d0eaf37fd6eb92753aa7587513bb5a8a5e697e1619315311e"
     },
     {
       "bytes": 12121,
@@ -31,16 +31,16 @@
       "sha256": "233384ed058d6f7f0f5ac18b019b901fcc639fef7b1f2dfcf3818050efe1be22"
     },
     {
-      "bytes": 3046,
-      "lines": 90,
+      "bytes": 3097,
+      "lines": 92,
       "path": "src/app/runtime/panda-session-context.ts",
-      "sha256": "fa9eff3c7501170c201b9b636d3ec5a26258b6dfbe7662530c32452198534f85"
+      "sha256": "033685d9e20dc15874865f8bf3e8b9c0d4244ede32cd871ea21590f8b47c45c4"
     },
     {
-      "bytes": 28771,
-      "lines": 809,
+      "bytes": 28927,
+      "lines": 811,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "3761255d7f5b7ecf4bcf4f11ddde15fef5bff82330119f0851d30078decb2f63"
+      "sha256": "5be2b8e6f2b1cbc697950a13a96d8ec40d34e6005d70550c644f3063cf50a097"
     },
     {
       "bytes": 11135,
@@ -337,10 +337,10 @@
       "sha256": "cad5b2b991230740617070b6e628d49803d08242741e790ee444d5c9635c5df3"
     },
     {
-      "bytes": 14269,
-      "lines": 218,
+      "bytes": 14444,
+      "lines": 219,
       "path": "src/prompts/runtime/default-agent.ts",
-      "sha256": "a970e1528e55abb09c7a95b57e416f6cffb8be0b80d0b8693848f88839aa3f34"
+      "sha256": "259391c4719f794932b02a279653697e46a2fc7962a69ab44d9eff87f39d9b3d"
     },
     {
       "bytes": 1652,
@@ -619,7 +619,7 @@
       }
     },
     {
-      "description": "Run a shell command. Foreground bash mutates the shared shell cwd and simple export/unset env state across calls. Background bash starts an isolated snapshot job, returns immediately, never mutates the shared shell session, and may later surface as a machine-generated runtime event; use background_job_status, background_job_wait, and background_job_cancel for follow-up.",
+      "description": "Run a shell command. Every panda invocation is an independent operation: earlier commands are not rolled back when a later shell step fails, so prefer one mutating Panda command per bash call. Foreground bash mutates the shared shell cwd and simple export/unset env state across calls. Background bash starts an isolated snapshot job, returns immediately, never mutates the shared shell session, and may later surface as a machine-generated runtime event; use background_job_status, background_job_wait, and background_job_cancel for follow-up.",
       "name": "bash",
       "parameters": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",

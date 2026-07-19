@@ -20,6 +20,7 @@ import {
     promoteQueuedThreadInputs,
 } from "./postgres-inputs.js";
 import type {PgPoolLike, PgQueryResult, PgQueryable} from "../../../lib/postgres-query.js";
+import {withTransaction} from "../../../lib/postgres-transaction.js";
 import type {ThreadEnqueueResult, ThreadInputApplyScope, ThreadRuntimeStore} from "./store.js";
 import type {DurableShellSession, ThreadShellStateKey, ThreadShellStateRecord, ThreadShellStateStore} from "./shell-state-store.js";
 import {
@@ -825,12 +826,17 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
 
   async createToolJob(input: CreateThreadToolJobInput): Promise<ThreadToolJobRecord> {
     const startedAt = input.startedAt ?? Date.now();
-    const result = await this.pool.query(`
+    const insert = async (
+      queryable: PgQueryable,
+      commandOrdinal: number | null,
+    ): Promise<PgQueryResult> => queryable.query(`
       INSERT INTO ${this.tables.toolJobs} (
         id,
         thread_id,
         run_id,
         run_thread_id,
+        parent_tool_call_id,
+        command_ordinal,
         kind,
         status,
         summary,
@@ -848,10 +854,12 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
         $6,
         $7,
         $8,
-        $9::jsonb,
+        $9,
         $10,
-        $11,
-        $12::jsonb
+        $11::jsonb,
+        $12,
+        $13,
+        $14::jsonb
       )
       RETURNING *
     `, [
@@ -859,6 +867,8 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
       input.threadId,
       input.runId ?? null,
       input.runId ? input.threadId : null,
+      input.parentToolCallId ?? null,
+      commandOrdinal,
       input.kind,
       input.status ?? "running",
       input.summary ?? "",
@@ -868,6 +878,39 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
       input.statusReason ?? null,
       toJson(input.progress),
     ]);
+
+    const result = input.parentToolCallId
+      ? await withTransaction(this.pool, async (client) => {
+        if (!input.runId) {
+          throw new Error("A parent Panda tool call requires its originating run id.");
+        }
+
+        const lockedRun = await client.query(`
+          SELECT id
+          FROM ${this.tables.runs}
+          WHERE id = $1
+            AND thread_id = $2
+          FOR UPDATE
+        `, [input.runId, input.threadId]);
+        if (!lockedRun.rows[0]) {
+          throw new Error(`Run ${input.runId} does not belong to thread ${input.threadId}.`);
+        }
+
+        const ordinalResult = await client.query(`
+          SELECT COALESCE(MAX(command_ordinal), 0) + 1 AS command_ordinal
+          FROM ${this.tables.toolJobs}
+          WHERE thread_id = $1
+            AND run_id = $2
+            AND parent_tool_call_id = $3
+        `, [input.threadId, input.runId, input.parentToolCallId]);
+        const commandOrdinal = Number((ordinalResult.rows[0] as {command_ordinal?: unknown} | undefined)?.command_ordinal);
+        if (!Number.isSafeInteger(commandOrdinal) || commandOrdinal < 1) {
+          throw new Error("Could not assign a Panda command execution ordinal.");
+        }
+
+        return insert(client, commandOrdinal);
+      })
+      : await insert(this.pool, null);
 
     await this.touchThread(input.threadId);
 
@@ -899,6 +942,24 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
     return result.rows.map((row) => parseToolJobRow(row as Record<string, unknown>));
   }
 
+  async listCommandToolJobsByParent(
+    threadId: string,
+    runId: string,
+    parentToolCallId: string,
+  ): Promise<readonly ThreadToolJobRecord[]> {
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.toolJobs}
+      WHERE thread_id = $1
+        AND run_id = $2
+        AND parent_tool_call_id = $3
+        AND kind = 'command'
+      ORDER BY command_ordinal ASC
+    `, [threadId, runId, parentToolCallId]);
+
+    return result.rows.map((row) => parseToolJobRow(row as Record<string, unknown>));
+  }
+
   async updateToolJob(jobId: string, update: ThreadToolJobUpdate): Promise<ThreadToolJobRecord> {
     const assignments: string[] = [];
     const values: unknown[] = [jobId];
@@ -910,12 +971,6 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
       index += 1;
     };
 
-    if (update.runId !== undefined) {
-      assignments.push(`run_id = $${index}`);
-      assignments.push(`run_thread_id = CASE WHEN $${index} IS NULL THEN NULL ELSE thread_id END`);
-      values.push(update.runId ?? null);
-      index += 1;
-    }
     if (update.status !== undefined) {
       push("status", update.status);
     }
