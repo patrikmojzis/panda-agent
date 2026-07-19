@@ -97,11 +97,21 @@ describe("channel send command authority", () => {
     });
     const command = createTelegramSendCommand(services, fileResolver);
 
-    await expect(command.execute(createRequest(TELEGRAM_SEND_COMMAND_NAME, {
+    const denied = await command.execute(createRequest(TELEGRAM_SEND_COMMAND_NAME, {
       connectorKey: "telegram-main",
       conversationId: "999999999",
       items: [{type: "text", text: "hello"}],
-    }))).rejects.toThrow("telegram.send target conversation 999999999 is not bound to the current session.");
+    })).then(() => null, (error: unknown) => error as Error);
+    expect(denied).toMatchObject({
+      pandaCommandErrorCode: "forbidden",
+      pandaCommandErrorDetails: {
+        failureCode: "resource_scope_denied",
+        retryable: false,
+        exitCode: 3,
+      },
+    });
+    expect(denied?.message).not.toContain("999999999");
+    expect(services.enqueueDelivery).not.toHaveBeenCalled();
   });
 
   it("rejects shared explicit send commands outside the current session", async () => {
@@ -112,10 +122,20 @@ describe("channel send command authority", () => {
     });
     const command = createDiscordSendCommand(services, fileResolver);
 
-    await expect(command.execute(createRequest(DISCORD_SEND_COMMAND_NAME, {
+    const denied = await command.execute(createRequest(DISCORD_SEND_COMMAND_NAME, {
       connectorKey: "discord-main",
       conversationId: "223456789012345678",
       items: [{type: "text", text: "hello"}],
-    }))).rejects.toThrow("discord.send target conversation 223456789012345678 is not bound to the current session.");
+    })).then(() => null, (error: unknown) => error as Error);
+    expect(denied).toMatchObject({
+      pandaCommandErrorCode: "forbidden",
+      pandaCommandErrorDetails: {
+        failureCode: "resource_scope_denied",
+        retryable: false,
+        exitCode: 3,
+      },
+    });
+    expect(denied?.message).not.toContain("223456789012345678");
+    expect(services.enqueueDelivery).not.toHaveBeenCalled();
   });
 });

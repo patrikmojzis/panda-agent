@@ -247,6 +247,12 @@ These pay back across almost every command.
 
    Every command should return machine JSON with `status` or `ok`, durable ids,
    and any `artifact`. Text output should be short and useful, not a JSON dump.
+   Intentional authentication and permission denials use the shared
+   `unauthorized`/`forbidden` envelope with a stable `failureCode`,
+   `retryable: false`, a bounded `nextAction`, and CLI exit code 3. The shim
+   preserves that compact JSON on stderr. `requiredCapability` is exposed only
+   after authentication succeeds; capability discovery is
+   `panda commands --output json`.
 
 5. Keep namespace policy, not legacy tool policy.
 

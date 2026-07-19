@@ -5,6 +5,7 @@ import {
 } from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 import type {CredentialResolver} from "../credentials/resolver.js";
+import {CommandDenialError, commandScopeDenied} from "../commands/errors.js";
 import type {CommandDescriptor, CommandRequest, CommandSuccess, RegisteredCommand} from "../commands/types.js";
 import type {ExecutionCredentialPolicy} from "../execution-environments/types.js";
 import {referencedMcpCredentialEnvKeys} from "./config.js";
@@ -190,7 +191,11 @@ function assertCredentialPolicy(policy: ExecutionCredentialPolicy | undefined, k
   const allowed = policy?.mode === "allowlist" ? new Set(policy.envKeys) : new Set<string>();
   const denied = keys.find((key) => !allowed.has(key));
   if (denied) {
-    throw commandError(`MCP credential ${denied} is not allowed by this execution scope.`, 3, "authentication");
+    throw commandScopeDenied(
+      "An MCP credential required by this server is not allowed in the current execution scope.",
+      "command_scope_denied",
+      "Use an MCP server whose credential requirements are allowed by the current execution scope.",
+    );
   }
 }
 
@@ -334,6 +339,7 @@ export function createMcpToolsCommand(options: McpCommandOptions): RegisteredCom
         assertOutputSize(output);
         return {ok: true, command: MCP_TOOLS_COMMAND_NAME, output, summary: `Listed ${tools.length} MCP tool${tools.length === 1 ? "" : "s"} from ${input.server}.`};
       } catch (error) {
+        if (error instanceof CommandDenialError) throw error;
         throw normalizeMcpError(error);
       }
     },
@@ -369,6 +375,7 @@ export function createMcpCallCommand(options: McpCommandOptions): RegisteredComm
           summary: isError ? `MCP tool ${input.server}/${input.tool} returned isError.` : `Called MCP tool ${input.server}/${input.tool}.`,
         };
       } catch (error) {
+        if (error instanceof CommandDenialError) throw error;
         throw normalizeMcpError(error);
       }
     },

@@ -2,6 +2,12 @@ import {randomUUID} from "node:crypto";
 
 import {isJsonObject, type JsonObject, type JsonValue} from "../../lib/json.js";
 import {
+  CommandDenialError,
+  commandCapabilityDenied,
+  commandUnauthorized,
+  type CommandDenialFailureCode,
+} from "../../domain/commands/errors.js";
+import {
     isCommandAllowed,
 } from "../../domain/commands/registry.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
@@ -23,6 +29,16 @@ import {COMMAND_AUDIT_METADATA} from "../../domain/commands/types.js";
 type CommandAuditStore = Pick<ThreadRuntimeStore, "createToolJob" | "updateToolJob">;
 type CommandScopeResolver = (scope: CommandScope) => Promise<CommandScope> | CommandScope;
 const MAX_SAFE_RETRY_AFTER_MS = 31 * 24 * 60 * 60 * 1_000;
+const COMMAND_DENIAL_FAILURE_CODES = new Set<CommandDenialFailureCode>([
+  "bearer_missing",
+  "bearer_invalid",
+  "lease_expired",
+  "scope_resolution_failed",
+  "capability_missing",
+  "command_scope_denied",
+  "identity_required",
+  "resource_scope_denied",
+]);
 
 export interface RuntimeCommandDispatcherOptions {
   commands: readonly RegisteredCommand[];
@@ -42,6 +58,10 @@ function errorResult(command: CommandName, error: CommandError): CommandResult {
 function errorDetails(error: unknown): JsonObject | undefined {
   if (!(error instanceof Error)) {
     return undefined;
+  }
+
+  if (error instanceof CommandDenialError) {
+    return error.pandaCommandErrorDetails;
   }
 
   const commandDetails = (error as {pandaCommandErrorDetails?: unknown}).pandaCommandErrorDetails;
@@ -84,6 +104,9 @@ function errorMessage(error: unknown): string {
 }
 
 function commandErrorCode(error: unknown): CommandErrorCode {
+  if (error instanceof CommandDenialError) {
+    return error.pandaCommandErrorCode;
+  }
   const code = (error as {pandaCommandErrorCode?: unknown} | null)?.pandaCommandErrorCode;
   return code === "rate_limited" ? code : "command_failed";
 }
@@ -98,6 +121,8 @@ function readAuditMetadata(result: CommandResult<JsonValue>): CommandAuditMetada
   const attemptCount = source.attemptCount;
   const totalBackoffMs = source.totalBackoffMs;
   const failureCode = source.failureCode;
+  const safeFailureCode = failureCode === "rate_limited" || failureCode === "quota_exhausted"
+    || (typeof failureCode === "string" && COMMAND_DENIAL_FAILURE_CODES.has(failureCode as CommandDenialFailureCode));
   return {
     ...(typeof attemptCount === "number" && Number.isSafeInteger(attemptCount) && attemptCount >= 0 && attemptCount <= 100
       ? {attemptCount}
@@ -105,7 +130,8 @@ function readAuditMetadata(result: CommandResult<JsonValue>): CommandAuditMetada
     ...(typeof totalBackoffMs === "number" && Number.isSafeInteger(totalBackoffMs) && totalBackoffMs >= 0 && totalBackoffMs <= 60_000
       ? {totalBackoffMs}
       : {}),
-    ...(failureCode === "rate_limited" || failureCode === "quota_exhausted" ? {failureCode} : {}),
+    ...(safeFailureCode ? {failureCode} : {}),
+    ...(typeof source.retryable === "boolean" ? {retryable: source.retryable} : {}),
     ...(source.autoRetryExhausted === true ? {autoRetryExhausted: true} : {}),
   };
 }
@@ -156,11 +182,14 @@ export class RuntimeCommandDispatcher implements CommandExecutor {
     try {
       scope = this.resolveScope ? await this.resolveScope(request.scope) : request.scope;
     } catch (error) {
-      return errorResult(request.command, {
-        code: "unauthorized",
-        message: `Panda command scope could not be resolved: ${errorMessage(error)}`,
-        details: errorDetails(error),
-      }) as CommandResult<TOutput>;
+      const denial = error instanceof CommandDenialError
+        ? error
+        : commandUnauthorized(
+          "Panda command scope could not be resolved.",
+          "scope_resolution_failed",
+          "Command access must be refreshed by the runtime or operator.",
+        );
+      return errorResult(request.command, denial.toCommandError()) as CommandResult<TOutput>;
     }
 
     const resolvedRequest: CommandRequest = {
@@ -169,10 +198,11 @@ export class RuntimeCommandDispatcher implements CommandExecutor {
     };
 
     if (isExpired(scope, this.now())) {
-      return errorResult(request.command, {
-        code: "unauthorized",
-        message: "Panda command lease expired.",
-      }) as CommandResult<TOutput>;
+      return errorResult(request.command, commandUnauthorized(
+        "Panda command lease expired.",
+        "lease_expired",
+        "Command access must be refreshed by the runtime or operator.",
+      ).toCommandError()) as CommandResult<TOutput>;
     }
 
     const startedAt = this.now().getTime();
@@ -188,10 +218,7 @@ export class RuntimeCommandDispatcher implements CommandExecutor {
     }
 
     if (!isCommandAllowed(scope, request.command)) {
-      const result = errorResult(request.command, {
-        code: "forbidden",
-        message: `Panda command ${request.command} is not allowed in this session.`,
-      }) as CommandResult<TOutput>;
+      const result = errorResult(request.command, commandCapabilityDenied(request.command).toCommandError()) as CommandResult<TOutput>;
       await this.finishAudit(audit, result, startedAt);
       return result;
     }

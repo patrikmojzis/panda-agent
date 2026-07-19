@@ -1,6 +1,7 @@
 import type {JsonObject} from "../../lib/json.js";
 import {isJsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
+import {commandScopeDenied} from "../commands/errors.js";
 import type {AgentSkillOperation, ExecutionSkillPolicy} from "../execution-environments/types.js";
 import {
   isExecutionSkillAllowed,
@@ -189,7 +190,11 @@ function assertSkillAllowed(scope: CommandScope, skillKey: string): void {
     return;
   }
 
-  throw new Error(`Skill ${skillKey} is not allowed in this execution environment.`);
+  throw commandScopeDenied(
+    "The requested skill is not allowed in this execution environment.",
+    "resource_scope_denied",
+    "The current command lease does not permit access to that skill.",
+  );
 }
 
 function assertAgentSkillOperationAllowed(scope: CommandScope, operation: AgentSkillOperation): void {
@@ -200,7 +205,11 @@ function assertAgentSkillOperationAllowed(scope: CommandScope, operation: AgentS
     return;
   }
 
-  throw new Error(`skill.${operation} is not allowed in this execution environment.`);
+  throw commandScopeDenied(
+    `skill.${operation} is not allowed in this execution environment.`,
+    "command_scope_denied",
+    "The current command lease does not permit this skill operation.",
+  );
 }
 
 function assertMutationAllowed(scope: CommandScope): void {
@@ -208,7 +217,11 @@ function assertMutationAllowed(scope: CommandScope): void {
     return;
   }
 
-  throw new Error("Skill mutation is not allowed in this execution environment.");
+  throw commandScopeDenied(
+    "Skill mutation is not allowed in this execution environment.",
+    "command_scope_denied",
+    "The current command lease does not permit skill mutation.",
+  );
 }
 
 async function mutateAgentSkill<T>(operation: () => Promise<T>): Promise<T> {

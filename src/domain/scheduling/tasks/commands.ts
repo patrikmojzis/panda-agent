@@ -1,5 +1,6 @@
 import {isRecord} from "../../../lib/records.js";
 import {normalizeToJsonValue, type JsonObject} from "../../../lib/json.js";
+import {commandScopeDenied} from "../../commands/errors.js";
 import type {CommandDescriptor, CommandRequest, CommandSuccess, RegisteredCommand} from "../../commands/types.js";
 import {normalizeScheduledTaskSchedule} from "./schedule.js";
 import type {
@@ -259,7 +260,11 @@ function assertTaskInSession(task: ScheduledTaskRecord, request: CommandRequest)
     return;
   }
 
-  throw new Error(`Scheduled task ${task.id} does not belong to this session.`);
+  throw commandScopeDenied(
+    "The scheduled task is not visible to the current session.",
+    "resource_scope_denied",
+    "Use a scheduled task owned by the current session.",
+  );
 }
 
 function serializeTaskSummary(task: ScheduledTaskRecord): JsonObject {

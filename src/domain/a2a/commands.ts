@@ -1,6 +1,7 @@
 import type {JsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 import type {OutboundItem} from "../channels/types.js";
+import {commandScopeDenied} from "../commands/errors.js";
 import type {CommandUploadStore} from "../commands/uploads.js";
 import type {CommandDescriptor, CommandRequest, CommandSuccess, RegisteredCommand} from "../commands/types.js";
 import {readExecutionEnvironmentFilesystemMetadata} from "../execution-environments/filesystem.js";
@@ -503,7 +504,11 @@ function createMessageSendCommand(
     descriptor: a2aSendCommandDescriptor,
     async execute(request: CommandRequest): Promise<CommandSuccess<MessageAgentSendCommandOutput>> {
       if (!request.scope.threadId) {
-        throw new Error(`${A2A_SEND_COMMAND_NAME} requires threadId in the command scope.`);
+        throw commandScopeDenied(
+          `${A2A_SEND_COMMAND_NAME} requires threadId in the command scope.`,
+          "command_scope_denied",
+          "Run the command from an active Panda thread context.",
+        );
       }
 
       const input = parseMessageAgentSendCommandInput(request.input, A2A_SEND_COMMAND_NAME);
@@ -552,7 +557,11 @@ export function createA2AInspectCommand(reader: A2ADeliveryReader): RegisteredCo
         deliveryId: input.deliveryId,
       });
       if (!delivery) {
-        throw new Error(`A2A delivery ${input.deliveryId} was not found for this session.`);
+        throw commandScopeDenied(
+          "The A2A delivery is not visible to the current session.",
+          "resource_scope_denied",
+          "Use a delivery returned by a2a.history in the current session.",
+        );
       }
 
       return {

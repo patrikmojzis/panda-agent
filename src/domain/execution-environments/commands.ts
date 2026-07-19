@@ -4,6 +4,7 @@ import {access, stat} from "node:fs/promises";
 import type {JsonObject} from "../../lib/json.js";
 import {isJsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
+import {commandScopeDenied} from "../commands/errors.js";
 import type {CommandDescriptor, CommandRequest, CommandSuccess, RegisteredCommand} from "../commands/types.js";
 import type {CommandFileResolver} from "../commands/files.js";
 import type {ExecutionEnvironmentStore} from "./store.js";
@@ -267,10 +268,18 @@ function validateOwnedDisposableEnvironment(input: {
     throw new Error(`Execution environment ${input.environment.id} is not disposable.`);
   }
   if (input.environment.agentKey !== input.scope.agentKey) {
-    throw new Error(`Execution environment ${input.environment.id} does not belong to agent ${input.scope.agentKey}.`);
+    throw commandScopeDenied(
+      "The execution environment is not visible to the current agent.",
+      "resource_scope_denied",
+      "Use an execution environment owned by the current agent and session.",
+    );
   }
   if (input.environment.createdBySessionId !== input.scope.sessionId) {
-    throw new Error(`Execution environment ${input.environment.id} is not owned by this session.`);
+    throw commandScopeDenied(
+      "The execution environment is not owned by this session.",
+      "resource_scope_denied",
+      "Use an execution environment owned by the current agent and session.",
+    );
   }
 }
 

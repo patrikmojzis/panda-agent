@@ -2,6 +2,7 @@ import type {JsonObject, JsonValue} from "../../lib/json.js";
 import {isJsonObject} from "../../lib/json.js";
 import {assertPathReadable} from "../../lib/fs.js";
 import {isRecord} from "../../lib/records.js";
+import {commandScopeDenied} from "../commands/errors.js";
 import type {CommandFileResolver} from "../commands/files.js";
 import type {CommandDescriptor, CommandName, CommandRequest, CommandSuccess, RegisteredCommand} from "../commands/types.js";
 import {assertCurrentSessionConversationBinding, type ConversationBindingAuthorizer} from "./conversation-authority.js";
@@ -220,7 +221,11 @@ export function createExplicitChannelSendCommand(
     descriptor,
     async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
       if (!request.scope.threadId) {
-        throw new Error(`${options.commandName} requires a thread id in the current runtime context.`);
+        throw commandScopeDenied(
+          `${options.commandName} requires a thread id in the current runtime context.`,
+          "command_scope_denied",
+          "Run the command from an active Panda thread context.",
+        );
       }
 
       const input = parseExplicitChannelSendInput(request.input, options);

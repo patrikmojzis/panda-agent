@@ -2,6 +2,7 @@ import type {JsonObject} from "../../../lib/json.js";
 import {isJsonObject} from "../../../lib/json.js";
 import {isRecord} from "../../../lib/records.js";
 import type {CommandDescriptor, CommandRequest, RegisteredCommand} from "../../../domain/commands/types.js";
+import {commandScopeDenied} from "../../../domain/commands/errors.js";
 import type {CommandFileResolver} from "../../../domain/commands/files.js";
 import {
   createExplicitChannelSendCommand,
@@ -368,7 +369,11 @@ async function findDiscordChannelBinding(
   }
 
   if (matches.length === 0) {
-    throw new Error(`discord.history found no current-session Discord channel ${input.channelId}.`);
+    throw commandScopeDenied(
+      "discord.history found no matching current-session Discord channel.",
+      "resource_scope_denied",
+      "Use a channel returned by discord.channel.list in the current session.",
+    );
   }
   if (!input.connectorKey && matches.length > 1) {
     throw new Error("discord.history found multiple matching channels; pass --connector <key>.");

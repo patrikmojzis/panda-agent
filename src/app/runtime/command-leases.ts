@@ -1,5 +1,6 @@
 import {randomBytes} from "node:crypto";
 
+import {commandUnauthorized} from "../../domain/commands/errors.js";
 import type {CommandCatalog} from "../../domain/commands/modules.js";
 import type {CommandPolicyModule, CommandScope} from "../../domain/commands/types.js";
 import {resolveCommandLeaseAuthority} from "../../domain/execution-environments/command-authority.js";
@@ -149,7 +150,11 @@ export class RuntimeCommandLeaseService implements CommandLeaseVerifier, Command
     }
     if (isExpired(scope, this.now())) {
       this.leases.delete(token);
-      return undefined;
+      throw commandUnauthorized(
+        "Panda command lease expired.",
+        "lease_expired",
+        "Command access must be refreshed by the runtime or operator.",
+      );
     }
 
     return scope;

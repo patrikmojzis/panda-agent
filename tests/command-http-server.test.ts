@@ -6,6 +6,7 @@ import path from "node:path";
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
+import {commandUnauthorized} from "../src/domain/commands/errors.js";
 import type {RegisteredCommand} from "../src/domain/commands/types.js";
 import {
   startCommandHttpServer,
@@ -345,8 +346,108 @@ describe("command HTTP server", () => {
 
     expect(response.status).toBe(401);
     await expect(readJson(response)).resolves.toEqual({
-      error: "Missing Panda command bearer token.",
+      ok: false,
+      error: {
+        code: "unauthorized",
+        message: "Missing Panda command bearer token.",
+        details: {
+          failureCode: "bearer_missing",
+          retryable: false,
+          nextAction: {
+            kind: "stop",
+            reason: "Command access must be supplied by the runtime or operator.",
+          },
+          exitCode: 3,
+        },
+      },
     });
+  });
+
+  it("returns structured terminal failures for invalid and expired bearer tokens", async () => {
+    const server = await startServer();
+    const invalid = await fetch(`${server.url}/commands`, {
+      headers: {authorization: "Bearer private-invalid-token"},
+    });
+    expect(invalid.status).toBe(401);
+    const invalidBody = await readJson(invalid);
+    expect(invalidBody).toMatchObject({
+      ok: false,
+      error: {
+        code: "unauthorized",
+        details: {failureCode: "bearer_invalid", retryable: false, exitCode: 3},
+      },
+    });
+    expect(JSON.stringify(invalidBody)).not.toContain("private-invalid-token");
+    expect(JSON.stringify(invalidBody)).not.toContain("requiredCapability");
+
+    const expiredServer = await startCommandHttpServer({
+      executor: new RuntimeCommandDispatcher({commands: [createEchoCommand()]}),
+      leaseVerifier: {
+        async verify() {
+          throw commandUnauthorized(
+            "Panda command lease expired.",
+            "lease_expired",
+            "Command access must be refreshed by the runtime or operator.",
+          );
+        },
+      },
+    });
+    servers.push(expiredServer);
+    const expired = await fetch(`${expiredServer.url}/commands`, {
+      headers: {authorization: "Bearer expired-token"},
+    });
+    expect(expired.status).toBe(401);
+    await expect(readJson(expired)).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "unauthorized",
+        details: {failureCode: "lease_expired", retryable: false, exitCode: 3},
+      },
+    });
+  });
+
+  it("returns structured forbidden capability failures without retrying the handler", async () => {
+    const execute = vi.fn(createEchoCommand().execute);
+    const server = await startCommandHttpServer({
+      executor: new RuntimeCommandDispatcher({
+        commands: [{...createEchoCommand(), execute}],
+      }),
+      leaseVerifier: createTestCommandLeaseVerifier([
+        ["token-limited", {
+          agentKey: "panda",
+          sessionId: "session-main",
+          allowedCommands: ["watch.create"],
+        }],
+      ]),
+    });
+    servers.push(server);
+
+    const response = await fetch(`${server.url}/commands/execute`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer token-limited",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({command: "test.echo", input: {secret: "private-input"}}),
+    });
+    expect(response.status).toBe(403);
+    const body = await readJson(response);
+    expect(body).toMatchObject({
+      ok: false,
+      command: "test.echo",
+      error: {
+        code: "forbidden",
+        details: {
+          failureCode: "capability_missing",
+          retryable: false,
+          requiredCapability: "test.echo",
+          nextAction: {kind: "discover_capabilities", command: "panda commands --output json"},
+          exitCode: 3,
+        },
+      },
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(JSON.stringify(body)).not.toContain("private-input");
   });
 
   it("aborts command execution when the HTTP caller disconnects", async () => {
@@ -543,6 +644,33 @@ describe("command HTTP server", () => {
       uploadRef: expect.stringMatching(/^upl_[a-f0-9]{32}$/),
       filename: "socket.txt",
       sizeBytes: 13,
+    });
+
+    const denied = await new Promise<{statusCode: number; body: string}>((resolve, reject) => {
+      const request = http.request({
+        socketPath: server.socketPath,
+        method: "GET",
+        path: "/commands",
+        headers: {authorization: "Bearer invalid-socket-token"},
+      }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("error", reject);
+        res.on("end", () => resolve({
+          statusCode: res.statusCode ?? 0,
+          body: Buffer.concat(chunks).toString("utf8"),
+        }));
+      });
+      request.on("error", reject);
+      request.end();
+    });
+    expect(denied.statusCode).toBe(401);
+    expect(JSON.parse(denied.body)).toMatchObject({
+      ok: false,
+      error: {
+        code: "unauthorized",
+        details: {failureCode: "bearer_invalid", retryable: false, exitCode: 3},
+      },
     });
   });
 

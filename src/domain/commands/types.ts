@@ -118,7 +118,8 @@ export interface CommandError {
 export interface CommandAuditMetadata {
   attemptCount?: number;
   totalBackoffMs?: number;
-  failureCode?: "rate_limited" | "quota_exhausted";
+  failureCode?: string;
+  retryable?: boolean;
   autoRetryExhausted?: boolean;
 }
 

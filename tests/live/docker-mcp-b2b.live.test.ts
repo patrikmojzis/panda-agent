@@ -227,7 +227,8 @@ describeLive("Docker MCP built-app Control-to-shim B2B", () => {
 
     const denied = await runShim("subagent-deny", ["mcp", "call", "fixture-stdio", "secret_echo", "--input", "{}"], true);
     expect(denied.exitCode).toBe(3);
-    expect(denied.stderr).toContain("MCP credential FIXTURE_SECRET is not allowed by this execution scope.");
+    expect(denied.stderr).toContain("An MCP credential required by this server is not allowed in the current execution scope.");
+    expect(denied.stderr).not.toContain("FIXTURE_SECRET");
     expect(`${denied.stdout}\n${denied.stderr}`).not.toContain(fixtureSecret);
     const deniedJson = await runCommandRequest("subagent-deny", "mcp.call", {
       server: "fixture-stdio",
@@ -237,8 +238,12 @@ describeLive("Docker MCP built-app Control-to-shim B2B", () => {
     expect(deniedJson).toMatchObject({
       ok: false,
       error: {
-        message: "MCP credential FIXTURE_SECRET is not allowed by this execution scope.",
-        details: {exitCode: 3, kind: "authentication"},
+        message: "An MCP credential required by this server is not allowed in the current execution scope.",
+        details: {
+          failureCode: "command_scope_denied",
+          retryable: false,
+          exitCode: 3,
+        },
       },
     });
 

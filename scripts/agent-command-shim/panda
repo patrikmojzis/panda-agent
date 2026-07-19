@@ -127,6 +127,23 @@ curl_command_raw() {
   curl -sS -H "authorization: Bearer ${token}" "$@"
 }
 
+print_command_failure_envelope() {
+  local response="$1"
+  if ! printf '%s' "$response" | jq -e '.ok == false and (.error | type) == "object" and (.error.code | type) == "string"' >/dev/null 2>&1; then
+    printf '%s\n' "$response" >&2
+    return 1
+  fi
+  printf '%s' "$response" | jq -c 'if .command == null then {ok: false, error} else {ok: false, command, error} end' >&2
+}
+
+command_failure_exit_code() {
+  local response="$1"
+  printf '%s' "$response" | jq -r '
+    .error.details.exitCode
+    | if type == "number" and floor == . and . >= 1 and . <= 125 then . else 1 end
+  ' 2>/dev/null || printf '1\n'
+}
+
 read_json_input() {
   local value="$1"
   case "$value" in
@@ -250,7 +267,7 @@ validate_json_kind() {
 execute_json_command() {
   local command="$1"
   local input="$2"
-  local body response status ok message error_code
+  local body response status ok exit_code
   body="$(jq -n --arg command "$command" --arg cwd "$PWD" --argjson input "$input" '{command: $command, input: $input, outputMode: "json", workingDirectory: $cwd}')"
   set +e
   response="$(curl_command_raw -H "content-type: application/json" -X POST --data "$body" "$(command_url "/commands/execute")")"
@@ -270,14 +287,9 @@ execute_json_command() {
     return 0
   fi
 
-  error_code="$(printf '%s\n' "$response" | jq -r '.error.code // empty' 2>/dev/null)" || error_code=""
-  if [ "$error_code" = "rate_limited" ]; then
-    printf '%s\n' "$response" | jq -c '{ok, command, error}' >&2
-    return 1
-  fi
-  message="$(printf '%s\n' "$response" | jq -r '.error.message // .error // "Panda command failed."' 2>/dev/null)" || message="Panda command failed."
-  printf '%s\n' "$message" >&2
-  return 1
+  print_command_failure_envelope "$response" || return 1
+  exit_code="$(command_failure_exit_code "$response")"
+  return "$exit_code"
 }
 
 project_skill_list_output() {
@@ -360,7 +372,7 @@ read_mcp_json_object_input() {
 mcp_execute_json_command() {
   local command="$1"
   local input="$2"
-  local body response status ok message exit_code
+  local body response status ok exit_code
   body="$(jq -n --arg command "$command" --arg cwd "$PWD" --argjson input "$input" '{command: $command, input: $input, outputMode: "json", workingDirectory: $cwd}')"
   set +e
   response="$(curl_command_raw -H "content-type: application/json" -X POST --data "$body" "$(command_url "/commands/execute")")"
@@ -381,9 +393,8 @@ mcp_execute_json_command() {
     return "$exit_code"
   fi
 
-  message="$(printf '%s\n' "$response" | jq -r '.error.message // .error // "Panda command failed."' 2>/dev/null)" || message="Panda command failed."
-  exit_code="$(printf '%s\n' "$response" | jq -r '.error.details.exitCode // 1' 2>/dev/null)" || exit_code="1"
-  printf '%s\n' "$message" >&2
+  print_command_failure_envelope "$response" || return 1
+  exit_code="$(command_failure_exit_code "$response")"
   return "$exit_code"
 }
 

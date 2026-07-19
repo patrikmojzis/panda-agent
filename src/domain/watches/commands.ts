@@ -1,5 +1,6 @@
 import {isRecord} from "../../lib/records.js";
 import {normalizeToJsonValue, type JsonObject} from "../../lib/json.js";
+import {commandScopeDenied} from "../commands/errors.js";
 import type {CommandDescriptor, CommandRequest, CommandSuccess, RegisteredCommand} from "../commands/types.js";
 import {parseWatchDetectorConfig, parseWatchSourceConfig} from "./config.js";
 import {
@@ -230,7 +231,11 @@ function assertWatchInSession(watch: WatchRecord, request: CommandRequest): void
     return;
   }
 
-  throw new Error(`Watch ${watch.id} does not belong to this session.`);
+  throw commandScopeDenied(
+    "The watch is not visible to the current session.",
+    "resource_scope_denied",
+    "Use a watch owned by the current session.",
+  );
 }
 
 function serializeWatchSummary(watch: WatchRecord): JsonObject {

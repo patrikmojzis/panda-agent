@@ -2,8 +2,13 @@ import {lstat, mkdir, rm} from "node:fs/promises";
 import {createServer, type IncomingMessage, type Server, type ServerResponse} from "node:http";
 import path from "node:path";
 
+import {
+  CommandDenialError,
+  commandCapabilityDenied,
+  commandUnauthorized,
+} from "../../domain/commands/errors.js";
 import {commandDescriptorToJson, formatCommandHelp} from "../../domain/commands/help.js";
-import type {CommandDescriptor, CommandExecutor, CommandName, CommandScope, CommandOutputMode} from "../../domain/commands/types.js";
+import type {CommandDescriptor, CommandError, CommandExecutor, CommandName, CommandScope, CommandOutputMode, CommandResult} from "../../domain/commands/types.js";
 import {writeJsonResponse} from "../../lib/http.js";
 import {isJsonObject, type JsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
@@ -41,7 +46,7 @@ export interface CommandHttpServer {
 class CommandHttpError extends Error {
   readonly statusCode: number;
 
-  constructor(statusCode: number, message: string) {
+  constructor(statusCode: number, message: string, readonly commandError?: CommandError) {
     super(message);
     this.name = "CommandHttpError";
     this.statusCode = statusCode;
@@ -53,7 +58,12 @@ function readBearerToken(request: IncomingMessage): string {
   const value = Array.isArray(authorization) ? authorization[0] : authorization;
   const token = value?.startsWith("Bearer ") ? trimToNull(value.slice("Bearer ".length)) : null;
   if (!token) {
-    throw new CommandHttpError(401, "Missing Panda command bearer token.");
+    const denial = commandUnauthorized(
+      "Missing Panda command bearer token.",
+      "bearer_missing",
+      "Command access must be supplied by the runtime or operator.",
+    );
+    throw new CommandHttpError(401, denial.message, denial.toCommandError());
   }
 
   return token;
@@ -62,7 +72,12 @@ function readBearerToken(request: IncomingMessage): string {
 async function readCommandScope(request: IncomingMessage, verifier: CommandLeaseVerifier): Promise<CommandScope> {
   const scope = await verifier.verify(readBearerToken(request));
   if (!scope) {
-    throw new CommandHttpError(403, "Invalid Panda command bearer token.");
+    const denial = commandUnauthorized(
+      "Invalid Panda command bearer token.",
+      "bearer_invalid",
+      "Command access must be refreshed by the runtime or operator.",
+    );
+    throw new CommandHttpError(401, denial.message, denial.toCommandError());
   }
 
   return scope;
@@ -141,6 +156,13 @@ function writeTextResponse(response: ServerResponse, statusCode: number, text: s
   response.end(text);
 }
 
+function commandResultStatus(result: CommandResult): number {
+  if (result.ok) return 200;
+  if (result.error.code === "unauthorized") return 401;
+  if (result.error.code === "forbidden") return 403;
+  return 400;
+}
+
 async function removeSocketPath(socketPath: string): Promise<void> {
   let stats;
   try {
@@ -182,7 +204,8 @@ async function handleRequest(
     }
     const descriptor = findDescriptor(await listDescriptors(options.executor, scope), "a2a.send");
     if (!descriptor) {
-      throw new CommandHttpError(403, "Command lease does not permit a2a.send uploads.");
+      const denial = commandCapabilityDenied("a2a.send");
+      throw new CommandHttpError(403, denial.message, denial.toCommandError());
     }
     const filenameHeader = request.headers["x-panda-filename"];
     const filename = Array.isArray(filenameHeader) ? filenameHeader[0] : filenameHeader;
@@ -253,7 +276,7 @@ async function handleRequest(
       request.removeListener("aborted", abort);
       response.removeListener("close", abortOnResponseClose);
     });
-    writeJsonResponse(response, result.ok ? 200 : 400, result);
+    writeJsonResponse(response, commandResultStatus(result), result);
     return;
   }
 
@@ -267,7 +290,16 @@ export async function startCommandHttpServer(options: CommandHttpServerOptions):
   const server = createServer((request, response) => {
     void handleRequest(request, response, options).catch((error) => {
       if (error instanceof CommandHttpError) {
-        writeJsonResponse(response, error.statusCode, {error: error.message});
+        writeJsonResponse(response, error.statusCode, error.commandError
+          ? {ok: false, error: error.commandError}
+          : {error: error.message});
+        return;
+      }
+      if (error instanceof CommandDenialError) {
+        writeJsonResponse(response, error.pandaCommandErrorCode === "unauthorized" ? 401 : 403, {
+          ok: false,
+          error: error.toCommandError(),
+        });
         return;
       }
 

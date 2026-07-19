@@ -133,8 +133,17 @@ describe("credentials end-to-end", () => {
     const denied = {
       ok: false,
       error: {
-        code: "command_failed",
+        code: "forbidden",
         message: "Credential mutation is not allowed in this execution environment.",
+        details: {
+          failureCode: "command_scope_denied",
+          retryable: false,
+          nextAction: {
+            kind: "stop",
+            reason: "The current command lease does not permit credential mutation.",
+          },
+          exitCode: 3,
+        },
       },
     };
 

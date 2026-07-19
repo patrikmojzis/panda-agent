@@ -2,6 +2,7 @@ import type {JsonObject} from "../../../lib/json.js";
 import {isJsonObject} from "../../../lib/json.js";
 import {isRecord} from "../../../lib/records.js";
 import type {CommandDescriptor, CommandRequest, RegisteredCommand} from "../../../domain/commands/types.js";
+import {commandScopeDenied} from "../../../domain/commands/errors.js";
 import type {CommandFileResolver} from "../../../domain/commands/files.js";
 import {
   createExplicitChannelSendCommand,
@@ -324,7 +325,11 @@ async function findWhatsAppChatBinding(
     .map((binding) => serializeWhatsAppChatBinding(binding));
 
   if (matches.length === 0) {
-    throw new Error(`whatsapp.history found no current-session WhatsApp chat ${input.chatId}.`);
+    throw commandScopeDenied(
+      "whatsapp.history found no matching current-session WhatsApp chat.",
+      "resource_scope_denied",
+      "Use a chat returned by whatsapp.chat.list in the current session.",
+    );
   }
 
   return matches[0]!;

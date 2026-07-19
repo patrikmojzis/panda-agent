@@ -1,6 +1,7 @@
 import type {JsonObject} from "../../lib/json.js";
 import {isJsonObject, requireJsonValue} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
+import {commandScopeDenied} from "../commands/errors.js";
 import type {CommandDescriptor, CommandRequest, CommandSuccess, RegisteredCommand} from "../commands/types.js";
 import type {
   AgentAppActionExecutionOptions,
@@ -712,7 +713,11 @@ export function createAppLinkCreateCommand(
         throw new Error(`App ${app.slug} does not expose a UI.`);
       }
       if (!request.scope.identityId) {
-        throw new Error("micro-app.link.create needs an identity. Ask the user to chat through an identity-bound channel first.");
+        throw commandScopeDenied(
+          "micro-app.link.create needs an identity.",
+          "identity_required",
+          "Ask the user to continue through an identity-bound channel before creating a link.",
+        );
       }
 
       const launch = await auth.createLaunchToken({

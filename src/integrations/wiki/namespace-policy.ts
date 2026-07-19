@@ -1,5 +1,6 @@
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import {trimToUndefined} from "../../lib/strings.js";
+import {commandScopeDenied} from "../../domain/commands/errors.js";
 import {
   DEFAULT_WIKI_LOCALE,
   type WikiPageListItem,
@@ -7,7 +8,6 @@ import {
 } from "./client.js";
 import {
   buildWikiArchiveRoot,
-  buildWikiAssetRoot,
   hasUnsafeWikiPathSegments,
   isArchivedWikiPath,
   isWikiAssetPathWithinNamespace,
@@ -106,8 +106,10 @@ export function buildWikiArchivePath(path: string, namespacePath: string, now = 
  */
 export function assertWikiNamespacePath(path: string, namespacePath: string): void {
   if (!isWikiPathWithinNamespace(path, namespacePath)) {
-    throw new ToolError(
-      `Wiki path ${path} is outside the agent namespace ${namespacePath}. Use only ${namespacePath} or its children, for example ${namespacePath}/profile.`,
+    throw commandScopeDenied(
+      "The Wiki path is outside the current agent namespace.",
+      "resource_scope_denied",
+      "Use only paths returned by Wiki commands in the current agent namespace.",
     );
   }
 }
@@ -116,10 +118,11 @@ export function assertWikiNamespacePath(path: string, namespacePath: string): vo
  * Enforces that asset operations stay inside the current agent asset namespace.
  */
 export function assertWikiNamespaceAssetPath(path: string, namespacePath: string): void {
-  const assetRoot = buildWikiAssetRoot(namespacePath);
   if (!isWikiAssetPathWithinNamespace(path, namespacePath)) {
-    throw new ToolError(
-      `Wiki asset path ${path} is outside the agent asset namespace ${assetRoot}. Use only ${assetRoot} or its children.`,
+    throw commandScopeDenied(
+      "The Wiki asset path is outside the current agent asset namespace.",
+      "resource_scope_denied",
+      "Use only asset paths returned by Wiki commands in the current agent namespace.",
     );
   }
 }

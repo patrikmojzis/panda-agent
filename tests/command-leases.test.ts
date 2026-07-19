@@ -634,6 +634,15 @@ describe("RuntimeCommandLeaseService", () => {
 
     now.mockReturnValue(new Date("2026-06-24T12:00:01.001Z"));
 
+    await expect(service.verify(lease!.token)).rejects.toMatchObject({
+      pandaCommandErrorCode: "unauthorized",
+      pandaCommandErrorDetails: {
+        failureCode: "lease_expired",
+        retryable: false,
+        nextAction: {kind: "stop"},
+        exitCode: 3,
+      },
+    });
     await expect(service.verify(lease!.token)).resolves.toBeUndefined();
   });
 

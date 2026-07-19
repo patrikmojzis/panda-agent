@@ -3,6 +3,18 @@ export {
   formatCommandHelp,
 } from "./help.js";
 export {
+  COMMAND_DENIAL_EXIT_CODE,
+  COMMAND_DISCOVERY_INSTRUCTION,
+  CommandDenialError,
+  commandCapabilityDenied,
+  commandScopeDenied,
+  commandUnauthorized,
+  type CommandDenialCode,
+  type CommandDenialErrorOptions,
+  type CommandDenialFailureCode,
+  type CommandDenialNextAction,
+} from "./errors.js";
+export {
   commandDescriptorsFromModules,
   commandNamesForRegistrationPhase,
   commandNamesForToolGroups,

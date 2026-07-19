@@ -9,6 +9,7 @@ import {assertPathReadable} from "../../../lib/fs.js";
 import type {OutboundDeliveryRecord, OutboundDeliveryTargetHistoryFilter} from "../../../domain/channels/deliveries/types.js";
 import type {ChannelActionInput} from "../../../domain/channels/actions/types.js";
 import {assertCurrentSessionConversationBinding, type ConversationBindingAuthorizer} from "../../../domain/channels/conversation-authority.js";
+import {commandScopeDenied} from "../../../domain/commands/errors.js";
 import type {OutboundDeliveryInput} from "../../../domain/channels/deliveries/types.js";
 import type {MediaDescriptor, OutboundFileItem, OutboundImageItem, OutboundItem} from "../../../domain/channels/types.js";
 import type {CommandFileResolver, CommandWritableFileResolver} from "../../../domain/commands/files.js";
@@ -1333,7 +1334,11 @@ export async function executeTelegramSendCommand(
   fileResolver: CommandFileResolver,
 ): Promise<JsonObject> {
   if (!request.scope.threadId) {
-    throw new Error("telegram.send requires a thread id in the current runtime context.");
+    throw commandScopeDenied(
+      "telegram.send requires a thread id in the current runtime context.",
+      "command_scope_denied",
+      "Run the command from an active Panda thread context.",
+    );
   }
 
   parseSendConversationId(input.conversationId);
@@ -1737,7 +1742,11 @@ async function findTelegramChatBinding(
   }
 
   if (matches.length === 0) {
-    throw new Error(`telegram.chat.info found no current-session Telegram chat ${input.conversationId}.`);
+    throw commandScopeDenied(
+      "telegram.chat.info found no matching current-session Telegram chat.",
+      "resource_scope_denied",
+      "Use a chat returned by telegram.chat.list in the current session.",
+    );
   }
   if (!input.connectorKey && matches.length > 1) {
     throw new Error("telegram.chat.info found multiple matching chats; pass --connector <key>.");
@@ -1877,7 +1886,11 @@ export async function executeTelegramMediaFetchCommand(
     mediaId: input.mediaId,
   });
   if (!found) {
-    throw new Error(`telegram.media.fetch found no media ${input.mediaId} in current-session chat ${conversationId}.`);
+    throw commandScopeDenied(
+      "telegram.media.fetch found no matching media in the current-session chat.",
+      "resource_scope_denied",
+      "Use media returned by current-session Telegram history.",
+    );
   }
 
   const sourceStat = await stat(found.media.localPath);

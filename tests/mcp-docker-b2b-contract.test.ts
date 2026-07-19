@@ -37,7 +37,8 @@ describe("MCP Docker B2B contract", () => {
     expect(core).not.toContain("issueCommandLease");
     expect(core).not.toContain("credentialPolicy:");
     expect(core).not.toContain('kind: "subagent"');
-    expect(live).toContain('details: {exitCode: 3, kind: "authentication"}');
+    expect(live).toContain('failureCode: "command_scope_denied"');
+    expect(live).toContain("retryable: false");
     expect(live).toContain("still exists after removal");
   });
 

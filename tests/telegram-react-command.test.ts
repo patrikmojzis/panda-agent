@@ -149,7 +149,7 @@ describe("telegram.react command", () => {
   it("rejects inferred targets outside the current session", async () => {
     const {command} = createReactCommand();
 
-    await expect(command.execute(createRequest({
+    const denied = await command.execute(createRequest({
       emoji: "🔥",
       currentInput: {
         source: TELEGRAM_SOURCE,
@@ -162,6 +162,15 @@ describe("telegram.react command", () => {
           },
         },
       },
-    }))).rejects.toThrow("telegram.react target conversation 999999999 is not bound to the current session.");
+    })).then(() => null, (error: unknown) => error as Error);
+    expect(denied).toMatchObject({
+      pandaCommandErrorCode: "forbidden",
+      pandaCommandErrorDetails: {
+        failureCode: "resource_scope_denied",
+        retryable: false,
+        exitCode: 3,
+      },
+    });
+    expect(denied?.message).not.toContain("999999999");
   });
 });

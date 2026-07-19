@@ -219,6 +219,18 @@ describe("environment commands", () => {
         sessionId: "session-a",
         threadId: "thread-a",
       },
-    })).rejects.toThrow("is not owned by this session");
+    })).rejects.toMatchObject({
+      pandaCommandErrorCode: "forbidden",
+      pandaCommandErrorDetails: {
+        failureCode: "resource_scope_denied",
+        retryable: false,
+        nextAction: {
+          kind: "stop",
+          reason: "Use an execution environment owned by the current agent and session.",
+        },
+        exitCode: 3,
+      },
+    });
+    expect(readEnvironmentLogs).toHaveBeenCalledTimes(1);
   });
 });

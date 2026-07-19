@@ -8,6 +8,7 @@ import {assertPathReadable} from "../../lib/fs.js";
 import {trimToUndefined} from "../../lib/strings.js";
 import type {OutboundDeliveryInput} from "../channels/deliveries/types.js";
 import type {OutboundFileItem, OutboundItem} from "../channels/types.js";
+import {commandScopeDenied} from "../commands/errors.js";
 import type {CommandFileResolver, CommandWritableFileResolver} from "../commands/files.js";
 import type {
   CommandArtifactDescriptor,
@@ -681,7 +682,11 @@ async function resolveDraft(
     sessionId: request.scope.sessionId,
   });
   if (message.agentKey !== request.scope.agentKey || message.accountKey !== input.accountKey) {
-    throw new Error(`Email message ${input.replyToEmailId} does not belong to account ${input.accountKey}.`);
+    throw commandScopeDenied(
+      "The email message is not available for this reply account.",
+      "resource_scope_denied",
+      "Use a message and account returned by the current session email commands.",
+    );
   }
 
   const sender = recipientPayloadFromMessage(message);
@@ -849,7 +854,11 @@ export async function executeEmailReadCommand(
     sessionId: request.scope.sessionId,
   });
   if (message.agentKey !== request.scope.agentKey) {
-    throw new Error(`Email message ${message.id} does not belong to agent ${request.scope.agentKey}.`);
+    throw commandScopeDenied(
+      "The email message is not visible to the current agent.",
+      "resource_scope_denied",
+      "Use a message returned by the current agent email commands.",
+    );
   }
 
   const [recipients, attachments] = await Promise.all([
@@ -876,7 +885,11 @@ export async function executeEmailAttachmentFetchCommand(
     sessionId: request.scope.sessionId,
   });
   if (message.agentKey !== request.scope.agentKey) {
-    throw new Error(`Email attachment ${attachment.id} does not belong to agent ${request.scope.agentKey}.`);
+    throw commandScopeDenied(
+      "The email attachment is not visible to the current agent.",
+      "resource_scope_denied",
+      "Use an attachment returned by the current agent email commands.",
+    );
   }
   if (!attachment.localPath) {
     throw new Error(`Email attachment ${attachment.id} has no stored local file path.`);
@@ -961,7 +974,11 @@ export async function executeEmailSendCommand(
   fileResolver: CommandFileResolver,
 ): Promise<JsonObject> {
   if (!request.scope.threadId) {
-    throw new Error("Email send requires agentKey, sessionId, and threadId in the current runtime context.");
+    throw commandScopeDenied(
+      "Email send requires agentKey, sessionId, and threadId in the current runtime context.",
+      "command_scope_denied",
+      "Run the command from an active Panda thread context.",
+    );
   }
 
   const account = await services.store.getAccount(request.scope.agentKey, input.accountKey);

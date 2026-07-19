@@ -1,4 +1,5 @@
 import type {ConversationBinding, ConversationBindingListFilter} from "../sessions/conversations/types.js";
+import {commandScopeDenied} from "../commands/errors.js";
 
 export interface ConversationBindingAuthorizer {
   listConversationBindings(filter: ConversationBindingListFilter): Promise<readonly ConversationBinding[]>;
@@ -22,8 +23,10 @@ export async function assertCurrentSessionConversationBinding(input: {
   );
 
   if (!binding) {
-    throw new Error(
-      `${input.commandName} target conversation ${input.externalConversationId} is not bound to the current session.`,
+    throw commandScopeDenied(
+      `${input.commandName} target conversation is not bound to the current session.`,
+      "resource_scope_denied",
+      "Use a conversation returned by the current session channel discovery command.",
     );
   }
 

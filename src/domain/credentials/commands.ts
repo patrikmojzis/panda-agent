@@ -1,6 +1,7 @@
 import type {JsonObject} from "../../lib/json.js";
 import {isJsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
+import {commandScopeDenied} from "../commands/errors.js";
 import type {CommandDescriptor, CommandRequest, CommandSuccess, RegisteredCommand} from "../commands/types.js";
 import type {CredentialService} from "./resolver.js";
 
@@ -85,7 +86,11 @@ function parseListEnvInput(input: unknown): {prefix?: string} {
 
 function assertCredentialMutationAllowed(request: CommandRequest): void {
   if (request.scope.credentialMutationAllowed !== true) {
-    throw new Error("Credential mutation is not allowed in this execution environment.");
+    throw commandScopeDenied(
+      "Credential mutation is not allowed in this execution environment.",
+      "command_scope_denied",
+      "The current command lease does not permit credential mutation.",
+    );
   }
 }
 

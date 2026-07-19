@@ -143,6 +143,34 @@ describe("wiki command service", () => {
     });
   });
 
+  it("rejects an out-of-namespace path as a terminal denial before Wiki I/O", async () => {
+    const fetchImpl = vi.fn();
+    const service = new WikiRuntimeCommandService({
+      env: {WIKI_URL: "http://wiki:3000"} as NodeJS.ProcessEnv,
+      fetchImpl: fetchImpl as typeof fetch,
+      bindings: createBindings(),
+    });
+    const command = createWikiSearchCommand(service);
+
+    await expect(command.execute({
+      command: WIKI_SEARCH_COMMAND_NAME,
+      input: {query: "private", path: "agents/other/private"},
+      scope: {agentKey: "panda", sessionId: "session-1"},
+    })).rejects.toMatchObject({
+      pandaCommandErrorCode: "forbidden",
+      pandaCommandErrorDetails: {
+        failureCode: "resource_scope_denied",
+        retryable: false,
+        nextAction: {
+          kind: "stop",
+          reason: "Use only paths returned by Wiki commands in the current agent namespace.",
+        },
+        exitCode: 3,
+      },
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("diffs two namespace-scoped wiki pages", async () => {
     const bindings = createBindings();
     const fetchImpl = vi

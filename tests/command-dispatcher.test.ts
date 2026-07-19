@@ -2,6 +2,7 @@ import {describe, expect, it} from "vitest";
 
 import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
 import {createBashCommandExecutionReader} from "../src/app/runtime/bash-command-summary-reader.js";
+import {commandScopeDenied} from "../src/domain/commands/errors.js";
 import {COMMAND_AUDIT_METADATA} from "../src/domain/commands/types.js";
 import type {RegisteredCommand} from "../src/domain/commands/types.js";
 import type {CreateThreadToolJobInput, ThreadToolJobRecord, ThreadToolJobUpdate} from "../src/domain/threads/runtime/types.js";
@@ -172,6 +173,16 @@ describe("RuntimeCommandDispatcher", () => {
       ok: false,
       error: {
         code: "forbidden",
+        details: {
+          failureCode: "capability_missing",
+          retryable: false,
+          requiredCapability: "test.echo",
+          nextAction: {
+            kind: "discover_capabilities",
+            command: "panda commands --output json",
+          },
+          exitCode: 3,
+        },
       },
     });
   });
@@ -213,8 +224,87 @@ describe("RuntimeCommandDispatcher", () => {
       ok: false,
       error: {
         code: "unauthorized",
+        details: {
+          failureCode: "lease_expired",
+          retryable: false,
+          nextAction: {
+            kind: "stop",
+          },
+          exitCode: 3,
+        },
       },
     });
+  });
+
+  it("returns a sanitized terminal denial when live scope resolution fails", async () => {
+    const dispatcher = new RuntimeCommandDispatcher({
+      commands: [createEchoCommand()],
+      resolveScope: () => {
+        throw new Error("private-token-and-policy-state");
+      },
+    });
+
+    const result = await dispatcher.execute({command: "test.echo", input: {}, scope});
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "unauthorized",
+        message: "Panda command scope could not be resolved.",
+        details: {
+          failureCode: "scope_resolution_failed",
+          retryable: false,
+          exitCode: 3,
+        },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("private-token");
+    expect(JSON.stringify(result)).not.toContain("policy-state");
+  });
+
+  it("preserves typed command-level denials instead of collapsing them to command_failed", async () => {
+    const audit = createAuditStore();
+    let attempts = 0;
+    const dispatcher = new RuntimeCommandDispatcher({
+      commands: [{
+        ...createEchoCommand(),
+        async execute() {
+          attempts += 1;
+          throw commandScopeDenied(
+            "Credential mutation is not allowed in this execution environment.",
+            "command_scope_denied",
+            "The current command lease does not permit credential mutation.",
+          );
+        },
+      }],
+      auditStore: audit.store,
+    });
+
+    const result = await dispatcher.execute({
+      command: "test.echo",
+      input: {secret: "never-persist-this"},
+      scope: {...scope, threadId: "thread-denial"},
+    });
+    expect(attempts).toBe(1);
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "forbidden",
+        details: {
+          failureCode: "command_scope_denied",
+          retryable: false,
+          nextAction: {kind: "stop"},
+          exitCode: 3,
+        },
+      },
+    });
+    expect(audit.updates[0]?.update.result).toEqual({
+      command: "test.echo",
+      ok: false,
+      code: "forbidden",
+      failureCode: "command_scope_denied",
+      retryable: false,
+    });
+    expect(JSON.stringify(audit.updates)).not.toContain("never-persist-this");
   });
 
   it("resolves the live session thread before execution and records command audit", async () => {
@@ -441,6 +531,7 @@ describe("RuntimeCommandDispatcher", () => {
       attemptCount: 3,
       totalBackoffMs: 5_000,
       failureCode: "rate_limited",
+      retryable: true,
       autoRetryExhausted: true,
     });
     expect(JSON.stringify(audit.updates)).not.toContain("private");
@@ -495,6 +586,8 @@ describe("RuntimeCommandDispatcher", () => {
         command: "test.echo",
         ok: false,
         code: "forbidden",
+        failureCode: "capability_missing",
+        retryable: false,
       },
     });
   });

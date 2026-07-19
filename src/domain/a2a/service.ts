@@ -4,6 +4,7 @@ import {isJsonObject, type JsonObject, type JsonValue} from "../../lib/json.js";
 import {trimToUndefined} from "../../lib/strings.js";
 import type {OutboundDeliveryRecord} from "../channels/deliveries/types.js";
 import type {OutboundItem} from "../channels/types.js";
+import {commandScopeDenied} from "../commands/errors.js";
 import type {SessionStore} from "../sessions/store.js";
 import type {A2ASenderEnvironmentSnapshot} from "../threads/requests/types.js";
 import {
@@ -109,7 +110,11 @@ export class A2AMessagingService {
       ? await this.sessions.getSession(explicitSessionId)
       : await this.resolveMainSession(explicitAgentKey!);
     if (explicitAgentKey && targetSession.agentKey !== explicitAgentKey) {
-      throw new Error(`Session ${targetSession.id} belongs to ${targetSession.agentKey}, not ${explicitAgentKey}.`);
+      throw commandScopeDenied(
+        "The requested A2A target does not match the selected session.",
+        "resource_scope_denied",
+        "Use a target returned by the current A2A commands.",
+      );
     }
 
     if (targetSession.id === input.senderSessionId) {
@@ -121,7 +126,11 @@ export class A2AMessagingService {
       recipientSessionId: targetSession.id,
     });
     if (!allowed) {
-      throw new Error(`A2A is not allowed from ${input.senderSessionId} to ${targetSession.id}.`);
+      throw commandScopeDenied(
+        "A2A delivery is not allowed between these sessions.",
+        "resource_scope_denied",
+        "Use a currently bound A2A peer session.",
+      );
     }
 
     const since = Date.now() - (60 * 60 * 1_000);

@@ -123,15 +123,26 @@ describe("generic MCP commands", () => {
   });
 
   it.each([
-    [undefined, "not allowed"],
-    [{mode: "none"}, "not allowed"],
-    [{mode: "allowlist", envKeys: []}, "not allowed"],
-  ])("denies credential refs before resolve or external work for policy %j", async (credentialPolicy, message) => {
+    undefined,
+    {mode: "none"},
+    {mode: "allowlist", envKeys: []},
+  ])("denies credential refs before resolve or external work for policy %j", async (credentialPolicy) => {
     const deps = dependencies();
     const dispatcher = new RuntimeCommandDispatcher({commands: [createMcpToolsCommand(deps)]});
     const result = await dispatcher.execute(request("mcp.tools", {server: "fixture"}, {credentialPolicy}));
-    expect(result).toMatchObject({ok: false, error: {details: {exitCode: 3, kind: "authentication"}}});
-    expect(JSON.stringify(result)).toContain(message);
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "forbidden",
+        message: "An MCP credential required by this server is not allowed in the current execution scope.",
+        details: {
+          failureCode: "command_scope_denied",
+          retryable: false,
+          exitCode: 3,
+        },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("FIXTURE_SECRET");
     expect(deps.credentials.resolveCredential).not.toHaveBeenCalled();
     expect(deps.runner.listTools).not.toHaveBeenCalled();
   });

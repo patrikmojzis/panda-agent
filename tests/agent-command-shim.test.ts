@@ -2735,15 +2735,81 @@ describe("agent command shim", () => {
           provider: "brave",
           status: 429,
           retryable: true,
-          retryAfterMs: 60_000,
+          retryAfterMs: expect.any(Number),
           attemptCount: 1,
           autoRetryExhausted: true,
         },
       },
     });
+    expect(payload.error.details.retryAfterMs).toBeGreaterThanOrEqual(59_000);
+    expect(payload.error.details.retryAfterMs).toBeLessThanOrEqual(60_000);
     expect(error?.stderr).not.toContain("private query");
     expect(error?.stderr).not.toContain("provider-secret-body");
     expect(error?.stderr).not.toContain("x-provider-secret");
+  });
+
+  it("prints terminal permission denials as compact JSON and exits 3 without retrying", async () => {
+    const execute = vi.fn(createTimeNowCommand().execute);
+    const server = await startCommandHttpServer({
+      executor: new RuntimeCommandDispatcher({
+        commands: [{...createTimeNowCommand(), execute}],
+      }),
+      leaseVerifier: createTestCommandLeaseVerifier([
+        ["token-limited", {
+          agentKey: "panda",
+          sessionId: "session-main",
+          allowedCommands: ["watch.create"],
+        }],
+      ]),
+    });
+    servers.push(server);
+
+    const error = await execFileAsync(shimPath, ["time", "now"], {
+      env: {...shimEnv(server), PANDA_COMMAND_TOKEN: "token-limited"},
+    }).then(() => null, (reason: unknown) => reason as {code: number; stderr: string});
+
+    expect(error?.code).toBe(3);
+    expect(error?.stderr.trim().split("\n")).toHaveLength(1);
+    expect(JSON.parse(error?.stderr.trim() ?? "{}")).toMatchObject({
+      ok: false,
+      command: "time.now",
+      error: {
+        code: "forbidden",
+        details: {
+          failureCode: "capability_missing",
+          retryable: false,
+          requiredCapability: "time.now",
+          nextAction: {kind: "discover_capabilities", command: "panda commands --output json"},
+          exitCode: 3,
+        },
+      },
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("preserves structured auth denials without exposing the bearer token", async () => {
+    const server = await startCommandHttpServer({
+      executor: new RuntimeCommandDispatcher({commands: [createTimeNowCommand()]}),
+      leaseVerifier: createTestCommandLeaseVerifier(),
+    });
+    servers.push(server);
+
+    const error = await execFileAsync(shimPath, ["time", "now"], {
+      env: {...shimEnv(server), PANDA_COMMAND_TOKEN: "private-invalid-token"},
+    }).then(() => null, (reason: unknown) => reason as {code: number; stderr: string});
+
+    expect(error?.code).toBe(3);
+    const payload = JSON.parse(error?.stderr.trim() ?? "{}");
+    expect(payload).toMatchObject({
+      ok: false,
+      error: {
+        code: "unauthorized",
+        details: {failureCode: "bearer_invalid", retryable: false, exitCode: 3},
+      },
+    });
+    expect(payload).not.toHaveProperty("command");
+    expect(error?.stderr).not.toContain("private-invalid-token");
+    expect(error?.stderr).not.toContain("requiredCapability");
   });
 
   it("rejects removed web.research compatibility command", async () => {
@@ -5411,7 +5477,7 @@ printf '{"ok":true,"output":%s}\\n' "$body"
   it("rejects the removed session prompt expression JSON shape", async () => {
     const server = await startWatchServer();
 
-    await expect(execFileAsync(shimPath, [
+    const error = await execFileAsync(shimPath, [
       "session",
       "prompt",
       "current",
@@ -5420,11 +5486,16 @@ printf '{"ok":true,"output":%s}\\n' "$body"
       '{"slug":"memory","expression":"upper(content)"}',
     ], {
       env: shimEnv(server),
-    })).rejects.toMatchObject({
-      stdout: "",
-      stderr: expect.stringContaining(
-        'session.prompt.transform no longer accepts {slug, expression}. Use {"slug":"memory","operation":"expression","expression":"upper(content)"}.',
-      ),
+    }).then(() => null, (reason: unknown) => reason as {stdout: string; stderr: string});
+
+    expect(error?.stdout).toBe("");
+    expect(JSON.parse(error?.stderr.trim() ?? "{}")).toMatchObject({
+      ok: false,
+      command: "session.prompt.transform",
+      error: {
+        code: "command_failed",
+        message: 'session.prompt.transform no longer accepts {slug, expression}. Use {"slug":"memory","operation":"expression","expression":"upper(content)"}.',
+      },
     });
   });
 
