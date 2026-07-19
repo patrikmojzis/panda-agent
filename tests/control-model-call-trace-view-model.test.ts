@@ -11,6 +11,7 @@ import {
   buildDebugReport,
   extractBashExecutionDetails,
   modelCallFailureGroups,
+  readableContextContent,
   usageBreakdown,
   usageSummary,
   usageTokenCounts,
@@ -55,6 +56,33 @@ function traceDetail(overrides: Partial<ModelCallTraceDetail>): ModelCallTraceDe
 }
 
 describe("Control model call trace view model", () => {
+  it("shows context content once with real line breaks instead of its JSON wrappers", () => {
+    const content = "Available profiles:\n- browser\n- implementation-coder";
+    const span = buildModelCallTraceViewModel({
+      id: "trace-context",
+      request: {
+        llmContextSections: [{
+          name: "Subagents",
+          content,
+          contentPreview: "Available profiles:…",
+          dump: `**Subagents:**\n\`\`\`${content}\`\`\``,
+          contentChars: content.length,
+          estimatedTokens: 12,
+        }],
+      },
+    }).spans.find((entry) => entry.kind === "context");
+
+    expect(span).toBeDefined();
+    expect(readableContextContent(span!)).toBe(content);
+  });
+
+  it("reads a string system prompt from its trace wrapper", () => {
+    expect(readableContextContent({
+      kind: "context",
+      raw: {systemPrompt: "First line\nSecond line"},
+    })).toBe("First line\nSecond line");
+  });
+
   it("pairs tool calls with results so operators do not match ids manually", () => {
     const model = buildModelCallTraceViewModel({
       id: "trace-1",

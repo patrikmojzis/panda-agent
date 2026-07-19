@@ -48,8 +48,28 @@ export type ModelCallUsageBreakdown = {
   totalCost: number
 }
 
+/** Returns the full human-readable text for a context span without JSON wrapper duplication. */
+export function readableContextContent(
+  span: Pick<TraceSpan, "kind" | "raw">
+): string | null {
+  if (span.kind !== "context") return null
+  return readableContextValue(span.raw)
+}
+
 export function modelCallDetailPath(traceId: string) {
   return `/model-calls/${encodeURIComponent(traceId)}`
+}
+
+function readableContextValue(value: unknown): string | null {
+  if (typeof value === "string") return value
+  const record = asRecord(value)
+  if (!record) return null
+
+  for (const key of ["content", "systemPrompt", "llmContextDump", "text", "dump", "contentPreview"]) {
+    const readable = readableContextValue(record[key])
+    if (readable !== null) return readable
+  }
+  return null
 }
 
 export function modelCallsListPath(

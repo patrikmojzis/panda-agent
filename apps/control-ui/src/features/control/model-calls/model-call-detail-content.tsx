@@ -40,6 +40,7 @@ import {
   extractBashExecutionDetails,
   modelCallDetailPath,
   modelCallsListPath,
+  readableContextContent,
   shortModelCallContextValue,
   traceDebugFindings,
   traceErrorSummary,
@@ -1673,7 +1674,9 @@ function SpanInspectorSheet({
             {span ? <SpanStatusBadge status={span.status} /> : null}
           </div>
           <SheetDescription>
-            {span ? `#${span.order} ${kindLabel(span.kind)} - ${span.title}` : "Selected timeline span"}
+            {span
+              ? `#${span.order} ${kindLabel(span.kind)} - ${span.title}${span.subtitle ? ` · ${span.subtitle}` : ""}`
+              : "Selected timeline span"}
           </SheetDescription>
           {span ? (
             <div className="flex flex-wrap items-center gap-2 pt-2">
@@ -1685,19 +1688,11 @@ function SpanInspectorSheet({
         {span ? (
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
             <div className="grid min-w-0 gap-4">
-              <div className="grid min-w-0 gap-2">
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                  <Badge variant="outline" className="tabular-nums">#{span.order}</Badge>
-                  <Badge variant="secondary">{kindLabel(span.kind)}</Badge>
-                  <span className="min-w-0 break-words text-sm font-semibold">{span.title}</span>
-                </div>
-                {span.subtitle ? (
-                  <div className="text-sm text-muted-foreground">{span.subtitle}</div>
-                ) : null}
-              </div>
               <div className="grid gap-2 sm:grid-cols-2">
                 <DetailField label="Span id" value={<CodeValue value={span.id} />} />
-                <DetailField label="Raw payload" value={formatBytes(sanitizedPayloadSize(span.raw)) ?? "-"} />
+                {span.kind !== "context" ? (
+                  <DetailField label="Raw payload" value={formatBytes(sanitizedPayloadSize(span.raw)) ?? "-"} />
+                ) : null}
                 {span.metrics.map((metric) => (
                   <DetailField key={`${metric.label}:${metric.value}`} label={metric.label} value={metric.value} />
                 ))}
@@ -1707,7 +1702,13 @@ function SpanInspectorSheet({
                 {span.role ? <DetailField label="Role" value={humanize(span.role)} /> : null}
                 {span.source ? <DetailField label="Source" value={span.source} /> : null}
               </div>
-              {span.tool ? <ToolInspectorSections span={span} /> : <PayloadSection title="Payload" value={span.raw} />}
+              {span.tool ? (
+                <ToolInspectorSections span={span} />
+              ) : span.kind === "context" ? (
+                <ContextInspectorSection span={span} />
+              ) : (
+                <PayloadSection title="Payload" value={span.raw} />
+              )}
               <details className="grid min-w-0 gap-2">
                 <summary className="cursor-pointer select-none text-xs text-muted-foreground">
                   Raw selected span JSON
@@ -1719,6 +1720,19 @@ function SpanInspectorSheet({
         ) : null}
       </SheetContent>
     </Sheet>
+  )
+}
+
+function ContextInspectorSection({ span }: { span: TraceSpan }) {
+  const content = readableContextContent(span)
+  return (
+    <PayloadSection
+      title="Content"
+      value={content ?? span.raw}
+      emptyLabel="No context content captured."
+      json={content === null}
+      showSize={false}
+    />
   )
 }
 
@@ -1851,11 +1865,13 @@ function PayloadSection({
   value,
   emptyLabel = "No payload captured.",
   json = false,
+  showSize = true,
 }: {
   title: string
   value: unknown
   emptyLabel?: string
   json?: boolean
+  showSize?: boolean
 }) {
   const preview = previewForValue(value)
   if (!preview) {
@@ -1871,7 +1887,9 @@ function PayloadSection({
     <section className="grid min-w-0 gap-2 border bg-muted/20 p-3">
       <div className="flex min-w-0 items-center justify-between gap-3">
         <h3 className="text-sm font-medium">{title}</h3>
-        <Badge variant="outline">{formatBytes(new TextEncoder().encode(formatSanitizedJson(value)).length)}</Badge>
+        {showSize ? (
+          <Badge variant="outline">{formatBytes(new TextEncoder().encode(formatSanitizedJson(value)).length)}</Badge>
+        ) : null}
       </div>
       {json ? <SanitizedJsonBlock value={value} /> : <ReadableFullValue value={value} />}
     </section>
