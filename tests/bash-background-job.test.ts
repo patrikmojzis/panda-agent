@@ -40,7 +40,7 @@ describe("ManagedBashJob", () => {
       cwd: workspace,
       childEnv: process.env,
       shell: process.env.SHELL ?? "/bin/bash",
-      timeoutMs: 5_000,
+      maxRuntimeMs: 5_000,
       trackedEnvKeys: [],
       maxOutputChars: 8,
       persistOutputThresholdChars: 8,
@@ -53,6 +53,8 @@ describe("ManagedBashJob", () => {
 
     const final = await job.wait(1_000);
     expect(final.status).toBe("completed");
+    expect(final.maxRuntimeMs).toBe(5_000);
+    expect(final.expiresAt).toBe(final.startedAt + 5_000);
     expect(final.finalCwd).toBe(await realpath(workspace));
     expect(final.stdoutPersisted).toBe(true);
     if (!final.stdoutPath) {
@@ -72,7 +74,7 @@ describe("ManagedBashJob", () => {
       cwd: workspace,
       childEnv: process.env,
       shell: process.env.SHELL ?? "/bin/bash",
-      timeoutMs: 5_000,
+      maxRuntimeMs: 5_000,
       trackedEnvKeys: [],
       maxOutputChars: 64,
       persistOutputThresholdChars: 1,

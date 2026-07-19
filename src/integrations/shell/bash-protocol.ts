@@ -75,6 +75,8 @@ export interface BashJobSnapshot {
   status: BashRunnerJobStatus;
   command: string;
   initialCwd: string;
+  maxRuntimeMs: number;
+  expiresAt: number;
   finalCwd?: string;
   startedAt: number;
   finishedAt?: number;
@@ -95,8 +97,13 @@ export interface BashJobSnapshot {
   stderrPath?: string;
 }
 
-export interface BashRunnerJobStartRequest extends BashExecutorRequest {
+export interface BashRunnerJobStartRequest {
   jobId: string;
+  command: string;
+  cwd: string;
+  maxRuntimeMs: number;
+  trackedEnvKeys: string[];
+  env?: Record<string, string>;
   maxOutputChars: number;
   persistOutputThresholdChars: number;
   persistOutputFiles?: boolean;
@@ -358,6 +365,8 @@ export function parseBashRunnerJobResponse(value: unknown): BashRunnerJobRespons
     status: value.status,
     command: readStringField(value, "command"),
     initialCwd: readStringField(value, "initialCwd"),
+    maxRuntimeMs: readNumberField(value, "maxRuntimeMs"),
+    expiresAt: readNumberField(value, "expiresAt"),
     startedAt: readNumberField(value, "startedAt"),
     timedOut: readBooleanField(value, "timedOut"),
     stdout: readStringField(value, "stdout"),

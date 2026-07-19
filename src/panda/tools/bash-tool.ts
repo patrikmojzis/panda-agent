@@ -46,12 +46,36 @@ import {
   type BashCommandExecutionReader,
 } from "./bash-command-summary.js";
 
-const DEFAULT_TIMEOUT_MS = 15_000;
+const DEFAULT_FOREGROUND_TIMEOUT_MS = 15_000;
+const DEFAULT_BACKGROUND_MAX_RUNTIME_MS = 30 * 60 * 1_000;
 const DEFAULT_MAX_OUTPUT_CHARS = 40_000;
 const DEFAULT_PROGRESS_INTERVAL_MS = 250;
 const DEFAULT_PROGRESS_TAIL_CHARS = 1_200;
 const DEFAULT_OUTPUT_DIRECTORY = path.join(tmpdir(), "runtime-tool-results");
 const DEFAULT_SHELL_ENVIRONMENT_ID = "default";
+
+const bashCommonSchemaShape = {
+  command: z.string().trim().min(1),
+  cwd: z.string().trim().min(1).optional(),
+  env: z.record(z.string(), z.string()).optional(),
+  target: z.string().trim().min(1).optional().describe("Optional registered bash target alias."),
+};
+
+const foregroundBashSchema = z.object({
+  ...bashCommonSchemaShape,
+  background: z.literal(false).optional().describe("Foreground mode for finite commands. Omit this field or set it to false."),
+  timeoutMs: z.number().int().min(100).max(300_000).optional()
+    .describe("Maximum time to wait for a finite foreground command. Timeout terminates the process group."),
+  maxRuntimeMs: z.never({error: "maxRuntimeMs requires background=true."}).optional(),
+});
+
+const backgroundBashSchema = z.object({
+  ...bashCommonSchemaShape,
+  background: z.literal(true).describe("Use for servers, watchers, tailers, and other processes expected not to exit."),
+  maxRuntimeMs: z.number().int().min(100).max(6 * 60 * 60 * 1_000).optional()
+    .describe("Maximum lifetime of a background process before Panda terminates its process group."),
+  timeoutMs: z.never({error: "timeoutMs is foreground-only. For background jobs use maxRuntimeMs."}).optional(),
+});
 
 
 function readExecutionEnvironmentId(context: DefaultAgentSessionContext | undefined): string {
@@ -292,7 +316,8 @@ type BashCredentialResolver = Pick<CredentialResolver, "resolveEnvironment">;
 
 export interface BashToolOptions {
   shell?: string;
-  defaultTimeoutMs?: number;
+  defaultForegroundTimeoutMs?: number;
+  defaultBackgroundMaxRuntimeMs?: number;
   maxOutputChars?: number;
   persistOutputThresholdChars?: number;
   progressIntervalMs?: number;
@@ -308,21 +333,15 @@ export interface BashToolOptions {
 }
 
 export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof BashTool.schema, TContext> {
-  static schema = z.object({
-    command: z.string().trim().min(1),
-    cwd: z.string().trim().min(1).optional(),
-    timeoutMs: z.number().int().min(100).max(300_000).optional(),
-    env: z.record(z.string(), z.string()).optional(),
-    background: z.boolean().optional(),
-    target: z.string().trim().min(1).optional().describe("Optional registered bash target alias."),
-  });
+  static schema = z.discriminatedUnion("background", [backgroundBashSchema, foregroundBashSchema]);
 
   name = "bash";
   description =
-    "Run a shell command. Every panda invocation is an independent operation: earlier commands are not rolled back when a later shell step fails, so prefer one mutating Panda command per bash call. Foreground bash mutates the shared shell cwd and simple export/unset env state across calls. Background bash starts an isolated snapshot job, returns immediately, never mutates the shared shell session, and may later surface as a machine-generated runtime event; use background_job_status, background_job_wait, and background_job_cancel for follow-up.";
+    "Run a shell command. Foreground mode is for finite commands: timeoutMs controls how long Panda waits and timeout terminates the process group. Use background=true with maxRuntimeMs for servers, watchers, tailers, and other non-terminating processes; it returns a jobId immediately and never mutates the shared shell session. Verify readiness with a separate bounded health command, then cancel the job when finished. Every panda invocation is independent, so prefer one mutating Panda command per bash call. Use background_job_status, background_job_wait, and background_job_cancel for follow-up.";
   schema = BashTool.schema;
 
-  private readonly defaultTimeoutMs: number;
+  private readonly defaultForegroundTimeoutMs: number;
+  private readonly defaultBackgroundMaxRuntimeMs: number;
   private readonly maxOutputChars: number;
   private readonly persistOutputThresholdChars: number;
   private readonly progressIntervalMs: number;
@@ -343,7 +362,8 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
     this.env = env;
     this.shell = options.shell;
     this.fetchImpl = options.fetchImpl;
-    this.defaultTimeoutMs = options.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.defaultForegroundTimeoutMs = options.defaultForegroundTimeoutMs ?? DEFAULT_FOREGROUND_TIMEOUT_MS;
+    this.defaultBackgroundMaxRuntimeMs = options.defaultBackgroundMaxRuntimeMs ?? DEFAULT_BACKGROUND_MAX_RUNTIME_MS;
     this.maxOutputChars = options.maxOutputChars ?? DEFAULT_MAX_OUTPUT_CHARS;
     this.persistOutputThresholdChars =
       options.persistOutputThresholdChars ?? this.maxOutputChars;
@@ -489,7 +509,6 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
     const shellSession = ensureShellSession(context);
     const baseCwd = shellSession?.cwd ?? readBaseCwd(context);
     const cwd = resolveCommandCwd(args.cwd, baseCwd);
-    const timeoutMs = args.timeoutMs ?? this.defaultTimeoutMs;
     const priorSecretSessionEnv = readSecretSessionEnv(shellSession);
     const resolvedCredentialEnv = filterCredentialEnv(this.credentialResolver
       ? await this.credentialResolver.resolveEnvironment({
@@ -511,6 +530,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
     const exportsSecretLikeKey = trackedEnvKeys.some(isSecretLikeEnvKey);
     const persistOutputFiles = !secretInventory.hasSecretMaterial && !exportsSecretLikeKey;
     if (args.background === true) {
+      const maxRuntimeMs = args.maxRuntimeMs ?? this.defaultBackgroundMaxRuntimeMs;
       if (!this.jobService) {
         throw new ToolError("Background bash is not available in this runtime.");
       }
@@ -525,7 +545,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
             jobId,
             command: args.command,
             cwd,
-            timeoutMs,
+            maxRuntimeMs,
             trackedEnvKeys,
             maxOutputChars: this.maxOutputChars,
             persistOutputThresholdChars: this.persistOutputThresholdChars,
@@ -556,6 +576,7 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
 
       return buildBackgroundJobPayload(job);
     }
+    const timeoutMs = args.timeoutMs ?? this.defaultForegroundTimeoutMs;
     const result = await this.resolveExecutor(executionEnvironment).execute({
       command: args.command,
       cwd,
@@ -659,7 +680,10 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
       : sanitizedPayload;
 
     if (result.timedOut) {
-      throw new ToolError(`Command timed out after ${timeoutMs}ms`, { details: finalPayload });
+      throw new ToolError(
+        `Foreground command exceeded ${timeoutMs}ms and its process group was terminated.\nFor servers, watchers, tailers, or other non-terminating processes, use background=true with maxRuntimeMs, verify readiness separately, and cancel the job when finished.`,
+        { details: finalPayload },
+      );
     }
 
     if (result.aborted) {

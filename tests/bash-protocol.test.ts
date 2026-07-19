@@ -48,6 +48,8 @@ function validJobResponse(): Record<string, unknown> {
     status: "completed",
     command: "printf done",
     initialCwd: "/workspace",
+    maxRuntimeMs: 1_800_000,
+    expiresAt: 1_701_800_000,
     finalCwd: "/workspace",
     startedAt: 1_700_000_000,
     finishedAt: 1_700_000_100,
@@ -89,6 +91,8 @@ describe("bash runner protocol", () => {
       jobId: "job-1",
       status: "completed",
       stdout: "done",
+      maxRuntimeMs: 1_800_000,
+      expiresAt: 1_701_800_000,
     });
   });
 

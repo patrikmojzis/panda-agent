@@ -300,7 +300,7 @@ fail at execution time.
 
 Remote mode supports the same background bash interface as local mode:
 
-- start with `bash(background=true)`
+- start with `bash(background=true, maxRuntimeMs=...)`
 - inspect with `background_job_status`
 - wait with `background_job_wait`
 - stop with `background_job_cancel`
@@ -312,6 +312,10 @@ The important rule stays the same:
 - resetting the current session cancels the retired thread's remote background jobs
 
 Background jobs snapshot cwd and env at spawn time and never merge anything back into the shared shell state.
+`timeoutMs` is foreground-only. Remote background starts accept only
+`maxRuntimeMs` for process lifetime; old background `timeoutMs` payloads fail
+instead of acting as an alias. The default maximum runtime is 30 minutes and the
+maximum is 6 hours.
 
 ## Runner Endpoints
 

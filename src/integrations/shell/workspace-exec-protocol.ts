@@ -4,16 +4,30 @@ export type WorkspaceExecActionName = "start" | "status" | "wait" | "cancel";
 export type WorkspaceExecMode = "foreground" | "background";
 export type WorkspaceProcessStatus = "running" | "completed" | "failed" | "cancelled";
 
-export interface WorkspaceExecStartRequest {
-  mode: WorkspaceExecMode;
+interface WorkspaceExecStartRequestBase {
   processId?: string;
   command: string;
   cwd: string;
   env?: Record<string, string>;
-  timeoutMs: number;
   trackedEnvKeys: string[];
   maxOutputChars: number;
 }
+
+export interface WorkspaceForegroundExecStartRequest extends WorkspaceExecStartRequestBase {
+  mode: "foreground";
+  timeoutMs: number;
+  maxRuntimeMs?: never;
+}
+
+export interface WorkspaceBackgroundExecStartRequest extends WorkspaceExecStartRequestBase {
+  mode: "background";
+  maxRuntimeMs: number;
+  timeoutMs?: never;
+}
+
+export type WorkspaceExecStartRequest =
+  | WorkspaceForegroundExecStartRequest
+  | WorkspaceBackgroundExecStartRequest;
 
 export type WorkspaceExecAction =
   | {action: "start"; environmentId: string; request: WorkspaceExecStartRequest}
@@ -26,6 +40,8 @@ export interface WorkspaceProcessSnapshot {
   status: WorkspaceProcessStatus;
   command: string;
   initialCwd: string;
+  maxRuntimeMs?: number;
+  expiresAt?: number;
   finalCwd?: string;
   startedAt: number;
   finishedAt?: number;

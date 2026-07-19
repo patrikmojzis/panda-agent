@@ -35,6 +35,7 @@ import {buildSafeCommandEnv, SAFE_SHELL} from "./environment.js";
 const DEFAULT_RUNNER_PORT = 8080;
 const BACKGROUND_JOB_WATCH_WAIT_MS = 300_000;
 const BACKGROUND_JOB_WATCH_IDLE_MS = 1_000;
+const DEFAULT_BACKGROUND_JOB_CANCEL_WAIT_MS = 5_000;
 const DEFAULT_RUNNER_HOST = "0.0.0.0";
 const MAX_BASH_RUNNER_JSON_BODY_BYTES = 8 * 1024 * 1024;
 
@@ -108,7 +109,7 @@ class LocalCommandExecutor implements CommandExecutor {
       cwd: input.cwd,
       childEnv: buildSafeCommandEnv({env: request.env, processEnv: this.options.env, home: input.cwd}),
       shell: this.options.shell,
-      timeoutMs: request.timeoutMs,
+      maxRuntimeMs: request.maxRuntimeMs,
       trackedEnvKeys: request.trackedEnvKeys,
       maxOutputChars: request.maxOutputChars,
       persistOutputThresholdChars: request.persistOutputThresholdChars,
@@ -251,7 +252,7 @@ function validateJobStartRequest(value: unknown): BashRunnerJobStartRequest {
   const jobId = trimToNull(typeof value.jobId === "string" ? value.jobId : null);
   const command = trimToNull(typeof value.command === "string" ? value.command : null);
   const cwd = trimToNull(typeof value.cwd === "string" ? value.cwd : null);
-  const timeoutMs = typeof value.timeoutMs === "number" ? value.timeoutMs : NaN;
+  const maxRuntimeMs = typeof value.maxRuntimeMs === "number" ? value.maxRuntimeMs : NaN;
   const maxOutputChars = typeof value.maxOutputChars === "number" ? value.maxOutputChars : NaN;
   const trackedEnvKeys = Array.isArray(value.trackedEnvKeys)
     ? value.trackedEnvKeys.filter((entry): entry is string => typeof entry === "string")
@@ -281,8 +282,11 @@ function validateJobStartRequest(value: unknown): BashRunnerJobStartRequest {
   if (!cwd) {
     throw new ToolError("Background job cwd must not be empty.");
   }
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 300_000) {
-    throw new ToolError("Background job timeoutMs must be an integer between 100 and 300000.");
+  if (value.timeoutMs !== undefined) {
+    throw new ToolError("Background job timeoutMs is not accepted. Use maxRuntimeMs.");
+  }
+  if (!Number.isInteger(maxRuntimeMs) || maxRuntimeMs < 100 || maxRuntimeMs > 21_600_000) {
+    throw new ToolError("Background job maxRuntimeMs must be an integer between 100 and 21600000.");
   }
   if (!Number.isInteger(maxOutputChars) || maxOutputChars < 1) {
     throw new ToolError("Background job maxOutputChars must be a positive integer.");
@@ -304,7 +308,7 @@ function validateJobStartRequest(value: unknown): BashRunnerJobStartRequest {
     jobId,
     command,
     cwd,
-    timeoutMs,
+    maxRuntimeMs,
     trackedEnvKeys,
     maxOutputChars,
     persistOutputThresholdChars,
@@ -793,7 +797,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
           return;
         }
 
-        const snapshot = await job.cancel(parsed.timeoutMs ?? 1_000);
+        const snapshot = await job.cancel(parsed.timeoutMs ?? DEFAULT_BACKGROUND_JOB_CANCEL_WAIT_MS);
         evictTerminalJob(parsed.jobId, snapshot);
 
         writeJsonResponse(response, 200, {

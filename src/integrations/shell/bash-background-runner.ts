@@ -33,14 +33,15 @@ import {sanitizeBashOutputPreview} from "./bash-output.js";
 import type {ShellExecutionContext} from "./types.js";
 import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 
-const DEFAULT_CANCEL_WAIT_TIMEOUT_MS = 1_000;
+const DEFAULT_LOCAL_CANCEL_WAIT_TIMEOUT_MS = 1_000;
+const DEFAULT_REMOTE_CANCEL_WAIT_TIMEOUT_MS = 5_000;
 const DEFAULT_REMOTE_TIMEOUT_BUFFER_MS = 5_000;
 
 export interface StartBashBackgroundJobOptions<TContext extends ShellExecutionContext = ShellExecutionContext> {
   jobId: string;
   command: string;
   cwd: string;
-  timeoutMs: number;
+  maxRuntimeMs: number;
   env?: Record<string, string>;
   resolvedEnv?: Record<string, string>;
   shellEnv?: Record<string, string>;
@@ -89,6 +90,8 @@ function bashResultPayload(snapshot: BashJobSnapshot, mode: "local" | "remote"):
     command: snapshot.command,
     mode,
     initialCwd: snapshot.initialCwd,
+    maxRuntimeMs: snapshot.maxRuntimeMs,
+    expiresAt: snapshot.expiresAt,
     startedAt: snapshot.startedAt,
     timedOut: snapshot.timedOut,
     stdout: snapshot.stdout,
@@ -121,6 +124,10 @@ function snapshotToJobSnapshot(snapshot: BashJobSnapshot, mode: "local" | "remot
       stdoutChars: snapshot.stdoutChars,
       stderrChars: snapshot.stderrChars,
     },
+    ...(snapshot.timedOut ? {
+      error: `Background command exceeded ${snapshot.maxRuntimeMs}ms and its process group was terminated.`,
+      statusReason: "Background process maximum runtime expired.",
+    } : {}),
     ...(snapshot.finishedAt !== undefined ? {finishedAt: snapshot.finishedAt} : {}),
     ...(snapshot.durationMs !== undefined ? {durationMs: snapshot.durationMs} : {}),
   };
@@ -173,7 +180,7 @@ export async function startBashBackgroundJob<TContext extends ShellExecutionCont
       cwd: options.cwd,
       childEnv,
       shell,
-      timeoutMs: options.timeoutMs,
+      maxRuntimeMs: options.maxRuntimeMs,
       trackedEnvKeys: options.trackedEnvKeys,
       maxOutputChars: options.maxOutputChars,
       persistOutputThresholdChars: options.persistOutputThresholdChars,
@@ -190,7 +197,7 @@ export async function startBashBackgroundJob<TContext extends ShellExecutionCont
       done: job.wait(2_147_000_000)
         .then((snapshot) => snapshotToCompletion(sanitizeSnapshot(snapshot, options), mode)),
       cancel: async () => snapshotToJobSnapshot(
-        sanitizeSnapshot(await job.cancel(DEFAULT_CANCEL_WAIT_TIMEOUT_MS), options),
+        sanitizeSnapshot(await job.cancel(DEFAULT_LOCAL_CANCEL_WAIT_TIMEOUT_MS), options),
         mode,
       ),
     };
@@ -216,7 +223,7 @@ export async function startBashBackgroundJob<TContext extends ShellExecutionCont
     jobId: options.jobId,
     command: options.command,
     cwd: options.cwd,
-    timeoutMs: options.timeoutMs,
+    maxRuntimeMs: options.maxRuntimeMs,
     trackedEnvKeys: options.trackedEnvKeys,
     maxOutputChars: options.maxOutputChars,
     persistOutputThresholdChars: options.persistOutputThresholdChars,
@@ -292,7 +299,7 @@ export async function startBashBackgroundJob<TContext extends ShellExecutionCont
         headers,
         body: JSON.stringify({
           jobId: options.jobId,
-          timeoutMs: DEFAULT_CANCEL_WAIT_TIMEOUT_MS,
+          timeoutMs: DEFAULT_REMOTE_CANCEL_WAIT_TIMEOUT_MS,
         } satisfies BashRunnerJobCancelRequest),
         signal: makeNetworkTimeoutSignal(DEFAULT_REMOTE_TIMEOUT_BUFFER_MS),
       });

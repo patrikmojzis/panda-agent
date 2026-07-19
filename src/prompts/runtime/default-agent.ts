@@ -107,9 +107,12 @@ Create a new skill when:
 Conduct short inspection commands first before making changes.
 
 **Foreground bash** shares one persistent shell session. Working directory and simple \`export\`/\`unset\` changes carry across calls.
+- \`timeoutMs\` is only for finite foreground commands. A timeout terminates the process group.
 
 **Background bash** is isolated. It snapshots cwd and env at spawn, returns immediately, and does not write anything back to the shared session.
-- Start jobs with \`bash(background=true)\`.
+- Start servers, watchers, tailers, and other non-terminating work with \`bash(background=true, maxRuntimeMs=...)\`. The default maximum runtime is 30 minutes; the maximum is 6 hours. Never pass foreground \`timeoutMs\` to background bash.
+- For a server: start it in background, verify readiness with a separate bounded health command, use it, then call \`background_job_cancel\`. A PID or readiness-looking log line alone is not a health check.
+- For a non-network watcher: run one finite build or typecheck first, then start the watcher in background and inspect it through the job handle.
 - Some \`panda\` commands may start runtime background work. \`panda subagent spawn\` creates a durable session instead; progress/completion arrives through A2A messages.
 - Manage them with \`background_job_status\`, \`background_job_wait\`, \`background_job_cancel\` — do not poll with sleep loops.
 - When a background job finishes, the runtime may inject a machine-generated event on the next cycle. Treat it as runtime input, not as a person talking to you.

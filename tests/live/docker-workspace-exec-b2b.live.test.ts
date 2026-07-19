@@ -165,6 +165,7 @@ async function waitForNoProcess(container: string, grepPattern: string): Promise
 }
 
 async function findBridgeGateway(): Promise<string> {
+  if (process.platform === "darwin" || process.platform === "win32") return "host.docker.internal";
   const gateway = await dockerOutput(["network", "inspect", "bridge", "--format", "{{(index .IPAM.Config 0).Gateway}}"]);
   return gateway || "host.docker.internal";
 }
@@ -364,12 +365,60 @@ describeLive("B2b real Docker paired workspace exec smoke", () => {
     expect(badCwd.status).toBe(400);
     expect(await dockerExecStatus(workspaceName, "test -f /tmp/should-not-run")).not.toBe(0);
 
+    const serverPort = 31_873;
+    const serverCommand = `python3 -m http.server ${serverPort} --bind 127.0.0.1`;
+    const healthCommand = `curl -fsS http://127.0.0.1:${serverPort}/ >/dev/null && printf ready`;
+    const serverJob = await runnerPost<BashJobSnapshot>(harness, runnerUrl, "jobs/start", {
+      jobId: `job-server-${harness.suffix}`,
+      command: serverCommand,
+      cwd: "/workspace",
+      maxRuntimeMs: 60_000,
+      trackedEnvKeys: [],
+      maxOutputChars: 20_000,
+      persistOutputThresholdChars: 20_000,
+    });
+    expect(serverJob).toMatchObject({status: "running", maxRuntimeMs: 60_000});
+    const ready = await runnerPost<BashExecutionResult>(harness, runnerUrl, "exec", {
+      requestId: `server-ready-${harness.suffix}`,
+      command: `for _attempt in {1..60}; do ${healthCommand} && exit 0; sleep 0.25; done; exit 1`,
+      cwd: "/workspace",
+      timeoutMs: 30_000,
+      trackedEnvKeys: [],
+      maxOutputChars: 20_000,
+    });
+    expect(ready).toMatchObject({success: true, stdout: "ready"});
+    await new Promise((resolve) => setTimeout(resolve, 20_000));
+    const stillReady = await runnerPost<BashExecutionResult>(harness, runnerUrl, "exec", {
+      requestId: `server-still-ready-${harness.suffix}`,
+      command: healthCommand,
+      cwd: "/workspace",
+      timeoutMs: 5_000,
+      trackedEnvKeys: [],
+      maxOutputChars: 20_000,
+    });
+    expect(stillReady).toMatchObject({success: true, stdout: "ready"});
+    const serverCancelled = await runnerPost<BashJobSnapshot>(harness, runnerUrl, "jobs/cancel", {
+      jobId: serverJob.jobId,
+      timeoutMs: 1_000,
+    });
+    expect(serverCancelled.status).toBe("cancelled");
+    const stoppedHealth = await runnerPost<BashExecutionResult>(harness, runnerUrl, "exec", {
+      requestId: `server-stopped-${harness.suffix}`,
+      command: healthCommand,
+      cwd: "/workspace",
+      timeoutMs: 5_000,
+      trackedEnvKeys: [],
+      maxOutputChars: 20_000,
+    });
+    expect(stoppedHealth.success).toBe(false);
+    expect(await dockerExec(workspaceName, `pgrep -af ${JSON.stringify("[3]1873")} || true`)).toBe("");
+
     const bgDir = `/workspace/bg-${harness.suffix}`;
     const job = await runnerPost<BashJobSnapshot>(harness, runnerUrl, "jobs/start", {
       jobId: `job-ok-${harness.suffix}`,
       command: `mkdir -p ${bgDir} && cd ${bgDir} && echo bg-out && echo bg-err >&2 && while [ ! -f ${bgDir}/release ]; do sleep 0.1; done`,
       cwd: "/workspace",
-      timeoutMs: 60_000,
+      maxRuntimeMs: 60_000,
       trackedEnvKeys: [],
       maxOutputChars: 20_000,
       persistOutputThresholdChars: 1,
@@ -377,6 +426,8 @@ describeLive("B2b real Docker paired workspace exec smoke", () => {
     });
     expect(job.jobId).toBe(`job-ok-${harness.suffix}`);
     expect(job.status).toBe("running");
+    expect(job.maxRuntimeMs).toBe(60_000);
+    expect(job.expiresAt).toBe(job.startedAt + 60_000);
     expect(JSON.stringify(job)).not.toContain("runner-job:");
     const status = await runnerPost<BashJobSnapshot>(harness, runnerUrl, "jobs/status", {jobId: job.jobId});
     expect(status.jobId).toBe(job.jobId);
@@ -394,7 +445,7 @@ describeLive("B2b real Docker paired workspace exec smoke", () => {
       jobId: `job-bad-${harness.suffix}`,
       command: "echo bad-out; echo bad-err >&2; exit 9",
       cwd: "/workspace",
-      timeoutMs: 60_000,
+      maxRuntimeMs: 60_000,
       trackedEnvKeys: [],
       maxOutputChars: 20_000,
       persistOutputThresholdChars: 1,
@@ -408,7 +459,7 @@ describeLive("B2b real Docker paired workspace exec smoke", () => {
       jobId: `job-cancel-${harness.suffix}`,
       command: `B2B_MARKER=${cancelMarker} bash -c 'bash -c "exec -a \"$B2B_MARKER-grandchild\" sleep 100000" & exec -a "$B2B_MARKER-child" sleep 100000'`,
       cwd: "/workspace",
-      timeoutMs: 120_000,
+      maxRuntimeMs: 120_000,
       trackedEnvKeys: [],
       maxOutputChars: 20_000,
       persistOutputThresholdChars: 1,

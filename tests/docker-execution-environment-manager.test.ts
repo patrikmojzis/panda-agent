@@ -3,7 +3,7 @@ import {PassThrough, Readable} from "node:stream";
 import os from "node:os";
 import path from "node:path";
 
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 
 import type {
     DisposableEnvironmentCreateRequest,
@@ -842,6 +842,7 @@ describe("execution environment manager HTTP boundary", () => {
         body: JSON.stringify({action: "start", environmentId: "env-a", request: {mode: "foreground", command: "pwd", cwd: "/workspace", timeoutMs: 1000, trackedEnvKeys: [], maxOutputChars: 1000}}),
       });
       expect(sameEnvResponse.status).toBe(501);
+
     } finally {
       await server.close();
     }
@@ -893,6 +894,16 @@ describe("execution environment manager HTTP boundary", () => {
       expect(dockerClient.execs[0]?.config.Tty).toBe(false);
       expect(dockerClient.execs[0]?.config.Cmd.join(" ")).toContain("setsid bash");
       expect(dockerClient.execs[0]?.config.Cmd.join(" ")).not.toContain("&;");
+
+      const legacyBackgroundTimeout = await fetch(`http://127.0.0.1:${server.port}/workspaces/exec`, {
+        method: "POST",
+        headers: {authorization: `Bearer ${execToken}`, "content-type": "application/json"},
+        body: JSON.stringify({action: "start", environmentId: "env-a", request: {mode: "background", command: "sleep 1", cwd: "/workspace", timeoutMs: 1000, trackedEnvKeys: [], maxOutputChars: 1000}}),
+      });
+      expect(legacyBackgroundTimeout.status).toBe(400);
+      await expect(legacyBackgroundTimeout.json()).resolves.toMatchObject({
+        error: "Workspace exec background mode does not accept timeoutMs. Use maxRuntimeMs.",
+      });
     } finally {
       await server.close();
       await rm(environmentsRoot, {recursive: true, force: true});
@@ -927,7 +938,7 @@ describe("execution environment manager HTTP boundary", () => {
       await expect(manager.handleWorkspaceExecAction({
         action: "start",
         environmentId: "env-a",
-        request: {mode: "background", processId: "proc-tmp-cwd", command: "pwd", cwd: "/tmp", timeoutMs: 1000, trackedEnvKeys: [], maxOutputChars: 1000},
+        request: {mode: "background", processId: "proc-tmp-cwd", command: "pwd", cwd: "/tmp", maxRuntimeMs: 1000, trackedEnvKeys: [], maxOutputChars: 1000},
       })).rejects.toMatchObject({details: {statusCode: 400}});
 
       expect(dockerClient.execs).toHaveLength(0);
@@ -1012,7 +1023,7 @@ describe("execution environment manager HTTP boundary", () => {
     await expect(manager.handleWorkspaceExecAction({
       action: "start",
       environmentId: "env-a",
-      request: {mode: "background", processId: "proc-new", command: "sleep 60", cwd: "/workspace", timeoutMs: 1000, trackedEnvKeys: [], maxOutputChars: 1000},
+      request: {mode: "background", processId: "proc-new", command: "sleep 60", cwd: "/workspace", maxRuntimeMs: 1000, trackedEnvKeys: [], maxOutputChars: 1000},
     })).rejects.toThrow("Workspace process table is full");
 
     expect(processTable).toHaveLength(128);
@@ -1039,7 +1050,7 @@ describe("execution environment manager HTTP boundary", () => {
       await manager.handleWorkspaceExecAction({
         action: "start",
         environmentId: "env-a",
-        request: {mode: "background", processId: "proc-cancel", command: "sleep 60", cwd: "/workspace", timeoutMs: 300000, trackedEnvKeys: [], maxOutputChars: 1000},
+        request: {mode: "background", processId: "proc-cancel", command: "sleep 60", cwd: "/workspace", maxRuntimeMs: 300000, trackedEnvKeys: [], maxOutputChars: 1000},
       });
 
       const started = Date.now();
@@ -1047,6 +1058,46 @@ describe("execution environment manager HTTP boundary", () => {
 
       expect(Date.now() - started).toBeLessThan(500);
       expect(cancelled).toMatchObject({status: "cancelled", aborted: true, abortReason: "Command aborted."});
+    } finally {
+      await rm(environmentsRoot, {recursive: true, force: true});
+    }
+  });
+
+  it("marks disposable background maximum-runtime expiry as a failed timeout", async () => {
+    const dockerClient = new FakeDockerClient();
+    dockerClient.execStreamChunks = [];
+    dockerClient.startExec = async () => new PassThrough();
+    const environmentsRoot = await mkdtemp(path.join(os.tmpdir(), "panda-env-root-"));
+    const manager = new DockerExecutionEnvironmentManager({
+      dockerClient,
+      workspaceExecSecret: "workspace-secret",
+      managerUrl: "http://manager:8095",
+      hostEnvironmentsRoot: environmentsRoot,
+      managerEnvironmentsRoot: environmentsRoot,
+      coreEnvironmentsRoot: "/core/environments",
+      parentRunnerEnvironmentsRoot: "/environments",
+      createTimeoutMs: 10,
+    });
+    try {
+      await manager.createDisposableEnvironment({agentKey: "panda", sessionId: "session-worker", environmentId: "env-a"});
+      const started = await manager.handleWorkspaceExecAction({
+        action: "start",
+        environmentId: "env-a",
+        request: {mode: "background", processId: "proc-expiry", command: "sleep 60", cwd: "/workspace", maxRuntimeMs: 100, trackedEnvKeys: [], maxOutputChars: 1000},
+      });
+      expect(started).toMatchObject({
+        status: "running",
+        maxRuntimeMs: 100,
+        expiresAt: started.startedAt + 100,
+      });
+
+      await vi.waitFor(async () => {
+        await expect(manager.handleWorkspaceExecAction({
+          action: "status",
+          environmentId: "env-a",
+          processId: "proc-expiry",
+        })).resolves.toMatchObject({status: "failed", timedOut: true, aborted: false});
+      });
     } finally {
       await rm(environmentsRoot, {recursive: true, force: true});
     }

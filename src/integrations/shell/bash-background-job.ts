@@ -12,7 +12,7 @@ export interface ManagedBashJobOptions {
   cwd: string;
   childEnv: NodeJS.ProcessEnv;
   shell: string;
-  timeoutMs: number;
+  maxRuntimeMs: number;
   trackedEnvKeys: string[];
   maxOutputChars: number;
   persistOutputThresholdChars: number;
@@ -121,13 +121,14 @@ export class ManagedBashJob {
       appendOutput(this.stderrCapture, chunk, this.options.maxOutputChars);
     });
 
+    const remainingRuntimeMs = Math.max(0, (this.startedAt + this.options.maxRuntimeMs) - Date.now());
     const timeoutTimer = setTimeout(() => {
       this.interruption ??= "timeout";
       this.kill("SIGTERM");
       setTimeout(() => {
         this.kill("SIGKILL");
       }, 250).unref();
-    }, this.options.timeoutMs);
+    }, remainingRuntimeMs);
     timeoutTimer.unref();
 
     child.once("error", (error) => {
@@ -223,6 +224,8 @@ export class ManagedBashJob {
         }),
         command: this.options.command,
         initialCwd: this.options.cwd,
+        maxRuntimeMs: this.options.maxRuntimeMs,
+        expiresAt: this.startedAt + this.options.maxRuntimeMs,
         startedAt: this.startedAt,
         timedOut: this.interruption === "timeout",
         stdout: this.stdoutCapture.preview,
@@ -284,6 +287,8 @@ export class ManagedBashJob {
       status: "running",
       command: this.options.command,
       initialCwd: this.options.cwd,
+      maxRuntimeMs: this.options.maxRuntimeMs,
+      expiresAt: this.startedAt + this.options.maxRuntimeMs,
       startedAt: this.startedAt,
       timedOut: false,
       stdout: this.stdoutCapture.preview,
@@ -317,6 +322,12 @@ export class ManagedBashJob {
       }
     }
 
-    return this.wait(timeoutMs);
+    const gracefulSnapshot = await this.wait(timeoutMs);
+    if (gracefulSnapshot.status !== "running") {
+      return gracefulSnapshot;
+    }
+
+    this.kill("SIGKILL");
+    return this.wait(Math.min(timeoutMs, 1_000));
   }
 }

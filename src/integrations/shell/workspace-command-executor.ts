@@ -129,11 +129,16 @@ function toExecutionResult(process: WorkspaceProcessSnapshot, request: CommandEx
 }
 
 function toJobSnapshot(jobId: string, process: WorkspaceProcessSnapshot): BashJobSnapshot {
+  if (typeof process.maxRuntimeMs !== "number" || typeof process.expiresAt !== "number") {
+    throw new ToolError("Workspace exec manager omitted background process lifetime metadata.");
+  }
   return {
     jobId,
     status: process.status,
     command: process.command,
     initialCwd: process.initialCwd,
+    maxRuntimeMs: process.maxRuntimeMs,
+    expiresAt: process.expiresAt,
     ...(process.finalCwd ? {finalCwd: process.finalCwd} : {}),
     startedAt: process.startedAt,
     ...(process.finishedAt ? {finishedAt: process.finishedAt} : {}),
@@ -259,7 +264,7 @@ export class WorkspaceCommandExecutor implements CommandExecutor {
         command: input.request.command,
         cwd: input.cwd,
         env: input.request.env,
-        timeoutMs: input.request.timeoutMs,
+        maxRuntimeMs: input.request.maxRuntimeMs,
         trackedEnvKeys: input.request.trackedEnvKeys,
         maxOutputChars: input.request.maxOutputChars,
       },

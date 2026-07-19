@@ -54,8 +54,8 @@ and start the runner separately.
 
 Ask Panda to call:
 
-- `bash` with `{"command":"sleep 5 && printf one","background":true}`
-- `bash` with `{"command":"sleep 20 && printf two","background":true}`
+- `bash` with `{"command":"sleep 5 && printf one","background":true,"maxRuntimeMs":300000}`
+- `bash` with `{"command":"sleep 20 && printf two","background":true,"maxRuntimeMs":300000}`
 
 Keep both returned `jobId` values.
 
@@ -141,6 +141,14 @@ Expected:
 
 - status is `lost`
 - reason explains the runtime restarted before completion
+
+8. Verify the canonical server workflow.
+
+Start a disposable test server with background bash and an explicit
+`maxRuntimeMs`. Verify readiness through a separate finite health probe, use the
+server, cancel the background job, and prove the process group and listening
+port are gone. A running PID or readiness-looking log line is not sufficient
+health evidence.
 
 ## What To Watch For
 

@@ -25,8 +25,9 @@ That means background bash is good for long-running work, but bad for “change 
 
 ```json
 {
-  "command": "npm test --watch=false",
-  "background": true
+  "command": "npm run dev",
+  "background": true,
+  "maxRuntimeMs": 1800000
 }
 ```
 
@@ -38,7 +39,34 @@ The `bash` tool returns immediately with a job handle:
 - `mode`
 - `initialCwd`
 - `startedAt`
+- `maxRuntimeMs`
+- `expiresAt`
 - `sessionStateIsolated: true`
+
+Background bash defaults to a 30-minute maximum runtime and accepts at most six
+hours. `timeoutMs` is foreground-only and is rejected when `background` is
+`true`; there is no compatibility alias. Reaching `maxRuntimeMs` terminates the
+process group and leaves a failed, timed-out job.
+
+For a server or watcher:
+
+1. Start it with background bash and a bounded `maxRuntimeMs`.
+2. Verify readiness with a separate finite health command.
+3. Use the service.
+4. Cancel the job when finished.
+
+A running PID or readiness-looking log line is not proof of health. For a
+non-network watcher, run one finite build or typecheck before starting watch
+mode.
+
+Canonical server flow:
+
+```text
+bash(command="pnpm dev", background=true, maxRuntimeMs=1800000)
+bash(command="until curl -fsS http://127.0.0.1:3000/health; do sleep 0.5; done", timeoutMs=30000)
+... use the service ...
+background_job_cancel(jobId)
+```
 
 ## Check Status
 
@@ -90,7 +118,7 @@ Background bash job results include:
 
 - `jobId`, `status`, `command`, `mode`
 - `initialCwd`, optional `finalCwd`
-- `startedAt`, optional `finishedAt`, optional `durationMs`
+- `startedAt`, `maxRuntimeMs`, `expiresAt`, optional `finishedAt`, optional `durationMs`
 - optional `exitCode`, optional `signal`, `timedOut`
 - `stdout`, `stderr`
 - `stdoutChars`, `stderrChars`

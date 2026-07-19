@@ -1159,16 +1159,29 @@ function validateWorkspaceExecAction(value: unknown): WorkspaceExecAction {
     const command = trimToNull(typeof request.command === "string" ? request.command : null);
     const cwd = trimToNull(typeof request.cwd === "string" ? request.cwd : null);
     const timeoutMs = typeof request.timeoutMs === "number" ? request.timeoutMs : NaN;
+    const maxRuntimeMs = typeof request.maxRuntimeMs === "number" ? request.maxRuntimeMs : NaN;
     const maxOutputChars = typeof request.maxOutputChars === "number" ? request.maxOutputChars : NaN;
     const trackedEnvKeys = Array.isArray(request.trackedEnvKeys) && request.trackedEnvKeys.every((entry) => typeof entry === "string") ? request.trackedEnvKeys : null;
     const env = request.env === undefined ? undefined : isRecord(request.env) && Object.values(request.env).every((entry) => typeof entry === "string") ? request.env as Record<string, string> : null;
     if (!command) throw new ToolError("Workspace exec command must not be empty.");
     if (!cwd || !path.posix.isAbsolute(cwd)) throw new ToolError("Workspace exec cwd must be an absolute path.");
-    if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 300_000) throw new ToolError("Workspace exec timeoutMs must be an integer between 100 and 300000.");
+    if (mode === "foreground") {
+      if (request.maxRuntimeMs !== undefined) throw new ToolError("Workspace exec maxRuntimeMs requires background mode.");
+      if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 300_000) throw new ToolError("Workspace exec timeoutMs must be an integer between 100 and 300000.");
+    } else {
+      if (request.timeoutMs !== undefined) throw new ToolError("Workspace exec background mode does not accept timeoutMs. Use maxRuntimeMs.");
+      if (!Number.isInteger(maxRuntimeMs) || maxRuntimeMs < 100 || maxRuntimeMs > 21_600_000) throw new ToolError("Workspace exec maxRuntimeMs must be an integer between 100 and 21600000.");
+    }
     if (!Number.isInteger(maxOutputChars) || maxOutputChars < 1 || maxOutputChars > 1_000_000) throw new ToolError("Workspace exec maxOutputChars must be an integer between 1 and 1000000.");
     if (trackedEnvKeys === null) throw new ToolError("Workspace exec trackedEnvKeys must be an array of strings.");
     if (env === null) throw new ToolError("Workspace exec env must be an object of string values.");
-    return {action: "start", environmentId, request: {mode, ...(processId ? {processId} : {}), command, cwd, timeoutMs, maxOutputChars, trackedEnvKeys, ...(env ? {env} : {})}};
+    return {
+      action: "start",
+      environmentId,
+      request: mode === "foreground"
+        ? {mode, ...(processId ? {processId} : {}), command, cwd, timeoutMs, maxOutputChars, trackedEnvKeys, ...(env ? {env} : {})}
+        : {mode, ...(processId ? {processId} : {}), command, cwd, maxRuntimeMs, maxOutputChars, trackedEnvKeys, ...(env ? {env} : {})},
+    };
   }
   if (action === "status" || action === "wait" || action === "cancel") {
     const processId = validateProcessId(value.processId);
@@ -1529,6 +1542,10 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       status: "running",
       command: request.command,
       initialCwd: request.cwd,
+      ...(request.mode === "background" ? {
+        maxRuntimeMs: request.maxRuntimeMs,
+        expiresAt: now + request.maxRuntimeMs,
+      } : {}),
       startedAt: now,
       timedOut: false,
       aborted: false,
@@ -1565,10 +1582,14 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       });
       record.execId = created.Id;
       const stream = await this.docker.startExec(created.Id, {Detach: false, Tty: false});
+      const lifetimeMs = record.request.mode === "foreground"
+        ? record.request.timeoutMs
+        : record.request.maxRuntimeMs;
+      const remainingRuntimeMs = Math.max(0, (record.startedAt + lifetimeMs) - Date.now());
       timeout = setTimeout(() => {
         record.snapshot.timedOut = true;
-        void this.cancelWorkspaceProcess(record, 1_000);
-      }, record.request.timeoutMs);
+        void this.cancelWorkspaceProcess(record, 1_000, "timeout");
+      }, remainingRuntimeMs);
       timeout.unref();
       await demuxDockerStdCopyStream(stream, (chunk) => stdout.append(chunk), (chunk) => stderr.append(chunk));
       const inspect = await this.waitForDockerExecCompletion(created.Id);
@@ -1577,7 +1598,7 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       const cancelled = record.snapshot.status === "cancelled";
       record.snapshot = {
         ...record.snapshot,
-        status: cancelled ? "cancelled" : exitCode === 0 ? "completed" : "failed",
+        status: timedOut ? "failed" : cancelled ? "cancelled" : exitCode === 0 ? "completed" : "failed",
         finishedAt: Date.now(),
         durationMs: Date.now() - record.startedAt,
         exitCode,
@@ -1614,13 +1635,18 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
     return inspect;
   }
 
-  private async cancelWorkspaceProcess(record: WorkspaceProcessRecord, timeoutMs: number): Promise<WorkspaceProcessSnapshot> {
+  private async cancelWorkspaceProcess(
+    record: WorkspaceProcessRecord,
+    timeoutMs: number,
+    reason: "cancel" | "timeout" = "cancel",
+  ): Promise<WorkspaceProcessSnapshot> {
     const now = Date.now();
     record.snapshot = {
       ...record.snapshot,
-      status: "cancelled",
-      aborted: true,
-      abortReason: "Command aborted.",
+      status: reason === "timeout" ? "failed" : "cancelled",
+      timedOut: reason === "timeout" || record.snapshot.timedOut,
+      aborted: reason === "cancel",
+      abortReason: reason === "cancel" ? "Command aborted." : null,
       finishedAt: record.snapshot.finishedAt ?? now,
       durationMs: record.snapshot.durationMs ?? now - record.startedAt,
     };

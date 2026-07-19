@@ -222,6 +222,24 @@ async function createBackgroundHarness(
 }
 
 describe("BashTool", () => {
+  it("hard-cuts foreground and background lifetime fields before launch", async () => {
+    const tool = new BashTool();
+    const context = createRunContext({cwd: "/tmp"});
+
+    await expect(tool.run(
+      {command: "sleep 1", background: true, timeoutMs: 1_000},
+      context,
+    )).rejects.toThrow("timeoutMs is foreground-only. For background jobs use maxRuntimeMs.");
+    await expect(tool.run(
+      {command: "sleep 1", maxRuntimeMs: 1_000},
+      context,
+    )).rejects.toThrow("maxRuntimeMs requires background=true.");
+    await expect(tool.run(
+      {command: "sleep 1", background: true, maxRuntimeMs: 21_600_001},
+      context,
+    )).rejects.toThrow("Too big: expected number to be <=21600000");
+  });
+
   it("formats tool calls and results through the tool instance", () => {
     const tool = new BashTool();
     const result: ToolResultMessage<JsonObject> = {
@@ -2020,6 +2038,8 @@ describe("BashTool", () => {
       expect(typeof startedOutput.jobId).toBe("string");
       expect(startedOutput.sessionStateIsolated).toBe(true);
       expect(startedOutput.mode).toBe("local");
+      expect(startedOutput.maxRuntimeMs).toBe(1_800_000);
+      expect(startedOutput.expiresAt).toBe(Number(startedOutput.startedAt) + 1_800_000);
       expect(context.shell?.cwd).toBe(workspace);
 
       const jobId = String(startedOutput.jobId);
@@ -2313,12 +2333,14 @@ describe("BashTool", () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-bg-cancel-"));
     try {
       const {bash, cancel, status, context} = await createBackgroundHarness(workspace);
+      const descendantMarker = path.join(workspace, "cancelled-descendant-ran");
 
       const started = await bash.run(
-        { command: "sleep 10", background: true },
+        { command: `(sleep 0.3; touch ${JSON.stringify(descendantMarker)}) & wait`, background: true, maxRuntimeMs: 21_600_000 },
         createRunContext(context),
       );
       const jobId = String(asObject(started).jobId);
+      expect(asObject(started).maxRuntimeMs).toBe(21_600_000);
 
       const cancelled = await cancel.run(
         { jobId },
@@ -2327,6 +2349,8 @@ describe("BashTool", () => {
       const cancelledOutput = asObject(cancelled);
 
       expect(cancelledOutput.status).toBe("cancelled");
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      await expect(readFile(descendantMarker)).rejects.toBeDefined();
 
       const finalStatus = await status.run(
         { jobId },
@@ -2335,6 +2359,82 @@ describe("BashTool", () => {
       expect(asObject(finalStatus).status).toBe("cancelled");
     } finally {
       await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps background lifetime separate from the foreground timeout", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-bg-lifetime-separate-"));
+    try {
+      const {bash, wait, context} = await createBackgroundHarness(workspace, {
+        defaultForegroundTimeoutMs: 100,
+        defaultBackgroundMaxRuntimeMs: 1_000,
+      });
+      const started = asObject(await bash.run(
+        {command: "sleep 0.2 && printf alive", background: true},
+        createRunContext(context),
+      ));
+      const finished = asObject(await wait.run(
+        {jobId: String(started.jobId), timeoutMs: 1_000},
+        createRunContext(context),
+      ));
+
+      expect(finished.status).toBe("completed");
+      expect(finished.stdout).toBe("alive");
+      expect(finished.maxRuntimeMs).toBe(1_000);
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
+  it("marks background maximum-runtime expiry as failed and kills descendants", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-bg-max-runtime-"));
+    try {
+      const {bash, wait, context} = await createBackgroundHarness(workspace);
+      const descendantMarker = path.join(workspace, "expired-descendant-ran");
+      const started = asObject(await bash.run(
+        {command: `(sleep 0.3; touch ${JSON.stringify(descendantMarker)}) & wait`, background: true, maxRuntimeMs: 100},
+        createRunContext(context),
+      ));
+      const finished = asObject(await wait.run(
+        {jobId: String(started.jobId), timeoutMs: 2_000},
+        createRunContext(context),
+      ));
+
+      expect(finished).toMatchObject({
+        status: "failed",
+        timedOut: true,
+        maxRuntimeMs: 100,
+        error: "Background command exceeded 100ms and its process group was terminated.",
+        reason: "Background process maximum runtime expired.",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await expect(readFile(descendantMarker)).rejects.toBeDefined();
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
+  it("returns a running wait snapshot without cancelling the background process", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-bg-wait-snapshot-"));
+    try {
+      const {bash, wait, cancel, context} = await createBackgroundHarness(workspace);
+      const started = asObject(await bash.run(
+        {command: "sleep 10", background: true},
+        createRunContext(context),
+      ));
+      const snapshot = asObject(await wait.run(
+        {jobId: String(started.jobId), timeoutMs: 0},
+        createRunContext(context),
+      ));
+
+      expect(snapshot.status).toBe("running");
+      expect(snapshot.maxRuntimeMs).toBe(1_800_000);
+      await expect(cancel.run(
+        {jobId: String(started.jobId)},
+        createRunContext(context),
+      )).resolves.toMatchObject({status: "cancelled"});
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
     }
   });
 
@@ -2456,7 +2556,9 @@ describe("BashTool", () => {
       await expect(tool.run(
         { command: "sleep 1", timeoutMs: 100 },
         createRunContext(context),
-      )).rejects.toBeInstanceOf(ToolError);
+      )).rejects.toThrow(
+        "Foreground command exceeded 100ms and its process group was terminated.\nFor servers, watchers, tailers, or other non-terminating processes, use background=true with maxRuntimeMs, verify readiness separately, and cancel the job when finished.",
+      );
 
       try {
         await tool.run(
@@ -2472,6 +2574,27 @@ describe("BashTool", () => {
       }
     } finally {
       await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("terminates the foreground process group on timeout", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-foreground-process-group-"));
+    try {
+      const tool = new BashTool({outputDirectory: path.join(workspace, "tool-results")});
+      const descendantMarker = path.join(workspace, "foreground-descendant-ran");
+      try {
+        await tool.run(
+          {command: `(sleep 0.3; touch ${JSON.stringify(descendantMarker)}) & wait`, timeoutMs: 100},
+          createRunContext({cwd: workspace, shell: {cwd: workspace, env: {}}}),
+        );
+      } catch (error) {
+        expect(error).toBeInstanceOf(ToolError);
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      await expect(readFile(descendantMarker)).rejects.toBeDefined();
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
     }
   });
 

@@ -86,16 +86,20 @@ describe("WorkspaceCommandExecutor", () => {
     const fetchImpl: typeof fetch = async (_url, init) => {
       const action = JSON.parse(String(init?.body)) as WorkspaceExecAction;
       actions.push(action);
-      if (action.action === "start") return response(snapshot({processId: action.request.processId ?? "proc", status: "running", command: action.request.command, initialCwd: action.request.cwd, exitCode: undefined, finishedAt: undefined, durationMs: undefined}));
-      if (action.action === "status") return response(snapshot({processId: action.processId, status: "completed", stdout: "done", stdoutChars: 4}));
-      if (action.action === "cancel") return response(snapshot({processId: action.processId, status: "cancelled", aborted: true, abortReason: "Command aborted."}));
-      return response(snapshot({processId: action.processId}));
+      if (action.action === "start") return response(snapshot({processId: action.request.processId ?? "proc", status: "running", command: action.request.command, initialCwd: action.request.cwd, maxRuntimeMs: action.request.mode === "background" ? action.request.maxRuntimeMs : undefined, expiresAt: action.request.mode === "background" ? 1 + action.request.maxRuntimeMs : undefined, exitCode: undefined, finishedAt: undefined, durationMs: undefined}));
+      if (action.action === "status") return response(snapshot({processId: action.processId, status: "completed", maxRuntimeMs: 1_800_000, expiresAt: 1_800_001, stdout: "done", stdoutChars: 4}));
+      if (action.action === "cancel") return response(snapshot({processId: action.processId, status: "cancelled", maxRuntimeMs: 1_800_000, expiresAt: 1_800_001, aborted: true, abortReason: "Command aborted."}));
+      return response(snapshot({processId: action.processId, maxRuntimeMs: 1_800_000, expiresAt: 1_800_001}));
     };
     const executor = new WorkspaceCommandExecutor({managerUrl: "http://manager", environmentId: "env-a", credential: "workspace-token", fetchImpl});
-    const job = await executor.startJob({cwd: "/workspace", request: {jobId: "job1", command: "echo done", cwd: "/workspace", timeoutMs: 1000, trackedEnvKeys: [], maxOutputChars: 1000, persistOutputThresholdChars: 1000}});
+    const job = await executor.startJob({cwd: "/workspace", request: {jobId: "job1", command: "echo done", cwd: "/workspace", maxRuntimeMs: 1_800_000, trackedEnvKeys: [], maxOutputChars: 1000, persistOutputThresholdChars: 1000}});
 
-    await expect(job.snapshot()).resolves.toMatchObject({jobId: "job1", status: "completed", stdout: "done", stdoutPersisted: false});
+    await expect(job.snapshot()).resolves.toMatchObject({jobId: "job1", status: "completed", maxRuntimeMs: 1_800_000, expiresAt: 1_800_001, stdout: "done", stdoutPersisted: false});
     await expect(job.cancel(25)).resolves.toMatchObject({status: "cancelled"});
     expect(actions.map((action) => action.action)).toEqual(["start", "status", "cancel"]);
+    expect(actions[0]).toMatchObject({
+      action: "start",
+      request: {mode: "background", maxRuntimeMs: 1_800_000},
+    });
   });
 });

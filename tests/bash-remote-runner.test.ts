@@ -462,7 +462,7 @@ describe("remote bash runner", () => {
           "printf background-ok",
         ].join(" && "),
         cwd: agentHome,
-        timeoutMs: 1_000,
+        maxRuntimeMs: 1_000,
         trackedEnvKeys: [],
         maxOutputChars: 8_000,
         persistOutputThresholdChars: 8_000,
@@ -648,6 +648,8 @@ describe("remote bash runner", () => {
       status,
       command: input.request.command,
       initialCwd: input.cwd,
+      maxRuntimeMs: input.request.maxRuntimeMs,
+      expiresAt: 123 + input.request.maxRuntimeMs,
       startedAt: 123,
       timedOut: false,
       stdout: status === "completed" ? "fake-job-done" : "",
@@ -743,7 +745,7 @@ describe("remote bash runner", () => {
         jobId: "job-seam-1",
         command: "sleep 1",
         cwd: agentHome,
-        timeoutMs: 1_000,
+        maxRuntimeMs: 1_000,
         trackedEnvKeys: [],
         maxOutputChars: 8_000,
         persistOutputThresholdChars: 8_000,
@@ -822,7 +824,7 @@ describe("remote bash runner", () => {
         jobId: "job-transient-watch",
         command: "sleep 60",
         cwd: agentHome,
-        timeoutMs: 60_000,
+        maxRuntimeMs: 60_000,
         trackedEnvKeys: [],
         maxOutputChars: 8_000,
         persistOutputThresholdChars: 8_000,
@@ -918,6 +920,89 @@ describe("remote bash runner", () => {
     const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda");
 
+    const legacyStartResponse = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/start`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify({
+        jobId: "job-legacy-timeout",
+        command: "sleep 1",
+        cwd: agentHome,
+        timeoutMs: 1_000,
+        trackedEnvKeys: [],
+        maxOutputChars: 8_000,
+        persistOutputThresholdChars: 8_000,
+      }),
+    });
+    expect(legacyStartResponse.status).toBe(400);
+    await expect(legacyStartResponse.json()).resolves.toMatchObject({
+      ok: false,
+      error: "Background job timeoutMs is not accepted. Use maxRuntimeMs.",
+    });
+
+    const serverPortFile = path.join(agentHome, "remote-server.port");
+    const serverScript = `const fs=require("node:fs");const http=require("node:http");const marker="remote-bash-server-marker";const server=http.createServer((_request,response)=>response.end("ready"));server.listen(0,"127.0.0.1",()=>fs.writeFileSync(${JSON.stringify(serverPortFile)},String(server.address().port)));`;
+    const serverStartResponse = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/start`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify({
+        jobId: "job-direct-server",
+        command: `node -e ${JSON.stringify(serverScript)}`,
+        cwd: agentHome,
+        maxRuntimeMs: 60_000,
+        trackedEnvKeys: [],
+        maxOutputChars: 8_000,
+        persistOutputThresholdChars: 8_000,
+      }),
+    });
+    expect(serverStartResponse.status).toBe(200);
+    await expect(serverStartResponse.json()).resolves.toMatchObject({
+      ok: true,
+      jobId: "job-direct-server",
+      status: "running",
+      maxRuntimeMs: 60_000,
+    });
+
+    const serverHealthResponse = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/exec`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify({
+        requestId: "request-direct-server-health",
+        command: `for _attempt in {1..40}; do if test -s ${JSON.stringify(serverPortFile)}; then _port=$(cat ${JSON.stringify(serverPortFile)}); curl -fsS "http://127.0.0.1:${"${_port}"}/" && exit 0; fi; sleep 0.05; done; exit 1`,
+        cwd: agentHome,
+        timeoutMs: 5_000,
+        trackedEnvKeys: [],
+        maxOutputChars: 8_000,
+      }),
+    });
+    expect(serverHealthResponse.status).toBe(200);
+    await expect(serverHealthResponse.json()).resolves.toMatchObject({ok: true, success: true, stdout: "ready"});
+    const serverPort = Number((await readFile(serverPortFile, "utf8")).trim());
+    expect(Number.isInteger(serverPort)).toBe(true);
+
+    const serverCancelResponse = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/cancel`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify({jobId: "job-direct-server"}),
+    });
+    expect(serverCancelResponse.status).toBe(200);
+    await expect(serverCancelResponse.json()).resolves.toMatchObject({ok: true, status: "cancelled"});
+    await expect(fetch(`http://127.0.0.1:${serverPort}/`)).rejects.toThrow();
+
+    const serverProcessResponse = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/exec`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify({
+        requestId: "request-direct-server-process-check",
+        command: "pgrep -af '[r]emote-bash-server-marker' || true",
+        cwd: agentHome,
+        timeoutMs: 5_000,
+        trackedEnvKeys: [],
+        maxOutputChars: 8_000,
+      }),
+    });
+    expect(serverProcessResponse.status).toBe(200);
+    await expect(serverProcessResponse.json()).resolves.toMatchObject({ok: true, success: true, stdout: ""});
+
     const startResponse = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/start`, {
       method: "POST",
       headers: {
@@ -930,7 +1015,7 @@ describe("remote bash runner", () => {
         jobId: "job-direct-1",
         command: "command -v sed >/dev/null && sleep 0.2 && printf done",
         cwd: agentHome,
-        timeoutMs: 1_000,
+        maxRuntimeMs: 1_000,
         trackedEnvKeys: [],
         maxOutputChars: 8_000,
         persistOutputThresholdChars: 8_000,
@@ -942,6 +1027,8 @@ describe("remote bash runner", () => {
       ok: true,
       jobId: "job-direct-1",
       status: "running",
+      maxRuntimeMs: 1_000,
+      expiresAt: expect.any(Number),
     });
 
     const statusResponse = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/status`, {
@@ -997,7 +1084,7 @@ describe("remote bash runner", () => {
         jobId: "job-direct-2",
         command: "sleep 10",
         cwd: agentHome,
-        timeoutMs: 10_000,
+        maxRuntimeMs: 10_000,
         trackedEnvKeys: [],
         maxOutputChars: 8_000,
         persistOutputThresholdChars: 8_000,
@@ -1022,6 +1109,34 @@ describe("remote bash runner", () => {
       ok: true,
       jobId: "job-direct-2",
       status: "cancelled",
+    });
+
+    const expiringStart = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/start`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify({
+        jobId: "job-direct-expiry",
+        command: "sleep 10",
+        cwd: agentHome,
+        maxRuntimeMs: 100,
+        trackedEnvKeys: [],
+        maxOutputChars: 8_000,
+        persistOutputThresholdChars: 8_000,
+      }),
+    });
+    expect(expiringStart.status).toBe(200);
+    const expiringWait = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/wait`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify({jobId: "job-direct-expiry", timeoutMs: 1_000}),
+    });
+    expect(expiringWait.status).toBe(200);
+    await expect(expiringWait.json()).resolves.toMatchObject({
+      ok: true,
+      jobId: "job-direct-expiry",
+      status: "failed",
+      timedOut: true,
+      maxRuntimeMs: 100,
     });
 
     const completedStatusResponse = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/status`, {
@@ -1053,7 +1168,7 @@ describe("remote bash runner", () => {
     });
 
     expect(cancelledStatusResponse.status).toBe(404);
-  });
+  }, 15_000);
 
   it("keeps remote background jobs isolated from the shared shell session", async () => {
     const agentHome = await createWorkspace("runtime-agent-home-");
@@ -1072,6 +1187,8 @@ describe("remote bash runner", () => {
       },
       createRunContext(context),
     );
+    expect(asObject(started).maxRuntimeMs).toBe(1_800_000);
+    expect(asObject(started).expiresAt).toBe(Number(asObject(started).startedAt) + 1_800_000);
 
     const finished = await wait.run(
       { jobId: String(asObject(started).jobId), timeoutMs: 1_000 },
@@ -1173,6 +1290,28 @@ describe("remote bash runner", () => {
     expect(asObject(firstFinished).stdout).toBe("first");
     expect(asObject(secondFinished).stdout).toBe("second");
     expect(Date.now() - startedAt).toBeLessThan(450);
+  });
+
+  it("surfaces remote background maximum-runtime expiry as a failed timeout", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const runner = await createRunner("panda");
+    const {bash, wait, context} = await createRemoteBackgroundHarness(agentHome, runner);
+    const started = asObject(await bash.run(
+      {command: "sleep 10", background: true, maxRuntimeMs: 100},
+      createRunContext(context),
+    ));
+    const finished = asObject(await wait.run(
+      {jobId: String(started.jobId), timeoutMs: 2_000},
+      createRunContext(context),
+    ));
+
+    expect(finished).toMatchObject({
+      status: "failed",
+      timedOut: true,
+      maxRuntimeMs: 100,
+      error: "Background command exceeded 100ms and its process group was terminated.",
+      reason: "Background process maximum runtime expired.",
+    });
   });
 
   it("fires the remote background completion handler when watcher-owned jobs finish", async () => {
@@ -1550,7 +1689,7 @@ describe("remote bash runner", () => {
         jobId: "job-root-denied",
         command: "pwd",
         cwd: deniedRoot,
-        timeoutMs: 1_000,
+        maxRuntimeMs: 1_000,
         trackedEnvKeys: [],
         maxOutputChars: 8_000,
         persistOutputThresholdChars: 8_000,
