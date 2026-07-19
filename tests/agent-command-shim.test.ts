@@ -3620,6 +3620,9 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     expect(emailSend.stdout).toContain("--html <text|@file|@->");
     expect(emailSend.stdout).toContain("--file <path>");
     expect(wikiRead.stdout).toContain("panda wiki read <path> [--locale <locale>] [--format json|markdown]");
+    expect(wikiRead.stdout).toContain("relative to the current agent namespace");
+    expect(wikiRead.stdout).toContain("panda wiki read profile");
+    expect(wikiRead.stdout).not.toContain("panda wiki read agents/panda/profile");
     expect(wikiSearch.stdout).toContain("panda wiki search <query>");
     expect(wikiList.stdout).toContain("panda wiki list [path]");
     expect(wikiList.stdout).toContain("--include-archived");

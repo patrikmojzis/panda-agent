@@ -1884,6 +1884,21 @@ describe("Panda command CLI discovery", () => {
         valueType: "boolean",
       }),
     ]));
+
+    const wikiDescriptors = write.mock.calls.slice(0, 12).map((call) => JSON.parse(String(call[0])));
+    for (const descriptor of wikiDescriptors) {
+      expect(JSON.stringify(descriptor.examples)).not.toContain("agents/panda");
+      expect(descriptor.resultShape).toMatchObject({
+        namespacePath: "string",
+      });
+    }
+    expect(wikiDescriptors[0]?.arguments[0]?.description).toContain("relative to the current agent namespace");
+    expect(wikiDescriptors[0]?.examples[0]?.command).toBe("panda wiki read profile");
+    expect(wikiDescriptors[6]?.resultShape).toMatchObject({
+      resolvedPath: "string",
+      destinationResolvedPath: "string",
+    });
+    expect(wikiDescriptors[10]?.arguments[0]?.description).toContain("under _assets relative");
   });
 
   it("prints descriptor-backed JSON help for todo commands", async () => {

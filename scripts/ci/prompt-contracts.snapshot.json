@@ -1,10 +1,10 @@
 {
   "files": [
     {
-      "bytes": 101764,
+      "bytes": 101738,
       "lines": 3399,
       "path": "scripts/agent-command-shim/routes.generated.sh",
-      "sha256": "49036f99221b1975f98f1d64dee930c18e676f4bee1e49c3bc96f1ad63f731aa"
+      "sha256": "21ba395142b727c4822d82108a1a18b9e563e0d2b37fb37b0276a629781fb031"
     },
     {
       "bytes": 1166,

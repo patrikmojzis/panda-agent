@@ -12,25 +12,53 @@ import {
   isArchivedWikiPath,
   isWikiAssetPathWithinNamespace,
   isWikiPathWithinNamespace,
-  trimWikiPath,
 } from "./paths.js";
 
 export const DEFAULT_WIKI_LIST_LIMIT = 100;
 export const MAX_WIKI_LIST_LIMIT = 500;
 export const INTERNAL_WIKI_LIST_SCAN_LIMIT = 1000;
 
+export type WikiPathKind = "page" | "asset";
+
+export interface ResolvedWikiInputPath {
+  inputPath: string;
+  resolvedPath: string;
+}
+
 /**
  * Normalizes user-supplied Wiki.js paths before namespace policy checks.
  */
-export function normalizeWikiInputPath(value: string): string {
-  const trimmed = trimWikiPath(value);
+function normalizeWikiInputPath(value: string): string {
+  const trimmed = value.trim();
   if (!trimmed) {
     throw new ToolError("wiki path must not be empty.");
   }
-  if (hasUnsafeWikiPathSegments(trimmed)) {
+  if (trimmed.startsWith("/") || trimmed.endsWith("/") || hasUnsafeWikiPathSegments(trimmed)) {
     throw new ToolError(`wiki path must not contain empty, '.' , or '..' segments (${value}).`);
   }
   return trimmed;
+}
+
+/** Resolves one agent-facing Wiki path before applying page or asset authority. */
+export function resolveWikiInputPath(
+  value: string,
+  namespacePath: string,
+  kind: WikiPathKind,
+): ResolvedWikiInputPath {
+  const inputPath = normalizeWikiInputPath(value);
+  const resolvedPath = isWikiPathWithinNamespace(inputPath, namespacePath)
+    ? inputPath
+    : inputPath.startsWith("agents/")
+      ? inputPath
+      : `${namespacePath}/${inputPath}`;
+
+  if (kind === "asset") {
+    assertWikiNamespaceAssetPath(resolvedPath, namespacePath);
+  } else {
+    assertWikiNamespacePath(resolvedPath, namespacePath);
+  }
+
+  return {inputPath, resolvedPath};
 }
 
 /**
@@ -109,7 +137,7 @@ export function assertWikiNamespacePath(path: string, namespacePath: string): vo
     throw commandScopeDenied(
       "The Wiki path is outside the current agent namespace.",
       "resource_scope_denied",
-      "Use only paths returned by Wiki commands in the current agent namespace.",
+      "Use a relative path in the current agent namespace or a canonical path returned for this agent.",
     );
   }
 }
@@ -122,7 +150,7 @@ export function assertWikiNamespaceAssetPath(path: string, namespacePath: string
     throw commandScopeDenied(
       "The Wiki asset path is outside the current agent asset namespace.",
       "resource_scope_denied",
-      "Use only asset paths returned by Wiki commands in the current agent namespace.",
+      "Use a relative _assets path in the current agent namespace or a canonical asset path returned for this agent.",
     );
   }
 }

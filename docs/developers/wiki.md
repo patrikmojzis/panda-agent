@@ -138,11 +138,26 @@ Not:
 
 The UI shows a `/` prefix, but the stored rule value itself should not include it.
 
+## Agent-Facing Path Resolution
+
+Native Wiki commands resolve unqualified paths inside the caller's configured
+namespace. With namespace `agents/panda`, `profile`, `notes/today`, and
+`_assets/profile/photo.png` resolve to `agents/panda/profile`,
+`agents/panda/notes/today`, and
+`agents/panda/_assets/profile/photo.png`. Canonical paths already inside
+`agents/panda` remain valid because command results return canonical paths.
+
+An input beginning with `agents/` is explicit intent: a path under another
+agent is rejected instead of being prefixed. Leading slashes, empty segments,
+`.` and `..` are invalid. Asset commands additionally require the resolved path
+to be under the caller's `_assets` root. Results expose `namespacePath`, the
+supplied `inputPath` when present, and the canonical `resolvedPath`.
+
 ## Code Ownership
 
 Keep Wiki.js semantics in the Wiki integration:
 
-- `src/integrations/wiki/namespace-policy.ts` owns namespace checks, archive paths, subtree filtering, and list limits.
+- `src/integrations/wiki/namespace-policy.ts` owns agent-facing path resolution, namespace checks, archive paths, subtree filtering, and list limits.
 - `src/integrations/wiki/asset-files.ts` owns supported upload/fetch MIME rules and managed asset filenames.
 - `src/integrations/wiki/tool-output.ts` owns the text rendering returned by the Panda wiki tool.
 - `src/integrations/wiki/types.ts`, `constants.ts`, `client-input.ts`, and

@@ -143,7 +143,7 @@ export interface WikiCommandService {
 
 const WIKI_PATH_ARGUMENT = {
   name: "path",
-  description: "Wiki page path inside the agent namespace.",
+  description: "Page path relative to the current agent namespace. A canonical path in that same namespace is also accepted.",
   required: true,
   kind: "positional" as const,
   valueType: "string" as const,
@@ -180,6 +180,12 @@ const WIKI_JSON_ARGUMENT = {
   description: "Structured JSON object for this command.",
   valueType: "json" as const,
 };
+
+const WIKI_PATH_RESOLUTION_RESULT_SHAPE = {
+  namespacePath: "string",
+  inputPath: "string",
+  resolvedPath: "string",
+} as const;
 
 function readRequiredString(value: unknown, label: string): string {
   if (typeof value !== "string" || value.trim().length === 0) {
@@ -268,6 +274,17 @@ function requireCommandJsonObject(value: unknown, label: string): JsonObject {
   return value;
 }
 
+function readWikiPathResolution(output: JsonObject): JsonObject {
+  const namespacePath = readOptionalString(output.namespacePath, "wiki output namespacePath");
+  const inputPath = readOptionalString(output.inputPath, "wiki output inputPath");
+  const resolvedPath = readOptionalString(output.resolvedPath, "wiki output resolvedPath");
+  return {
+    ...(namespacePath ? {namespacePath} : {}),
+    ...(inputPath ? {inputPath} : {}),
+    ...(resolvedPath ? {resolvedPath} : {}),
+  };
+}
+
 function formatWikiReadOutput(output: JsonObject, input: WikiReadCommandInput): JsonObject {
   if (input.format !== "markdown") {
     return output;
@@ -283,6 +300,7 @@ function formatWikiReadOutput(output: JsonObject, input: WikiReadCommandInput): 
       found: false,
       path,
       ...(locale ? {locale} : {}),
+      ...readWikiPathResolution(output),
     };
   }
 
@@ -299,6 +317,7 @@ function formatWikiReadOutput(output: JsonObject, input: WikiReadCommandInput): 
     ...(locale ? {locale} : {}),
     ...(title ? {title} : {}),
     ...(updatedAt ? {updatedAt} : {}),
+    ...readWikiPathResolution(output),
     content: readRequiredString(output.content, "wiki.read output content"),
   };
 }
@@ -503,20 +522,21 @@ export const wikiReadCommandDescriptor: CommandDescriptor = {
   examples: [
     {
       description: "Read a page",
-      command: "panda wiki read agents/panda/profile",
+      command: "panda wiki read profile",
     },
     {
       description: "Read page markdown with compact metadata",
-      command: "panda wiki read agents/panda/profile --format markdown",
+      command: "panda wiki read profile --format markdown",
     },
     {
       description: "Use JSON input",
-      command: "panda wiki read --json '{\"path\":\"agents/panda/profile\"}'",
+      command: "panda wiki read --json '{\"path\":\"profile\"}'",
     },
   ],
   requiredCapabilities: ["wiki.read"],
   resultShape: {
     operation: "read",
+    ...WIKI_PATH_RESOLUTION_RESULT_SHAPE,
     found: "boolean",
     path: "string",
     locale: "string",
@@ -542,7 +562,7 @@ export const wikiSearchCommandDescriptor: CommandDescriptor = {
     },
     {
       name: "path",
-      description: "Optional subtree path to scope the search.",
+      description: "Optional subtree relative to the current agent namespace. A canonical same-namespace path is also accepted.",
       valueType: "string",
       valueName: "path",
     },
@@ -571,7 +591,7 @@ export const wikiSearchCommandDescriptor: CommandDescriptor = {
     },
     {
       description: "Search one subtree",
-      command: "panda wiki search profile --path agents/panda/notes --limit 10",
+      command: "panda wiki search profile --path notes --limit 10",
     },
     {
       description: "Use JSON input",
@@ -581,6 +601,9 @@ export const wikiSearchCommandDescriptor: CommandDescriptor = {
   requiredCapabilities: ["wiki.search"],
   resultShape: {
     operation: "search",
+    namespacePath: "string",
+    inputPath: "string|absent when no path is supplied",
+    resolvedPath: "string",
     query: "string",
     path: "string",
     totalHits: "number",
@@ -600,7 +623,7 @@ export const wikiListCommandDescriptor: CommandDescriptor = {
   arguments: [
     {
       name: "path",
-      description: "Optional subtree path to list.",
+      description: "Optional subtree relative to the current agent namespace. A canonical same-namespace path is also accepted.",
       kind: "positional",
       valueType: "string",
       valueName: "path",
@@ -635,16 +658,19 @@ export const wikiListCommandDescriptor: CommandDescriptor = {
     },
     {
       description: "List one subtree",
-      command: "panda wiki list agents/panda/notes --limit 20",
+      command: "panda wiki list notes --limit 20",
     },
     {
       description: "Use JSON input",
-      command: "panda wiki list --json '{\"path\":\"agents/panda/notes\",\"limit\":20}'",
+      command: "panda wiki list --json '{\"path\":\"notes\",\"limit\":20}'",
     },
   ],
   requiredCapabilities: ["wiki.list"],
   resultShape: {
     operation: "list",
+    namespacePath: "string",
+    inputPath: "string|absent when no path is supplied",
+    resolvedPath: "string",
     path: "string",
     locale: "string",
     count: "number",
@@ -662,7 +688,7 @@ export const wikiDiffCommandDescriptor: CommandDescriptor = {
   arguments: [
     {
       name: "left-path",
-      description: "Left/source wiki page path inside the agent namespace.",
+      description: "Left/source page path relative to the current agent namespace. A canonical same-namespace path is also accepted.",
       required: true,
       kind: "positional",
       valueType: "string",
@@ -670,7 +696,7 @@ export const wikiDiffCommandDescriptor: CommandDescriptor = {
     },
     {
       name: "right-path",
-      description: "Right/target wiki page path inside the agent namespace.",
+      description: "Right/target page path relative to the current agent namespace. A canonical same-namespace path is also accepted.",
       required: true,
       kind: "positional",
       valueType: "string",
@@ -693,20 +719,25 @@ export const wikiDiffCommandDescriptor: CommandDescriptor = {
   examples: [
     {
       description: "Compare an archived page to the live page",
-      command: "panda wiki diff agents/panda/_archive/2026/06/profile-20260625t120000z agents/panda/profile",
+      command: "panda wiki diff _archive/2026/06/profile-20260625t120000z profile",
     },
     {
       description: "Show tighter diff context",
-      command: "panda wiki diff agents/panda/old agents/panda/new --context 1",
+      command: "panda wiki diff old new --context 1",
     },
     {
       description: "Use JSON input",
-      command: "panda wiki diff --json '{\"leftPath\":\"agents/panda/old\",\"rightPath\":\"agents/panda/new\"}'",
+      command: "panda wiki diff --json '{\"leftPath\":\"old\",\"rightPath\":\"new\"}'",
     },
   ],
   requiredCapabilities: ["wiki.diff"],
   resultShape: {
     operation: "diff",
+    namespacePath: "string",
+    leftInputPath: "string",
+    leftResolvedPath: "string",
+    rightInputPath: "string",
+    rightResolvedPath: "string",
     equal: "boolean",
     left: "object",
     right: "object",
@@ -787,16 +818,17 @@ export const wikiWriteCommandDescriptor: CommandDescriptor = {
   examples: [
     {
       description: "Write a page from a markdown file",
-      command: "panda wiki write page agents/panda/profile --title Profile --content @profile.md",
+      command: "panda wiki write page profile --title Profile --content @profile.md",
     },
     {
       description: "Use JSON input",
-      command: "panda wiki write page --json '{\"path\":\"agents/panda/profile\",\"title\":\"Profile\",\"content\":\"# Profile\"}'",
+      command: "panda wiki write page --json '{\"path\":\"profile\",\"title\":\"Profile\",\"content\":\"# Profile\"}'",
     },
   ],
   requiredCapabilities: ["wiki.write"],
   resultShape: {
     operation: "write",
+    ...WIKI_PATH_RESOLUTION_RESULT_SHAPE,
     action: "created|updated",
     page: {
       id: "number",
@@ -855,16 +887,17 @@ export const wikiWriteSectionCommandDescriptor: CommandDescriptor = {
   examples: [
     {
       description: "Write one section from stdin",
-      command: "cat facts.md | panda wiki write section agents/panda/profile Facts --content @-",
+      command: "cat facts.md | panda wiki write section profile Facts --content @-",
     },
     {
       description: "Use JSON input",
-      command: "panda wiki write section --json '{\"path\":\"agents/panda/profile\",\"section\":\"Facts\",\"content\":\"- useful\"}'",
+      command: "panda wiki write section --json '{\"path\":\"profile\",\"section\":\"Facts\",\"content\":\"- useful\"}'",
     },
   ],
   requiredCapabilities: ["wiki.write.section"],
   resultShape: {
     operation: "write_section",
+    ...WIKI_PATH_RESOLUTION_RESULT_SHAPE,
     action: "created|updated",
     section: {
       title: "string",
@@ -891,7 +924,7 @@ export const wikiMoveCommandDescriptor: CommandDescriptor = {
     WIKI_PATH_ARGUMENT,
     {
       name: "destination-path",
-      description: "Destination wiki page path inside the agent namespace.",
+      description: "Destination page path relative to the current agent namespace. A canonical same-namespace path is also accepted.",
       required: true,
       kind: "positional",
       valueType: "string",
@@ -914,16 +947,19 @@ export const wikiMoveCommandDescriptor: CommandDescriptor = {
   examples: [
     {
       description: "Move a page",
-      command: "panda wiki move agents/panda/old agents/panda/new --rewrite-links",
+      command: "panda wiki move old new --rewrite-links",
     },
     {
       description: "Use JSON input",
-      command: "panda wiki move --json '{\"path\":\"agents/panda/old\",\"destinationPath\":\"agents/panda/new\"}'",
+      command: "panda wiki move --json '{\"path\":\"old\",\"destinationPath\":\"new\"}'",
     },
   ],
   requiredCapabilities: ["wiki.move"],
   resultShape: {
     operation: "move",
+    ...WIKI_PATH_RESOLUTION_RESULT_SHAPE,
+    destinationInputPath: "string",
+    destinationResolvedPath: "string",
     movedFrom: "string",
     movedTo: "string",
     rewriteLinks: "boolean",
@@ -959,16 +995,17 @@ export const wikiArchiveCommandDescriptor: CommandDescriptor = {
   examples: [
     {
       description: "Archive a page",
-      command: "panda wiki archive agents/panda/old-note",
+      command: "panda wiki archive old-note",
     },
     {
       description: "Use JSON input",
-      command: "panda wiki archive --json '{\"path\":\"agents/panda/old-note\"}'",
+      command: "panda wiki archive --json '{\"path\":\"old-note\"}'",
     },
   ],
   requiredCapabilities: ["wiki.archive"],
   resultShape: {
     operation: "archive",
+    ...WIKI_PATH_RESOLUTION_RESULT_SHAPE,
     archivedFrom: "string",
     archivedTo: "string",
     page: {
@@ -991,7 +1028,7 @@ export const wikiRestoreCommandDescriptor: CommandDescriptor = {
   arguments: [
     {
       name: "archived-path",
-      description: "Archived wiki page path under the agent _archive tree.",
+      description: "Archived page path relative to the agent namespace, beginning with _archive/. A canonical same-namespace path is also accepted.",
       required: true,
       kind: "positional",
       valueType: "string",
@@ -999,7 +1036,7 @@ export const wikiRestoreCommandDescriptor: CommandDescriptor = {
     },
     {
       name: "destination-path",
-      description: "Live destination wiki page path inside the agent namespace.",
+      description: "Live destination path relative to the current agent namespace. A canonical same-namespace path is also accepted.",
       required: true,
       kind: "positional",
       valueType: "string",
@@ -1017,16 +1054,19 @@ export const wikiRestoreCommandDescriptor: CommandDescriptor = {
   examples: [
     {
       description: "Restore an archived page to a live path",
-      command: "panda wiki restore agents/panda/_archive/2026/06/profile-20260625t120000z agents/panda/profile",
+      command: "panda wiki restore _archive/2026/06/profile-20260625t120000z profile",
     },
     {
       description: "Use JSON input",
-      command: "panda wiki restore --json '{\"path\":\"agents/panda/_archive/2026/06/profile-20260625t120000z\",\"destinationPath\":\"agents/panda/profile\"}'",
+      command: "panda wiki restore --json '{\"path\":\"_archive/2026/06/profile-20260625t120000z\",\"destinationPath\":\"profile\"}'",
     },
   ],
   requiredCapabilities: ["wiki.restore"],
   resultShape: {
     operation: "restore",
+    ...WIKI_PATH_RESOLUTION_RESULT_SHAPE,
+    destinationInputPath: "string",
+    destinationResolvedPath: "string",
     restoredFrom: "string",
     restoredTo: "string",
     page: {
@@ -1111,16 +1151,17 @@ export const wikiAttachImageCommandDescriptor: CommandDescriptor = {
   examples: [
     {
       description: "Attach a local image",
-      command: "panda wiki attach image agents/panda/profile Facts --slot profile-photo --source ./profile.png --alt 'Profile photo'",
+      command: "panda wiki attach image profile Facts --slot profile-photo --source ./profile.png --alt 'Profile photo'",
     },
     {
       description: "Use JSON input",
-      command: "panda wiki attach image --json '{\"path\":\"agents/panda/profile\",\"section\":\"Facts\",\"slot\":\"profile-photo\",\"sourcePath\":\"./profile.png\",\"alt\":\"Profile photo\"}'",
+      command: "panda wiki attach image --json '{\"path\":\"profile\",\"section\":\"Facts\",\"slot\":\"profile-photo\",\"sourcePath\":\"./profile.png\",\"alt\":\"Profile photo\"}'",
     },
   ],
   requiredCapabilities: ["wiki.attach.image"],
   resultShape: {
     operation: "attach_image",
+    ...WIKI_PATH_RESOLUTION_RESULT_SHAPE,
     action: "created|updated|unchanged",
     upload: "uploaded",
     assetPath: "string",
@@ -1145,7 +1186,7 @@ export const wikiFetchAssetCommandDescriptor: CommandDescriptor = {
   arguments: [
     {
       name: "asset-path",
-      description: "Namespace-scoped Wiki.js image or PDF asset path.",
+      description: "Asset path under _assets relative to the current namespace. A canonical same-namespace asset path is also accepted.",
       required: true,
       kind: "positional",
       valueType: "string",
@@ -1156,16 +1197,17 @@ export const wikiFetchAssetCommandDescriptor: CommandDescriptor = {
   examples: [
     {
       description: "Fetch a stored image asset",
-      command: "panda wiki fetch asset agents/panda/_assets/profile/photo.png",
+      command: "panda wiki fetch asset _assets/profile/photo.png",
     },
     {
       description: "Use JSON input",
-      command: "panda wiki fetch asset --json '{\"assetPath\":\"agents/panda/_assets/profile/photo.png\"}'",
+      command: "panda wiki fetch asset --json '{\"assetPath\":\"_assets/profile/photo.png\"}'",
     },
   ],
   requiredCapabilities: ["wiki.fetch.asset"],
   resultShape: {
     operation: "fetch_asset",
+    ...WIKI_PATH_RESOLUTION_RESULT_SHAPE,
     assetPath: "string",
     localPath: "string",
     mimeType: "string",
@@ -1189,7 +1231,7 @@ export const wikiDeleteAssetCommandDescriptor: CommandDescriptor = {
   arguments: [
     {
       name: "asset-path",
-      description: "Namespace-scoped Wiki.js asset path under the agent _assets tree.",
+      description: "Asset path under _assets relative to the current namespace. A canonical same-namespace asset path is also accepted.",
       required: true,
       kind: "positional",
       valueType: "string",
@@ -1205,16 +1247,17 @@ export const wikiDeleteAssetCommandDescriptor: CommandDescriptor = {
   examples: [
     {
       description: "Delete a stored image asset",
-      command: "panda wiki delete asset agents/panda/_assets/profile/photo.png --yes",
+      command: "panda wiki delete asset _assets/profile/photo.png --yes",
     },
     {
       description: "Use JSON input",
-      command: "panda wiki delete asset --json '{\"assetPath\":\"agents/panda/_assets/profile/photo.png\"}'",
+      command: "panda wiki delete asset --json '{\"assetPath\":\"_assets/profile/photo.png\"}'",
     },
   ],
   requiredCapabilities: ["wiki.delete.asset"],
   resultShape: {
     operation: "delete_asset",
+    ...WIKI_PATH_RESOLUTION_RESULT_SHAPE,
     assetPath: "string",
     assetId: "number",
     filename: "string",

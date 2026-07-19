@@ -1,4 +1,5 @@
 import {mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
+import {createServer as createHttpServer} from "node:http";
 import {tmpdir} from "node:os";
 import path from "node:path";
 
@@ -13,6 +14,7 @@ import {
   createWikiDeleteAssetCommand,
   createWikiDiffCommand,
   createWikiFetchAssetCommand,
+  createWikiListCommand,
   createWikiMoveCommand,
   createWikiReadCommand,
   createWikiSearchCommand,
@@ -24,6 +26,7 @@ import {
   WIKI_DELETE_ASSET_COMMAND_NAME,
   WIKI_DIFF_COMMAND_NAME,
   WIKI_FETCH_ASSET_COMMAND_NAME,
+  WIKI_LIST_COMMAND_NAME,
   WIKI_MOVE_COMMAND_NAME,
   WIKI_READ_COMMAND_NAME,
   WIKI_SEARCH_COMMAND_NAME,
@@ -129,7 +132,7 @@ const STALE_WIKI_COMMAND_CASES: readonly StaleWikiCommandCase[] = [
     commandName: WIKI_WRITE_COMMAND_NAME,
     pagePath: "agents/panda/profile",
     input: {
-      path: "agents/panda/profile",
+      path: "profile",
       content: "# Merged profile",
       baseUpdatedAt: "2026-07-18T19:00:00.000Z",
     },
@@ -140,7 +143,7 @@ const STALE_WIKI_COMMAND_CASES: readonly StaleWikiCommandCase[] = [
     commandName: WIKI_WRITE_SECTION_COMMAND_NAME,
     pagePath: "agents/panda/profile",
     input: {
-      path: "agents/panda/profile",
+      path: "profile",
       section: "Facts",
       content: "New facts.",
       baseUpdatedAt: "2026-07-18T19:00:00.000Z",
@@ -152,8 +155,8 @@ const STALE_WIKI_COMMAND_CASES: readonly StaleWikiCommandCase[] = [
     commandName: WIKI_MOVE_COMMAND_NAME,
     pagePath: "agents/panda/profile",
     input: {
-      path: "agents/panda/profile",
-      destinationPath: "agents/panda/about",
+      path: "profile",
+      destinationPath: "about",
       baseUpdatedAt: "2026-07-18T19:00:00.000Z",
     },
     createCommand: createWikiMoveCommand,
@@ -163,7 +166,7 @@ const STALE_WIKI_COMMAND_CASES: readonly StaleWikiCommandCase[] = [
     commandName: WIKI_ARCHIVE_COMMAND_NAME,
     pagePath: "agents/panda/profile",
     input: {
-      path: "agents/panda/profile",
+      path: "profile",
       baseUpdatedAt: "2026-07-18T19:00:00.000Z",
     },
     createCommand: createWikiArchiveCommand,
@@ -173,8 +176,8 @@ const STALE_WIKI_COMMAND_CASES: readonly StaleWikiCommandCase[] = [
     commandName: WIKI_RESTORE_COMMAND_NAME,
     pagePath: "agents/panda/_archive/2026/07/profile-old",
     input: {
-      path: "agents/panda/_archive/2026/07/profile-old",
-      destinationPath: "agents/panda/profile",
+      path: "_archive/2026/07/profile-old",
+      destinationPath: "profile",
       baseUpdatedAt: "2026-07-18T19:00:00.000Z",
     },
     createCommand: createWikiRestoreCommand,
@@ -184,7 +187,7 @@ const STALE_WIKI_COMMAND_CASES: readonly StaleWikiCommandCase[] = [
     commandName: WIKI_ATTACH_IMAGE_COMMAND_NAME,
     pagePath: "agents/panda/profile",
     input: {
-      path: "agents/panda/profile",
+      path: "profile",
       section: "Facts",
       slot: "profile-photo",
       sourcePath: "private-source.png",
@@ -200,6 +203,157 @@ const STALE_WIKI_COMMAND_CASES: readonly StaleWikiCommandCase[] = [
 ];
 
 describe("wiki command service", () => {
+  it("resolves a relative wiki.read path and returns canonical path metadata", async () => {
+    const fetchImpl = vi.fn(async () => wikiGraphQlResponse({singleByPath: buildPage()}));
+    const service = new WikiRuntimeCommandService({
+      env: {WIKI_URL: "http://wiki:3000"} as NodeJS.ProcessEnv,
+      fetchImpl: fetchImpl as typeof fetch,
+      bindings: createBindings(),
+    });
+
+    const command = createWikiReadCommand(service);
+    const result = await command.execute({
+      command: WIKI_READ_COMMAND_NAME,
+      input: {path: "profile"},
+      scope: {agentKey: "panda", sessionId: "session-1"},
+    });
+
+    expect(result.output).toMatchObject({
+      operation: "read",
+      found: true,
+      path: "agents/panda/profile",
+      namespacePath: "agents/panda",
+      inputPath: "profile",
+      resolvedPath: "agents/panda/profile",
+    });
+    expect(getRequestBody(fetchImpl, 0)).toMatchObject({
+      variables: {path: "agents/panda/profile", locale: "en"},
+    });
+
+    const markdown = await command.execute({
+      command: WIKI_READ_COMMAND_NAME,
+      input: {path: "profile", format: "markdown"},
+      scope: {agentKey: "panda", sessionId: "session-1"},
+    });
+    expect(markdown.output).toMatchObject({
+      format: "markdown",
+      inputPath: "profile",
+      resolvedPath: "agents/panda/profile",
+      namespacePath: "agents/panda",
+    });
+  });
+
+  it("isolates relative and canonical paths across two agent Wiki bindings", async () => {
+    const bindings = {
+      getBinding: vi.fn(async (agentKey: string) => ({
+        agentKey,
+        wikiGroupId: agentKey === "panda" ? 5 : 6,
+        namespacePath: `agents/${agentKey}`,
+        apiToken: `${agentKey}-token`,
+        keyVersion: 1,
+        createdAt: 1,
+        updatedAt: 1,
+      })),
+    };
+    const requests: Array<{path: string; authorization: string}> = [];
+    const server = createHttpServer(async (request, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) chunks.push(Buffer.from(chunk));
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as {variables?: Record<string, unknown>};
+      const requestedPath = String(body.variables?.path ?? "");
+      requests.push({
+        path: requestedPath,
+        authorization: String(request.headers.authorization ?? ""),
+      });
+      response.writeHead(200, {"content-type": "application/json"});
+      response.end(JSON.stringify({
+        data: {pages: {singleByPath: buildPage({path: requestedPath})}},
+      }));
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        server.off("error", reject);
+        resolve();
+      });
+    });
+
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Expected a TCP test server address.");
+      const service = new WikiRuntimeCommandService({
+        env: {WIKI_URL: `http://127.0.0.1:${address.port}`} as NodeJS.ProcessEnv,
+        bindings,
+      });
+
+      await expect(service.readPage("panda", {path: "profile"})).resolves.toMatchObject({
+        inputPath: "profile",
+        resolvedPath: "agents/panda/profile",
+      });
+      await expect(service.readPage("luna", {path: "profile"})).resolves.toMatchObject({
+        inputPath: "profile",
+        resolvedPath: "agents/luna/profile",
+      });
+      await expect(service.readPage("panda", {path: "agents/panda/profile"})).resolves.toMatchObject({
+        inputPath: "agents/panda/profile",
+        resolvedPath: "agents/panda/profile",
+      });
+      await expect(service.readPage("panda", {path: "agents/luna/profile"})).rejects.toMatchObject({
+        pandaCommandErrorCode: "forbidden",
+      });
+      expect(requests).toEqual([
+        {path: "agents/panda/profile", authorization: "Bearer panda-token"},
+        {path: "agents/luna/profile", authorization: "Bearer luna-token"},
+        {path: "agents/panda/profile", authorization: "Bearer panda-token"},
+      ]);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+  });
+
+  it("defaults wiki.list to the namespace root and resolves an optional relative subtree", async () => {
+    const fetchImpl = vi.fn(async () => wikiGraphQlResponse({
+      list: [
+        buildPage(),
+        buildPage({id: 13, path: "agents/panda/notes/today", title: "Today"}),
+      ],
+    }));
+    const service = new WikiRuntimeCommandService({
+      env: {WIKI_URL: "http://wiki:3000"} as NodeJS.ProcessEnv,
+      fetchImpl: fetchImpl as typeof fetch,
+      bindings: createBindings(),
+    });
+    const command = createWikiListCommand(service);
+
+    const root = await command.execute({
+      command: WIKI_LIST_COMMAND_NAME,
+      input: {},
+      scope: {agentKey: "panda", sessionId: "session-1"},
+    });
+    const subtree = await command.execute({
+      command: WIKI_LIST_COMMAND_NAME,
+      input: {path: "notes"},
+      scope: {agentKey: "panda", sessionId: "session-1"},
+    });
+
+    expect(root.output).toMatchObject({
+      operation: "list",
+      path: "agents/panda",
+      namespacePath: "agents/panda",
+      resolvedPath: "agents/panda",
+      count: 2,
+    });
+    expect(root.output).not.toHaveProperty("inputPath");
+    expect(subtree.output).toMatchObject({
+      path: "agents/panda/notes",
+      namespacePath: "agents/panda",
+      inputPath: "notes",
+      resolvedPath: "agents/panda/notes",
+      count: 1,
+      pages: [expect.objectContaining({path: "agents/panda/notes/today"})],
+    });
+  });
+
   it("limits scoped wiki.search results and reports truncation", async () => {
     const bindings = createBindings();
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
@@ -263,6 +417,8 @@ describe("wiki command service", () => {
       operation: "search",
       query: "profile",
       path: "agents/panda",
+      namespacePath: "agents/panda",
+      resolvedPath: "agents/panda",
       totalHits: 2,
       count: 1,
       truncated: true,
@@ -299,10 +455,48 @@ describe("wiki command service", () => {
         retryable: false,
         nextAction: {
           kind: "stop",
-          reason: "Use only paths returned by Wiki commands in the current agent namespace.",
+          reason: "Use a relative path in the current agent namespace or a canonical path returned for this agent.",
         },
         exitCode: 3,
       },
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      label: "wiki.diff right path",
+      commandName: WIKI_DIFF_COMMAND_NAME,
+      input: {leftPath: "profile", rightPath: "agents/other/private"},
+      createCommand: createWikiDiffCommand,
+    },
+    {
+      label: "wiki.move destination",
+      commandName: WIKI_MOVE_COMMAND_NAME,
+      input: {path: "profile", destinationPath: "agents/other/private"},
+      createCommand: createWikiMoveCommand,
+    },
+    {
+      label: "wiki.restore destination",
+      commandName: WIKI_RESTORE_COMMAND_NAME,
+      input: {path: "_archive/2026/profile", destinationPath: "agents/other/private"},
+      createCommand: createWikiRestoreCommand,
+    },
+  ])("rejects a cross-agent $label before Wiki I/O", async (testCase) => {
+    const fetchImpl = vi.fn();
+    const service = new WikiRuntimeCommandService({
+      env: {WIKI_URL: "http://wiki:3000"} as NodeJS.ProcessEnv,
+      fetchImpl: fetchImpl as typeof fetch,
+      bindings: createBindings(),
+    });
+
+    await expect(testCase.createCommand(service).execute({
+      command: testCase.commandName,
+      input: testCase.input,
+      scope: {agentKey: "panda", sessionId: "session-1"},
+    })).rejects.toMatchObject({
+      pandaCommandErrorCode: "forbidden",
+      pandaCommandErrorDetails: {failureCode: "resource_scope_denied"},
     });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -461,7 +655,7 @@ describe("wiki command service", () => {
     const merged = await dispatcher.execute({
       command: WIKI_WRITE_COMMAND_NAME,
       input: {
-        path: "agents/panda/profile",
+        path: "profile",
         content: "# Profile\n\nLatest fact.\n\nMerged intent.",
         baseUpdatedAt: latestUpdatedAt,
       },
@@ -471,6 +665,9 @@ describe("wiki command service", () => {
       ok: true,
       output: {
         action: "updated",
+        namespacePath: "agents/panda",
+        inputPath: "profile",
+        resolvedPath: "agents/panda/profile",
         page: {updatedAt},
       },
     });
@@ -544,8 +741,8 @@ describe("wiki command service", () => {
     const result = await command.execute({
       command: WIKI_DIFF_COMMAND_NAME,
       input: {
-        leftPath: "agents/panda/_archive/2026/06/profile-old",
-        rightPath: "agents/panda/profile",
+        leftPath: "_archive/2026/06/profile-old",
+        rightPath: "profile",
         contextLines: 1,
       },
       scope: {
@@ -557,6 +754,11 @@ describe("wiki command service", () => {
     expect(result.output).toMatchObject({
       operation: "diff",
       locale: "en",
+      namespacePath: "agents/panda",
+      leftInputPath: "_archive/2026/06/profile-old",
+      leftResolvedPath: "agents/panda/_archive/2026/06/profile-old",
+      rightInputPath: "profile",
+      rightResolvedPath: "agents/panda/profile",
       left: {
         path: "agents/panda/_archive/2026/06/profile-old",
         contentLines: 3,
@@ -670,7 +872,7 @@ describe("wiki command service", () => {
     const result = await command.execute({
       command: WIKI_WRITE_SECTION_COMMAND_NAME,
       input: {
-        path: "agents/panda/profile",
+        path: "profile",
         section: "Facts",
         content: "New facts.",
       },
@@ -683,6 +885,9 @@ describe("wiki command service", () => {
     expect(result.output).toMatchObject({
       operation: "write_section",
       action: "updated",
+      namespacePath: "agents/panda",
+      inputPath: "profile",
+      resolvedPath: "agents/panda/profile",
       section: {
         title: "Facts",
         action: "replaced",
@@ -778,8 +983,8 @@ describe("wiki command service", () => {
     const result = await command.execute({
       command: WIKI_RESTORE_COMMAND_NAME,
       input: {
-        path: archivedPath,
-        destinationPath,
+        path: "_archive/2026/06/profile-20260625t120000z",
+        destinationPath: "profile",
       },
       scope: {
         agentKey: "panda",
@@ -789,6 +994,11 @@ describe("wiki command service", () => {
 
     expect(result.output).toMatchObject({
       operation: "restore",
+      namespacePath: "agents/panda",
+      inputPath: "_archive/2026/06/profile-20260625t120000z",
+      resolvedPath: archivedPath,
+      destinationInputPath: "profile",
+      destinationResolvedPath: destinationPath,
       restoredFrom: archivedPath,
       restoredTo: destinationPath,
       page: {
@@ -935,7 +1145,7 @@ describe("wiki command service", () => {
       const result = await command.execute({
         command: WIKI_ATTACH_IMAGE_COMMAND_NAME,
         input: {
-          path: "agents/panda/profile",
+          path: "profile",
           section: "Facts",
           slot: "profile-photo",
           sourcePath: "profile.png",
@@ -950,6 +1160,9 @@ describe("wiki command service", () => {
       expect(result.output).toMatchObject({
         operation: "attach_image",
         action: "updated",
+        namespacePath: "agents/panda",
+        inputPath: "profile",
+        resolvedPath: "agents/panda/profile",
         assetPath: "agents/panda/_assets/profile/profile-photo.png",
         slot: "profile-photo",
         page: {
@@ -995,7 +1208,7 @@ describe("wiki command service", () => {
       const result = await command.execute({
         command: WIKI_FETCH_ASSET_COMMAND_NAME,
         input: {
-          assetPath: "agents/panda/_assets/profile/profile-photo.png",
+          assetPath: "_assets/profile/profile-photo.png",
         },
         scope: {
           agentKey: "panda",
@@ -1018,6 +1231,9 @@ describe("wiki command service", () => {
       );
       expect(result.output).toMatchObject({
         operation: "fetch_asset",
+        namespacePath: "agents/panda",
+        inputPath: "_assets/profile/profile-photo.png",
+        resolvedPath: "agents/panda/_assets/profile/profile-photo.png",
         assetPath: "agents/panda/_assets/profile/profile-photo.png",
         localPath,
         mimeType: "image/png",
@@ -1098,7 +1314,7 @@ describe("wiki command service", () => {
     const result = await command.execute({
       command: WIKI_DELETE_ASSET_COMMAND_NAME,
       input: {
-        assetPath: "agents/panda/_assets/profile/profile-photo.png",
+        assetPath: "_assets/profile/profile-photo.png",
       },
       scope: {
         agentKey: "panda",
@@ -1108,6 +1324,9 @@ describe("wiki command service", () => {
 
     expect(result.output).toEqual({
       operation: "delete_asset",
+      namespacePath: "agents/panda",
+      inputPath: "_assets/profile/profile-photo.png",
+      resolvedPath: "agents/panda/_assets/profile/profile-photo.png",
       assetPath: "agents/panda/_assets/profile/profile-photo.png",
       assetId: 44,
       filename: "profile-photo.png",

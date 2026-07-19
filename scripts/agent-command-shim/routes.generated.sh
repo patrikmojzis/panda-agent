@@ -444,8 +444,8 @@ agent_command_shim_print_root_usage_examples() {
   cat note.txt | panda vent --stdin
   cat SKILL.md | panda skill set calendar --description "Use this for calendar work." --content @-
   cat query.sql | panda postgres readonly query --sql @-
-  panda wiki read agents/panda/profile
-  cat facts.md | panda wiki write section agents/panda/profile Facts --content @-
+  panda wiki read profile
+  cat facts.md | panda wiki write section profile Facts --content @-
   cat brief.md | panda session prompt current set brief --content @-
   panda todo add "Inspect code"
   panda subagent spawn "Inspect the runtime wiring." --profile workspace

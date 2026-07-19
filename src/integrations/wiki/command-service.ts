@@ -49,16 +49,15 @@ import {
   buildWikiArchivePath,
   DEFAULT_WIKI_LIST_LIMIT,
   INTERNAL_WIKI_LIST_SCAN_LIMIT,
-  assertWikiNamespacePath,
+  assertWikiNamespaceAssetPath,
   filterWikiListedPagesToScope,
   filterWikiSearchResultsToScope,
-  normalizeWikiInputLocale,
-  normalizeWikiInputPath,
-  normalizeWikiListLimit,
   normalizeWikiAssetSlot,
   normalizeWikiImageText,
+  normalizeWikiInputLocale,
+  normalizeWikiListLimit,
   normalizeWikiSectionTitle,
-  assertWikiNamespaceAssetPath,
+  resolveWikiInputPath,
 } from "./namespace-policy.js";
 import {buildWikiAssetRoot, buildWikiPageAssetDirectory, isArchivedWikiPath} from "./paths.js";
 import {buildWikiContentDiff} from "./content-diff.js";
@@ -207,8 +206,7 @@ export class WikiRuntimeCommandService implements WikiCommandService {
 
   async readPage(agentKey: string, input: WikiReadCommandInput): Promise<JsonObject> {
     const {client, namespacePath} = await this.resolveClient(agentKey);
-    const path = normalizeWikiInputPath(input.path);
-    assertWikiNamespacePath(path, namespacePath);
+    const {inputPath, resolvedPath: path} = resolveWikiInputPath(input.path, namespacePath, "page");
     const locale = normalizeWikiInputLocale(input.locale);
     const page = await client.getPageByPath(path, locale);
     if (!page) {
@@ -217,6 +215,9 @@ export class WikiRuntimeCommandService implements WikiCommandService {
         found: false,
         path,
         locale,
+        namespacePath,
+        inputPath,
+        resolvedPath: path,
       };
     }
 
@@ -224,14 +225,19 @@ export class WikiRuntimeCommandService implements WikiCommandService {
       operation: "read",
       found: true,
       ...requireJsonValue(page, "wiki.read page") as JsonObject,
+      namespacePath,
+      inputPath,
+      resolvedPath: path,
     };
   }
 
   async searchPages(agentKey: string, input: WikiSearchCommandInput): Promise<JsonObject> {
     const {client, namespacePath} = await this.resolveClient(agentKey);
     const locale = normalizeWikiInputLocale(input.locale);
-    const scopePath = input.path ? normalizeWikiInputPath(input.path) : namespacePath;
-    assertWikiNamespacePath(scopePath, namespacePath);
+    const resolution = input.path
+      ? resolveWikiInputPath(input.path, namespacePath, "page")
+      : undefined;
+    const scopePath = resolution?.resolvedPath ?? namespacePath;
     const result = await client.searchPages(input.query, {locale});
     const scopedResults = filterWikiSearchResultsToScope(
       result.results,
@@ -245,6 +251,9 @@ export class WikiRuntimeCommandService implements WikiCommandService {
       operation: "search",
       query: input.query,
       path: scopePath,
+      namespacePath,
+      ...(resolution ? {inputPath: resolution.inputPath} : {}),
+      resolvedPath: scopePath,
       totalHits: scopedResults.length,
       count: results.length,
       truncated: results.length < scopedResults.length,
@@ -256,10 +265,12 @@ export class WikiRuntimeCommandService implements WikiCommandService {
   async listPages(agentKey: string, input: WikiListCommandInput): Promise<JsonObject> {
     const {client, namespacePath} = await this.resolveClient(agentKey);
     const locale = normalizeWikiInputLocale(input.locale ?? DEFAULT_WIKI_LOCALE);
-    const scopePath = input.path ? normalizeWikiInputPath(input.path) : namespacePath;
+    const resolution = input.path
+      ? resolveWikiInputPath(input.path, namespacePath, "page")
+      : undefined;
+    const scopePath = resolution?.resolvedPath ?? namespacePath;
     const limit = normalizeWikiListLimit(input.limit ?? DEFAULT_WIKI_LIST_LIMIT);
     const includeArchived = input.includeArchived === true || isArchivedWikiPath(scopePath, namespacePath);
-    assertWikiNamespacePath(scopePath, namespacePath);
 
     const listedPages = await client.listPages({
       limit: INTERNAL_WIKI_LIST_SCAN_LIMIT,
@@ -278,6 +289,9 @@ export class WikiRuntimeCommandService implements WikiCommandService {
     return {
       operation: "list",
       path: scopePath,
+      namespacePath,
+      ...(resolution ? {inputPath: resolution.inputPath} : {}),
+      resolvedPath: scopePath,
       locale,
       count: pages.length,
       totalPages: filteredPages.length,
@@ -291,10 +305,10 @@ export class WikiRuntimeCommandService implements WikiCommandService {
   async diffPages(agentKey: string, input: WikiDiffCommandInput): Promise<JsonObject> {
     const {client, namespacePath} = await this.resolveClient(agentKey);
     const locale = normalizeWikiInputLocale(input.locale ?? DEFAULT_WIKI_LOCALE);
-    const leftPath = normalizeWikiInputPath(input.leftPath);
-    const rightPath = normalizeWikiInputPath(input.rightPath);
-    assertWikiNamespacePath(leftPath, namespacePath);
-    assertWikiNamespacePath(rightPath, namespacePath);
+    const left = resolveWikiInputPath(input.leftPath, namespacePath, "page");
+    const right = resolveWikiInputPath(input.rightPath, namespacePath, "page");
+    const leftPath = left.resolvedPath;
+    const rightPath = right.resolvedPath;
 
     const [leftPage, rightPage] = await Promise.all([
       client.getPageByPath(leftPath, locale),
@@ -315,6 +329,11 @@ export class WikiRuntimeCommandService implements WikiCommandService {
     return {
       operation: "diff",
       locale,
+      namespacePath,
+      leftInputPath: left.inputPath,
+      leftResolvedPath: leftPath,
+      rightInputPath: right.inputPath,
+      rightResolvedPath: rightPath,
       left: wikiDiffPageSummary(leftPage),
       right: wikiDiffPageSummary(rightPage),
       equal: diff.equal,
@@ -327,8 +346,7 @@ export class WikiRuntimeCommandService implements WikiCommandService {
 
   async writePage(agentKey: string, input: WikiWriteCommandInput): Promise<JsonObject> {
     const {client, namespacePath} = await this.resolveClient(agentKey);
-    const path = normalizeWikiInputPath(input.path);
-    assertWikiNamespacePath(path, namespacePath);
+    const {inputPath, resolvedPath: path} = resolveWikiInputPath(input.path, namespacePath, "page");
     const locale = normalizeWikiInputLocale(input.locale);
     const existing = await client.getPageByPath(path, locale);
     const result = await writeWikiPage({
@@ -351,14 +369,16 @@ export class WikiRuntimeCommandService implements WikiCommandService {
     return {
       operation: "write",
       action: result.action,
+      namespacePath,
+      inputPath,
+      resolvedPath: path,
       page: wikiPageSummary(result.page),
     };
   }
 
   async writeSection(agentKey: string, input: WikiWriteSectionCommandInput): Promise<JsonObject> {
     const {client, namespacePath} = await this.resolveClient(agentKey);
-    const path = normalizeWikiInputPath(input.path);
-    assertWikiNamespacePath(path, namespacePath);
+    const {inputPath, resolvedPath: path} = resolveWikiInputPath(input.path, namespacePath, "page");
     const locale = normalizeWikiInputLocale(input.locale);
     const existing = await client.getPageByPath(path, locale);
     const createIfMissing = input.createIfMissing ?? true;
@@ -398,6 +418,9 @@ export class WikiRuntimeCommandService implements WikiCommandService {
     return {
       operation: "write_section",
       action: result.action,
+      namespacePath,
+      inputPath,
+      resolvedPath: path,
       section: {
         title: sectionTitle,
         action: result.action === "created" ? "created" : sectionContent.action,
@@ -408,16 +431,16 @@ export class WikiRuntimeCommandService implements WikiCommandService {
 
   async movePage(agentKey: string, input: WikiMoveCommandInput): Promise<JsonObject> {
     const {client, namespacePath} = await this.resolveClient(agentKey);
-    const path = normalizeWikiInputPath(input.path);
-    assertWikiNamespacePath(path, namespacePath);
+    const source = resolveWikiInputPath(input.path, namespacePath, "page");
+    const destination = resolveWikiInputPath(input.destinationPath, namespacePath, "page");
+    const path = source.resolvedPath;
+    const destinationPath = destination.resolvedPath;
     const locale = normalizeWikiInputLocale(input.locale);
     const existing = await client.getPageByPath(path, locale);
     if (!existing) {
       throw new ToolError(`Wiki page ${locale}/${path} does not exist.`);
     }
 
-    const destinationPath = normalizeWikiInputPath(input.destinationPath);
-    assertWikiNamespacePath(destinationPath, namespacePath);
     const moveResult = await moveWikiPageWithinNamespace({
       client,
       existing,
@@ -438,6 +461,11 @@ export class WikiRuntimeCommandService implements WikiCommandService {
 
     return {
       operation: "move",
+      namespacePath,
+      inputPath: source.inputPath,
+      resolvedPath: path,
+      destinationInputPath: destination.inputPath,
+      destinationResolvedPath: destinationPath,
       movedFrom: path,
       movedTo: moved.path,
       rewriteLinks,
@@ -452,8 +480,7 @@ export class WikiRuntimeCommandService implements WikiCommandService {
 
   async archivePage(agentKey: string, input: WikiArchiveCommandInput): Promise<JsonObject> {
     const {client, namespacePath} = await this.resolveClient(agentKey);
-    const path = normalizeWikiInputPath(input.path);
-    assertWikiNamespacePath(path, namespacePath);
+    const {inputPath, resolvedPath: path} = resolveWikiInputPath(input.path, namespacePath, "page");
     const locale = normalizeWikiInputLocale(input.locale);
     const existing = await client.getPageByPath(path, locale);
     if (!existing) {
@@ -477,6 +504,9 @@ export class WikiRuntimeCommandService implements WikiCommandService {
 
     return {
       operation: "archive",
+      namespacePath,
+      inputPath,
+      resolvedPath: path,
       archivedFrom: path,
       archivedTo: archived.path,
       page: wikiPageSummary(archived),
@@ -485,8 +515,10 @@ export class WikiRuntimeCommandService implements WikiCommandService {
 
   async restorePage(agentKey: string, input: WikiRestoreCommandInput): Promise<JsonObject> {
     const {client, namespacePath} = await this.resolveClient(agentKey);
-    const path = normalizeWikiInputPath(input.path);
-    assertWikiNamespacePath(path, namespacePath);
+    const archived = resolveWikiInputPath(input.path, namespacePath, "page");
+    const destination = resolveWikiInputPath(input.destinationPath, namespacePath, "page");
+    const path = archived.resolvedPath;
+    const destinationPath = destination.resolvedPath;
     if (!isArchivedWikiPath(path, namespacePath)) {
       throw new ToolError(`Wiki page ${path} is not archived. Use wiki.move for live page moves.`);
     }
@@ -505,8 +537,6 @@ export class WikiRuntimeCommandService implements WikiCommandService {
       requestedPath: path,
     });
 
-    const destinationPath = normalizeWikiInputPath(input.destinationPath);
-    assertWikiNamespacePath(destinationPath, namespacePath);
     if (isArchivedWikiPath(destinationPath, namespacePath)) {
       throw new ToolError("Wiki restore destination must be a live namespace path, not _archive.");
     }
@@ -524,6 +554,11 @@ export class WikiRuntimeCommandService implements WikiCommandService {
 
     return {
       operation: "restore",
+      namespacePath,
+      inputPath: archived.inputPath,
+      resolvedPath: path,
+      destinationInputPath: destination.inputPath,
+      destinationResolvedPath: destinationPath,
       restoredFrom: path,
       restoredTo: restored.path,
       page: wikiPageSummary(restored),
@@ -532,8 +567,7 @@ export class WikiRuntimeCommandService implements WikiCommandService {
 
   async attachImage(agentKey: string, input: WikiAttachImageResolvedCommandInput): Promise<JsonObject> {
     const {client, namespacePath} = await this.resolveClient(agentKey);
-    const path = normalizeWikiInputPath(input.path);
-    assertWikiNamespacePath(path, namespacePath);
+    const {inputPath, resolvedPath: path} = resolveWikiInputPath(input.path, namespacePath, "page");
     if (isArchivedWikiPath(path, namespacePath)) {
       throw new ToolError(`Wiki page ${path} is archived. Do not attach images to archive history.`);
     }
@@ -621,6 +655,9 @@ export class WikiRuntimeCommandService implements WikiCommandService {
       return {
         operation: "attach_image",
         action: "unchanged",
+        namespacePath,
+        inputPath,
+        resolvedPath: path,
         upload: "uploaded",
         assetPath,
         slot,
@@ -671,6 +708,9 @@ export class WikiRuntimeCommandService implements WikiCommandService {
     return {
       operation: "attach_image",
       action: result.action,
+      namespacePath,
+      inputPath,
+      resolvedPath: path,
       upload: "uploaded",
       assetPath,
       slot,
@@ -694,8 +734,7 @@ export class WikiRuntimeCommandService implements WikiCommandService {
 
   async fetchAsset(agentKey: string, input: WikiFetchAssetCommandInput): Promise<WikiFetchAssetCommandResult> {
     const {client, namespacePath} = await this.resolveClient(agentKey);
-    const assetPath = normalizeWikiInputPath(input.assetPath);
-    assertWikiNamespaceAssetPath(assetPath, namespacePath);
+    const {inputPath, resolvedPath: assetPath} = resolveWikiInputPath(input.assetPath, namespacePath, "asset");
 
     const downloaded = await client.downloadAsset(assetPath);
     const mimeType = inferViewableWikiAssetMimeType(assetPath, downloaded.mimeType);
@@ -724,6 +763,9 @@ export class WikiRuntimeCommandService implements WikiCommandService {
     return {
       output: {
         operation: "fetch_asset",
+        namespacePath,
+        inputPath,
+        resolvedPath: assetPath,
         assetPath,
         localPath,
         mimeType,
@@ -735,8 +777,7 @@ export class WikiRuntimeCommandService implements WikiCommandService {
 
   async deleteAsset(agentKey: string, input: WikiDeleteAssetCommandInput): Promise<JsonObject> {
     const {client, namespacePath} = await this.resolveClient(agentKey);
-    const assetPath = normalizeWikiInputPath(input.assetPath);
-    assertWikiNamespaceAssetPath(assetPath, namespacePath);
+    const {inputPath, resolvedPath: assetPath} = resolveWikiInputPath(input.assetPath, namespacePath, "asset");
     const assetRoot = buildWikiAssetRoot(namespacePath);
     const asset = await this.findAssetByPath(client, assetPath, assetRoot);
     if (!asset) {
@@ -747,6 +788,9 @@ export class WikiRuntimeCommandService implements WikiCommandService {
 
     return {
       operation: "delete_asset",
+      namespacePath,
+      inputPath,
+      resolvedPath: assetPath,
       assetPath,
       assetId: asset.id,
       filename: asset.filename,
