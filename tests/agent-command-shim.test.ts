@@ -100,6 +100,7 @@ import {
   createWikiFetchAssetCommand,
   createWikiListCommand,
   createWikiMoveCommand,
+  createWikiOverviewCommand,
   createWikiReadCommand,
   createWikiRestoreCommand,
   createWikiSearchCommand,
@@ -679,6 +680,21 @@ describe("agent command shim", () => {
         changes: 1,
         ...(options?.input ? {input: options.input} : {}),
         wakeRequested: false,
+      })),
+      overviewPages: vi.fn(async (_agentKey: string, input: {locale?: string}) => ({
+        operation: "overview",
+        namespacePath: "agents/panda",
+        locale: input.locale ?? "en",
+        recentlyEdited: [{
+          title: "Profile",
+          path: "agents/panda/profile",
+          updatedAt: "2026-06-24T12:00:00.000Z",
+        }],
+        mostLinked: [{
+          title: "Profile",
+          path: "agents/panda/profile",
+          inboundLinks: 3,
+        }],
       })),
       readPage: vi.fn(async (_agentKey: string, input: {path: string; locale?: string}) => ({
         operation: "read",
@@ -2046,6 +2062,7 @@ describe("agent command shim", () => {
             environments: store,
             lifecycle: store,
           }),
+          createWikiOverviewCommand(store),
           createWikiReadCommand(store),
           createWikiSearchCommand(store),
           createWikiListCommand(store),
@@ -3336,6 +3353,7 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     expect(env.stdout).toContain("panda env list [--prefix <prefix>]");
     expect(env.stdout).toContain("panda env set <key> (--stdin|--from-file <path>)");
     const wiki = await execFileAsync(shimPath, ["wiki", "--help"]);
+    expect(wiki.stdout).toContain("panda wiki overview --help");
     expect(wiki.stdout).toContain("panda wiki search --help");
     expect(wiki.stdout).toContain("panda wiki diff --help");
     expect(wiki.stdout).toContain("panda wiki write section --help");
@@ -3444,6 +3462,7 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     const whisperTranslate = await execHelp(["whisper", "translate", "--help"]);
     const emailAccountList = await execHelp(["email", "account", "list", "--help"]);
     const emailSend = await execHelp(["email", "send", "--help"]);
+    const wikiOverview = await execHelp(["wiki", "overview", "--help"]);
     const wikiRead = await execHelp(["wiki", "read", "--help"]);
     const wikiSearch = await execHelp(["wiki", "search", "--help"]);
     const wikiList = await execHelp(["wiki", "list", "--help"]);
@@ -3619,6 +3638,7 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     expect(emailSend.stdout).toContain("--reply-to-email-id <email-id>");
     expect(emailSend.stdout).toContain("--html <text|@file|@->");
     expect(emailSend.stdout).toContain("--file <path>");
+    expect(wikiOverview.stdout).toContain("panda wiki overview [--locale <locale>]");
     expect(wikiRead.stdout).toContain("panda wiki read <path> [--locale <locale>] [--format json|markdown]");
     expect(wikiRead.stdout).toContain("relative to the current agent namespace");
     expect(wikiRead.stdout).toContain("panda wiki read profile");
@@ -4812,6 +4832,27 @@ printf '{"ok":true,"output":%s}\\n' "$body"
       results: [
         expect.objectContaining({path: "agents/panda/profile"}),
       ],
+    });
+  });
+
+  it("executes wiki.overview through native args", async () => {
+    const server = await startWatchServer();
+
+    const {stdout} = await execFileAsync(shimPath, [
+      "wiki",
+      "overview",
+      "--locale",
+      "sk",
+    ], {
+      env: shimEnv(server),
+    });
+
+    expect(JSON.parse(stdout)).toMatchObject({
+      operation: "overview",
+      namespacePath: "agents/panda",
+      locale: "sk",
+      recentlyEdited: [expect.objectContaining({path: "agents/panda/profile"})],
+      mostLinked: [expect.objectContaining({inboundLinks: 3})],
     });
   });
 

@@ -16,6 +16,7 @@ import {
   createWikiFetchAssetCommand,
   createWikiListCommand,
   createWikiMoveCommand,
+  createWikiOverviewCommand,
   createWikiReadCommand,
   createWikiSearchCommand,
   createWikiRestoreCommand,
@@ -28,6 +29,7 @@ import {
   WIKI_FETCH_ASSET_COMMAND_NAME,
   WIKI_LIST_COMMAND_NAME,
   WIKI_MOVE_COMMAND_NAME,
+  WIKI_OVERVIEW_COMMAND_NAME,
   WIKI_READ_COMMAND_NAME,
   WIKI_SEARCH_COMMAND_NAME,
   WIKI_RESTORE_COMMAND_NAME,
@@ -203,6 +205,72 @@ const STALE_WIKI_COMMAND_CASES: readonly StaleWikiCommandCase[] = [
 ];
 
 describe("wiki command service", () => {
+  it("returns recent and most-linked pages through wiki.overview", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const query = String(JSON.parse(String(init?.body ?? "{}")).query ?? "");
+      if (query.includes("query ListPages")) {
+        return wikiGraphQlResponse({
+          list: [
+            buildPage({updatedAt: "2026-07-19T10:00:00.000Z"}),
+            buildPage({
+              id: 13,
+              path: "agents/other/private",
+              title: "Other",
+              updatedAt: "2026-07-19T11:00:00.000Z",
+            }),
+          ],
+        });
+      }
+      if (query.includes("query ListPageLinks")) {
+        return wikiGraphQlResponse({
+          links: [
+            {
+              id: 1,
+              path: "en/agents/panda/project",
+              title: "Project",
+              links: ["en/agents/panda/profile"],
+            },
+            {
+              id: 2,
+              path: "en/agents/panda/profile",
+              title: "Profile",
+              links: [],
+            },
+          ],
+        });
+      }
+      throw new Error("Unexpected Wiki overview query.");
+    });
+    const service = new WikiRuntimeCommandService({
+      env: {WIKI_URL: "http://wiki-overview:3000"} as NodeJS.ProcessEnv,
+      fetchImpl: fetchImpl as typeof fetch,
+      bindings: createBindings(),
+    });
+    const command = createWikiOverviewCommand(service);
+
+    const result = await command.execute({
+      command: WIKI_OVERVIEW_COMMAND_NAME,
+      input: {},
+      scope: {agentKey: "panda", sessionId: "session-1"},
+    });
+
+    expect(result.output).toMatchObject({
+      operation: "overview",
+      namespacePath: "agents/panda",
+      locale: "en",
+      recentlyEdited: [{
+        title: "Profile",
+        path: "agents/panda/profile",
+        updatedAt: "2026-07-19T10:00:00.000Z",
+      }],
+      mostLinked: [{
+        title: "Profile",
+        path: "agents/panda/profile",
+        inboundLinks: 1,
+      }],
+    });
+  });
+
   it("resolves a relative wiki.read path and returns canonical path metadata", async () => {
     const fetchImpl = vi.fn(async () => wikiGraphQlResponse({singleByPath: buildPage()}));
     const service = new WikiRuntimeCommandService({

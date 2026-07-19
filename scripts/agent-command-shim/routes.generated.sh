@@ -101,6 +101,9 @@ agent_command_shim_lookup_route() {
     'postgres readonly query')
       printf '%s\t%s\n' 'postgres.readonly.query' 'postgres readonly query'
       ;;
+    'wiki overview')
+      printf '%s\t%s\n' 'wiki.overview' 'wiki overview'
+      ;;
     'wiki read')
       printf '%s\t%s\n' 'wiki.read' 'wiki read'
       ;;
@@ -355,6 +358,7 @@ agent_command_shim_print_root_usage_commands() {
   panda skill patch <skill-key> --description <text|@file|@->
   panda skill delete <skill-key> --yes
   panda postgres readonly query (--sql <text|@file|@-> [--max-rows <n>]|--schema-help)
+  panda wiki overview [--locale <locale>]
   panda wiki read <path> [--locale <locale>] [--format json|markdown]
   panda wiki search <query> [--path <path>] [--locale <locale>] [--limit <n>]
   panda wiki list [path] [--limit <n>] [--include-archived] [--locale <locale>]
@@ -796,6 +800,16 @@ Detailed help is available only through the current agent command lease.
 Usage:
   panda postgres readonly query --json @payload.json
 PANDA_COMMAND_HELP_postgres_readonly_query
+      ;;
+    'wiki.overview')
+      cat <<'PANDA_COMMAND_HELP_wiki_overview'
+Panda command: wiki.overview
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda wiki overview --json @payload.json
+PANDA_COMMAND_HELP_wiki_overview
       ;;
     'wiki.read')
       cat <<'PANDA_COMMAND_HELP_wiki_read'
@@ -2112,6 +2126,24 @@ PANDA_COMMAND_HELP_JSON_skill_delete
   "examples": []
 }
 PANDA_COMMAND_HELP_JSON_postgres_readonly_query
+      ;;
+    'wiki.overview')
+      cat <<'PANDA_COMMAND_HELP_JSON_wiki_overview'
+{
+  "name": "wiki.overview",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda wiki overview --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_wiki_overview
       ;;
     'wiki.read')
       cat <<'PANDA_COMMAND_HELP_JSON_wiki_read'

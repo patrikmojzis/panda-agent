@@ -153,6 +153,25 @@ agent is rejected instead of being prefixed. Leading slashes, empty segments,
 to be under the caller's `_assets` root. Results expose `namespacePath`, the
 supplied `inputPath` when present, and the canonical `resolvedPath`.
 
+## Agent Discovery
+
+The default Wiki Overview prompt exposes at most 20 namespace-scoped key pages.
+Pages are selected by inbound-link strength, then rendered as stable
+`title :: path` entries without timestamps, link counts, or refresh metadata.
+
+Dynamic discovery stays pull-based:
+
+```bash
+panda wiki overview
+panda wiki search <query>
+panda wiki list [path]
+panda wiki read <path>
+```
+
+`panda wiki overview` returns recently edited pages and the inbound-link
+ranking. Keep those volatile details out of the default prompt so ordinary Wiki
+activity does not invalidate the model prompt cache.
+
 ## Code Ownership
 
 Keep Wiki.js semantics in the Wiki integration:
@@ -166,6 +185,7 @@ Keep Wiki.js semantics in the Wiki integration:
 - `src/integrations/wiki/page-move.ts` owns live page moves plus affected internal-link rewrites.
 - `src/integrations/wiki/page-write.ts` owns create/update behavior.
 - `src/integrations/wiki/page-conflict.ts` owns optimistic conflict checks and the safe refresh contract.
+- `src/integrations/wiki/overview.ts` owns bounded Wiki discovery, ranking, and snapshot caching.
 - `src/domain/wiki/commands.ts` owns the command-facing Wiki surface.
 - `src/integrations/wiki/command-service.ts` owns command orchestration over the Wiki integration.
 

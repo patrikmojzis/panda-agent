@@ -11,6 +11,7 @@ import type {
 } from "../commands/types.js";
 
 export const WIKI_READ_COMMAND_NAME = "wiki.read";
+export const WIKI_OVERVIEW_COMMAND_NAME = "wiki.overview";
 export const WIKI_SEARCH_COMMAND_NAME = "wiki.search";
 export const WIKI_LIST_COMMAND_NAME = "wiki.list";
 export const WIKI_DIFF_COMMAND_NAME = "wiki.diff";
@@ -29,6 +30,10 @@ export interface WikiReadCommandInput {
   path: string;
   locale?: string;
   format?: WikiReadFormat;
+}
+
+export interface WikiOverviewCommandInput {
+  locale?: string;
 }
 
 export interface WikiSearchCommandInput {
@@ -127,6 +132,7 @@ export interface WikiFetchAssetCommandResult {
 }
 
 export interface WikiCommandService {
+  overviewPages(agentKey: string, input: WikiOverviewCommandInput): Promise<JsonObject>;
   readPage(agentKey: string, input: WikiReadCommandInput): Promise<JsonObject>;
   searchPages(agentKey: string, input: WikiSearchCommandInput): Promise<JsonObject>;
   listPages(agentKey: string, input: WikiListCommandInput): Promise<JsonObject>;
@@ -332,6 +338,13 @@ function parseWikiReadInput(input: unknown): WikiReadCommandInput {
     ...(locale ? {locale} : {}),
     ...(format ? {format} : {}),
   };
+}
+
+function parseWikiOverviewInput(input: unknown): WikiOverviewCommandInput {
+  const object = requireInputObject(input, WIKI_OVERVIEW_COMMAND_NAME);
+  const locale = readOptionalString(object.locale, "wiki.overview locale");
+
+  return locale ? {locale} : {};
 }
 
 function parseWikiSearchInput(input: unknown): WikiSearchCommandInput {
@@ -541,6 +554,37 @@ export const wikiReadCommandDescriptor: CommandDescriptor = {
     path: "string",
     locale: "string",
     content: "string|absent when not found",
+  },
+};
+
+export const wikiOverviewCommandDescriptor: CommandDescriptor = {
+  name: WIKI_OVERVIEW_COMMAND_NAME,
+  summary: "Show recent and important agent-owned wiki pages.",
+  description: "Returns a bounded namespace-scoped discovery snapshot with recently edited pages and inbound-link ranking.",
+  usage: "panda wiki overview [--locale <locale>]",
+  inputModes: ["flags", "json", "stdin", "file"],
+  outputModes: ["json", "text"],
+  arguments: [
+    WIKI_LOCALE_ARGUMENT,
+    {
+      name: "json",
+      description: "Structured JSON object containing optional locale.",
+      valueType: "json",
+    },
+  ],
+  examples: [
+    {
+      description: "Inspect the current namespace overview",
+      command: "panda wiki overview",
+    },
+  ],
+  requiredCapabilities: [WIKI_OVERVIEW_COMMAND_NAME],
+  resultShape: {
+    operation: "overview",
+    namespacePath: "string",
+    locale: "string",
+    recentlyEdited: [{title: "string", path: "string", updatedAt: "string"}],
+    mostLinked: [{title: "string", path: "string", inboundLinks: "number"}],
   },
 };
 
@@ -1280,6 +1324,25 @@ export function createWikiReadCommand(service: WikiCommandService): RegisteredCo
         command: WIKI_READ_COMMAND_NAME,
         output: formatWikiReadOutput(output, input),
         summary: `Read wiki page ${input.path}.`,
+      };
+    },
+  };
+}
+
+export function createWikiOverviewCommand(service: WikiCommandService): RegisteredCommand {
+  return {
+    descriptor: wikiOverviewCommandDescriptor,
+    async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
+      const output = requireCommandJsonObject(
+        await service.overviewPages(request.scope.agentKey, parseWikiOverviewInput(request.input)),
+        WIKI_OVERVIEW_COMMAND_NAME,
+      );
+
+      return {
+        ok: true,
+        command: WIKI_OVERVIEW_COMMAND_NAME,
+        output,
+        summary: "Loaded wiki overview.",
       };
     },
   };

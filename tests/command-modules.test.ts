@@ -54,6 +54,7 @@ const factoryBackedCommandNames = [
   "skill.patch",
   "skill.delete",
   "postgres.readonly.query",
+  "wiki.overview",
   "wiki.read",
   "wiki.search",
   "wiki.list",

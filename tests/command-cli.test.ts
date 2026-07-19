@@ -1564,6 +1564,7 @@ describe("Panda command CLI discovery", () => {
     await createProgram().parseAsync(["wiki", "attach", "image", "--help", "--json"], {from: "user"});
     await createProgram().parseAsync(["wiki", "fetch", "asset", "--help", "--json"], {from: "user"});
     await createProgram().parseAsync(["wiki", "delete", "asset", "--help", "--json"], {from: "user"});
+    await createProgram().parseAsync(["wiki", "overview", "--help", "--json"], {from: "user"});
 
     expect(JSON.parse(String(write.mock.calls[0]?.[0]))).toMatchObject({
       name: "wiki.read",
@@ -1885,7 +1886,16 @@ describe("Panda command CLI discovery", () => {
       }),
     ]));
 
-    const wikiDescriptors = write.mock.calls.slice(0, 12).map((call) => JSON.parse(String(call[0])));
+    expect(JSON.parse(String(write.mock.calls[12]?.[0]))).toMatchObject({
+      name: "wiki.overview",
+      usage: "panda wiki overview [--locale <locale>]",
+      resultShape: {
+        recentlyEdited: [{title: "string", path: "string", updatedAt: "string"}],
+        mostLinked: [{title: "string", path: "string", inboundLinks: "number"}],
+      },
+    });
+
+    const wikiDescriptors = write.mock.calls.slice(0, 13).map((call) => JSON.parse(String(call[0])));
     for (const descriptor of wikiDescriptors) {
       expect(JSON.stringify(descriptor.examples)).not.toContain("agents/panda");
       expect(descriptor.resultShape).toMatchObject({

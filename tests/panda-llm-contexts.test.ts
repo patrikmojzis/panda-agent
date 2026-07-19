@@ -94,6 +94,7 @@ describe("buildDefaultAgentLlmContexts", () => {
     expect(dump).toContain("`panda skill set <skill-key> --description <text|@file|@-> --content <text|@file|@-> [--tag <tag>...]`");
     expect(dump).toContain("`panda skill patch <skill-key> --description <text|@file|@->`");
     expect(dump).toContain("`panda postgres readonly query (--sql <text|@file|@-> [--max-rows <n>]|--schema-help)`");
+    expect(dump).toContain("`panda wiki overview [--locale <locale>]`");
     expect(dump).toContain("`panda wiki read <path> [--locale <locale>] [--format json|markdown]`");
     expect(dump).toContain("`panda wiki search <query> [--path <path>] [--locale <locale>] [--limit <n>]`");
     expect(dump).toContain("`panda wiki list [path] [--limit <n>] [--include-archived] [--locale <locale>]`");

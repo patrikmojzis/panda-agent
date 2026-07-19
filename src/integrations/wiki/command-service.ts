@@ -12,6 +12,7 @@ import type {
   WikiFetchAssetCommandResult,
   WikiListCommandInput,
   WikiMoveCommandInput,
+  WikiOverviewCommandInput,
   WikiReadCommandInput,
   WikiRestoreCommandInput,
   WikiSearchCommandInput,
@@ -61,6 +62,7 @@ import {
 } from "./namespace-policy.js";
 import {buildWikiAssetRoot, buildWikiPageAssetDirectory, isArchivedWikiPath} from "./paths.js";
 import {buildWikiContentDiff} from "./content-diff.js";
+import {WikiOverviewReader} from "./overview.js";
 
 export interface WikiCommandServiceOptions {
   env?: NodeJS.ProcessEnv;
@@ -120,11 +122,13 @@ export class WikiRuntimeCommandService implements WikiCommandService {
   private readonly env: NodeJS.ProcessEnv;
   private readonly fetchImpl?: typeof fetch;
   private readonly bindings: Pick<WikiBindingService, "getBinding">;
+  private readonly overviewReader: WikiOverviewReader;
 
   constructor(options: WikiCommandServiceOptions) {
     this.env = options.env ?? process.env;
     this.fetchImpl = options.fetchImpl;
     this.bindings = options.bindings;
+    this.overviewReader = new WikiOverviewReader(options);
   }
 
   private async resolveClient(agentKey: string): Promise<{
@@ -201,6 +205,26 @@ export class WikiRuntimeCommandService implements WikiCommandService {
     return {
       id: asset.id,
       filename: asset.filename,
+    };
+  }
+
+  async overviewPages(agentKey: string, input: WikiOverviewCommandInput): Promise<JsonObject> {
+    const snapshot = await this.overviewReader.read({
+      agentKey,
+      locale: input.locale,
+    });
+    if (!snapshot) {
+      throw new ToolError(
+        `wiki binding missing for agent ${agentKey}. Run \`panda wiki binding set ${agentKey} ...\`.`,
+      );
+    }
+
+    return {
+      operation: "overview",
+      namespacePath: snapshot.namespacePath,
+      locale: snapshot.locale,
+      recentlyEdited: snapshot.recentlyEdited.map((entry) => requireJsonValue(entry, "wiki.overview recent page")),
+      mostLinked: snapshot.topLinked.map((entry) => requireJsonValue(entry, "wiki.overview linked page")),
     };
   }
 

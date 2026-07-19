@@ -190,6 +190,7 @@ import {
   createWikiFetchAssetCommand,
   createWikiListCommand,
   createWikiMoveCommand,
+  createWikiOverviewCommand,
   createWikiReadCommand,
   createWikiRestoreCommand,
   createWikiSearchCommand,
@@ -203,6 +204,7 @@ import {
   wikiFetchAssetCommandDescriptor,
   wikiListCommandDescriptor,
   wikiMoveCommandDescriptor,
+  wikiOverviewCommandDescriptor,
   wikiReadCommandDescriptor,
   wikiRestoreCommandDescriptor,
   wikiSearchCommandDescriptor,
@@ -861,6 +863,13 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
   agentCommandModule(postgresReadonlyQueryCommandDescriptor, ["postgres", "readonly", "query"], "@payload.json", agentCommandPolicy(["memory"], {
     requiresReadonlyPostgres: true,
   }), (dependencies) => createPostgresReadonlyQueryCommand(requirePostgresReadonly(dependencies))),
+  agentCommandModule(
+    wikiOverviewCommandDescriptor,
+    ["wiki", "overview"],
+    "{}",
+    agentCommandPolicy(["memory"]),
+    (dependencies) => dependencies.wiki ? createWikiOverviewCommand(dependencies.wiki) : null,
+  ),
   agentCommandModule(
     wikiReadCommandDescriptor,
     ["wiki", "read"],

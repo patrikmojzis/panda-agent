@@ -20,6 +20,7 @@ import {
   wikiFetchAssetCommandDescriptor,
   wikiListCommandDescriptor,
   wikiMoveCommandDescriptor,
+  wikiOverviewCommandDescriptor,
   wikiReadCommandDescriptor,
   wikiRestoreCommandDescriptor,
   wikiSearchCommandDescriptor,
@@ -214,6 +215,7 @@ export function registerWikiCommands(program: Command): void {
     .command("wiki")
     .description("Manage Panda Wiki.js bindings");
 
+  registerJsonWikiCommand(wikiProgram, "overview", wikiOverviewCommandDescriptor);
   registerJsonWikiCommand(wikiProgram, "read", wikiReadCommandDescriptor);
   registerJsonWikiCommand(wikiProgram, "search", wikiSearchCommandDescriptor);
   registerJsonWikiCommand(wikiProgram, "list", wikiListCommandDescriptor);

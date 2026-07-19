@@ -2284,6 +2284,7 @@ USAGE
       ""|--help|-h)
         cat <<'USAGE'
 Usage:
+  panda wiki overview --help [--json]
   panda wiki read --help [--json]
   panda wiki search --help [--json]
   panda wiki list --help [--json]
@@ -2296,6 +2297,7 @@ Usage:
   panda wiki attach image --help [--json]
   panda wiki fetch asset --help [--json]
   panda wiki delete asset --help [--json]
+  panda wiki overview [--locale <locale>]
   panda wiki read <path> [--locale <locale>] [--format json|markdown]
   panda wiki read --json @payload.json
   panda wiki search <query> [--path <path>] [--locale <locale>] [--limit <n>]
@@ -2326,6 +2328,7 @@ USAGE
     esac
     subcommand="${1:-}"
     case "$subcommand" in
+      overview) command_name="wiki.overview"; command_label="overview" ;;
       read) command_name="wiki.read"; command_label="read" ;;
       search) command_name="wiki.search"; command_label="search" ;;
       list) command_name="wiki.list"; command_label="list" ;;
@@ -2383,6 +2386,28 @@ USAGE
     fi
     if [ "${1:-}" != "--json" ]; then
       case "$command_name" in
+        wiki.overview)
+          locale=""
+          while [ "$#" -gt 0 ]; do
+            option="$1"
+            shift
+            case "$option" in
+              --locale)
+                [ "$#" -gt 0 ] || die "panda wiki overview --locale requires a value."
+                locale="$1"
+                shift
+                ;;
+              *)
+                die "Unknown panda wiki overview option: $option"
+                ;;
+            esac
+          done
+          payload="$(jq -n \
+            --arg locale "$locale" \
+            'if $locale != "" then {locale: $locale} else {} end')"
+          execute_json_command "$command_name" "$payload"
+          exit $?
+          ;;
         wiki.read)
           wiki_path="${1:-}"
           [ -n "$wiki_path" ] || die "panda wiki read requires <path> or --json @payload.json."

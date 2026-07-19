@@ -2,128 +2,76 @@ import {describe, expect, it, vi} from "vitest";
 
 import {WikiOverviewContext} from "../src/panda/contexts/wiki-overview-context.js";
 
-function createFetchImpl(payloads: {
-  list: unknown;
-  links: unknown;
-}) {
+function createFetchImpl(payloads: {list?: unknown; links: unknown}) {
   return vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-    const body = JSON.parse(String(init?.body ?? "{}")) as {
-      query?: string;
-      variables?: {
-        limit?: number;
-      };
-    };
-    if (body.query?.includes("query ListPages")) {
-      const list = Array.isArray(payloads.list) && typeof body.variables?.limit === "number"
-        ? payloads.list.slice(0, body.variables.limit)
-        : payloads.list;
-      return new Response(JSON.stringify({
-        data: {
-          pages: {
-            list,
-          },
-        },
-      }), {
-        status: 200,
-        headers: {"content-type": "application/json"},
-      });
+    const body = JSON.parse(String(init?.body ?? "{}")) as {query?: string};
+    const payload = body.query?.includes("query ListPages")
+      ? {list: payloads.list ?? []}
+      : body.query?.includes("query ListPageLinks")
+        ? {links: payloads.links}
+        : null;
+    if (!payload) {
+      throw new Error(`Unexpected query: ${body.query ?? "<missing>"}`);
     }
 
-    if (body.query?.includes("query ListPageLinks")) {
-      return new Response(JSON.stringify({
-        data: {
-          pages: {
-            links: payloads.links,
-          },
-        },
-      }), {
-        status: 200,
-        headers: {"content-type": "application/json"},
-      });
-    }
-
-    throw new Error(`Unexpected query: ${body.query ?? "<missing>"}`);
+    return new Response(JSON.stringify({data: {pages: payload}}), {
+      status: 200,
+      headers: {"content-type": "application/json"},
+    });
   }) as typeof fetch;
 }
 
+function createBinding(agentKey = "panda") {
+  return {
+    agentKey,
+    wikiGroupId: 1,
+    namespacePath: `agents/${agentKey}`,
+    apiToken: "wiki-token",
+    keyVersion: 1,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
 describe("WikiOverviewContext", () => {
-  it("ranks recent pages and inbound links within the agent namespace and caches the snapshot", async () => {
+  it("renders cache-stable key pages without activity metadata", async () => {
     const fetchImpl = createFetchImpl({
-      list: [
-        {
-          id: 1,
-          path: "agents/panda/profile",
-          locale: "en",
-          title: "Profile",
-          updatedAt: "2026-04-19T11:05:00.000Z",
-        },
-        {
-          id: 2,
-          path: "agents/panda/project-alpha",
-          locale: "en",
-          title: "Project Alpha",
-          updatedAt: "2026-04-19T11:10:00.000Z",
-        },
-        {
-          id: 3,
-          path: "agents/otter/notes",
-          locale: "en",
-          title: "Otter Notes",
-          updatedAt: "2026-04-19T11:20:00.000Z",
-        },
-        {
-          id: 4,
-          path: "agents/panda/_archive/2026/04/old-profile",
-          locale: "en",
-          title: "Old Profile",
-          updatedAt: "2026-04-19T11:30:00.000Z",
-        },
-      ],
       links: [
         {
           id: 1,
-          path: "en/agents/panda/project-alpha",
+          path: "en/agents/cache-panda/project-alpha",
           title: "Project Alpha",
-          links: ["en/agents/panda/profile"],
+          links: ["en/agents/cache-panda/profile"],
         },
         {
           id: 2,
-          path: "en/agents/panda/logbook",
+          path: "en/agents/cache-panda/logbook",
           title: "Logbook",
-          links: ["en/agents/panda/profile", "en/agents/panda/project-alpha", "en/agents/otter/notes"],
+          links: [
+            "en/agents/cache-panda/profile",
+            "en/agents/cache-panda/project-alpha",
+            "en/agents/otter/notes",
+          ],
         },
         {
           id: 3,
-          path: "en/agents/panda/profile",
+          path: "en/agents/cache-panda/profile",
           title: "Profile",
           links: [],
         },
         {
           id: 4,
-          path: "en/agents/panda/_archive/2026/04/old-profile",
+          path: "en/agents/cache-panda/_archive/2026/04/old-profile",
           title: "Old Profile",
-          links: ["en/agents/panda/profile"],
+          links: ["en/agents/cache-panda/profile"],
         },
       ],
     });
-
     let nowMs = Date.parse("2026-04-19T12:00:00.000Z");
     const context = new WikiOverviewContext({
-      agentKey: "panda",
-      bindings: {
-        getBinding: async () => ({
-          agentKey: "panda",
-          wikiGroupId: 1,
-          namespacePath: "agents/panda",
-          apiToken: "wiki-token",
-          keyVersion: 1,
-          createdAt: "2026-04-19T10:00:00.000Z",
-          updatedAt: "2026-04-19T10:00:00.000Z",
-        }),
-      },
-      env: {
-        WIKI_URL: "http://wiki.internal:3000",
-      } as NodeJS.ProcessEnv,
+      agentKey: "cache-panda",
+      bindings: {getBinding: async () => createBinding("cache-panda")},
+      env: {WIKI_URL: "http://wiki.internal:3000"} as NodeJS.ProcessEnv,
       fetchImpl,
       ttlMs: 5 * 60_000,
       now: () => new Date(nowMs),
@@ -133,36 +81,26 @@ describe("WikiOverviewContext", () => {
     nowMs += 2 * 60_000;
     const second = await context.getContent();
 
-    expect(first).toContain("Namespace: agents/panda");
-    expect(first).toContain("Allowed scope: only this namespace and its child pages.");
-    expect(first).toContain("Overview snapshot refreshes every 5m.");
-    expect(first).toContain("- Project Alpha :: agents/panda/project-alpha (updated 2026-04-19T11:10:00.000Z)");
-    expect(first).toContain("- Profile :: agents/panda/profile (2 inbound links)");
-    expect(first).toContain("- Project Alpha :: agents/panda/project-alpha (1 inbound link)");
-    expect(second).toBe(first);
+    expect(first).toContain("Namespace: agents/cache-panda");
+    expect(first).toContain("Key pages:");
+    expect(first).toContain("- Project Alpha :: agents/cache-panda/project-alpha");
+    expect(first).toContain("- Profile :: agents/cache-panda/profile");
+    expect(first).toContain("Use `panda wiki overview` for recently edited pages and link details.");
+    expect(first).not.toContain("Recently edited:");
+    expect(first).not.toContain("updated ");
+    expect(first).not.toContain("inbound link");
+    expect(first).not.toContain("refreshes");
     expect(first).not.toContain("Otter Notes");
     expect(first).not.toContain("Old Profile");
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(second).toBe(first);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("renders an empty namespace without blowing up", async () => {
     const context = new WikiOverviewContext({
       agentKey: "panda",
-      bindings: {
-        getBinding: async () => ({
-          agentKey: "panda",
-          wikiGroupId: 1,
-          namespacePath: "agents/panda",
-          apiToken: "wiki-token",
-          keyVersion: 1,
-          createdAt: "2026-04-19T10:00:00.000Z",
-          updatedAt: "2026-04-19T10:00:00.000Z",
-        }),
-      },
-      fetchImpl: createFetchImpl({
-        list: [],
-        links: [],
-      }),
+      bindings: {getBinding: async () => createBinding()},
+      fetchImpl: createFetchImpl({links: []}),
       ttlMs: 0,
     });
 
@@ -170,35 +108,14 @@ describe("WikiOverviewContext", () => {
 
     expect(content).toContain("Namespace: agents/panda");
     expect(content).toContain("Allowed scope: only this namespace and its child pages.");
-    expect(content).toContain("Overview snapshot refreshes on demand.");
-    expect(content).toContain("- No pages yet.");
-    expect(content).toContain("- No inbound links yet.");
+    expect(content).toContain("- No linked pages yet.");
   });
 
   it("falls back to the page slug when a linked target has no title", async () => {
     const context = new WikiOverviewContext({
       agentKey: "panda",
-      bindings: {
-        getBinding: async () => ({
-          agentKey: "panda",
-          wikiGroupId: 1,
-          namespacePath: "agents/panda",
-          apiToken: "wiki-token",
-          keyVersion: 1,
-          createdAt: "2026-04-19T10:00:00.000Z",
-          updatedAt: "2026-04-19T10:00:00.000Z",
-        }),
-      },
+      bindings: {getBinding: async () => createBinding()},
       fetchImpl: createFetchImpl({
-        list: [
-          {
-            id: 1,
-            path: "agents/panda/untitled",
-            locale: "en",
-            title: "",
-            updatedAt: "2026-04-19T11:00:00.000Z",
-          },
-        ],
         links: [
           {
             id: 1,
@@ -217,64 +134,37 @@ describe("WikiOverviewContext", () => {
       ttlMs: 0,
     });
 
-    const content = await context.getContent();
-
-    expect(content).toContain("Overview snapshot refreshes on demand.");
-    expect(content).toContain("- untitled :: agents/panda/untitled (1 inbound link)");
+    await expect(context.getContent()).resolves.toContain("- untitled :: agents/panda/untitled");
   });
 
-  it("overfetches recent pages before namespace filtering so other agents do not crowd out the list", async () => {
-    const fetchImpl = createFetchImpl({
-      list: [
-        ...Array.from({length: 12}, (_, index) => ({
-          id: index + 1,
-          path: `agents/otter/hot-${index + 1}`,
-          locale: "en",
-          title: `Otter Hot ${index + 1}`,
-          updatedAt: `2026-04-19T11:${String(59 - index).padStart(2, "0")}:00.000Z`,
-        })),
-        {
-          id: 20,
-          path: "agents/panda/project-alpha",
-          locale: "en",
-          title: "Project Alpha",
-          updatedAt: "2026-04-19T11:20:00.000Z",
-        },
-        {
-          id: 21,
-          path: "agents/panda/profile",
-          locale: "en",
-          title: "Profile",
-          updatedAt: "2026-04-19T11:19:00.000Z",
-        },
-      ],
+  it("keeps the twenty strongest pages but renders them in stable path order", async () => {
+    const targets = Array.from({length: 25}, (_, index) => ({
+      id: index + 1,
+      path: `en/agents/panda/target-${index}`,
+      title: `Target ${index}`,
       links: [],
-    });
+    }));
+    const sources = Array.from({length: 25}, (_, index) => ({
+      id: 100 + index,
+      path: `en/agents/panda/source-${index}`,
+      title: `Source ${index}`,
+      links: targets.slice(0, 25 - index).map((target) => target.path),
+    }));
     const context = new WikiOverviewContext({
       agentKey: "panda",
-      bindings: {
-        getBinding: async () => ({
-          agentKey: "panda",
-          wikiGroupId: 1,
-          namespacePath: "agents/panda",
-          apiToken: "wiki-token",
-          keyVersion: 1,
-          createdAt: "2026-04-19T10:00:00.000Z",
-          updatedAt: "2026-04-19T10:00:00.000Z",
-        }),
-      },
-      fetchImpl,
-      recentLimit: 2,
+      bindings: {getBinding: async () => createBinding()},
+      fetchImpl: createFetchImpl({links: [...targets, ...sources]}),
       ttlMs: 0,
     });
 
     const content = await context.getContent();
-    const listRequest = JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body ?? "{}")) as {
-      variables?: {limit?: number};
-    };
+    const keyPageLines = content.split("\n").filter((line) => line.startsWith("- Target"));
 
-    expect(content).toContain("- Project Alpha :: agents/panda/project-alpha (updated 2026-04-19T11:20:00.000Z)");
-    expect(content).toContain("- Profile :: agents/panda/profile (updated 2026-04-19T11:19:00.000Z)");
-    expect(listRequest.variables?.limit).toBeGreaterThan(2);
+    expect(keyPageLines).toHaveLength(20);
+    expect(keyPageLines).toContain("- Target 0 :: agents/panda/target-0");
+    expect(keyPageLines).toContain("- Target 19 :: agents/panda/target-19");
+    expect(keyPageLines).not.toContain("- Target 20 :: agents/panda/target-20");
+    expect(keyPageLines.indexOf("- Target 10 :: agents/panda/target-10"))
+      .toBeLessThan(keyPageLines.indexOf("- Target 2 :: agents/panda/target-2"));
   });
 });
