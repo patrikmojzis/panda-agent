@@ -64,7 +64,7 @@ import type {WikiBindingRecord} from "../wiki/types.js";
 import {normalizeWikiGroupId, normalizeWikiNamespacePath} from "../wiki/types.js";
 import type {ControlAuditEventSummary, ControlReadService} from "./read-service.js";
 import type {ControlSessionRecord} from "./types.js";
-import {summarizeRuntimeError} from "./runtime-error-summary.js";
+import {summarizeRuntimeError} from "../../lib/runtime-error-summary.js";
 import {
   buildRunnerEndpoint,
   makeNetworkTimeoutSignal,

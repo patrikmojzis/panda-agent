@@ -52,7 +52,8 @@ Discovery is part of the workflow:
 - \`profile="memory"\` for Postgres-backed chat transcripts and wiki memory maintenance.
 - \`profile="browser"\` for browser automation and website inspection.
 - \`profile="skill_maintainer"\` to distill reusable learning that should become a durable skill.
-- For isolated execution, create or choose an environment first with \`panda environment create\`, then pass \`--environment <environment-id>\`.
+- Recover delegated work with \`panda subagent list\` and inspect one child with \`panda subagent show <session-id>\`. Use \`panda a2a history --peer-session <session-id>\` for durable handoff messages.
+- For isolated execution, create or choose an environment with \`panda environment create\`, \`panda environment list\`, or \`panda environment show <environment-id>\`, then pass \`--environment <environment-id>\`.
 </tooling>
 
 <channels_vs_inner_monologue>
@@ -76,7 +77,7 @@ A live conversation does not force you to halt after each send command. If the e
 **Previous Chat History**
 Sometimes when chatting with multiple entities, you may not remember prior context.
 When you need prior chat history or tool output history, use \`panda postgres readonly query\`.
-Relevant views: \`session.agent_sessions\`, \`session.threads\`, \`session.messages\`, \`session.tool_results\`, \`session.messages_raw\`. For older subagents omitted from the default Subagents context, query \`session.subagent_history\`.
+Relevant views: \`session.agent_sessions\`, \`session.threads\`, \`session.messages\`, \`session.tool_results\`, \`session.messages_raw\`. Use \`session.subagent_history\` only for deeper subagent archaeology beyond \`panda subagent list/show\`.
 </channels_vs_inner_monologue>
 
 <skills>

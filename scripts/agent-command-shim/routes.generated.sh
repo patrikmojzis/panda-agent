@@ -170,6 +170,12 @@ agent_command_shim_lookup_route() {
     'subagent spawn')
       printf '%s\t%s\n' 'subagent.spawn' 'subagent spawn'
       ;;
+    'subagent list')
+      printf '%s\t%s\n' 'subagent.list' 'subagent list'
+      ;;
+    'subagent show')
+      printf '%s\t%s\n' 'subagent.show' 'subagent show'
+      ;;
     'subagent profile list')
       printf '%s\t%s\n' 'subagent.profile.list' 'subagent profile list'
       ;;
@@ -381,6 +387,8 @@ agent_command_shim_print_root_usage_commands() {
   panda todo block <index>
   panda todo clear
   panda subagent spawn (<task|@file|@->|--prompt <text|@file|@->) [--profile <slug>|--tool-group <group>...] [--context <text|@file|@->] [(--environment <environment-id> [--isolated]|--agent-workspace)] [--credential <env-key>...]
+  panda subagent list [--run-status running|completed|failed|all] [--limit <n>]
+  panda subagent show <session-id>
   panda subagent profile list [--include-disabled]
   panda subagent profile show <slug> [--include-disabled]
   panda subagent profile upsert <slug> --description <text|@file|@-> --prompt <text|@file|@-> --tool-group <group>... [--model <model>] [--thinking low|medium|high|xhigh] [--enabled|--disabled]
@@ -1030,6 +1038,26 @@ Detailed help is available only through the current agent command lease.
 Usage:
   panda subagent spawn --json @payload.json
 PANDA_COMMAND_HELP_subagent_spawn
+      ;;
+    'subagent.list')
+      cat <<'PANDA_COMMAND_HELP_subagent_list'
+Panda command: subagent.list
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda subagent list --json @payload.json
+PANDA_COMMAND_HELP_subagent_list
+      ;;
+    'subagent.show')
+      cat <<'PANDA_COMMAND_HELP_subagent_show'
+Panda command: subagent.show
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda subagent show --json @payload.json
+PANDA_COMMAND_HELP_subagent_show
       ;;
     'subagent.profile.list')
       cat <<'PANDA_COMMAND_HELP_subagent_profile_list'
@@ -2540,6 +2568,42 @@ PANDA_COMMAND_HELP_JSON_todo_clear
   "examples": []
 }
 PANDA_COMMAND_HELP_JSON_subagent_spawn
+      ;;
+    'subagent.list')
+      cat <<'PANDA_COMMAND_HELP_JSON_subagent_list'
+{
+  "name": "subagent.list",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda subagent list --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_subagent_list
+      ;;
+    'subagent.show')
+      cat <<'PANDA_COMMAND_HELP_JSON_subagent_show'
+{
+  "name": "subagent.show",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda subagent show --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_subagent_show
       ;;
     'subagent.profile.list')
       cat <<'PANDA_COMMAND_HELP_JSON_subagent_profile_list'

@@ -30,7 +30,7 @@ const READONLY_VIEW_GUIDANCE = [
   "Do not invent is_active flags or extra session_id subqueries unless you are joining raw tables outside the session.* views.",
   "Use session.prompts for session prompt docs, session.agent_pairings for known identities, and session.agent_skills for stored skills.",
   "For exploratory reads, prefer left(...), substring(...), regex filters, full-text search, or other narrow projections instead of pulling giant content blobs blindly.",
-  "For durable session todo context, query session.todos. For older subagent archaeology omitted from the default prompt, query session.subagent_history. For session automation, query session.scheduled_tasks or session.watches directly with ORDER BY/LIMIT.",
+  "For durable session todo context, query session.todos. For deeper subagent archaeology beyond panda subagent list/show, query session.subagent_history. For session automation, query session.scheduled_tasks or session.watches directly with ORDER BY/LIMIT.",
   "Prefer session.agent_skills for stored skill bodies and session.messages_raw only when you truly need raw JSONB.",
   "Large skill bodies may need substring(...) or targeted column selection.",
   "If you need schema help, query information_schema.columns.",

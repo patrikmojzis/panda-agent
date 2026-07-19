@@ -11,6 +11,7 @@ import {
   defineCommandModule,
 } from "../src/domain/commands/modules.js";
 import type {CommandCatalogModule, CommandModule, RegisteredCommand} from "../src/domain/commands/types.js";
+import {resolveCommandLeaseAuthority} from "../src/domain/execution-environments/command-authority.js";
 import {
   type AgentCommandModuleDependencies,
   buildDefaultAgentCommandModules,
@@ -77,6 +78,8 @@ const factoryBackedCommandNames = [
   "todo.block",
   "todo.clear",
   "subagent.spawn",
+  "subagent.list",
+  "subagent.show",
   "subagent.profile.list",
   "subagent.profile.show",
   "subagent.profile.upsert",
@@ -203,6 +206,7 @@ function defaultModuleDependencies(): AgentCommandModuleDependencies {
     sessionPrompts: {} as AgentCommandModuleDependencies["sessionPrompts"],
     sessionTodos: {} as AgentCommandModuleDependencies["sessionTodos"],
     subagentProfiles: {} as AgentCommandModuleDependencies["subagentProfiles"],
+    subagentInventory: {} as AgentCommandModuleDependencies["subagentInventory"],
     credentials: {} as AgentCommandModuleDependencies["credentials"],
     credentialResolver: {} as AgentCommandModuleDependencies["credentialResolver"],
     mcpConfigs: {} as AgentCommandModuleDependencies["mcpConfigs"],
@@ -440,5 +444,25 @@ describe("command modules", () => {
       "whatsapp.history",
       "whatsapp.send",
     ]);
+  });
+
+  it("grants inventory through subagent.spawn without adding it to profile tool groups", () => {
+    const grantedSubagentCommands = resolveCommandLeaseAuthority({
+      commandCatalog: DEFAULT_AGENT_COMMAND_CATALOG,
+      toolPolicy: {allowedTools: ["subagent.spawn"]},
+    }).filter((name) => name.startsWith("subagent."));
+
+    expect(grantedSubagentCommands).toEqual([
+      "subagent.spawn",
+      "subagent.list",
+      "subagent.show",
+    ]);
+    expect(DEFAULT_AGENT_COMMAND_CATALOG.namesForToolGroups([
+      "core",
+      "operate",
+      "memory",
+      "internet",
+      "skill_maintenance",
+    ])).not.toEqual(expect.arrayContaining(["subagent.list", "subagent.show"]));
   });
 });

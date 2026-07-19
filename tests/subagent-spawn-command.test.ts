@@ -91,6 +91,7 @@ describe("subagent spawn command", () => {
         profileSource: "builtin",
         execution: "isolated_environment",
         environmentId: "env-parent-owned",
+        inspectCommand: "panda subagent show subagent-session",
       },
     });
   });

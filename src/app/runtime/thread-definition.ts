@@ -51,10 +51,10 @@ export interface CreateThreadDefinitionOptions {
   fallbackContext: Pick<DefaultAgentSessionContext, "cwd">;
   agentStore?: AgentProfileStore & Partial<PairedIdentitiesAgentStore>;
   identityStore?: PairedIdentitiesIdentityStore;
-  sessionStore?: Pick<SessionStore, "listAgentSessions" | "readSessionTodo">;
+  sessionStore?: Pick<SessionStore, "readSessionTodo">;
   sessionRoutes?: PairedIdentitiesRouteStore;
   subagentProfiles?: Pick<SubagentProfileStore, "listProfiles">;
-  threadStore?: Pick<ThreadRuntimeStore, "listToolJobs"> & Partial<Pick<ThreadRuntimeStore, "listThreadSummaries">>;
+  threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
   executionEnvironments?: Pick<ExecutionEnvironmentStore, "getEnvironment" | "listBindingsForEnvironments" | "listDisposableEnvironmentsByOwner" | "listBindingsForSession">;
   wikiBindings?: Pick<WikiBindingService, "getBinding">;

@@ -82,6 +82,10 @@ import {
   createSubagentProfileUpsertCommand,
   createSubagentSpawnCommand,
 } from "../src/domain/subagents/commands.js";
+import {
+  createSubagentListCommand,
+  createSubagentShowCommand,
+} from "../src/domain/subagents/inventory-commands.js";
 import {buildSubagentSessionMetadata} from "../src/domain/subagents/session-metadata.js";
 import {createTimeNowCommand} from "../src/domain/time/commands.js";
 import {
@@ -1789,6 +1793,34 @@ describe("agent command shim", () => {
         expiresAt: Date.UTC(2026, 4, 13, 12, 0, 0),
       })),
     };
+    const inventoryRecord = {
+      sessionId: "subagent-session",
+      currentThreadId: "subagent-thread",
+      profile: "workspace",
+      execution: "agent_workspace" as const,
+      taskPreview: "Inspect the runtime wiring.",
+      startedAt: "2026-07-19T10:00:00.000Z",
+      messageCount: 2,
+      pendingInputCount: 0,
+      lastMessageAt: "2026-07-19T10:02:00.000Z",
+      latestRun: {
+        id: "subagent-run",
+        status: "completed" as const,
+        startedAt: "2026-07-19T10:00:01.000Z",
+        finishedAt: "2026-07-19T10:01:00.000Z",
+        errorSummary: null,
+      },
+      environment: null,
+    };
+    const subagentInventory = {
+      list: vi.fn(async (input: {runStatus: string; limit: number}) => ({
+        records: [{...inventoryRecord, profile: `${input.runStatus}:${input.limit}`}],
+        hasMore: false,
+      })),
+      show: vi.fn(async (input: {sessionId: string}) => input.sessionId === inventoryRecord.sessionId
+        ? inventoryRecord
+        : null),
+    };
     const readonlyPool = new FakeReadonlyPool();
     const backgroundStore = new TestThreadRuntimeStore();
     await backgroundStore.createThread({
@@ -2106,6 +2138,8 @@ describe("agent command shim", () => {
           createSubagentProfileEnableCommand(store),
           createSubagentProfileDisableCommand(store),
           createSubagentSpawnCommand(store),
+          createSubagentListCommand(subagentInventory),
+          createSubagentShowCommand(subagentInventory),
           createListEnvValuesCommand(store),
           createSetEnvValueCommand(store),
           createClearEnvValueCommand(store),
@@ -2282,17 +2316,19 @@ describe("agent command shim", () => {
     );
     expect(Object.fromEntries(
       DEFAULT_AGENT_COMMAND_MODULES
-        .filter((module) => module.descriptor.name.startsWith("mcp."))
+        .filter((module) => module.policy.capability !== module.descriptor.name)
         .map((module) => [module.descriptor.name, module.policy.capability]),
     )).toEqual({
       "mcp.tools": "mcp.*",
       "mcp.call": "mcp.*",
+      "subagent.list": "subagent.spawn",
+      "subagent.show": "subagent.spawn",
     });
     expect(DEFAULT_AGENT_COMMAND_MODULES
-      .filter((module) => !module.descriptor.name.startsWith("mcp."))
+      .filter((module) => module.policy.capability === module.descriptor.name)
       .map((module) => module.policy.capability)).toEqual(
         DEFAULT_AGENT_COMMAND_MODULES
-          .filter((module) => !module.descriptor.name.startsWith("mcp."))
+          .filter((module) => module.policy.capability === module.descriptor.name)
           .map((module) => module.descriptor.name),
       );
   });
@@ -3374,6 +3410,8 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     const vent = await execFileAsync(shimPath, ["vent", "--help"]);
     expect(vent.stdout).toContain("Detailed help is available only through the current agent command lease.");
     const subagent = await execFileAsync(shimPath, ["subagent", "--help"]);
+    expect(subagent.stdout).toContain("panda subagent list --help");
+    expect(subagent.stdout).toContain("panda subagent show <session-id>");
     expect(subagent.stdout).toContain("panda subagent spawn --help");
     expect(subagent.stdout).toContain("panda subagent spawn (<task|@file|@->|--prompt <text|@file|@->)");
     expect(subagent.stdout).toContain("panda subagent profile upsert --help");
@@ -3567,6 +3605,8 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     const todoShow = await execHelp(["todo", "show", "--help"]);
     const todoDone = await execHelp(["todo", "done", "--help"]);
     const todoBlock = await execHelp(["todo", "block", "--help"]);
+    const subagentList = await execHelp(["subagent", "list", "--help"]);
+    const subagentShow = await execHelp(["subagent", "show", "--help"]);
     const subagentSpawn = await execHelp(["subagent", "spawn", "--help"]);
     const subagentProfileUpsert = await execHelp(["subagent", "profile", "upsert", "--help"]);
     expect(todoAdd.stdout).toContain("panda todo add <text|@file|@-> [--status pending|in_progress|blocked]");
@@ -3576,6 +3616,8 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     expect(todoBlock.stdout).toContain("panda todo block <index>");
     expect(todoClear.stdout).toContain("Clear the current session todo list.");
     expect(todoClear.stdout).toContain("panda todo clear");
+    expect(subagentList.stdout).toContain("panda subagent list [--run-status running|completed|failed|all] [--limit <n>]");
+    expect(subagentShow.stdout).toContain("panda subagent show <session-id>");
     expect(vent.stdout).toContain("Send a short private vent note to Panda Trace.");
     expect(vent.stdout).toContain("panda vent (--message <text|@file|@->|--stdin)");
     expect(vent.stdout).toContain("--stdin");
@@ -5778,6 +5820,40 @@ printf '{"ok":true,"output":%s}\\n' "$body"
       "two",
     ])).rejects.toMatchObject({
       stderr: expect.stringContaining("panda session prompt current transform accepts only one transform mode."),
+    });
+  });
+
+  it("executes subagent inventory list/show through native args", async () => {
+    const server = await startWatchServer();
+
+    const list = await execFileAsync(shimPath, [
+      "subagent",
+      "list",
+      "--run-status",
+      "failed",
+      "--limit",
+      "7",
+    ], {
+      env: shimEnv(server),
+    });
+    const show = await execFileAsync(shimPath, [
+      "subagent",
+      "show",
+      "subagent-session",
+    ], {
+      env: shimEnv(server),
+    });
+
+    expect(JSON.parse(list.stdout)).toMatchObject({
+      operation: "list",
+      count: 1,
+      hasMore: false,
+      subagents: [expect.objectContaining({profile: "failed:7"})],
+    });
+    expect(JSON.parse(show.stdout)).toMatchObject({
+      operation: "show",
+      sessionId: "subagent-session",
+      currentThreadId: "subagent-thread",
     });
   });
 

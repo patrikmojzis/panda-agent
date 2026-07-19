@@ -16,6 +16,7 @@ import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
 import {PostgresSubagentProfileStore} from "../../domain/subagents/postgres.js";
+import {PostgresSubagentInventory} from "../../domain/subagents/inventory.js";
 import type {SubagentProfileStore} from "../../domain/subagents/store.js";
 import {createCommandCatalog, type CommandCatalog} from "../../domain/commands/modules.js";
 import {PostgresEmailStore} from "../../domain/email/postgres.js";
@@ -438,6 +439,7 @@ export async function bootstrapRuntime(
     const subagentProfiles = new PostgresSubagentProfileStore({
       pool: postgresPool,
     });
+    const subagentInventory = new PostgresSubagentInventory(postgresPool);
     const executionEnvironments = new PostgresExecutionEnvironmentStore({
       pool: postgresPool,
     });
@@ -648,6 +650,7 @@ export async function bootstrapRuntime(
       sessionPrompts: sessionStore,
       sessionTodos: sessionStore,
       subagentProfiles,
+      subagentInventory,
       credentials: credentialService ?? undefined,
       credentialResolver,
       mcpConfigs,

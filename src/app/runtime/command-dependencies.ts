@@ -24,6 +24,7 @@ export interface RuntimeCommandDependenciesInput {
   sessionPrompts: RequiredCommandDependency<"sessionPrompts">;
   sessionTodos: RequiredCommandDependency<"sessionTodos">;
   subagentProfiles: RequiredCommandDependency<"subagentProfiles">;
+  subagentInventory: RequiredCommandDependency<"subagentInventory">;
   credentials?: AgentCommandModuleDependencies["credentials"];
   credentialResolver: RequiredCommandDependency<"credentialResolver">;
   mcpConfigs: RequiredCommandDependency<"mcpConfigs">;
@@ -81,6 +82,7 @@ export function buildRuntimeCommandDependencies(
     sessionPrompts: input.sessionPrompts,
     sessionTodos: input.sessionTodos,
     subagentProfiles: input.subagentProfiles,
+    subagentInventory: input.subagentInventory,
     credentials: input.credentials,
     credentialResolver: input.credentialResolver,
     mcpConfigs: input.mcpConfigs,

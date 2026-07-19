@@ -53,8 +53,7 @@ function leadingSafeText(value: string): string {
 }
 
 function hasEnoughLeadingProse(value: string): boolean {
-  const trimmed = value.trim();
-  return trimmed.length > 0;
+  return value.trim().length > 0;
 }
 
 function inlineStructuredPayloadStart(value: string): number | null {
@@ -91,6 +90,7 @@ function truncateSummary(value: string, maxChars: number): string {
   return `${slice}…`;
 }
 
+/** Return a bounded error summary without structured runtime payloads or stack traces. */
 export function summarizeRuntimeError(error: unknown, options: {maxChars?: number} = {}): string | null {
   const message = messageFromError(error);
   if (!message?.trim()) return null;

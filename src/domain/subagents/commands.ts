@@ -628,6 +628,7 @@ export const subagentSpawnCommandDescriptor: CommandDescriptor = {
     profileSource: "builtin|custom|ad_hoc",
     execution: "agent_workspace|isolated_environment",
     environmentId: "string|null",
+    inspectCommand: "string",
     note: "string",
   },
 };
@@ -802,6 +803,7 @@ export function createSubagentSpawnCommand(
         profileSource: metadata.profile.source,
         execution: metadata.execution,
         ...(created.environment?.id ? {environmentId: created.environment.id} : {}),
+        inspectCommand: `panda subagent show ${created.session.id}`,
         note: "Progress and completion will arrive through A2A commands, not a background job.",
       }, "subagent.spawn result");
 

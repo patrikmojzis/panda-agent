@@ -268,7 +268,7 @@ Do not solve that by handing the SQL command raw table access.
 `session.agent_skills` exposes stored skill bodies.
 Use `description` or `substring(content from ... for ...)` for large skills instead of yanking the whole blob every time.
 
-`session.subagent_history` exposes current-session child subagent identifiers, bounded task previews, environment state, and last activity so older subagents can stay out of the default prompt without leaking full handoff text.
+`session.subagent_history` exposes current-session child subagent identifiers, bounded task previews, environment state, and last activity for deeper archaeology beyond the bounded `panda subagent list/show` inventory, without leaking full handoff text.
 
 ## Hard Rules
 

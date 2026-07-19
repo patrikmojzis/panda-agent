@@ -64,10 +64,10 @@ export interface BuildDefaultAgentLlmContextsOptions {
   context?: DefaultAgentSessionContext;
   agentStore?: AgentProfileStore & Partial<PairedIdentitiesAgentStore>;
   identityStore?: PairedIdentitiesIdentityStore;
-  sessionStore?: Partial<Pick<SessionStore, "listAgentSessions" | "listSessionPrompts" | "readSessionTodo">>;
+  sessionStore?: Partial<Pick<SessionStore, "listSessionPrompts" | "readSessionTodo">>;
   sessionRoutes?: PairedIdentitiesRouteStore;
   subagentProfiles?: Pick<SubagentProfileStore, "listProfiles">;
-  threadStore?: Pick<ThreadRuntimeStore, "listToolJobs"> & Partial<Pick<ThreadRuntimeStore, "listThreadSummaries">>;
+  threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
   executionEnvironments?: Pick<ExecutionEnvironmentStore, "getEnvironment" | "listBindingsForEnvironments" | "listDisposableEnvironmentsByOwner" | "listBindingsForSession">;
   wikiBindings?: Pick<WikiBindingService, "getBinding">;
@@ -172,19 +172,12 @@ export function buildDefaultAgentLlmContexts(
 
   if (
     uniqueSections.has("subagents")
-    && typeof options.sessionStore?.listAgentSessions === "function"
+    && options.subagentProfiles
     && options.agentKey
-    && options.context?.sessionId
   ) {
     llmContexts.push(new SubagentsContext({
-      sessions: options.sessionStore as Pick<SessionStore, "listAgentSessions">,
-      environments: options.executionEnvironments,
       subagentProfiles: options.subagentProfiles,
-      threads: typeof options.threadStore?.listThreadSummaries === "function"
-        ? {listThreadSummaries: options.threadStore.listThreadSummaries.bind(options.threadStore)}
-        : undefined,
       agentKey: options.agentKey,
-      parentSessionId: options.context.sessionId,
     }));
   }
 

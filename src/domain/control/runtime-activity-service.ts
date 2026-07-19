@@ -5,7 +5,7 @@ import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import {buildThreadRuntimeTableNames} from "../threads/runtime/postgres-shared.js";
 import type {ThreadRunStatus} from "../threads/runtime/types.js";
 import {buildControlTableNames} from "./postgres-shared.js";
-import {summarizeRuntimeError} from "./runtime-error-summary.js";
+import {summarizeRuntimeError} from "../../lib/runtime-error-summary.js";
 import type {ControlSessionRecord} from "./types.js";
 
 const DEFAULT_RUN_LIMIT = 25;

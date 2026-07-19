@@ -35,6 +35,7 @@ describe("command dependency builders", () => {
       sessionPrompts: fakeDependency("sessionPrompts"),
       sessionTodos: fakeDependency("sessionTodos"),
       subagentProfiles: fakeDependency("subagentProfiles"),
+      subagentInventory: fakeDependency("subagentInventory"),
       postgresReadonly: fakeDependency("postgresReadonly"),
       executionEnvironments: fakeDependency("executionEnvironments"),
       environmentLifecycle: fakeDependency("environmentLifecycle"),

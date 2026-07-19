@@ -3454,12 +3454,16 @@ USAGE
 	      ""|--help|-h)
 	        cat <<'USAGE'
 Usage:
+  panda subagent list --help [--json]
+  panda subagent show --help [--json]
   panda subagent spawn --help [--json]
   panda subagent profile list --help [--json]
   panda subagent profile show --help [--json]
   panda subagent profile upsert --help [--json]
   panda subagent profile enable --help [--json]
   panda subagent profile disable --help [--json]
+  panda subagent list [--run-status running|completed|failed|all] [--limit <n>]
+  panda subagent show <session-id>
   panda subagent spawn (<task|@file|@->|--prompt <text|@file|@->) [--profile <slug>|--tool-group <group>...] [--context <text|@file|@->] [(--environment <environment-id> [--isolated]|--agent-workspace)] [--credential <env-key>...]
   panda subagent spawn --json @payload.json
   panda subagent profile list [--include-disabled]
@@ -3473,6 +3477,14 @@ USAGE
 	        ;;
 	    esac
 	    case "${1:-}" in
+	      list)
+	        command_name="subagent.list"
+	        shift
+	        ;;
+	      show)
+	        command_name="subagent.show"
+	        shift
+	        ;;
 	      spawn)
 	        command_name="subagent.spawn"
 	        shift
@@ -3489,7 +3501,7 @@ USAGE
 	        esac
 	        shift
 	        ;;
-	      *) die "Unknown panda subagent command. Try: panda subagent spawn --help" ;;
+	      *) die "Unknown panda subagent command. Try: panda subagent list --help" ;;
 	    esac
 	    if [ "${1:-}" = "--help" ]; then
 	      shift
@@ -3504,6 +3516,47 @@ USAGE
 	      fi
 	      curl_command "$(command_url "/commands/${command_name}/help")"
 	      exit 0
+	    fi
+	    if [ "${1:-}" != "--json" ] && [ "$command_name" = "subagent.list" ]; then
+	      run_status=""
+	      limit=""
+	      while [ "$#" -gt 0 ]; do
+	        option="$1"
+	        shift
+	        case "$option" in
+	          --run-status)
+	            [ "$#" -gt 0 ] || die "panda subagent list --run-status requires running, completed, failed, or all."
+	            run_status="$1"
+	            shift
+	            ;;
+	          --limit)
+	            [ "$#" -gt 0 ] || die "panda subagent list --limit requires a number."
+	            limit="$1"
+	            require_positive_integer "$limit" "panda subagent list --limit"
+	            shift
+	            ;;
+	          *)
+	            die "Unknown panda subagent list option: $option"
+	            ;;
+	        esac
+	      done
+	      payload="$(jq -n \
+	        --arg runStatus "$run_status" \
+	        --arg limit "$limit" \
+	        '({})
+	         + (if $runStatus != "" then {runStatus: $runStatus} else {} end)
+	         + (if $limit != "" then {limit: ($limit | tonumber)} else {} end)')"
+	      execute_json_command "$command_name" "$payload"
+	      exit $?
+	    fi
+	    if [ "${1:-}" != "--json" ] && [ "$command_name" = "subagent.show" ]; then
+	      subagent_session_id="${1:-}"
+	      [ -n "$subagent_session_id" ] || die "panda subagent show requires <session-id> or --json @payload.json."
+	      shift
+	      [ "$#" -eq 0 ] || die "panda subagent show accepts only one session id."
+	      payload="$(jq -n --arg sessionId "$subagent_session_id" '{sessionId: $sessionId}')"
+	      execute_json_command "$command_name" "$payload"
+	      exit $?
 	    fi
 	    if [ "${1:-}" != "--json" ] && [ "$command_name" = "subagent.profile.list" ]; then
 	      include_disabled="false"

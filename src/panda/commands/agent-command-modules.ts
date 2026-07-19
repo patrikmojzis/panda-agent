@@ -145,12 +145,20 @@ import {
   subagentProfileShowCommandDescriptor,
   subagentProfileUpsertCommandDescriptor,
   subagentSpawnCommandDescriptor,
+  SUBAGENT_SPAWN_COMMAND_NAME,
   type SubagentSpawnSessionCreator,
   type SubagentProfileListCommandStore,
   type SubagentProfileShowCommandStore,
   type SubagentProfileStateCommandStore,
   type SubagentProfileUpsertCommandStore,
 } from "../../domain/subagents/commands.js";
+import {
+  createSubagentListCommand,
+  createSubagentShowCommand,
+  subagentListCommandDescriptor,
+  subagentShowCommandDescriptor,
+} from "../../domain/subagents/inventory-commands.js";
+import type {SubagentInventoryReader} from "../../domain/subagents/inventory.js";
 import {
   createTimeNowCommand,
   timeNowCommandDescriptor,
@@ -362,6 +370,7 @@ export interface AgentCommandModuleDependencies {
   sessionPrompts?: SessionPromptCommandStore;
   sessionTodos?: SessionTodoCommandStore;
   subagentProfiles?: SubagentProfileCommandStore;
+  subagentInventory?: SubagentInventoryReader;
   credentials?: EnvCommandService;
   credentialResolver?: Pick<CredentialResolver, "resolveCredential">;
   mcpConfigs?: McpConfigReader;
@@ -533,6 +542,14 @@ function requireSubagentProfiles(dependencies: AgentCommandModuleDependencies): 
   }
 
   return dependencies.subagentProfiles;
+}
+
+function requireSubagentInventory(dependencies: AgentCommandModuleDependencies): SubagentInventoryReader {
+  if (!dependencies.subagentInventory) {
+    throw new Error("Agent command module requires subagentInventory.");
+  }
+
+  return dependencies.subagentInventory;
 }
 
 function requirePostgresReadonly(
@@ -1027,6 +1044,20 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
     (dependencies) => dependencies.subagentSessions
       ? createSubagentSpawnCommand(dependencies.subagentSessions)
       : null,
+  ),
+  agentCommandModule(
+    subagentListCommandDescriptor,
+    ["subagent", "list"],
+    "@payload.json",
+    agentCommandPolicy([], {capability: SUBAGENT_SPAWN_COMMAND_NAME}),
+    (dependencies) => createSubagentListCommand(requireSubagentInventory(dependencies)),
+  ),
+  agentCommandModule(
+    subagentShowCommandDescriptor,
+    ["subagent", "show"],
+    "@payload.json",
+    agentCommandPolicy([], {capability: SUBAGENT_SPAWN_COMMAND_NAME}),
+    (dependencies) => createSubagentShowCommand(requireSubagentInventory(dependencies)),
   ),
   agentCommandModule(
     subagentProfileListCommandDescriptor,
