@@ -250,7 +250,7 @@ validate_json_kind() {
 execute_json_command() {
   local command="$1"
   local input="$2"
-  local body response status ok message
+  local body response status ok message error_code
   body="$(jq -n --arg command "$command" --arg cwd "$PWD" --argjson input "$input" '{command: $command, input: $input, outputMode: "json", workingDirectory: $cwd}')"
   set +e
   response="$(curl_command_raw -H "content-type: application/json" -X POST --data "$body" "$(command_url "/commands/execute")")"
@@ -270,6 +270,11 @@ execute_json_command() {
     return 0
   fi
 
+  error_code="$(printf '%s\n' "$response" | jq -r '.error.code // empty' 2>/dev/null)" || error_code=""
+  if [ "$error_code" = "rate_limited" ]; then
+    printf '%s\n' "$response" | jq -c '{ok, command, error}' >&2
+    return 1
+  fi
   message="$(printf '%s\n' "$response" | jq -r '.error.message // .error // "Panda command failed."' 2>/dev/null)" || message="Panda command failed."
   printf '%s\n' "$message" >&2
   return 1

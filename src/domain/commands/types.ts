@@ -101,11 +101,28 @@ export interface CommandRequest<TInput extends JsonObject = JsonObject> {
   workingDirectory?: string;
 }
 
+export type CommandErrorCode =
+  | "unknown_command"
+  | "unauthorized"
+  | "forbidden"
+  | "invalid_input"
+  | "rate_limited"
+  | "command_failed";
+
 export interface CommandError {
-  code: "unknown_command" | "unauthorized" | "forbidden" | "invalid_input" | "command_failed";
+  code: CommandErrorCode;
   message: string;
   details?: JsonObject;
 }
+
+export interface CommandAuditMetadata {
+  attemptCount?: number;
+  totalBackoffMs?: number;
+  failureCode?: "rate_limited" | "quota_exhausted";
+  autoRetryExhausted?: boolean;
+}
+
+export const COMMAND_AUDIT_METADATA = Symbol("panda.command.auditMetadata");
 
 export interface CommandArtifactDescriptor {
   kind: "image" | "pdf";
@@ -133,6 +150,7 @@ export interface CommandSuccess<TOutput extends JsonValue = JsonObject> {
   output: TOutput;
   summary?: string;
   artifact?: CommandArtifactDescriptor;
+  [COMMAND_AUDIT_METADATA]?: CommandAuditMetadata;
 }
 
 export interface CommandFailure {

@@ -47,6 +47,7 @@ import type {PostgresReadonlyQueryCommandOptions} from "../../integrations/postg
 import {BrowserRunnerClient} from "../../integrations/browser/client.js";
 import {AgentAppService} from "../../integrations/apps/sqlite-service.js";
 import {WikiRuntimeCommandService} from "../../integrations/wiki/command-service.js";
+import {BraveThrottleGate} from "../../integrations/web/brave-throttle.js";
 import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
 import {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import {createBashCommandExecutionReader} from "./bash-command-summary-reader.js";
@@ -632,8 +633,10 @@ export async function bootstrapRuntime(
         pool: postgresPool,
     };
     const commandFileResolver = new RuntimeCommandFileResolver(process.env);
+    const braveThrottleGate = new BraveThrottleGate();
     const commandDependencies = buildRuntimeCommandDependencies({
       env: process.env,
+      braveThrottleGate,
       backgroundJobService,
       commandFileResolver,
       watchStore: watches,

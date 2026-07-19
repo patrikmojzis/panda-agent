@@ -12,6 +12,7 @@ type RequiredCommandDependency<K extends keyof AgentCommandModuleDependencies> =
 
 export interface RuntimeCommandDependenciesInput {
   env: NodeJS.ProcessEnv;
+  braveThrottleGate: RequiredCommandDependency<"braveThrottleGate">;
   backgroundJobService: RequiredCommandDependency<"backgroundJobService">;
   commandFileResolver: RequiredCommandDependency<"commandFileResolver">;
   watchStore: RequiredCommandDependency<"watchStore">;
@@ -59,6 +60,7 @@ export function buildRuntimeCommandDependencies(
 ): AgentCommandModuleDependencies {
   return {
     env: input.env,
+    braveThrottleGate: input.braveThrottleGate,
     backgroundJobService: input.backgroundJobService,
     commandFileResolver: input.commandFileResolver,
     watchStore: input.watchStore,

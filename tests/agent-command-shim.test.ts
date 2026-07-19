@@ -253,6 +253,7 @@ describe("agent command shim", () => {
       sessionId?: string;
       items: readonly unknown[];
     }) => void;
+    braveWebFetchImpl?: typeof fetch;
     socketPath?: string;
   } = {}) {
     const mutations = {
@@ -1803,7 +1804,7 @@ describe("agent command shim", () => {
           createWebReadCommand({resourceStore: webResources}),
           createBraveWebSearchCommand({
             apiKey: "BSA-test-key",
-            fetchImpl: async () => new Response(JSON.stringify({
+            fetchImpl: options.braveWebFetchImpl ?? (async () => new Response(JSON.stringify({
               web: {
                 results: [{
                   title: "Brave Web",
@@ -1814,7 +1815,7 @@ describe("agent command shim", () => {
             }), {
               status: 200,
               headers: {"content-type": "application/json"},
-            }),
+            })),
           }),
           createBraveNewsSearchCommand({
             apiKey: "BSA-test-key",
@@ -2700,6 +2701,49 @@ describe("agent command shim", () => {
         }],
       },
     });
+  });
+
+  it("prints structured safe Brave throttle errors", async () => {
+    const server = await startWatchServer({
+      braveWebFetchImpl: async () => new Response("provider-secret-body", {
+        status: 429,
+        headers: {
+          "retry-after": "60",
+          "x-provider-secret": "do-not-return",
+        },
+      }),
+    });
+
+    const error = await execFileAsync(shimPath, [
+      "brave",
+      "web",
+      "search",
+      "private query",
+    ], {
+      env: shimEnv(server),
+    }).then(() => null, (reason: unknown) => reason as {stderr: string});
+
+    expect(error).not.toBeNull();
+    const payload = JSON.parse(error?.stderr.trim() ?? "{}");
+    expect(payload).toMatchObject({
+      ok: false,
+      command: "brave.web.search",
+      error: {
+        code: "rate_limited",
+        message: "Brave Search remained rate limited after bounded retries.",
+        details: {
+          provider: "brave",
+          status: 429,
+          retryable: true,
+          retryAfterMs: 60_000,
+          attemptCount: 1,
+          autoRetryExhausted: true,
+        },
+      },
+    });
+    expect(error?.stderr).not.toContain("private query");
+    expect(error?.stderr).not.toContain("provider-secret-body");
+    expect(error?.stderr).not.toContain("x-provider-secret");
   });
 
   it("rejects removed web.research compatibility command", async () => {

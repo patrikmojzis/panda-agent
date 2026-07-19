@@ -17,11 +17,13 @@ function fakeDependency<K extends keyof AgentCommandModuleDependencies>(
 describe("command dependency builders", () => {
   it("builds runtime command dependencies with app URL adapters", () => {
     const backgroundJobService = fakeDependency("backgroundJobService");
+    const braveThrottleGate = fakeDependency("braveThrottleGate");
     const deps = buildRuntimeCommandDependencies({
       env: {
         PANDA_APPS_HOST: "127.0.0.1",
         PANDA_APPS_PORT: "8092",
       },
+      braveThrottleGate,
       backgroundJobService,
       commandFileResolver: fakeDependency("commandFileResolver"),
       watchStore: fakeDependency("watchStore"),
@@ -39,6 +41,7 @@ describe("command dependency builders", () => {
     });
 
     expect(deps.backgroundJobService).toBe(backgroundJobService);
+    expect(deps.braveThrottleGate).toBe(braveThrottleGate);
     expect(deps.resolveAppLaunchUrls?.({
       agentKey: "panda",
       appSlug: "notes",

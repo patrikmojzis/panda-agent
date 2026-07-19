@@ -301,6 +301,7 @@ import {
   webFetchCommandDescriptor,
   webReadCommandDescriptor,
 } from "../../integrations/web/commands.js";
+import type {BraveThrottleGate} from "../../integrations/web/brave-throttle.js";
 import {
   createImageGenerateCommand,
   imageGenerateCommandDescriptor,
@@ -344,6 +345,7 @@ type EmailCommandStore =
 
 export interface AgentCommandModuleDependencies {
   env?: NodeJS.ProcessEnv;
+  braveThrottleGate?: BraveThrottleGate;
   backgroundJobService?: BackgroundToolJobService;
   commandFileResolver?: AgentCommandFileResolver;
   commandUploads?: CommandUploadStore;
@@ -1339,56 +1341,56 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
     ["brave", "web", "search"],
     "@payload.json",
     agentCommandPolicy(["internet"]),
-    (dependencies) => createBraveWebSearchCommand({env: dependencies.env}),
+    (dependencies) => createBraveWebSearchCommand({env: dependencies.env, throttleGate: dependencies.braveThrottleGate}),
   ),
   agentCommandModule(
     braveNewsSearchCommandDescriptor,
     ["brave", "news", "search"],
     "@payload.json",
     agentCommandPolicy(["internet"]),
-    (dependencies) => createBraveNewsSearchCommand({env: dependencies.env}),
+    (dependencies) => createBraveNewsSearchCommand({env: dependencies.env, throttleGate: dependencies.braveThrottleGate}),
   ),
   agentCommandModule(
     braveVideoSearchCommandDescriptor,
     ["brave", "video", "search"],
     "@payload.json",
     agentCommandPolicy(["internet"]),
-    (dependencies) => createBraveVideoSearchCommand({env: dependencies.env}),
+    (dependencies) => createBraveVideoSearchCommand({env: dependencies.env, throttleGate: dependencies.braveThrottleGate}),
   ),
   agentCommandModule(
     braveImageSearchCommandDescriptor,
     ["brave", "image", "search"],
     "@payload.json",
     agentCommandPolicy(["internet"]),
-    (dependencies) => createBraveImageSearchCommand({env: dependencies.env}),
+    (dependencies) => createBraveImageSearchCommand({env: dependencies.env, throttleGate: dependencies.braveThrottleGate}),
   ),
   agentCommandModule(
     braveLlmContextCommandDescriptor,
     ["brave", "llm", "context"],
     "@payload.json",
     agentCommandPolicy(["internet"]),
-    (dependencies) => createBraveLlmContextCommand({env: dependencies.env}),
+    (dependencies) => createBraveLlmContextCommand({env: dependencies.env, throttleGate: dependencies.braveThrottleGate}),
   ),
   agentCommandModule(
     bravePlaceSearchCommandDescriptor,
     ["brave", "place", "search"],
     "@payload.json",
     agentCommandPolicy(["internet"]),
-    (dependencies) => createBravePlaceSearchCommand({env: dependencies.env}),
+    (dependencies) => createBravePlaceSearchCommand({env: dependencies.env, throttleGate: dependencies.braveThrottleGate}),
   ),
   agentCommandModule(
     bravePlacePoiCommandDescriptor,
     ["brave", "place", "poi"],
     "@payload.json",
     agentCommandPolicy(["internet"]),
-    (dependencies) => createBravePlacePoiCommand({env: dependencies.env}),
+    (dependencies) => createBravePlacePoiCommand({env: dependencies.env, throttleGate: dependencies.braveThrottleGate}),
   ),
   agentCommandModule(
     bravePlaceDescriptionCommandDescriptor,
     ["brave", "place", "description"],
     "@payload.json",
     agentCommandPolicy(["internet"]),
-    (dependencies) => createBravePlaceDescriptionCommand({env: dependencies.env}),
+    (dependencies) => createBravePlaceDescriptionCommand({env: dependencies.env, throttleGate: dependencies.braveThrottleGate}),
   ),
   agentCommandModule(
     openAIWebResearchCommandDescriptor,

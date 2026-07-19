@@ -7,8 +7,10 @@ import {
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {ThreadToolJobRecord} from "../../domain/threads/runtime/types.js";
 import type {
+    CommandAuditMetadata,
     CommandDescriptor,
     CommandError,
+    CommandErrorCode,
     CommandExecutor,
     CommandName,
     CommandRequest,
@@ -16,9 +18,11 @@ import type {
     CommandScope,
     RegisteredCommand,
 } from "../../domain/commands/types.js";
+import {COMMAND_AUDIT_METADATA} from "../../domain/commands/types.js";
 
 type CommandAuditStore = Pick<ThreadRuntimeStore, "createToolJob" | "updateToolJob">;
 type CommandScopeResolver = (scope: CommandScope) => Promise<CommandScope> | CommandScope;
+const MAX_SAFE_RETRY_AFTER_MS = 31 * 24 * 60 * 60 * 1_000;
 
 export interface RuntimeCommandDispatcherOptions {
   commands: readonly RegisteredCommand[];
@@ -42,6 +46,31 @@ function errorDetails(error: unknown): JsonObject | undefined {
 
   const commandDetails = (error as {pandaCommandErrorDetails?: unknown}).pandaCommandErrorDetails;
   const details = isJsonObject(commandDetails) ? commandDetails : undefined;
+  if ((error as {pandaCommandErrorCode?: unknown}).pandaCommandErrorCode === "rate_limited") {
+    if (!details) {
+      return undefined;
+    }
+    const retryAfterMs = details.retryAfterMs;
+    const attemptCount = details.attemptCount;
+    const totalBackoffMs = details.totalBackoffMs;
+    const failureCode = details.failureCode;
+    return {
+      ...(details.provider === "brave" ? {provider: "brave"} : {}),
+      ...(details.status === 429 ? {status: 429} : {}),
+      ...(failureCode === "rate_limited" || failureCode === "quota_exhausted" ? {failureCode} : {}),
+      ...(typeof details.retryable === "boolean" ? {retryable: details.retryable} : {}),
+      ...(typeof retryAfterMs === "number" && Number.isSafeInteger(retryAfterMs) && retryAfterMs >= 0 && retryAfterMs <= MAX_SAFE_RETRY_AFTER_MS
+        ? {retryAfterMs}
+        : {}),
+      ...(typeof attemptCount === "number" && Number.isSafeInteger(attemptCount) && attemptCount >= 0 && attemptCount <= 100
+        ? {attemptCount}
+        : {}),
+      ...(typeof totalBackoffMs === "number" && Number.isSafeInteger(totalBackoffMs) && totalBackoffMs >= 0 && totalBackoffMs <= 60_000
+        ? {totalBackoffMs}
+        : {}),
+      ...(details.autoRetryExhausted === true ? {autoRetryExhausted: true} : {}),
+    };
+  }
   const output: JsonObject = {
     ...(error.name ? {name: error.name} : {}),
     ...(details ?? {}),
@@ -52,6 +81,33 @@ function errorDetails(error: unknown): JsonObject | undefined {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function commandErrorCode(error: unknown): CommandErrorCode {
+  const code = (error as {pandaCommandErrorCode?: unknown} | null)?.pandaCommandErrorCode;
+  return code === "rate_limited" ? code : "command_failed";
+}
+
+function readAuditMetadata(result: CommandResult<JsonValue>): CommandAuditMetadata {
+  const source = result.ok
+    ? result[COMMAND_AUDIT_METADATA]
+    : result.error.details;
+  if (!source) {
+    return {};
+  }
+  const attemptCount = source.attemptCount;
+  const totalBackoffMs = source.totalBackoffMs;
+  const failureCode = source.failureCode;
+  return {
+    ...(typeof attemptCount === "number" && Number.isSafeInteger(attemptCount) && attemptCount >= 0 && attemptCount <= 100
+      ? {attemptCount}
+      : {}),
+    ...(typeof totalBackoffMs === "number" && Number.isSafeInteger(totalBackoffMs) && totalBackoffMs >= 0 && totalBackoffMs <= 60_000
+      ? {totalBackoffMs}
+      : {}),
+    ...(failureCode === "rate_limited" || failureCode === "quota_exhausted" ? {failureCode} : {}),
+    ...(source.autoRetryExhausted === true ? {autoRetryExhausted: true} : {}),
+  };
 }
 
 function isExpired(scope: CommandScope, now: Date): boolean {
@@ -156,7 +212,7 @@ export class RuntimeCommandDispatcher implements CommandExecutor {
       return result;
     } catch (error) {
       const result = errorResult(request.command, {
-        code: "command_failed",
+        code: commandErrorCode(error),
         message: errorMessage(error),
         details: errorDetails(error),
       }) as CommandResult<TOutput>;
@@ -198,6 +254,7 @@ export class RuntimeCommandDispatcher implements CommandExecutor {
 
     const finishedAt = this.now().getTime();
     try {
+      const auditMetadata = readAuditMetadata(result);
       await this.auditStore.updateToolJob(audit.id, {
         status: result.ok ? "completed" : "failed",
         finishedAt,
@@ -206,11 +263,13 @@ export class RuntimeCommandDispatcher implements CommandExecutor {
           ? {
             command: result.command,
             ok: true,
+            ...auditMetadata,
           }
           : {
             command: result.command,
             ok: false,
             code: result.error.code,
+            ...auditMetadata,
           },
         error: null,
       });

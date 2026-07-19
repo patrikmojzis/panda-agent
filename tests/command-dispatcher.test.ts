@@ -2,6 +2,7 @@ import {describe, expect, it} from "vitest";
 
 import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
 import {createBashCommandExecutionReader} from "../src/app/runtime/bash-command-summary-reader.js";
+import {COMMAND_AUDIT_METADATA} from "../src/domain/commands/types.js";
 import type {RegisteredCommand} from "../src/domain/commands/types.js";
 import type {CreateThreadToolJobInput, ThreadToolJobRecord, ThreadToolJobUpdate} from "../src/domain/threads/runtime/types.js";
 
@@ -345,6 +346,105 @@ describe("RuntimeCommandDispatcher", () => {
       {ordinal: 1, command: "test.echo", status: "completed"},
       {ordinal: 2, command: "test.missing", status: "failed", code: "unknown_command"},
     ]);
+  });
+
+  it("persists hidden successful retry metadata on the existing command audit", async () => {
+    const audit = createAuditStore();
+    const command: RegisteredCommand = {
+      ...createEchoCommand(),
+      async execute(request) {
+        return {
+          ok: true,
+          command: "test.echo",
+          output: request.input,
+          [COMMAND_AUDIT_METADATA]: {
+            attemptCount: 2,
+            totalBackoffMs: 1_500,
+          },
+        };
+      },
+    };
+    const dispatcher = new RuntimeCommandDispatcher({commands: [command], auditStore: audit.store});
+
+    const result = await dispatcher.execute({
+      command: "test.echo",
+      input: {query: "private-query"},
+      scope: {...scope, threadId: "thread-retry"},
+    });
+
+    expect(result).toMatchObject({ok: true, output: {query: "private-query"}});
+    expect(JSON.stringify(result)).not.toContain("attemptCount");
+    expect(audit.jobs).toHaveLength(1);
+    expect(audit.updates[0]?.update.result).toEqual({
+      command: "test.echo",
+      ok: true,
+      attemptCount: 2,
+      totalBackoffMs: 1_500,
+    });
+    expect(JSON.stringify(audit.updates)).not.toContain("private-query");
+  });
+
+  it("returns rate_limited and whitelists only safe retry audit metadata", async () => {
+    const audit = createAuditStore();
+    const command: RegisteredCommand = {
+      ...createEchoCommand(),
+      async execute() {
+        const error = new Error("Brave Search remained rate limited after bounded retries.") as Error & {
+          pandaCommandErrorCode: "rate_limited";
+          pandaCommandErrorDetails: Record<string, unknown>;
+        };
+        error.pandaCommandErrorCode = "rate_limited";
+        error.pandaCommandErrorDetails = {
+          provider: "brave",
+          status: 429,
+          retryable: true,
+          retryAfterMs: 8_000,
+          attemptCount: 3,
+          totalBackoffMs: 5_000,
+          failureCode: "rate_limited",
+          autoRetryExhausted: true,
+          query: "private-query",
+          url: "https://private.example/search",
+          headers: {authorization: "secret"},
+        };
+        throw error;
+      },
+    };
+    const dispatcher = new RuntimeCommandDispatcher({commands: [command], auditStore: audit.store});
+
+    const result = await dispatcher.execute({
+      command: "test.echo",
+      input: {query: "private-input"},
+      scope: {...scope, threadId: "thread-rate-limit"},
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "rate_limited",
+        details: {
+          provider: "brave",
+          status: 429,
+          retryable: true,
+          retryAfterMs: 8_000,
+          attemptCount: 3,
+          autoRetryExhausted: true,
+        },
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("private");
+    expect(JSON.stringify(result)).not.toContain("secret");
+    expect(audit.jobs).toHaveLength(1);
+    expect(audit.updates[0]?.update.result).toEqual({
+      command: "test.echo",
+      ok: false,
+      code: "rate_limited",
+      attemptCount: 3,
+      totalBackoffMs: 5_000,
+      failureCode: "rate_limited",
+      autoRetryExhausted: true,
+    });
+    expect(JSON.stringify(audit.updates)).not.toContain("private");
+    expect(JSON.stringify(audit.updates)).not.toContain("secret");
   });
 
   it("records forbidden command attempts without executing the handler", async () => {

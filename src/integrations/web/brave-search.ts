@@ -1,7 +1,11 @@
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import {isJsonObject, type JsonObject} from "../../lib/json.js";
-import {readResponseError} from "../../lib/http.js";
 import {trimToNull} from "../../lib/strings.js";
+import {
+  BraveThrottleGate,
+  type BraveRateLimitFailureCode,
+  type BraveThrottlePermit,
+} from "./brave-throttle.js";
 
 export const BRAVE_WEB_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
 export const BRAVE_NEWS_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/news/search";
@@ -22,8 +26,10 @@ export const MAX_BRAVE_PLACE_SEARCH_COUNT = 100;
 export const MAX_BRAVE_PLACE_DETAIL_IDS = 20;
 export const MAX_BRAVE_SEARCH_COUNT = 10;
 export const DEFAULT_BRAVE_SEARCH_TIMEOUT_MS = 10_000;
+export const DEFAULT_BRAVE_RETRY_BUDGET_MS = 15_000;
+export const MAX_BRAVE_PHYSICAL_ATTEMPTS = 3;
 
-const MAX_ERROR_CHARS = 4_000;
+const MIN_BRAVE_QUOTA_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const BRAVE_COUNTRY_CODES = new Set([
   "AR",
   "AU",
@@ -253,6 +259,21 @@ export interface BraveSearchOptions {
   defaultCount?: number;
   signal?: AbortSignal;
   now?: () => number;
+  random?: () => number;
+  retryBudgetMs?: number;
+  throttleGate?: BraveThrottleGate;
+}
+
+export interface BraveAttemptMetadata {
+  attemptCount: number;
+  totalBackoffMs: number;
+}
+
+const braveAttemptMetadata = new WeakMap<object, BraveAttemptMetadata>();
+
+/** Reads internal retry telemetry without adding it to the model-visible result. */
+export function readBraveAttemptMetadata(result: object): BraveAttemptMetadata | undefined {
+  return braveAttemptMetadata.get(result);
 }
 
 export interface BraveSearchResult extends JsonObject {
@@ -555,51 +576,229 @@ function buildSearchUrl(
   return {url, normalized};
 }
 
+interface BraveRateLimitResponse {
+  retryable: boolean;
+  retryAfterMs?: number;
+  failureCode: BraveRateLimitFailureCode;
+}
+
+interface BraveRateLimitErrorDetails extends JsonObject {
+  provider: "brave";
+  status: 429;
+  failureCode: BraveRateLimitFailureCode;
+  retryable: boolean;
+  retryAfterMs: number;
+  attemptCount: number;
+  totalBackoffMs: number;
+  autoRetryExhausted: true;
+}
+
+class BraveRateLimitError extends ToolError {
+  readonly pandaCommandErrorCode = "rate_limited" as const;
+  readonly pandaCommandErrorDetails: BraveRateLimitErrorDetails;
+
+  constructor(details: BraveRateLimitErrorDetails) {
+    super(details.retryable
+      ? "Brave Search remained rate limited after bounded retries."
+      : "Brave Search quota is exhausted.");
+    this.pandaCommandErrorDetails = details;
+  }
+}
+
+function parsePositiveDelayMs(value: string | null, now: () => number): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  if (/^\d+$/.test(value.trim())) {
+    const milliseconds = Number(value.trim()) * 1_000;
+    return Number.isSafeInteger(milliseconds) && milliseconds > 0 ? milliseconds : undefined;
+  }
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    return undefined;
+  }
+  const milliseconds = Math.ceil(timestamp - now());
+  return milliseconds > 0 ? milliseconds : undefined;
+}
+
+function parseCsvNumbers(value: string | null): Array<number | undefined> {
+  return value?.split(",").map((entry) => {
+    const parsed = Number(entry.trim());
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+  }) ?? [];
+}
+
+function parsePolicyWindowsMs(value: string | null): Array<number | undefined> {
+  return value?.split(",").map((entry) => {
+    const match = /(?:^|;)\s*w=(\d+)\s*(?:;|$)/i.exec(entry.trim());
+    const seconds = match?.[1] ? Number(match[1]) : Number.NaN;
+    const milliseconds = seconds * 1_000;
+    return Number.isSafeInteger(milliseconds) && milliseconds > 0 ? milliseconds : undefined;
+  }) ?? [];
+}
+
+function readBraveRateLimitResponse(headers: Headers, now: () => number): BraveRateLimitResponse {
+  const retryAfterMs = parsePositiveDelayMs(headers.get("retry-after"), now);
+  const remaining = parseCsvNumbers(headers.get("x-ratelimit-remaining"));
+  const resetsMs = parseCsvNumbers(headers.get("x-ratelimit-reset"))
+    .map((seconds) => seconds === undefined ? undefined : Math.ceil(seconds * 1_000));
+  const policyWindowsMs = parsePolicyWindowsMs(headers.get("x-ratelimit-policy"));
+  const exhaustedIndices = remaining.flatMap((value, index) => value === 0 ? [index] : []);
+  const quotaExhausted = exhaustedIndices.some((index) => (
+    (policyWindowsMs[index] ?? 0) >= MIN_BRAVE_QUOTA_WINDOW_MS
+  ));
+  const exhaustedResetMs = exhaustedIndices
+    .map((index) => resetsMs[index])
+    .filter((value): value is number => value !== undefined && value > 0);
+  const documentedResetMs = exhaustedResetMs.length > 0
+    ? Math.max(...exhaustedResetMs)
+    : resetsMs.find((value): value is number => value !== undefined && value > 0);
+  const providerMinimumMs = Math.max(retryAfterMs ?? 0, documentedResetMs ?? 0);
+
+  return {
+    retryable: !quotaExhausted,
+    failureCode: quotaExhausted ? "quota_exhausted" : "rate_limited",
+    ...(providerMinimumMs > 0 ? {retryAfterMs: providerMinimumMs} : {}),
+  };
+}
+
+function equalJitterDelayMs(attemptIndex: number, random: () => number): number {
+  const [minimum, maximum] = attemptIndex <= 0 ? [1_000, 2_000] : [4_000, 8_000];
+  const sample = Math.max(0, Math.min(1, random()));
+  return Math.round(minimum + ((maximum - minimum) * sample));
+}
+
+async function discardResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // The response is already terminal; body cleanup must not replace its safe error.
+  }
+}
+
+function rateLimitError(input: {
+  gate: BraveThrottleGate;
+  attemptCount: number;
+  totalBackoffMs: number;
+  retryable: boolean;
+  failureCode: BraveRateLimitFailureCode;
+}): BraveRateLimitError {
+  return new BraveRateLimitError({
+    provider: "brave",
+    status: 429,
+    failureCode: input.failureCode,
+    retryable: input.retryable,
+    retryAfterMs: input.gate.retryAfterMs(),
+    attemptCount: input.attemptCount,
+    totalBackoffMs: input.totalBackoffMs,
+    autoRetryExhausted: true,
+  });
+}
+
 async function fetchBraveJson<TPayload>(
   url: URL,
   options: BraveSearchOptions,
-): Promise<{payload: TPayload; elapsedMs: number}> {
+): Promise<{payload: TPayload; elapsedMs: number; attemptMetadata: BraveAttemptMetadata}> {
   const apiKey = resolveApiKey(options);
   const timeoutMs = options.timeoutMs ?? DEFAULT_BRAVE_SEARCH_TIMEOUT_MS;
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
-  const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
-  const startedAt = (options.now ?? Date.now)();
+  const now = options.now ?? Date.now;
+  const random = options.random ?? Math.random;
+  const startedAt = now();
+  const deadlineMs = startedAt + Math.max(1, options.retryBudgetMs ?? DEFAULT_BRAVE_RETRY_BUDGET_MS);
+  const gate = options.throttleGate ?? new BraveThrottleGate({now});
+  let attemptCount = 0;
+  let totalBackoffMs = 0;
 
-  try {
-    const response = await (options.fetchImpl ?? fetch)(url, {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        "X-Subscription-Token": apiKey,
-      },
-      signal,
-    });
-
-    if (!response.ok) {
-      const detail = await readResponseError(response, MAX_ERROR_CHARS);
-      throw new ToolError(
-        `Brave Search API error (${response.status}): ${detail || response.statusText}`,
-      );
-    }
-
-    return {
-      payload: await response.json() as TPayload,
-      elapsedMs: (options.now ?? Date.now)() - startedAt,
-    };
-  } catch (error) {
-    if (options.signal?.aborted) {
+  for (let attemptIndex = 0; attemptIndex < MAX_BRAVE_PHYSICAL_ATTEMPTS; attemptIndex += 1) {
+    let acquired;
+    try {
+      acquired = await gate.acquire({deadlineMs, signal: options.signal});
+    } catch {
       throw new ToolError("Brave search was aborted.");
     }
-    if (timeoutSignal.aborted) {
-      throw new ToolError(`Brave search timed out after ${timeoutMs}ms.`);
-    }
-    if (error instanceof ToolError) {
-      throw error;
+    totalBackoffMs += acquired.allowed ? acquired.permit.waitedMs : acquired.waitedMs;
+    if (!acquired.allowed) {
+      throw rateLimitError({
+        gate,
+        attemptCount,
+        totalBackoffMs,
+        retryable: acquired.retryable,
+        failureCode: acquired.failureCode,
+      });
     }
 
-    const message = error instanceof Error ? error.message : String(error);
-    throw new ToolError(`Brave search failed: ${message}`);
+    const permit: BraveThrottlePermit = acquired.permit;
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
+    attemptCount += 1;
+    let response: Response;
+    try {
+      response = await (options.fetchImpl ?? fetch)(url, {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          "X-Subscription-Token": apiKey,
+        },
+        signal,
+      });
+    } catch (error) {
+      gate.reportRequestFailure(permit);
+      if (options.signal?.aborted) {
+        throw new ToolError("Brave search was aborted.");
+      }
+      if (timeoutSignal.aborted) {
+        throw new ToolError(`Brave search timed out after ${timeoutMs}ms.`);
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new ToolError(`Brave search failed: ${message}`);
+    }
+
+    if (response.status !== 429) {
+      gate.reportNonRateLimited(permit);
+      if (!response.ok) {
+        await discardResponseBody(response);
+        throw new ToolError(`Brave Search API request failed with status ${response.status}.`);
+      }
+      return {
+        payload: await response.json() as TPayload,
+        elapsedMs: now() - startedAt,
+        attemptMetadata: {attemptCount, totalBackoffMs},
+      };
+    }
+
+    const rateLimit = readBraveRateLimitResponse(response.headers, now);
+    await discardResponseBody(response);
+    const retryAfterMs = rateLimit.retryAfterMs
+      ?? equalJitterDelayMs(Math.min(attemptIndex, 1), random);
+    gate.reportRateLimit({
+      permit,
+      retryAfterMs,
+      retryable: rateLimit.retryable,
+      failureCode: rateLimit.failureCode,
+    });
+    const remainingBudgetMs = Math.max(0, deadlineMs - now());
+    if (
+      !rateLimit.retryable
+      || attemptCount >= MAX_BRAVE_PHYSICAL_ATTEMPTS
+      || retryAfterMs > remainingBudgetMs
+    ) {
+      throw rateLimitError({
+        gate,
+        attemptCount,
+        totalBackoffMs,
+        retryable: rateLimit.retryable,
+        failureCode: rateLimit.failureCode,
+      });
+    }
   }
+
+  throw rateLimitError({
+    gate,
+    attemptCount,
+    totalBackoffMs,
+    retryable: true,
+    failureCode: "rate_limited",
+  });
 }
 
 function serializeSearchResult(result: BraveSearchApiResult): JsonObject {
@@ -674,6 +873,14 @@ function serializeSearchResultPayload(input: {
   };
 }
 
+function attachBraveAttemptMetadata<T extends object>(
+  result: T,
+  metadata: BraveAttemptMetadata,
+): T {
+  braveAttemptMetadata.set(result, metadata);
+  return result;
+}
+
 export async function searchBraveWeb(
   input: BraveSearchInput,
   options: BraveSearchOptions = {},
@@ -682,16 +889,16 @@ export async function searchBraveWeb(
     ...options,
     maxCount: MAX_BRAVE_WEB_SEARCH_COUNT,
   });
-  const {payload, elapsedMs} = await fetchBraveJson<BraveWebSearchResponse>(url, options);
+  const {payload, elapsedMs, attemptMetadata} = await fetchBraveJson<BraveWebSearchResponse>(url, options);
   const results = Array.isArray(payload.web?.results) ? payload.web.results : [];
 
-  return serializeSearchResultPayload({
+  return attachBraveAttemptMetadata(serializeSearchResultPayload({
     vertical: "web",
     normalized,
     elapsedMs,
     results,
     moreResultsAvailable: payload.query?.more_results_available,
-  });
+  }), attemptMetadata);
 }
 
 export async function searchBraveNews(
@@ -702,20 +909,20 @@ export async function searchBraveNews(
     ...options,
     maxCount: MAX_BRAVE_NEWS_SEARCH_COUNT,
   });
-  const {payload, elapsedMs} = await fetchBraveJson<BraveNewsSearchResponse>(url, options);
+  const {payload, elapsedMs, attemptMetadata} = await fetchBraveJson<BraveNewsSearchResponse>(url, options);
   const results = Array.isArray(payload.results)
     ? payload.results
     : Array.isArray(payload.news?.results)
       ? payload.news.results
       : [];
 
-  return serializeSearchResultPayload({
+  return attachBraveAttemptMetadata(serializeSearchResultPayload({
     vertical: "news",
     normalized,
     elapsedMs,
     results,
     moreResultsAvailable: payload.query?.more_results_available,
-  });
+  }), attemptMetadata);
 }
 
 export async function searchBraveVideo(
@@ -728,20 +935,20 @@ export async function searchBraveVideo(
     includeExtraSnippets: false,
     includeGoggles: false,
   });
-  const {payload, elapsedMs} = await fetchBraveJson<BraveMediaSearchResponse>(url, options);
+  const {payload, elapsedMs, attemptMetadata} = await fetchBraveJson<BraveMediaSearchResponse>(url, options);
   const results = Array.isArray(payload.results)
     ? payload.results
     : Array.isArray(payload.videos?.results)
       ? payload.videos.results
       : [];
 
-  return serializeSearchResultPayload({
+  return attachBraveAttemptMetadata(serializeSearchResultPayload({
     vertical: "video",
     normalized,
     elapsedMs,
     results,
     moreResultsAvailable: payload.query?.more_results_available,
-  });
+  }), attemptMetadata);
 }
 
 export async function searchBraveImage(
@@ -759,14 +966,14 @@ export async function searchBraveImage(
   if (normalized.safesearch === "moderate") {
     throw new ToolError("brave.image.search safesearch must be off or strict.");
   }
-  const {payload, elapsedMs} = await fetchBraveJson<BraveMediaSearchResponse>(url, options);
+  const {payload, elapsedMs, attemptMetadata} = await fetchBraveJson<BraveMediaSearchResponse>(url, options);
   const results = Array.isArray(payload.results)
     ? payload.results as BraveImageApiResult[]
     : Array.isArray(payload.images?.results)
       ? payload.images.results
       : [];
 
-  return serializeSearchResultPayload({
+  return attachBraveAttemptMetadata(serializeSearchResultPayload({
     vertical: "image",
     normalized: {
       ...normalized,
@@ -777,7 +984,7 @@ export async function searchBraveImage(
     results,
     moreResultsAvailable: payload.query?.more_results_available,
     serialize: (result) => serializeImageResult(result as BraveImageApiResult),
-  });
+  }), attemptMetadata);
 }
 
 function normalizePlaceInput(input: BravePlaceSearchInput): BravePlaceSearchInput & {
@@ -909,14 +1116,14 @@ export async function searchBravePlace(
   options: BraveSearchOptions = {},
 ): Promise<BravePlaceSearchResult> {
   const {url, normalized} = buildPlaceSearchUrl(input, options);
-  const {payload, elapsedMs} = await fetchBraveJson<BravePlaceSearchResponse>(url, options);
+  const {payload, elapsedMs, attemptMetadata} = await fetchBraveJson<BravePlaceSearchResponse>(url, options);
   const places = Array.isArray(payload.results) ? payload.results.map(serializePlaceResult) : [];
   const cities = serializeJsonArray(payload.cities);
   const addresses = serializeJsonArray(payload.addresses);
   const streets = serializeJsonArray(payload.streets);
   const mixed = serializeJsonArray(payload.mixed);
 
-  return {
+  return attachBraveAttemptMetadata({
     provider: "brave",
     vertical: "place",
     query: normalized.query ?? null,
@@ -938,7 +1145,7 @@ export async function searchBravePlace(
     streets,
     mixed,
     location: isJsonObject(payload.location) ? payload.location : null,
-  };
+  }, attemptMetadata);
 }
 
 export async function fetchBravePlacePois(
@@ -946,15 +1153,15 @@ export async function fetchBravePlacePois(
   options: BraveSearchOptions = {},
 ): Promise<BravePlaceDetailsResult> {
   const ids = normalizePlaceIds(input);
-  const {payload, elapsedMs} = await fetchBraveJson<JsonObject>(buildPlaceDetailsUrl(BRAVE_PLACE_POIS_ENDPOINT, ids), options);
-  return {
+  const {payload, elapsedMs, attemptMetadata} = await fetchBraveJson<JsonObject>(buildPlaceDetailsUrl(BRAVE_PLACE_POIS_ENDPOINT, ids), options);
+  return attachBraveAttemptMetadata({
     provider: "brave",
     vertical: "place_poi",
     ids,
     elapsedMs,
     resultCount: countPayloadResults(payload),
     payload,
-  };
+  }, attemptMetadata);
 }
 
 export async function fetchBravePlaceDescriptions(
@@ -962,15 +1169,15 @@ export async function fetchBravePlaceDescriptions(
   options: BraveSearchOptions = {},
 ): Promise<BravePlaceDetailsResult> {
   const ids = normalizePlaceIds(input);
-  const {payload, elapsedMs} = await fetchBraveJson<JsonObject>(buildPlaceDetailsUrl(BRAVE_PLACE_DESCRIPTIONS_ENDPOINT, ids), options);
-  return {
+  const {payload, elapsedMs, attemptMetadata} = await fetchBraveJson<JsonObject>(buildPlaceDetailsUrl(BRAVE_PLACE_DESCRIPTIONS_ENDPOINT, ids), options);
+  return attachBraveAttemptMetadata({
     provider: "brave",
     vertical: "place_description",
     ids,
     elapsedMs,
     resultCount: countPayloadResults(payload),
     payload,
-  };
+  }, attemptMetadata);
 }
 
 function buildLlmContextUrl(input: BraveLlmContextInput): {url: URL; normalized: ReturnType<typeof normalizeCommonSearchInput>; thresholdMode?: BraveLlmContextThresholdMode} {
@@ -1002,12 +1209,12 @@ export async function searchBraveLlmContext(
   options: BraveSearchOptions = {},
 ): Promise<BraveLlmContextResult> {
   const {url, normalized} = buildLlmContextUrl(input);
-  const {payload, elapsedMs} = await fetchBraveJson<{grounding?: unknown; sources?: unknown}>(url, options);
+  const {payload, elapsedMs, attemptMetadata} = await fetchBraveJson<{grounding?: unknown; sources?: unknown}>(url, options);
   const grounding = isJsonObject(payload.grounding) ? payload.grounding : {};
   const sources = isJsonObject(payload.sources) ? payload.sources : {};
   const generic = Array.isArray(grounding.generic) ? grounding.generic : [];
 
-  return {
+  return attachBraveAttemptMetadata({
     provider: "brave",
     vertical: "llm_context",
     query: normalized.query,
@@ -1018,5 +1225,5 @@ export async function searchBraveLlmContext(
     resultCount: generic.length,
     grounding,
     sources,
-  };
+  }, attemptMetadata);
 }

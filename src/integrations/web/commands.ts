@@ -2,10 +2,12 @@ import {mkdir, writeFile} from "node:fs/promises";
 import path from "node:path";
 
 import type {JsonObject} from "../../lib/json.js";
+import {sleepWithSignal} from "../../lib/async.js";
 import {isRecord} from "../../lib/records.js";
 import {wrapExternalUntrustedContent} from "../../prompts/external-content.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {CommandWritableFileResolver} from "../../domain/commands/files.js";
+import {COMMAND_AUDIT_METADATA} from "../../domain/commands/types.js";
 import type {CommandDescriptor, CommandRequest, CommandSuccess, RegisteredCommand} from "../../domain/commands/types.js";
 import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import type {ThreadToolJobRecord} from "../../domain/threads/runtime/types.js";
@@ -32,12 +34,15 @@ import {
   searchBravePlace,
   searchBraveVideo,
   searchBraveWeb,
+  readBraveAttemptMetadata,
   type BraveLlmContextInput,
   type BravePlaceDetailsInput,
   type BravePlaceSearchInput,
   type BraveSearchInput,
+  type BraveSearchOptions,
   type FetchImpl as BraveSearchFetchImpl,
 } from "./brave-search.js";
+import {BraveThrottleGate} from "./brave-throttle.js";
 import {
   DEFAULT_WEB_RESEARCH_MODEL,
   DEFAULT_WEB_RESEARCH_REASONING_EFFORT,
@@ -1200,24 +1205,6 @@ function retryDelayMs(
   return Math.max(0, Math.round(base * (0.75 + random() * 0.5)));
 }
 
-async function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(signal.reason ?? new Error("web.fetch was aborted."));
-      return;
-    }
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(signal?.reason ?? new Error("web.fetch was aborted."));
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, delayMs);
-    signal?.addEventListener("abort", onAbort, {once: true});
-  });
-}
-
 function abortedFailure(downloadLimitBytes: number, attemptCount: number): WebCommandError {
   return new WebCommandError("web.fetch was aborted.", {
     failureCode: "timeout",
@@ -1299,7 +1286,7 @@ export function createWebFetchCommand(options: {
             throw failure;
           }
           try {
-            await (options.waitForRetry ?? waitForRetry)(delayMs, signal);
+            await (options.waitForRetry ?? sleepWithSignal)(delayMs, signal);
           } catch {
             throw abortedFailure(downloadLimitBytes, attemptCount);
           }
@@ -1318,7 +1305,7 @@ export function createWebFetchCommand(options: {
         );
         if (delayMs > 0) {
           try {
-            await (options.waitForRetry ?? waitForRetry)(delayMs, signal);
+            await (options.waitForRetry ?? sleepWithSignal)(delayMs, signal);
           } catch {
             throw abortedFailure(downloadLimitBytes, attemptCount);
           }
@@ -1612,235 +1599,181 @@ export function createWebReadCommand(options: {
   };
 }
 
-export function createBraveWebSearchCommand(options: {
+export interface BraveCommandOptions {
   apiKey?: string;
   env?: NodeJS.ProcessEnv;
   fetchImpl?: BraveSearchFetchImpl;
   timeoutMs?: number;
   defaultCount?: number;
   now?: () => number;
-} = {}): RegisteredCommand {
+  random?: () => number;
+  retryBudgetMs?: number;
+  throttleGate?: BraveThrottleGate;
+}
+
+function createBraveRequestOptions(options: BraveCommandOptions): (signal?: AbortSignal) => BraveSearchOptions {
+  const throttleGate = options.throttleGate ?? new BraveThrottleGate({now: options.now});
+  return (signal) => ({
+    apiKey: options.apiKey,
+    env: options.env,
+    fetchImpl: options.fetchImpl,
+    timeoutMs: options.timeoutMs,
+    defaultCount: options.defaultCount,
+    now: options.now,
+    random: options.random,
+    retryBudgetMs: options.retryBudgetMs,
+    throttleGate,
+    signal,
+  });
+}
+
+function braveCommandAudit(result: object): Pick<CommandSuccess, typeof COMMAND_AUDIT_METADATA> {
+  const metadata = readBraveAttemptMetadata(result);
+  if (!metadata || (metadata.attemptCount <= 1 && metadata.totalBackoffMs === 0)) {
+    return {};
+  }
+  return {[COMMAND_AUDIT_METADATA]: metadata};
+}
+
+export function createBraveWebSearchCommand(options: BraveCommandOptions = {}): RegisteredCommand {
+  const requestOptions = createBraveRequestOptions(options);
   return {
     descriptor: braveWebSearchCommandDescriptor,
     async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
       const input = readWebSearchInput(request.input, BRAVE_WEB_SEARCH_COMMAND_NAME);
-      const result = await searchBraveWeb(input, {
-        apiKey: options.apiKey,
-        env: options.env,
-        fetchImpl: options.fetchImpl,
-        timeoutMs: options.timeoutMs,
-        defaultCount: options.defaultCount,
-        now: options.now,
-      });
+      const result = await searchBraveWeb(input, requestOptions(request.signal));
       return {
         ok: true,
         command: BRAVE_WEB_SEARCH_COMMAND_NAME,
         output: result,
         summary: `Found ${result.resultCount} Brave web result${result.resultCount === 1 ? "" : "s"} for ${result.query}.`,
+        ...braveCommandAudit(result),
       };
     },
   };
 }
 
-export function createBraveNewsSearchCommand(options: {
-  apiKey?: string;
-  env?: NodeJS.ProcessEnv;
-  fetchImpl?: BraveSearchFetchImpl;
-  timeoutMs?: number;
-  defaultCount?: number;
-  now?: () => number;
-} = {}): RegisteredCommand {
+export function createBraveNewsSearchCommand(options: BraveCommandOptions = {}): RegisteredCommand {
+  const requestOptions = createBraveRequestOptions(options);
   return {
     descriptor: braveNewsSearchCommandDescriptor,
     async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
       const input = readWebSearchInput(request.input, BRAVE_NEWS_SEARCH_COMMAND_NAME);
-      const result = await searchBraveNews(input, {
-        apiKey: options.apiKey,
-        env: options.env,
-        fetchImpl: options.fetchImpl,
-        timeoutMs: options.timeoutMs,
-        defaultCount: options.defaultCount,
-        now: options.now,
-      });
+      const result = await searchBraveNews(input, requestOptions(request.signal));
       return {
         ok: true,
         command: BRAVE_NEWS_SEARCH_COMMAND_NAME,
         output: result,
         summary: `Found ${result.resultCount} Brave news result${result.resultCount === 1 ? "" : "s"} for ${result.query}.`,
+        ...braveCommandAudit(result),
       };
     },
   };
 }
 
-export function createBraveVideoSearchCommand(options: {
-  apiKey?: string;
-  env?: NodeJS.ProcessEnv;
-  fetchImpl?: BraveSearchFetchImpl;
-  timeoutMs?: number;
-  defaultCount?: number;
-  now?: () => number;
-} = {}): RegisteredCommand {
+export function createBraveVideoSearchCommand(options: BraveCommandOptions = {}): RegisteredCommand {
+  const requestOptions = createBraveRequestOptions(options);
   return {
     descriptor: braveVideoSearchCommandDescriptor,
     async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
       const input = readWebSearchInput(request.input, BRAVE_VIDEO_SEARCH_COMMAND_NAME);
-      const result = await searchBraveVideo(input, {
-        apiKey: options.apiKey,
-        env: options.env,
-        fetchImpl: options.fetchImpl,
-        timeoutMs: options.timeoutMs,
-        defaultCount: options.defaultCount,
-        now: options.now,
-      });
+      const result = await searchBraveVideo(input, requestOptions(request.signal));
       return {
         ok: true,
         command: BRAVE_VIDEO_SEARCH_COMMAND_NAME,
         output: result,
         summary: `Found ${result.resultCount} Brave video result${result.resultCount === 1 ? "" : "s"} for ${result.query}.`,
+        ...braveCommandAudit(result),
       };
     },
   };
 }
 
-export function createBraveImageSearchCommand(options: {
-  apiKey?: string;
-  env?: NodeJS.ProcessEnv;
-  fetchImpl?: BraveSearchFetchImpl;
-  timeoutMs?: number;
-  defaultCount?: number;
-  now?: () => number;
-} = {}): RegisteredCommand {
+export function createBraveImageSearchCommand(options: BraveCommandOptions = {}): RegisteredCommand {
+  const requestOptions = createBraveRequestOptions(options);
   return {
     descriptor: braveImageSearchCommandDescriptor,
     async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
       const input = readWebSearchInput(request.input, BRAVE_IMAGE_SEARCH_COMMAND_NAME);
-      const result = await searchBraveImage(input, {
-        apiKey: options.apiKey,
-        env: options.env,
-        fetchImpl: options.fetchImpl,
-        timeoutMs: options.timeoutMs,
-        defaultCount: options.defaultCount,
-        now: options.now,
-      });
+      const result = await searchBraveImage(input, requestOptions(request.signal));
       return {
         ok: true,
         command: BRAVE_IMAGE_SEARCH_COMMAND_NAME,
         output: result,
         summary: `Found ${result.resultCount} Brave image result${result.resultCount === 1 ? "" : "s"} for ${result.query}.`,
+        ...braveCommandAudit(result),
       };
     },
   };
 }
 
-export function createBraveLlmContextCommand(options: {
-  apiKey?: string;
-  env?: NodeJS.ProcessEnv;
-  fetchImpl?: BraveSearchFetchImpl;
-  timeoutMs?: number;
-  now?: () => number;
-} = {}): RegisteredCommand {
+export function createBraveLlmContextCommand(options: BraveCommandOptions = {}): RegisteredCommand {
+  const requestOptions = createBraveRequestOptions(options);
   return {
     descriptor: braveLlmContextCommandDescriptor,
     async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
       const input = readBraveLlmContextInput(request.input);
-      const result = await searchBraveLlmContext(input, {
-        apiKey: options.apiKey,
-        env: options.env,
-        fetchImpl: options.fetchImpl,
-        timeoutMs: options.timeoutMs,
-        now: options.now,
-      });
+      const result = await searchBraveLlmContext(input, requestOptions(request.signal));
       return {
         ok: true,
         command: BRAVE_LLM_CONTEXT_COMMAND_NAME,
         output: result,
         summary: `Retrieved Brave LLM context from ${result.resultCount} source${result.resultCount === 1 ? "" : "s"} for ${result.query}.`,
+        ...braveCommandAudit(result),
       };
     },
   };
 }
 
-export function createBravePlaceSearchCommand(options: {
-  apiKey?: string;
-  env?: NodeJS.ProcessEnv;
-  fetchImpl?: BraveSearchFetchImpl;
-  timeoutMs?: number;
-  defaultCount?: number;
-  now?: () => number;
-} = {}): RegisteredCommand {
+export function createBravePlaceSearchCommand(options: BraveCommandOptions = {}): RegisteredCommand {
+  const requestOptions = createBraveRequestOptions(options);
   return {
     descriptor: bravePlaceSearchCommandDescriptor,
     async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
       const input = readPlaceSearchInput(request.input);
-      const result = await searchBravePlace(input, {
-        apiKey: options.apiKey,
-        env: options.env,
-        fetchImpl: options.fetchImpl,
-        timeoutMs: options.timeoutMs,
-        defaultCount: options.defaultCount,
-        now: options.now,
-      });
+      const result = await searchBravePlace(input, requestOptions(request.signal));
       return {
         ok: true,
         command: BRAVE_PLACE_SEARCH_COMMAND_NAME,
         output: result,
         summary: `Found ${result.resultCount} Brave place result${result.resultCount === 1 ? "" : "s"}.`,
+        ...braveCommandAudit(result),
       };
     },
   };
 }
 
-export function createBravePlacePoiCommand(options: {
-  apiKey?: string;
-  env?: NodeJS.ProcessEnv;
-  fetchImpl?: BraveSearchFetchImpl;
-  timeoutMs?: number;
-  now?: () => number;
-} = {}): RegisteredCommand {
+export function createBravePlacePoiCommand(options: BraveCommandOptions = {}): RegisteredCommand {
+  const requestOptions = createBraveRequestOptions(options);
   return {
     descriptor: bravePlacePoiCommandDescriptor,
     async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
       const input = readPlaceDetailsInput(request.input, BRAVE_PLACE_POI_COMMAND_NAME);
-      const result = await fetchBravePlacePois(input, {
-        apiKey: options.apiKey,
-        env: options.env,
-        fetchImpl: options.fetchImpl,
-        timeoutMs: options.timeoutMs,
-        now: options.now,
-      });
+      const result = await fetchBravePlacePois(input, requestOptions(request.signal));
       return {
         ok: true,
         command: BRAVE_PLACE_POI_COMMAND_NAME,
         output: result,
         summary: `Fetched Brave POI details for ${result.ids.length} place id${result.ids.length === 1 ? "" : "s"}.`,
+        ...braveCommandAudit(result),
       };
     },
   };
 }
 
-export function createBravePlaceDescriptionCommand(options: {
-  apiKey?: string;
-  env?: NodeJS.ProcessEnv;
-  fetchImpl?: BraveSearchFetchImpl;
-  timeoutMs?: number;
-  now?: () => number;
-} = {}): RegisteredCommand {
+export function createBravePlaceDescriptionCommand(options: BraveCommandOptions = {}): RegisteredCommand {
+  const requestOptions = createBraveRequestOptions(options);
   return {
     descriptor: bravePlaceDescriptionCommandDescriptor,
     async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
       const input = readPlaceDetailsInput(request.input, BRAVE_PLACE_DESCRIPTION_COMMAND_NAME);
-      const result = await fetchBravePlaceDescriptions(input, {
-        apiKey: options.apiKey,
-        env: options.env,
-        fetchImpl: options.fetchImpl,
-        timeoutMs: options.timeoutMs,
-        now: options.now,
-      });
+      const result = await fetchBravePlaceDescriptions(input, requestOptions(request.signal));
       return {
         ok: true,
         command: BRAVE_PLACE_DESCRIPTION_COMMAND_NAME,
         output: result,
         summary: `Fetched Brave place descriptions for ${result.ids.length} place id${result.ids.length === 1 ? "" : "s"}.`,
+        ...braveCommandAudit(result),
       };
     },
   };
