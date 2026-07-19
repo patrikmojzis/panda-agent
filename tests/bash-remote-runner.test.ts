@@ -651,14 +651,15 @@ describe("remote bash runner", () => {
 
   function fakeJobSnapshot(input: CommandExecutorJobStartInput, status: BashJobSnapshot["status"]): BashJobSnapshot {
     const finished = status !== "running";
+    const startedAt = Date.now();
     return {
       jobId: input.request.jobId,
       status,
       command: input.request.command,
       initialCwd: input.cwd,
       maxRuntimeMs: input.request.maxRuntimeMs,
-      expiresAt: 123 + input.request.maxRuntimeMs,
-      startedAt: 123,
+      expiresAt: startedAt + input.request.maxRuntimeMs,
+      startedAt,
       timedOut: false,
       stdout: status === "completed" ? "fake-job-done" : "",
       stderr: "",
@@ -669,7 +670,7 @@ describe("remote bash runner", () => {
       stdoutPersisted: false,
       stderrPersisted: false,
       trackedEnvKeys: input.request.trackedEnvKeys,
-      ...(finished ? {finishedAt: 456, durationMs: 333, exitCode: 0, signal: null, finalCwd: input.cwd} : {}),
+      ...(finished ? {finishedAt: startedAt + 333, durationMs: 333, exitCode: 0, signal: null, finalCwd: input.cwd} : {}),
     };
   }
 
@@ -789,7 +790,7 @@ describe("remote bash runner", () => {
     });
     expect(waitResponse.status).toBe(200);
     await expect(waitResponse.json()).resolves.toMatchObject({status: "completed", stdout: "fake-job-done"});
-    expect(controlled.waitTimeouts).toEqual([300_000]);
+    expect(controlled.waitTimeouts).toEqual([5_000]);
 
     const repeatedWait = await requestDirectRunnerJob(runner, "wait", {
       jobId: "job-retained-terminal",
@@ -839,8 +840,8 @@ describe("remote bash runner", () => {
       status: "completed",
       stdout: "fake-job-done",
       maxRuntimeMs: 1_000,
-      expiresAt: 1_123,
-      finishedAt: 456,
+      expiresAt: expect.any(Number),
+      finishedAt: expect.any(Number),
       durationMs: 333,
       exitCode: 0,
       signal: null,
@@ -885,7 +886,7 @@ describe("remote bash runner", () => {
       await expect(statusResponse.json()).resolves.toMatchObject({
         status: terminalStatus,
         maxRuntimeMs: 1_000,
-        expiresAt: 1_123,
+        expiresAt: expect.any(Number),
       });
       const waitResponse = await requestDirectRunnerJob(runner, "wait", {jobId, timeoutMs: 1_000});
       expect(waitResponse.status).toBe(200);
@@ -949,22 +950,27 @@ describe("remote bash runner", () => {
     expect(runner.server.listening).toBe(false);
   });
 
-  it("releases a credential-shaped executor job after retaining its terminal snapshot", async () => {
+  it("recovers from a watcher rejection and releases the credential-shaped executor job", async () => {
     const script = `
       import {startBashRunner} from "./src/integrations/shell/bash-runner.ts";
       let releaseCompletion;
+      let markWatcherRejected;
       let markWatcherReturned;
       let jobReference;
+      let waitCalls = 0;
       const completion = new Promise((resolve) => { releaseCompletion = resolve; });
+      const watcherRejected = new Promise((resolve) => { markWatcherRejected = resolve; });
       const watcherReturned = new Promise((resolve) => { markWatcherReturned = resolve; });
-      const snapshot = (input, status) => ({
+      const snapshot = (input, status) => {
+        const startedAt = Date.now();
+        return ({
         jobId: input.request.jobId,
         status,
         command: input.request.command,
         initialCwd: input.cwd,
         maxRuntimeMs: input.request.maxRuntimeMs,
-        expiresAt: 1001,
-        startedAt: 1,
+        expiresAt: startedAt + input.request.maxRuntimeMs,
+        startedAt,
         timedOut: false,
         stdout: status === "completed" ? "done" : "",
         stderr: "",
@@ -975,8 +981,9 @@ describe("remote bash runner", () => {
         stdoutPersisted: false,
         stderrPersisted: false,
         trackedEnvKeys: [],
-        ...(status === "running" ? {} : {finishedAt: 2, durationMs: 1, exitCode: 0, signal: null}),
+        ...(status === "running" ? {} : {finishedAt: startedAt + 1, durationMs: 1, exitCode: 0, signal: null}),
       });
+      };
       const runner = await startBashRunner({
         agentKey: "panda",
         host: "127.0.0.1",
@@ -989,6 +996,11 @@ describe("remote bash runner", () => {
               credentialShapedEnv: {OPENAI_API_KEY: "sk-shaped-not-a-real-secret"},
               snapshot: () => snapshot(input, status),
               wait: async () => {
+                waitCalls += 1;
+                if (waitCalls === 1) {
+                  markWatcherRejected();
+                  throw new Error("transient watcher transport failure");
+                }
                 await completion;
                 status = "completed";
                 markWatcherReturned();
@@ -1025,8 +1037,10 @@ describe("remote bash runner", () => {
         });
         if (response.status !== 200) throw new Error("start failed: " + response.status);
         await response.json();
+        await watcherRejected;
         releaseCompletion();
         await watcherReturned;
+        if (waitCalls !== 2) throw new Error("watcher did not retry exactly once: " + waitCalls);
         await new Promise((resolve) => setImmediate(resolve));
         for (let index = 0; index < 20; index += 1) {
           global.gc();
@@ -1271,6 +1285,8 @@ describe("remote bash runner", () => {
     let cancelCalls = 0;
     const completion = new Promise<void>((resolve) => { releaseCompletion = resolve; });
     const watcherReturned = new Promise<void>((resolve) => { markWatcherReturned = resolve; });
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
     const runner = await createRunner("panda", {
       commandExecutor: {
         execute: async () => { throw new Error("unexpected exec"); },
@@ -1295,7 +1311,11 @@ describe("remote bash runner", () => {
       "start",
       directJobStartRequest("job-close-during-watch", agentHome, "sleep 1"),
     )).status).toBe(200);
-    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const observationCallIndex = setTimeoutSpy.mock.calls.findIndex((call) => (
+      typeof call[1] === "number" && call[1] > 90_000
+    ));
+    expect(observationCallIndex).toBeGreaterThanOrEqual(0);
+    const observationTimer = setTimeoutSpy.mock.results[observationCallIndex]?.value as NodeJS.Timeout;
 
     const firstClose = runner.close();
     expect(runner.close()).toBe(firstClose);
@@ -1303,6 +1323,7 @@ describe("remote bash runner", () => {
     await watcherReturned;
 
     expect(cancelCalls).toBe(1);
+    expect(clearTimeoutSpy).toHaveBeenCalledWith(observationTimer);
     expect(setTimeoutSpy.mock.calls.some((call) => call[1] === 90_000)).toBe(false);
     expect(runner.server.listening).toBe(false);
   });
@@ -1533,6 +1554,242 @@ describe("remote bash runner", () => {
     expect({acceptedRunning, lostFirstWaits}).toEqual({acceptedRunning: attempts, lostFirstWaits: 0});
   }, 30_000);
 
+  it("rejects duplicate active foreground request IDs and close kills the accepted process group", async () => {
+    if (process.platform === "win32") return;
+
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const markerPath = path.join(agentHome, "duplicate-exec-processes.txt");
+    const runner = await createRunner("panda");
+    const body = {
+      requestId: "request-duplicate-active",
+      command: `(sleep 30) & child=$!; printf '%s %s' "$$" "$child" > ${JSON.stringify(markerPath)}; wait`,
+      cwd: agentHome,
+      timeoutMs: 60_000,
+      trackedEnvKeys: [],
+      maxOutputChars: 8_000,
+    };
+
+    const acceptedResponse = fetch(`http://127.0.0.1:${runner.port}/agents/panda/exec`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify(body),
+    });
+    await waitFor(async () => {
+      try {
+        return (await readFile(markerPath, "utf8")).trim().split(" ").length === 2;
+      } catch {
+        return false;
+      }
+    });
+    const pids = (await readFile(markerPath, "utf8")).trim().split(" ").map(Number);
+
+    const duplicateResponse = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/exec`, {
+      method: "POST",
+      headers: buildDirectRunnerHeaders("panda"),
+      body: JSON.stringify({...body, command: "printf duplicate"}),
+    });
+    expect(duplicateResponse.status).toBe(400);
+    await expect(duplicateResponse.json()).resolves.toMatchObject({
+      error: "Runner requestId request-duplicate-active is already active.",
+    });
+
+    const closeStartedAt = Date.now();
+    await runner.close();
+    expect(Date.now() - closeStartedAt).toBeLessThan(6_000);
+    const accepted = await acceptedResponse;
+    expect(accepted.status).toBe(200);
+    await expect(accepted.json()).resolves.toMatchObject({aborted: true});
+    for (const pid of pids) {
+      expect(() => process.kill(pid, 0)).toThrow();
+    }
+  }, 10_000);
+
+  it("retries persistent watcher failures, then releases credentials and the job ID at its lifetime bound", async () => {
+    const script = `
+      import {startBashRunner} from "./src/integrations/shell/bash-runner.ts";
+      const realSetTimeout = globalThis.setTimeout;
+      let observationExpiry;
+      let observationDelay;
+      let observationTimer;
+      let firstJobReference;
+      let startCalls = 0;
+      let watcherWaitCalls = 0;
+      globalThis.setTimeout = ((callback, delay, ...args) => {
+        const timer = realSetTimeout(callback, delay, ...args);
+        if (typeof delay === "number" && delay > 90_000 && !observationExpiry) {
+          observationExpiry = callback;
+          observationDelay = delay;
+          observationTimer = timer;
+        }
+        return timer;
+      });
+      const snapshot = (input, status) => {
+        const startedAt = Date.now();
+        return {
+          jobId: input.request.jobId,
+          status,
+          command: input.request.command,
+          initialCwd: input.cwd,
+          maxRuntimeMs: input.request.maxRuntimeMs,
+          expiresAt: startedAt + input.request.maxRuntimeMs,
+          startedAt,
+          timedOut: false,
+          stdout: status === "completed" ? "done" : "",
+          stderr: "",
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          stdoutChars: status === "completed" ? 4 : 0,
+          stderrChars: 0,
+          stdoutPersisted: false,
+          stderrPersisted: false,
+          trackedEnvKeys: [],
+          ...(status === "running" ? {} : {
+            finishedAt: startedAt + 1,
+            durationMs: 1,
+            exitCode: 0,
+            signal: null,
+          }),
+        };
+      };
+      const runner = await startBashRunner({
+        agentKey: "panda",
+        host: "127.0.0.1",
+        port: 0,
+        commandExecutor: {
+          execute: async () => { throw new Error("unexpected exec"); },
+          startJob: async (input) => {
+            startCalls += 1;
+            if (startCalls === 1) {
+              const job = {
+                credentialShapedEnv: {OPENAI_API_KEY: "sk-shaped-not-a-real-secret"},
+                snapshot: () => snapshot(input, "running"),
+                wait: async () => {
+                  watcherWaitCalls += 1;
+                  throw new Error("persistent watcher transport failure");
+                },
+                cancel: async () => snapshot(input, "cancelled"),
+              };
+              firstJobReference = new WeakRef(job);
+              return job;
+            }
+            return {
+              snapshot: () => snapshot(input, "completed"),
+              wait: async () => snapshot(input, "completed"),
+              cancel: async () => snapshot(input, "completed"),
+            };
+          },
+        },
+      });
+      const headers = {
+        "content-type": "application/json",
+        "x-runtime-agent-key": "panda",
+        "x-runtime-agent-path-scoped": "1",
+        "x-runtime-expected-path": "/agents/panda",
+      };
+      const requestJob = (endpoint, body) => fetch(
+        "http://127.0.0.1:" + runner.port + "/agents/panda/jobs/" + endpoint,
+        {method: "POST", headers, body: JSON.stringify(body)},
+      );
+      const waitUntil = async (predicate) => {
+        const deadline = Date.now() + 5_000;
+        while (!predicate()) {
+          if (Date.now() >= deadline) throw new Error("condition timed out");
+          await new Promise((resolve) => realSetTimeout(resolve, 10));
+        }
+      };
+      try {
+        const request = {
+          jobId: "job-persistent-watch-failure",
+          command: "sleep 1",
+          cwd: process.cwd(),
+          maxRuntimeMs: 1_000,
+          trackedEnvKeys: [],
+          maxOutputChars: 8_000,
+          persistOutputThresholdChars: 8_000,
+        };
+        const started = await requestJob("start", request);
+        if (started.status !== 200 || (await started.json()).status !== "running") {
+          throw new Error("running start failed");
+        }
+        await waitUntil(() => watcherWaitCalls >= 2);
+        if (!observationExpiry || !(observationDelay > 90_000 && observationDelay <= 91_000)) {
+          throw new Error("missing bounded observation expiry");
+        }
+        if (observationTimer.hasRef()) throw new Error("observation expiry timer was referenced");
+        observationExpiry();
+        observationExpiry = undefined;
+        observationTimer = undefined;
+        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setImmediate(resolve));
+
+        const expired = await requestJob("status", {jobId: request.jobId});
+        if (expired.status !== 404) throw new Error("expired ID remained reserved: " + expired.status);
+        const reused = await requestJob("start", {...request, command: "printf reused"});
+        if (reused.status !== 200) throw new Error("ID reuse failed: " + reused.status);
+        const consumed = await requestJob("wait", {jobId: request.jobId});
+        if (consumed.status !== 200) throw new Error("replacement consume failed: " + consumed.status);
+
+        for (let index = 0; index < 20; index += 1) {
+          global.gc();
+          await new Promise((resolve) => setImmediate(resolve));
+          if (!firstJobReference.deref()) break;
+        }
+        if (firstJobReference.deref()) throw new Error("persistent failure retained the credential-shaped job");
+        if (startCalls !== 2) throw new Error("unexpected start count: " + startCalls);
+        process.stdout.write("persistent-watch-released");
+      } finally {
+        globalThis.setTimeout = realSetTimeout;
+        await runner.close();
+      }
+    `;
+
+    const result = await execFileAsync(process.execPath, [
+      "--expose-gc",
+      "--import",
+      "tsx",
+      "--input-type=module",
+      "--eval",
+      script,
+    ], {cwd: path.resolve("."), timeout: 10_000});
+    expect(result.stdout).toBe("persistent-watch-released");
+  }, 15_000);
+
+  it("uses a bounded watcher poll and awaits the in-flight poll during close", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    let watcherWaitTimeout: number | undefined;
+    let markWatcherStarted!: () => void;
+    const watcherStarted = new Promise<void>((resolve) => { markWatcherStarted = resolve; });
+    const runner = await createRunner("panda", {
+      commandExecutor: {
+        execute: async () => { throw new Error("unexpected exec"); },
+        startJob: async (input) => ({
+          snapshot: () => fakeJobSnapshot(input, "running"),
+          wait: async (timeoutMs) => {
+            watcherWaitTimeout = timeoutMs;
+            markWatcherStarted();
+            if ((timeoutMs ?? Number.POSITIVE_INFINITY) > 5_000) {
+              throw new Error("watcher poll was not bounded");
+            }
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            return fakeJobSnapshot(input, "running");
+          },
+          cancel: async () => fakeJobSnapshot(input, "cancelled"),
+        }),
+      },
+    });
+    expect((await requestDirectRunnerJob(
+      runner,
+      "start",
+      directJobStartRequest("job-bounded-watch-close", agentHome, "sleep 1"),
+    )).status).toBe(200);
+    await watcherStarted;
+
+    const closeStartedAt = Date.now();
+    await runner.close();
+    expect(watcherWaitTimeout).toBeLessThanOrEqual(5_000);
+    expect(Date.now() - closeStartedAt).toBeLessThan(6_000);
+  }, 10_000);
+
   it("serves /exec through the command executor seam without changing the runner protocol", async () => {
     const agentHome = await createWorkspace("runtime-agent-home-");
     const calls: CommandExecutorExecInput[] = [];
@@ -1589,7 +1846,7 @@ describe("remote bash runner", () => {
           const job: CommandExecutorJob = {
             snapshot: () => fakeJobSnapshot(input, status),
             wait: async (timeoutMs) => {
-              if (timeoutMs === 300_000) {
+              if (timeoutMs === 5_000) {
                 return fakeJobSnapshot(input, status);
               }
               status = "completed";
@@ -1701,7 +1958,7 @@ describe("remote bash runner", () => {
     expect(startResponse.status).toBe(200);
 
     await vi.waitFor(() => {
-      expect(waitTimeouts).toEqual([300_000]);
+      expect(waitTimeouts).toEqual([5_000]);
     });
 
     const statusResponse = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/status`, {

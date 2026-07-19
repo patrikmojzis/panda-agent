@@ -33,8 +33,12 @@ import {readJsonHttpBody} from "../http-body.js";
 import {buildSafeCommandEnv, SAFE_SHELL} from "./environment.js";
 
 const DEFAULT_RUNNER_PORT = 8080;
-const BACKGROUND_JOB_WATCH_WAIT_MS = 300_000;
+// CommandExecutorJob has no AbortSignal, so close still awaits the in-flight call;
+// keep cooperative executor transports on a short poll instead of one 300s wait.
+const BACKGROUND_JOB_WATCH_WAIT_MS = 5_000;
 const BACKGROUND_JOB_WATCH_IDLE_MS = 1_000;
+const BACKGROUND_JOB_WATCH_RETRY_MS = 1_000;
+const BACKGROUND_JOB_WATCH_EXPIRY_GRACE_MS = 90_000;
 // Core allows a 60s wait plus a 5s HTTP buffer; 90s adds bounded scheduling grace.
 const BACKGROUND_JOB_TERMINAL_RETENTION_MS = 90_000;
 const CLOSE_JOB_WAIT_MS = 1_000;
@@ -50,7 +54,8 @@ interface RunningBackgroundJobState {
   kind: "running";
   token: symbol;
   job: CommandExecutorJob;
-  wakeWatcherIdle?: () => void;
+  observationExpiryTimer?: NodeJS.Timeout;
+  wakeWatcherDelay?: () => void;
 }
 
 interface TerminalBackgroundJobState {
@@ -600,7 +605,11 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
     if (state.kind === "terminal") {
       clearTimeout(state.expiryTimer);
     } else {
-      state.wakeWatcherIdle?.();
+      if (state.observationExpiryTimer) {
+        clearTimeout(state.observationExpiryTimer);
+        state.observationExpiryTimer = undefined;
+      }
+      state.wakeWatcherDelay?.();
     }
     return true;
   };
@@ -622,6 +631,12 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
     if (closing || snapshot.status === "running" || backgroundJobs.get(jobId) !== state) {
       return undefined;
     }
+
+    if (state.observationExpiryTimer) {
+      clearTimeout(state.observationExpiryTimer);
+      state.observationExpiryTimer = undefined;
+    }
+    state.wakeWatcherDelay?.();
 
     let terminalState!: TerminalBackgroundJobState;
     const expiryTimer = setTimeout(() => {
@@ -655,23 +670,42 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
     return consumed;
   };
 
-  const waitForWatcherIdle = async (jobId: string, state: RunningBackgroundJobState): Promise<void> => {
+  const waitForWatcherDelay = async (
+    jobId: string,
+    state: RunningBackgroundJobState,
+    delayMs: number,
+  ): Promise<void> => {
     await new Promise<void>((resolve) => {
       let settled = false;
       const finish = (): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        state.wakeWatcherIdle = undefined;
+        state.wakeWatcherDelay = undefined;
         resolve();
       };
-      const timer = setTimeout(finish, BACKGROUND_JOB_WATCH_IDLE_MS);
+      const timer = setTimeout(finish, delayMs);
       timer.unref();
-      state.wakeWatcherIdle = finish;
+      state.wakeWatcherDelay = finish;
       if (closing || backgroundJobs.get(jobId) !== state) {
         finish();
       }
     });
+  };
+
+  const scheduleRunningJobObservationExpiry = (
+    jobId: string,
+    state: RunningBackgroundJobState,
+    expiresAt: number,
+  ): void => {
+    const delayMs = Math.max(0, expiresAt + BACKGROUND_JOB_WATCH_EXPIRY_GRACE_MS - Date.now());
+    const timer = setTimeout(() => {
+      // The executor owns max-runtime process cleanup. After its deadline plus grace,
+      // fail closed by releasing an unobservable credential-bearing runner state.
+      deleteBackgroundJob(jobId, state);
+    }, delayMs);
+    timer.unref();
+    state.observationExpiryTimer = timer;
   };
 
   const watchBackgroundJob = (jobId: string, state: RunningBackgroundJobState): void => {
@@ -681,15 +715,16 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
         try {
           snapshot = await state.job.wait(BACKGROUND_JOB_WATCH_WAIT_MS);
         } catch {
-          // Keep the job queryable for explicit status/wait/cancel calls if background polling fails.
-          return;
+          if (closing || backgroundJobs.get(jobId) !== state) return;
+          await waitForWatcherDelay(jobId, state, BACKGROUND_JOB_WATCH_RETRY_MS);
+          continue;
         }
         if (closing || backgroundJobs.get(jobId) !== state) return;
         if (snapshot.status !== "running") {
           retainTerminalJob(jobId, state, snapshot);
           return;
         }
-        await waitForWatcherIdle(jobId, state);
+        await waitForWatcherDelay(jobId, state, BACKGROUND_JOB_WATCH_IDLE_MS);
       }
     })();
     backgroundWatchers.add(watcher);
@@ -817,8 +852,13 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
           return;
         }
 
+        if (activeRequests.has(parsed.requestId)) {
+          throw new ToolError(`Runner requestId ${parsed.requestId} is already active.`);
+        }
+
         const controller = new AbortController();
-        activeRequests.set(parsed.requestId, { controller });
+        const active: ActiveRunnerRequest = { controller };
+        activeRequests.set(parsed.requestId, active);
 
         response.once("close", () => {
           if (!response.writableEnded) {
@@ -848,7 +888,9 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
           });
           return;
         } finally {
-          activeRequests.delete(parsed.requestId);
+          if (activeRequests.get(parsed.requestId) === active) {
+            activeRequests.delete(parsed.requestId);
+          }
         }
       }
 
@@ -925,6 +967,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
             ...(retainedState?.snapshot ?? snapshot),
           });
           if (snapshot.status === "running") {
+            scheduleRunningJobObservationExpiry(parsed.jobId, state, snapshot.expiresAt);
             watchBackgroundJob(parsed.jobId, state);
           }
           return;
