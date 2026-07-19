@@ -1,11 +1,12 @@
 import {ConfigurationError} from "../../../kernel/agent/exceptions.js";
 
-type RuntimeProviderName = "openai" | "openai-codex" | "anthropic";
+type RuntimeProviderName = "openai" | "openai-codex" | "anthropic" | "kimi-coding";
 export type ProviderAuthKind =
   | "openai-api-key"
   | "openai-codex-oauth"
   | "anthropic-api-key-or-oauth"
-  | "anthropic-oauth";
+  | "anthropic-oauth"
+  | "kimi-api-key";
 
 interface ProviderConfig {
   runtimeProvider: RuntimeProviderName;
@@ -45,6 +46,13 @@ const PROVIDER_CONFIGS = {
     defaultModel: "claude-sonnet-4-5",
     missingApiKeyMessage:
       "Missing Anthropic OAuth token. Add ANTHROPIC_AUTH_TOKEN, ANTHROPIC_OAUTH_TOKEN, or CLAUDE_CODE_OAUTH_TOKEN.",
+  },
+  "kimi-coding": {
+    runtimeProvider: "kimi-coding",
+    authKind: "kimi-api-key",
+    defaultModelEnvVar: "KIMI_MODEL",
+    defaultModel: "k3",
+    missingApiKeyMessage: "Missing KIMI_API_KEY.",
   },
 } as const satisfies Record<string, ProviderConfig>;
 

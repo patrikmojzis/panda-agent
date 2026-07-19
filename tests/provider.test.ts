@@ -1,18 +1,16 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
-    Agent,
-    assertProviderName,
-    ConfigurationError,
-    parseProviderName,
-    resolveModelSelector,
-    Thread,
+  Agent,
+  assertProviderName,
+  ConfigurationError,
+  parseProviderName,
+  resolveModelSelector,
+  resolveProviderApiKey,
+  Thread,
 } from "../src/index.js";
 import {resolveProviderModel} from "../src/integrations/providers/shared/model.js";
-import {
-    resolveDefaultAgentModelSelector,
-    resolveDefaultAgentSubagentModelSelector,
-} from "../src/panda/defaults.js";
+import {resolveDefaultAgentModelSelector, resolveDefaultAgentSubagentModelSelector,} from "../src/panda/defaults.js";
 
 describe("model selector", () => {
   afterEach(() => {
@@ -21,13 +19,14 @@ describe("model selector", () => {
 
   it("parses supported provider names", () => {
     expect(parseProviderName(" openai-codex ")).toBe("openai-codex");
+    expect(parseProviderName(" kimi-coding ")).toBe("kimi-coding");
     expect(parseProviderName("open-ai")).toBeNull();
   });
 
   it("throws a configuration error for unsupported providers", () => {
     expect(() => assertProviderName("open-ai")).toThrowError(ConfigurationError);
     expect(() => assertProviderName("open-ai")).toThrowError(
-      'Unsupported provider "open-ai". Expected one of `openai`, `openai-codex`, `anthropic`, `anthropic-oauth`.',
+      'Unsupported provider "open-ai". Expected one of `openai`, `openai-codex`, `anthropic`, `anthropic-oauth`, `kimi-coding`.',
     );
   });
 
@@ -89,6 +88,19 @@ describe("model selector", () => {
       ANTHROPIC_MODEL: "claude-haiku-4-5",
       CODEX_HOME: "/tmp/panda-empty-codex-home",
     })).toBe("anthropic/claude-haiku-4-5");
+
+    expect(resolveDefaultAgentModelSelector({
+      KIMI_API_KEY: "kimi-api-key",
+      KIMI_MODEL: "k3",
+      CODEX_HOME: "/tmp/panda-empty-codex-home",
+    })).toBe("kimi-coding/k3");
+  });
+
+  it("resolves Kimi Code membership auth", () => {
+    expect(resolveProviderApiKey("kimi-coding", {KIMI_API_KEY: " kimi-api-key "})).toBe(
+      "kimi-api-key",
+    );
+    expect(resolveProviderApiKey("kimi-coding", {})).toBeUndefined();
   });
 
   it("uses the environment default when a thread has no explicit model", () => {
@@ -130,6 +142,21 @@ describe("model selector", () => {
     expect(resolveProviderModel(providerName, modelId)).toMatchObject({
       id: modelId,
       provider: providerName,
+    });
+  });
+
+  it("resolves the pi-ai Kimi Code K3 catalog model", () => {
+    expect(resolveModelSelector("kimi-coding/k3")).toEqual({
+      canonical: "kimi-coding/k3",
+      providerName: "kimi-coding",
+      modelId: "k3",
+    });
+    expect(resolveProviderModel("kimi-coding", "k3")).toMatchObject({
+      id: "k3",
+      provider: "kimi-coding",
+      api: "anthropic-messages",
+      baseUrl: "https://api.kimi.com/coding",
+      contextWindow: 1_048_576,
     });
   });
 

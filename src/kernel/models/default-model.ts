@@ -15,6 +15,10 @@ function resolveDefaultModelProvider(env: NodeJS.ProcessEnv = process.env): Prov
     return "anthropic";
   }
 
+  if (env.KIMI_API_KEY && !env.OPENAI_API_KEY) {
+    return "kimi-coding";
+  }
+
   return "openai";
 }
 
