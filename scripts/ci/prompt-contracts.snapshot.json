@@ -1,10 +1,10 @@
 {
   "files": [
     {
-      "bytes": 100917,
-      "lines": 3367,
+      "bytes": 101764,
+      "lines": 3399,
       "path": "scripts/agent-command-shim/routes.generated.sh",
-      "sha256": "bd4787bf7baf6a9bb861f6772a492de27f8310006c76e58738237dd2bc47b9ac"
+      "sha256": "49036f99221b1975f98f1d64dee930c18e676f4bee1e49c3bc96f1ad63f731aa"
     },
     {
       "bytes": 1166,
@@ -67,10 +67,10 @@
       "sha256": "c6d98f315f2cfc237bbf5fdd6eb957112e92238bedd6e16956056d0a7939fb56"
     },
     {
-      "bytes": 49907,
-      "lines": 1445,
+      "bytes": 50186,
+      "lines": 1455,
       "path": "src/panda/commands/agent-command-modules.ts",
-      "sha256": "ae3a4d9ed0c05361c67cc47bdba3004cfd226e04da19434d51a62eb351c6c067"
+      "sha256": "7107fb39540348c90b0c8c2b32fb56d67a5c6eb75a25ba8bef5bc4a8a5ed782e"
     },
     {
       "bytes": 572,
@@ -449,6 +449,7 @@
       "toolNames": [
         "browser",
         "web.fetch",
+        "web.read",
         "brave.web.search",
         "brave.news.search",
         "brave.video.search",

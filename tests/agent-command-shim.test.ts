@@ -8,6 +8,7 @@ import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 
 import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
 import {FileSystemCommandUploadStore} from "../src/integrations/commands/file-uploads.js";
+import {FileSystemWebResourceStore} from "../src/integrations/web/web-resources.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {READONLY_SESSION_VIEW_BASENAMES} from "../src/domain/threads/runtime/postgres-readonly.js";
 import {
@@ -131,6 +132,7 @@ import {
   createBraveWebSearchCommand,
   createOpenAIWebResearchCommand,
   createWebFetchCommand,
+  createWebReadCommand,
 } from "../src/integrations/web/commands.js";
 import {createPostgresReadonlyQueryCommand} from "../src/integrations/postgres/readonly-query-command.js";
 import {createImageGenerateCommand} from "../src/panda/commands/image-generate-command.js";
@@ -302,6 +304,9 @@ describe("agent command shim", () => {
     const commandUploadDataDir = await mkdtemp(path.join(os.tmpdir(), "panda-command-upload-shim-"));
     directories.push(commandUploadDataDir);
     const commandUploads = new FileSystemCommandUploadStore({
+      env: {...process.env, DATA_DIR: commandUploadDataDir},
+    });
+    const webResources = new FileSystemWebResourceStore({
       env: {...process.env, DATA_DIR: commandUploadDataDir},
     });
     const emailAttachmentSource = path.join(emailAttachmentDir, "invoice-source.pdf");
@@ -1793,7 +1798,9 @@ describe("agent command shim", () => {
               headers: {"content-type": "text/html; charset=utf-8"},
             }),
             lookupHostname: async () => ["93.184.216.34"],
+            resourceStore: webResources,
           }),
+          createWebReadCommand({resourceStore: webResources}),
           createBraveWebSearchCommand({
             apiKey: "BSA-test-key",
             fetchImpl: async () => new Response(JSON.stringify({
@@ -2444,7 +2451,7 @@ describe("agent command shim", () => {
       "web",
       "fetch",
       "https://example.com/article",
-      "--max-chars",
+      "--chunk-chars",
       "5",
       "--no-links",
     ], {
@@ -2461,7 +2468,46 @@ describe("agent command shim", () => {
       contentFormat: "markdown",
     });
     expect(output).not.toHaveProperty("links");
-    expect(output.content.length).toBeLessThanOrEqual(5);
+    expect(output.content).toContain("<<<EXTERNAL_UNTRUSTED_CONTENT");
+    expect(output.content).toContain("Hello");
+
+    const read = await execFileAsync(shimPath, [
+      "web",
+      "read",
+      output.resourceRef,
+      "--cursor",
+      output.nextCursor,
+      "--chunk-chars",
+      "100",
+    ], {env: shimEnv(server)});
+    expect(JSON.parse(read.stdout)).toMatchObject({
+      operation: "read",
+      resourceRef: output.resourceRef,
+      content: expect.any(String),
+    });
+  });
+
+  it("rejects removed web.fetch limit flags before transport", async () => {
+    await expect(execFileAsync(shimPath, [
+      "web",
+      "fetch",
+      "https://example.com/article",
+      "--max-chars",
+      "5",
+    ])).rejects.toMatchObject({
+      stderr: expect.stringContaining("panda web fetch --max-chars was removed; use --chunk-chars."),
+    });
+  });
+
+  it("rejects removed web.fetch JSON limit fields before transport", async () => {
+    await expect(execFileAsync(shimPath, [
+      "web",
+      "fetch",
+      "--json",
+      '{"url":"https://example.com/article","maxContentChars":5}',
+    ])).rejects.toMatchObject({
+      stderr: expect.stringContaining("panda web fetch maxContentChars was removed; use chunkChars."),
+    });
   });
 
   it("rejects removed web.search compatibility command", async () => {
@@ -3249,8 +3295,8 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     expect(a2aInspect.stdout).toContain("delivery-id");
     expect(a2aHistory.stdout).toContain("panda a2a history [--peer-session <session-id>] [--direction inbound|outbound|all] [--limit <n>]");
     expect(a2aHistory.stdout).toContain("--direction <inbound|outbound|all>");
-    expect(webFetch.stdout).toContain("Fetch a public readable HTML page.");
-    expect(webFetch.stdout).toContain("panda web fetch <url> [--max-chars <n>] [--format markdown|text] [--save <path>] [--include-links|--no-links]");
+    expect(webFetch.stdout).toContain("Fetch a bounded public resource into model-ready content or an artifact.");
+    expect(webFetch.stdout).toContain("panda web fetch <url> [--chunk-chars <n>] [--format markdown|text] [--save <path>] [--include-links|--no-links]");
     expect(webFetch.stdout).toContain("--save <path>");
     expect(watchList.stdout).toContain("panda watch list [--status enabled|disabled|all] [--limit <n>]");
     expect(watchList.stdout).toContain("--status <enabled|disabled|all>");

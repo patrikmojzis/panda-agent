@@ -275,6 +275,9 @@ agent_command_shim_lookup_route() {
     'web fetch')
       printf '%s\t%s\n' 'web.fetch' 'web fetch'
       ;;
+    'web read')
+      printf '%s\t%s\n' 'web.read' 'web read'
+      ;;
     'brave web search')
       printf '%s\t%s\n' 'brave.web.search' 'brave web search'
       ;;
@@ -409,7 +412,8 @@ agent_command_shim_print_root_usage_commands() {
   panda env set <key> (--stdin|--from-file <path>)
   panda env clear <key>
   panda vent (--message <text|@file|@->|--stdin)
-  panda web fetch <url> [--max-chars <n>] [--format markdown|text] [--save <path>] [--include-links|--no-links]
+  panda web fetch <url> [--chunk-chars <n>] [--format markdown|text] [--save <path>] [--include-links|--no-links]
+  panda web read <resource-ref> [--cursor <cursor>] [--chunk-chars <n>]
   panda brave web search <query> [-n|--count <n>] [--offset <n>] [--freshness pd|pw|pm|py|YYYY-MM-DDtoYYYY-MM-DD] [--country <code>] [--lang <code>] [--safe off|moderate|strict] [--extra-snippets] [--goggles <url-or-inline>]
   panda brave news search <query> [-n|--count <n>] [--offset <n>] [--freshness pd|pw|pm|py|YYYY-MM-DDtoYYYY-MM-DD] [--country <code>] [--lang <code>] [--safe off|moderate|strict] [--extra-snippets] [--goggles <url-or-inline>]
   panda brave video search <query> [-n|--count <n>] [--offset <n>] [--freshness pd|pw|pm|py|YYYY-MM-DDtoYYYY-MM-DD] [--country <code>] [--lang <code>] [--safe off|moderate|strict] [--no-spellcheck]
@@ -1372,6 +1376,16 @@ Detailed help is available only through the current agent command lease.
 Usage:
   panda web fetch --json @payload.json
 PANDA_COMMAND_HELP_web_fetch
+      ;;
+    'web.read')
+      cat <<'PANDA_COMMAND_HELP_web_read'
+Panda command: web.read
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda web read --json @payload.json
+PANDA_COMMAND_HELP_web_read
       ;;
     'brave.web.search')
       cat <<'PANDA_COMMAND_HELP_brave_web_search'
@@ -3142,6 +3156,24 @@ PANDA_COMMAND_HELP_JSON_vent_send
   "examples": []
 }
 PANDA_COMMAND_HELP_JSON_web_fetch
+      ;;
+    'web.read')
+      cat <<'PANDA_COMMAND_HELP_JSON_web_read'
+{
+  "name": "web.read",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda web read --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_web_read
       ;;
     'brave.web.search')
       cat <<'PANDA_COMMAND_HELP_JSON_brave_web_search'

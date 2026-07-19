@@ -71,6 +71,7 @@ interface FetchSafeHttpResourceOptions {
   method?: "GET" | "POST";
   headers?: Record<string, string>;
   body?: string;
+  readErrorBody?: boolean;
 }
 
 interface FetchSafeHttpResourceResult {
@@ -80,13 +81,16 @@ interface FetchSafeHttpResourceResult {
   statusText: string;
   contentType: string | null;
   headers: Headers;
+  bodyBytes: Uint8Array;
   bodyText: string;
+  downloadedBytes: number;
 }
 
 type FetchedResponse = {
   status: number;
   statusText: string;
   headers: Headers;
+  bodyBytes: Uint8Array;
   bodyText: string;
 };
 
@@ -182,6 +186,7 @@ async function fetchWithCustomImpl(
     maxBytes: number;
     method: "GET" | "POST";
     body?: string;
+    readErrorBody: boolean;
   },
 ): Promise<FetchedResponse> {
   const response = await params.fetchImpl(url, {
@@ -191,14 +196,21 @@ async function fetchWithCustomImpl(
     body: params.body,
     signal: params.signal,
   });
+  const skipBody = isRedirectStatus(response.status)
+    || (!params.readErrorBody && (response.status < 200 || response.status >= 300));
+  if (skipBody && response.body) {
+    await response.body.cancel().catch(() => undefined);
+  }
+  const body = skipBody
+    ? {bytes: new Uint8Array(), text: ""}
+    : await readResponseBody(response, params.maxBytes);
 
   return {
     status: response.status,
     statusText: response.statusText,
     headers: response.headers,
-    bodyText: isRedirectStatus(response.status)
-      ? ""
-      : await readResponseText(response, params.maxBytes),
+    bodyBytes: body.bytes,
+    bodyText: body.text,
   };
 }
 
@@ -211,6 +223,7 @@ export async function fetchWithPinnedLookup(
     maxBytes: number;
     method: "GET" | "POST";
     body?: string;
+    readErrorBody: boolean;
   },
 ): Promise<FetchedResponse> {
   const requestImpl = url.protocol === "https:" ? https.request : http.request;
@@ -248,20 +261,32 @@ export async function fetchWithPinnedLookup(
       const statusText = response.statusMessage ?? "";
 
       if (isRedirectStatus(status)) {
-        response.resume();
-        response.once("end", () => succeed({
+        response.destroy();
+        succeed({
           status,
           statusText,
           headers,
+          bodyBytes: new Uint8Array(),
           bodyText: "",
-        }));
-        response.once("error", fail);
+        });
+        return;
+      }
+
+      if (!params.readErrorBody && (status < 200 || status >= 300)) {
+        response.destroy();
+        succeed({
+          status,
+          statusText,
+          headers,
+          bodyBytes: new Uint8Array(),
+          bodyText: "",
+        });
         return;
       }
 
       const contentLength = Number(headers.get("content-length"));
       if (Number.isFinite(contentLength) && contentLength > params.maxBytes) {
-        response.resume();
+        response.destroy();
         fail(new ToolError(
           `web.fetch response exceeded the ${params.maxBytes} byte limit before reading the body.`,
         ));
@@ -287,6 +312,7 @@ export async function fetchWithPinnedLookup(
           status,
           statusText,
           headers,
+          bodyBytes: combined,
           bodyText: getTextDecoder(headers.get("content-type")).decode(combined),
         });
       });
@@ -300,20 +326,19 @@ export async function fetchWithPinnedLookup(
   });
 }
 
-async function readResponseText(
+async function readResponseBody(
   response: Response,
   maxBytes: number,
-): Promise<string> {
+): Promise<{bytes: Uint8Array; text: string}> {
   const contentLength = Number(response.headers.get("content-length"));
   if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+    await response.body?.cancel().catch(() => undefined);
     throw new ToolError(
       `web.fetch response exceeded the ${maxBytes} byte limit before reading the body.`,
     );
   }
 
-  if (!response.body) {
-    return "";
-  }
+  if (!response.body) return {bytes: new Uint8Array(), text: ""};
 
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -343,7 +368,10 @@ async function readResponseText(
     offset += chunk.byteLength;
   }
 
-  return getTextDecoder(response.headers.get("content-type")).decode(buffer);
+  return {
+    bytes: buffer,
+    text: getTextDecoder(response.headers.get("content-type")).decode(buffer),
+  };
 }
 
 function formatHttpError(status: number, statusText: string, detail: string): string {
@@ -365,6 +393,7 @@ export async function fetchSafeHttpResource(
   );
   const userAgent = trimToUndefined(options.userAgent) ?? DEFAULT_WEB_FETCH_USER_AGENT;
   const method = options.method ?? "GET";
+  const readErrorBody = options.readErrorBody ?? true;
   const carriesCallerState = carriesCallerControlledRequestState({
     method,
     headers: options.headers,
@@ -401,6 +430,7 @@ export async function fetchSafeHttpResource(
             maxBytes: maxResponseBytes,
             method,
             body: options.body,
+            readErrorBody,
           })
         : await fetchWithPinnedLookup(currentUrl, {
             lookup: safeTarget.lookup,
@@ -409,6 +439,7 @@ export async function fetchSafeHttpResource(
             maxBytes: maxResponseBytes,
             method,
             body: options.body,
+            readErrorBody,
           });
 
       if (!isRedirectStatus(response.status)) {
@@ -446,7 +477,9 @@ export async function fetchSafeHttpResource(
       statusText: response.statusText,
       contentType: response.headers.get("content-type"),
       headers: response.headers,
+      bodyBytes: response.bodyBytes,
       bodyText: response.bodyText,
+      downloadedBytes: response.bodyBytes.byteLength,
     };
   } catch (error) {
     if (options.signal?.aborted) {

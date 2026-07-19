@@ -296,8 +296,10 @@ import {
   createBraveWebSearchCommand,
   createOpenAIWebResearchCommand,
   createWebFetchCommand,
+  createWebReadCommand,
   openAIWebResearchCommandDescriptor,
   webFetchCommandDescriptor,
+  webReadCommandDescriptor,
 } from "../../integrations/web/commands.js";
 import {
   createImageGenerateCommand,
@@ -1321,8 +1323,16 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
     "@payload.json",
     agentCommandPolicy(["internet"]),
     (dependencies) => createWebFetchCommand({
-      fileResolver: requireCommandFileResolver(dependencies),
+      env: dependencies.env,
+      fileResolver: dependencies.commandFileResolver,
     }),
+  ),
+  agentCommandModule(
+    webReadCommandDescriptor,
+    ["web", "read"],
+    "@payload.json",
+    agentCommandPolicy(["internet"]),
+    (dependencies) => createWebReadCommand({env: dependencies.env}),
   ),
   agentCommandModule(
     braveWebSearchCommandDescriptor,

@@ -296,6 +296,67 @@ describe("command HTTP server", () => {
     });
   });
 
+  it("aborts command execution when the HTTP caller disconnects", async () => {
+    let markStarted!: () => void;
+    let markAborted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const aborted = new Promise<void>((resolve) => {
+      markAborted = resolve;
+    });
+    const command: RegisteredCommand = {
+      descriptor: {
+        name: "test.wait",
+        summary: "Wait for cancellation.",
+        description: "Waits until its caller disconnects.",
+        usage: "panda test wait --json '{}'",
+        inputModes: ["json"],
+        outputModes: ["json"],
+        arguments: [],
+        examples: [],
+      },
+      async execute(request) {
+        markStarted();
+        await new Promise<void>((resolve) => {
+          request.signal?.addEventListener("abort", () => {
+            markAborted();
+            resolve();
+          }, {once: true});
+        });
+        return {ok: true, command: "test.wait", output: {aborted: true}};
+      },
+    };
+    const server = await startCommandHttpServer({
+      executor: new RuntimeCommandDispatcher({commands: [command]}),
+      leaseVerifier: createTestCommandLeaseVerifier([
+        ["token-a", {
+          agentKey: "panda",
+          sessionId: "session-main",
+          allowedCommands: ["test.wait"],
+        }],
+      ]),
+    });
+    servers.push(server);
+
+    const request = http.request(`${server.url}/commands/execute`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer token-a",
+        "content-type": "application/json",
+      },
+    });
+    request.on("error", () => undefined);
+    request.end(JSON.stringify({command: "test.wait", input: {}}));
+    await started;
+    request.destroy();
+
+    await expect(Promise.race([
+      aborted.then(() => "aborted"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("timeout"), 1_000)),
+    ])).resolves.toBe("aborted");
+  });
+
   it("streams sender-scoped A2A uploads over HTTP", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "panda-command-upload-http-"));
     directories.push(dataDir);

@@ -3,19 +3,25 @@ import path from "node:path";
 
 import type {JsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
+import {wrapExternalUntrustedContent} from "../../prompts/external-content.js";
+import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {CommandWritableFileResolver} from "../../domain/commands/files.js";
 import type {CommandDescriptor, CommandRequest, CommandSuccess, RegisteredCommand} from "../../domain/commands/types.js";
 import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import type {ThreadToolJobRecord} from "../../domain/threads/runtime/types.js";
 import {
-  DEFAULT_WEB_FETCH_MAX_CONTENT_CHARS,
   DEFAULT_WEB_FETCH_MAX_REDIRECTS,
-  DEFAULT_WEB_FETCH_MAX_RESPONSE_BYTES,
   DEFAULT_WEB_FETCH_TIMEOUT_MS,
   DEFAULT_WEB_FETCH_USER_AGENT,
-  fetchReadableWebPage,
+  fetchSafeHttpResource,
   type FetchImpl,
 } from "./web-fetch.js";
+import {extractReadableContentFromHtml, looksLikeHtml} from "./html-content.js";
+import {
+  DEFAULT_WEB_RESOURCE_SCOPE_BYTES,
+  FileSystemWebResourceStore,
+  WebResourceError,
+} from "./web-resources.js";
 import type {LookupHostname} from "./safe-web-target.js";
 import {
   fetchBravePlaceDescriptions,
@@ -42,6 +48,7 @@ import {
 } from "./research.js";
 
 export const WEB_FETCH_COMMAND_NAME = "web.fetch";
+export const WEB_READ_COMMAND_NAME = "web.read";
 export const OPENAI_WEB_RESEARCH_COMMAND_NAME = "openai.web_research";
 export const BRAVE_WEB_SEARCH_COMMAND_NAME = "brave.web.search";
 export const BRAVE_NEWS_SEARCH_COMMAND_NAME = "brave.news.search";
@@ -64,11 +71,17 @@ const BRAVE_SEARCH_RESULT_SHAPE = {
   results: ["object"],
 } satisfies JsonObject;
 
+const DEFAULT_WEB_FETCH_CHUNK_CHARS = 20_000;
+const DEFAULT_WEB_FETCH_DOWNLOAD_BYTES = 10_000_000;
+const MAX_WEB_FETCH_CHUNK_CHARS = 100_000;
+const DEFAULT_WEB_FETCH_RETRY_BUDGET_MS = 30_000;
+const MAX_WEB_FETCH_ATTEMPTS = 3;
+
 export const webFetchCommandDescriptor: CommandDescriptor = {
   name: WEB_FETCH_COMMAND_NAME,
-  summary: "Fetch a public readable HTML page.",
-  description: "Fetches a public HTTP/HTTPS HTML page and returns readable content plus metadata. Use --format text for plain text body output; --include-links/--no-links controls separate follow-up link metadata.",
-  usage: "panda web fetch <url> [--max-chars <n>] [--format markdown|text] [--save <path>] [--include-links|--no-links]",
+  summary: "Fetch a bounded public resource into model-ready content or an artifact.",
+  description: "Safely GETs public HTML, text, Markdown, JSON, XML, CSV, PDF, image, or bounded binary content. --chunk-chars controls readable characters returned per response; it does not raise the network byte limit. Resource refs are short-lived and session-scoped. Binary bytes become artifacts, never stdout. Use browser only for client-rendered public pages; use curl for custom methods, headers, authentication, or protocol debugging. Private targets and HTTP 401/403 are terminal.",
+  usage: "panda web fetch <url> [--chunk-chars <n>] [--format markdown|text] [--save <path>] [--include-links|--no-links]",
   inputModes: ["flags", "json", "stdin", "file"],
   outputModes: ["json", "text"],
   arguments: [
@@ -81,10 +94,13 @@ export const webFetchCommandDescriptor: CommandDescriptor = {
       valueName: "url",
     },
     {
-      name: "max-chars",
-      description: "Maximum readable content characters to return or save.",
+      name: "chunk-chars",
+      description: "Readable characters returned per response. Does not raise the network download-byte limit.",
       valueType: "number",
       valueName: "n",
+      defaultValue: DEFAULT_WEB_FETCH_CHUNK_CHARS,
+      minimum: 1,
+      maximum: MAX_WEB_FETCH_CHUNK_CHARS,
     },
     {
       name: "format",
@@ -111,7 +127,7 @@ export const webFetchCommandDescriptor: CommandDescriptor = {
     },
     {
       name: "json",
-      description: "Structured JSON object containing url and optional maxContentChars, format, save, and includeLinks.",
+      description: "Structured JSON object containing url and optional chunkChars, format, save, and includeLinks. maxContentChars is invalid.",
       valueType: "json",
     },
   ],
@@ -122,7 +138,7 @@ export const webFetchCommandDescriptor: CommandDescriptor = {
     },
     {
       description: "Save a long page without dumping the whole body",
-      command: "panda web fetch https://example.com/docs --max-chars 50000 --save ./docs.md",
+      command: "panda web fetch https://example.com/docs --chunk-chars 50000 --save ./docs.md",
     },
   ],
   requiredCapabilities: [WEB_FETCH_COMMAND_NAME],
@@ -132,11 +148,79 @@ export const webFetchCommandDescriptor: CommandDescriptor = {
     status: "number",
     contentType: "string",
     title: "string|null",
+    canonicalUrl: "string|null",
     content: "string|absent when saved",
     contentPreview: "string|absent unless saved",
-    truncated: "boolean",
+    contentKind: "article|text|markdown|json|xml|csv|pdf|image|binary",
+    downloadedBytes: "number",
+    downloadLimitBytes: "number",
+    attemptCount: "number",
+    chunkLimitChars: "number",
+    contentComplete: "boolean",
+    resourceRef: "string|absent",
+    resourceExpiresAt: "ISO timestamp",
+    nextCursor: "string|absent",
     saved: "object|null",
     links: ["object"],
+    artifact: "object|null",
+    externalContent: "{untrusted:true,source:web,wrappedContent:true}",
+  },
+};
+
+export const webReadCommandDescriptor: CommandDescriptor = {
+  name: WEB_READ_COMMAND_NAME,
+  summary: "Read the next chunk of a fetched web resource.",
+  description: "Reads session-scoped short-lived untrusted content without repeating the network request. Resource refs and cursors are opaque and expire automatically after one hour.",
+  usage: "panda web read <resource-ref> [--cursor <cursor>] [--chunk-chars <n>]",
+  inputModes: ["flags", "json", "stdin", "file"],
+  outputModes: ["json", "text"],
+  arguments: [
+    {
+      name: "resource-ref",
+      description: "Opaque resourceRef returned by web.fetch.",
+      required: true,
+      kind: "positional",
+      valueType: "string",
+      valueName: "resource-ref",
+    },
+    {
+      name: "cursor",
+      description: "Opaque nextCursor returned by the previous chunk.",
+      valueType: "string",
+      valueName: "cursor",
+    },
+    {
+      name: "chunk-chars",
+      description: "Readable characters returned in this response.",
+      valueType: "number",
+      valueName: "n",
+      defaultValue: DEFAULT_WEB_FETCH_CHUNK_CHARS,
+      minimum: 1,
+      maximum: MAX_WEB_FETCH_CHUNK_CHARS,
+    },
+    {
+      name: "json",
+      description: "Structured JSON object containing resourceRef and optional cursor and chunkChars.",
+      valueType: "json",
+    },
+  ],
+  examples: [
+    {
+      description: "Continue a large resource",
+      command: "panda web read web_abc123 --cursor cur_abc123",
+    },
+  ],
+  requiredCapabilities: [WEB_READ_COMMAND_NAME],
+  resultShape: {
+    operation: "read",
+    resourceRef: "string",
+    contentKind: "string",
+    contentFormat: "markdown|text",
+    content: "string",
+    chunkLimitChars: "number",
+    contentComplete: "boolean",
+    nextCursor: "string|absent",
+    externalContent: "{untrusted:true,source:web,wrappedContent:true}",
   },
 };
 
@@ -673,7 +757,7 @@ type WebFetchFormat = "markdown" | "text";
 
 interface WebFetchCommandInput {
   url: string;
-  maxContentChars?: number;
+  chunkChars: number;
   format: WebFetchFormat;
   save?: string;
   includeLinks: boolean;
@@ -684,10 +768,10 @@ function readWebFetchInput(input: unknown): WebFetchCommandInput {
     throw new Error("web.fetch url must be a non-empty string.");
   }
 
-  const maxContentChars = readOptionalNumber(input.maxContentChars ?? input.max_chars ?? input.maxChars, "web.fetch maxContentChars");
-  if (maxContentChars !== undefined && maxContentChars <= 0) {
-    throw new Error("web.fetch maxContentChars must be greater than 0.");
+  if (input.maxContentChars !== undefined || input.maxChars !== undefined || input.max_chars !== undefined) {
+    throw new Error("web.fetch maxContentChars was removed; use chunkChars.");
   }
+  const chunkChars = readChunkChars(input.chunkChars, "web.fetch chunkChars");
 
   const rawFormat = readOptionalString(input.format, "web.fetch format") ?? "markdown";
   if (rawFormat !== "markdown" && rawFormat !== "text") {
@@ -699,11 +783,19 @@ function readWebFetchInput(input: unknown): WebFetchCommandInput {
 
   return {
     url: input.url.trim(),
+    chunkChars,
     format: rawFormat,
     includeLinks,
-    ...(maxContentChars !== undefined ? {maxContentChars} : {}),
     ...(save ? {save} : {}),
   };
+}
+
+function readChunkChars(value: unknown, label: string): number {
+  const parsed = readOptionalNumber(value, label) ?? DEFAULT_WEB_FETCH_CHUNK_CHARS;
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_WEB_FETCH_CHUNK_CHARS) {
+    throw new Error(`${label} must be an integer from 1 to ${MAX_WEB_FETCH_CHUNK_CHARS}.`);
+  }
+  return parsed;
 }
 
 function readOptionalNumber(value: unknown, label: string): number | undefined {
@@ -873,13 +965,6 @@ function backgroundJobPayload(record: ThreadToolJobRecord): JsonObject {
   };
 }
 
-function serializeWebFetchLinks(result: Awaited<ReturnType<typeof fetchReadableWebPage>>): JsonObject[] {
-  return result.links.map((link) => ({
-    text: link.text,
-    url: link.url,
-  }) satisfies JsonObject);
-}
-
 function webFetchSavedPreview(content: string): string {
   const limit = 1_000;
   return content.length > limit ? `${content.slice(0, limit)}...` : content;
@@ -895,71 +980,634 @@ function formatWebFetchContent(content: string, format: WebFetchFormat): string 
   return format === "text" ? markdownishToPlainText(content) : content;
 }
 
+type WebFailureCode =
+  | "invalid_url"
+  | "private_target"
+  | "redirect_blocked"
+  | "redirect_limit"
+  | "remote_denial"
+  | "remote_not_found"
+  | "remote_throttle"
+  | "remote_server_error"
+  | "timeout"
+  | "network_error"
+  | "response_too_large"
+  | "decode_failed"
+  | "requires_browser"
+  | "extract_failed"
+  | "storage_failed"
+  | "resource_expired";
+
+type WebFailurePhase =
+  | "validate"
+  | "resolve"
+  | "connect"
+  | "download"
+  | "decode"
+  | "extract"
+  | "store"
+  | "read";
+
+type WebCommandErrorDetails = {
+  failureCode: WebFailureCode;
+  phase: WebFailurePhase;
+  retryable: boolean;
+  nextAction: string;
+  status?: number;
+  contentType?: string | null;
+  downloadLimitBytes?: number;
+  attemptCount?: number;
+  retryAfterMs?: number;
+};
+
+class WebCommandError extends Error {
+  readonly pandaCommandErrorDetails: JsonObject;
+
+  constructor(message: string, details: WebCommandErrorDetails) {
+    super(message);
+    this.name = "WebCommandError";
+    this.pandaCommandErrorDetails = details;
+  }
+}
+
+function baseContentType(value: string | null): string {
+  return value?.split(";", 1)[0]?.trim().toLowerCase() || "application/octet-stream";
+}
+
+function classifyReadable(
+  contentType: string,
+  body: string,
+): "html" | "text" | "markdown" | "json" | "xml" | "csv" | null {
+  if (contentType === "text/html" || contentType === "application/xhtml+xml" || looksLikeHtml(body)) {
+    return "html";
+  }
+  const sample = body.slice(0, 4_096);
+  if (sample.includes("\0") || (sample.match(/\uFFFD/g)?.length ?? 0) > 8) {
+    return null;
+  }
+  if (contentType === "application/json" || contentType.endsWith("+json")) {
+    return "json";
+  }
+  if (contentType === "application/xml" || contentType === "text/xml" || contentType.endsWith("+xml")) {
+    return "xml";
+  }
+  if (contentType === "text/csv" || contentType === "application/csv") {
+    return "csv";
+  }
+  if (contentType === "text/markdown" || contentType === "text/x-markdown") {
+    return "markdown";
+  }
+  if (contentType.startsWith("text/")) {
+    return "text";
+  }
+  return contentType === "application/octet-stream" ? "text" : null;
+}
+
+function wrapWebContent(content: string, contentKind: string): string {
+  return wrapExternalUntrustedContent(content, {source: "web", kind: contentKind});
+}
+
+function externalWebContentDetails(): JsonObject {
+  return {untrusted: true, source: "web", wrappedContent: true};
+}
+
+function failureFor(error: unknown, downloadLimitBytes?: number): WebCommandError {
+  if (error instanceof WebCommandError) return error;
+  if (error instanceof WebResourceError) {
+    return new WebCommandError(error.message, {
+      failureCode: error.failureCode,
+      phase: error.failureCode === "resource_expired" ? "read" : "store",
+      retryable: false,
+      nextAction: error.failureCode === "resource_expired" ? "fetch_again" : "stop",
+      ...(downloadLimitBytes !== undefined ? {downloadLimitBytes} : {}),
+    });
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+  const invalidTarget = lower.includes("valid url")
+    || lower.includes("valid hostname")
+    || lower.includes("only supports http")
+    || lower.includes("embedded credentials");
+  const failureCode: WebFailureCode = lower.includes("private") || lower.includes("public address")
+    ? "private_target"
+    : lower.includes("redirect limit") ? "redirect_limit"
+      : lower.includes("redirect") ? "redirect_blocked"
+        : lower.includes("byte limit") || lower.includes("exceeded") ? "response_too_large"
+          : lower.includes("timed out") ? "timeout"
+            : invalidTarget ? "invalid_url"
+              : "network_error";
+  const safeMessage = failureCode === "private_target"
+    ? "web.fetch blocked a private target."
+    : failureCode === "redirect_limit"
+      ? "web.fetch exceeded its redirect limit."
+      : failureCode === "redirect_blocked"
+        ? "web.fetch blocked an unsafe redirect."
+        : failureCode === "response_too_large"
+          ? `web.fetch response exceeded the ${downloadLimitBytes ?? "configured"} byte limit.`
+          : failureCode === "timeout"
+            ? "web.fetch timed out."
+            : failureCode === "invalid_url"
+              ? "web.fetch requires a valid public HTTP/HTTPS URL."
+              : "web.fetch could not retrieve the public resource.";
+  return new WebCommandError(safeMessage, {
+    failureCode,
+    phase: failureCode === "invalid_url"
+      ? "validate"
+      : failureCode === "private_target"
+        ? "resolve"
+        : failureCode === "response_too_large"
+          ? "download"
+          : "connect",
+    retryable: failureCode === "timeout" || failureCode === "network_error",
+    nextAction: failureCode === "response_too_large" ? "curl_or_smaller_resource" : "stop",
+    ...(downloadLimitBytes !== undefined ? {downloadLimitBytes} : {}),
+  });
+}
+
+function remoteFailure(
+  status: number,
+  contentType: string,
+  attemptCount: number,
+  downloadLimitBytes: number,
+  headers: Headers,
+  now: () => number,
+): WebCommandError {
+  const failureCode: WebFailureCode = status === 401 || status === 403
+    ? "remote_denial"
+    : status === 404
+      ? "remote_not_found"
+      : status === 429
+        ? "remote_throttle"
+        : "remote_server_error";
+  const retryAfterMs = readRetryAfterMs(headers, now);
+  return new WebCommandError(`web.fetch failed with HTTP ${status}.`, {
+    failureCode,
+    phase: "download",
+    retryable: status === 429 || status === 502 || status === 503 || status === 504,
+    status,
+    contentType,
+    downloadLimitBytes,
+    attemptCount,
+    ...(retryAfterMs !== undefined ? {retryAfterMs} : {}),
+    nextAction: transientStatus(status) ? "retry_later" : "stop",
+  });
+}
+
+function requireDownloadLimit(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > DEFAULT_WEB_RESOURCE_SCOPE_BYTES) {
+    throw new Error(`${label} must be an integer from 1 to ${DEFAULT_WEB_RESOURCE_SCOPE_BYTES}.`);
+  }
+  return value;
+}
+
+function configuredDownloadLimit(env: NodeJS.ProcessEnv | undefined): number {
+  const raw = env?.WEB_FETCH_DOWNLOAD_LIMIT_BYTES?.trim();
+  if (!raw) {
+    return DEFAULT_WEB_FETCH_DOWNLOAD_BYTES;
+  }
+  return requireDownloadLimit(Number(raw), "WEB_FETCH_DOWNLOAD_LIMIT_BYTES");
+}
+
+function transientStatus(status: number): boolean {
+  return status === 429 || status === 502 || status === 503 || status === 504;
+}
+
+function readRetryAfterMs(headers: Headers, now: () => number): number | undefined {
+  const retryAfterHeader = headers.get("retry-after");
+  if (retryAfterHeader === null) {
+    return undefined;
+  }
+  const retryAfterSeconds = Number(retryAfterHeader);
+  const retryAfterDate = Date.parse(retryAfterHeader);
+  const retryAfterMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0
+    ? retryAfterSeconds * 1_000
+    : Number.isFinite(retryAfterDate)
+      ? Math.max(0, retryAfterDate - now())
+      : Number.NaN;
+  return Number.isFinite(retryAfterMs) ? retryAfterMs : undefined;
+}
+
+function retryDelayMs(
+  headers: Headers,
+  attempt: number,
+  random: () => number,
+  now: () => number,
+): number {
+  const retryAfterMs = readRetryAfterMs(headers, now);
+  const base = retryAfterMs !== undefined
+    ? Math.min(2_000, retryAfterMs)
+    : Math.min(500, 100 * (attempt + 1));
+  return Math.max(0, Math.round(base * (0.75 + random() * 0.5)));
+}
+
+async function waitForRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new Error("web.fetch was aborted."));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason ?? new Error("web.fetch was aborted."));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener("abort", onAbort, {once: true});
+  });
+}
+
+function abortedFailure(downloadLimitBytes: number, attemptCount: number): WebCommandError {
+  return new WebCommandError("web.fetch was aborted.", {
+    failureCode: "timeout",
+    phase: "connect",
+    retryable: false,
+    nextAction: "stop",
+    downloadLimitBytes,
+    attemptCount,
+  });
+}
+
 export function createWebFetchCommand(options: {
   fetchImpl?: FetchImpl;
   lookupHostname?: LookupHostname;
   timeoutMs?: number;
   maxRedirects?: number;
   maxResponseBytes?: number;
-  maxContentChars?: number;
+  env?: NodeJS.ProcessEnv;
+  resourceStore?: FileSystemWebResourceStore;
+  retryBudgetMs?: number;
+  signal?: AbortSignal;
+  now?: () => number;
+  random?: () => number;
+  waitForRetry?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
   userAgent?: string;
   fileResolver?: CommandWritableFileResolver;
 } = {}): RegisteredCommand {
+  const resources = options.resourceStore ?? new FileSystemWebResourceStore({env: options.env});
+  const downloadLimitBytes = options.maxResponseBytes === undefined
+    ? configuredDownloadLimit(options.env)
+    : requireDownloadLimit(options.maxResponseBytes, "web.fetch maxResponseBytes");
   return {
     descriptor: webFetchCommandDescriptor,
     async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
       const input = readWebFetchInput(request.input);
-      const result = await fetchReadableWebPage(input.url, {
-        fetchImpl: options.fetchImpl,
-        lookupHostname: options.lookupHostname,
-        timeoutMs: options.timeoutMs ?? DEFAULT_WEB_FETCH_TIMEOUT_MS,
-        maxRedirects: options.maxRedirects ?? DEFAULT_WEB_FETCH_MAX_REDIRECTS,
-        maxResponseBytes: options.maxResponseBytes ?? DEFAULT_WEB_FETCH_MAX_RESPONSE_BYTES,
-        maxContentChars: input.maxContentChars ?? options.maxContentChars ?? DEFAULT_WEB_FETCH_MAX_CONTENT_CHARS,
-        userAgent: options.userAgent ?? DEFAULT_WEB_FETCH_USER_AGENT,
+      const now = options.now ?? Date.now;
+      const random = options.random ?? Math.random;
+      const signal = request.signal && options.signal
+        ? AbortSignal.any([request.signal, options.signal])
+        : request.signal ?? options.signal;
+      const retryDeadline = now()
+        + Math.max(1, options.retryBudgetMs ?? DEFAULT_WEB_FETCH_RETRY_BUDGET_MS);
+      let response: Awaited<ReturnType<typeof fetchSafeHttpResource>> | undefined;
+      let attemptCount = 0;
+      for (let attempt = 0; attempt < MAX_WEB_FETCH_ATTEMPTS; attempt += 1) {
+        if (signal?.aborted) {
+          throw abortedFailure(downloadLimitBytes, attemptCount);
+        }
+        const remainingMs = retryDeadline - now();
+        if (remainingMs <= 0) {
+          break;
+        }
+        attemptCount = attempt + 1;
+        try {
+          response = await fetchSafeHttpResource(input.url, {
+            fetchImpl: options.fetchImpl,
+            lookupHostname: options.lookupHostname,
+            timeoutMs: Math.min(options.timeoutMs ?? DEFAULT_WEB_FETCH_TIMEOUT_MS, remainingMs),
+            maxRedirects: options.maxRedirects ?? DEFAULT_WEB_FETCH_MAX_REDIRECTS,
+            maxResponseBytes: downloadLimitBytes,
+            userAgent: options.userAgent ?? DEFAULT_WEB_FETCH_USER_AGENT,
+            signal,
+            readErrorBody: false,
+          });
+        } catch (error) {
+          if (signal?.aborted) {
+            throw abortedFailure(downloadLimitBytes, attemptCount);
+          }
+          const failure = failureFor(error, downloadLimitBytes);
+          failure.pandaCommandErrorDetails.attemptCount = attemptCount;
+          if (!failure.pandaCommandErrorDetails.retryable || attempt === MAX_WEB_FETCH_ATTEMPTS - 1) {
+            throw failure;
+          }
+          const delayMs = Math.min(
+            retryDelayMs(new Headers(), attempt, random, now),
+            Math.max(0, retryDeadline - now()),
+          );
+          if (delayMs <= 0) {
+            throw failure;
+          }
+          try {
+            await (options.waitForRetry ?? waitForRetry)(delayMs, signal);
+          } catch {
+            throw abortedFailure(downloadLimitBytes, attemptCount);
+          }
+          continue;
+        }
+        if (!transientStatus(response.status) || attempt === MAX_WEB_FETCH_ATTEMPTS - 1) {
+          break;
+        }
+        const retryBudgetRemainingMs = Math.max(0, retryDeadline - now());
+        if (retryBudgetRemainingMs <= 0) {
+          break;
+        }
+        const delayMs = Math.min(
+          retryDelayMs(response.headers, attempt, random, now),
+          retryBudgetRemainingMs,
+        );
+        if (delayMs > 0) {
+          try {
+            await (options.waitForRetry ?? waitForRetry)(delayMs, signal);
+          } catch {
+            throw abortedFailure(downloadLimitBytes, attemptCount);
+          }
+        }
+      }
+      if (!response) {
+        throw new WebCommandError("web.fetch retry budget elapsed.", {
+          failureCode: "timeout",
+          phase: "connect",
+          retryable: true,
+          nextAction: "retry_later",
+          downloadLimitBytes,
+          attemptCount,
+        });
+      }
+      const contentType = baseContentType(response.contentType);
+      if (response.status < 200 || response.status >= 300) {
+        throw remoteFailure(
+          response.status,
+          contentType,
+          attemptCount,
+          downloadLimitBytes,
+          response.headers,
+          now,
+        );
+      }
+      const readableKind = classifyReadable(contentType, response.bodyText);
+      const scope = {agentKey: request.scope.agentKey, sessionId: request.scope.sessionId};
+      const fetchedAt = new Date().toISOString();
+      if (!readableKind) {
+        const kind = contentType === "application/pdf"
+          ? "pdf"
+          : contentType.startsWith("image/")
+            ? "image"
+            : "binary";
+        const filename = path.basename(new URL(response.finalUrl).pathname)
+          || (kind === "pdf" ? "document.pdf" : "resource.bin");
+        let stored;
+        try {
+          stored = await resources.store({
+            scope,
+            contentKind: kind,
+            contentFormat: "binary",
+            contentType,
+            filename,
+            bytes: response.bodyBytes,
+            readable: false,
+          });
+        } catch (error) {
+          throw failureFor(error, downloadLimitBytes);
+        }
+        const output = {
+          operation: "fetch",
+          resourceRef: stored.resourceRef,
+          resourceExpiresAt: new Date(stored.expiresAt).toISOString(),
+          url: input.url,
+          finalUrl: response.finalUrl,
+          status: response.status,
+          contentType,
+          contentKind: kind,
+          downloadedBytes: response.downloadedBytes,
+          downloadLimitBytes,
+          fetchedAt,
+          attemptCount,
+          contentComplete: true,
+          artifact: {
+            path: stored.path,
+            mimeType: contentType,
+            filename: stored.filename,
+            bytes: response.downloadedBytes,
+          },
+          externalContent: externalWebContentDetails(),
+          cache: "miss",
+        } satisfies JsonObject;
+        return {
+          ok: true,
+          command: WEB_FETCH_COMMAND_NAME,
+          output,
+          summary: "Fetched a public web resource.",
+          ...(kind === "pdf" || kind === "image" ? {
+            artifact: {
+              kind: kind === "pdf" ? "pdf" as const : "image" as const,
+              source: "view_media" as const,
+              path: stored.path,
+              mimeType: contentType,
+              bytes: response.downloadedBytes,
+            },
+          } : {}),
+        };
+      }
+      let title: string | null = null;
+      let description: string | null = null;
+      let siteName: string | null = null;
+      let canonicalUrl: string | null = null;
+      let links: JsonObject[] = [];
+      let normalized = response.bodyText;
+      let contentKind: string = readableKind;
+      if (readableKind === "html") {
+        try {
+          const extracted = extractReadableContentFromHtml({
+            html: response.bodyText,
+            url: response.finalUrl,
+          });
+          normalized = extracted.content;
+          title = extracted.title ?? null;
+          description = extracted.description ?? null;
+          siteName = extracted.siteName ?? null;
+          canonicalUrl = extracted.canonicalUrl ?? null;
+          links = extracted.links.map((link) => ({text: link.text, url: link.url}));
+          contentKind = "article";
+        } catch (error) {
+          const requiresBrowser = error instanceof ToolError
+            && error.message.includes("could not extract any readable content");
+          throw new WebCommandError(
+            requiresBrowser
+              ? "The response requires a browser."
+              : "The response could not be extracted.",
+            {
+              failureCode: requiresBrowser ? "requires_browser" : "extract_failed",
+              phase: "extract",
+              retryable: false,
+              status: response.status,
+              contentType,
+              downloadLimitBytes,
+              attemptCount,
+              nextAction: requiresBrowser ? "browser" : "stop",
+            },
+          );
+        }
+      } else if (readableKind === "json") {
+        try {
+          normalized = JSON.stringify(JSON.parse(response.bodyText), null, 2);
+        } catch {
+          throw new WebCommandError("The response advertised JSON but could not be decoded.", {
+            failureCode: "decode_failed",
+            phase: "decode",
+            retryable: false,
+            status: response.status,
+            contentType,
+            downloadLimitBytes,
+            attemptCount,
+            nextAction: "curl",
+          });
+        }
+      }
+      const fullContent = formatWebFetchContent(normalized, input.format);
+      const stored = await resources.store({
+        scope,
+        contentKind,
+        contentFormat: input.format,
+        contentType,
+        filename: "resource.txt",
+        bytes: Buffer.from(fullContent),
+        readable: true,
+      }).catch((error) => {
+        throw failureFor(error, downloadLimitBytes);
       });
-      const content = formatWebFetchContent(result.content, input.format);
+      const first = await resources.read({
+        scope,
+        resourceRef: stored.resourceRef,
+        chunkChars: input.chunkChars,
+      }).catch((error) => {
+        throw failureFor(error, downloadLimitBytes);
+      });
+      const content = wrapWebContent(first.content, contentKind);
       let saved: JsonObject | null = null;
       if (input.save) {
         if (!options.fileResolver) {
-          throw new Error("web.fetch --save requires command file resolver support.");
+          throw new WebCommandError("web.fetch --save requires a writable execution environment.", {
+            failureCode: "storage_failed",
+            phase: "store",
+            retryable: false,
+            nextAction: "omit_save",
+            downloadLimitBytes,
+            attemptCount,
+          });
         }
-        const resolved = await options.fileResolver.resolveWritablePath({
-          request,
-          file: {
-            path: input.save,
-          },
-        });
-        const savedContent = content.endsWith("\n") ? content : `${content}\n`;
-        await mkdir(path.dirname(resolved.path), {recursive: true});
-        await writeFile(resolved.path, savedContent, "utf8");
-        saved = {
-          path: resolved.path,
-          displayPath: resolved.displayPath,
-          bytes: Buffer.byteLength(savedContent, "utf8"),
-          format: input.format,
-        };
+        try {
+          const resolved = await options.fileResolver.resolveWritablePath({
+            request,
+            file: {
+              path: input.save,
+            },
+          });
+          const savedContent = fullContent.endsWith("\n") ? fullContent : `${fullContent}\n`;
+          await mkdir(path.dirname(resolved.path), {recursive: true});
+          await writeFile(resolved.path, savedContent, "utf8");
+          saved = {
+            path: resolved.path,
+            displayPath: resolved.displayPath,
+            bytes: Buffer.byteLength(savedContent, "utf8"),
+            format: input.format,
+          };
+        } catch {
+          throw new WebCommandError("web.fetch could not save the resource.", {
+            failureCode: "storage_failed",
+            phase: "store",
+            retryable: false,
+            nextAction: "omit_save",
+            downloadLimitBytes,
+            attemptCount,
+          });
+        }
       }
       const output = {
-        url: result.url,
-        finalUrl: result.finalUrl,
-        status: result.status,
-        contentType: result.contentType,
-        title: result.title,
-        description: result.description,
-        siteName: result.siteName,
+        operation: "fetch",
+        resourceRef: stored.resourceRef,
+        resourceExpiresAt: new Date(stored.expiresAt).toISOString(),
+        url: input.url,
+        finalUrl: response.finalUrl,
+        status: response.status,
+        contentType,
+        contentKind,
+        downloadedBytes: response.downloadedBytes,
+        downloadLimitBytes,
+        fetchedAt,
+        attemptCount,
+        title,
+        description,
+        siteName,
+        canonicalUrl,
         contentFormat: input.format,
-        truncated: result.truncated,
-        ...(saved ? {contentPreview: webFetchSavedPreview(content), saved} : {content}),
-        ...(input.includeLinks ? {links: serializeWebFetchLinks(result)} : {}),
+        chunkLimitChars: input.chunkChars,
+        contentComplete: first.contentComplete,
+        ...(first.nextCursor ? {nextCursor: first.nextCursor} : {}),
+        truncated: !first.contentComplete,
+        ...(saved ? {
+          contentPreview: wrapWebContent(webFetchSavedPreview(first.content), contentKind),
+          saved,
+        } : {content}),
+        ...(input.includeLinks ? {links} : {}),
+        artifact: null,
+        externalContent: externalWebContentDetails(),
+        cache: "miss",
       } satisfies JsonObject;
 
       return {
         ok: true,
         command: WEB_FETCH_COMMAND_NAME,
         output,
-        summary: `Fetched ${result.finalUrl}.`,
+        summary: "Fetched a public web resource.",
       };
+    },
+  };
+}
+
+export function createWebReadCommand(options: {
+  env?: NodeJS.ProcessEnv;
+  resourceStore?: FileSystemWebResourceStore;
+} = {}): RegisteredCommand {
+  const resources = options.resourceStore ?? new FileSystemWebResourceStore({env: options.env});
+  return {
+    descriptor: webReadCommandDescriptor,
+    async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
+      if (!isRecord(request.input)) {
+        throw new Error("web.read input must be a JSON object.");
+      }
+      if (typeof request.input.resourceRef !== "string" || !request.input.resourceRef.trim()) {
+        throw new Error("web.read resourceRef must be a non-empty string.");
+      }
+      const cursor = readOptionalString(request.input.cursor, "web.read cursor");
+      const chunkChars = readChunkChars(request.input.chunkChars, "web.read chunkChars");
+      try {
+        const resourceRef = request.input.resourceRef.trim();
+        const result = await resources.read({
+          scope: {agentKey: request.scope.agentKey, sessionId: request.scope.sessionId},
+          resourceRef,
+          ...(cursor ? {cursor} : {}),
+          chunkChars,
+        });
+        return {
+          ok: true,
+          command: WEB_READ_COMMAND_NAME,
+          output: {
+            operation: "read",
+            resourceRef,
+            contentKind: result.contentKind,
+            contentFormat: result.contentFormat,
+            content: wrapWebContent(result.content, result.contentKind),
+            chunkLimitChars: chunkChars,
+            contentComplete: result.contentComplete,
+            ...(result.nextCursor ? {nextCursor: result.nextCursor} : {}),
+            externalContent: externalWebContentDetails(),
+          },
+          summary: `Read ${resourceRef}.`,
+        };
+      } catch (error) {
+        throw failureFor(error);
+      }
     },
   };
 }

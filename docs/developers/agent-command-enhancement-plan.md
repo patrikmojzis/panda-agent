@@ -293,7 +293,7 @@ Priority:
 
 | Command | Current shape | Enhancement | Priority |
 | --- | --- | --- | --- |
-| `web.fetch` | Native `panda web fetch <url> [--max-chars <n>] [--format markdown\|text] [--save <path>] [--include-links\|--no-links]`; `--json` input remains. | Done for readable markdown/text output, link inclusion/suppression, max content chars, and saved workspace artifacts for long pages. Raw HTML archival can be a separate mode later if needed. | P0 |
+| `web.fetch` / `web.read` | Native `panda web fetch <url> [--chunk-chars <n>] [--format markdown\|text] [--save <path>] [--include-links\|--no-links]` plus `panda web read <resource-ref> [--cursor <cursor>] [--chunk-chars <n>]`; `--json` input remains. | Done for safe public-resource classification, model-ready untrusted content, short-lived resumable reads, binary artifacts, structured failures, and bounded retries. `--chunk-chars` limits model output; `WEB_FETCH_DOWNLOAD_LIMIT_BYTES` controls the separate network bound. | P0 |
 | `web.search` | Removed compatibility alias for Brave Web Search. | Done. Use `brave.web.search`. | P2 |
 | `brave.web.search` | Native `panda brave web search <query> [-n\|--count <n>] [--offset <n>] [--freshness pd\|pw\|pm\|py\|YYYY-MM-DDtoYYYY-MM-DD] [--country <code>] [--lang <code>] [--safe off\|moderate\|strict] [--extra-snippets] [--goggles <url-or-inline>]`; `--json` input remains. | Done for Web Search. | P0 |
 | `brave.news.search` | Native `panda brave news search <query> [-n\|--count <n>] [--offset <n>] [--freshness pd\|pw\|pm\|py\|YYYY-MM-DDtoYYYY-MM-DD] [--country <code>] [--lang <code>] [--safe off\|moderate\|strict] [--extra-snippets] [--goggles <url-or-inline>]`; `--json` input remains. | Done for News Search. | P0 |

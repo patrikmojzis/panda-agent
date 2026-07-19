@@ -882,7 +882,12 @@ dispatch_generated_json_route() {
       [ "$command_name" != "skill.list" ] || return 127
       if [ "${rest[0]:-}" = "--json" ]; then
         [ -n "${rest[1]:-}" ] || die "panda ${command_label} --json requires @file, @-, or inline JSON."
-        if execute_json_command "$command_name" "$(read_json_input "${rest[1]}")"; then
+        local json_payload
+        json_payload="$(read_json_input "${rest[1]}")"
+        if [ "$command_name" = "web.fetch" ] && printf '%s' "$json_payload" | jq -e 'type == "object" and (has("maxContentChars") or has("maxChars") or has("max_chars"))' >/dev/null; then
+          die "panda web fetch maxContentChars was removed; use chunkChars."
+        fi
+        if execute_json_command "$command_name" "$json_payload"; then
           return 0
         fi
         return $?
@@ -1029,6 +1034,7 @@ USAGE
         cat <<'USAGE'
 Usage:
   panda web fetch --help [--json]
+  panda web read --help [--json]
   panda openai web-research --help [--json]
   panda brave web search --help [--json]
   panda brave news search --help [--json]
@@ -1038,7 +1044,8 @@ Usage:
   panda brave place search --help [--json]
   panda brave place poi --help [--json]
   panda brave place description --help [--json]
-  panda web fetch <url> [--max-chars <n>] [--format markdown|text] [--save <path>] [--include-links|--no-links]
+  panda web fetch <url> [--chunk-chars <n>] [--format markdown|text] [--save <path>] [--include-links|--no-links]
+  panda web read <resource-ref> [--cursor <cursor>] [--chunk-chars <n>]
   panda web fetch --json @payload.json
   panda openai web-research <query|@file|@-> [--model <model>] [--effort low|medium|high]
   panda brave web search "latest TypeScript release" -n 5 --freshness pw
@@ -1054,6 +1061,7 @@ USAGE
     subcommand="${1:-}"
     case "$subcommand" in
       fetch) command_name="web.fetch" ;;
+      read) command_name="web.read" ;;
       *) die "Unknown panda web command. Try: panda web fetch --help" ;;
     esac
     shift
@@ -1078,16 +1086,19 @@ USAGE
     fi
     if [ "$subcommand" = "fetch" ] && [ "${1:-}" != "--json" ]; then
       fetch_url=""
-      max_chars=""
+      chunk_chars=""
       format=""
       save_path=""
       include_links=""
       while [ "$#" -gt 0 ]; do
         case "$1" in
-          --max-chars|--max-content-chars)
-            [ "$#" -gt 1 ] || die "panda web fetch --max-chars requires a number."
-            max_chars="$2"
+          --chunk-chars)
+            [ "$#" -gt 1 ] || die "panda web fetch --chunk-chars requires a number."
+            chunk_chars="$2"
             shift 2
+            ;;
+          --max-chars|--max-content-chars)
+            die "panda web fetch --max-chars was removed; use --chunk-chars."
             ;;
           --format)
             [ "$#" -gt 1 ] || die "panda web fetch --format requires markdown or text."
@@ -1120,24 +1131,60 @@ USAGE
       [ -n "$fetch_url" ] || die "panda web fetch requires <url> or --json @payload.json."
       payload="$(jq -n \
         --arg url "$fetch_url" \
-        --arg maxChars "$max_chars" \
+        --arg chunkChars "$chunk_chars" \
         --arg format "$format" \
         --arg save "$save_path" \
         --arg includeLinks "$include_links" \
         '{
           url: $url
         }
-        + (if $maxChars != "" then {maxContentChars: ($maxChars | tonumber)} else {} end)
+        + (if $chunkChars != "" then {chunkChars: ($chunkChars | tonumber)} else {} end)
         + (if $format != "" then {format: $format} else {} end)
         + (if $save != "" then {save: $save} else {} end)
         + (if $includeLinks != "" then {includeLinks: ($includeLinks == "true")} else {} end)')"
       execute_json_command "$command_name" "$payload"
       exit $?
     fi
+    if [ "$subcommand" = "read" ] && [ "${1:-}" != "--json" ]; then
+      resource_ref=""
+      cursor=""
+      chunk_chars=""
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --cursor)
+            [ "$#" -gt 1 ] || die "panda web read --cursor requires a cursor."
+            cursor="$2"
+            shift 2
+            ;;
+          --chunk-chars)
+            [ "$#" -gt 1 ] || die "panda web read --chunk-chars requires a number."
+            chunk_chars="$2"
+            shift 2
+            ;;
+          --max-chars|--max-content-chars)
+            die "panda web read --max-chars was removed; use --chunk-chars."
+            ;;
+          --*) die "Unknown panda web read option: $1" ;;
+          *)
+            [ -z "$resource_ref" ] || die "panda web read accepts one resource ref."
+            resource_ref="$1"
+            shift
+            ;;
+        esac
+      done
+      [ -n "$resource_ref" ] || die "panda web read requires <resource-ref> or --json @payload.json."
+      payload="$(jq -n --arg resourceRef "$resource_ref" --arg cursor "$cursor" --arg chunkChars "$chunk_chars" '{resourceRef: $resourceRef} + (if $cursor != "" then {cursor: $cursor} else {} end) + (if $chunkChars != "" then {chunkChars: ($chunkChars | tonumber)} else {} end)')"
+      execute_json_command "$command_name" "$payload"
+      exit $?
+    fi
     [ "${1:-}" = "--json" ] || die "panda web ${subcommand} requires --json @file or --json @-."
     shift
     [ -n "${1:-}" ] || die "panda web ${subcommand} --json requires @file, @-, or inline JSON."
-    execute_json_command "$command_name" "$(read_json_input "$1")"
+    json_payload="$(read_json_input "$1")"
+    if [ "$subcommand" = "fetch" ] && printf '%s' "$json_payload" | jq -e 'type == "object" and (has("maxContentChars") or has("maxChars") or has("max_chars"))' >/dev/null; then
+      die "panda web fetch maxContentChars was removed; use chunkChars."
+    fi
+    execute_json_command "$command_name" "$json_payload"
     exit $?
     ;;
   brave)

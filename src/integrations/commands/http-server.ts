@@ -233,12 +233,25 @@ async function handleRequest(
 
   if (method === "POST" && url.pathname === "/commands/execute") {
     const body = await readCommandRequestBody(request);
+    const abortController = new AbortController();
+    const abort = () => abortController.abort();
+    const abortOnResponseClose = () => {
+      if (!response.writableFinished) {
+        abort();
+      }
+    };
+    request.once("aborted", abort);
+    response.once("close", abortOnResponseClose);
     const result = await options.executor.execute({
       command: body.command,
       input: body.input,
       scope,
+      signal: abortController.signal,
       ...(body.outputMode === undefined ? {} : {outputMode: body.outputMode}),
       ...(body.workingDirectory === undefined ? {} : {workingDirectory: body.workingDirectory}),
+    }).finally(() => {
+      request.removeListener("aborted", abort);
+      response.removeListener("close", abortOnResponseClose);
     });
     writeJsonResponse(response, result.ok ? 200 : 400, result);
     return;

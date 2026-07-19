@@ -97,6 +97,7 @@ describe("subagent tool groups", () => {
           "toolNames": [
             "browser",
             "web.fetch",
+            "web.read",
             "brave.web.search",
             "brave.news.search",
             "brave.video.search",

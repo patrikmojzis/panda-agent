@@ -125,7 +125,8 @@ describe("buildDefaultAgentLlmContexts", () => {
     expect(dump).toContain("`panda a2a send (--to-session <session-id>|--to-agent <agent-key>) (--text <text|@file|@->|--stdin|--file <path>)...`");
     expect(dump).toContain("`panda a2a inspect <delivery-id>`");
     expect(dump).toContain("`panda a2a history [--peer-session <session-id>] [--direction inbound|outbound|all] [--limit <n>]`");
-    expect(dump).toContain("`panda web fetch <url> [--max-chars <n>] [--format markdown|text] [--save <path>] [--include-links|--no-links]`");
+    expect(dump).toContain("`panda web fetch <url> [--chunk-chars <n>] [--format markdown|text] [--save <path>] [--include-links|--no-links]`");
+    expect(dump).toContain("`panda web read <resource-ref> [--cursor <cursor>] [--chunk-chars <n>]`");
     expect(dump).toContain("`panda brave web search <query> [-n|--count <n>] [--offset <n>] [--freshness pd|pw|pm|py|YYYY-MM-DDtoYYYY-MM-DD] [--country <code>] [--lang <code>] [--safe off|moderate|strict] [--extra-snippets] [--goggles <url-or-inline>]`");
     expect(dump).toContain("`panda brave news search <query> [-n|--count <n>] [--offset <n>] [--freshness pd|pw|pm|py|YYYY-MM-DDtoYYYY-MM-DD] [--country <code>] [--lang <code>] [--safe off|moderate|strict] [--extra-snippets] [--goggles <url-or-inline>]`");
     expect(dump).toContain("`panda brave video search <query> [-n|--count <n>] [--offset <n>] [--freshness pd|pw|pm|py|YYYY-MM-DDtoYYYY-MM-DD] [--country <code>] [--lang <code>] [--safe off|moderate|strict] [--no-spellcheck]`");

@@ -22,6 +22,7 @@ type PageMetadata = {
   title?: string;
   description?: string;
   siteName?: string;
+  canonicalUrl?: string;
 };
 
 type HtmlDocument = ReturnType<typeof parseHTML>["document"];
@@ -41,6 +42,7 @@ type ReadableWebContent = {
   title?: string;
   description?: string;
   siteName?: string;
+  canonicalUrl?: string;
   content: string;
   links: readonly WebFetchLink[];
 };
@@ -158,6 +160,7 @@ function readMetaContent(
 }
 
 function readPageMetadata(document: HtmlDocument, url: string): PageMetadata {
+  const canonicalHref = trimToUndefined(document.querySelector('link[rel="canonical"]')?.getAttribute("href"));
   return {
     title: trimToUndefined(document.querySelector("title")?.textContent ?? undefined),
     description: readMetaContent(document, [
@@ -170,6 +173,7 @@ function readPageMetadata(document: HtmlDocument, url: string): PageMetadata {
         'meta[property="og:site_name"]',
         'meta[name="application-name"]',
       ]) ?? trimToUndefined(new URL(url).hostname),
+    canonicalUrl: canonicalHref ? absolutizeUrl(canonicalHref, url) ?? undefined : undefined,
   };
 }
 
@@ -296,6 +300,7 @@ export function extractReadableContentFromHtml(params: {
     title: readableTitle,
     description: readableDescription,
     siteName: readableSiteName,
+    canonicalUrl: metadata.canonicalUrl,
     content,
     links: extractLinks(readableHtml, params.url),
   };

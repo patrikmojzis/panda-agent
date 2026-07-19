@@ -112,6 +112,7 @@ const factoryBackedCommandNames = [
   "env.clear",
   "vent.send",
   "web.fetch",
+  "web.read",
   "brave.web.search",
   "brave.news.search",
   "brave.video.search",

@@ -36,6 +36,7 @@ import {
   braveWebSearchCommandDescriptor,
   openAIWebResearchCommandDescriptor,
   webFetchCommandDescriptor,
+  webReadCommandDescriptor,
 } from "../src/integrations/web/commands.js";
 import {imageGenerateCommandDescriptor} from "../src/panda/commands/image-generate-command.js";
 import {whisperTranscribeCommandDescriptor, whisperTranslateCommandDescriptor} from "../src/integrations/audio/commands.js";
@@ -256,7 +257,7 @@ describe("Panda command CLI discovery", () => {
         message: "panda env set execution requires the agent command shim transport",
       },
       {
-        argv: ["web", "fetch", "https://example.com", "--max-chars", "100"],
+        argv: ["web", "fetch", "https://example.com", "--chunk-chars", "100"],
         message: "panda web fetch execution requires the agent command shim transport",
       },
       {
@@ -336,12 +337,22 @@ describe("Panda command CLI discovery", () => {
   it("includes descriptor-backed JSON help for web.fetch", async () => {
     expect(webFetchCommandDescriptor).toMatchObject({
       name: "web.fetch",
-      usage: "panda web fetch <url> [--max-chars <n>] [--format markdown|text] [--save <path>] [--include-links|--no-links]",
+      usage: "panda web fetch <url> [--chunk-chars <n>] [--format markdown|text] [--save <path>] [--include-links|--no-links]",
       inputModes: ["flags", "json", "stdin", "file"],
       resultShape: {
         finalUrl: "string",
         content: "string|absent when saved",
         saved: "object|null",
+      },
+    });
+    expect(webReadCommandDescriptor).toMatchObject({
+      name: "web.read",
+      usage: "panda web read <resource-ref> [--cursor <cursor>] [--chunk-chars <n>]",
+      inputModes: ["flags", "json", "stdin", "file"],
+      resultShape: {
+        resourceRef: "string",
+        contentComplete: "boolean",
+        nextCursor: "string|absent",
       },
     });
   });

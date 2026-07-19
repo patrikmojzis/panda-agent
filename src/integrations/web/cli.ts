@@ -13,6 +13,7 @@ import {
   braveWebSearchCommandDescriptor,
   openAIWebResearchCommandDescriptor,
   webFetchCommandDescriptor,
+  webReadCommandDescriptor,
 } from "./commands.js";
 
 interface WebCommandHelpOptions {
@@ -51,6 +52,7 @@ export function registerWebCommandHelpCommands(program: Command): void {
     .command("web")
     .description("Use agent-facing web commands");
   registerHelpCommand(web, "fetch", webFetchCommandDescriptor, "web fetch");
+  registerHelpCommand(web, "read", webReadCommandDescriptor, "web read");
 
   const brave = program
     .command("brave")

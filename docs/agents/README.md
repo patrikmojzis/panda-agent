@@ -10,4 +10,5 @@ Start here:
 - [Apps](./apps.md)
 - [Browser](./browser.md)
 - [Email](./email.md)
+- [Web fetch](./web.md)
 - [Watches](./watches.md)

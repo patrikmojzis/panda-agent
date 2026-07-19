@@ -94,6 +94,7 @@ export interface CommandRequest<TInput extends JsonObject = JsonObject> {
   command: CommandName;
   input: TInput;
   scope: CommandScope;
+  signal?: AbortSignal;
   outputMode?: CommandOutputMode;
   dryRun?: boolean;
   workingDirectory?: string;
