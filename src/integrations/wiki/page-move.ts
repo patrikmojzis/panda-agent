@@ -1,6 +1,7 @@
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject} from "../../lib/json.js";
 import type {WikiJsClient, WikiPage} from "./client.js";
+import {assertWikiPageVersionCurrent} from "./page-conflict.js";
 import {retargetWikiLinks, rewriteRelativeWikiLinksForMovedPage} from "./link-rewrite.js";
 import {
   isArchivedWikiPath,
@@ -63,28 +64,17 @@ export async function moveWikiPageWithinNamespace(input: {
     throw new ToolError(`Wiki move destination ${destinationPath} is the same as the current path.`);
   }
 
+  await assertWikiPageVersionCurrent({
+    client,
+    page: existing,
+    baseUpdatedAt,
+    namespacePath,
+    requestedPath: sourcePath,
+  });
+
   const destinationExisting = await client.getPageByPath(destinationPath, locale);
   if (destinationExisting) {
     throw new ToolError(`Wiki page ${locale}/${destinationPath} already exists.`);
-  }
-
-  if (baseUpdatedAt) {
-    const hasConflict = await client.checkPageConflicts(existing.id, baseUpdatedAt);
-    if (hasConflict) {
-      const latest = await client.getConflictLatest(existing.id);
-      throw new ToolError(
-        `Wiki page ${latest.locale}/${latest.path} changed since ${baseUpdatedAt}. Read the latest page before moving it.`,
-        {
-          details: {
-            pageId: latest.id,
-            path: latest.path,
-            locale: latest.locale,
-            updatedAt: latest.updatedAt,
-            title: latest.title,
-          },
-        },
-      );
-    }
   }
 
   let moved = await client.movePage({

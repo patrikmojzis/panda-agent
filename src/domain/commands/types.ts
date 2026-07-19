@@ -105,6 +105,7 @@ export type CommandErrorCode =
   | "unknown_command"
   | "unauthorized"
   | "forbidden"
+  | "conflict"
   | "invalid_input"
   | "rate_limited"
   | "command_failed";
@@ -120,6 +121,10 @@ export interface CommandAuditMetadata {
   totalBackoffMs?: number;
   failureCode?: string;
   retryable?: boolean;
+  requiresRefresh?: boolean;
+  resource?: JsonObject;
+  nextAction?: JsonObject;
+  exitCode?: number;
   autoRetryExhausted?: boolean;
 }
 

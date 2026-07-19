@@ -3,8 +3,10 @@ import {describe, expect, it} from "vitest";
 import * as commandExports from "../src/domain/commands/index.js";
 
 const EXPECTED_COMMAND_EXPORTS = [
+  "COMMAND_CONFLICT_EXIT_CODE",
   "COMMAND_DENIAL_EXIT_CODE",
   "COMMAND_DISCOVERY_INSTRUCTION",
+  "CommandConflictError",
   "CommandDenialError",
   "DEFAULT_COMMAND_REGISTRATION_PHASE",
   "commandDescriptorToJson",
@@ -17,6 +19,7 @@ const EXPECTED_COMMAND_EXPORTS = [
   "buildCommandRouteTree",
   "commandCapabilityDenied",
   "commandScopeDenied",
+  "commandStaleVersionConflict",
   "commandUnauthorized",
   "createCommandCatalog",
   "createCommandsFromModules",

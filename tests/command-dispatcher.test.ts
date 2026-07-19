@@ -2,7 +2,7 @@ import {describe, expect, it} from "vitest";
 
 import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
 import {createBashCommandExecutionReader} from "../src/app/runtime/bash-command-summary-reader.js";
-import {commandScopeDenied} from "../src/domain/commands/errors.js";
+import {commandScopeDenied, commandStaleVersionConflict} from "../src/domain/commands/errors.js";
 import {COMMAND_AUDIT_METADATA} from "../src/domain/commands/types.js";
 import type {RegisteredCommand} from "../src/domain/commands/types.js";
 import type {CreateThreadToolJobInput, ThreadToolJobRecord, ThreadToolJobUpdate} from "../src/domain/threads/runtime/types.js";
@@ -305,6 +305,87 @@ describe("RuntimeCommandDispatcher", () => {
       retryable: false,
     });
     expect(JSON.stringify(audit.updates)).not.toContain("never-persist-this");
+  });
+
+  it("preserves stale conflict recovery metadata through dispatch and audit without retrying", async () => {
+    const audit = createAuditStore();
+    let attempts = 0;
+    const conflictResource = {
+      kind: "wiki_page",
+      path: "agents/panda/profile",
+      locale: "en",
+      latestUpdatedAt: "2026-07-18T20:00:00.000Z",
+      content: "private latest content",
+    };
+    const dispatcher = new RuntimeCommandDispatcher({
+      commands: [{
+        ...createEchoCommand(),
+        async execute() {
+          attempts += 1;
+          throw commandStaleVersionConflict({
+            message: "The Wiki page changed after the supplied baseUpdatedAt.",
+            resource: conflictResource,
+            nextAction: {
+              kind: "refresh_merge_write",
+              command: "panda wiki read agents/panda/profile",
+            },
+          });
+        },
+      }],
+      auditStore: audit.store,
+    });
+
+    const result = await dispatcher.execute({
+      command: "test.echo",
+      input: {content: "private stale content"},
+      scope: {...scope, threadId: "thread-conflict"},
+    });
+
+    expect(attempts).toBe(1);
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "conflict",
+        details: {
+          failureCode: "stale_version",
+          retryable: false,
+          requiresRefresh: true,
+          resource: {
+            kind: "wiki_page",
+            path: "agents/panda/profile",
+            locale: "en",
+            latestUpdatedAt: "2026-07-18T20:00:00.000Z",
+          },
+          nextAction: {
+            kind: "refresh_merge_write",
+            command: "panda wiki read agents/panda/profile",
+          },
+          exitCode: 4,
+        },
+      },
+    });
+    expect(audit.updates[0]?.update.result).toEqual({
+      command: "test.echo",
+      ok: false,
+      code: "conflict",
+      failureCode: "stale_version",
+      retryable: false,
+      requiresRefresh: true,
+      resource: {
+        kind: "wiki_page",
+        path: "agents/panda/profile",
+        locale: "en",
+        latestUpdatedAt: "2026-07-18T20:00:00.000Z",
+      },
+      nextAction: {
+        kind: "refresh_merge_write",
+        command: "panda wiki read agents/panda/profile",
+      },
+      exitCode: 4,
+    });
+    expect(JSON.stringify(audit.updates)).not.toContain("private stale content");
+    expect(JSON.stringify(result)).not.toContain("private latest content");
+    expect(JSON.stringify(audit.updates)).not.toContain("private latest content");
   });
 
   it("resolves the live session thread before execution and records command audit", async () => {

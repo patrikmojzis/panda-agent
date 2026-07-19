@@ -43,6 +43,7 @@ import {
 } from "./asset-blocks.js";
 import {buildMarkdownPageWithSection, upsertMarkdownSection} from "./markdown-sections.js";
 import {moveWikiPageWithinNamespace} from "./page-move.js";
+import {assertWikiPageVersionCurrent} from "./page-conflict.js";
 import {writeWikiPage} from "./page-write.js";
 import {
   buildWikiArchivePath,
@@ -335,6 +336,7 @@ export class WikiRuntimeCommandService implements WikiCommandService {
       existing,
       path,
       locale,
+      namespacePath,
       content: input.content,
       createIfMissing: input.createIfMissing ?? true,
       title: input.title,
@@ -381,6 +383,7 @@ export class WikiRuntimeCommandService implements WikiCommandService {
       existing,
       path,
       locale,
+      namespacePath,
       content: sectionContent.content,
       createIfMissing,
       title: existing ? existing.title : input.title,
@@ -457,24 +460,13 @@ export class WikiRuntimeCommandService implements WikiCommandService {
       throw new ToolError(`Wiki page ${locale}/${path} does not exist.`);
     }
 
-    if (input.baseUpdatedAt) {
-      const hasConflict = await client.checkPageConflicts(existing.id, input.baseUpdatedAt);
-      if (hasConflict) {
-        const latest = await client.getConflictLatest(existing.id);
-        throw new ToolError(
-          `Wiki page ${latest.locale}/${latest.path} changed since ${input.baseUpdatedAt}. Read the latest page before archiving it.`,
-          {
-            details: {
-              pageId: latest.id,
-              path: latest.path,
-              locale: latest.locale,
-              updatedAt: latest.updatedAt,
-              title: latest.title,
-            },
-          },
-        );
-      }
-    }
+    await assertWikiPageVersionCurrent({
+      client,
+      page: existing,
+      baseUpdatedAt: input.baseUpdatedAt,
+      namespacePath,
+      requestedPath: path,
+    });
 
     const archivedPath = buildWikiArchivePath(path, namespacePath);
     const archived = await client.movePage({
@@ -505,24 +497,13 @@ export class WikiRuntimeCommandService implements WikiCommandService {
       throw new ToolError(`Wiki page ${locale}/${path} does not exist.`);
     }
 
-    if (input.baseUpdatedAt) {
-      const hasConflict = await client.checkPageConflicts(existing.id, input.baseUpdatedAt);
-      if (hasConflict) {
-        const latest = await client.getConflictLatest(existing.id);
-        throw new ToolError(
-          `Wiki page ${latest.locale}/${latest.path} changed since ${input.baseUpdatedAt}. Read the latest page before restoring it.`,
-          {
-            details: {
-              pageId: latest.id,
-              path: latest.path,
-              locale: latest.locale,
-              updatedAt: latest.updatedAt,
-              title: latest.title,
-            },
-          },
-        );
-      }
-    }
+    await assertWikiPageVersionCurrent({
+      client,
+      page: existing,
+      baseUpdatedAt: input.baseUpdatedAt,
+      namespacePath,
+      requestedPath: path,
+    });
 
     const destinationPath = normalizeWikiInputPath(input.destinationPath);
     assertWikiNamespacePath(destinationPath, namespacePath);
@@ -576,6 +557,15 @@ export class WikiRuntimeCommandService implements WikiCommandService {
     }
     if (!existing && !trimToUndefined(input.title)) {
       throw new ToolError("attach_image needs title when creating a new page.");
+    }
+    if (existing) {
+      await assertWikiPageVersionCurrent({
+        client,
+        page: existing,
+        baseUpdatedAt: input.baseUpdatedAt,
+        namespacePath,
+        requestedPath: path,
+      });
     }
 
     const previousAssetPath = existing
@@ -651,6 +641,7 @@ export class WikiRuntimeCommandService implements WikiCommandService {
       existing,
       path,
       locale,
+      namespacePath,
       content: nextContent,
       createIfMissing,
       title: existing ? existing.title : input.title,

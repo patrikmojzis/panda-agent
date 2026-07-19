@@ -4,20 +4,31 @@ import path from "node:path";
 
 import {describe, expect, it, vi} from "vitest";
 
+import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
+import type {JsonObject} from "../src/lib/json.js";
+import type {CommandName, RegisteredCommand} from "../src/domain/commands/types.js";
 import {
+  createWikiArchiveCommand,
   createWikiAttachImageCommand,
   createWikiDeleteAssetCommand,
   createWikiDiffCommand,
   createWikiFetchAssetCommand,
+  createWikiMoveCommand,
+  createWikiReadCommand,
   createWikiSearchCommand,
   createWikiRestoreCommand,
+  createWikiWriteCommand,
   createWikiWriteSectionCommand,
+  WIKI_ARCHIVE_COMMAND_NAME,
   WIKI_ATTACH_IMAGE_COMMAND_NAME,
   WIKI_DELETE_ASSET_COMMAND_NAME,
   WIKI_DIFF_COMMAND_NAME,
   WIKI_FETCH_ASSET_COMMAND_NAME,
+  WIKI_MOVE_COMMAND_NAME,
+  WIKI_READ_COMMAND_NAME,
   WIKI_SEARCH_COMMAND_NAME,
   WIKI_RESTORE_COMMAND_NAME,
+  WIKI_WRITE_COMMAND_NAME,
   WIKI_WRITE_SECTION_COMMAND_NAME,
 } from "../src/domain/wiki/commands.js";
 import {WikiRuntimeCommandService} from "../src/integrations/wiki/command-service.js";
@@ -62,6 +73,131 @@ function getRequestBody(fetchImpl: ReturnType<typeof vi.fn>, callIndex: number):
 
   return JSON.parse(body) as Record<string, unknown>;
 }
+
+function wikiGraphQlResponse(pages: Record<string, unknown>): Response {
+  return new Response(JSON.stringify({data: {pages}}), {
+    status: 200,
+    headers: {"content-type": "application/json"},
+  });
+}
+
+function createStaleWikiFetch(pagePath: string) {
+  const operations: string[] = [];
+  const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if (typeof init?.body !== "string") throw new Error("Expected Wiki GraphQL request body.");
+    const body = JSON.parse(init.body) as {query?: unknown; variables?: Record<string, unknown>};
+    const query = typeof body.query === "string" ? body.query : "";
+    if (query.includes("GetPageByPath")) {
+      operations.push("read");
+      return wikiGraphQlResponse({
+        singleByPath: body.variables?.path === pagePath
+          ? buildPage({path: pagePath, updatedAt: "2026-07-18T19:00:00.000Z"})
+          : null,
+      });
+    }
+    if (query.includes("CheckPageConflicts")) {
+      operations.push("check_conflict");
+      return wikiGraphQlResponse({checkConflicts: true});
+    }
+    if (query.includes("GetConflictLatest")) {
+      operations.push("read_latest_revision");
+      return wikiGraphQlResponse({
+        conflictLatest: buildPage({
+          path: pagePath,
+          title: "PRIVATE LATEST TITLE",
+          content: "PRIVATE LATEST CONTENT",
+          updatedAt: "2026-07-18T20:00:00.000Z",
+        }),
+      });
+    }
+    throw new Error(`Unexpected Wiki operation after stale conflict: ${query.slice(0, 80)}`);
+  });
+  return {fetchImpl, operations};
+}
+
+interface StaleWikiCommandCase {
+  label: string;
+  commandName: CommandName;
+  pagePath: string;
+  input: JsonObject;
+  createCommand(service: WikiRuntimeCommandService): RegisteredCommand;
+}
+
+const STALE_WIKI_COMMAND_CASES: readonly StaleWikiCommandCase[] = [
+  {
+    label: "page replacement",
+    commandName: WIKI_WRITE_COMMAND_NAME,
+    pagePath: "agents/panda/profile",
+    input: {
+      path: "agents/panda/profile",
+      content: "# Merged profile",
+      baseUpdatedAt: "2026-07-18T19:00:00.000Z",
+    },
+    createCommand: createWikiWriteCommand,
+  },
+  {
+    label: "section update",
+    commandName: WIKI_WRITE_SECTION_COMMAND_NAME,
+    pagePath: "agents/panda/profile",
+    input: {
+      path: "agents/panda/profile",
+      section: "Facts",
+      content: "New facts.",
+      baseUpdatedAt: "2026-07-18T19:00:00.000Z",
+    },
+    createCommand: createWikiWriteSectionCommand,
+  },
+  {
+    label: "move",
+    commandName: WIKI_MOVE_COMMAND_NAME,
+    pagePath: "agents/panda/profile",
+    input: {
+      path: "agents/panda/profile",
+      destinationPath: "agents/panda/about",
+      baseUpdatedAt: "2026-07-18T19:00:00.000Z",
+    },
+    createCommand: createWikiMoveCommand,
+  },
+  {
+    label: "archive",
+    commandName: WIKI_ARCHIVE_COMMAND_NAME,
+    pagePath: "agents/panda/profile",
+    input: {
+      path: "agents/panda/profile",
+      baseUpdatedAt: "2026-07-18T19:00:00.000Z",
+    },
+    createCommand: createWikiArchiveCommand,
+  },
+  {
+    label: "restore",
+    commandName: WIKI_RESTORE_COMMAND_NAME,
+    pagePath: "agents/panda/_archive/2026/07/profile-old",
+    input: {
+      path: "agents/panda/_archive/2026/07/profile-old",
+      destinationPath: "agents/panda/profile",
+      baseUpdatedAt: "2026-07-18T19:00:00.000Z",
+    },
+    createCommand: createWikiRestoreCommand,
+  },
+  {
+    label: "image attachment",
+    commandName: WIKI_ATTACH_IMAGE_COMMAND_NAME,
+    pagePath: "agents/panda/profile",
+    input: {
+      path: "agents/panda/profile",
+      section: "Facts",
+      slot: "profile-photo",
+      sourcePath: "private-source.png",
+      alt: "Profile photo",
+      baseUpdatedAt: "2026-07-18T19:00:00.000Z",
+    },
+    createCommand: (service) => createWikiAttachImageCommand(service, {
+      async resolveReadablePath({file}) {
+        return {path: `/nonexistent/${file.path}`, displayPath: file.path};
+      },
+    }),
+  },
+];
 
 describe("wiki command service", () => {
   it("limits scoped wiki.search results and reports truncation", async () => {
@@ -169,6 +305,187 @@ describe("wiki command service", () => {
       },
     });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each(STALE_WIKI_COMMAND_CASES)("returns a safe terminal conflict for stale $label", async (testCase) => {
+    const {fetchImpl, operations} = createStaleWikiFetch(testCase.pagePath);
+    const service = new WikiRuntimeCommandService({
+      env: {WIKI_URL: "http://wiki:3000"} as NodeJS.ProcessEnv,
+      fetchImpl: fetchImpl as typeof fetch,
+      bindings: createBindings(),
+    });
+    const dispatcher = new RuntimeCommandDispatcher({
+      commands: [testCase.createCommand(service)],
+    });
+
+    const result = await dispatcher.execute({
+      command: testCase.commandName,
+      input: testCase.input,
+      scope: {
+        agentKey: "panda",
+        sessionId: "session-1",
+        allowedCommands: [testCase.commandName],
+      },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      command: testCase.commandName,
+      error: {
+        code: "conflict",
+        message: "The Wiki page changed after the supplied baseUpdatedAt.",
+        details: {
+          failureCode: "stale_version",
+          retryable: false,
+          requiresRefresh: true,
+          resource: {
+            kind: "wiki_page",
+            path: testCase.pagePath,
+            locale: "en",
+            latestUpdatedAt: "2026-07-18T20:00:00.000Z",
+          },
+          nextAction: {
+            kind: "refresh_merge_write",
+            command: `panda wiki read ${testCase.pagePath}`,
+          },
+          exitCode: 4,
+        },
+      },
+    });
+    expect(operations).toEqual(["read", "check_conflict", "read_latest_revision"]);
+    expect(JSON.stringify(result)).not.toContain("PRIVATE LATEST TITLE");
+    expect(JSON.stringify(result)).not.toContain("PRIVATE LATEST CONTENT");
+    expect(JSON.stringify(result)).not.toContain("# Merged profile");
+  });
+
+  it("recovers through explicit read -> merge -> fresh write without repeating the stale write", async () => {
+    const operations: string[] = [];
+    let conflictChecks = 0;
+    let updates = 0;
+    const latestUpdatedAt = "2026-07-18T20:00:00.000Z";
+    const updatedAt = "2026-07-18T20:05:00.000Z";
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (typeof init?.body !== "string") throw new Error("Expected Wiki GraphQL request body.");
+      const body = JSON.parse(init.body) as {query?: unknown; variables?: Record<string, unknown>};
+      const query = typeof body.query === "string" ? body.query : "";
+      if (query.includes("GetPageByPath")) {
+        operations.push("read");
+        return wikiGraphQlResponse({
+          singleByPath: buildPage({
+            content: updates === 0 ? "# Profile\n\nLatest fact." : "# Profile\n\nLatest fact.\n\nMerged intent.",
+            updatedAt: updates === 0 ? latestUpdatedAt : updatedAt,
+          }),
+        });
+      }
+      if (query.includes("CheckPageConflicts")) {
+        conflictChecks += 1;
+        operations.push(conflictChecks === 1 ? "check_stale" : "check_fresh");
+        return wikiGraphQlResponse({checkConflicts: conflictChecks === 1});
+      }
+      if (query.includes("GetConflictLatest")) {
+        operations.push("read_latest_revision");
+        return wikiGraphQlResponse({
+          conflictLatest: buildPage({
+            content: "PRIVATE LATEST CONTENT",
+            updatedAt: latestUpdatedAt,
+          }),
+        });
+      }
+      if (query.includes("UpdatePage")) {
+        operations.push("write_merged");
+        expect(body.variables).toMatchObject({
+          content: "# Profile\n\nLatest fact.\n\nMerged intent.",
+        });
+        updates += 1;
+        return wikiGraphQlResponse({
+          update: {
+            responseResult: {succeeded: true, message: "updated"},
+            page: {id: 12},
+          },
+        });
+      }
+      throw new Error(`Unexpected Wiki operation: ${query.slice(0, 80)}`);
+    });
+    const service = new WikiRuntimeCommandService({
+      env: {WIKI_URL: "http://wiki:3000"} as NodeJS.ProcessEnv,
+      fetchImpl: fetchImpl as typeof fetch,
+      bindings: createBindings(),
+    });
+    const dispatcher = new RuntimeCommandDispatcher({
+      commands: [createWikiWriteCommand(service), createWikiReadCommand(service)],
+    });
+    const scope = {
+      agentKey: "panda",
+      sessionId: "session-1",
+      allowedCommands: [WIKI_WRITE_COMMAND_NAME, WIKI_READ_COMMAND_NAME],
+    };
+
+    const stale = await dispatcher.execute({
+      command: WIKI_WRITE_COMMAND_NAME,
+      input: {
+        path: "agents/panda/profile",
+        content: "# Profile\n\nStale intent.",
+        baseUpdatedAt: "2026-07-18T19:00:00.000Z",
+      },
+      scope,
+    });
+    expect(stale).toMatchObject({
+      ok: false,
+      error: {
+        code: "conflict",
+        details: {
+          retryable: false,
+          nextAction: {
+            kind: "refresh_merge_write",
+            command: "panda wiki read agents/panda/profile",
+          },
+        },
+      },
+    });
+    expect(updates).toBe(0);
+    expect(operations).toEqual(["read", "check_stale", "read_latest_revision"]);
+
+    const refreshed = await dispatcher.execute({
+      command: WIKI_READ_COMMAND_NAME,
+      input: {path: "agents/panda/profile"},
+      scope,
+    });
+    expect(refreshed).toMatchObject({
+      ok: true,
+      output: {
+        content: "# Profile\n\nLatest fact.",
+        updatedAt: latestUpdatedAt,
+      },
+    });
+
+    const merged = await dispatcher.execute({
+      command: WIKI_WRITE_COMMAND_NAME,
+      input: {
+        path: "agents/panda/profile",
+        content: "# Profile\n\nLatest fact.\n\nMerged intent.",
+        baseUpdatedAt: latestUpdatedAt,
+      },
+      scope,
+    });
+    expect(merged).toMatchObject({
+      ok: true,
+      output: {
+        action: "updated",
+        page: {updatedAt},
+      },
+    });
+    expect(operations).toEqual([
+      "read",
+      "check_stale",
+      "read_latest_revision",
+      "read",
+      "read",
+      "check_fresh",
+      "write_merged",
+      "read",
+    ]);
+    expect(conflictChecks).toBe(2);
+    expect(updates).toBe(1);
   });
 
   it("diffs two namespace-scoped wiki pages", async () => {

@@ -3,6 +3,7 @@ import {randomUUID} from "node:crypto";
 import {isJsonObject, type JsonObject, type JsonValue} from "../../lib/json.js";
 import {
   CommandDenialError,
+  CommandStructuredError,
   commandCapabilityDenied,
   commandUnauthorized,
   type CommandDenialFailureCode,
@@ -39,6 +40,8 @@ const COMMAND_DENIAL_FAILURE_CODES = new Set<CommandDenialFailureCode>([
   "identity_required",
   "resource_scope_denied",
 ]);
+const MAX_SAFE_AUDIT_PATH_LENGTH = 512;
+const MAX_SAFE_AUDIT_COMMAND_LENGTH = 1_024;
 
 export interface RuntimeCommandDispatcherOptions {
   commands: readonly RegisteredCommand[];
@@ -60,7 +63,7 @@ function errorDetails(error: unknown): JsonObject | undefined {
     return undefined;
   }
 
-  if (error instanceof CommandDenialError) {
+  if (error instanceof CommandStructuredError) {
     return error.pandaCommandErrorDetails;
   }
 
@@ -104,11 +107,47 @@ function errorMessage(error: unknown): string {
 }
 
 function commandErrorCode(error: unknown): CommandErrorCode {
-  if (error instanceof CommandDenialError) {
+  if (error instanceof CommandStructuredError) {
     return error.pandaCommandErrorCode;
   }
   const code = (error as {pandaCommandErrorCode?: unknown} | null)?.pandaCommandErrorCode;
   return code === "rate_limited" ? code : "command_failed";
+}
+
+function safeAuditString(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== "string" || value.length === 0 || value.length > maxLength || /[\u0000-\u001f\u007f]/.test(value)) {
+    return undefined;
+  }
+  return value;
+}
+
+function readConflictAuditMetadata(result: CommandResult<JsonValue>, source: JsonObject): CommandAuditMetadata {
+  if (result.ok || result.error.code !== "conflict" || source.failureCode !== "stale_version") {
+    return {};
+  }
+
+  const rawResource = isJsonObject(source.resource) ? source.resource : undefined;
+  const path = safeAuditString(rawResource?.path, MAX_SAFE_AUDIT_PATH_LENGTH);
+  const locale = safeAuditString(rawResource?.locale, 64);
+  const latestUpdatedAt = safeAuditString(rawResource?.latestUpdatedAt, 64);
+  const resource = rawResource?.kind === "wiki_page" && path && locale && latestUpdatedAt
+    ? {kind: "wiki_page", path, locale, latestUpdatedAt}
+    : undefined;
+
+  const rawNextAction = isJsonObject(source.nextAction) ? source.nextAction : undefined;
+  const command = safeAuditString(rawNextAction?.command, MAX_SAFE_AUDIT_COMMAND_LENGTH);
+  const nextAction = rawNextAction?.kind === "refresh_merge_write" && command?.startsWith("panda wiki read ")
+    ? {kind: "refresh_merge_write", command}
+    : undefined;
+
+  return {
+    failureCode: "stale_version",
+    retryable: false,
+    ...(source.requiresRefresh === true ? {requiresRefresh: true} : {}),
+    ...(resource ? {resource} : {}),
+    ...(nextAction ? {nextAction} : {}),
+    ...(source.exitCode === 4 ? {exitCode: 4} : {}),
+  };
 }
 
 function readAuditMetadata(result: CommandResult<JsonValue>): CommandAuditMetadata {
@@ -121,8 +160,16 @@ function readAuditMetadata(result: CommandResult<JsonValue>): CommandAuditMetada
   const attemptCount = source.attemptCount;
   const totalBackoffMs = source.totalBackoffMs;
   const failureCode = source.failureCode;
-  const safeFailureCode = failureCode === "rate_limited" || failureCode === "quota_exhausted"
-    || (typeof failureCode === "string" && COMMAND_DENIAL_FAILURE_CODES.has(failureCode as CommandDenialFailureCode));
+  const conflictMetadata = result.ok
+    ? {}
+    : readConflictAuditMetadata(result, result.error.details ?? {});
+  const safeFailureCode = typeof failureCode === "string" && (
+    failureCode === "rate_limited"
+    || failureCode === "quota_exhausted"
+    || COMMAND_DENIAL_FAILURE_CODES.has(failureCode as CommandDenialFailureCode)
+  )
+    ? failureCode
+    : conflictMetadata.failureCode;
   return {
     ...(typeof attemptCount === "number" && Number.isSafeInteger(attemptCount) && attemptCount >= 0 && attemptCount <= 100
       ? {attemptCount}
@@ -130,9 +177,10 @@ function readAuditMetadata(result: CommandResult<JsonValue>): CommandAuditMetada
     ...(typeof totalBackoffMs === "number" && Number.isSafeInteger(totalBackoffMs) && totalBackoffMs >= 0 && totalBackoffMs <= 60_000
       ? {totalBackoffMs}
       : {}),
-    ...(safeFailureCode ? {failureCode} : {}),
+    ...(safeFailureCode ? {failureCode: safeFailureCode} : {}),
     ...(typeof source.retryable === "boolean" ? {retryable: source.retryable} : {}),
     ...(source.autoRetryExhausted === true ? {autoRetryExhausted: true} : {}),
+    ...conflictMetadata,
   };
 }
 

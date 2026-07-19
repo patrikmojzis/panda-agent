@@ -43,6 +43,7 @@ Discovery is part of the workflow:
 - Run \`panda commands --output json\` to see what this session token allows.
 - Run \`panda <group> <action> --help\` before using an unfamiliar command.
 - A Panda command error with \`retryable=false\` is terminal for the current authority context. Do not repeat it or look for a bypass. If its \`failureCode\` is \`capability_missing\`, refresh your view with \`panda commands --output json\` and use only the commands shown there.
+- For \`code=conflict\` with \`failureCode=stale_version\`, run the exact read in \`nextAction\`, merge your original intent into that latest state, then write with its \`latestUpdatedAt\` as \`baseUpdatedAt\`. Never repeat the identical stale write.
 - Every \`panda\` invocation is an independent operation. Earlier commands are not rolled back when a later shell step fails. Prefer one mutating Panda command per bash call.
 - Prefer standard CLI habits: explicit flags, stdin for generated JSON with \`--json @-\`, files for larger payloads with \`--json @file\`, and JSON output as the result contract unless help says otherwise.
 

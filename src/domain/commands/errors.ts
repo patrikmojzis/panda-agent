@@ -2,6 +2,7 @@ import type {JsonObject} from "../../lib/json.js";
 import type {CommandError, CommandErrorCode, CommandName} from "./types.js";
 
 export const COMMAND_DENIAL_EXIT_CODE = 3;
+export const COMMAND_CONFLICT_EXIT_CODE = 4;
 export const COMMAND_DISCOVERY_INSTRUCTION = "panda commands --output json";
 
 export type CommandDenialCode = Extract<CommandErrorCode, "unauthorized" | "forbidden">;
@@ -28,31 +29,87 @@ export interface CommandDenialErrorOptions {
   requiredCapability?: CommandName;
 }
 
+/** Typed command failure whose normalized fields are safe to preserve across command transports. */
+export class CommandStructuredError extends Error {
+  constructor(
+    readonly pandaCommandErrorCode: CommandErrorCode,
+    message: string,
+    readonly pandaCommandErrorDetails: JsonObject,
+  ) {
+    super(message);
+    this.name = "CommandStructuredError";
+  }
+
+  toCommandError(): CommandError {
+    return {
+      code: this.pandaCommandErrorCode,
+      message: this.message,
+      details: this.pandaCommandErrorDetails,
+    };
+  }
+}
+
 /** Terminal command authority failure that is safe to expose through transports and audits. */
-export class CommandDenialError extends Error {
-  readonly pandaCommandErrorCode: CommandDenialCode;
-  readonly pandaCommandErrorDetails: JsonObject;
+export class CommandDenialError extends CommandStructuredError {
 
   constructor(readonly options: CommandDenialErrorOptions) {
-    super(options.message);
-    this.name = "CommandDenialError";
-    this.pandaCommandErrorCode = options.code;
-    this.pandaCommandErrorDetails = {
+    super(options.code, options.message, {
       failureCode: options.failureCode,
       retryable: false,
       nextAction: options.nextAction,
       exitCode: COMMAND_DENIAL_EXIT_CODE,
       ...(options.requiredCapability ? {requiredCapability: options.requiredCapability} : {}),
-    };
+    });
+    this.name = "CommandDenialError";
   }
+}
 
-  toCommandError(): CommandError {
-    return {
-      code: this.options.code,
-      message: this.message,
-      details: this.pandaCommandErrorDetails,
-    };
+export interface CommandConflictResource {
+  kind: string;
+  id?: string | number;
+  path?: string;
+  locale?: string;
+  latestUpdatedAt?: string;
+  latestRevision?: string | number;
+}
+
+export interface CommandConflictErrorOptions {
+  message: string;
+  resource: CommandConflictResource;
+  nextAction: {
+    kind: "refresh_merge_write";
+    command: string;
+  };
+}
+
+/** Stale optimistic write that requires fresh state before another mutation. */
+export class CommandConflictError extends CommandStructuredError {
+  constructor(options: CommandConflictErrorOptions) {
+    super("conflict", options.message, {
+      failureCode: "stale_version",
+      retryable: false,
+      requiresRefresh: true,
+      resource: {
+        kind: options.resource.kind,
+        ...(options.resource.id === undefined ? {} : {id: options.resource.id}),
+        ...(options.resource.path === undefined ? {} : {path: options.resource.path}),
+        ...(options.resource.locale === undefined ? {} : {locale: options.resource.locale}),
+        ...(options.resource.latestUpdatedAt === undefined ? {} : {latestUpdatedAt: options.resource.latestUpdatedAt}),
+        ...(options.resource.latestRevision === undefined ? {} : {latestRevision: options.resource.latestRevision}),
+      },
+      nextAction: {
+        kind: options.nextAction.kind,
+        command: options.nextAction.command,
+      },
+      exitCode: COMMAND_CONFLICT_EXIT_CODE,
+    });
+    this.name = "CommandConflictError";
   }
+}
+
+/** Creates the canonical stale-version failure without performing a retry or merge. */
+export function commandStaleVersionConflict(options: CommandConflictErrorOptions): CommandConflictError {
+  return new CommandConflictError(options);
 }
 
 /** Creates the canonical terminal failure for a command missing from the authenticated lease. */

@@ -3,7 +3,7 @@ import {createServer, type IncomingMessage, type Server, type ServerResponse} fr
 import path from "node:path";
 
 import {
-  CommandDenialError,
+  CommandStructuredError,
   commandCapabilityDenied,
   commandUnauthorized,
 } from "../../domain/commands/errors.js";
@@ -160,6 +160,7 @@ function commandResultStatus(result: CommandResult): number {
   if (result.ok) return 200;
   if (result.error.code === "unauthorized") return 401;
   if (result.error.code === "forbidden") return 403;
+  if (result.error.code === "conflict") return 409;
   return 400;
 }
 
@@ -295,8 +296,15 @@ export async function startCommandHttpServer(options: CommandHttpServerOptions):
           : {error: error.message});
         return;
       }
-      if (error instanceof CommandDenialError) {
-        writeJsonResponse(response, error.pandaCommandErrorCode === "unauthorized" ? 401 : 403, {
+      if (error instanceof CommandStructuredError) {
+        const statusCode = error.pandaCommandErrorCode === "unauthorized"
+          ? 401
+          : error.pandaCommandErrorCode === "forbidden"
+            ? 403
+            : error.pandaCommandErrorCode === "conflict"
+              ? 409
+              : 400;
+        writeJsonResponse(response, statusCode, {
           ok: false,
           error: error.toCommandError(),
         });

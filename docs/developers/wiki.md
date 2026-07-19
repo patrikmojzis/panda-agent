@@ -149,8 +149,22 @@ Keep Wiki.js semantics in the Wiki integration:
   `client-parsers.ts` own the typed client surface, defaults, client input
   normalization, and Wiki.js response parsing.
 - `src/integrations/wiki/page-move.ts` owns live page moves plus affected internal-link rewrites.
-- `src/integrations/wiki/page-write.ts` owns create/update behavior and optimistic conflict checks.
+- `src/integrations/wiki/page-write.ts` owns create/update behavior.
+- `src/integrations/wiki/page-conflict.ts` owns optimistic conflict checks and the safe refresh contract.
 - `src/domain/wiki/commands.ts` owns the command-facing Wiki surface.
 - `src/integrations/wiki/command-service.ts` owns command orchestration over the Wiki integration.
 
 Do not move raw Wiki.js path or output policy back into command handlers.
+
+## Optimistic Write Conflicts
+
+Wiki mutations that accept `baseUpdatedAt` keep the Wiki.js conflict check
+authoritative. A stale version throws the shared command-domain `conflict`
+error with `failureCode=stale_version`, `retryable=false`, scoped latest
+revision metadata, `panda wiki read <path>` as the only next action, and exit
+code 4. The error never includes latest page content, title, or a diff.
+
+Recovery is always explicit: read the latest page, semantically merge the
+original intent, then write with that page's `updatedAt` as the new
+`baseUpdatedAt`. Do not retry the stale payload, auto-merge, force overwrite,
+or drop the concurrency precondition.

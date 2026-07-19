@@ -253,6 +253,10 @@ These pay back across almost every command.
    preserves that compact JSON on stderr. `requiredCapability` is exposed only
    after authentication succeeds; capability discovery is
    `panda commands --output json`.
+   Optimistic stale writes use `code=conflict`,
+   `failureCode=stale_version`, `retryable: false`, scoped latest-revision
+   metadata, a single refresh-merge-write action, and exit code 4. The error
+   never carries the latest resource content.
 
 5. Keep namespace policy, not legacy tool policy.
 

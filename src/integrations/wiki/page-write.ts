@@ -2,6 +2,7 @@ import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {JsonObject} from "../../lib/json.js";
 import {trimToUndefined} from "../../lib/strings.js";
 import type {WikiJsClient, WikiPage} from "./client.js";
+import {assertWikiPageVersionCurrent} from "./page-conflict.js";
 
 interface WikiPageWriteProgress extends JsonObject {
   status: "creating" | "updating";
@@ -22,6 +23,7 @@ export async function writeWikiPage(input: {
   existing: WikiPage | null;
   path: string;
   locale: string;
+  namespacePath: string;
   content: string;
   createIfMissing: boolean;
   title?: string;
@@ -38,6 +40,7 @@ export async function writeWikiPage(input: {
     existing,
     path,
     locale,
+    namespacePath,
     content,
     createIfMissing,
     title,
@@ -75,24 +78,13 @@ export async function writeWikiPage(input: {
     };
   }
 
-  if (baseUpdatedAt) {
-    const hasConflict = await client.checkPageConflicts(existing.id, baseUpdatedAt);
-    if (hasConflict) {
-      const latest = await client.getConflictLatest(existing.id);
-      throw new ToolError(
-        `Wiki page ${latest.locale}/${latest.path} changed since ${baseUpdatedAt}. Read the latest page before overwriting it.`,
-        {
-          details: {
-            pageId: latest.id,
-            path: latest.path,
-            locale: latest.locale,
-            updatedAt: latest.updatedAt,
-            title: latest.title,
-          },
-        },
-      );
-    }
-  }
+  await assertWikiPageVersionCurrent({
+    client,
+    page: existing,
+    baseUpdatedAt,
+    namespacePath,
+    requestedPath: path,
+  });
 
   emitProgress?.({status: "updating", path, locale});
   const updated = await client.updatePage({

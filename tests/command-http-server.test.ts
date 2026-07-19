@@ -6,7 +6,7 @@ import path from "node:path";
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
-import {commandUnauthorized} from "../src/domain/commands/errors.js";
+import {commandStaleVersionConflict, commandUnauthorized} from "../src/domain/commands/errors.js";
 import type {RegisteredCommand} from "../src/domain/commands/types.js";
 import {
   startCommandHttpServer,
@@ -14,6 +14,22 @@ import {
 } from "../src/integrations/commands/http-server.js";
 import {FileSystemCommandUploadStore} from "../src/integrations/commands/file-uploads.js";
 import {createTestCommandLeaseVerifier} from "./helpers/command-lease-verifier.js";
+
+function staleWikiConflict() {
+  return commandStaleVersionConflict({
+    message: "The Wiki page changed after the supplied baseUpdatedAt.",
+    resource: {
+      kind: "wiki_page",
+      path: "agents/panda/profile",
+      locale: "en",
+      latestUpdatedAt: "2026-07-18T20:00:00.000Z",
+    },
+    nextAction: {
+      kind: "refresh_merge_write",
+      command: "panda wiki read agents/panda/profile",
+    },
+  });
+}
 
 function createEchoCommand(): RegisteredCommand {
   return {
@@ -450,6 +466,56 @@ describe("command HTTP server", () => {
     expect(JSON.stringify(body)).not.toContain("private-input");
   });
 
+  it("returns stale conflicts as HTTP 409 with the refresh contract intact", async () => {
+    const execute = vi.fn(async () => {
+      throw staleWikiConflict();
+    });
+    const server = await startCommandHttpServer({
+      executor: new RuntimeCommandDispatcher({
+        commands: [{...createEchoCommand(), execute}],
+      }),
+      leaseVerifier: createTestCommandLeaseVerifier([
+        ["token-a", {
+          agentKey: "panda",
+          sessionId: "session-main",
+          allowedCommands: ["test.echo"],
+        }],
+      ]),
+    });
+    servers.push(server);
+
+    const response = await fetch(`${server.url}/commands/execute`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer token-a",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({command: "test.echo", input: {content: "private stale content"}}),
+    });
+
+    expect(response.status).toBe(409);
+    const body = await readJson(response);
+    expect(body).toMatchObject({
+      ok: false,
+      command: "test.echo",
+      error: {
+        code: "conflict",
+        details: {
+          failureCode: "stale_version",
+          retryable: false,
+          requiresRefresh: true,
+          nextAction: {
+            kind: "refresh_merge_write",
+            command: "panda wiki read agents/panda/profile",
+          },
+          exitCode: 4,
+        },
+      },
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(body)).not.toContain("private stale content");
+  });
+
   it("aborts command execution when the HTTP caller disconnects", async () => {
     let markStarted!: () => void;
     let markAborted!: () => void;
@@ -572,10 +638,13 @@ describe("command HTTP server", () => {
   it("serves the same command contract over a Unix socket", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "panda-command-socket-"));
     directories.push(directory);
+    const execute = vi.fn(async () => {
+      throw staleWikiConflict();
+    });
     const server = await startCommandHttpServer({
       socketPath: path.join(directory, "command.sock"),
       executor: new RuntimeCommandDispatcher({
-        commands: [createEchoCommand(), createA2ASendCommand()],
+        commands: [{...createEchoCommand(), execute}, createA2ASendCommand()],
       }),
       leaseVerifier: createTestCommandLeaseVerifier([
         ["token-a", {
@@ -672,6 +741,37 @@ describe("command HTTP server", () => {
         details: {failureCode: "bearer_invalid", retryable: false, exitCode: 3},
       },
     });
+
+    const conflict = await new Promise<{statusCode: number; body: string}>((resolve, reject) => {
+      const request = http.request({
+        socketPath: server.socketPath,
+        method: "POST",
+        path: "/commands/execute",
+        headers: {
+          authorization: "Bearer token-a",
+          "content-type": "application/json",
+        },
+      }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        res.on("error", reject);
+        res.on("end", () => resolve({
+          statusCode: res.statusCode ?? 0,
+          body: Buffer.concat(chunks).toString("utf8"),
+        }));
+      });
+      request.on("error", reject);
+      request.end(JSON.stringify({command: "test.echo", input: {}}));
+    });
+    expect(conflict.statusCode).toBe(409);
+    expect(JSON.parse(conflict.body)).toMatchObject({
+      ok: false,
+      error: {
+        code: "conflict",
+        details: {failureCode: "stale_version", retryable: false, exitCode: 4},
+      },
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
   });
 
   it("refuses to replace a non-socket Unix socket path", async () => {

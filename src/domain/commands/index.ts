@@ -4,11 +4,16 @@ export {
 } from "./help.js";
 export {
   COMMAND_DENIAL_EXIT_CODE,
+  COMMAND_CONFLICT_EXIT_CODE,
   COMMAND_DISCOVERY_INSTRUCTION,
+  CommandConflictError,
   CommandDenialError,
   commandCapabilityDenied,
   commandScopeDenied,
+  commandStaleVersionConflict,
   commandUnauthorized,
+  type CommandConflictErrorOptions,
+  type CommandConflictResource,
   type CommandDenialCode,
   type CommandDenialErrorOptions,
   type CommandDenialFailureCode,

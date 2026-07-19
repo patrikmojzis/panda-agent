@@ -7,6 +7,7 @@ import {promisify} from "node:util";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 
 import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
+import {commandStaleVersionConflict} from "../src/domain/commands/errors.js";
 import {FileSystemCommandUploadStore} from "../src/integrations/commands/file-uploads.js";
 import {FileSystemWebResourceStore} from "../src/integrations/web/web-resources.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
@@ -2785,6 +2786,69 @@ describe("agent command shim", () => {
       },
     });
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("preserves stale conflict JSON and exits 4 without repeating the write", async () => {
+    const execute = vi.fn(async () => {
+      throw commandStaleVersionConflict({
+        message: "The Wiki page changed after the supplied baseUpdatedAt.",
+        resource: {
+          kind: "wiki_page",
+          path: "agents/panda/profile",
+          locale: "en",
+          latestUpdatedAt: "2026-07-18T20:00:00.000Z",
+        },
+        nextAction: {
+          kind: "refresh_merge_write",
+          command: "panda wiki read agents/panda/profile",
+        },
+      });
+    });
+    const server = await startCommandHttpServer({
+      executor: new RuntimeCommandDispatcher({
+        commands: [{...createTimeNowCommand(), execute}],
+      }),
+      leaseVerifier: createTestCommandLeaseVerifier([
+        ["token-a", {
+          agentKey: "panda",
+          sessionId: "session-main",
+          allowedCommands: ["time.now"],
+        }],
+      ]),
+    });
+    servers.push(server);
+
+    const error = await execFileAsync(shimPath, ["time", "now"], {
+      env: {...shimEnv(server), PANDA_COMMAND_TOKEN: "token-a"},
+    }).then(() => null, (reason: unknown) => reason as {code: number; stderr: string});
+
+    expect(error?.code).toBe(4);
+    expect(error?.stderr.trim().split("\n")).toHaveLength(1);
+    expect(JSON.parse(error?.stderr.trim() ?? "{}")).toMatchObject({
+      ok: false,
+      command: "time.now",
+      error: {
+        code: "conflict",
+        details: {
+          failureCode: "stale_version",
+          retryable: false,
+          requiresRefresh: true,
+          resource: {
+            kind: "wiki_page",
+            path: "agents/panda/profile",
+            locale: "en",
+            latestUpdatedAt: "2026-07-18T20:00:00.000Z",
+          },
+          nextAction: {
+            kind: "refresh_merge_write",
+            command: "panda wiki read agents/panda/profile",
+          },
+          exitCode: 4,
+        },
+      },
+    });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(error?.stderr).not.toContain("content");
   });
 
   it("preserves structured auth denials without exposing the bearer token", async () => {
