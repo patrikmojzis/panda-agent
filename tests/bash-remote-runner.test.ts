@@ -1754,6 +1754,68 @@ describe("remote bash runner", () => {
     expect(result.stdout).toBe("persistent-watch-released");
   }, 15_000);
 
+  it.each([
+    ["valid executor deadline", 1_000_500, 1_000, 90_500],
+    ["missing executor deadline", "missing", 1_000, 91_000],
+    ["NaN executor deadline", Number.NaN, 1_000, 91_000],
+    ["infinite executor deadline", Number.POSITIVE_INFINITY, 1_000, 91_000],
+    ["past/skewed executor deadline", 999_999, 1_000, 91_000],
+    ["excessive timer-valid executor deadline", 2_001_000_000, 1_000, 91_000],
+    ["maximum accepted local lifetime", "missing", 21_600_000, 21_690_000],
+  ] as const)(
+    "bounds observation expiry for %s",
+    async (_label, executorExpiresAt, maxRuntimeMs, expectedDelayMs) => {
+      const agentHome = await createWorkspace("runtime-agent-home-");
+      vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+      const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+      let status: BashJobSnapshot["status"] = "running";
+      let releaseWatcher!: () => void;
+      const watcherGate = new Promise<void>((resolve) => { releaseWatcher = resolve; });
+      const runner = await createRunner("panda", {
+        commandExecutor: {
+          execute: async () => { throw new Error("unexpected exec"); },
+          startJob: async (input) => {
+            const snapshot = (): BashJobSnapshot => {
+              const result = fakeJobSnapshot(input, status);
+              if (executorExpiresAt === "missing") {
+                delete (result as Partial<BashJobSnapshot>).expiresAt;
+              } else {
+                result.expiresAt = executorExpiresAt;
+              }
+              return result;
+            };
+            return {
+              snapshot,
+              wait: async () => {
+                await watcherGate;
+                return snapshot();
+              },
+              cancel: async () => {
+                status = "cancelled";
+                releaseWatcher();
+                return snapshot();
+              },
+            };
+          },
+        },
+      });
+
+      expect((await requestDirectRunnerJob(
+        runner,
+        "start",
+        {
+          ...directJobStartRequest("job-observation-deadline", agentHome, "sleep 1"),
+          maxRuntimeMs,
+        },
+      )).status).toBe(200);
+      const timerCallIndex = setTimeoutSpy.mock.calls.findIndex((call) => call[1] === expectedDelayMs);
+      expect(timerCallIndex).toBeGreaterThanOrEqual(0);
+      const observationTimer = setTimeoutSpy.mock.results[timerCallIndex]?.value as NodeJS.Timeout;
+      expect(observationTimer.hasRef()).toBe(false);
+      await runner.close();
+    },
+  );
+
   it("uses a bounded watcher poll and awaits the in-flight poll during close", async () => {
     const agentHome = await createWorkspace("runtime-agent-home-");
     let watcherWaitTimeout: number | undefined;

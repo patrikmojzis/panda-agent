@@ -696,9 +696,21 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
   const scheduleRunningJobObservationExpiry = (
     jobId: string,
     state: RunningBackgroundJobState,
-    expiresAt: number,
+    ownershipStartedAt: number,
+    maxRuntimeMs: number,
+    executorExpiresAt: unknown,
   ): void => {
-    const delayMs = Math.max(0, expiresAt + BACKGROUND_JOB_WATCH_EXPIRY_GRACE_MS - Date.now());
+    const localHardExpiresAt = ownershipStartedAt + maxRuntimeMs;
+    const observationExpiresAt = typeof executorExpiresAt === "number"
+      && Number.isFinite(executorExpiresAt)
+      && executorExpiresAt >= ownershipStartedAt
+      && executorExpiresAt <= localHardExpiresAt
+      ? executorExpiresAt
+      : localHardExpiresAt;
+    const delayMs = Math.max(
+      0,
+      observationExpiresAt + BACKGROUND_JOB_WATCH_EXPIRY_GRACE_MS - Date.now(),
+    );
     const timer = setTimeout(() => {
       // The executor owns max-runtime process cleanup. After its deadline plus grace,
       // fail closed by releasing an unobservable credential-bearing runner state.
@@ -952,6 +964,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
             throw runnerClosingError();
           }
 
+          const ownershipStartedAt = Date.now();
           const state: RunningBackgroundJobState = {
             kind: "running",
             token: Symbol(parsed.jobId),
@@ -967,7 +980,13 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
             ...(retainedState?.snapshot ?? snapshot),
           });
           if (snapshot.status === "running") {
-            scheduleRunningJobObservationExpiry(parsed.jobId, state, snapshot.expiresAt);
+            scheduleRunningJobObservationExpiry(
+              parsed.jobId,
+              state,
+              ownershipStartedAt,
+              parsed.maxRuntimeMs,
+              snapshot.expiresAt,
+            );
             watchBackgroundJob(parsed.jobId, state);
           }
           return;
