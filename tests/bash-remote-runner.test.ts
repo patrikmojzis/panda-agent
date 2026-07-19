@@ -1816,6 +1816,60 @@ describe("remote bash runner", () => {
     },
   );
 
+  it.each([
+    ["95-second forward step", 1_095_000],
+    ["60-second rollback", 940_000],
+    ["overflow-sized rollback", -2_999_000_000],
+  ] as const)("keeps observation expiry relative across a %s", async (_label, steppedNow) => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    let releaseWatcher!: () => void;
+    const watcherGate = new Promise<void>((resolve) => { releaseWatcher = resolve; });
+    const runner = await createRunner("panda", {
+      commandExecutor: {
+        execute: async () => { throw new Error("unexpected exec"); },
+        startJob: async (input) => {
+          const running = fakeJobSnapshot(input, "running");
+          delete (running as Partial<BashJobSnapshot>).expiresAt;
+          const cancelled: BashJobSnapshot = {
+            ...running,
+            status: "cancelled",
+            finishedAt: 1_000_001,
+            durationMs: 1,
+            exitCode: null,
+            signal: null,
+          };
+          return {
+            snapshot: () => {
+              dateNowSpy.mockReturnValueOnce(1_000_000).mockReturnValue(steppedNow);
+              return running;
+            },
+            wait: async () => {
+              await watcherGate;
+              return cancelled;
+            },
+            cancel: async () => {
+              releaseWatcher();
+              return cancelled;
+            },
+          };
+        },
+      },
+    });
+
+    expect((await requestDirectRunnerJob(
+      runner,
+      "start",
+      directJobStartRequest("job-observation-clock-step", agentHome, "sleep 1"),
+    )).status).toBe(200);
+    const timerCallIndex = setTimeoutSpy.mock.calls.findIndex((call) => call[1] === 91_000);
+    expect(timerCallIndex).toBeGreaterThanOrEqual(0);
+    const observationTimer = setTimeoutSpy.mock.results[timerCallIndex]?.value as NodeJS.Timeout;
+    expect(observationTimer.hasRef()).toBe(false);
+    await runner.close();
+  });
+
   it("uses a bounded watcher poll and awaits the in-flight poll during close", async () => {
     const agentHome = await createWorkspace("runtime-agent-home-");
     let watcherWaitTimeout: number | undefined;

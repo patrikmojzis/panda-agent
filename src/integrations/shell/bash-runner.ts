@@ -701,16 +701,13 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
     executorExpiresAt: unknown,
   ): void => {
     const localHardExpiresAt = ownershipStartedAt + maxRuntimeMs;
-    const observationExpiresAt = typeof executorExpiresAt === "number"
+    const observationLifetimeMs = typeof executorExpiresAt === "number"
       && Number.isFinite(executorExpiresAt)
       && executorExpiresAt >= ownershipStartedAt
       && executorExpiresAt <= localHardExpiresAt
-      ? executorExpiresAt
-      : localHardExpiresAt;
-    const delayMs = Math.max(
-      0,
-      observationExpiresAt + BACKGROUND_JOB_WATCH_EXPIRY_GRACE_MS - Date.now(),
-    );
+      ? executorExpiresAt - ownershipStartedAt
+      : maxRuntimeMs;
+    const delayMs = observationLifetimeMs + BACKGROUND_JOB_WATCH_EXPIRY_GRACE_MS;
     const timer = setTimeout(() => {
       // The executor owns max-runtime process cleanup. After its deadline plus grace,
       // fail closed by releasing an unobservable credential-bearing runner state.
