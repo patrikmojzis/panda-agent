@@ -13,10 +13,7 @@ import type {CredentialResolver} from "../../domain/credentials/resolver.js";
 import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {ensureShellSession, readBaseCwd} from "../../app/runtime/panda-path-context.js";
-import {
-  assertExecutionTargetToolAllowed,
-  resolveExecutionTargetContext,
-} from "./execution-target-context.js";
+import {assertExecutionTargetToolAllowed, resolveExecutionTargetContext,} from "./execution-target-context.js";
 import {
   type BashExecutor,
   createDefaultBashExecutor,
@@ -26,10 +23,7 @@ import {
 import {startBashBackgroundJob} from "../../integrations/shell/bash-background-runner.js";
 import {sanitizeBashOutputPreview} from "../../integrations/shell/bash-output.js";
 import {readThreadId} from "../../integrations/shell/runtime-context.js";
-import {
-  redactSecretsInJsonObject,
-  redactSecretsInString,
-} from "../../integrations/shell/redaction.js";
+import {redactSecretsInJsonObject, redactSecretsInString,} from "../../integrations/shell/redaction.js";
 import {applyPersistedEnv, collectTrackedEnvKeys, resolveCommandCwd,} from "../../integrations/shell/bash-session.js";
 import type {PersistedEnvEntry} from "../../integrations/shell/bash-protocol.js";
 import type {ShellSession} from "../../integrations/shell/types.js";
@@ -42,8 +36,8 @@ import type {
 import {buildBackgroundJobPayload, formatBackgroundJobResult} from "./background-job-tools.js";
 import {
   attachBashCommandExecutionSummary,
-  buildBashCommandExecutionSummary,
   type BashCommandExecutionReader,
+  buildBashCommandExecutionSummary,
 } from "./bash-command-summary.js";
 
 const DEFAULT_FOREGROUND_TIMEOUT_MS = 15_000;
@@ -61,20 +55,30 @@ const bashCommonSchemaShape = {
   target: z.string().trim().min(1).optional().describe("Optional registered bash target alias."),
 };
 
-const foregroundBashSchema = z.object({
+const bashSchema = z.object({
   ...bashCommonSchemaShape,
-  background: z.literal(false).optional().describe("Foreground mode for finite commands. Omit this field or set it to false."),
+  background: z.boolean().optional()
+    .describe("Set true only for servers, watchers, tailers, and other non-terminating commands."),
   timeoutMs: z.number().int().min(100).max(300_000).optional()
     .describe("Maximum time to wait for a finite foreground command. Timeout terminates the process group."),
-  maxRuntimeMs: z.never({error: "maxRuntimeMs requires background=true."}).optional(),
-});
-
-const backgroundBashSchema = z.object({
-  ...bashCommonSchemaShape,
-  background: z.literal(true).describe("Use for servers, watchers, tailers, and other processes expected not to exit."),
   maxRuntimeMs: z.number().int().min(100).max(6 * 60 * 60 * 1_000).optional()
     .describe("Maximum lifetime of a background process before Panda terminates its process group."),
-  timeoutMs: z.never({error: "timeoutMs is foreground-only. For background jobs use maxRuntimeMs."}).optional(),
+}).superRefine((value, context) => {
+  if (value.background === true && value.timeoutMs !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["timeoutMs"],
+      message: "timeoutMs is foreground-only. For background jobs use maxRuntimeMs.",
+    });
+  }
+
+  if (value.background !== true && value.maxRuntimeMs !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["maxRuntimeMs"],
+      message: "maxRuntimeMs requires background=true.",
+    });
+  }
 });
 
 
@@ -333,7 +337,7 @@ export interface BashToolOptions {
 }
 
 export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof BashTool.schema, TContext> {
-  static schema = z.discriminatedUnion("background", [backgroundBashSchema, foregroundBashSchema]);
+  static schema = bashSchema;
 
   name = "bash";
   description =

@@ -5,16 +5,16 @@ import path from "node:path";
 import {afterAll, beforeAll, describe, expect, it} from "vitest";
 
 import {
-    Agent,
-    BackgroundJobCancelTool,
-    BackgroundJobStatusTool,
-    BackgroundJobWaitTool,
-    BashTool,
-    type DefaultAgentSessionContext,
-    type JsonObject,
-    RunContext,
-    ToolError,
-    type ToolResultMessage,
+  Agent,
+  BackgroundJobCancelTool,
+  BackgroundJobStatusTool,
+  BackgroundJobWaitTool,
+  BashTool,
+  type DefaultAgentSessionContext,
+  type JsonObject,
+  RunContext,
+  ToolError,
+  type ToolResultMessage,
 } from "../src/index.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import type {ThreadToolJobRecord} from "../src/domain/threads/runtime/types.js";
@@ -222,6 +222,18 @@ async function createBackgroundHarness(
 }
 
 describe("BashTool", () => {
+  it("publishes one object schema so coding providers can generate arguments", () => {
+    expect(new BashTool().piTool.parameters).toMatchObject({
+      type: "object",
+      required: ["command"],
+      properties: {
+        command: {type: "string"},
+        background: {type: "boolean"},
+      },
+    });
+    expect(new BashTool().piTool.parameters).not.toHaveProperty("oneOf");
+  });
+
   it("hard-cuts foreground and background lifetime fields before launch", async () => {
     const tool = new BashTool();
     const context = createRunContext({cwd: "/tmp"});
