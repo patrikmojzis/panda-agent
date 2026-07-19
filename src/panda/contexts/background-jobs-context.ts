@@ -1,7 +1,6 @@
 import {LlmContext} from "../../kernel/agent/llm-context.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import {renderBackgroundJobsContext} from "../../prompts/contexts/background-jobs.js";
-import {resolveNow} from "./shared.js";
 
 const COMMAND_PREVIEW_CHARS = 120;
 
@@ -14,33 +13,9 @@ function truncatePreview(value: string, maxChars: number): string {
   return `${compact.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
 }
 
-function formatElapsedDuration(startedAt: number, now: number): string {
-  const elapsedMs = Math.max(0, now - startedAt);
-  if (elapsedMs < 1_000) {
-    return `${elapsedMs}ms`;
-  }
-
-  const elapsedSeconds = elapsedMs / 1_000;
-  if (elapsedSeconds < 10) {
-    return `${elapsedSeconds.toFixed(1)}s`;
-  }
-
-  if (elapsedSeconds < 60) {
-    return `${Math.round(elapsedSeconds)}s`;
-  }
-
-  const elapsedMinutes = elapsedSeconds / 60;
-  if (elapsedMinutes < 10) {
-    return `${elapsedMinutes.toFixed(1)}m`;
-  }
-
-  return `${Math.round(elapsedMinutes)}m`;
-}
-
 export interface BackgroundJobsContextOptions {
   store: Pick<ThreadRuntimeStore, "listToolJobs">;
   threadId: string;
-  now?: Date | (() => Date);
 }
 
 export class BackgroundJobsContext extends LlmContext {
@@ -48,17 +23,14 @@ export class BackgroundJobsContext extends LlmContext {
 
   private readonly store: Pick<ThreadRuntimeStore, "listToolJobs">;
   private readonly threadId: string;
-  private readonly now?: Date | (() => Date);
 
   constructor(options: BackgroundJobsContextOptions) {
     super();
     this.store = options.store;
     this.threadId = options.threadId;
-    this.now = options.now;
   }
 
   async getContent(): Promise<string> {
-    const now = resolveNow(this.now).getTime();
     const runningJobs = (await this.store.listToolJobs(this.threadId))
       .filter((job) => job.status === "running");
 
@@ -66,7 +38,6 @@ export class BackgroundJobsContext extends LlmContext {
       jobId: job.id,
       kind: job.kind,
       startedAt: new Date(job.startedAt).toISOString(),
-      elapsed: formatElapsedDuration(job.startedAt, now),
       summary: truncatePreview(job.summary, COMMAND_PREVIEW_CHARS),
     })));
   }

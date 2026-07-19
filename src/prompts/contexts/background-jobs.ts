@@ -2,7 +2,6 @@ export interface RenderBackgroundJobsContextJob {
   jobId: string;
   kind: string;
   startedAt: string;
-  elapsed: string;
   summary: string;
 }
 
@@ -14,7 +13,7 @@ export function renderBackgroundJobsContext(jobs: readonly RenderBackgroundJobsC
   return [
     "Background jobs currently running in this thread:",
     ...jobs.map((job) => {
-      return `- ${job.jobId} | ${job.kind} | started ${job.startedAt} | elapsed ${job.elapsed} | ${job.summary}`;
+      return `- ${job.jobId} | ${job.kind} | started ${job.startedAt} | ${job.summary}`;
     }),
   ].join("\n");
 }
