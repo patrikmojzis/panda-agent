@@ -173,6 +173,34 @@ import {
 import type {CredentialResolver} from "../../domain/credentials/resolver.js";
 import type {McpConfigReader} from "../../domain/mcp/store.js";
 import type {McpRunner} from "../../domain/mcp/types.js";
+import {
+  createMcpOauthDiscoverCommand,
+  createMcpOauthDisconnectCommand,
+  createMcpOauthStartCommand,
+  createMcpOauthStatusCommand,
+  createMcpServerAddCommand,
+  createMcpServerDeleteCommand,
+  createMcpServerDisableCommand,
+  createMcpServerEnableCommand,
+  createMcpServerListCommand,
+  createMcpServerShowCommand,
+  createMcpServerTestCommand,
+  createMcpServerUpdateCommand,
+  MCP_MANAGEMENT_CAPABILITY,
+  mcpOauthDiscoverCommandDescriptor,
+  mcpOauthDisconnectCommandDescriptor,
+  mcpOauthStartCommandDescriptor,
+  mcpOauthStatusCommandDescriptor,
+  mcpServerAddCommandDescriptor,
+  mcpServerDeleteCommandDescriptor,
+  mcpServerDisableCommandDescriptor,
+  mcpServerEnableCommandDescriptor,
+  mcpServerListCommandDescriptor,
+  mcpServerShowCommandDescriptor,
+  mcpServerTestCommandDescriptor,
+  mcpServerUpdateCommandDescriptor,
+} from "../../domain/mcp/management-commands.js";
+import type {McpManagementService} from "../../domain/mcp/management-service.js";
 import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
 import type {WatchMutationService} from "../../domain/watches/mutation-service.js";
 import type {WatchStore} from "../../domain/watches/store.js";
@@ -375,6 +403,7 @@ export interface AgentCommandModuleDependencies {
   credentialResolver?: Pick<CredentialResolver, "resolveCredential">;
   mcpConfigs?: McpConfigReader;
   mcpRunner?: McpRunner;
+  mcpManagement?: McpManagementService;
   postgresReadonly?: PostgresReadonlyQueryCommandOptions;
   executionEnvironments?: EnvironmentReadCommandServices["environments"];
   environmentLifecycle?: EnvironmentCommandLifecycle;
@@ -447,6 +476,26 @@ function requireMcpOptions(dependencies: AgentCommandModuleDependencies) {
     runner: dependencies.mcpRunner,
     credentials: dependencies.credentialResolver,
   };
+}
+
+function requireMcpManagement(dependencies: AgentCommandModuleDependencies): McpManagementService {
+  if (!dependencies.mcpManagement) throw new Error("Agent command module requires MCP management service.");
+  return dependencies.mcpManagement;
+}
+
+function mcpManagementCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  createCommand: (service: McpManagementService) => RegisteredCommand,
+  jsonInput = "@payload.json",
+): AgentCommandModule {
+  return agentCommandModule(
+    descriptor,
+    helpArgv,
+    jsonInput,
+    agentCommandPolicy(["operate"], {capability: MCP_MANAGEMENT_CAPABILITY}),
+    (dependencies) => createCommand(requireMcpManagement(dependencies)),
+  );
 }
 
 function requireBackgroundJobService(dependencies: AgentCommandModuleDependencies): BackgroundToolJobService {
@@ -674,6 +723,18 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
     agentCommandPolicy(["mcp"], {capability: MCP_COMMAND_CAPABILITY}),
     (dependencies) => createMcpCallCommand(requireMcpOptions(dependencies)),
   ),
+  mcpManagementCommandModule(mcpServerListCommandDescriptor, ["mcp", "server", "list"], createMcpServerListCommand, "{}"),
+  mcpManagementCommandModule(mcpServerShowCommandDescriptor, ["mcp", "server", "show"], createMcpServerShowCommand),
+  mcpManagementCommandModule(mcpServerAddCommandDescriptor, ["mcp", "server", "add"], createMcpServerAddCommand),
+  mcpManagementCommandModule(mcpServerUpdateCommandDescriptor, ["mcp", "server", "update"], createMcpServerUpdateCommand),
+  mcpManagementCommandModule(mcpServerEnableCommandDescriptor, ["mcp", "server", "enable"], createMcpServerEnableCommand),
+  mcpManagementCommandModule(mcpServerDisableCommandDescriptor, ["mcp", "server", "disable"], createMcpServerDisableCommand),
+  mcpManagementCommandModule(mcpServerDeleteCommandDescriptor, ["mcp", "server", "delete"], createMcpServerDeleteCommand),
+  mcpManagementCommandModule(mcpServerTestCommandDescriptor, ["mcp", "server", "test"], createMcpServerTestCommand),
+  mcpManagementCommandModule(mcpOauthDiscoverCommandDescriptor, ["mcp", "oauth", "discover"], createMcpOauthDiscoverCommand),
+  mcpManagementCommandModule(mcpOauthStartCommandDescriptor, ["mcp", "oauth", "start"], createMcpOauthStartCommand),
+  mcpManagementCommandModule(mcpOauthStatusCommandDescriptor, ["mcp", "oauth", "status"], createMcpOauthStatusCommand),
+  mcpManagementCommandModule(mcpOauthDisconnectCommandDescriptor, ["mcp", "oauth", "disconnect"], createMcpOauthDisconnectCommand),
   agentCommandModule(
     watchListCommandDescriptor,
     ["watch", "list"],

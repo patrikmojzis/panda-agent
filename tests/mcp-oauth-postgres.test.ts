@@ -89,11 +89,28 @@ describe("MCP OAuth persistence", () => {
   it("consumes PKCE state once and rejects expiry and replay", async () => {
     const {service} = await harness();
     await service.saveConnection({agentKey: "panda", serverName: "reports", expectedVersion: null, state: {version: MCP_OAUTH_STATE_VERSION}});
-    await service.createAttempt({rawState: "state-one", codeVerifier: "verifier-one", agentKey: "panda", serverName: "reports", initiatedIdentityId: "identity-1", initiatedSessionId: "session-1", expiresAt: 2_000});
+    await service.createAttempt({rawState: "state-one", codeVerifier: "verifier-one", agentKey: "panda", serverName: "reports", initiator: {kind: "control", identityId: "identity-1", sessionId: "session-1"}, expiresAt: 2_000});
     await expect(service.consumeAttempt("state-one", 1_000)).resolves.toMatchObject({codeVerifier: "verifier-one"});
     await expect(service.consumeAttempt("state-one", 1_000)).resolves.toBeNull();
-    await service.createAttempt({rawState: "state-two", codeVerifier: "verifier-two", agentKey: "panda", serverName: "reports", initiatedIdentityId: "identity-1", initiatedSessionId: "session-1", expiresAt: 2_000});
+    await service.createAttempt({rawState: "state-two", codeVerifier: "verifier-two", agentKey: "panda", serverName: "reports", initiator: {kind: "control", identityId: "identity-1", sessionId: "session-1"}, expiresAt: 2_000});
     await expect(service.consumeAttempt("state-two", 2_001)).resolves.toBeNull();
+  });
+
+  it("persists an agent OAuth initiator without requiring a Control identity", async () => {
+    const {service} = await harness();
+    await service.saveConnection({agentKey: "panda", serverName: "reports", expectedVersion: null, state: {version: MCP_OAUTH_STATE_VERSION}});
+    await service.createAttempt({
+      rawState: "agent-state",
+      codeVerifier: "agent-verifier",
+      agentKey: "panda",
+      serverName: "reports",
+      initiator: {kind: "agent", agentKey: "panda", sessionId: "session-agent", threadId: "thread-agent"},
+      expiresAt: 2_000,
+    });
+    await expect(service.consumeAttempt("agent-state", 1_000)).resolves.toMatchObject({
+      codeVerifier: "agent-verifier",
+      initiator: {kind: "agent", agentKey: "panda", sessionId: "session-agent", threadId: "thread-agent"},
+    });
   });
 
   it("cascades OAuth state when the agent is deleted", async () => {

@@ -147,6 +147,21 @@ import {
   commandRoutesFromModules,
 } from "../src/domain/commands/modules.js";
 import {buildCommandRouteTree} from "../src/domain/commands/route-tree.js";
+import type {CommandDescriptor, RegisteredCommand} from "../src/domain/commands/types.js";
+import {
+  mcpOauthDiscoverCommandDescriptor,
+  mcpOauthDisconnectCommandDescriptor,
+  mcpOauthStartCommandDescriptor,
+  mcpOauthStatusCommandDescriptor,
+  mcpServerAddCommandDescriptor,
+  mcpServerDeleteCommandDescriptor,
+  mcpServerDisableCommandDescriptor,
+  mcpServerEnableCommandDescriptor,
+  mcpServerListCommandDescriptor,
+  mcpServerShowCommandDescriptor,
+  mcpServerTestCommandDescriptor,
+  mcpServerUpdateCommandDescriptor,
+} from "../src/domain/mcp/management-commands.js";
 import {DEFAULT_AGENT_COMMAND_MODULES} from "../src/panda/commands/agent-command-modules.js";
 import {DEFAULT_AGENT_COMMAND_DESCRIPTORS} from "../src/panda/commands/agent-command-descriptors.js";
 import {DEFAULT_AGENT_COMMAND_SHIM_ROUTES} from "../src/panda/commands/agent-command-shim-routes.js";
@@ -161,6 +176,29 @@ import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 const execFileAsync = promisify(execFile);
 const shimPath = path.resolve("scripts/agent-command-shim/panda");
 const defaultTestCommandScopeAllowedCommands = DEFAULT_AGENT_COMMAND_DESCRIPTORS.map((descriptor) => descriptor.name);
+const mcpManagementDescriptors = [
+  mcpServerListCommandDescriptor,
+  mcpServerShowCommandDescriptor,
+  mcpServerAddCommandDescriptor,
+  mcpServerUpdateCommandDescriptor,
+  mcpServerEnableCommandDescriptor,
+  mcpServerDisableCommandDescriptor,
+  mcpServerDeleteCommandDescriptor,
+  mcpServerTestCommandDescriptor,
+  mcpOauthDiscoverCommandDescriptor,
+  mcpOauthStartCommandDescriptor,
+  mcpOauthStatusCommandDescriptor,
+  mcpOauthDisconnectCommandDescriptor,
+];
+
+function echoInputCommand(descriptor: CommandDescriptor): RegisteredCommand {
+  return {
+    descriptor,
+    async execute(request) {
+      return {ok: true, command: descriptor.name, output: request.input};
+    },
+  };
+}
 
 const COMMAND_TRANSPORT_ENV_KEYS = [
   "PANDA_COMMAND_ACCESS_FILE",
@@ -1833,6 +1871,7 @@ describe("agent command shim", () => {
     const server = await startCommandHttpServer({
       executor: new RuntimeCommandDispatcher({
         commands: [
+          ...mcpManagementDescriptors.map(echoInputCommand),
           createTimeNowCommand({
             now: () => new Date("2026-06-24T12:34:56.000Z"),
           }),
@@ -2321,6 +2360,18 @@ describe("agent command shim", () => {
     )).toEqual({
       "mcp.tools": "mcp.*",
       "mcp.call": "mcp.*",
+      "mcp.server.list": "mcp.manage.*",
+      "mcp.server.show": "mcp.manage.*",
+      "mcp.server.add": "mcp.manage.*",
+      "mcp.server.update": "mcp.manage.*",
+      "mcp.server.enable": "mcp.manage.*",
+      "mcp.server.disable": "mcp.manage.*",
+      "mcp.server.delete": "mcp.manage.*",
+      "mcp.server.test": "mcp.manage.*",
+      "mcp.oauth.discover": "mcp.manage.*",
+      "mcp.oauth.start": "mcp.manage.*",
+      "mcp.oauth.status": "mcp.manage.*",
+      "mcp.oauth.disconnect": "mcp.manage.*",
       "subagent.list": "subagent.spawn",
       "subagent.show": "subagent.spawn",
     });
@@ -2331,6 +2382,41 @@ describe("agent command shim", () => {
           .filter((module) => module.policy.capability === module.descriptor.name)
           .map((module) => module.descriptor.name),
       );
+  });
+
+  it("executes agent MCP management flags through the public shim routes", async () => {
+    const server = await startWatchServer();
+    const env = shimEnv(server);
+    const config = {
+      transport: "stdio",
+      enabled: false,
+      command: "node",
+      args: ["fixture.mjs"],
+      env: {TOKEN: {credentialEnvKey: "TOKEN"}},
+      timeoutMs: 30_000,
+    };
+
+    const added = await execFileAsync(shimPath, [
+      "mcp", "server", "add", "fixture",
+      "--config", JSON.stringify(config),
+      "--expected-version", "0",
+    ], {env});
+    expect(JSON.parse(added.stdout)).toEqual({server: "fixture", config, expectedVersion: 0});
+
+    const tested = await execFileAsync(shimPath, ["mcp", "server", "test", "fixture", "--timeout-ms", "5000"], {env});
+    expect(JSON.parse(tested.stdout)).toEqual({server: "fixture", timeoutMs: 5_000});
+
+    const started = await execFileAsync(shimPath, [
+      "mcp", "oauth", "start", "fixture",
+      "--manual-client", '{"clientId":"client-id","tokenEndpointAuthMethod":"none"}',
+    ], {env});
+    expect(JSON.parse(started.stdout)).toEqual({
+      server: "fixture",
+      manualClient: {clientId: "client-id", tokenEndpointAuthMethod: "none"},
+    });
+
+    const deleted = await execFileAsync(shimPath, ["mcp", "server", "delete", "fixture", "--expected-version", "4"], {env});
+    expect(JSON.parse(deleted.stdout)).toEqual({server: "fixture", expectedVersion: 4});
   });
 
   it("uses canonical command names instead of removed namespace wildcards in test leases", () => {

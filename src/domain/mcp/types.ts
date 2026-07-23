@@ -73,6 +73,7 @@ export interface McpAgentConfig {
 export interface McpAgentConfigRecord {
   agentKey: string;
   config: McpAgentConfig;
+  version: number;
   createdAt?: number;
   updatedAt?: number;
 }

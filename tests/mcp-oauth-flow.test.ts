@@ -78,8 +78,7 @@ describe("MCP OAuth lifecycle", () => {
       authConfig,
       redirectUrl,
       rawState,
-      initiatedIdentityId: "identity-test",
-      initiatedSessionId: "session-test",
+      initiator: {kind: "control", identityId: "identity-test", sessionId: "session-test"},
     });
     const authorization = await fetch(started.authorizationUrl, {redirect: "manual"});
     const callback = new URL(authorization.headers.get("location")!);

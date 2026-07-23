@@ -5,11 +5,9 @@ import {
 } from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 import type {CredentialResolver} from "../credentials/resolver.js";
-import {CommandDenialError, commandScopeDenied} from "../commands/errors.js";
+import {CommandDenialError} from "../commands/errors.js";
 import type {CommandDescriptor, CommandRequest, CommandSuccess, RegisteredCommand} from "../commands/types.js";
-import type {ExecutionCredentialPolicy} from "../execution-environments/types.js";
-import {mcpOAuthGrantRef} from "./oauth-types.js";
-import {referencedMcpCredentialEnvKeys} from "./config.js";
+import {McpInvocationError, resolveMcpInvocation} from "./invocation.js";
 import type {McpConfigReader} from "./store.js";
 import {
   MCP_MAX_TIMEOUT_MS,
@@ -18,11 +16,9 @@ import {
   type McpCallOutput,
   type McpCompatibilityWarning,
   type McpOperationDiagnostics,
-  type McpResolvedInvocation,
   type McpRunner,
   type McpRunnerResult,
   type McpToolsOutput,
-  type McpValueSource,
 } from "./types.js";
 
 export const MCP_TOOLS_COMMAND_NAME = "mcp.tools";
@@ -171,6 +167,13 @@ function runnerErrorDetails(error: unknown): {
 
 function normalizeMcpError(error: unknown): McpCommandError {
   if (error instanceof McpCommandError) return error;
+  if (error instanceof McpInvocationError) {
+    return commandError(
+      error.message,
+      Number(error.pandaCommandErrorDetails.exitCode),
+      String(error.pandaCommandErrorDetails.kind),
+    );
+  }
   const runner = runnerErrorDetails(error);
   if (runner) {
     return commandError(
@@ -186,117 +189,20 @@ function normalizeMcpError(error: unknown): McpCommandError {
   return commandError("MCP command failed before external execution.", 2, "config_input");
 }
 
-function assertCredentialPolicy(
-  policy: ExecutionCredentialPolicy | undefined,
-  keys: readonly string[],
-  credentialRefs: readonly string[] = [],
-): void {
-  if (keys.length === 0 && credentialRefs.length === 0) return;
-  if (policy?.mode === "all_agent") return;
-  const allowed = policy?.mode === "allowlist" ? new Set(policy.envKeys) : new Set<string>();
-  const denied = keys.find((key) => !allowed.has(key));
-  if (denied) {
-    throw commandScopeDenied(
-      "An MCP credential required by this server is not allowed in the current execution scope.",
-      "command_scope_denied",
-      "Use an MCP server whose credential requirements are allowed by the current execution scope.",
-    );
-  }
-  const allowedRefs = policy?.mode === "allowlist" ? new Set(policy.credentialRefs ?? []) : new Set<string>();
-  const deniedRef = credentialRefs.find((ref) => !allowedRefs.has(ref));
-  if (deniedRef) {
-    throw commandScopeDenied(
-      "An MCP OAuth grant required by this server is not allowed in the current execution scope.",
-      "command_scope_denied",
-      "Use an MCP server whose OAuth grant is allowed by the current execution scope.",
-    );
-  }
-}
-
-async function resolveCredentialValues(
-  credentials: McpCredentialResolver,
-  agentKey: string,
-  keys: readonly string[],
-): Promise<Map<string, string>> {
-  const values = new Map<string, string>();
-  for (const key of keys) {
-    let resolved;
-    try {
-      resolved = await credentials.resolveCredential(key, {agentKey});
-    } catch {
-      throw commandError(`MCP credential ${key} could not be decrypted.`, 3, "authentication");
-    }
-    if (!resolved) throw commandError(`MCP credential ${key} is not configured.`, 3, "authentication");
-    values.set(key, resolved.value);
-  }
-  return values;
-}
-
-function resolveValue(source: McpValueSource, credentials: ReadonlyMap<string, string>): string {
-  if ("value" in source) return source.value;
-  const value = credentials.get(source.credentialEnvKey);
-  if (value === undefined) throw commandError("MCP credential resolution failed closed.", 3, "authentication");
-  return value;
-}
-
 async function resolveInvocation(
   options: McpCommandOptions,
   request: CommandRequest,
   serverName: string,
   timeoutMs?: number,
-): Promise<McpResolvedInvocation> {
-  let record;
-  try {
-    record = await options.configs.getAgentConfig(request.scope.agentKey);
-  } catch {
-    throw commandError("Stored MCP config is invalid.", 2, "config_input");
-  }
-  const config = record.config.servers[serverName];
-  if (!config) throw commandError(`MCP server ${serverName} is not configured.`, 2, "config_input");
-  if (!config.enabled) throw commandError(`MCP server ${serverName} is disabled.`, 2, "config_input");
-  const keys = referencedMcpCredentialEnvKeys(config);
-  const oauthRefs = config.transport === "streamable-http" && config.auth?.type === "oauth"
-    ? [mcpOAuthGrantRef(serverName)]
-    : [];
-  assertCredentialPolicy(request.scope.credentialPolicy, keys, oauthRefs);
-  const credentials = await resolveCredentialValues(options.credentials, request.scope.agentKey, keys);
-  const resolvedTimeout = timeoutMs ?? config.timeoutMs;
-  if (config.transport === "stdio") {
-    return {
-      config: {
-        transport: "stdio",
-        enabled: config.enabled,
-        command: config.command,
-        args: config.args,
-        ...(config.cwd ? {cwd: config.cwd} : {}),
-        ...(config.env ? {env: Object.fromEntries(
-          Object.entries(config.env).map(([key, source]) => [key, resolveValue(source, credentials)]),
-        )} : {}),
-        timeoutMs: resolvedTimeout,
-      },
-      knownSecrets: [...credentials.values()],
-    };
-  }
-  const headers = Object.fromEntries((config.headers ?? []).map((header) => [
-    header.name,
-    header.credentialEnvKey ? credentials.get(header.credentialEnvKey)! : header.value!,
-  ]));
-  if (config.auth?.type === "bearer") headers.Authorization = `Bearer ${credentials.get(config.auth.credentialEnvKey)!}`;
-  return {
-    config: {
-      transport: config.transport,
-      enabled: config.enabled,
-      url: config.url,
-      timeoutMs: resolvedTimeout,
-      ...(Object.keys(headers).length > 0 ? {headers} : {}),
-      ...(config.auth?.type === "oauth" ? {oauth: {
-        agentKey: request.scope.agentKey,
-        serverName,
-        auth: config.auth,
-      }} : {}),
-    },
-    knownSecrets: [...credentials.values()],
-  };
+): ReturnType<typeof resolveMcpInvocation> {
+  return resolveMcpInvocation({
+    configs: options.configs,
+    credentials: options.credentials,
+    agentKey: request.scope.agentKey,
+    serverName,
+    credentialPolicy: request.scope.credentialPolicy,
+    ...(timeoutMs === undefined ? {} : {timeoutMs}),
+  });
 }
 
 export const mcpToolsCommandDescriptor: CommandDescriptor = {

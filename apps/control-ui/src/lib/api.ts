@@ -84,6 +84,7 @@ export type McpServerStatus =
   | "missing_credentials"
   | "credential_store_unavailable"
   | "credential_unreadable"
+  | "credential_policy_denied"
   | "authorization_required"
   | "authorizing"
   | "reauthorization_required"
@@ -783,6 +784,7 @@ export async function apiWrite<T>(
     method?: "POST" | "PUT" | "PATCH" | "DELETE"
     body?: unknown
     csrfToken?: string | null
+    headers?: Record<string, string>
   } = {}
 ): Promise<T> {
   return parseResponse<T>(
@@ -792,6 +794,7 @@ export async function apiWrite<T>(
       headers: {
         "content-type": "application/json",
         ...(options.csrfToken ? { "x-control-csrf": options.csrfToken } : {}),
+        ...(options.headers ?? {}),
       },
       body:
         options.body === undefined ? undefined : JSON.stringify(options.body),
@@ -993,27 +996,29 @@ export const controlApi = {
       { csrfToken }
     ),
   mcpServers: (agentKey: string) =>
-    apiGet<{ servers: McpServerRow[]; count: number }>(
+    apiGet<{ servers: McpServerRow[]; count: number; version: number }>(
       `/agents/${encodeURIComponent(agentKey)}/mcp-servers`
     ),
   putMcpServer: (
     agentKey: string,
     serverName: string,
     body: McpServerPayload,
-    csrfToken?: string | null
+    csrfToken?: string | null,
+    expectedVersion?: number
   ) =>
-    apiWrite<{ server: McpServerRow }>(
+    apiWrite<{ server: McpServerRow; version: number }>(
       `/agents/${encodeURIComponent(agentKey)}/mcp-servers/${encodeURIComponent(serverName)}`,
-      { method: "PUT", body, csrfToken }
+      { method: "PUT", body, csrfToken, headers: expectedVersion === undefined ? {} : {"if-match": String(expectedVersion)} }
     ),
   deleteMcpServer: (
     agentKey: string,
     serverName: string,
-    csrfToken?: string | null
+    csrfToken?: string | null,
+    expectedVersion?: number
   ) =>
-    apiWrite<{ deleted: boolean }>(
+    apiWrite<{ deleted: boolean; version: number }>(
       `/agents/${encodeURIComponent(agentKey)}/mcp-servers/${encodeURIComponent(serverName)}`,
-      { method: "DELETE", csrfToken }
+      { method: "DELETE", csrfToken, headers: expectedVersion === undefined ? {} : {"if-match": String(expectedVersion)} }
     ),
   discoverMcpOAuth: (
     agentKey: string,

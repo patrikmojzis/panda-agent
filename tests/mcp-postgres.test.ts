@@ -4,6 +4,7 @@ import {DataType, newDb} from "pg-mem";
 import {PostgresAgentStore} from "../src/domain/agents/postgres.js";
 import {normalizeMcpConfig} from "../src/domain/mcp/config.js";
 import {PostgresMcpConfigStore} from "../src/domain/mcp/postgres.js";
+import {McpRegistryVersionConflictError} from "../src/domain/mcp/store.js";
 
 const stdio = (command = "node") => ({
   transport: "stdio",
@@ -45,6 +46,7 @@ describe("MCP config persistence", () => {
     await expect(configs.getAgentConfig("panda")).resolves.toEqual({
       agentKey: "panda",
       config: {servers: {}},
+      version: 0,
     });
 
     await configs.putServer("panda", "fixture", stdio());
@@ -55,6 +57,7 @@ describe("MCP config persistence", () => {
     await expect(configs.getAgentConfig("luna")).resolves.toEqual({
       agentKey: "luna",
       config: {servers: {}},
+      version: 0,
     });
   });
 
@@ -96,6 +99,27 @@ describe("MCP config persistence", () => {
     await tracedStore.putServer("panda", "fixture", stdio());
     expect(queries.some((sql) => /FROM "runtime"\."agents".*FOR UPDATE/.test(sql))).toBe(true);
     expect(queries.some((sql) => /FROM "runtime"\."agent_mcp_configs".*FOR UPDATE/.test(sql))).toBe(true);
+  });
+
+  it("increments versions only for real changes and rejects stale writes", async () => {
+    const {configs} = await harness();
+    await expect(configs.putServer("panda", "fixture", stdio(), {mode: "create", expectedVersion: 0})).resolves.toMatchObject({
+      changed: true,
+      record: {version: 1},
+    });
+    await expect(configs.setServerEnabled("panda", "fixture", true, {expectedVersion: 1})).resolves.toMatchObject({
+      changed: false,
+      record: {version: 1},
+    });
+    await expect(configs.putServer("panda", "fixture", stdio("bun"), {mode: "update", expectedVersion: 0})).rejects.toEqual(
+      expect.objectContaining<McpRegistryVersionConflictError>({currentVersion: 1}),
+    );
+    await expect(configs.putServer("panda", "fixture", stdio("bun"), {mode: "update", expectedVersion: 1})).resolves.toMatchObject({
+      previous: stdio(),
+      server: stdio("bun"),
+      record: {version: 2},
+    });
+    await expect(configs.deleteServer("panda", "missing", {expectedVersion: 2})).resolves.toMatchObject({deleted: false, record: {version: 2}});
   });
 });
 

@@ -80,6 +80,7 @@ function dependencies(overrides: {configs?: InMemoryMcpConfigStore; runner?: Mcp
 describe("generic MCP commands", () => {
   it("keeps MCP catalog visibility behind the mcp group", () => {
     expect(DEFAULT_AGENT_COMMAND_CATALOG.namesForToolGroups(["mcp"])).toEqual(["mcp.*"]);
+    expect(DEFAULT_AGENT_COMMAND_CATALOG.namesForToolGroups(["operate"])).toContain("mcp.manage.*");
     expect(resolveCommandLeaseAuthority({
       commandCatalog: DEFAULT_AGENT_COMMAND_CATALOG,
       toolPolicy: {},
@@ -88,6 +89,14 @@ describe("generic MCP commands", () => {
       commandCatalog: DEFAULT_AGENT_COMMAND_CATALOG,
       toolPolicy: {allowedTools: ["mcp.*"]},
     }).filter((name) => name.startsWith("mcp."))).toEqual([MCP_TOOLS_COMMAND_NAME, MCP_CALL_COMMAND_NAME]);
+    expect(resolveCommandLeaseAuthority({
+      commandCatalog: DEFAULT_AGENT_COMMAND_CATALOG,
+      toolPolicy: {allowedTools: ["mcp.manage.*"]},
+    }).filter((name) => name.startsWith("mcp."))).toEqual([
+      "mcp.server.list", "mcp.server.show", "mcp.server.add", "mcp.server.update",
+      "mcp.server.enable", "mcp.server.disable", "mcp.server.delete", "mcp.server.test",
+      "mcp.oauth.discover", "mcp.oauth.start", "mcp.oauth.status", "mcp.oauth.disconnect",
+    ]);
   });
 
   it("loads the agent registry and preserves full tool/result envelopes", async () => {

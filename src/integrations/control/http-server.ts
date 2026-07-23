@@ -53,6 +53,7 @@ import type {ControlModelCallTraceService} from "../../domain/control/model-call
 import type {ModelCallTraceMode, ModelCallTraceStatus} from "../../domain/model-call-traces/types.js";
 import type {ControlGrantRecord, ControlGrantRole, ControlSessionRecord} from "../../domain/control/types.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
+import {McpRegistryVersionConflictError} from "../../domain/mcp/store.js";
 
 export const CONTROL_SESSION_COOKIE = "panda_control_session";
 export const CONTROL_CSRF_COOKIE = "panda_control_csrf";
@@ -135,6 +136,17 @@ class ControlHttpError extends Error {
   constructor(readonly statusCode: number, message: string) {
     super(message);
   }
+}
+
+function optionalIfMatchVersion(request: IncomingMessage): number | undefined {
+  const value = request.headers["if-match"];
+  if (value === undefined) return undefined;
+  const raw = Array.isArray(value) ? value[0] : value;
+  const normalized = raw?.trim().replace(/^W\//, "").replace(/^"|"$/g, "");
+  if (!normalized || !/^\d+$/.test(normalized)) throw new ControlHttpError(400, "If-Match must contain an MCP registry version.");
+  const parsed = Number(normalized);
+  if (!Number.isSafeInteger(parsed)) throw new ControlHttpError(400, "If-Match MCP registry version is invalid.");
+  return parsed;
 }
 
 export interface ControlHttpServer {
@@ -1059,8 +1071,7 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         }
         if (oauthError || !code) {
           try {
-            const result = await options.mcp.failOAuth(state, oauthError ? "authorization_denied" : "missing_code");
-            await options.auth.recordAudit({identityId: result.identityId, sessionId: result.sessionId, eventType: "control_operator_write", metadata: result.audit});
+            await options.mcp.failOAuth(state, oauthError ? "authorization_denied" : "missing_code");
           } catch {
             // The generic failure page intentionally does not reveal state validity.
           }
@@ -1069,7 +1080,6 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         }
         try {
           const result = await options.mcp.finishOAuth(state, code);
-          await options.auth.recordAudit({identityId: result.identityId, sessionId: result.sessionId, eventType: "control_operator_write", metadata: result.audit});
           writeOAuthCallbackPage(response, result.completed ? 200 : 400, result.completed);
         } catch {
           writeOAuthCallbackPage(response, 400, false);
@@ -1256,10 +1266,8 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         requireCsrf(request, options.auth, session);
         try {
           const result = await options.mcp.discoverOAuth(session, mcpOAuthPath.agentKey, mcpOAuthPath.serverName);
-          await recordOperatorAudit(options.auth, session, result.audit);
           writeJsonResponse(response, 200, {discovery: result.discovery});
         } catch (error) {
-          await recordOperatorAudit(options.auth, session, {action: "fail_mcp_oauth", agentKey: mcpOAuthPath.agentKey, serverName: mcpOAuthPath.serverName, reason: "discovery_failed"});
           throw new ControlHttpError(400, error instanceof Error ? error.message : "Control MCP OAuth discovery failed.");
         }
         return;
@@ -1269,10 +1277,8 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         try {
           const body = await readBody(request);
           const result = await options.mcp.startOAuth(session, mcpOAuthPath.agentKey, mcpOAuthPath.serverName, {manualClient: body.manualClient});
-          await recordOperatorAudit(options.auth, session, result.audit);
           writeJsonResponse(response, 200, {authorizationUrl: result.authorizationUrl, expiresAt: result.expiresAt});
         } catch (error) {
-          await recordOperatorAudit(options.auth, session, {action: "fail_mcp_oauth", agentKey: mcpOAuthPath.agentKey, serverName: mcpOAuthPath.serverName, reason: "connect_start_failed"});
           throw new ControlHttpError(400, error instanceof Error ? error.message : "Control MCP OAuth start failed.");
         }
         return;
@@ -1281,7 +1287,6 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         requireCsrf(request, options.auth, session);
         try {
           const result = await options.mcp.disconnectOAuth(session, mcpOAuthPath.agentKey, mcpOAuthPath.serverName);
-          await recordOperatorAudit(options.auth, session, result.audit);
           writeJsonResponse(response, 200, {disconnected: result.disconnected});
         } catch (error) {
           throw new ControlHttpError(400, error instanceof Error ? error.message : "Control MCP OAuth disconnect failed.");
@@ -1291,10 +1296,13 @@ export async function startControlServer(options: StartControlServerOptions): Pr
       if (mcpServerPath && request.method === "PUT") {
         requireCsrf(request, options.auth, session);
         try {
-          const result = await options.mcp.putServer(session, mcpServerPath.agentKey, mcpServerPath.serverName, await readBody(request));
-          await recordOperatorAudit(options.auth, session, result.audit);
-          writeJsonResponse(response, 200, {server: result.server});
+          const result = await options.mcp.putServer(session, mcpServerPath.agentKey, mcpServerPath.serverName, await readBody(request), optionalIfMatchVersion(request));
+          writeJsonResponse(response, 200, result);
         } catch (error) {
+          if (error instanceof McpRegistryVersionConflictError) {
+            writeJsonResponse(response, 409, {error: "stale_version", currentVersion: error.currentVersion});
+            return;
+          }
           const message = error instanceof Error ? error.message : "Control MCP server update failed.";
           throw new ControlHttpError(message === "Control target agent was not found or is not visible." ? 404 : 400, message);
         }
@@ -1303,10 +1311,13 @@ export async function startControlServer(options: StartControlServerOptions): Pr
       if (mcpServerPath && request.method === "DELETE") {
         requireCsrf(request, options.auth, session);
         try {
-          const result = await options.mcp.deleteServer(session, mcpServerPath.agentKey, mcpServerPath.serverName);
-          await recordOperatorAudit(options.auth, session, result.audit);
-          writeJsonResponse(response, 200, {deleted: result.deleted});
+          const result = await options.mcp.deleteServer(session, mcpServerPath.agentKey, mcpServerPath.serverName, optionalIfMatchVersion(request));
+          writeJsonResponse(response, 200, result);
         } catch (error) {
+          if (error instanceof McpRegistryVersionConflictError) {
+            writeJsonResponse(response, 409, {error: "stale_version", currentVersion: error.currentVersion});
+            return;
+          }
           const message = error instanceof Error ? error.message : "Control MCP server delete failed.";
           throw new ControlHttpError(message === "Control target agent was not found or is not visible." ? 404 : 400, message);
         }

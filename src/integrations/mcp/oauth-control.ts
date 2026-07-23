@@ -1,6 +1,6 @@
 import type {McpConfigStore} from "../../domain/mcp/store.js";
 import type {McpHttpOAuthAuth, McpHttpServerConfig} from "../../domain/mcp/types.js";
-import type {McpOAuthDiscoverySummary, McpOAuthManualClientInput, McpOAuthTokenEndpointAuthMethod} from "../../domain/mcp/oauth-types.js";
+import type {McpOAuthDiscoverySummary, McpOAuthInitiator, McpOAuthManualClientInput, McpOAuthTokenEndpointAuthMethod} from "../../domain/mcp/oauth-types.js";
 import type {McpOAuthService} from "../../domain/mcp/oauth-service.js";
 import {requireNonEmptyString} from "../../lib/strings.js";
 import {
@@ -77,8 +77,7 @@ export class McpOAuthControl {
   async start(input: {
     agentKey: string;
     serverName: string;
-    initiatedIdentityId: string;
-    initiatedSessionId: string;
+    initiator: McpOAuthInitiator;
     manualClient?: unknown;
   }): Promise<{authorizationUrl: string; expiresAt: number}> {
     const server = oauthServer(await this.options.configs.getAgentConfig(input.agentKey), input.serverName);
@@ -95,8 +94,7 @@ export class McpOAuthControl {
       authConfig: server.auth,
       redirectUrl: this.options.redirectUrl,
       rawState: newMcpOAuthState(),
-      initiatedIdentityId: input.initiatedIdentityId,
-      initiatedSessionId: input.initiatedSessionId,
+      initiator: input.initiator,
       manualClient: manualClient(input.manualClient),
       fetchFn: this.options.fetchFn,
     });
@@ -106,8 +104,7 @@ export class McpOAuthControl {
     completed: boolean;
     agentKey: string;
     serverName: string;
-    initiatedIdentityId: string;
-    initiatedSessionId: string;
+    initiator: McpOAuthInitiator;
     issuer?: string;
     scopes: string[];
   }> {
@@ -131,8 +128,7 @@ export class McpOAuthControl {
         completed: false,
         agentKey: attempt.agentKey,
         serverName: attempt.serverName,
-        initiatedIdentityId: attempt.initiatedIdentityId,
-        initiatedSessionId: attempt.initiatedSessionId,
+        initiator: attempt.initiator,
         scopes: server.auth.scope.mode === "explicit" ? server.auth.scope.values : [],
       };
     }
@@ -145,8 +141,7 @@ export class McpOAuthControl {
       completed: true,
       agentKey: attempt.agentKey,
       serverName: attempt.serverName,
-      initiatedIdentityId: attempt.initiatedIdentityId,
-      initiatedSessionId: attempt.initiatedSessionId,
+      initiator: attempt.initiator,
       issuer: connection?.authorizationServerUrl,
       scopes,
     };
@@ -155,16 +150,14 @@ export class McpOAuthControl {
   async fail(rawState: string): Promise<{
     agentKey: string;
     serverName: string;
-    initiatedIdentityId: string;
-    initiatedSessionId: string;
+    initiator: McpOAuthInitiator;
   }> {
     const attempt = await this.options.service.consumeAttempt(rawState);
     if (!attempt) throw new Error("MCP OAuth state is invalid, expired, or already used.");
     return {
       agentKey: attempt.agentKey,
       serverName: attempt.serverName,
-      initiatedIdentityId: attempt.initiatedIdentityId,
-      initiatedSessionId: attempt.initiatedSessionId,
+      initiator: attempt.initiator,
     };
   }
 

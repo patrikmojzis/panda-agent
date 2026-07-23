@@ -34,6 +34,7 @@ import {
   useAgentMcpServers,
 } from "@/features/control/api/queries"
 import {
+  ApiError,
   controlApi,
   type McpHeaderValue,
   type McpOAuthDiscovery,
@@ -49,6 +50,7 @@ const statusLabels: Record<McpServerRow["status"], string> = {
   missing_credentials: "Missing credentials",
   credential_store_unavailable: "Credential store unavailable",
   credential_unreadable: "Credential unreadable",
+  credential_policy_denied: "Credential policy denied",
   authorization_required: "Authorization required",
   authorizing: "Authorizing",
   reauthorization_required: "Reconnect required",
@@ -574,12 +576,14 @@ function McpOAuthDialog({
   open,
   onOpenChange,
   onChanged,
+  registryVersion,
 }: {
   agentKey: string
   row: McpStreamableHttpServerRow
   open: boolean
   onOpenChange: (open: boolean) => void
   onChanged: () => Promise<unknown>
+  registryVersion: number
 }) {
   const auth = useAuth()
   const oauth = row.auth?.type === "oauth" ? row.auth : null
@@ -637,11 +641,13 @@ function McpOAuthDialog({
             ],
           },
         },
-        auth.csrfToken
+        auth.csrfToken,
+        registryVersion
       )
       await onChanged()
       setDiscovery(null)
     } catch (caught) {
+      if (caught instanceof ApiError && caught.status === 409) await onChanged()
       setError(
         caught instanceof Error
           ? caught.message
@@ -818,6 +824,17 @@ export function McpPanel({ agentKey }: { agentKey: string }) {
   const [oauthRow, setOauthRow] =
     React.useState<McpStreamableHttpServerRow | null>(null)
   const invalidate = controlKeys.agents.detail(agentKey)
+  const registryVersion = servers.data?.version ?? 0
+  const writeRegistry = async <T,>(operation: () => Promise<T>): Promise<T> => {
+    try {
+      return await operation()
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        await servers.refetch()
+      }
+      throw error
+    }
+  }
   const save = useToastMutation({
     mutationFn: ({
       serverName,
@@ -826,24 +843,42 @@ export function McpPanel({ agentKey }: { agentKey: string }) {
       serverName: string
       payload: McpServerPayload
     }) =>
-      controlApi.putMcpServer(agentKey, serverName, payload, auth.csrfToken),
+      writeRegistry(() =>
+        controlApi.putMcpServer(
+          agentKey,
+          serverName,
+          payload,
+          auth.csrfToken,
+          registryVersion
+        )
+      ),
     success: "MCP server saved",
     invalidate,
   })
   const toggle = useToastMutation({
     mutationFn: (row: McpServerRow) =>
-      controlApi.putMcpServer(
-        agentKey,
-        row.serverName,
-        withoutDto(row, !row.enabled),
-        auth.csrfToken
+      writeRegistry(() =>
+        controlApi.putMcpServer(
+          agentKey,
+          row.serverName,
+          withoutDto(row, !row.enabled),
+          auth.csrfToken,
+          registryVersion
+        )
       ),
     success: "MCP server status updated",
     invalidate,
   })
   const remove = useToastMutation({
     mutationFn: (row: McpServerRow) =>
-      controlApi.deleteMcpServer(agentKey, row.serverName, auth.csrfToken),
+      writeRegistry(() =>
+        controlApi.deleteMcpServer(
+          agentKey,
+          row.serverName,
+          auth.csrfToken,
+          registryVersion
+        )
+      ),
     success: "MCP server deleted",
     invalidate,
   })
@@ -1027,6 +1062,7 @@ export function McpPanel({ agentKey }: { agentKey: string }) {
             if (!open) setOauthRow(null)
           }}
           onChanged={() => servers.refetch()}
+          registryVersion={registryVersion}
         />
       ) : null}
     </div>

@@ -193,35 +193,42 @@ describeLive("Docker MCP built-app Control-to-shim B2B", () => {
       value: fixtureSecret,
     });
     expect(credential.status).toBe(200);
-    const stdio = await controlWrite("/agents/panda/mcp-servers/fixture-stdio", "PUT", {
+    const stdioConfig = {
       transport: "stdio",
       enabled: true,
       command: "/usr/bin/node",
       args: ["/app/examples/mcp/fixture-server.mjs", "--transport", "stdio"],
       env: {FIXTURE_SECRET: {credentialEnvKey: "FIXTURE_SECRET"}},
       timeoutMs: 10_000,
-    });
-    expect(stdio.status).toBe(200);
-    const http = await controlWrite("/agents/panda/mcp-servers/fixture-http", "PUT", {
+    };
+    const stdioAdded = await runShim("primary-initial", ["mcp", "server", "add", "fixture-stdio", "--config", JSON.stringify(stdioConfig), "--expected-version", "0"]);
+    expect(JSON.parse(stdioAdded.stdout)).toMatchObject({version: 1, server: {serverName: "fixture-stdio"}});
+    const stdioTested = await runShim("primary-initial", ["mcp", "server", "test", "fixture-stdio"]);
+    expect(JSON.parse(stdioTested.stdout)).toMatchObject({server: "fixture-stdio", toolCount: expect.any(Number)});
+
+    const httpConfig = {
       transport: "streamable-http",
       enabled: true,
       url: `http://${fixture}:3010/mcp`,
       auth: {type: "bearer", credentialEnvKey: "FIXTURE_SECRET"},
       timeoutMs: 10_000,
-    });
-    expect(http.status).toBe(200);
-    const oauth = await controlWrite("/agents/panda/mcp-servers/fixture-oauth", "PUT", {
+    };
+    const httpAdded = await runShim("primary-initial", ["mcp", "server", "add", "fixture-http", "--config", JSON.stringify(httpConfig), "--expected-version", "1"]);
+    expect(JSON.parse(httpAdded.stdout)).toMatchObject({version: 2, server: {serverName: "fixture-http"}});
+
+    const oauthConfig = {
       transport: "streamable-http",
       enabled: true,
       url: "http://127.0.0.1:3011/mcp",
       auth: {type: "oauth", registration: {mode: "dynamic"}, scope: {mode: "explicit", values: ["resource:read"]}},
       timeoutMs: 10_000,
-    });
-    expect(oauth.status).toBe(200);
-    const discovery = await controlWrite("/agents/panda/mcp-servers/fixture-oauth/oauth/discover", "POST");
-    await expect(discovery.json()).resolves.toMatchObject({discovery: {supportedScopes: ["resource:read"], registrationEndpointAvailable: true}});
-    const started = await controlWrite("/agents/panda/mcp-servers/fixture-oauth/oauth/start", "POST", {});
-    const authorizationUrl = ((await started.json()) as {authorizationUrl: string}).authorizationUrl;
+    };
+    const oauthAdded = await runShim("primary-initial", ["mcp", "server", "add", "fixture-oauth", "--config", JSON.stringify(oauthConfig), "--expected-version", "2"]);
+    expect(JSON.parse(oauthAdded.stdout)).toMatchObject({version: 3, server: {serverName: "fixture-oauth"}});
+    const discovery = await runShim("primary-initial", ["mcp", "oauth", "discover", "fixture-oauth"]);
+    expect(JSON.parse(discovery.stdout)).toMatchObject({discovery: {supportedScopes: ["resource:read"], registrationEndpointAvailable: true}});
+    const started = await runShim("primary-initial", ["mcp", "oauth", "start", "fixture-oauth"]);
+    const authorizationUrl = (JSON.parse(started.stdout) as {authorizationUrl: string}).authorizationUrl;
     const authorization = await docker([
       "exec", core, "node", "--input-type=module", "-e",
       "const response = await fetch(process.argv[1], {redirect: 'manual'}); process.stdout.write(response.headers.get('location') ?? '');",
@@ -230,6 +237,8 @@ describeLive("Docker MCP built-app Control-to-shim B2B", () => {
     const callback = new URL(authorization.stdout);
     const completed = await fetch(`${controlBase}/api/control/mcp/oauth/callback${callback.search}`);
     expect(completed.status).toBe(200);
+    const oauthStatus = await runShim("primary-initial", ["mcp", "oauth", "status", "fixture-oauth"]);
+    expect(JSON.parse(oauthStatus.stdout)).toMatchObject({status: "ready"});
     const persisted = await docker([
       "exec", postgres, "psql", "-U", "postgres", "-d", "panda", "-Atc",
       "SELECT count(*) FROM runtime.agent_mcp_configs AS configs CROSS JOIN LATERAL jsonb_object_keys(configs.config->'servers') AS server_keys(server_name) WHERE configs.agent_key='panda'",
@@ -288,22 +297,20 @@ describeLive("Docker MCP built-app Control-to-shim B2B", () => {
     const oauthRefreshed = await runShim("subagent-allow", ["mcp", "call", "fixture-oauth", "echo", "--input", '{"message":"oauth-refreshed"}']);
     expect(oauthRefreshed.exitCode).toBe(0);
     expect(oauthRefreshed.stdout).toContain("oauth-refreshed");
-    const disconnectedOauth = await controlWrite("/agents/panda/mcp-servers/fixture-oauth/oauth", "DELETE");
-    await expect(disconnectedOauth.json()).resolves.toEqual({disconnected: true});
+    const disconnectedOauth = await runShim("primary-initial", ["mcp", "oauth", "disconnect", "fixture-oauth"]);
+    expect(JSON.parse(disconnectedOauth.stdout)).toEqual({disconnected: true});
     const oauthEvents = await docker([
       "exec", core, "node", "--input-type=module", "-e",
       "const response = await fetch('http://127.0.0.1:3011/oauth/events'); process.stdout.write(await response.text());",
     ]);
     expect(JSON.parse(oauthEvents.stdout)).toMatchObject({events: expect.arrayContaining([{type: "register"}, {type: "exchange"}, {type: "refresh", rotated: true}, {type: "revoke"}])});
 
-    const deleteHttp = await controlWrite("/agents/panda/mcp-servers/fixture-http", "DELETE");
-    expect(deleteHttp.status).toBe(200);
-    await expect(deleteHttp.json()).resolves.toMatchObject({deleted: true});
-    const deleteStdio = await controlWrite("/agents/panda/mcp-servers/fixture-stdio", "DELETE");
-    expect(deleteStdio.status).toBe(200);
-    await expect(deleteStdio.json()).resolves.toMatchObject({deleted: true});
-    const deleteOauth = await controlWrite("/agents/panda/mcp-servers/fixture-oauth", "DELETE");
-    expect(deleteOauth.status).toBe(200);
+    const deleteHttp = await runShim("primary-initial", ["mcp", "server", "delete", "fixture-http", "--expected-version", "3"]);
+    expect(JSON.parse(deleteHttp.stdout)).toMatchObject({deleted: true, version: 4});
+    const deleteStdio = await runShim("primary-initial", ["mcp", "server", "delete", "fixture-stdio", "--expected-version", "4"]);
+    expect(JSON.parse(deleteStdio.stdout)).toMatchObject({deleted: true, version: 5});
+    const deleteOauth = await runShim("primary-initial", ["mcp", "server", "delete", "fixture-oauth", "--expected-version", "5"]);
+    expect(JSON.parse(deleteOauth.stdout)).toMatchObject({deleted: true, version: 6});
     const removed = await docker([
       "exec", postgres, "psql", "-U", "postgres", "-d", "panda", "-Atc",
       "SELECT count(DISTINCT configs.agent_key), count(server_keys.server_name) FROM runtime.agent_mcp_configs AS configs LEFT JOIN LATERAL jsonb_object_keys(configs.config->'servers') AS server_keys(server_name) ON true WHERE configs.agent_key='panda'",

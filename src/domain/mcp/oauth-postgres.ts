@@ -4,7 +4,7 @@ import {requireNonEmptyString} from "../../lib/strings.js";
 import {normalizeAgentKey} from "../agents/types.js";
 import type {EncryptedCredentialValue} from "../credentials/types.js";
 import {isSafeMcpServerName} from "./config.js";
-import type {McpOAuthAttemptRecord, McpOAuthConnectionRecord} from "./oauth-types.js";
+import type {McpOAuthAttemptRecord, McpOAuthConnectionRecord, McpOAuthInitiator} from "./oauth-types.js";
 import {ensurePostgresMcpSchema} from "./postgres-schema.js";
 import {buildMcpTableNames} from "./postgres-shared.js";
 
@@ -58,13 +58,27 @@ function parseConnection(row: Record<string, unknown>): McpOAuthConnectionRecord
 }
 
 function parseAttempt(row: Record<string, unknown>): McpOAuthAttemptRecord {
+  const kind = row.initiator_kind;
+  const sessionId = requireNonEmptyString(row.initiated_session_id, "MCP OAuth initiating session is required.");
+  const identityId = optionalString(row.initiated_identity_id, "MCP OAuth initiating identity");
+  const threadId = optionalString(row.initiated_thread_id, "MCP OAuth initiating thread");
+  const initiator: McpOAuthInitiator = kind === "agent"
+    ? {
+      kind: "agent",
+      agentKey: normalizeAgentKey(requireNonEmptyString(row.agent_key, "MCP OAuth agent key is required.")),
+      sessionId,
+      ...(identityId ? {identityId} : {}),
+      ...(threadId ? {threadId} : {}),
+    }
+    : kind === "control"
+      ? {kind: "control", identityId: requireNonEmptyString(identityId, "MCP OAuth initiating identity is required."), sessionId}
+      : (() => { throw new Error("MCP OAuth initiator kind is invalid."); })();
   return {
     stateHash: requireNonEmptyString(row.state_hash, "MCP OAuth state hash is required."),
     agentKey: normalizeAgentKey(requireNonEmptyString(row.agent_key, "MCP OAuth agent key is required.")),
     serverName: serverName(row.server_name),
     encryptedVerifier: encrypted(row, "verifier"),
-    initiatedIdentityId: requireNonEmptyString(row.initiated_identity_id, "MCP OAuth initiating identity is required."),
-    initiatedSessionId: requireNonEmptyString(row.initiated_session_id, "MCP OAuth initiating session is required."),
+    initiator,
     expiresAt: requireTimestampMillis(row.expires_at, "MCP OAuth expires_at must be a valid timestamp."),
     consumedAt: optionalTimestampMillis(row.consumed_at, "MCP OAuth consumed_at must be a valid timestamp."),
     createdAt: requireTimestampMillis(row.created_at, "MCP OAuth attempt created_at must be a valid timestamp."),
@@ -127,31 +141,35 @@ export class PostgresMcpOAuthStore {
     agentKey: string;
     serverName: string;
     encryptedVerifier: EncryptedCredentialValue;
-    initiatedIdentityId: string;
-    initiatedSessionId: string;
+    initiator: McpOAuthInitiator;
     expiresAt: number;
   }): Promise<McpOAuthAttemptRecord> {
     const result = await this.pool.query(`
       INSERT INTO ${this.tables.oauthAttempts} (
         state_hash, agent_key, server_name, verifier_ciphertext, verifier_iv, verifier_tag,
-        key_version, initiated_identity_id, initiated_session_id, expires_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        key_version, initiator_kind, initiated_identity_id, initiated_session_id, initiated_thread_id, expires_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
       ON CONFLICT (agent_key, server_name) DO UPDATE SET
         state_hash=EXCLUDED.state_hash,
         verifier_ciphertext=EXCLUDED.verifier_ciphertext,
         verifier_iv=EXCLUDED.verifier_iv,
         verifier_tag=EXCLUDED.verifier_tag,
         key_version=EXCLUDED.key_version,
+        initiator_kind=EXCLUDED.initiator_kind,
         initiated_identity_id=EXCLUDED.initiated_identity_id,
         initiated_session_id=EXCLUDED.initiated_session_id,
+        initiated_thread_id=EXCLUDED.initiated_thread_id,
         expires_at=EXCLUDED.expires_at,
         consumed_at=NULL,
         created_at=NOW()
       RETURNING *
     `, [input.stateHash, normalizeAgentKey(input.agentKey), serverName(input.serverName), input.encryptedVerifier.ciphertext,
       input.encryptedVerifier.iv, input.encryptedVerifier.tag, input.encryptedVerifier.keyVersion,
-      requireNonEmptyString(input.initiatedIdentityId, "MCP OAuth initiating identity is required."),
-      requireNonEmptyString(input.initiatedSessionId, "MCP OAuth initiating session is required."), new Date(input.expiresAt)]);
+      input.initiator.kind,
+      input.initiator.identityId ?? null,
+      requireNonEmptyString(input.initiator.sessionId, "MCP OAuth initiating session is required."),
+      input.initiator.kind === "agent" ? input.initiator.threadId ?? null : null,
+      new Date(input.expiresAt)]);
     return parseAttempt(result.rows[0] as Record<string, unknown>);
   }
 

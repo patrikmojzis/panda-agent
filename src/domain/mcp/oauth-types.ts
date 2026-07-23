@@ -33,12 +33,15 @@ export interface McpOAuthAttemptRecord {
   agentKey: string;
   serverName: string;
   encryptedVerifier: EncryptedCredentialValue;
-  initiatedIdentityId: string;
-  initiatedSessionId: string;
+  initiator: McpOAuthInitiator;
   expiresAt: number;
   consumedAt?: number;
   createdAt: number;
 }
+
+export type McpOAuthInitiator =
+  | {kind: "control"; identityId: string; sessionId: string}
+  | {kind: "agent"; agentKey: string; sessionId: string; identityId?: string; threadId?: string};
 
 export interface DecryptedMcpOAuthAttempt extends Omit<McpOAuthAttemptRecord, "encryptedVerifier"> {
   codeVerifier: string;

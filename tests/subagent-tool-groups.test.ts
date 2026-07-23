@@ -119,6 +119,7 @@ describe("subagent tool groups", () => {
           "agentSkillOperations": undefined,
           "toolNames": [
             "postgres.readonly.query",
+            "wiki.overview",
             "wiki.read",
             "wiki.search",
             "wiki.list",
@@ -142,6 +143,7 @@ describe("subagent tool groups", () => {
           ],
           "toolNames": [
             "thinking_set",
+            "mcp.manage.*",
             "watch.list",
             "watch.show",
             "watch.runs",
@@ -259,6 +261,7 @@ describe("subagent tool groups", () => {
       "whisper.transcribe",
       "whisper.translate",
       "postgres.readonly.query",
+      "wiki.overview",
       "wiki.read",
       "wiki.search",
       "wiki.list",

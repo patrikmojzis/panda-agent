@@ -29,6 +29,7 @@ export interface RuntimeCommandDependenciesInput {
   credentialResolver: RequiredCommandDependency<"credentialResolver">;
   mcpConfigs: RequiredCommandDependency<"mcpConfigs">;
   mcpRunner: RequiredCommandDependency<"mcpRunner">;
+  mcpManagement: RequiredCommandDependency<"mcpManagement">;
   postgresReadonly: RequiredCommandDependency<"postgresReadonly">;
   executionEnvironments: RequiredCommandDependency<"executionEnvironments">;
   environmentLifecycle: RequiredCommandDependency<"environmentLifecycle">;
@@ -87,6 +88,7 @@ export function buildRuntimeCommandDependencies(
     credentialResolver: input.credentialResolver,
     mcpConfigs: input.mcpConfigs,
     mcpRunner: input.mcpRunner,
+    mcpManagement: input.mcpManagement,
     postgresReadonly: input.postgresReadonly,
     executionEnvironments: input.executionEnvironments,
     environmentLifecycle: input.environmentLifecycle,

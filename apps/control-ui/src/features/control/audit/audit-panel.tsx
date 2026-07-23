@@ -145,6 +145,7 @@ export function AuditPanel({
 
 const auditEventTypeOptions = [
   { label: "Operator writes", value: "control_operator_write" },
+  { label: "Agent MCP operations", value: "agent_mcp_operation" },
   { label: "Prompt writes", value: "session_prompt_write" },
   { label: "Briefing writes", value: "session_briefing_write" },
   { label: "Wake policy writes", value: "session_heartbeat_config_write" },
@@ -169,6 +170,9 @@ function AuditEventTypeFilter({ state }: { state: DataTableState }) {
 function AuditContext({ event }: { event: AuditEvent }) {
   const metadata = event.metadata
   const entries = [
+    typeof metadata.actorKind === "string"
+      ? { label: "Origin", value: metadata.actorKind }
+      : null,
     typeof metadata.agentKey === "string"
       ? { label: "Agent", value: metadata.agentKey }
       : null,
@@ -177,6 +181,9 @@ function AuditContext({ event }: { event: AuditEvent }) {
       : null,
     typeof metadata.sessionId === "string"
       ? { label: "Session", value: short(metadata.sessionId) }
+      : null,
+    typeof metadata.runtimeSessionId === "string"
+      ? { label: "Runtime session", value: short(metadata.runtimeSessionId) }
       : null,
     typeof metadata.envKey === "string"
       ? { label: "Credential", value: metadata.envKey }

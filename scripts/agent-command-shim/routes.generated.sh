@@ -11,6 +11,42 @@ agent_command_shim_lookup_route() {
     'mcp call')
       printf '%s\t%s\n' 'mcp.call' 'mcp call'
       ;;
+    'mcp server list')
+      printf '%s\t%s\n' 'mcp.server.list' 'mcp server list'
+      ;;
+    'mcp server show')
+      printf '%s\t%s\n' 'mcp.server.show' 'mcp server show'
+      ;;
+    'mcp server add')
+      printf '%s\t%s\n' 'mcp.server.add' 'mcp server add'
+      ;;
+    'mcp server update')
+      printf '%s\t%s\n' 'mcp.server.update' 'mcp server update'
+      ;;
+    'mcp server enable')
+      printf '%s\t%s\n' 'mcp.server.enable' 'mcp server enable'
+      ;;
+    'mcp server disable')
+      printf '%s\t%s\n' 'mcp.server.disable' 'mcp server disable'
+      ;;
+    'mcp server delete')
+      printf '%s\t%s\n' 'mcp.server.delete' 'mcp server delete'
+      ;;
+    'mcp server test')
+      printf '%s\t%s\n' 'mcp.server.test' 'mcp server test'
+      ;;
+    'mcp oauth discover')
+      printf '%s\t%s\n' 'mcp.oauth.discover' 'mcp oauth discover'
+      ;;
+    'mcp oauth start')
+      printf '%s\t%s\n' 'mcp.oauth.start' 'mcp oauth start'
+      ;;
+    'mcp oauth status')
+      printf '%s\t%s\n' 'mcp.oauth.status' 'mcp oauth status'
+      ;;
+    'mcp oauth disconnect')
+      printf '%s\t%s\n' 'mcp.oauth.disconnect' 'mcp oauth disconnect'
+      ;;
     'watch list')
       printf '%s\t%s\n' 'watch.list' 'watch list'
       ;;
@@ -334,6 +370,18 @@ agent_command_shim_print_root_usage_commands() {
   panda time now [--timezone <iana>] [--format iso|local|full]
   panda mcp tools <server> [--timeout-ms <ms>]
   panda mcp call <server> <tool> --input <json|@file|@-> [--timeout-ms <ms>]
+  panda mcp server list
+  panda mcp server show <server>
+  panda mcp server add <server> --config <json|@file|@-> --expected-version <n>
+  panda mcp server update <server> --config <json|@file|@-> --expected-version <n>
+  panda mcp server enable <server> --expected-version <n>
+  panda mcp server disable <server> --expected-version <n>
+  panda mcp server delete <server> --expected-version <n>
+  panda mcp server test <server> [--timeout-ms <ms>]
+  panda mcp oauth discover <server>
+  panda mcp oauth start <server> [--manual-client <json|@file|@->]
+  panda mcp oauth status <server>
+  panda mcp oauth disconnect <server>
   panda watch list [--status enabled|disabled|all] [--limit <n>]
   panda watch show <watch-id>
   panda watch runs <watch-id> [--limit <n>]
@@ -508,6 +556,126 @@ Detailed help is available only through the current agent command lease.
 Usage:
   panda mcp call --json @payload.json
 PANDA_COMMAND_HELP_mcp_call
+      ;;
+    'mcp.server.list')
+      cat <<'PANDA_COMMAND_HELP_mcp_server_list'
+Panda command: mcp.server.list
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda mcp server list --json @payload.json
+PANDA_COMMAND_HELP_mcp_server_list
+      ;;
+    'mcp.server.show')
+      cat <<'PANDA_COMMAND_HELP_mcp_server_show'
+Panda command: mcp.server.show
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda mcp server show --json @payload.json
+PANDA_COMMAND_HELP_mcp_server_show
+      ;;
+    'mcp.server.add')
+      cat <<'PANDA_COMMAND_HELP_mcp_server_add'
+Panda command: mcp.server.add
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda mcp server add --json @payload.json
+PANDA_COMMAND_HELP_mcp_server_add
+      ;;
+    'mcp.server.update')
+      cat <<'PANDA_COMMAND_HELP_mcp_server_update'
+Panda command: mcp.server.update
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda mcp server update --json @payload.json
+PANDA_COMMAND_HELP_mcp_server_update
+      ;;
+    'mcp.server.enable')
+      cat <<'PANDA_COMMAND_HELP_mcp_server_enable'
+Panda command: mcp.server.enable
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda mcp server enable --json @payload.json
+PANDA_COMMAND_HELP_mcp_server_enable
+      ;;
+    'mcp.server.disable')
+      cat <<'PANDA_COMMAND_HELP_mcp_server_disable'
+Panda command: mcp.server.disable
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda mcp server disable --json @payload.json
+PANDA_COMMAND_HELP_mcp_server_disable
+      ;;
+    'mcp.server.delete')
+      cat <<'PANDA_COMMAND_HELP_mcp_server_delete'
+Panda command: mcp.server.delete
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda mcp server delete --json @payload.json
+PANDA_COMMAND_HELP_mcp_server_delete
+      ;;
+    'mcp.server.test')
+      cat <<'PANDA_COMMAND_HELP_mcp_server_test'
+Panda command: mcp.server.test
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda mcp server test --json @payload.json
+PANDA_COMMAND_HELP_mcp_server_test
+      ;;
+    'mcp.oauth.discover')
+      cat <<'PANDA_COMMAND_HELP_mcp_oauth_discover'
+Panda command: mcp.oauth.discover
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda mcp oauth discover --json @payload.json
+PANDA_COMMAND_HELP_mcp_oauth_discover
+      ;;
+    'mcp.oauth.start')
+      cat <<'PANDA_COMMAND_HELP_mcp_oauth_start'
+Panda command: mcp.oauth.start
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda mcp oauth start --json @payload.json
+PANDA_COMMAND_HELP_mcp_oauth_start
+      ;;
+    'mcp.oauth.status')
+      cat <<'PANDA_COMMAND_HELP_mcp_oauth_status'
+Panda command: mcp.oauth.status
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda mcp oauth status --json @payload.json
+PANDA_COMMAND_HELP_mcp_oauth_status
+      ;;
+    'mcp.oauth.disconnect')
+      cat <<'PANDA_COMMAND_HELP_mcp_oauth_disconnect'
+Panda command: mcp.oauth.disconnect
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda mcp oauth disconnect --json @payload.json
+PANDA_COMMAND_HELP_mcp_oauth_disconnect
       ;;
     'watch.list')
       cat <<'PANDA_COMMAND_HELP_watch_list'
@@ -1614,6 +1782,222 @@ PANDA_COMMAND_HELP_JSON_mcp_tools
   "examples": []
 }
 PANDA_COMMAND_HELP_JSON_mcp_call
+      ;;
+    'mcp.server.list')
+      cat <<'PANDA_COMMAND_HELP_JSON_mcp_server_list'
+{
+  "name": "mcp.server.list",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda mcp server list --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_mcp_server_list
+      ;;
+    'mcp.server.show')
+      cat <<'PANDA_COMMAND_HELP_JSON_mcp_server_show'
+{
+  "name": "mcp.server.show",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda mcp server show --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_mcp_server_show
+      ;;
+    'mcp.server.add')
+      cat <<'PANDA_COMMAND_HELP_JSON_mcp_server_add'
+{
+  "name": "mcp.server.add",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda mcp server add --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_mcp_server_add
+      ;;
+    'mcp.server.update')
+      cat <<'PANDA_COMMAND_HELP_JSON_mcp_server_update'
+{
+  "name": "mcp.server.update",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda mcp server update --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_mcp_server_update
+      ;;
+    'mcp.server.enable')
+      cat <<'PANDA_COMMAND_HELP_JSON_mcp_server_enable'
+{
+  "name": "mcp.server.enable",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda mcp server enable --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_mcp_server_enable
+      ;;
+    'mcp.server.disable')
+      cat <<'PANDA_COMMAND_HELP_JSON_mcp_server_disable'
+{
+  "name": "mcp.server.disable",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda mcp server disable --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_mcp_server_disable
+      ;;
+    'mcp.server.delete')
+      cat <<'PANDA_COMMAND_HELP_JSON_mcp_server_delete'
+{
+  "name": "mcp.server.delete",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda mcp server delete --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_mcp_server_delete
+      ;;
+    'mcp.server.test')
+      cat <<'PANDA_COMMAND_HELP_JSON_mcp_server_test'
+{
+  "name": "mcp.server.test",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda mcp server test --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_mcp_server_test
+      ;;
+    'mcp.oauth.discover')
+      cat <<'PANDA_COMMAND_HELP_JSON_mcp_oauth_discover'
+{
+  "name": "mcp.oauth.discover",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda mcp oauth discover --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_mcp_oauth_discover
+      ;;
+    'mcp.oauth.start')
+      cat <<'PANDA_COMMAND_HELP_JSON_mcp_oauth_start'
+{
+  "name": "mcp.oauth.start",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda mcp oauth start --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_mcp_oauth_start
+      ;;
+    'mcp.oauth.status')
+      cat <<'PANDA_COMMAND_HELP_JSON_mcp_oauth_status'
+{
+  "name": "mcp.oauth.status",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda mcp oauth status --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_mcp_oauth_status
+      ;;
+    'mcp.oauth.disconnect')
+      cat <<'PANDA_COMMAND_HELP_JSON_mcp_oauth_disconnect'
+{
+  "name": "mcp.oauth.disconnect",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda mcp oauth disconnect --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_mcp_oauth_disconnect
       ;;
     'watch.list')
       cat <<'PANDA_COMMAND_HELP_JSON_watch_list'

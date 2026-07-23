@@ -2,7 +2,7 @@ import {isJsonObject, type JsonObject} from "../../lib/json.js";
 import {hashOpaqueToken} from "../../lib/opaque-tokens.js";
 import {isRecord} from "../../lib/records.js";
 import {CredentialCrypto} from "../credentials/crypto.js";
-import type {McpOAuthAttemptRecord, McpOAuthConnectionRecord, McpOAuthConnectionState, DecryptedMcpOAuthAttempt, DecryptedMcpOAuthConnection} from "./oauth-types.js";
+import type {McpOAuthAttemptRecord, McpOAuthConnectionRecord, McpOAuthConnectionState, DecryptedMcpOAuthAttempt, DecryptedMcpOAuthConnection, McpOAuthInitiator} from "./oauth-types.js";
 import {MCP_OAUTH_STATE_VERSION} from "./oauth-types.js";
 
 type OAuthStore = {
@@ -22,8 +22,7 @@ type OAuthStore = {
     agentKey: string;
     serverName: string;
     encryptedVerifier: ReturnType<CredentialCrypto["encrypt"]>;
-    initiatedIdentityId: string;
-    initiatedSessionId: string;
+    initiator: McpOAuthInitiator;
     expiresAt: number;
   }): Promise<McpOAuthAttemptRecord>;
   consumeAttempt(stateHash: string, now: number): Promise<McpOAuthAttemptRecord | null>;
@@ -101,8 +100,7 @@ export class McpOAuthService {
     codeVerifier: string;
     agentKey: string;
     serverName: string;
-    initiatedIdentityId: string;
-    initiatedSessionId: string;
+    initiator: McpOAuthInitiator;
     expiresAt: number;
   }): Promise<void> {
     await this.options.store.createAttempt({
@@ -110,8 +108,7 @@ export class McpOAuthService {
       agentKey: input.agentKey,
       serverName: input.serverName,
       encryptedVerifier: this.options.crypto.encrypt(input.codeVerifier),
-      initiatedIdentityId: input.initiatedIdentityId,
-      initiatedSessionId: input.initiatedSessionId,
+      initiator: input.initiator,
       expiresAt: input.expiresAt,
     });
   }

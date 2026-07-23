@@ -134,6 +134,15 @@ function safeOperatorSummary(value: unknown): Record<string, unknown> {
     ...(typeof raw.loginTokenExpiresAt === "string" ? {loginTokenExpiresAt: raw.loginTokenExpiresAt} : {}),
     ...(typeof raw.envKey === "string" ? {envKey: raw.envKey} : {}),
     ...(typeof raw.serverName === "string" ? {serverName: raw.serverName} : {}),
+    ...(typeof raw.runtimeSessionId === "string" ? {runtimeSessionId: raw.runtimeSessionId} : {}),
+    ...(typeof raw.threadId === "string" ? {threadId: raw.threadId} : {}),
+    ...(raw.actorKind === "control" || raw.actorKind === "agent" ? {actorKind: raw.actorKind} : {}),
+    ...(raw.outcome === "success" || raw.outcome === "failure" ? {outcome: raw.outcome} : {}),
+    ...(typeof raw.failureCode === "string" ? {failureCode: raw.failureCode} : {}),
+    ...(typeof raw.issuer === "string" ? {issuer: raw.issuer} : {}),
+    ...(typeof raw.blockedOriginCount === "number" ? {blockedOriginCount: raw.blockedOriginCount} : {}),
+    ...(raw.remoteRevocation === "succeeded" || raw.remoteRevocation === "failed" || raw.remoteRevocation === "unsupported" ? {remoteRevocation: raw.remoteRevocation} : {}),
+    ...(Array.isArray(raw.scopes) && raw.scopes.every((entry) => typeof entry === "string") ? {scopes: raw.scopes} : {}),
     ...(raw.transport === "stdio" || raw.transport === "streamable-http" || raw.transport === "sse" ? {transport: raw.transport} : {}),
     ...(typeof raw.enabled === "boolean" ? {enabled: raw.enabled} : {}),
     ...(Array.isArray(raw.changedFields) && raw.changedFields.every((entry) => typeof entry === "string") ? {changedFields: raw.changedFields} : {}),
@@ -203,7 +212,7 @@ function sanitizedAuditMetadata(eventType: string, value: unknown): Record<strin
       ...(typeof reason.length === "number" ? {reason: {length: reason.length}} : {}),
     };
   }
-  if (eventType === "control_operator_write") {
+  if (eventType === "control_operator_write" || eventType === "agent_mcp_operation") {
     return safeOperatorSummary(raw);
   }
   if (eventType === "control_dev_login") {
@@ -337,8 +346,7 @@ export class ControlReadService {
       const identityParam = `$${values.length}`;
       values.push(visibleAgentKeys);
       const agentsParam = `$${values.length}`;
-      where.push(`identity_id = ${identityParam}`);
-      where.push(`((event_type IN ('login', 'logout', 'control_dev_login')) OR (event_type IN ('session_briefing_write', 'session_prompt_write', 'session_heartbeat_config_write', 'session_scheduled_task_write', 'session_watch_config_write', 'control_operator_write') AND metadata->>'agentKey' = ANY(${agentsParam}::text[])))`);
+      where.push(`((identity_id = ${identityParam} AND ((event_type IN ('login', 'logout', 'control_dev_login')) OR (event_type IN ('session_briefing_write', 'session_prompt_write', 'session_heartbeat_config_write', 'session_scheduled_task_write', 'session_watch_config_write', 'control_operator_write') AND metadata->>'agentKey' = ANY(${agentsParam}::text[])))) OR (event_type = 'agent_mcp_operation' AND metadata->>'agentKey' = ANY(${agentsParam}::text[])))`);
     }
 
     values.push(limit);

@@ -18,7 +18,7 @@ import {isLoopbackHttpHostname} from "../../lib/http.js";
 import {isJsonObject, type JsonObject} from "../../lib/json.js";
 import {generateOpaqueToken} from "../../lib/opaque-tokens.js";
 import type {McpHttpOAuthAuth} from "../../domain/mcp/types.js";
-import type {McpOAuthManualClientInput, McpOAuthDiscoverySummary, McpOAuthConnectionState} from "../../domain/mcp/oauth-types.js";
+import type {McpOAuthManualClientInput, McpOAuthDiscoverySummary, McpOAuthConnectionState, McpOAuthInitiator} from "../../domain/mcp/oauth-types.js";
 import {MCP_OAUTH_ATTEMPT_TTL_MS, MCP_OAUTH_STATE_VERSION} from "../../domain/mcp/oauth-types.js";
 import type {McpOAuthService} from "../../domain/mcp/oauth-service.js";
 
@@ -419,8 +419,7 @@ export class McpOAuthProviderSession {
 
 export async function startMcpOAuthAuthorization(input: McpOAuthProviderSessionOptions & {
   manualClient?: McpOAuthManualClientInput;
-  initiatedIdentityId: string;
-  initiatedSessionId: string;
+  initiator: McpOAuthInitiator;
   now?: number;
   fetchFn?: typeof fetch;
 }): Promise<{authorizationUrl: string; expiresAt: number}> {
@@ -438,8 +437,7 @@ export async function startMcpOAuthAuthorization(input: McpOAuthProviderSessionO
     codeVerifier: session.codeVerifier(),
     agentKey: input.agentKey,
     serverName: input.serverName,
-    initiatedIdentityId: input.initiatedIdentityId,
-    initiatedSessionId: input.initiatedSessionId,
+    initiator: input.initiator,
     expiresAt,
   });
   return {authorizationUrl: session.authorizationUrl().toString(), expiresAt};

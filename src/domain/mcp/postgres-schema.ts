@@ -11,9 +11,14 @@ export async function ensurePostgresMcpSchema(pool: PgPoolLike): Promise<void> {
     CREATE TABLE IF NOT EXISTS ${tables.configs} (
       agent_key TEXT PRIMARY KEY REFERENCES ${agents.agents}(agent_key) ON DELETE CASCADE,
       config JSONB NOT NULL,
+      version BIGINT NOT NULL DEFAULT 1,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.configs}
+    ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 1
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${tables.oauthConnections} (
@@ -43,8 +48,10 @@ export async function ensurePostgresMcpSchema(pool: PgPoolLike): Promise<void> {
       verifier_iv BYTEA NOT NULL,
       verifier_tag BYTEA NOT NULL,
       key_version SMALLINT NOT NULL,
-      initiated_identity_id TEXT NOT NULL,
+      initiator_kind TEXT NOT NULL DEFAULT 'control' CHECK (initiator_kind IN ('control', 'agent')),
+      initiated_identity_id TEXT,
       initiated_session_id TEXT NOT NULL,
+      initiated_thread_id TEXT,
       expires_at TIMESTAMPTZ NOT NULL,
       consumed_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -54,6 +61,18 @@ export async function ensurePostgresMcpSchema(pool: PgPoolLike): Promise<void> {
       CHECK (server_name <> ''),
       CHECK (state_hash <> '')
     )
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.oauthAttempts}
+    ADD COLUMN IF NOT EXISTS initiator_kind TEXT NOT NULL DEFAULT 'control'
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.oauthAttempts}
+    ADD COLUMN IF NOT EXISTS initiated_thread_id TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.oauthAttempts}
+    ALTER COLUMN initiated_identity_id DROP NOT NULL
   `);
   await pool.query(`
     CREATE INDEX IF NOT EXISTS agent_mcp_oauth_attempts_server_idx

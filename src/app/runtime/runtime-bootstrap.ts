@@ -7,6 +7,7 @@ import {PostgresCredentialStore} from "../../domain/credentials/postgres.js";
 import {PostgresMcpConfigStore} from "../../domain/mcp/postgres.js";
 import {PostgresMcpOAuthStore} from "../../domain/mcp/oauth-postgres.js";
 import {McpOAuthService} from "../../domain/mcp/oauth-service.js";
+import {McpManagementService} from "../../domain/mcp/management-service.js";
 import {SdkMcpRunner} from "../../integrations/mcp/client.js";
 import {McpOAuthRuntime} from "../../integrations/mcp/oauth.js";
 import {McpOAuthControl} from "../../integrations/mcp/oauth-control.js";
@@ -555,12 +556,17 @@ export async function bootstrapRuntime(
       store: credentialStore,
       crypto: credentialCrypto,
     });
-    const controlMcp = new ControlMcpService({
-      reads: controlReads,
+    const mcpManagement = new McpManagementService({
       configs: mcpConfigs,
       credentials: credentialResolver,
+      runner: mcpRunner,
       oauthConnections: mcpOAuthStore,
       oauth: oauthControl,
+      audit: controlAuth,
+    });
+    const controlMcp = new ControlMcpService({
+      reads: controlReads,
+      management: mcpManagement,
     });
     const executionEnvironmentManager = createExecutionEnvironmentManagerClientFromEnv(process.env);
     const executionEnvironmentSetupRunner = new RemoteExecutionEnvironmentSetupRunner({
@@ -668,6 +674,7 @@ export async function bootstrapRuntime(
       credentialResolver,
       mcpConfigs,
       mcpRunner,
+      mcpManagement,
       postgresReadonly: postgresReadonlyCommandOptions,
       executionEnvironments,
       environmentLifecycle: executionEnvironmentService,

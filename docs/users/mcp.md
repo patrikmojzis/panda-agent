@@ -7,6 +7,7 @@ Panda can discover and call tools on agent-scoped MCP servers over `stdio`, Stre
 - The only production registry is the agent row in Postgres table `runtime.agent_mcp_configs`. An absent row means no servers.
 - Configure servers in **Control → Agents → _agent_ → MCP**. Saved URLs, commands, arguments, working directories, literals, and credential reference names are visible to authorized Control users. Resolved credential values are never returned.
 - `mcp.tools` and `mcp.call` are visible only when the execution scope grants the `mcp` tool group. Panda does not hide tools based on destructive/write annotations.
+- Registry and OAuth management commands require the separate `operate` tool group. Granting `mcp` alone never allows an agent to add, edit, test, or delete a server.
 - Primary-agent fallback scopes can use all credentials owned by that agent. A subagent must explicitly allow credential environment keys and opaque OAuth refs such as `mcp-oauth:<server-name>`. Missing policy denies all credential-backed MCP operations.
 
 Store bearer tokens and secret header/environment values under the agent's **Credentials** tab first. In MCP forms, refer to them by `credentialEnvKey`; do not paste a secret into a literal field.
@@ -19,6 +20,23 @@ panda mcp call <server> <tool> --input '{"key":"value"}'
 ```
 
 Both commands accept `--timeout-ms` from 1000 through 120000. The registry default is 30000 ms. `mcp.tools` exhausts pagination before returning. `mcp.call` returns the complete MCP result envelope, including non-text content, `structuredContent`, `_meta`, and `isError`. A tool-level `isError: true` remains a successful command response with `output.exitCode: 4`; transport/protocol failures and deadlines are command failures.
+
+Agents with `operate` can manage only their own registry:
+
+```bash
+panda mcp server list
+panda mcp server show <server>
+panda mcp server add <server> --config @server.json --expected-version 0
+panda mcp server update <server> --config @server.json --expected-version <n>
+panda mcp server enable <server> --expected-version <n>
+panda mcp server disable <server> --expected-version <n>
+panda mcp server delete <server> --expected-version <n>
+panda mcp server test <server> [--timeout-ms <ms>]
+```
+
+Every list/show/mutation response contains the current registry `version`. Mutations require the version the agent last read. A stale write returns `conflict/stale_version` with `currentVersion`; refresh and deliberately retry instead of overwriting concurrent operator changes. A no-op enable/disable and deleting a missing server do not increment the version.
+
+`server test` accepts only a persisted registration, including a disabled one. It performs MCP initialize and complete paginated `tools/list`; it never invokes a tool. This means an `operate` grant is a real trust boundary: a self-managed stdio registration may start a local process. Agent-managed headers and stdio environment entries must use `credentialEnvKey`; literal secret values are rejected and stored Control-only literals are redacted from agent responses.
 
 ## OAuth for Streamable HTTP
 
@@ -40,6 +58,17 @@ OAuth uses Authorization Code with PKCE and belongs to the agent/server pair. Pa
 ```
 
 Use Control to save the server, run **Discover**, approve any exact cross-origin HTTPS origins, then **Connect**. For manual registration, enter the client ID, optional client secret, and token endpoint authentication method during Connect. Secrets, tokens, PKCE verifiers, and registered client information are encrypted with `CREDENTIALS_MASTER_KEY` and are never returned by Control.
+
+An agent with `operate` and an allowed `mcp-oauth:<server>` credential ref can run the same lifecycle:
+
+```bash
+panda mcp oauth discover <server>
+panda mcp oauth start <server>
+panda mcp oauth status <server>
+panda mcp oauth disconnect <server>
+```
+
+`oauth start` returns `authorizationUrl` and `expiresAt`. The agent sends that link to the user; the pre-auth callback stores the grant, and the agent polls `oauth status` until it becomes `ready`. The callback does not wake the session. For a manual client, use JSON input with `clientId`, `tokenEndpointAuthMethod`, and optional `clientSecretCredentialEnvKey`; agent commands never accept a raw client secret.
 
 `scope.mode=explicit` requires unique non-empty strings, which Panda passes through unchanged. `server-default` is a deliberate operator choice and delegates scope selection to the MCP OAuth discovery flow; it is never an automatic fallback. OAuth is rejected for stdio and legacy SSE.
 

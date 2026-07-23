@@ -5961,6 +5961,18 @@ USAGE
 Usage:
   panda mcp tools --help [--json]
   panda mcp call --help [--json]
+  panda mcp server list
+  panda mcp server show <server>
+  panda mcp server add <server> --config <json|@file|@-> --expected-version <n>
+  panda mcp server update <server> --config <json|@file|@-> --expected-version <n>
+  panda mcp server enable <server> --expected-version <n>
+  panda mcp server disable <server> --expected-version <n>
+  panda mcp server delete <server> --expected-version <n>
+  panda mcp server test <server> [--timeout-ms <ms>]
+  panda mcp oauth discover <server>
+  panda mcp oauth start <server> [--manual-client <json|@file|@->]
+  panda mcp oauth status <server>
+  panda mcp oauth disconnect <server>
   panda mcp tools <server> [--timeout-ms <ms>]
   panda mcp call <server> <tool> --input <json|@file|@-> [--timeout-ms <ms>]
   panda mcp tools --json @payload.json
@@ -5969,6 +5981,109 @@ USAGE
         exit 0
         ;;
     esac
+    if [ "${1:-}" = "server" ] || [ "${1:-}" = "oauth" ]; then
+      mcp_namespace="$1"
+      shift
+      mcp_action="${1:-}"
+      [ -n "$mcp_action" ] || mcp_input_error "panda mcp ${mcp_namespace} requires a subcommand."
+      case "${mcp_namespace}.${mcp_action}" in
+        server.list|server.show|server.add|server.update|server.enable|server.disable|server.delete|server.test|oauth.discover|oauth.start|oauth.status|oauth.disconnect)
+          command_name="mcp.${mcp_namespace}.${mcp_action}"
+          ;;
+        *) mcp_input_error "Unknown panda mcp ${mcp_namespace} command: ${mcp_action}" ;;
+      esac
+      shift
+      if [ "${1:-}" = "--help" ]; then
+        shift
+        if [ "${1:-}" = "--json" ]; then
+          if declare -F agent_command_shim_print_local_help_json >/dev/null && agent_command_shim_print_local_help_json "$command_name"; then exit 0; fi
+          curl_command "$(command_url "/commands/${command_name}/help?format=json")"
+          exit 0
+        fi
+        if declare -F agent_command_shim_print_local_help >/dev/null && agent_command_shim_print_local_help "$command_name"; then exit 0; fi
+        curl_command "$(command_url "/commands/${command_name}/help")"
+        exit 0
+      fi
+      if [ "${1:-}" = "--json" ]; then
+        shift
+        [ -n "${1:-}" ] || mcp_input_error "panda mcp ${mcp_namespace} ${mcp_action} --json requires @file, @-, or inline JSON."
+        payload="$(read_mcp_json_object_input "$1" "panda mcp ${mcp_namespace} ${mcp_action} --json")"
+        mcp_execute_json_command "$command_name" "$payload"
+        exit $?
+      fi
+      if [ "$mcp_namespace" = "oauth" ]; then
+        server_key="${1:-}"
+        [ -n "$server_key" ] || mcp_input_error "panda mcp oauth ${mcp_action} requires <server>."
+        case "$server_key" in --*) mcp_input_error "panda mcp oauth ${mcp_action} requires <server> before options." ;; esac
+        shift
+        manual_client=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --manual-client)
+              [ "$mcp_action" = "start" ] || mcp_input_error "--manual-client is only valid for panda mcp oauth start."
+              [ "$#" -gt 1 ] || mcp_input_error "panda mcp oauth start --manual-client requires JSON, @file, or @-."
+              manual_client="$(read_mcp_json_object_input "$2" "panda mcp oauth start --manual-client")"
+              shift 2
+              ;;
+            *) mcp_input_error "Unknown panda mcp oauth ${mcp_action} option: $1" ;;
+          esac
+        done
+        payload="$(jq -n --arg server "$server_key" --argjson manualClient "${manual_client:-null}" '{server: $server} + (if $manualClient != null then {manualClient: $manualClient} else {} end)')"
+        mcp_execute_json_command "$command_name" "$payload"
+        exit $?
+      fi
+      if [ "$mcp_action" = "list" ]; then
+        [ "$#" -eq 0 ] || mcp_input_error "panda mcp server list does not accept arguments."
+        mcp_execute_json_command "$command_name" '{}'
+        exit $?
+      fi
+      server_key="${1:-}"
+      [ -n "$server_key" ] || mcp_input_error "panda mcp server ${mcp_action} requires <server>."
+      case "$server_key" in --*) mcp_input_error "panda mcp server ${mcp_action} requires <server> before options." ;; esac
+      shift
+      config_json=""
+      expected_version=""
+      timeout_ms=""
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          --config)
+            [ "$mcp_action" = "add" ] || [ "$mcp_action" = "update" ] || mcp_input_error "--config is only valid for add or update."
+            [ "$#" -gt 1 ] || mcp_input_error "panda mcp server ${mcp_action} --config requires JSON, @file, or @-."
+            config_json="$(read_mcp_json_object_input "$2" "panda mcp server ${mcp_action} --config")"
+            shift 2
+            ;;
+          --expected-version)
+            [ "$#" -gt 1 ] || mcp_input_error "panda mcp server ${mcp_action} --expected-version requires a value."
+            require_non_negative_integer "$2" "panda mcp server ${mcp_action} --expected-version"
+            expected_version="$2"
+            shift 2
+            ;;
+          --timeout-ms)
+            [ "$mcp_action" = "test" ] || mcp_input_error "--timeout-ms is only valid for panda mcp server test."
+            [ "$#" -gt 1 ] || mcp_input_error "panda mcp server test --timeout-ms requires a value."
+            mcp_require_positive_integer "$2" "panda mcp server test --timeout-ms"
+            timeout_ms="$2"
+            shift 2
+            ;;
+          *) mcp_input_error "Unknown panda mcp server ${mcp_action} option: $1" ;;
+        esac
+      done
+      case "$mcp_action" in
+        add|update)
+          [ -n "$config_json" ] || mcp_input_error "panda mcp server ${mcp_action} requires --config <json|@file|@->."
+          [ -n "$expected_version" ] || mcp_input_error "panda mcp server ${mcp_action} requires --expected-version <n>."
+          payload="$(jq -n --arg server "$server_key" --argjson config "$config_json" --arg expectedVersion "$expected_version" '{server: $server, config: $config, expectedVersion: ($expectedVersion | tonumber)}')"
+          ;;
+        enable|disable|delete)
+          [ -n "$expected_version" ] || mcp_input_error "panda mcp server ${mcp_action} requires --expected-version <n>."
+          payload="$(jq -n --arg server "$server_key" --arg expectedVersion "$expected_version" '{server: $server, expectedVersion: ($expectedVersion | tonumber)}')"
+          ;;
+        show) payload="$(jq -n --arg server "$server_key" '{server: $server}')" ;;
+        test) payload="$(jq -n --arg server "$server_key" --arg timeoutMs "$timeout_ms" '{server: $server} + (if $timeoutMs != "" then {timeoutMs: ($timeoutMs | tonumber)} else {} end)')" ;;
+      esac
+      mcp_execute_json_command "$command_name" "$payload"
+      exit $?
+    fi
     subcommand="${1:-}"
     case "$subcommand" in
       tools) command_name="mcp.tools" ;;

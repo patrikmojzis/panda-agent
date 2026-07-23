@@ -16,9 +16,11 @@ describe("MCP Docker B2B contract", () => {
     const core = await source("examples/mcp/docker-b2b-core.mjs");
     expect(live).not.toContain("SdkMcpRunner");
     expect(live).toContain("/api/control/dev-login");
-    expect(live).toContain("/agents/panda/mcp-servers/fixture-stdio");
-    expect(live).toContain("/agents/panda/mcp-servers/fixture-http");
-    expect(live).toContain("/agents/panda/mcp-servers/fixture-oauth/oauth/start");
+    expect(live).toContain('["mcp", "server", "add", "fixture-stdio"');
+    expect(live).toContain('["mcp", "server", "test", "fixture-stdio"]');
+    expect(live).toContain('["mcp", "server", "add", "fixture-http"');
+    expect(live).toContain('["mcp", "oauth", "start", "fixture-oauth"]');
+    expect(live).toContain('["mcp", "oauth", "status", "fixture-oauth"]');
     expect(live).toContain("oauth-refreshed");
     expect(live).toContain("PANDA_COMMAND_ACCESS_FILE");
     expect(live).toContain('"--entrypoint", "/usr/local/bin/panda"');
