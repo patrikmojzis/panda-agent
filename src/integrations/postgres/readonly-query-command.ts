@@ -838,7 +838,7 @@ function parseReadonlyQueryCommandInput(input: unknown): ParsedReadonlyQueryComm
 
 export const postgresReadonlyQueryCommandDescriptor: CommandDescriptor = {
   name: POSTGRES_READONLY_QUERY_COMMAND_NAME,
-  summary: "Run a scoped read-only Postgres query.",
+  summary: "Run a scoped read-only Postgres query (message bodies: session.messages.text).",
   description: `Runs one SELECT or WITH query through the scoped readonly session views. ${READONLY_VIEW_GUIDANCE}`,
   usage: "panda postgres readonly query (--sql <text|@file|@-> [--max-rows <n>]|--schema-help)",
   inputModes: ["flags", "json", "stdin", "file"],

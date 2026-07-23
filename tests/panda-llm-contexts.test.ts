@@ -75,6 +75,7 @@ describe("buildDefaultAgentLlmContexts", () => {
     expect(dump).toContain("**Panda CLI Catalog:**");
     expect(dump).toContain("panda commands --output json");
     expect(dump).toContain("returns the full machine-readable catalog; invoke commands with the spaced CLI paths shown below");
+    expect(dump).toContain("Run a scoped read-only Postgres query (message bodies: session.messages.text).");
     expect(dump).toContain("`panda watch list [--status enabled|disabled|all] [--limit <n>]`");
     expect(dump).toContain("`panda watch show <watch-id>`");
     expect(dump).toContain("`panda watch create --title <text|@file|@-> --every <minutes> (--url <url> --value-path <path> --percent-change <n> [--label <text|@file|@->]|--source-json <json|@file|@-> --detector-json <json|@file|@-> [--source-kind <kind>] [--detector-kind <kind>]) [--disabled]`");
