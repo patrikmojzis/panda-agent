@@ -1350,7 +1350,7 @@ describe("Panda command CLI discovery", () => {
     });
     expect(JSON.parse(String(write.mock.calls[5]?.[0]))).toMatchObject({
       name: "telegram.sticker.send",
-      usage: "panda telegram sticker send --chat <conversation-id> --connector <key> (--file <path>|--file-id <id>)",
+      usage: "panda telegram sticker send --chat <conversation-id> --connector <key> (--ref <sticker-ref>|--file <path>|--file-id <id>)",
       arguments: expect.arrayContaining([
         expect.objectContaining({
           name: "file",

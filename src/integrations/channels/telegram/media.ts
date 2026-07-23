@@ -37,6 +37,7 @@ export interface TelegramMediaDownloadResult {
 export interface TelegramMediaPart {
   kind: TelegramMediaKind;
   fileId: string;
+  fileUniqueId: string;
   mimeType: string;
   sizeBytes?: number;
   hintFilename?: string;
@@ -149,6 +150,7 @@ export function collectTelegramMediaParts(message: TelegramContext["msg"]): read
     parts.push({
       kind: "photo",
       fileId: photo.file_id,
+      fileUniqueId: photo.file_unique_id,
       mimeType: "image/jpeg",
       sizeBytes: photo.file_size,
       metadata: {
@@ -163,6 +165,7 @@ export function collectTelegramMediaParts(message: TelegramContext["msg"]): read
     parts.push({
       kind: "document",
       fileId: message.document.file_id,
+      fileUniqueId: message.document.file_unique_id,
       mimeType: message.document.mime_type ?? "application/octet-stream",
       sizeBytes: message.document.file_size,
       hintFilename: message.document.file_name,
@@ -176,6 +179,7 @@ export function collectTelegramMediaParts(message: TelegramContext["msg"]): read
     parts.push({
       kind: "voice",
       fileId: message.voice.file_id,
+      fileUniqueId: message.voice.file_unique_id,
       mimeType: message.voice.mime_type ?? "audio/ogg",
       sizeBytes: message.voice.file_size,
       metadata: {
@@ -189,6 +193,7 @@ export function collectTelegramMediaParts(message: TelegramContext["msg"]): read
     parts.push({
       kind: "sticker",
       fileId: message.sticker.file_id,
+      fileUniqueId: message.sticker.file_unique_id,
       mimeType: inferTelegramStickerMimeType(message.sticker),
       sizeBytes: message.sticker.file_size,
       metadata: {
@@ -196,6 +201,7 @@ export function collectTelegramMediaParts(message: TelegramContext["msg"]): read
         emoji: message.sticker.emoji ?? null,
         setName: message.sticker.set_name ?? null,
         stickerType: message.sticker.type,
+        stickerFormat: message.sticker.is_video ? "video" : message.sticker.is_animated ? "animated" : "static",
         isAnimated: message.sticker.is_animated,
         isVideo: message.sticker.is_video,
         width: message.sticker.width,
@@ -208,6 +214,7 @@ export function collectTelegramMediaParts(message: TelegramContext["msg"]): read
     parts.push({
       kind: "video",
       fileId: message.video.file_id,
+      fileUniqueId: message.video.file_unique_id,
       mimeType: message.video.mime_type ?? "video/mp4",
       sizeBytes: message.video.file_size,
       hintFilename: message.video.file_name,
@@ -224,6 +231,7 @@ export function collectTelegramMediaParts(message: TelegramContext["msg"]): read
     parts.push({
       kind: "audio",
       fileId: message.audio.file_id,
+      fileUniqueId: message.audio.file_unique_id,
       mimeType: message.audio.mime_type ?? "audio/mpeg",
       sizeBytes: message.audio.file_size,
       hintFilename: message.audio.file_name,
@@ -240,6 +248,7 @@ export function collectTelegramMediaParts(message: TelegramContext["msg"]): read
     parts.push({
       kind: "animation",
       fileId: message.animation.file_id,
+      fileUniqueId: message.animation.file_unique_id,
       mimeType: inferTelegramAnimationMimeType(message.animation),
       sizeBytes: message.animation.file_size,
       hintFilename: message.animation.file_name,
@@ -256,6 +265,7 @@ export function collectTelegramMediaParts(message: TelegramContext["msg"]): read
     parts.push({
       kind: "video_note",
       fileId: message.video_note.file_id,
+      fileUniqueId: message.video_note.file_unique_id,
       mimeType: "video/mp4",
       sizeBytes: message.video_note.file_size,
       metadata: {
@@ -333,6 +343,7 @@ async function downloadTelegramMediaPart(
     hintFilename: part.hintFilename,
     metadata: {
       telegramFileId: part.fileId,
+      telegramFileUniqueId: part.fileUniqueId,
       telegramFilePath: file.file_path,
       ...(part.metadata ?? {}),
     },

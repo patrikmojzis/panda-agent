@@ -30,6 +30,13 @@ import {
   telegramUnpinCommandDescriptor,
 } from "./commands.js";
 import {
+  telegramStickerInspectCommandDescriptor,
+  telegramStickerListCommandDescriptor,
+  telegramStickerSaveCommandDescriptor,
+  telegramStickerSetSaveCommandDescriptor,
+  telegramStickerSetShowCommandDescriptor,
+} from "./sticker-commands.js";
+import {
   createTelegramBotIdentityClient,
   disableTelegramBotAccount,
   setTelegramBotAccount,
@@ -91,6 +98,11 @@ interface TelegramUnpinCliOptions {
 }
 
 interface TelegramStickerSendCliOptions {
+  help?: boolean;
+  json?: boolean | string;
+}
+
+interface TelegramStickerCliOptions {
   help?: boolean;
   json?: boolean | string;
 }
@@ -726,7 +738,11 @@ export function registerTelegramCommands(program: Command, dependencies: Telegra
 
   const stickerProgram = telegramProgram
     .command("sticker")
-    .description("Send Telegram stickers");
+    .description("Inspect, save, browse, and send Telegram stickers");
+
+  const stickerSetProgram = stickerProgram
+    .command("set")
+    .description("Inspect and import Telegram sticker sets");
 
   chatProgram
     .command("info")
@@ -846,6 +862,107 @@ export function registerTelegramCommands(program: Command, dependencies: Telegra
     });
 
   stickerProgram
+    .command("inspect")
+    .description(telegramStickerInspectCommandDescriptor.summary)
+    .argument("[stickerRef]", "Opaque inbound Telegram sticker reference")
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output")
+    .option("--chat <conversationId>", "Telegram conversation id")
+    .option("--connector <connectorKey>", "Telegram connector key")
+    .action((_stickerRef: string | undefined, options: TelegramStickerCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(telegramStickerInspectCommandDescriptor, Boolean(options.json));
+        return;
+      }
+      throw new Error("panda telegram sticker inspect execution requires the agent command shim transport.");
+    });
+
+  stickerProgram
+    .command("save")
+    .description(telegramStickerSaveCommandDescriptor.summary)
+    .argument("[stickerRef]", "Opaque inbound Telegram sticker reference")
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output")
+    .option("--chat <conversationId>", "Telegram conversation id")
+    .option("--connector <connectorKey>", "Telegram connector key")
+    .option("--tag <tag>", "Repeatable library tag")
+    .option("--description <text>", "Library description")
+    .action((_stickerRef: string | undefined, options: TelegramStickerCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(telegramStickerSaveCommandDescriptor, Boolean(options.json));
+        return;
+      }
+      throw new Error("panda telegram sticker save execution requires the agent command shim transport.");
+    });
+
+  stickerProgram
+    .command("list")
+    .description(telegramStickerListCommandDescriptor.summary)
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output")
+    .option("--query <text>", "Search description or pack metadata")
+    .option("--emoji <emoji>", "Exact emoji filter")
+    .option("--tag <tag>", "Exact tag filter")
+    .option("--connector <connectorKey>", "Telegram connector key")
+    .option("--limit <n>", "Maximum results")
+    .action((options: TelegramStickerCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(telegramStickerListCommandDescriptor, Boolean(options.json));
+        return;
+      }
+      throw new Error("panda telegram sticker list execution requires the agent command shim transport.");
+    });
+
+  stickerSetProgram
+    .command("show")
+    .description(telegramStickerSetShowCommandDescriptor.summary)
+    .argument("[setName]", "Telegram sticker set name")
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output")
+    .option("--connector <connectorKey>", "Telegram connector key")
+    .action((_setName: string | undefined, options: TelegramStickerCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(telegramStickerSetShowCommandDescriptor, Boolean(options.json));
+        return;
+      }
+      throw new Error("panda telegram sticker set show execution requires the agent command shim transport.");
+    });
+
+  stickerSetProgram
+    .command("save")
+    .description(telegramStickerSetSaveCommandDescriptor.summary)
+    .argument("[setName]", "Telegram sticker set name")
+    .helpOption(false)
+    .allowUnknownOption(true)
+    .allowExcessArguments(true)
+    .option("--help", "Show command help")
+    .option("--json [input]", "Use JSON input/output")
+    .option("--connector <connectorKey>", "Telegram connector key")
+    .option("--all", "Import the complete set")
+    .option("--sticker <stickerRef>", "Repeatable set-local sticker reference")
+    .option("--tag <tag>", "Repeatable library tag")
+    .option("--description <text>", "Library description")
+    .action((_setName: string | undefined, options: TelegramStickerCliOptions) => {
+      if (options.help) {
+        writeCommandDescriptorHelp(telegramStickerSetSaveCommandDescriptor, Boolean(options.json));
+        return;
+      }
+      throw new Error("panda telegram sticker set save execution requires the agent command shim transport.");
+    });
+
+  stickerProgram
     .command("send")
     .description(telegramStickerSendCommandDescriptor.summary)
     .helpOption(false)
@@ -857,6 +974,7 @@ export function registerTelegramCommands(program: Command, dependencies: Telegra
     .option("--connector <connectorKey>", "Telegram connector key")
     .option("--file <path>", "Workspace sticker file path")
     .option("--file-id <id>", "Telegram sticker file id")
+    .option("--ref <stickerRef>", "Agent-library sticker reference")
     .action((options: TelegramStickerSendCliOptions) => {
       if (options.help) {
         writeCommandDescriptorHelp(telegramStickerSendCommandDescriptor, Boolean(options.json));

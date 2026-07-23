@@ -124,6 +124,13 @@ import {
   createTelegramStickerSendCommand,
   createTelegramUnpinCommand,
 } from "../src/integrations/channels/telegram/commands.js";
+import {
+  telegramStickerInspectCommandDescriptor,
+  telegramStickerListCommandDescriptor,
+  telegramStickerSaveCommandDescriptor,
+  telegramStickerSetSaveCommandDescriptor,
+  telegramStickerSetShowCommandDescriptor,
+} from "../src/integrations/channels/telegram/sticker-commands.js";
 import {createDiscordChannelListCommand, createDiscordHistoryCommand, createDiscordSendCommand} from "../src/integrations/channels/discord/commands.js";
 import {createWhatsAppChatListCommand, createWhatsAppHistoryCommand, createWhatsAppSendCommand} from "../src/integrations/channels/whatsapp/commands.js";
 import {createVentSendCommand} from "../src/integrations/panda-trace/vent-commands.js";
@@ -1872,6 +1879,13 @@ describe("agent command shim", () => {
       executor: new RuntimeCommandDispatcher({
         commands: [
           ...mcpManagementDescriptors.map(echoInputCommand),
+          ...[
+            telegramStickerInspectCommandDescriptor,
+            telegramStickerSaveCommandDescriptor,
+            telegramStickerListCommandDescriptor,
+            telegramStickerSetShowCommandDescriptor,
+            telegramStickerSetSaveCommandDescriptor,
+          ].map(echoInputCommand),
           createTimeNowCommand({
             now: () => new Date("2026-06-24T12:34:56.000Z"),
           }),
@@ -2229,6 +2243,10 @@ describe("agent command shim", () => {
                 path: file.path,
                 displayPath: file.path,
               };
+            },
+          }, {
+            async getSticker() {
+              return null;
             },
           }),
           createDiscordChannelListCommand({
@@ -3720,7 +3738,8 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     expect(telegramSend.stdout).toContain("--stdin");
     expect(telegramSend.stdout).toContain("--image <path>");
     expect(telegramSend.stdout).toContain("--reply-to-message-id <message-id>");
-    expect(telegramStickerSend.stdout).toContain("panda telegram sticker send --chat <conversation-id> --connector <key> (--file <path>|--file-id <id>)");
+    expect(telegramStickerSend.stdout).toContain("panda telegram sticker send --chat <conversation-id> --connector <key> (--ref <sticker-ref>|--file <path>|--file-id <id>)");
+    expect(telegramStickerSend.stdout).toContain("--ref <sticker-ref>");
     expect(telegramStickerSend.stdout).toContain("--file-id <id>");
     expect(telegramReact.stdout).toContain("panda telegram react <message-id> (--emoji <emoji>|--remove)");
     expect(telegramReact.stdout).toContain("--remove");
@@ -6894,6 +6913,52 @@ printf '{"ok":true,"output":%s}\\n' "$body"
         type: "file_id",
       },
       queued: true,
+    });
+  });
+
+  it("parses Telegram sticker library and pack commands through native args", async () => {
+    const server = await startWatchServer();
+    const inspect = await execFileAsync(shimPath, [
+      "telegram", "sticker", "inspect", "tg-in:media-1",
+      "--chat", "1615376408",
+      "--connector", "telegram-main",
+    ], {env: shimEnv(server)});
+    expect(JSON.parse(inspect.stdout)).toEqual({
+      stickerRef: "tg-in:media-1",
+      conversationId: "1615376408",
+      connectorKey: "telegram-main",
+    });
+
+    const list = await execFileAsync(shimPath, [
+      "telegram", "sticker", "list",
+      "--query", "good night",
+      "--emoji", "🌙",
+      "--tag", "sleep",
+      "--connector", "telegram-main",
+      "--limit", "12",
+    ], {env: shimEnv(server)});
+    expect(JSON.parse(list.stdout)).toEqual({
+      query: "good night",
+      emoji: "🌙",
+      tag: "sleep",
+      connectorKey: "telegram-main",
+      limit: 12,
+    });
+
+    const saveSet = await execFileAsync(shimPath, [
+      "telegram", "sticker", "set", "save", "PandaPack",
+      "--connector", "telegram-main",
+      "--sticker", "tg-set:aaaaaaaaaaaaaaaaaaaaaa",
+      "--sticker", "tg-set:bbbbbbbbbbbbbbbbbbbbbb",
+      "--tag", "favorite",
+      "--description", "Panda reactions",
+    ], {env: shimEnv(server)});
+    expect(JSON.parse(saveSet.stdout)).toEqual({
+      setName: "PandaPack",
+      connectorKey: "telegram-main",
+      stickerRefs: ["tg-set:aaaaaaaaaaaaaaaaaaaaaa", "tg-set:bbbbbbbbbbbbbbbbbbbbbb"],
+      tags: ["favorite"],
+      description: "Panda reactions",
     });
   });
 

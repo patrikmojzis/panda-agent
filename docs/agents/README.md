@@ -10,5 +10,6 @@ Start here:
 - [Apps](./apps.md)
 - [Browser](./browser.md)
 - [Email](./email.md)
+- [Telegram stickers](./telegram.md)
 - [Web fetch](./web.md)
 - [Watches](./watches.md)

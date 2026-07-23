@@ -6,6 +6,8 @@ import {isJsonObject} from "../../../lib/json.js";
 import {isRecord} from "../../../lib/records.js";
 import {trimToUndefined} from "../../../lib/strings.js";
 import {assertPathReadable} from "../../../lib/fs.js";
+import type {TelegramStickerStore} from "../../../domain/agents/telegram-stickers/store.js";
+import {parseTelegramStickerLibraryRef} from "../../../domain/agents/telegram-stickers/types.js";
 import type {OutboundDeliveryRecord, OutboundDeliveryTargetHistoryFilter} from "../../../domain/channels/deliveries/types.js";
 import type {ChannelActionInput} from "../../../domain/channels/actions/types.js";
 import {assertCurrentSessionConversationBinding, type ConversationBindingAuthorizer} from "../../../domain/channels/conversation-authority.js";
@@ -35,6 +37,7 @@ import {
   isAllowedTelegramReactionEmoji,
   parseTelegramReactionMessageId,
 } from "./reactions.js";
+import {readTelegramInboundSticker, serializeSafeTelegramSticker} from "./sticker-metadata.js";
 
 export const TELEGRAM_REACT_COMMAND_NAME = "telegram.react";
 export const TELEGRAM_EDIT_COMMAND_NAME = "telegram.edit";
@@ -103,6 +106,7 @@ export type TelegramStickerSendCommandInput = JsonObject & {
   conversationId: string;
   filePath?: string;
   fileId?: string;
+  stickerRef?: string;
 };
 
 type TelegramHistoryDirection = "inbound" | "outbound" | "all";
@@ -248,7 +252,7 @@ const TELEGRAM_UNPIN_JSON_ARGUMENT = {
 
 const TELEGRAM_STICKER_SEND_JSON_ARGUMENT = {
   name: "json",
-  description: "Structured JSON object containing connectorKey, conversationId, and exactly one of filePath or fileId.",
+  description: "Structured JSON object containing connectorKey, conversationId, and exactly one of stickerRef, filePath, or fileId.",
   valueType: "json" as const,
 };
 
@@ -561,11 +565,12 @@ function parseTelegramStickerSendCommandInput(input: unknown): TelegramStickerSe
   if (!isRecord(input)) {
     throw new Error("telegram.sticker.send input must be a JSON object.");
   }
-  rejectUnexpectedKeys(input, ["connectorKey", "conversationId", "filePath", "fileId"], "telegram.sticker.send input");
+  rejectUnexpectedKeys(input, ["connectorKey", "conversationId", "filePath", "fileId", "stickerRef"], "telegram.sticker.send input");
   const filePath = readOptionalString(input.filePath, "telegram.sticker.send filePath");
   const fileId = readOptionalString(input.fileId, "telegram.sticker.send fileId");
-  if (Boolean(filePath) === Boolean(fileId)) {
-    throw new Error("telegram.sticker.send requires exactly one of filePath or fileId.");
+  const stickerRef = readOptionalString(input.stickerRef, "telegram.sticker.send stickerRef");
+  if ([filePath, fileId, stickerRef].filter(Boolean).length !== 1) {
+    throw new Error("telegram.sticker.send requires exactly one of filePath, fileId, or stickerRef.");
   }
 
   return {
@@ -573,6 +578,7 @@ function parseTelegramStickerSendCommandInput(input: unknown): TelegramStickerSe
     conversationId: readRequiredString(input.conversationId, "telegram.sticker.send conversationId"),
     ...(filePath ? {filePath} : {}),
     ...(fileId ? {fileId} : {}),
+    ...(stickerRef ? {stickerRef} : {}),
   };
 }
 
@@ -1179,6 +1185,7 @@ export async function executeTelegramStickerSendCommand(
   request: CommandRequest,
   queue: TelegramStickerSendCommandQueue,
   fileResolver: CommandFileResolver,
+  stickers: Pick<TelegramStickerStore, "getSticker">,
 ): Promise<JsonObject> {
   parseTelegramActionConversationId(input.conversationId);
   await assertCurrentSessionConversationBinding({
@@ -1189,15 +1196,37 @@ export async function executeTelegramStickerSendCommand(
     sessionId: request.scope.sessionId,
     commandName: TELEGRAM_STICKER_SEND_COMMAND_NAME,
   });
-  const sticker = input.filePath
-    ? {
+  let sticker:
+    | {type: "file"; path: string}
+    | {type: "file_id"; fileId: string};
+  let resultType: "file" | "file_id" | "library_ref";
+  if (input.filePath) {
+    sticker = {
       type: "file" as const,
       path: await resolveTelegramStickerFilePath(input.filePath, request, fileResolver),
+    };
+    resultType = "file";
+  } else if (input.stickerRef) {
+    const id = parseTelegramStickerLibraryRef(input.stickerRef);
+    const saved = await stickers.getSticker(request.scope.agentKey, id);
+    if (!saved) {
+      throw new Error("telegram.sticker.send found no matching sticker in the current agent library.");
     }
-    : {
+    if (saved.connectorKey !== input.connectorKey) {
+      throw new Error("telegram.sticker.send saved sticker belongs to a different Telegram connector.");
+    }
+    sticker = {
+      type: "file_id" as const,
+      fileId: saved.fileId,
+    };
+    resultType = "library_ref";
+  } else {
+    sticker = {
       type: "file_id" as const,
       fileId: readRequiredString(input.fileId, "telegram.sticker.send fileId"),
     };
+    resultType = "file_id";
+  }
   await queue.enqueueAction({
     channel: TELEGRAM_SOURCE,
     connectorKey: input.connectorKey,
@@ -1212,7 +1241,7 @@ export async function executeTelegramStickerSendCommand(
     ok: true,
     connectorKey: input.connectorKey,
     conversationId: input.conversationId,
-    sticker: sticker.type === "file" ? {type: "file"} : {type: "file_id"},
+    sticker: {type: resultType},
     queued: true,
   }, "telegram.sticker.send result");
 }
@@ -1220,8 +1249,8 @@ export async function executeTelegramStickerSendCommand(
 export const telegramStickerSendCommandDescriptor: CommandDescriptor = {
   name: TELEGRAM_STICKER_SEND_COMMAND_NAME,
   summary: "Send a Telegram sticker.",
-  description: "Queues a Telegram sticker action for an explicit chat and connector. Use --file for a workspace sticker file or --file-id for a Telegram-hosted sticker id.",
-  usage: "panda telegram sticker send --chat <conversation-id> --connector <key> (--file <path>|--file-id <id>)",
+  description: "Queues a Telegram sticker action for an explicit chat and connector. Prefer an agent-library ref; file and raw file-id remain available for compatibility.",
+  usage: "panda telegram sticker send --chat <conversation-id> --connector <key> (--ref <sticker-ref>|--file <path>|--file-id <id>)",
   inputModes: ["flags", "json", "stdin", "file"],
   outputModes: ["json", "text"],
   arguments: [
@@ -1240,22 +1269,33 @@ export const telegramStickerSendCommandDescriptor: CommandDescriptor = {
       valueName: "key",
     },
     {
+      name: "ref",
+      description: "Agent-library sticker reference.",
+      valueType: "string",
+      valueName: "sticker-ref",
+      conflictsWith: ["file", "file-id"],
+    },
+    {
       name: "file",
       description: "Workspace sticker file path.",
       valueType: "string",
       valueName: "path",
-      conflictsWith: ["file-id"],
+      conflictsWith: ["ref", "file-id"],
     },
     {
       name: "file-id",
       description: "Telegram sticker file id.",
       valueType: "string",
       valueName: "id",
-      conflictsWith: ["file"],
+      conflictsWith: ["ref", "file"],
     },
     TELEGRAM_STICKER_SEND_JSON_ARGUMENT,
   ],
   examples: [
+    {
+      description: "Send a sticker saved in the agent library",
+      command: "panda telegram sticker send --chat 12345 --connector telegram-main --ref tg-lib:00000000-0000-4000-8000-000000000001",
+    },
     {
       description: "Send a workspace sticker file",
       command: "panda telegram sticker send --chat 12345 --connector telegram-main --file ./sticker.webp",
@@ -1548,11 +1588,25 @@ function serializeInboundMedia(metadata: Record<string, unknown>): JsonObject[] 
     const sizeBytes = typeof entry.sizeBytes === "number" && Number.isFinite(entry.sizeBytes)
       ? entry.sizeBytes
       : undefined;
+    const serializedMetadata = isRecord(entry.metadata) ? entry.metadata : undefined;
+    const sticker = id && mimeType && sizeBytes !== undefined && serializedMetadata
+      ? readTelegramInboundSticker({
+        id,
+        source: TELEGRAM_SOURCE,
+        connectorKey: "",
+        mimeType,
+        sizeBytes,
+        localPath: "",
+        metadata: serializedMetadata as JsonValue,
+        createdAt: 0,
+      })
+      : null;
     return [requireCommandJsonObject({
       ...(id ? {id} : {}),
       ...(mimeType ? {mimeType} : {}),
       ...(sizeBytes === undefined ? {} : {sizeBytes}),
       ...(originalFilename ? {originalFilename} : {}),
+      ...(sticker ? {sticker: serializeSafeTelegramSticker(sticker)} : {}),
     }, "telegram.history media")];
   });
 }
@@ -2240,6 +2294,7 @@ export function createTelegramUnpinCommand(queue: TelegramUnpinCommandQueue): Re
 export function createTelegramStickerSendCommand(
   queue: TelegramStickerSendCommandQueue,
   fileResolver: CommandFileResolver,
+  stickers: Pick<TelegramStickerStore, "getSticker">,
 ): RegisteredCommand {
   return {
     descriptor: telegramStickerSendCommandDescriptor,
@@ -2249,6 +2304,7 @@ export function createTelegramStickerSendCommand(
         request,
         queue,
         fileResolver,
+        stickers,
       );
       return {
         ok: true,

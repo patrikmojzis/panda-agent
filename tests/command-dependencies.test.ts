@@ -78,6 +78,7 @@ describe("command dependency builders", () => {
       channelMessages: fakeDependency("channelMessages"),
       outboundDeliveries,
       channelActions,
+      telegramStickers: fakeDependency("telegramStickers"),
       email: fakeDependency("email"),
     };
     const built = buildDaemonChannelCommandDependencies(deps);
@@ -87,6 +88,7 @@ describe("command dependency builders", () => {
       connectorAccounts: deps.connectorAccounts,
       conversations: deps.conversations,
       channelMessages: deps.channelMessages,
+      telegramStickers: deps.telegramStickers,
       email: deps.email,
     });
     expect(built.outboundDeliveries).toEqual({

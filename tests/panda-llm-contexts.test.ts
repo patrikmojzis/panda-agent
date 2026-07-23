@@ -145,7 +145,7 @@ describe("buildDefaultAgentLlmContexts", () => {
     expect(dump).toContain("`panda telegram chat list [--connector <key>]`");
     expect(dump).toContain("`panda telegram chat info <conversation-id> [--connector <key>]`");
     expect(dump).toContain("`panda telegram send --chat <conversation-id> --connector <key> (--text <text|@file|@->|--stdin|--image <path>|--file <path>)... [--reply-to-message-id <message-id>]`");
-    expect(dump).toContain("`panda telegram sticker send --chat <conversation-id> --connector <key> (--file <path>|--file-id <id>)`");
+    expect(dump).toContain("`panda telegram sticker send --chat <conversation-id> --connector <key> (--ref <sticker-ref>|--file <path>|--file-id <id>)`");
     expect(dump).toContain("`panda telegram edit <message-id> (--text <text|@file|@->|--stdin) --chat <conversation-id> --connector <key>`");
     expect(dump).toContain("`panda telegram delete <message-id> --chat <conversation-id> --connector <key>`");
     expect(dump).toContain("`panda telegram pin <message-id> --chat <conversation-id> --connector <key> [--silent]`");

@@ -1,10 +1,10 @@
 {
   "files": [
     {
-      "bytes": 101738,
-      "lines": 3399,
+      "bytes": 121064,
+      "lines": 4039,
       "path": "scripts/agent-command-shim/routes.generated.sh",
-      "sha256": "21ba395142b727c4822d82108a1a18b9e563e0d2b37fb37b0276a629781fb031"
+      "sha256": "6cd01e2afa880e0852c4e8a30e302c03c31595a5b62d0c3561271b362c534d3c"
     },
     {
       "bytes": 1166,
@@ -19,10 +19,10 @@
       "sha256": "90f5ef6dfaeebf09223f66734e27bc6563b2133246cace59746f129535bf7b40"
     },
     {
-      "bytes": 15590,
-      "lines": 413,
+      "bytes": 16335,
+      "lines": 429,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "98c6e5eb24b0e18d0eaf37fd6eb92753aa7587513bb5a8a5e697e1619315311e"
+      "sha256": "ac7c85c778c52c447a01353e0a5b84600d028b31486faf185e53e589fabf242b"
     },
     {
       "bytes": 12121,
@@ -37,16 +37,16 @@
       "sha256": "033685d9e20dc15874865f8bf3e8b9c0d4244ede32cd871ea21590f8b47c45c4"
     },
     {
-      "bytes": 29083,
-      "lines": 814,
+      "bytes": 30652,
+      "lines": 837,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "da42ace9b873c1009e380af722dbaa70e321f3eb58b2e420d3921ef24debd663"
+      "sha256": "f261990ac6c97f1e0adb4e7474fcfe90092f6aae6098ae949a601a8e2d815057"
     },
     {
-      "bytes": 11135,
-      "lines": 270,
+      "bytes": 10997,
+      "lines": 266,
       "path": "src/app/runtime/thread-definition.ts",
-      "sha256": "ffe9b6f8420f34356231ed7d8e534f3d00ff6e824661ce1cacf044aadf762a84"
+      "sha256": "70b15819432e0b53c920e745bcc1059b80d6a10ff8c89cbcb99352121acb101b"
     },
     {
       "bytes": 1490,
@@ -67,10 +67,10 @@
       "sha256": "c6d98f315f2cfc237bbf5fdd6eb957112e92238bedd6e16956056d0a7939fb56"
     },
     {
-      "bytes": 50676,
-      "lines": 1457,
+      "bytes": 58000,
+      "lines": 1624,
       "path": "src/panda/commands/agent-command-modules.ts",
-      "sha256": "f9a8b834e1c713812c678751661d2f5a115ba03426f1ab17d1b36a8434b94fb6"
+      "sha256": "c5ba0410227054297c8c22e784af4022572770fadf2adf89cae9a19dad068365"
     },
     {
       "bytes": 572,
@@ -85,10 +85,10 @@
       "sha256": "accb735748ad4b159fbc311edeaf9947c6b15622d1a723fc5fa1452c1058c151"
     },
     {
-      "bytes": 2203,
-      "lines": 73,
+      "bytes": 1399,
+      "lines": 44,
       "path": "src/panda/contexts/background-jobs-context.ts",
-      "sha256": "c9dba92c99c1b215b5d3e5545677395423b39853d8ebe04fabf857aa246ca3d8"
+      "sha256": "61ecd6241a8370f2c8e41d29172e157556890a599b7649f544148416472f9b1b"
     },
     {
       "bytes": 2844,
@@ -97,10 +97,10 @@
       "sha256": "3072f55b56c701de2cc2653f7f2b5437fed8ad19f49a13648cb4d0592bf7f2b8"
     },
     {
-      "bytes": 9037,
-      "lines": 233,
+      "bytes": 8505,
+      "lines": 226,
       "path": "src/panda/contexts/builder.ts",
-      "sha256": "6288bacdee7e20ef8efeb9c019c96a4873dca771147dc1ab49de746faf3a2988"
+      "sha256": "01aa30c8936dae4f329eec2ce282aea2a7f178816b6fe2e7c5b34c8d5207ec8f"
     },
     {
       "bytes": 958,
@@ -157,16 +157,16 @@
       "sha256": "86648c823a3098b9e55973b0dad0aa52be02920048a4cf959a4e04729d4785e7"
     },
     {
-      "bytes": 15202,
-      "lines": 397,
+      "bytes": 1483,
+      "lines": 45,
       "path": "src/panda/contexts/subagents-context.ts",
-      "sha256": "6c971ad4023f778789c83423cf179f4f430e9fb8ca24db07f70794d8e439844e"
+      "sha256": "f26189a99d1f2486c959cba42616a68b29fc76de03599c4c495891e0bdae2223"
     },
     {
-      "bytes": 8404,
-      "lines": 300,
+      "bytes": 1723,
+      "lines": 56,
       "path": "src/panda/contexts/wiki-overview-context.ts",
-      "sha256": "0287aada70f144eccc8563788290198462def04698e4f38a20c2d8791eb49151"
+      "sha256": "0f4c3d1e259c7805dc9999f5eac541cd9f8ec9e733ad23b37d1b84a14156346a"
     },
     {
       "bytes": 1123,
@@ -235,10 +235,10 @@
       "sha256": "c217f8cbf58aa867cc043864722267afe75a1248f98a81224801478eb823294c"
     },
     {
-      "bytes": 530,
-      "lines": 20,
+      "bytes": 486,
+      "lines": 19,
       "path": "src/prompts/contexts/background-jobs.ts",
-      "sha256": "96332b1cf9422f96dce73fe7eb25f6c7adc3655e52e9469c65b2ef50d64b8f99"
+      "sha256": "28c4f4bfcb3ce6887893d95983a821c41f8effa91cfdff092b63b1ab58352e56"
     },
     {
       "bytes": 2183,
@@ -301,16 +301,16 @@
       "sha256": "e89a7e60fc38cb7440b60356526a5551ea9debaaac190f9f1062f36f37c84fde"
     },
     {
-      "bytes": 5345,
-      "lines": 149,
+      "bytes": 1123,
+      "lines": 35,
       "path": "src/prompts/contexts/subagents.ts",
-      "sha256": "29d343f0850716f9ddfa69d936c1774e263f97cecf22e264bcc2c4b634ecf1ac"
+      "sha256": "eecb83f1cb3f36429cc4b4cf17083555a5fa5c984db8f37fba74a93d2ab37163"
     },
     {
-      "bytes": 1371,
-      "lines": 49,
+      "bytes": 835,
+      "lines": 33,
       "path": "src/prompts/contexts/wiki-overview.ts",
-      "sha256": "409cca2981e6ef2e7ff3393e3ac6eefbb877a363d5133295bd94c1c9a8a35c81"
+      "sha256": "4fe46237f5e3de892ec0b2ff3d995465a4d719dac02404011b866b815a9e16f5"
     },
     {
       "bytes": 773,
@@ -337,10 +337,10 @@
       "sha256": "cad5b2b991230740617070b6e628d49803d08242741e790ee444d5c9635c5df3"
     },
     {
-      "bytes": 15619,
-      "lines": 224,
+      "bytes": 15899,
+      "lines": 225,
       "path": "src/prompts/runtime/default-agent.ts",
-      "sha256": "b31dfc430135841e115a669b24a42f56d7bdccfa472f4f404a35b378b639b033"
+      "sha256": "5a17505e5742f50c39e974b64c1eb09891441078706ccd1f5ee651e66ccb9358"
     },
     {
       "bytes": 1652,
@@ -406,6 +406,11 @@
         "telegram.delete",
         "telegram.pin",
         "telegram.unpin",
+        "telegram.sticker.inspect",
+        "telegram.sticker.save",
+        "telegram.sticker.list",
+        "telegram.sticker.set.show",
+        "telegram.sticker.set.save",
         "telegram.sticker.send",
         "discord.channel.list",
         "discord.history",
@@ -474,6 +479,7 @@
       },
       "toolNames": [
         "postgres.readonly.query",
+        "wiki.overview",
         "wiki.read",
         "wiki.search",
         "wiki.list",
@@ -498,6 +504,7 @@
       "description": "Operational mutation and control surfaces.",
       "toolNames": [
         "thinking_set",
+        "mcp.manage.*",
         "watch.list",
         "watch.show",
         "watch.runs",
@@ -623,99 +630,51 @@
       "name": "bash",
       "parameters": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
-            "additionalProperties": false,
-            "properties": {
-              "background": {
-                "const": true,
-                "description": "Use for servers, watchers, tailers, and other processes expected not to exit.",
-                "type": "boolean"
-              },
-              "command": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "cwd": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "env": {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "propertyNames": {
-                  "type": "string"
-                },
-                "type": "object"
-              },
-              "maxRuntimeMs": {
-                "description": "Maximum lifetime of a background process before Panda terminates its process group.",
-                "maximum": 21600000,
-                "minimum": 100,
-                "type": "integer"
-              },
-              "target": {
-                "description": "Optional registered bash target alias.",
-                "minLength": 1,
-                "type": "string"
-              },
-              "timeoutMs": {
-                "not": {}
-              }
+        "additionalProperties": false,
+        "properties": {
+          "background": {
+            "description": "Set true only for servers, watchers, tailers, and other non-terminating commands.",
+            "type": "boolean"
+          },
+          "command": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "cwd": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "env": {
+            "additionalProperties": {
+              "type": "string"
             },
-            "required": [
-              "command",
-              "background"
-            ],
+            "propertyNames": {
+              "type": "string"
+            },
             "type": "object"
           },
-          {
-            "additionalProperties": false,
-            "properties": {
-              "background": {
-                "const": false,
-                "description": "Foreground mode for finite commands. Omit this field or set it to false.",
-                "type": "boolean"
-              },
-              "command": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "cwd": {
-                "minLength": 1,
-                "type": "string"
-              },
-              "env": {
-                "additionalProperties": {
-                  "type": "string"
-                },
-                "propertyNames": {
-                  "type": "string"
-                },
-                "type": "object"
-              },
-              "maxRuntimeMs": {
-                "not": {}
-              },
-              "target": {
-                "description": "Optional registered bash target alias.",
-                "minLength": 1,
-                "type": "string"
-              },
-              "timeoutMs": {
-                "description": "Maximum time to wait for a finite foreground command. Timeout terminates the process group.",
-                "maximum": 300000,
-                "minimum": 100,
-                "type": "integer"
-              }
-            },
-            "required": [
-              "command"
-            ],
-            "type": "object"
+          "maxRuntimeMs": {
+            "description": "Maximum lifetime of a background process before Panda terminates its process group.",
+            "maximum": 21600000,
+            "minimum": 100,
+            "type": "integer"
+          },
+          "target": {
+            "description": "Optional registered bash target alias.",
+            "minLength": 1,
+            "type": "string"
+          },
+          "timeoutMs": {
+            "description": "Maximum time to wait for a finite foreground command. Timeout terminates the process group.",
+            "maximum": 300000,
+            "minimum": 100,
+            "type": "integer"
           }
-        ]
+        },
+        "required": [
+          "command"
+        ],
+        "type": "object"
       }
     },
     {

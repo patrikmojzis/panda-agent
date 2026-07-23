@@ -4957,7 +4957,12 @@ Usage:
   panda telegram send --help [--json]
   panda telegram send --chat <conversation-id> --connector <key> (--text <text|@file|@->|--stdin|--image <path>|--file <path>)... [--reply-to-message-id <message-id>]
   panda telegram sticker send --help [--json]
-  panda telegram sticker send --chat <conversation-id> --connector <key> (--file <path>|--file-id <id>)
+  panda telegram sticker send --chat <conversation-id> --connector <key> (--ref <sticker-ref>|--file <path>|--file-id <id>)
+  panda telegram sticker inspect <sticker-ref> --chat <conversation-id> --connector <key>
+  panda telegram sticker save <sticker-ref> --chat <conversation-id> --connector <key> [--tag <tag>...] [--description <text>]
+  panda telegram sticker list [--query <text>] [--emoji <emoji>] [--tag <tag>] [--connector <key>] [--limit <n>]
+  panda telegram sticker set show <set-name> --connector <key>
+  panda telegram sticker set save <set-name> --connector <key> (--all|--sticker <sticker-ref>...) [--tag <tag>...] [--description <text>]
   panda telegram react --help [--json]
   panda telegram react <message-id> (--emoji <emoji>|--remove) --chat <conversation-id> --connector <key>
   panda telegram edit --help [--json]
@@ -5035,10 +5040,26 @@ USAGE
 	      sticker)
 	        shift
 	        sticker_subcommand="${1:-}"
-	        [ "$sticker_subcommand" = "send" ] || die "Unknown panda telegram sticker command. Try: panda telegram sticker send --help"
-	        command_name="telegram.sticker.send"
-	        subcommand="sticker send"
-	        shift
+	        case "$sticker_subcommand" in
+	          send|inspect|save|list)
+	            command_name="telegram.sticker.${sticker_subcommand}"
+	            subcommand="sticker ${sticker_subcommand}"
+	            shift
+	            ;;
+	          set)
+	            shift
+	            sticker_set_subcommand="${1:-}"
+	            case "$sticker_set_subcommand" in
+	              show|save)
+	                command_name="telegram.sticker.set.${sticker_set_subcommand}"
+	                subcommand="sticker set ${sticker_set_subcommand}"
+	                shift
+	                ;;
+	              *) die "Unknown panda telegram sticker set command. Try: panda telegram sticker set show --help" ;;
+	            esac
+	            ;;
+	          *) die "Unknown panda telegram sticker command. Try: panda telegram sticker list --help" ;;
+	        esac
 	        ;;
 	      media)
 	        shift
@@ -5212,11 +5233,187 @@ USAGE
 	      execute_json_command "$command_name" "$payload"
 	      exit $?
 	    fi
+	    if [ "$subcommand" = "sticker inspect" ] || [ "$subcommand" = "sticker save" ]; then
+	      sticker_ref="${1:-}"
+	      [ -n "$sticker_ref" ] || die "panda telegram ${subcommand} requires <sticker-ref> or --json @payload.json."
+	      shift
+	      conversation_id=""
+	      connector_key=""
+	      tags_json="[]"
+	      description=""
+	      while [ "$#" -gt 0 ]; do
+	        case "$1" in
+	          --chat)
+	            [ "$#" -gt 1 ] || die "panda telegram ${subcommand} --chat requires a conversation id."
+	            conversation_id="$2"
+	            shift 2
+	            ;;
+	          --connector)
+	            [ "$#" -gt 1 ] || die "panda telegram ${subcommand} --connector requires a key."
+	            connector_key="$2"
+	            shift 2
+	            ;;
+	          --tag)
+	            [ "$subcommand" = "sticker save" ] || die "panda telegram sticker inspect does not accept --tag."
+	            [ "$#" -gt 1 ] || die "panda telegram sticker save --tag requires a tag."
+	            tags_json="$(printf '%s' "$tags_json" | jq -c --arg tag "$2" '. + [$tag]')"
+	            shift 2
+	            ;;
+	          --description)
+	            [ "$subcommand" = "sticker save" ] || die "panda telegram sticker inspect does not accept --description."
+	            [ "$#" -gt 1 ] || die "panda telegram sticker save --description requires text."
+	            description="$(read_text_input "$2")"
+	            shift 2
+	            ;;
+	          *) die "Unknown panda telegram ${subcommand} option: $1" ;;
+	        esac
+	      done
+	      [ -n "$conversation_id" ] || die "panda telegram ${subcommand} requires --chat <conversation-id>."
+	      [ -n "$connector_key" ] || die "panda telegram ${subcommand} requires --connector <key>."
+	      payload="$(jq -n \
+	        --arg stickerRef "$sticker_ref" \
+	        --arg conversationId "$conversation_id" \
+	        --arg connectorKey "$connector_key" \
+	        --argjson tags "$tags_json" \
+	        --arg description "$description" \
+	        '{
+	          stickerRef: $stickerRef,
+	          conversationId: $conversationId,
+	          connectorKey: $connectorKey
+	        }
+	        + (if ($tags | length) > 0 then {tags: $tags} else {} end)
+	        + (if $description != "" then {description: $description} else {} end)')"
+	      execute_json_command "$command_name" "$payload"
+	      exit $?
+	    fi
+	    if [ "$subcommand" = "sticker list" ]; then
+	      query=""
+	      emoji=""
+	      tag=""
+	      connector_key=""
+	      limit=""
+	      while [ "$#" -gt 0 ]; do
+	        case "$1" in
+	          --query)
+	            [ "$#" -gt 1 ] || die "panda telegram sticker list --query requires text."
+	            query="$2"
+	            shift 2
+	            ;;
+	          --emoji)
+	            [ "$#" -gt 1 ] || die "panda telegram sticker list --emoji requires an emoji."
+	            emoji="$2"
+	            shift 2
+	            ;;
+	          --tag)
+	            [ "$#" -gt 1 ] || die "panda telegram sticker list --tag requires a tag."
+	            tag="$2"
+	            shift 2
+	            ;;
+	          --connector)
+	            [ "$#" -gt 1 ] || die "panda telegram sticker list --connector requires a key."
+	            connector_key="$2"
+	            shift 2
+	            ;;
+	          --limit)
+	            [ "$#" -gt 1 ] || die "panda telegram sticker list --limit requires a positive integer."
+	            require_positive_integer "$2" "panda telegram sticker list --limit"
+	            limit="$2"
+	            shift 2
+	            ;;
+	          *) die "Unknown panda telegram sticker list option: $1" ;;
+	        esac
+	      done
+	      payload="$(jq -n \
+	        --arg query "$query" \
+	        --arg emoji "$emoji" \
+	        --arg tag "$tag" \
+	        --arg connectorKey "$connector_key" \
+	        --arg limit "$limit" \
+	        '{}
+	        + (if $query != "" then {query: $query} else {} end)
+	        + (if $emoji != "" then {emoji: $emoji} else {} end)
+	        + (if $tag != "" then {tag: $tag} else {} end)
+	        + (if $connectorKey != "" then {connectorKey: $connectorKey} else {} end)
+	        + (if $limit != "" then {limit: ($limit | tonumber)} else {} end)')"
+	      execute_json_command "$command_name" "$payload"
+	      exit $?
+	    fi
+	    if [ "$subcommand" = "sticker set show" ] || [ "$subcommand" = "sticker set save" ]; then
+	      set_name="${1:-}"
+	      [ -n "$set_name" ] || die "panda telegram ${subcommand} requires <set-name> or --json @payload.json."
+	      shift
+	      connector_key=""
+	      import_all="false"
+	      sticker_refs_json="[]"
+	      tags_json="[]"
+	      description=""
+	      while [ "$#" -gt 0 ]; do
+	        case "$1" in
+	          --connector)
+	            [ "$#" -gt 1 ] || die "panda telegram ${subcommand} --connector requires a key."
+	            connector_key="$2"
+	            shift 2
+	            ;;
+	          --all)
+	            [ "$subcommand" = "sticker set save" ] || die "panda telegram sticker set show does not accept --all."
+	            import_all="true"
+	            shift
+	            ;;
+	          --sticker)
+	            [ "$subcommand" = "sticker set save" ] || die "panda telegram sticker set show does not accept --sticker."
+	            [ "$#" -gt 1 ] || die "panda telegram sticker set save --sticker requires a reference."
+	            sticker_refs_json="$(printf '%s' "$sticker_refs_json" | jq -c --arg ref "$2" '. + [$ref]')"
+	            shift 2
+	            ;;
+	          --tag)
+	            [ "$subcommand" = "sticker set save" ] || die "panda telegram sticker set show does not accept --tag."
+	            [ "$#" -gt 1 ] || die "panda telegram sticker set save --tag requires a tag."
+	            tags_json="$(printf '%s' "$tags_json" | jq -c --arg tag "$2" '. + [$tag]')"
+	            shift 2
+	            ;;
+	          --description)
+	            [ "$subcommand" = "sticker set save" ] || die "panda telegram sticker set show does not accept --description."
+	            [ "$#" -gt 1 ] || die "panda telegram sticker set save --description requires text."
+	            description="$(read_text_input "$2")"
+	            shift 2
+	            ;;
+	          *) die "Unknown panda telegram ${subcommand} option: $1" ;;
+	        esac
+	      done
+	      [ -n "$connector_key" ] || die "panda telegram ${subcommand} requires --connector <key>."
+	      if [ "$subcommand" = "sticker set save" ]; then
+	        sticker_count="$(printf '%s' "$sticker_refs_json" | jq 'length')"
+	        if [ "$import_all" = "true" ] && [ "$sticker_count" -gt 0 ]; then
+	          die "panda telegram sticker set save accepts --all or --sticker, not both."
+	        fi
+	        if [ "$import_all" != "true" ] && [ "$sticker_count" -eq 0 ]; then
+	          die "panda telegram sticker set save requires --all or --sticker <sticker-ref>."
+	        fi
+	      fi
+	      payload="$(jq -n \
+	        --arg setName "$set_name" \
+	        --arg connectorKey "$connector_key" \
+	        --argjson all "$import_all" \
+	        --argjson stickerRefs "$sticker_refs_json" \
+	        --argjson tags "$tags_json" \
+	        --arg description "$description" \
+	        '{
+	          setName: $setName,
+	          connectorKey: $connectorKey
+	        }
+	        + (if $all then {all: true} else {} end)
+	        + (if ($stickerRefs | length) > 0 then {stickerRefs: $stickerRefs} else {} end)
+	        + (if ($tags | length) > 0 then {tags: $tags} else {} end)
+	        + (if $description != "" then {description: $description} else {} end)')"
+	      execute_json_command "$command_name" "$payload"
+	      exit $?
+	    fi
 	    if [ "$subcommand" = "sticker send" ]; then
 	      conversation_id=""
 	      connector_key=""
 	      file_path=""
 	      file_id=""
+	      sticker_ref=""
 	      while [ "$#" -gt 0 ]; do
 	        case "$1" in
 	          --chat)
@@ -5239,6 +5436,11 @@ USAGE
 	            file_id="$2"
 	            shift 2
 	            ;;
+	          --ref)
+	            [ "$#" -gt 1 ] || die "panda telegram sticker send --ref requires a sticker reference."
+	            sticker_ref="$2"
+	            shift 2
+	            ;;
 	          *)
 	            die "Unknown panda telegram sticker send option: $1"
 	            ;;
@@ -5246,23 +5448,24 @@ USAGE
 	      done
 	      [ -n "$conversation_id" ] || die "panda telegram sticker send requires --chat <conversation-id>."
 	      [ -n "$connector_key" ] || die "panda telegram sticker send requires --connector <key>."
-	      if [ -n "$file_path" ] && [ -n "$file_id" ]; then
-	        die "panda telegram sticker send accepts exactly one of --file or --file-id."
-	      fi
-	      if [ -z "$file_path" ] && [ -z "$file_id" ]; then
-	        die "panda telegram sticker send requires --file <path> or --file-id <id>."
-	      fi
+	      sticker_source_count=0
+	      [ -z "$file_path" ] || sticker_source_count=$((sticker_source_count + 1))
+	      [ -z "$file_id" ] || sticker_source_count=$((sticker_source_count + 1))
+	      [ -z "$sticker_ref" ] || sticker_source_count=$((sticker_source_count + 1))
+	      [ "$sticker_source_count" -eq 1 ] || die "panda telegram sticker send requires exactly one of --ref, --file, or --file-id."
 	      payload="$(jq -n \
 	        --arg connectorKey "$connector_key" \
 	        --arg conversationId "$conversation_id" \
 	        --arg filePath "$file_path" \
 	        --arg fileId "$file_id" \
+	        --arg stickerRef "$sticker_ref" \
 	        '{
 	          connectorKey: $connectorKey,
 	          conversationId: $conversationId
 	        }
 	        + (if $filePath != "" then {filePath: $filePath} else {} end)
-	        + (if $fileId != "" then {fileId: $fileId} else {} end)')"
+	        + (if $fileId != "" then {fileId: $fileId} else {} end)
+	        + (if $stickerRef != "" then {stickerRef: $stickerRef} else {} end)')"
 	      execute_json_command "$command_name" "$payload"
 	      exit $?
 	    fi

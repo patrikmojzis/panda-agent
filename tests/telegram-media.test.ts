@@ -81,6 +81,7 @@ describe("telegram media", () => {
       {
         kind: "photo",
         fileId: "large-photo",
+        fileUniqueId: "large-photo-uniq",
         mimeType: "image/jpeg",
         sizeBytes: 5,
         metadata: {
@@ -92,6 +93,7 @@ describe("telegram media", () => {
       {
         kind: "sticker",
         fileId: "video-sticker",
+        fileUniqueId: "video-sticker-uniq",
         mimeType: "video/webm",
         sizeBytes: 5,
         metadata: {
@@ -99,6 +101,7 @@ describe("telegram media", () => {
           emoji: "🙂",
           setName: "panda",
           stickerType: "regular",
+          stickerFormat: "video",
           isAnimated: false,
           isVideo: true,
           width: 512,
@@ -108,6 +111,7 @@ describe("telegram media", () => {
       {
         kind: "audio",
         fileId: "audio-file",
+        fileUniqueId: "audio-file-uniq",
         mimeType: "audio/mpeg",
         sizeBytes: 5,
         hintFilename: "song.mp3",
@@ -121,6 +125,7 @@ describe("telegram media", () => {
       {
         kind: "animation",
         fileId: "animation-file",
+        fileUniqueId: "animation-file-uniq",
         mimeType: "image/gif",
         sizeBytes: 5,
         hintFilename: "fun.gif",
@@ -134,6 +139,7 @@ describe("telegram media", () => {
       {
         kind: "video_note",
         fileId: "video-note-file",
+        fileUniqueId: "video-note-uniq",
         mimeType: "video/mp4",
         sizeBytes: 5,
         metadata: {
@@ -207,6 +213,7 @@ describe("telegram media", () => {
       sizeBytes: 5,
       metadata: {
         telegramFileId: "video-file",
+        telegramFileUniqueId: "video-file-uniq",
         telegramFilePath: "videos/file.mp4",
         telegramMediaKind: "video",
         duration: 8,

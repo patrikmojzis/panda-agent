@@ -284,6 +284,21 @@ agent_command_shim_lookup_route() {
     'telegram unpin')
       printf '%s\t%s\n' 'telegram.unpin' 'telegram unpin'
       ;;
+    'telegram sticker inspect')
+      printf '%s\t%s\n' 'telegram.sticker.inspect' 'telegram sticker inspect'
+      ;;
+    'telegram sticker save')
+      printf '%s\t%s\n' 'telegram.sticker.save' 'telegram sticker save'
+      ;;
+    'telegram sticker list')
+      printf '%s\t%s\n' 'telegram.sticker.list' 'telegram sticker list'
+      ;;
+    'telegram sticker set show')
+      printf '%s\t%s\n' 'telegram.sticker.set.show' 'telegram sticker set show'
+      ;;
+    'telegram sticker set save')
+      printf '%s\t%s\n' 'telegram.sticker.set.save' 'telegram sticker set save'
+      ;;
     'telegram sticker send')
       printf '%s\t%s\n' 'telegram.sticker.send' 'telegram sticker send'
       ;;
@@ -461,7 +476,12 @@ agent_command_shim_print_root_usage_commands() {
   panda telegram delete <message-id> --chat <conversation-id> --connector <key>
   panda telegram pin <message-id> --chat <conversation-id> --connector <key> [--silent]
   panda telegram unpin <message-id> --chat <conversation-id> --connector <key>
-  panda telegram sticker send --chat <conversation-id> --connector <key> (--file <path>|--file-id <id>)
+  panda telegram sticker inspect <sticker-ref> --chat <conversation-id> --connector <key>
+  panda telegram sticker save <sticker-ref> --chat <conversation-id> --connector <key> [--tag <tag>...] [--description <text>]
+  panda telegram sticker list [--query <text>] [--emoji <emoji>] [--tag <tag>] [--connector <key>] [--limit <n>]
+  panda telegram sticker set show <set-name> --connector <key>
+  panda telegram sticker set save <set-name> --connector <key> (--all|--sticker <sticker-ref>...) [--tag <tag>...] [--description <text>]
+  panda telegram sticker send --chat <conversation-id> --connector <key> (--ref <sticker-ref>|--file <path>|--file-id <id>)
   panda discord channel list [--connector <key>]
   panda discord history --channel <channel-id> [--connector <key>] [--direction inbound|outbound|all] [--limit <n>]
   panda discord send --channel <channel-id> --connector <key> [--thread <thread-id>] [--guild <guild-id>] (--text <text|@file|@->|--stdin|--image <path>|--file <path>)... [--reply-to-message-id <message-id>]
@@ -1466,6 +1486,56 @@ Detailed help is available only through the current agent command lease.
 Usage:
   panda telegram unpin --json @payload.json
 PANDA_COMMAND_HELP_telegram_unpin
+      ;;
+    'telegram.sticker.inspect')
+      cat <<'PANDA_COMMAND_HELP_telegram_sticker_inspect'
+Panda command: telegram.sticker.inspect
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda telegram sticker inspect --json @payload.json
+PANDA_COMMAND_HELP_telegram_sticker_inspect
+      ;;
+    'telegram.sticker.save')
+      cat <<'PANDA_COMMAND_HELP_telegram_sticker_save'
+Panda command: telegram.sticker.save
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda telegram sticker save --json @payload.json
+PANDA_COMMAND_HELP_telegram_sticker_save
+      ;;
+    'telegram.sticker.list')
+      cat <<'PANDA_COMMAND_HELP_telegram_sticker_list'
+Panda command: telegram.sticker.list
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda telegram sticker list --json @payload.json
+PANDA_COMMAND_HELP_telegram_sticker_list
+      ;;
+    'telegram.sticker.set.show')
+      cat <<'PANDA_COMMAND_HELP_telegram_sticker_set_show'
+Panda command: telegram.sticker.set.show
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda telegram sticker set show --json @payload.json
+PANDA_COMMAND_HELP_telegram_sticker_set_show
+      ;;
+    'telegram.sticker.set.save')
+      cat <<'PANDA_COMMAND_HELP_telegram_sticker_set_save'
+Panda command: telegram.sticker.set.save
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda telegram sticker set save --json @payload.json
+PANDA_COMMAND_HELP_telegram_sticker_set_save
       ;;
     'telegram.sticker.send')
       cat <<'PANDA_COMMAND_HELP_telegram_sticker_send'
@@ -3420,6 +3490,96 @@ PANDA_COMMAND_HELP_JSON_telegram_pin
   "examples": []
 }
 PANDA_COMMAND_HELP_JSON_telegram_unpin
+      ;;
+    'telegram.sticker.inspect')
+      cat <<'PANDA_COMMAND_HELP_JSON_telegram_sticker_inspect'
+{
+  "name": "telegram.sticker.inspect",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda telegram sticker inspect --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_telegram_sticker_inspect
+      ;;
+    'telegram.sticker.save')
+      cat <<'PANDA_COMMAND_HELP_JSON_telegram_sticker_save'
+{
+  "name": "telegram.sticker.save",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda telegram sticker save --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_telegram_sticker_save
+      ;;
+    'telegram.sticker.list')
+      cat <<'PANDA_COMMAND_HELP_JSON_telegram_sticker_list'
+{
+  "name": "telegram.sticker.list",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda telegram sticker list --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_telegram_sticker_list
+      ;;
+    'telegram.sticker.set.show')
+      cat <<'PANDA_COMMAND_HELP_JSON_telegram_sticker_set_show'
+{
+  "name": "telegram.sticker.set.show",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda telegram sticker set show --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_telegram_sticker_set_show
+      ;;
+    'telegram.sticker.set.save')
+      cat <<'PANDA_COMMAND_HELP_JSON_telegram_sticker_set_save'
+{
+  "name": "telegram.sticker.set.save",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda telegram sticker set save --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_telegram_sticker_set_save
       ;;
     'telegram.sticker.send')
       cat <<'PANDA_COMMAND_HELP_JSON_telegram_sticker_send'

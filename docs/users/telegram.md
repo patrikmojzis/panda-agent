@@ -27,6 +27,14 @@ Replacing an existing key is blocked by default. To rotate the same bot intentio
 printf '%s' "$NEW_BOT_TOKEN" | panda telegram account set main --agent clawd --bot-token-stdin --replace
 ```
 
+## Sticker packs and the agent library
+
+Inbound Telegram stickers include safe model-facing metadata: emoji, pack name, sticker type and format, dimensions, and an opaque `tg-in:` reference. The agent can inspect that received sticker, browse its public Telegram pack, and save selected stickers or the whole pack to its durable agent-owned library.
+
+Saved stickers use opaque `tg-lib:` references. Panda keeps Telegram `file_id` values private and sends saved static, animated, and video stickers directly from Telegram without downloading and uploading them again. Libraries are limited to 500 stickers per agent; a pack import is limited to 200 and deduplicates by Telegram `file_unique_id` within a connector.
+
+See [Telegram stickers for agents](../agents/telegram.md) for the command workflow.
+
 ## Troubleshooting
 
 - `Unknown Telegram account main`: store it in Control Telegram setup, or run `panda telegram account set main --agent <agent> --bot-token-stdin`.
@@ -34,3 +42,4 @@ printf '%s' "$NEW_BOT_TOKEN" | panda telegram account set main --agent clawd --b
 - Telegram not visible in Control: make sure the connector account is agent-owned (`--agent <agent>` or Control setup), enabled, and has a stored `bot_token` secret.
 - Inbound messages do not route: bind the Telegram conversation to a session and pair the numeric Telegram user id to an identity already paired with the agent.
 - Docker worker not running: `TELEGRAM_ENABLED=true` enables the worker service; bot tokens still belong in DB-stored connector accounts.
+- Sticker set lookup fails: verify the connector is enabled and the pack still exists. Deleted/private packs and Telegram API failures are returned as command errors without exposing the bot token.

@@ -48,6 +48,7 @@ export interface DaemonChannelCommandDependenciesInput {
   channelActions: {
     enqueueAction<K extends ChannelActionKind>(input: ChannelActionInput<K>): Promise<ChannelActionRecord<K>>;
   };
+  telegramStickers: RequiredCommandDependency<"telegramStickers">;
   email: RequiredCommandDependency<"email">;
 }
 
@@ -122,6 +123,7 @@ export function buildDaemonChannelCommandDependencies(
       listConversationBindings: (filter) => input.conversations.listConversationBindings(filter),
     },
     channelActions,
+    telegramStickers: input.telegramStickers,
     email: input.email,
   };
 }

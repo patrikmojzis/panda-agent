@@ -6,6 +6,9 @@ import {PostgresOutboundDeliveryStore} from "../../domain/channels/deliveries/po
 import {ChannelOutboundDeliveryWorker} from "../../domain/channels/deliveries/worker.js";
 import {PostgresConnectorLeaseRepo} from "../../domain/connector-leases/repo.js";
 import {PostgresConnectorAccountStore} from "../../domain/connectors/postgres.js";
+import {resolveCredentialCrypto} from "../../domain/credentials/crypto.js";
+import {PostgresTelegramStickerStore} from "../../domain/agents/telegram-stickers/postgres.js";
+import {TelegramStickerLibrary} from "../../domain/agents/telegram-stickers/service.js";
 import {HeartbeatRunner} from "../../domain/scheduling/heartbeats/runner.js";
 import {ScheduledTaskRunner} from "../../domain/scheduling/tasks/runner.js";
 import {ConversationRepo} from "../../domain/sessions/conversations/repo.js";
@@ -34,6 +37,7 @@ import {EMAIL_CONNECTOR_KEY} from "../../domain/email/shared.js";
 import {createEmailOutboundAdapter} from "../../integrations/channels/email/outbound.js";
 import {EmailSyncRunner} from "../../integrations/channels/email/sync-runner.js";
 import {TELEGRAM_SOURCE,} from "../../integrations/channels/telegram/config.js";
+import {createTelegramStickerSetReader} from "../../integrations/channels/telegram/sticker-set-reader.js";
 import {WHATSAPP_SOURCE} from "../../integrations/channels/whatsapp/config.js";
 import {resolveAgentMediaDir} from "./data-dir.js";
 import {readPositiveIntegerEnv} from "./database.js";
@@ -243,6 +247,16 @@ export async function bootstrapDaemonContext(
     const connectorAccounts = new PostgresConnectorAccountStore({
       pool: runtime.pool,
     });
+    const telegramStickerStore = new PostgresTelegramStickerStore({
+      pool: runtime.pool,
+    });
+    const telegramStickers = new TelegramStickerLibrary(
+      telegramStickerStore,
+      createTelegramStickerSetReader({
+        accounts: connectorAccounts,
+        crypto: resolveCredentialCrypto(),
+      }),
+    );
 
     sessionRoutes = new SessionRouteRepo({
       pool: runtime.pool,
@@ -265,6 +279,7 @@ export async function bootstrapDaemonContext(
         channelMessages: runtime.store,
         outboundDeliveries,
         channelActions,
+        telegramStickers,
         email: runtime.email,
       }),
       {registrationPhase: "daemon.channel", requireAll: true},
@@ -292,6 +307,7 @@ export async function bootstrapDaemonContext(
       outboundDeliveries,
       a2aBindings,
       channelActions,
+      telegramStickerStore,
       connectorLeases,
       requests,
       daemonState,

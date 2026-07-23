@@ -3,6 +3,7 @@ import type {MediaDescriptor, RememberedRoute} from "../../../domain/channels/ty
 import {renderTelegramInboundText, renderTelegramReactionText,} from "../../../prompts/channels/telegram.js";
 import {TELEGRAM_SOURCE} from "./config.js";
 import {describeMediaDescriptor, serializeMediaDescriptor} from "../media-shared.js";
+import {describeTelegramSticker, readTelegramInboundSticker} from "./sticker-metadata.js";
 
 export interface TelegramInboundTextOptions {
   connectorKey: string;
@@ -158,7 +159,10 @@ export function buildTelegramInboundText(options: TelegramInboundTextOptions): s
     firstName: options.firstName,
     lastName: options.lastName,
     replyToMessageId: options.replyToMessageId,
-    attachments: options.media.map((descriptor) => describeMediaDescriptor(descriptor)),
+    attachments: options.media.map((descriptor) => {
+      const sticker = readTelegramInboundSticker(descriptor);
+      return describeMediaDescriptor(descriptor, sticker ? describeTelegramSticker(sticker) : []);
+    }),
     body: options.text,
   });
 }

@@ -67,7 +67,7 @@ function buildSecretRedactionFragments(secret: string): readonly string[] {
   return [...new Set([exact, ...pieces])];
 }
 
-function sanitizeSecretError(error: unknown, secret: string): Error {
+export function sanitizeTelegramSecretError(error: unknown, secret: string): Error {
   const message = error instanceof Error ? error.message : String(error);
   let sanitized = message;
   for (const fragment of buildSecretRedactionFragments(secret)) {
@@ -77,11 +77,11 @@ function sanitizeSecretError(error: unknown, secret: string): Error {
   return new Error(sanitized);
 }
 
-async function withSecretErrorSafety<T>(secret: string, fn: () => Promise<T>): Promise<T> {
+export async function withTelegramSecretErrorSafety<T>(secret: string, fn: () => Promise<T>): Promise<T> {
   try {
     return await fn();
   } catch (error) {
-    throw sanitizeSecretError(error, secret);
+    throw sanitizeTelegramSecretError(error, secret);
   }
 }
 
@@ -131,9 +131,9 @@ export async function setTelegramBotAccount(input: SetTelegramBotAccountInput): 
   if (existing && existing.ownerKind === "agent" && input.ownerAgentKey && existing.ownerAgentKey && existing.ownerAgentKey !== input.ownerAgentKey) {
     throw new Error(`Telegram account ${input.accountKey} is already owned by agent ${existing.ownerAgentKey}. Choose a per-bot account key such as ${input.ownerAgentKey}, or replace it from that owning agent first.`);
   }
-  const bot = await withSecretErrorSafety(botToken, () => input.client.getBotIdentity(botToken));
+  const bot = await withTelegramSecretErrorSafety(botToken, () => input.client.getBotIdentity(botToken));
   const account = await input.store.upsertAccount(buildTelegramAccountInput(input, bot));
-  await withSecretErrorSafety(botToken, () => (
+  await withTelegramSecretErrorSafety(botToken, () => (
     input.store.setSecret(account.id, TELEGRAM_BOT_TOKEN_SECRET_KEY, botToken, crypto)
   ));
   return {account, bot};
@@ -149,7 +149,7 @@ export async function validateStoredTelegramBotAccount(input: StoredTelegramBotA
   if (!botToken) {
     throw new Error(`Telegram account ${input.accountKey} does not have a stored bot token. Re-store it in Control → agent → Connectors → Telegram setup, or run \`panda telegram account set ${input.accountKey} --replace --agent <agentKey> --bot-token-stdin\`.`);
   }
-  const bot = await withSecretErrorSafety(botToken, () => input.client.getBotIdentity(botToken));
+  const bot = await withTelegramSecretErrorSafety(botToken, () => input.client.getBotIdentity(botToken));
   if (bot.id !== account.connectorKey) {
     throw new Error("Stored Telegram token identity does not match the connector account.");
   }

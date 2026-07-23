@@ -91,6 +91,38 @@ describe("telegram helpers", () => {
     })).toContain("identity_handle: alice");
   });
 
+  it("adds safe first-class sticker metadata to inbound context", () => {
+    const text = buildTelegramInboundText({
+      connectorKey: "bot-main",
+      externalConversationId: "123",
+      externalActorId: "456",
+      externalMessageId: "789",
+      identityHandle: "alice",
+      chatId: "123",
+      chatType: "private",
+      media: [mediaDescriptor({
+        mimeType: "application/x-tgsticker",
+        metadata: {
+          telegramMediaKind: "sticker",
+          telegramFileId: "private-file-id",
+          telegramFileUniqueId: "private-unique-id",
+          emoji: "🎉",
+          setName: "PandaPack",
+          stickerType: "regular",
+          stickerFormat: "animated",
+          width: 512,
+          height: 512,
+        },
+      })],
+    });
+
+    expect(text).toContain("sticker_ref: tg-in:media-1");
+    expect(text).toContain("sticker_set_name: PandaPack");
+    expect(text).toContain("sticker_format: animated");
+    expect(text).not.toContain("private-file-id");
+    expect(text).not.toContain("private-unique-id");
+  });
+
   it("builds reaction text with reaction-specific context fields", () => {
     const text = buildTelegramReactionText({
       connectorKey: "bot-main",

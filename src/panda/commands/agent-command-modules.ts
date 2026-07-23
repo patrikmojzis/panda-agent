@@ -297,6 +297,19 @@ import {
   telegramStickerSendCommandDescriptor,
   telegramUnpinCommandDescriptor,
 } from "../../integrations/channels/telegram/commands.js";
+import type {TelegramStickerLibrary} from "../../domain/agents/telegram-stickers/service.js";
+import {
+  createTelegramStickerInspectCommand,
+  createTelegramStickerListCommand,
+  createTelegramStickerSaveCommand,
+  createTelegramStickerSetSaveCommand,
+  createTelegramStickerSetShowCommand,
+  telegramStickerInspectCommandDescriptor,
+  telegramStickerListCommandDescriptor,
+  telegramStickerSaveCommandDescriptor,
+  telegramStickerSetSaveCommandDescriptor,
+  telegramStickerSetShowCommandDescriptor,
+} from "../../integrations/channels/telegram/sticker-commands.js";
 import {
   createWhatsAppChatListCommand,
   createWhatsAppHistoryCommand,
@@ -414,6 +427,7 @@ export interface AgentCommandModuleDependencies {
   channelMessages?: ChannelCommandMessages;
   outboundDeliveries?: ChannelCommandDeliveries;
   channelActions?: TelegramActionCommandQueue;
+  telegramStickers?: TelegramStickerLibrary;
   email?: EmailCommandStore;
   a2aMessaging?: MessageAgentCommandQueue;
   a2aDeliveries?: A2ADeliveryReader;
@@ -669,6 +683,22 @@ function requireChannelActions(dependencies: AgentCommandModuleDependencies): Te
   }
 
   return dependencies.channelActions;
+}
+
+function requireTelegramStickers(dependencies: AgentCommandModuleDependencies): TelegramStickerLibrary {
+  if (!dependencies.telegramStickers) {
+    throw new Error("Agent command module requires telegramStickers.");
+  }
+  return dependencies.telegramStickers;
+}
+
+function telegramStickerCommandServices(dependencies: AgentCommandModuleDependencies) {
+  return {
+    library: requireTelegramStickers(dependencies),
+    messages: requireChannelMessages(dependencies),
+    conversations: requireConversations(dependencies),
+    connectorAccounts: requireConnectorAccounts(dependencies),
+  };
 }
 
 function requireEmail(dependencies: AgentCommandModuleDependencies): EmailCommandStore {
@@ -1323,6 +1353,41 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
     (dependencies) => createTelegramUnpinCommand(requireChannelActions(dependencies)),
   ),
   daemonChannelCommandModule(
+    telegramStickerInspectCommandDescriptor,
+    ["telegram", "sticker", "inspect"],
+    "@payload.json",
+    agentCommandPolicy(["communicate_human"]),
+    (dependencies) => createTelegramStickerInspectCommand(telegramStickerCommandServices(dependencies)),
+  ),
+  daemonChannelCommandModule(
+    telegramStickerSaveCommandDescriptor,
+    ["telegram", "sticker", "save"],
+    "@payload.json",
+    agentCommandPolicy(["communicate_human"]),
+    (dependencies) => createTelegramStickerSaveCommand(telegramStickerCommandServices(dependencies)),
+  ),
+  daemonChannelCommandModule(
+    telegramStickerListCommandDescriptor,
+    ["telegram", "sticker", "list"],
+    "{}",
+    agentCommandPolicy(["communicate_human"]),
+    (dependencies) => createTelegramStickerListCommand(telegramStickerCommandServices(dependencies)),
+  ),
+  daemonChannelCommandModule(
+    telegramStickerSetShowCommandDescriptor,
+    ["telegram", "sticker", "set", "show"],
+    "@payload.json",
+    agentCommandPolicy(["communicate_human"]),
+    (dependencies) => createTelegramStickerSetShowCommand(telegramStickerCommandServices(dependencies)),
+  ),
+  daemonChannelCommandModule(
+    telegramStickerSetSaveCommandDescriptor,
+    ["telegram", "sticker", "set", "save"],
+    "@payload.json",
+    agentCommandPolicy(["communicate_human"]),
+    (dependencies) => createTelegramStickerSetSaveCommand(telegramStickerCommandServices(dependencies)),
+  ),
+  daemonChannelCommandModule(
     telegramStickerSendCommandDescriptor,
     ["telegram", "sticker", "send"],
     "@payload.json",
@@ -1330,6 +1395,7 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
     (dependencies) => createTelegramStickerSendCommand(
       requireChannelActions(dependencies),
       requireCommandFileResolver(dependencies),
+      requireTelegramStickers(dependencies),
     ),
   ),
   daemonChannelCommandModule(
