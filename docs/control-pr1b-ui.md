@@ -90,13 +90,16 @@ When Control is enabled, `docker-stack.sh` wires `panda-core` like this:
 
 - `PANDA_CONTROL_HOST=0.0.0.0` inside the container so Docker can publish the port.
 - `PANDA_CONTROL_PORT=${PANDA_CONTROL_PORT:-4767}` inside the container.
+- `PANDA_CONTROL_PUBLIC_URL` is passed through for OAuth callback construction. Set it to the canonical Tailscale HTTPS URL when MCP OAuth is used.
 - `PANDA_CONTROL_PUBLISH_HOST=${PANDA_CONTROL_PUBLISH_HOST:-127.0.0.1}` on the Docker host.
 - `PANDA_CONTROL_PUBLISH_PORT=${PANDA_CONTROL_PUBLISH_PORT:-${PANDA_CONTROL_PORT:-4767}}` on the Docker host.
 
 The safe default publishes Control on host loopback only (`127.0.0.1:4767`). Keep that default when you will expose it through Tailscale Serve on the host:
 
 ```bash
-PANDA_CONTROL_ENABLED=true ./scripts/docker-stack.sh up --build
+PANDA_CONTROL_ENABLED=true \
+PANDA_CONTROL_PUBLIC_URL=https://panda-mini.example.ts.net \
+./scripts/docker-stack.sh up --build
 tailscale serve http://127.0.0.1:4767
 ```
 

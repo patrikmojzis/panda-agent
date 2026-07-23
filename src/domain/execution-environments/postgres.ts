@@ -50,7 +50,12 @@ function parseCredentialPolicy(value: unknown): ExecutionCredentialPolicy {
     return {mode: "all_agent"};
   }
   if (value.mode === "allowlist") {
-    return {mode: "allowlist", envKeys: readTrimmedList(value.envKeys)};
+    const credentialRefs = readTrimmedList(value.credentialRefs);
+    return {
+      mode: "allowlist",
+      envKeys: readTrimmedList(value.envKeys),
+      ...(credentialRefs.length > 0 ? {credentialRefs} : {}),
+    };
   }
   return {mode: "none"};
 }

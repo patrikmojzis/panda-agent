@@ -206,6 +206,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
       credentialPolicy: {
         mode: "allowlist",
         envKeys: [" NPM_TOKEN ", ""],
+        credentialRefs: [" mcp-oauth:reports ", ""],
       },
       skillPolicy: {
         mode: "allowlist",
@@ -224,6 +225,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
       credentialPolicy: {
         mode: "allowlist",
         envKeys: ["NPM_TOKEN"],
+        credentialRefs: ["mcp-oauth:reports"],
       },
       skillPolicy: {
         mode: "allowlist",

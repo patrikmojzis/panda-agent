@@ -478,6 +478,7 @@ function parsePayload<K extends RuntimeRequestKind>(
         execution: parseSubagentExecution(payload.execution),
         environmentId: parseOptionalString(payload.environmentId),
         credentialAllowlist: parseOptionalStringArray(payload.credentialAllowlist, "credential allowlist"),
+        credentialRefAllowlist: parseOptionalStringArray(payload.credentialRefAllowlist, "credential ref allowlist"),
         toolGroups: parseOptionalStringArray(payload.toolGroups, "subagent tool groups"),
         model: parseOptionalString(payload.model),
         thinking: parseThinking(payload.thinking),

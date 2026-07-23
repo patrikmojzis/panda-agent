@@ -116,6 +116,7 @@ export function createDaemonRequestProcessor(
       execution: payload.execution,
       environmentId: payload.environmentId,
       credentialAllowlist: payload.credentialAllowlist,
+      credentialRefAllowlist: payload.credentialRefAllowlist,
       toolGroups: payload.toolGroups,
       model: payload.model,
       thinking: payload.thinking,

@@ -386,7 +386,7 @@ agent_command_shim_print_root_usage_commands() {
   panda todo done <index>
   panda todo block <index>
   panda todo clear
-  panda subagent spawn (<task|@file|@->|--prompt <text|@file|@->) [--profile <slug>|--tool-group <group>...] [--context <text|@file|@->] [(--environment <environment-id> [--isolated]|--agent-workspace)] [--credential <env-key>...]
+  panda subagent spawn (<task|@file|@->|--prompt <text|@file|@->) [--profile <slug>|--tool-group <group>...] [--context <text|@file|@->] [(--environment <environment-id> [--isolated]|--agent-workspace)] [--credential <env-key>...] [--credential-ref <credential-ref>...]
   panda subagent list [--run-status running|completed|failed|all] [--limit <n>]
   panda subagent show <session-id>
   panda subagent profile list [--include-disabled]

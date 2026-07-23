@@ -1,6 +1,8 @@
 import {Client} from "@modelcontextprotocol/sdk/client/index.js";
 import {SSEClientTransport, SseError} from "@modelcontextprotocol/sdk/client/sse.js";
 import {StreamableHTTPClientTransport, StreamableHTTPError} from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import {UnauthorizedError} from "@modelcontextprotocol/sdk/client/auth.js";
+import {OAuthError} from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import {CompatibilityCallToolResultSchema, ErrorCode, McpError} from "@modelcontextprotocol/sdk/types.js";
 import type {JsonSchemaType, JsonSchemaValidator, jsonSchemaValidator} from "@modelcontextprotocol/sdk/validation";
 
@@ -20,6 +22,8 @@ import {
 } from "../../domain/mcp/types.js";
 import {BoundedStdioClientTransport, McpStdioIngressLimitError} from "./stdio-transport.js";
 import {McpRedactionCollisionError, redactExactJson, StreamingSecretRedactor} from "./redaction.js";
+import {McpOAuthAuthorizationRequiredError, type McpOAuthProviderSession, type McpOAuthRuntimeProviderFactory} from "./oauth.js";
+import {isLoopbackHttpHostname} from "../../lib/http.js";
 
 export type McpRunnerPhase =
   | "connect"
@@ -140,12 +144,18 @@ function createBoundedFetch(
   onResponse: () => void,
 ): typeof fetch {
   const configured = new URL(config.url);
+  const allowedOrigins = new Set([configured.origin, ...(config.oauth?.auth.trustedOrigins ?? [])]);
   return async (input, init = {}) => {
     const request = new Request(input, init);
     const requestUrl = new URL(request.url);
-    if ((requestUrl.protocol !== "http:" && requestUrl.protocol !== "https:") || requestUrl.origin !== configured.origin) {
+    const secureProtocol = requestUrl.protocol === "https:"
+      || (requestUrl.protocol === "http:" && (!config.oauth || isLoopbackHttpHostname(requestUrl.hostname)));
+    if (!secureProtocol || !allowedOrigins.has(requestUrl.origin)) {
       throw new McpHttpBoundaryError("connect");
     }
+    const resourceRequest = requestUrl.origin === configured.origin
+      && requestUrl.pathname === configured.pathname
+      && requestUrl.search === configured.search;
     const signal = abortSignals(deadlineSignal, request.signal);
     let response: Response;
     try {
@@ -159,14 +169,17 @@ function createBoundedFetch(
       await response.body?.cancel().catch(() => undefined);
       throw new McpHttpBoundaryError("http_status", response.status);
     }
-    if (!response.ok) {
+    if (!response.ok && !(config.oauth && (resourceRequest || requestUrl.origin !== configured.origin || requestUrl.pathname !== configured.pathname))) {
       await response.body?.cancel().catch(() => undefined);
       throw new McpHttpBoundaryError(
         phaseForHttpStatus(response.status, request.headers.has("mcp-session-id")),
         response.status,
       );
     }
-    if (!requestContentTypeIsValid(request.method, response)) {
+    const contentTypeValid = config.oauth && !resourceRequest
+      ? response.headers.get("content-type")?.toLowerCase().includes("application/json") === true
+      : requestContentTypeIsValid(request.method, response);
+    if (response.ok && !contentTypeValid) {
       await response.body?.cancel().catch(() => undefined);
       throw new McpHttpBoundaryError("invalid_content");
     }
@@ -258,6 +271,7 @@ function runnerErrorMessage(transport: McpResolvedInvocation["config"]["transpor
 }
 
 export class SdkMcpRunner implements McpRunner {
+  constructor(private readonly options: {oauth?: McpOAuthRuntimeProviderFactory} = {}) {}
   async listTools(invocation: McpResolvedInvocation): Promise<McpRunnerResult<JsonObject>> {
     return this.run(invocation, async (client, requestOptions) => {
       const tools: JsonValue[] = [];
@@ -321,6 +335,7 @@ export class SdkMcpRunner implements McpRunner {
     let stderrTruncated = false;
     let stderrFinished = false;
     let redactor: StreamingSecretRedactor | undefined;
+    let oauthSession: McpOAuthProviderSession | undefined;
 
     if (config.transport === "stdio") {
       transport = new BoundedStdioClientTransport({
@@ -348,12 +363,31 @@ export class SdkMcpRunner implements McpRunner {
       });
       transport.stderr.on("data", (chunk) => redactor?.append(Buffer.isBuffer(chunk) ? chunk : String(chunk)));
     } else {
+      if (config.oauth) {
+        try {
+          if (!this.options.oauth) throw new McpOAuthAuthorizationRequiredError();
+          oauthSession = await this.options.oauth.create({
+            agentKey: config.oauth.agentKey,
+            serverName: config.oauth.serverName,
+            serverUrl: config.url,
+            authConfig: config.oauth.auth,
+          });
+        } catch {
+          clearTimeout(timer);
+          throw new McpRunnerError({
+            message: runnerErrorMessage(config.transport, "authentication"),
+            exitCode: 3,
+            phase: "authentication",
+            diagnostics: httpDiagnostics(config.transport),
+          });
+        }
+      }
       const fetch = createBoundedFetch(config, deadline.signal, () => {
         httpResponseReceived = true;
       });
       const requestInit = {headers: config.headers};
       transport = config.transport === "streamable-http"
-        ? new StreamableHTTPClientTransport(new URL(config.url), {fetch, requestInit})
+        ? new StreamableHTTPClientTransport(new URL(config.url), {fetch, requestInit, ...(oauthSession ? {authProvider: oauthSession.provider} : {})})
         : new SSEClientTransport(new URL(config.url), {fetch, eventSourceInit: {fetch}, requestInit});
     }
 
@@ -362,9 +396,15 @@ export class SdkMcpRunner implements McpRunner {
       : httpDiagnostics(config.transport);
 
     try {
-      await client.connect(transport, requestOptions);
-      stage = "operation";
-      const value = await operation(client, requestOptions);
+      const execute = async () => {
+        if (oauthSession) await oauthSession.reload();
+        await client.connect(transport, requestOptions);
+        stage = "operation";
+        return operation(client, requestOptions);
+      };
+      const value = config.transport === "streamable-http" && config.oauth && this.options.oauth
+        ? await this.options.oauth.runExclusive(`${config.oauth.agentKey}:${config.oauth.serverName}`, execute)
+        : await execute();
       if (redactor && remaining(deadlineAt) > 0) {
         await new Promise<void>((resolve) => setImmediate(resolve));
       }
@@ -390,13 +430,21 @@ export class SdkMcpRunner implements McpRunner {
       const timeout = isTimeout(error, deadline.signal);
       const initializationProtocolDataReceived = httpResponseReceived
         || (transport instanceof BoundedStdioClientTransport && transport.protocolMessageReceived);
+      const authenticationError = error instanceof UnauthorizedError
+        || error instanceof OAuthError
+        || error instanceof McpOAuthAuthorizationRequiredError;
+      if (oauthSession && authenticationError) {
+        await oauthSession.markReauthorizationRequired(true).catch(() => undefined);
+      }
       const phase: McpRunnerPhase = timeout
         ? "timeout"
         : error instanceof McpOutputLimitError
             || error instanceof McpStdioIngressLimitError
             || (transport instanceof BoundedStdioClientTransport && transport.ingressLimitExceeded)
           ? "output_limit"
-          : error instanceof McpHttpBoundaryError
+            : authenticationError
+              ? "authentication"
+            : error instanceof McpHttpBoundaryError
             ? error.phase
             : error instanceof McpRedactionCollisionError || error instanceof SyntaxError
               ? "invalid_content"

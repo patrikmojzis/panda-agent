@@ -125,6 +125,23 @@ describe("MCP config parser", () => {
     });
   });
 
+  it("accepts provider-neutral OAuth config without interpreting scopes", () => {
+    expect(normalizeMcpConfig({servers: {remote: {
+      transport: "streamable-http",
+      enabled: true,
+      url: "https://mcp.example.test/mcp",
+      auth: {
+        type: "oauth",
+        registration: {mode: "dynamic"},
+        scope: {mode: "explicit", values: ["documents:read", "search"]},
+        trustedOrigins: ["https://login.example.test"],
+      },
+    }}})).toMatchObject({servers: {remote: {auth: {
+      type: "oauth",
+      scope: {mode: "explicit", values: ["documents:read", "search"]},
+    }}}});
+  });
+
   it.each([
     [{servers: {bad: {...stdio(), unknown: true}}}, "unsupported field unknown"],
     [{servers: {bad: {...stdio(), enabled: undefined}}}, "enabled must be a boolean"],
@@ -134,6 +151,11 @@ describe("MCP config parser", () => {
     [{servers: {bad: {transport: "sse", enabled: true, url: "https://example.test/sse#secret"}}}, "must not include a fragment"],
     [{servers: {bad: {transport: "sse", enabled: true, url: "https://example.test/sse", headers: [{name: "Mcp-Session-Id", value: "x"}]}}}, "owned by HTTP or the MCP SDK"],
     [{servers: {bad: {transport: "sse", enabled: true, url: "https://example.test/sse", headers: [{name: "X-Test", value: "x", credentialEnvKey: "TOKEN"}]}}}, "exactly one"],
+    [{servers: {bad: {transport: "sse", enabled: true, url: "https://example.test/sse", auth: {type: "oauth", registration: {mode: "dynamic"}, scope: {mode: "server-default"}}}}}, "requires streamable-http"],
+    [{servers: {bad: {transport: "streamable-http", enabled: true, url: "http://example.test/mcp", auth: {type: "oauth", registration: {mode: "dynamic"}, scope: {mode: "server-default"}}}}}, "must use HTTPS"],
+    [{servers: {bad: {transport: "streamable-http", enabled: true, url: "https://example.test/mcp", auth: {type: "oauth", registration: {mode: "dynamic"}, scope: {mode: "explicit", values: []}}}}}, "explicit scope values"],
+    [{servers: {bad: {transport: "streamable-http", enabled: true, url: "https://example.test/mcp", auth: {type: "oauth", registration: {mode: "dynamic"}, scope: {mode: "explicit", values: ["read", "read"]}}}}}, "must be unique"],
+    [{servers: {bad: {transport: "streamable-http", enabled: true, url: "https://example.test/mcp", auth: {type: "oauth", registration: {mode: "dynamic"}, scope: {mode: "server-default"}, trustedOrigins: ["https://auth.example.test/path"]}}}}, "only an origin"],
   ])("rejects invalid config %#", (value, message) => {
     expect(() => normalizeMcpConfig(value)).toThrow(message as string);
   });

@@ -6036,6 +6036,8 @@ printf '{"ok":true,"output":%s}\\n' "$body"
       "internet",
       "--credential",
       "BRAVE_API_KEY",
+      "--credential-ref",
+      "mcp-oauth:reports",
     ], {
       env: shimEnv(server),
     });

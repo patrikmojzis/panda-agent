@@ -1,5 +1,11 @@
 import {describe, expect, it} from "vitest";
-import {DEFAULT_CONTROL_HOST, DEFAULT_CONTROL_PORT, resolveOptionalControlServerBinding} from "../src/integrations/control/config.js";
+import {
+  buildControlMcpOAuthCallbackUrl,
+  DEFAULT_CONTROL_HOST,
+  DEFAULT_CONTROL_PORT,
+  resolveControlPublicUrl,
+  resolveOptionalControlServerBinding,
+} from "../src/integrations/control/config.js";
 
 describe("Control config", () => {
   it("is disabled by default", () => {
@@ -20,5 +26,12 @@ describe("Control config", () => {
       PANDA_CONTROL_HOST: "0.0.0.0",
       PANDA_CONTROL_PORT: "4768",
     })).toEqual({enabled: true, host: "0.0.0.0", port: 4768});
+  });
+
+  it("builds OAuth callbacks only from a secure canonical public URL", () => {
+    expect(resolveControlPublicUrl({PANDA_CONTROL_PUBLIC_URL: "https://panda.example.test/control/"})).toBe("https://panda.example.test/control");
+    expect(buildControlMcpOAuthCallbackUrl("https://panda.example.test/control")).toBe("https://panda.example.test/control/api/control/mcp/oauth/callback");
+    expect(resolveControlPublicUrl({PANDA_CONTROL_PUBLIC_URL: "http://127.0.0.1:4767"})).toBe("http://127.0.0.1:4767");
+    expect(() => resolveControlPublicUrl({PANDA_CONTROL_PUBLIC_URL: "http://panda.example.test"})).toThrow("must use HTTPS");
   });
 });

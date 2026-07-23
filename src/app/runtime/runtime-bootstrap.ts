@@ -5,7 +5,12 @@ import type {AgentStore} from "../../domain/agents/store.js";
 import {CredentialResolver, CredentialService} from "../../domain/credentials/resolver.js";
 import {PostgresCredentialStore} from "../../domain/credentials/postgres.js";
 import {PostgresMcpConfigStore} from "../../domain/mcp/postgres.js";
+import {PostgresMcpOAuthStore} from "../../domain/mcp/oauth-postgres.js";
+import {McpOAuthService} from "../../domain/mcp/oauth-service.js";
 import {SdkMcpRunner} from "../../integrations/mcp/client.js";
+import {McpOAuthRuntime} from "../../integrations/mcp/oauth.js";
+import {McpOAuthControl} from "../../integrations/mcp/oauth-control.js";
+import {buildControlMcpOAuthCallbackUrl, resolveControlPublicUrl} from "../../integrations/control/config.js";
 import {resolveCredentialCrypto} from "../../domain/credentials/crypto.js";
 import {PostgresExecutionEnvironmentStore} from "../../domain/execution-environments/postgres.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
@@ -479,7 +484,7 @@ export async function bootstrapRuntime(
       pool: postgresPool,
     });
     const mcpConfigs = new PostgresMcpConfigStore(postgresPool);
-    const mcpRunner = new SdkMcpRunner();
+    const mcpOAuthStore = new PostgresMcpOAuthStore(postgresPool);
     const connectorAccountStore = new PostgresConnectorAccountStore({
       pool: postgresPool,
     });
@@ -540,6 +545,12 @@ export async function bootstrapRuntime(
     });
 
     const credentialCrypto = resolveCredentialCrypto();
+    const controlPublicUrl = resolveControlPublicUrl();
+    const oauthService = credentialCrypto ? new McpOAuthService({store: mcpOAuthStore, crypto: credentialCrypto}) : null;
+    const oauthRedirectUrl = controlPublicUrl ? buildControlMcpOAuthCallbackUrl(controlPublicUrl) : null;
+    const oauthRuntime = oauthService && oauthRedirectUrl ? new McpOAuthRuntime({service: oauthService, redirectUrl: oauthRedirectUrl}) : undefined;
+    const oauthControl = oauthService && oauthRedirectUrl ? new McpOAuthControl({service: oauthService, configs: mcpConfigs, redirectUrl: oauthRedirectUrl}) : undefined;
+    const mcpRunner = new SdkMcpRunner({oauth: oauthRuntime});
     const credentialResolver = new CredentialResolver({
       store: credentialStore,
       crypto: credentialCrypto,
@@ -548,6 +559,8 @@ export async function bootstrapRuntime(
       reads: controlReads,
       configs: mcpConfigs,
       credentials: credentialResolver,
+      oauthConnections: mcpOAuthStore,
+      oauth: oauthControl,
     });
     const executionEnvironmentManager = createExecutionEnvironmentManagerClientFromEnv(process.env);
     const executionEnvironmentSetupRunner = new RemoteExecutionEnvironmentSetupRunner({

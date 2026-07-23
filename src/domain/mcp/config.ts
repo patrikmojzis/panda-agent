@@ -1,12 +1,13 @@
 import {normalizeCredentialEnvKey} from "../credentials/types.js";
 import {isRecord} from "../../lib/records.js";
+import {isLoopbackHttpHostname} from "../../lib/http.js";
 import {
   MCP_DEFAULT_TIMEOUT_MS,
   MCP_MAX_SERVERS,
   MCP_MAX_TIMEOUT_MS,
   MCP_MIN_TIMEOUT_MS,
   type McpAgentConfig,
-  type McpHttpBearerAuth,
+  type McpHttpAuth,
   type McpHttpHeaderValue,
   type McpServerConfig,
   type McpValueSource,
@@ -19,7 +20,10 @@ const STDIO_SERVER_FIELDS = new Set([...COMMON_SERVER_FIELDS, "command", "args",
 const HTTP_SERVER_FIELDS = new Set([...COMMON_SERVER_FIELDS, "url", "headers", "auth"]);
 const VALUE_SOURCE_FIELDS = new Set(["value", "credentialEnvKey"]);
 const HEADER_FIELDS = new Set(["name", "value", "credentialEnvKey"]);
-const AUTH_FIELDS = new Set(["type", "credentialEnvKey"]);
+const BEARER_AUTH_FIELDS = new Set(["type", "credentialEnvKey"]);
+const OAUTH_AUTH_FIELDS = new Set(["type", "registration", "scope", "trustedOrigins"]);
+const OAUTH_REGISTRATION_FIELDS = new Set(["mode"]);
+const OAUTH_SCOPE_FIELDS = new Set(["mode", "values"]);
 const CONFIG_FIELDS = new Set(["servers"]);
 const RESERVED_HEADERS = new Set([
   "host",
@@ -178,16 +182,69 @@ function readHeaders(value: unknown, label: string, hasAuth: boolean): McpHttpHe
   });
 }
 
-function readAuth(value: unknown, label: string): McpHttpBearerAuth | undefined {
+function readTrustedOrigin(value: unknown, label: string): string {
+  const raw = readRequiredString(value, label);
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`${label} must be a valid absolute URL origin.`);
+  }
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopbackHttpHostname(url.hostname))) {
+    throw new Error(`${label} must use HTTPS except on loopback hosts.`);
+  }
+  if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+    throw new Error(`${label} must contain only an origin.`);
+  }
+  return url.origin;
+}
+
+function readAuth(value: unknown, label: string): McpHttpAuth | undefined {
   if (value === undefined || value === null) return undefined;
   if (!isRecord(value)) throw new Error(`${label} must be a JSON object.`);
-  assertKnownFields(value, AUTH_FIELDS, label);
-  if (value.type !== "bearer") throw new Error(`${label} type must be "bearer".`);
+  if (value.type === "bearer") {
+    assertKnownFields(value, BEARER_AUTH_FIELDS, label);
+    return {
+      type: "bearer",
+      credentialEnvKey: normalizeCredentialEnvKey(
+        readRequiredString(value.credentialEnvKey, `${label} credentialEnvKey`),
+      ),
+    };
+  }
+  if (value.type !== "oauth") throw new Error(`${label} type must be "bearer" or "oauth".`);
+  assertKnownFields(value, OAUTH_AUTH_FIELDS, label);
+  if (!isRecord(value.registration)) throw new Error(`${label} registration must be a JSON object.`);
+  assertKnownFields(value.registration, OAUTH_REGISTRATION_FIELDS, `${label} registration`);
+  if (value.registration.mode !== "dynamic" && value.registration.mode !== "manual") {
+    throw new Error(`${label} registration mode must be "dynamic" or "manual".`);
+  }
+  if (!isRecord(value.scope)) throw new Error(`${label} scope must be a JSON object.`);
+  assertKnownFields(value.scope, OAUTH_SCOPE_FIELDS, `${label} scope`);
+  const scope = value.scope.mode === "server-default"
+    ? (() => {
+      if (Object.hasOwn(value.scope, "values")) throw new Error(`${label} server-default scope must not include values.`);
+      return {mode: "server-default" as const};
+    })()
+    : (() => {
+      if (value.scope.mode !== "explicit") throw new Error(`${label} scope mode must be "explicit" or "server-default".`);
+      const values = readStringArray(value.scope.values, `${label} scope values`).map((entry) => entry.trim());
+      if (values.length === 0 || values.some((entry) => !entry || /\s/.test(entry))) {
+        throw new Error(`${label} explicit scope values must be non-empty strings without whitespace.`);
+      }
+      if (new Set(values).size !== values.length) throw new Error(`${label} explicit scope values must be unique.`);
+      return {mode: "explicit" as const, values};
+    })();
+  let trustedOrigins: string[] | undefined;
+  if (value.trustedOrigins !== undefined && value.trustedOrigins !== null) {
+    if (!Array.isArray(value.trustedOrigins)) throw new Error(`${label} trustedOrigins must be an array.`);
+    trustedOrigins = value.trustedOrigins.map((origin, index) => readTrustedOrigin(origin, `${label} trustedOrigins[${index}]`));
+    if (new Set(trustedOrigins).size !== trustedOrigins.length) throw new Error(`${label} trustedOrigins must be unique.`);
+  }
   return {
-    type: "bearer",
-    credentialEnvKey: normalizeCredentialEnvKey(
-      readRequiredString(value.credentialEnvKey, `${label} credentialEnvKey`),
-    ),
+    type: "oauth",
+    registration: {mode: value.registration.mode},
+    scope,
+    ...(trustedOrigins && trustedOrigins.length > 0 ? {trustedOrigins} : {}),
   };
 }
 
@@ -213,11 +270,19 @@ export function normalizeMcpServerConfig(name: string, value: unknown): McpServe
   if (value.transport === "streamable-http" || value.transport === "sse") {
     assertKnownFields(value, HTTP_SERVER_FIELDS, `MCP server ${name}`);
     const auth = readAuth(value.auth, `MCP server ${name} auth`);
+    if (value.transport === "sse" && auth?.type === "oauth") {
+      throw new Error(`MCP server ${name} OAuth requires streamable-http transport.`);
+    }
+    const url = readUrl(value.url, `MCP server ${name} url`);
+    const parsedUrl = new URL(url);
+    if (auth?.type === "oauth" && parsedUrl.protocol !== "https:" && !isLoopbackHttpHostname(parsedUrl.hostname)) {
+      throw new Error(`MCP server ${name} OAuth URL must use HTTPS except on loopback hosts.`);
+    }
     const headers = readHeaders(value.headers, `MCP server ${name} headers`, Boolean(auth));
     return {
       transport: value.transport,
       enabled: readEnabled(value.enabled, `MCP server ${name} enabled`),
-      url: readUrl(value.url, `MCP server ${name} url`),
+      url,
       ...(headers ? {headers} : {}),
       ...(auth ? {auth} : {}),
       timeoutMs: readTimeoutMs(value.timeoutMs, `MCP server ${name} timeoutMs`),
@@ -243,7 +308,7 @@ export function referencedMcpCredentialEnvKeys(config: McpServerConfig): string[
   const keys = config.transport === "stdio"
     ? Object.values(config.env ?? {}).flatMap((source) => "credentialEnvKey" in source ? [source.credentialEnvKey] : [])
     : [
-      ...(config.auth ? [config.auth.credentialEnvKey] : []),
+      ...(config.auth?.type === "bearer" ? [config.auth.credentialEnvKey] : []),
       ...(config.headers ?? []).flatMap((header) => header.credentialEnvKey ? [header.credentialEnvKey] : []),
     ];
   return [...new Set(keys)];

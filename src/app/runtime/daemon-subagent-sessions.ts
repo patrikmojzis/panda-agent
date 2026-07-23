@@ -17,6 +17,7 @@ export interface DaemonCreateSubagentSessionInput {
   execution?: CreateSubagentSessionRequestPayload["execution"];
   environmentId?: string;
   credentialAllowlist?: readonly string[];
+  credentialRefAllowlist?: readonly string[];
   toolGroups?: readonly string[];
   model?: string;
   thinking?: CreateSubagentSessionRequestPayload["thinking"];
@@ -46,6 +47,7 @@ export function createDaemonSubagentSessionCreator(
       execution: input.execution,
       environmentId: input.environmentId,
       credentialAllowlist: input.credentialAllowlist,
+      credentialRefAllowlist: input.credentialRefAllowlist,
       toolGroups: input.toolGroups,
       model: input.model,
       thinking: input.thinking,

@@ -11,7 +11,7 @@ import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environ
 import {PostgresCredentialStore} from "../src/domain/credentials/postgres.js";
 import {CredentialService} from "../src/domain/credentials/resolver.js";
 import {PostgresMcpConfigStore} from "../src/domain/mcp/postgres.js";
-import {ControlMcpService} from "../src/domain/control/mcp-service.js";
+import {ControlMcpService, type ControlMcpServiceOptions} from "../src/domain/control/mcp-service.js";
 import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/postgres.js";
 import {PostgresControlAuthService} from "../src/domain/control/auth.js";
@@ -60,6 +60,7 @@ async function createHarness(options: {
   telegramBotIdentityClient?: { getBotIdentity(token: string): Promise<{id: string; username?: string; displayName?: string}> };
   fetchImpl?: typeof fetch;
   env?: NodeJS.ProcessEnv;
+  mcpOAuth?: ControlMcpServiceOptions["oauth"];
 } = {}) {
   const db = newDb({noAstCoverageCheck: true});
   db.public.registerFunction({name: "pg_notify", args: [DataType.text, DataType.text], returns: DataType.text, implementation: () => ""});
@@ -95,7 +96,7 @@ async function createHarness(options: {
   const wikiBindingStore = new PostgresWikiBindingStore({pool});
   const credentialCrypto = new CredentialCrypto("control-test-master-key");
   const credentialService = new CredentialService({store: credentials, crypto: credentialCrypto});
-  const controlMcp = new ControlMcpService({reads, configs: mcpConfigs, credentials: credentialService});
+  const controlMcp = new ControlMcpService({reads, configs: mcpConfigs, credentials: credentialService, oauth: options.mcpOAuth});
   const wikiBindingService = new WikiBindingService({store: wikiBindingStore, crypto: credentialCrypto});
   const operator = new ControlOperatorService({
     pool,
@@ -269,6 +270,91 @@ describe("Control auth HTTP", () => {
     });
     expect(deleted.status).toBe(200);
     await expect(deleted.json()).resolves.toEqual({deleted: true});
+  });
+
+  it("runs OAuth discovery, manual connect, public callback, replay protection, and disconnect without leaking secrets", async () => {
+    let consumed = false;
+    let deniedConsumed = false;
+    let controlSessionId = "";
+    const start = vi.fn(async () => ({authorizationUrl: "https://login.example.test/authorize?state=opaque-state", expiresAt: Date.now() + 60_000}));
+    const oauth: NonNullable<ControlMcpServiceOptions["oauth"]> = {
+      status: async () => ({status: consumed ? "ready" : "authorization_required"}),
+      discover: async () => ({
+        resource: "https://mcp.example.test/mcp",
+        resourceMetadataUrl: "https://mcp.example.test/.well-known/oauth-protected-resource/mcp",
+        authorizationServer: "https://login.example.test",
+        supportedScopes: ["resource:read"],
+        registrationEndpointAvailable: false,
+        tokenEndpointAuthMethods: ["client_secret_basic"],
+        blockedOrigins: [],
+      }),
+      start,
+      finish: async (state, code) => {
+        if (state !== "opaque-state" || code !== "callback-code" || consumed) throw new Error("invalid state");
+        consumed = true;
+        return {completed: true, agentKey: "panda", serverName: "oauth-server", initiatedIdentityId: "identity-patrik", initiatedSessionId: controlSessionId, issuer: "https://login.example.test", scopes: ["resource:read"]};
+      },
+      fail: async (state) => {
+        if (state !== "denied-state" || deniedConsumed) throw new Error("invalid state");
+        deniedConsumed = true;
+        return {agentKey: "panda", serverName: "oauth-server", initiatedIdentityId: "identity-patrik", initiatedSessionId: controlSessionId};
+      },
+      disconnect: async () => ({disconnected: true, remoteRevocation: "succeeded"}),
+      deleteConnection: async () => true,
+      invalidate: async () => {},
+    };
+    const harness = await createHarness({mcpOAuth: oauth});
+    const base = await startHarnessServer(harness);
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role: "admin"});
+    const login = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
+    const loginBody = await login.json() as {csrfToken: string; session: {id: string}};
+    controlSessionId = loginBody.session.id;
+    const cookies = cookieHeader(login);
+    const headers = {cookie: cookies, "content-type": "application/json", "x-control-csrf": loginBody.csrfToken};
+    const config = {
+      transport: "streamable-http",
+      enabled: true,
+      url: "https://mcp.example.test/mcp",
+      auth: {type: "oauth", registration: {mode: "manual"}, scope: {mode: "explicit", values: ["resource:read"]}},
+      timeoutMs: 30_000,
+    };
+    expect((await fetch(`${base}/api/control/agents/panda/mcp-servers/oauth-server`, {method: "PUT", headers, body: JSON.stringify(config)})).status).toBe(200);
+
+    expect((await fetch(`${base}/api/control/agents/panda/mcp-servers/oauth-server/oauth/discover`, {method: "POST", headers: {cookie: cookies}})).status).toBe(403);
+    const discovery = await fetch(`${base}/api/control/agents/panda/mcp-servers/oauth-server/oauth/discover`, {method: "POST", headers});
+    await expect(discovery.json()).resolves.toMatchObject({discovery: {supportedScopes: ["resource:read"], blockedOrigins: []}});
+
+    const secret = "CLIENT_SECRET_SENTINEL";
+    const connect = await fetch(`${base}/api/control/agents/panda/mcp-servers/oauth-server/oauth/start`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({manualClient: {clientId: "client-id", clientSecret: secret, tokenEndpointAuthMethod: "client_secret_basic"}}),
+    });
+    const connectText = await connect.text();
+    expect(connect.status).toBe(200);
+    expect(connectText).not.toContain(secret);
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({manualClient: expect.objectContaining({clientSecret: secret})}));
+
+    const callback = await fetch(`${base}/api/control/mcp/oauth/callback?state=opaque-state&code=callback-code`);
+    expect(callback.status).toBe(200);
+    expect(callback.headers.get("content-security-policy")).toContain("default-src 'none'");
+    expect(await callback.text()).not.toContain("callback-code");
+    expect((await fetch(`${base}/api/control/mcp/oauth/callback?state=opaque-state&code=callback-code`)).status).toBe(400);
+    expect((await fetch(`${base}/api/control/mcp/oauth/callback?state=denied-state&error=access_denied`)).status).toBe(400);
+    expect((await fetch(`${base}/api/control/mcp/oauth/callback?state=denied-state&error=access_denied`)).status).toBe(400);
+
+    const listText = await (await fetch(`${base}/api/control/agents/panda/mcp-servers`, {headers: {cookie: cookies}})).text();
+    expect(listText).toContain('"status":"ready"');
+    expect(listText).not.toContain(secret);
+    const disconnected = await fetch(`${base}/api/control/agents/panda/mcp-servers/oauth-server/oauth`, {method: "DELETE", headers});
+    await expect(disconnected.json()).resolves.toEqual({disconnected: true});
+
+    const audits = await harness.pool.query(`SELECT metadata FROM "runtime"."control_audit_events" WHERE metadata->>'action' LIKE '%mcp_oauth'`);
+    const auditText = JSON.stringify(audits.rows);
+    expect(auditText).toContain("complete_mcp_oauth");
+    expect(auditText).toContain("disconnect_mcp_oauth");
+    expect(auditText).toContain("fail_mcp_oauth");
+    expect(auditText).not.toContain(secret);
   });
 
   it("rejects expired Control login tokens", async () => {

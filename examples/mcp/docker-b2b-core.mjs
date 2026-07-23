@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {mkdir, writeFile} from "node:fs/promises";
+import {spawn} from "node:child_process";
 
 import {createRuntime} from "/app/dist/app/runtime/create-runtime.js";
 import {startCommandHttpServer} from "/app/dist/integrations/commands/http-server.js";
@@ -18,6 +19,7 @@ const runtime = await createRuntime({
 });
 let commandServer;
 let controlServer;
+let oauthFixture;
 
 async function writeAccessFile(name, commandAccess) {
   if (!commandAccess?.url) throw new Error(`MCP B2B ${name} HTTP command access was not issued.`);
@@ -32,6 +34,7 @@ async function close() {
   await controlServer?.close().catch(() => undefined);
   await commandServer?.close().catch(() => undefined);
   await runtime.close().catch(() => undefined);
+  oauthFixture?.kill("SIGTERM");
 }
 
 try {
@@ -42,6 +45,17 @@ try {
   });
   await runtime.agentStore.bootstrapAgent({agentKey: "panda", displayName: "Panda"});
   await runtime.agentStore.ensurePairing("panda", "identity-mcp-b2b");
+  oauthFixture = spawn(process.execPath, ["/app/examples/mcp/fixture-server.mjs", "--transport", "http", "--host", "127.0.0.1", "--port", "3011", "--mode", "oauth"], {
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  await new Promise((resolve, reject) => {
+    let output = "";
+    oauthFixture.stdout.on("data", (chunk) => {
+      output += chunk.toString("utf8");
+      if (output.includes("READY ")) resolve();
+    });
+    oauthFixture.once("exit", (code) => reject(new Error(`OAuth fixture exited before readiness with ${code}.`)));
+  });
   await runtime.sessionStore.createSession({
     id: "session-mcp-primary",
     agentKey: "panda",
@@ -65,6 +79,7 @@ try {
     task: "Prove MCP credential allowlisting through production policy resolution.",
     toolGroups: ["mcp"],
     credentialAllowlist: ["FIXTURE_SECRET"],
+    credentialRefAllowlist: ["mcp-oauth:fixture-oauth"],
     sessionId: "session-mcp-subagent-allow",
     threadId: "thread-mcp-subagent-allow",
     createdByIdentityId: "identity-mcp-b2b",

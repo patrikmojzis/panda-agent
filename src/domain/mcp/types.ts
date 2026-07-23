@@ -38,12 +38,29 @@ export interface McpHttpBearerAuth {
   credentialEnvKey: string;
 }
 
+export type McpOAuthRegistration =
+  | {mode: "dynamic"}
+  | {mode: "manual"};
+
+export type McpOAuthScope =
+  | {mode: "explicit"; values: string[]}
+  | {mode: "server-default"};
+
+export interface McpHttpOAuthAuth {
+  type: "oauth";
+  registration: McpOAuthRegistration;
+  scope: McpOAuthScope;
+  trustedOrigins?: string[];
+}
+
+export type McpHttpAuth = McpHttpBearerAuth | McpHttpOAuthAuth;
+
 export interface McpHttpServerConfig {
   transport: "streamable-http" | "sse";
   enabled: boolean;
   url: string;
   headers?: McpHttpHeaderValue[];
-  auth?: McpHttpBearerAuth;
+  auth?: McpHttpAuth;
   timeoutMs: number;
 }
 
@@ -66,6 +83,11 @@ export interface McpResolvedStdioServerConfig extends Omit<McpStdioServerConfig,
 
 export interface McpResolvedHttpServerConfig extends Omit<McpHttpServerConfig, "headers" | "auth"> {
   headers?: Record<string, string>;
+  oauth?: {
+    agentKey: string;
+    serverName: string;
+    auth: McpHttpOAuthAuth;
+  };
 }
 
 export type McpResolvedServerConfig = McpResolvedStdioServerConfig | McpResolvedHttpServerConfig;

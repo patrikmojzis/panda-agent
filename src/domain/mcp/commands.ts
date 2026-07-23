@@ -8,6 +8,7 @@ import type {CredentialResolver} from "../credentials/resolver.js";
 import {CommandDenialError, commandScopeDenied} from "../commands/errors.js";
 import type {CommandDescriptor, CommandRequest, CommandSuccess, RegisteredCommand} from "../commands/types.js";
 import type {ExecutionCredentialPolicy} from "../execution-environments/types.js";
+import {mcpOAuthGrantRef} from "./oauth-types.js";
 import {referencedMcpCredentialEnvKeys} from "./config.js";
 import type {McpConfigReader} from "./store.js";
 import {
@@ -185,8 +186,12 @@ function normalizeMcpError(error: unknown): McpCommandError {
   return commandError("MCP command failed before external execution.", 2, "config_input");
 }
 
-function assertCredentialPolicy(policy: ExecutionCredentialPolicy | undefined, keys: readonly string[]): void {
-  if (keys.length === 0) return;
+function assertCredentialPolicy(
+  policy: ExecutionCredentialPolicy | undefined,
+  keys: readonly string[],
+  credentialRefs: readonly string[] = [],
+): void {
+  if (keys.length === 0 && credentialRefs.length === 0) return;
   if (policy?.mode === "all_agent") return;
   const allowed = policy?.mode === "allowlist" ? new Set(policy.envKeys) : new Set<string>();
   const denied = keys.find((key) => !allowed.has(key));
@@ -195,6 +200,15 @@ function assertCredentialPolicy(policy: ExecutionCredentialPolicy | undefined, k
       "An MCP credential required by this server is not allowed in the current execution scope.",
       "command_scope_denied",
       "Use an MCP server whose credential requirements are allowed by the current execution scope.",
+    );
+  }
+  const allowedRefs = policy?.mode === "allowlist" ? new Set(policy.credentialRefs ?? []) : new Set<string>();
+  const deniedRef = credentialRefs.find((ref) => !allowedRefs.has(ref));
+  if (deniedRef) {
+    throw commandScopeDenied(
+      "An MCP OAuth grant required by this server is not allowed in the current execution scope.",
+      "command_scope_denied",
+      "Use an MCP server whose OAuth grant is allowed by the current execution scope.",
     );
   }
 }
@@ -241,7 +255,10 @@ async function resolveInvocation(
   if (!config) throw commandError(`MCP server ${serverName} is not configured.`, 2, "config_input");
   if (!config.enabled) throw commandError(`MCP server ${serverName} is disabled.`, 2, "config_input");
   const keys = referencedMcpCredentialEnvKeys(config);
-  assertCredentialPolicy(request.scope.credentialPolicy, keys);
+  const oauthRefs = config.transport === "streamable-http" && config.auth?.type === "oauth"
+    ? [mcpOAuthGrantRef(serverName)]
+    : [];
+  assertCredentialPolicy(request.scope.credentialPolicy, keys, oauthRefs);
   const credentials = await resolveCredentialValues(options.credentials, request.scope.agentKey, keys);
   const resolvedTimeout = timeoutMs ?? config.timeoutMs;
   if (config.transport === "stdio") {
@@ -264,7 +281,7 @@ async function resolveInvocation(
     header.name,
     header.credentialEnvKey ? credentials.get(header.credentialEnvKey)! : header.value!,
   ]));
-  if (config.auth) headers.Authorization = `Bearer ${credentials.get(config.auth.credentialEnvKey)!}`;
+  if (config.auth?.type === "bearer") headers.Authorization = `Bearer ${credentials.get(config.auth.credentialEnvKey)!}`;
   return {
     config: {
       transport: config.transport,
@@ -272,6 +289,11 @@ async function resolveInvocation(
       url: config.url,
       timeoutMs: resolvedTimeout,
       ...(Object.keys(headers).length > 0 ? {headers} : {}),
+      ...(config.auth?.type === "oauth" ? {oauth: {
+        agentKey: request.scope.agentKey,
+        serverName,
+        auth: config.auth,
+      }} : {}),
     },
     knownSecrets: [...credentials.values()],
   };

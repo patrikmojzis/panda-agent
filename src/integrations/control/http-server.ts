@@ -663,6 +663,26 @@ function matchAgentMcpServerPath(path: string): {agentKey: string; serverName: s
   return {agentKey: decodeURIComponent(match[1]!), serverName: decodeURIComponent(match[2]!)};
 }
 
+function matchAgentMcpOAuthPath(path: string): {agentKey: string; serverName: string; action?: "discover" | "start"} | null {
+  const match = /^\/agents\/([^/]+)\/mcp-servers\/([^/]+)\/oauth(?:\/(discover|start))?$/.exec(path);
+  if (!match) return null;
+  return {
+    agentKey: decodeURIComponent(match[1]!),
+    serverName: decodeURIComponent(match[2]!),
+    ...(match[3] ? {action: match[3] as "discover" | "start"} : {}),
+  };
+}
+
+function writeOAuthCallbackPage(response: ServerResponse, status: 200 | 400, success: boolean): void {
+  response.writeHead(status, {
+    "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'",
+    "x-content-type-options": "nosniff",
+  });
+  response.end(`<!doctype html><html><head><meta charset="utf-8"><title>Panda MCP OAuth</title><style>body{font-family:system-ui;margin:3rem;max-width:42rem}</style></head><body><h1>${success ? "MCP connected" : "MCP connection failed"}</h1><p>${success ? "Authorization completed. You can close this tab and return to Panda Control." : "The authorization response was invalid, expired, or could not be exchanged. Return to Panda Control and try again."}</p></body></html>`);
+}
+
 function matchAgentCredentialPath(path: string): {agentKey: string; envKey: string} | null {
   const match = /^\/agents\/([^/]+)\/credentials\/([^/]+)$/.exec(path);
   if (!match) return null;
@@ -1029,6 +1049,34 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         return;
       }
 
+      if (request.method === "GET" && path === "/mcp/oauth/callback") {
+        const state = url.searchParams.get("state") ?? "";
+        const code = url.searchParams.get("code") ?? "";
+        const oauthError = url.searchParams.get("error");
+        if (!state) {
+          writeOAuthCallbackPage(response, 400, false);
+          return;
+        }
+        if (oauthError || !code) {
+          try {
+            const result = await options.mcp.failOAuth(state, oauthError ? "authorization_denied" : "missing_code");
+            await options.auth.recordAudit({identityId: result.identityId, sessionId: result.sessionId, eventType: "control_operator_write", metadata: result.audit});
+          } catch {
+            // The generic failure page intentionally does not reveal state validity.
+          }
+          writeOAuthCallbackPage(response, 400, false);
+          return;
+        }
+        try {
+          const result = await options.mcp.finishOAuth(state, code);
+          await options.auth.recordAudit({identityId: result.identityId, sessionId: result.sessionId, eventType: "control_operator_write", metadata: result.audit});
+          writeOAuthCallbackPage(response, result.completed ? 200 : 400, result.completed);
+        } catch {
+          writeOAuthCallbackPage(response, 400, false);
+        }
+        return;
+      }
+
       const session = await authenticate(request, options.auth);
       if (request.method === "GET" && path === "/me") {
         writeJsonResponse(response, 200, {session: publicSession(session)});
@@ -1203,6 +1251,43 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         return;
       }
       const mcpServerPath = matchAgentMcpServerPath(path);
+      const mcpOAuthPath = matchAgentMcpOAuthPath(path);
+      if (mcpOAuthPath?.action === "discover" && request.method === "POST") {
+        requireCsrf(request, options.auth, session);
+        try {
+          const result = await options.mcp.discoverOAuth(session, mcpOAuthPath.agentKey, mcpOAuthPath.serverName);
+          await recordOperatorAudit(options.auth, session, result.audit);
+          writeJsonResponse(response, 200, {discovery: result.discovery});
+        } catch (error) {
+          await recordOperatorAudit(options.auth, session, {action: "fail_mcp_oauth", agentKey: mcpOAuthPath.agentKey, serverName: mcpOAuthPath.serverName, reason: "discovery_failed"});
+          throw new ControlHttpError(400, error instanceof Error ? error.message : "Control MCP OAuth discovery failed.");
+        }
+        return;
+      }
+      if (mcpOAuthPath?.action === "start" && request.method === "POST") {
+        requireCsrf(request, options.auth, session);
+        try {
+          const body = await readBody(request);
+          const result = await options.mcp.startOAuth(session, mcpOAuthPath.agentKey, mcpOAuthPath.serverName, {manualClient: body.manualClient});
+          await recordOperatorAudit(options.auth, session, result.audit);
+          writeJsonResponse(response, 200, {authorizationUrl: result.authorizationUrl, expiresAt: result.expiresAt});
+        } catch (error) {
+          await recordOperatorAudit(options.auth, session, {action: "fail_mcp_oauth", agentKey: mcpOAuthPath.agentKey, serverName: mcpOAuthPath.serverName, reason: "connect_start_failed"});
+          throw new ControlHttpError(400, error instanceof Error ? error.message : "Control MCP OAuth start failed.");
+        }
+        return;
+      }
+      if (mcpOAuthPath && !mcpOAuthPath.action && request.method === "DELETE") {
+        requireCsrf(request, options.auth, session);
+        try {
+          const result = await options.mcp.disconnectOAuth(session, mcpOAuthPath.agentKey, mcpOAuthPath.serverName);
+          await recordOperatorAudit(options.auth, session, result.audit);
+          writeJsonResponse(response, 200, {disconnected: result.disconnected});
+        } catch (error) {
+          throw new ControlHttpError(400, error instanceof Error ? error.message : "Control MCP OAuth disconnect failed.");
+        }
+        return;
+      }
       if (mcpServerPath && request.method === "PUT") {
         requireCsrf(request, options.auth, session);
         try {

@@ -41,6 +41,7 @@ export interface SubagentSpawnSessionCreator {
     execution?: SubagentExecutionMode;
     environmentId?: string;
     credentialAllowlist?: readonly string[];
+    credentialRefAllowlist?: readonly string[];
     createdByIdentityId?: string;
   }): Promise<{
     session: Pick<SessionRecord, "id" | "metadata">;
@@ -56,6 +57,7 @@ const SPAWN_ALLOWED_INPUT_KEYS = new Set([
   "execution",
   "environmentId",
   "credentialAllowlist",
+  "credentialRefAllowlist",
   "toolGroups",
 ]);
 const UPSERT_PROFILE_ALLOWED_INPUT_KEYS = new Set([
@@ -127,17 +129,17 @@ function readSpawnToolGroups(value: unknown): SubagentToolGroup[] | undefined {
   });
 }
 
-function readCredentialAllowlist(value: unknown): string[] | undefined {
+function readCredentialAllowlist(value: unknown, field = "credentialAllowlist"): string[] | undefined {
   if (value === undefined || value === null) {
     return undefined;
   }
   if (!Array.isArray(value)) {
-    throw new Error("subagent.spawn credentialAllowlist must be an array.");
+    throw new Error(`subagent.spawn ${field} must be an array.`);
   }
   if (value.length > 50) {
-    throw new Error("subagent.spawn credentialAllowlist must contain at most 50 entries.");
+    throw new Error(`subagent.spawn ${field} must contain at most 50 entries.`);
   }
-  return value.map((entry, index) => readRequiredString(entry, `subagent.spawn credentialAllowlist[${index}]`));
+  return value.map((entry, index) => readRequiredString(entry, `subagent.spawn ${field}[${index}]`));
 }
 
 function readSpawnExecution(value: unknown): SubagentExecutionMode | undefined {
@@ -247,6 +249,7 @@ function parseSpawnInput(input: unknown) {
   const execution = readSpawnExecution(input.execution);
   const environmentId = readOptionalString(input.environmentId, "subagent.spawn environmentId");
   const credentialAllowlist = readCredentialAllowlist(input.credentialAllowlist);
+  const credentialRefAllowlist = readCredentialAllowlist(input.credentialRefAllowlist, "credentialRefAllowlist");
   const toolGroups = readSpawnToolGroups(input.toolGroups);
 
   return {
@@ -256,6 +259,7 @@ function parseSpawnInput(input: unknown) {
     ...(execution ? {execution} : {}),
     ...(environmentId ? {environmentId} : {}),
     credentialAllowlist: credentialAllowlist ?? [],
+    credentialRefAllowlist: credentialRefAllowlist ?? [],
     ...(toolGroups ? {toolGroups} : {}),
   };
 }
@@ -530,7 +534,7 @@ export const subagentSpawnCommandDescriptor: CommandDescriptor = {
   name: SUBAGENT_SPAWN_COMMAND_NAME,
   summary: "Create a durable subagent session.",
   description: "Creates a durable subagent session and hands off work immediately. Progress and completion arrive through A2A commands, not background-job polling.",
-  usage: "panda subagent spawn (<task|@file|@->|--prompt <text|@file|@->) [--profile <slug>|--tool-group <group>...] [--context <text|@file|@->] [(--environment <environment-id> [--isolated]|--agent-workspace)] [--credential <env-key>...]",
+  usage: "panda subagent spawn (<task|@file|@->|--prompt <text|@file|@->) [--profile <slug>|--tool-group <group>...] [--context <text|@file|@->] [(--environment <environment-id> [--isolated]|--agent-workspace)] [--credential <env-key>...] [--credential-ref <credential-ref>...]",
   inputModes: ["flags", "json", "stdin", "file"],
   outputModes: ["json", "text"],
   arguments: [
@@ -600,8 +604,15 @@ export const subagentSpawnCommandDescriptor: CommandDescriptor = {
       repeatable: true,
     },
     {
+      name: "credential-ref",
+      description: "Repeatable opaque credential grant reference to allowlist for the subagent.",
+      valueType: "string",
+      valueName: "credential-ref",
+      repeatable: true,
+    },
+    {
       name: "json",
-      description: "Structured JSON object containing prompt, plus optional profile, context, execution, environmentId, credentialAllowlist, and toolGroups.",
+      description: "Structured JSON object containing prompt, plus optional profile, context, execution, environmentId, credentialAllowlist, credentialRefAllowlist, and toolGroups.",
       valueType: "json",
     },
   ],
@@ -787,6 +798,7 @@ export function createSubagentSpawnCommand(
         ...(input.execution !== undefined ? {execution: input.execution} : {}),
         ...(input.environmentId !== undefined ? {environmentId: input.environmentId} : {}),
         credentialAllowlist: input.credentialAllowlist,
+        ...(input.credentialRefAllowlist.length > 0 ? {credentialRefAllowlist: input.credentialRefAllowlist} : {}),
         ...(request.scope.identityId ? {createdByIdentityId: request.scope.identityId} : {}),
       });
 

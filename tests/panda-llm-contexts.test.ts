@@ -115,7 +115,7 @@ describe("buildDefaultAgentLlmContexts", () => {
     expect(dump).toContain("`panda todo done <index>`");
     expect(dump).toContain("`panda todo block <index>`");
     expect(dump).toContain("`panda todo clear`");
-    expect(dump).toContain("`panda subagent spawn (<task|@file|@->|--prompt <text|@file|@->) [--profile <slug>|--tool-group <group>...] [--context <text|@file|@->] [(--environment <environment-id> [--isolated]|--agent-workspace)] [--credential <env-key>...]`");
+    expect(dump).toContain("`panda subagent spawn (<task|@file|@->|--prompt <text|@file|@->) [--profile <slug>|--tool-group <group>...] [--context <text|@file|@->] [(--environment <environment-id> [--isolated]|--agent-workspace)] [--credential <env-key>...] [--credential-ref <credential-ref>...]`");
     expect(dump).toContain("`panda subagent profile list [--include-disabled]`");
     expect(dump).toContain("`panda subagent profile show <slug> [--include-disabled]`");
     expect(dump).toContain("`panda subagent profile upsert <slug> --description <text|@file|@-> --prompt <text|@file|@-> --tool-group <group>... [--model <model>] [--thinking low|medium|high|xhigh] [--enabled|--disabled]`");

@@ -121,11 +121,15 @@ function parseCredentialPolicy(value: unknown): ExecutionCredentialPolicy {
     return {mode: value.mode};
   }
   if (value.mode === "allowlist") {
+    const credentialRefs = Array.isArray(value.credentialRefs)
+      ? uniqueTrimmedStrings(value.credentialRefs.filter((entry): entry is string => typeof entry === "string"))
+      : [];
     return {
       mode: "allowlist",
       envKeys: Array.isArray(value.envKeys)
         ? uniqueTrimmedStrings(value.envKeys.filter((entry): entry is string => typeof entry === "string"))
         : [],
+      ...(credentialRefs.length > 0 ? {credentialRefs} : {}),
     };
   }
   throw new Error(`Unsupported subagent metadata credential policy ${String(value.mode)}.`);

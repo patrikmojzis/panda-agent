@@ -54,6 +54,7 @@ export interface RuntimeClientSubagentSessionOptions extends RuntimeClientSessio
   execution?: "agent_workspace" | "isolated_environment";
   environmentId?: string;
   credentialAllowlist?: readonly string[];
+  credentialRefAllowlist?: readonly string[];
   toolGroups?: readonly string[];
 }
 
@@ -246,6 +247,7 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
           thinking: sessionOptions.thinking,
           ...(sessionOptions.inferenceProjection ? {inferenceProjection: sessionOptions.inferenceProjection} : {}),
           ...(sessionOptions.credentialAllowlist ? {credentialAllowlist: sessionOptions.credentialAllowlist} : {}),
+          ...(sessionOptions.credentialRefAllowlist ? {credentialRefAllowlist: sessionOptions.credentialRefAllowlist} : {}),
           ...(sessionOptions.toolGroups ? {toolGroups: sessionOptions.toolGroups} : {}),
           ...(sessionOptions.environmentId ? {environmentId: trimToUndefined(sessionOptions.environmentId)} : {}),
         },

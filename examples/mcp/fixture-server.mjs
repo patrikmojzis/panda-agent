@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import {spawn} from "node:child_process";
 import {createServer} from "node:http";
-import {randomUUID} from "node:crypto";
+import {createHash, randomUUID} from "node:crypto";
 import {once} from "node:events";
 
 const args = process.argv.slice(2);
@@ -17,6 +17,11 @@ const secret = process.env.FIXTURE_SECRET ?? "";
 const emitSecretKeys = mode === "secret-keys" || mode === "secret-key-collision";
 const events = [];
 const sessions = new Map();
+const oauthClients = new Map();
+const oauthCodes = new Map();
+const oauthAccessTokens = new Set();
+const oauthRefreshTokens = new Set();
+const oauthEvents = [];
 
 const richTools = [
   {
@@ -216,6 +221,26 @@ async function readJson(request) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
+async function readForm(request) {
+  const chunks = [];
+  for await (const chunk of request) chunks.push(Buffer.from(chunk));
+  return new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+}
+
+function oauthBase(request) {
+  return `http://${request.headers.host}`;
+}
+
+function issueOAuthTokens(response, rotatedFrom) {
+  const accessToken = `access-${randomUUID()}`;
+  const refreshToken = `refresh-${randomUUID()}`;
+  oauthAccessTokens.add(accessToken);
+  oauthRefreshTokens.add(refreshToken);
+  if (rotatedFrom) oauthRefreshTokens.delete(rotatedFrom);
+  oauthEvents.push({type: rotatedFrom ? "refresh" : "exchange", rotated: Boolean(rotatedFrom)});
+  json(response, 200, {access_token: accessToken, token_type: "Bearer", expires_in: 3600, refresh_token: refreshToken, scope: "resource:read"});
+}
+
 function record(request) {
   events.push({
     method: request.method,
@@ -231,6 +256,97 @@ function record(request) {
 async function runHttp() {
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://fixture");
+    const base = oauthBase(request);
+    if (mode === "oauth" && url.pathname === "/.well-known/oauth-protected-resource/mcp") {
+      json(response, 200, {resource: `${base}/mcp`, authorization_servers: [base], scopes_supported: ["resource:read"]});
+      return;
+    }
+    if (mode === "oauth" && (url.pathname === "/.well-known/oauth-authorization-server" || url.pathname === "/.well-known/openid-configuration")) {
+      json(response, 200, {
+        issuer: base,
+        authorization_endpoint: `${base}/oauth/authorize`,
+        token_endpoint: `${base}/oauth/token`,
+        registration_endpoint: `${base}/oauth/register`,
+        revocation_endpoint: `${base}/oauth/revoke`,
+        response_types_supported: ["code"],
+        grant_types_supported: ["authorization_code", "refresh_token"],
+        code_challenge_methods_supported: ["S256"],
+        token_endpoint_auth_methods_supported: ["none"],
+        scopes_supported: ["resource:read"],
+      });
+      return;
+    }
+    if (mode === "oauth" && url.pathname === "/oauth/register" && request.method === "POST") {
+      const metadata = await readJson(request);
+      const clientId = `client-${randomUUID()}`;
+      oauthClients.set(clientId, metadata);
+      oauthEvents.push({type: "register"});
+      json(response, 201, {...metadata, client_id: clientId, token_endpoint_auth_method: "none"});
+      return;
+    }
+    if (mode === "oauth" && url.pathname === "/oauth/authorize" && request.method === "GET") {
+      const clientId = url.searchParams.get("client_id") ?? "";
+      const redirectUri = url.searchParams.get("redirect_uri") ?? "";
+      const codeChallenge = url.searchParams.get("code_challenge") ?? "";
+      if (!oauthClients.has(clientId) || !redirectUri || !codeChallenge || url.searchParams.get("code_challenge_method") !== "S256") {
+        json(response, 400, {error: "invalid_request"});
+        return;
+      }
+      const code = `code-${randomUUID()}`;
+      oauthCodes.set(code, {clientId, redirectUri, codeChallenge});
+      const callback = new URL(redirectUri);
+      callback.searchParams.set("code", code);
+      callback.searchParams.set("state", url.searchParams.get("state") ?? "");
+      response.writeHead(302, {location: callback.toString()});
+      response.end();
+      return;
+    }
+    if (mode === "oauth" && url.pathname === "/oauth/token" && request.method === "POST") {
+      const form = await readForm(request);
+      if (form.get("grant_type") === "authorization_code") {
+        const code = form.get("code") ?? "";
+        const stored = oauthCodes.get(code);
+        const verifier = form.get("code_verifier") ?? "";
+        const challenge = createHash("sha256").update(verifier).digest("base64url");
+        if (!stored || stored.clientId !== form.get("client_id") || stored.redirectUri !== form.get("redirect_uri") || challenge !== stored.codeChallenge) {
+          json(response, 400, {error: "invalid_grant"});
+          return;
+        }
+        oauthCodes.delete(code);
+        issueOAuthTokens(response);
+        return;
+      }
+      if (form.get("grant_type") === "refresh_token") {
+        const refreshToken = form.get("refresh_token") ?? "";
+        if (!oauthRefreshTokens.has(refreshToken)) {
+          json(response, 400, {error: "invalid_grant"});
+          return;
+        }
+        issueOAuthTokens(response, refreshToken);
+        return;
+      }
+      json(response, 400, {error: "unsupported_grant_type"});
+      return;
+    }
+    if (mode === "oauth" && url.pathname === "/oauth/revoke" && request.method === "POST") {
+      const form = await readForm(request);
+      oauthAccessTokens.delete(form.get("token") ?? "");
+      oauthRefreshTokens.delete(form.get("token") ?? "");
+      oauthEvents.push({type: "revoke"});
+      response.writeHead(200);
+      response.end();
+      return;
+    }
+    if (mode === "oauth" && url.pathname === "/oauth/expire" && request.method === "POST") {
+      oauthAccessTokens.clear();
+      oauthEvents.push({type: "expire"});
+      json(response, 200, {ok: true});
+      return;
+    }
+    if (mode === "oauth" && url.pathname === "/oauth/events") {
+      json(response, 200, {events: oauthEvents});
+      return;
+    }
     if (url.pathname === "/events") {
       json(response, 200, {events});
       return;
@@ -269,6 +385,10 @@ async function runHttp() {
     if (url.pathname === "/mcp") {
       if (mode === "require-auth" && request.headers.authorization !== `Bearer ${secret}`) {
         json(response, 401, {error: "unauthorized"});
+        return;
+      }
+      if (mode === "oauth" && !oauthAccessTokens.has(String(request.headers.authorization ?? "").replace(/^Bearer /, ""))) {
+        json(response, 401, {error: "unauthorized"}, {"www-authenticate": `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"`});
         return;
       }
       const sessionId = String(request.headers["mcp-session-id"] ?? "");

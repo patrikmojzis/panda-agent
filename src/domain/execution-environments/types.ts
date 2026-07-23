@@ -54,7 +54,7 @@ export type ExecutionEnvironmentState =
 export type ExecutionCredentialPolicy =
   | {mode: "all_agent"}
   | {mode: "none"}
-  | {mode: "allowlist"; envKeys: readonly string[]};
+  | {mode: "allowlist"; envKeys: readonly string[]; credentialRefs?: readonly string[]};
 
 export type ExecutionSkillPolicy =
   | {mode: "all_agent"}

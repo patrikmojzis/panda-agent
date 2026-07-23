@@ -31,6 +31,7 @@ describe("subagent spawn command", () => {
             credentialPolicy: {
               mode: "allowlist",
               envKeys: input.credentialAllowlist ?? [],
+              credentialRefs: input.credentialRefAllowlist ?? [],
             },
             skillPolicy: {mode: "all_agent"},
             toolPolicy: {allowedTools: ["a2a.send"]},
@@ -61,6 +62,7 @@ describe("subagent spawn command", () => {
         execution: "isolated_environment",
         environmentId: "env-parent-owned",
         credentialAllowlist: ["BRAVE_API_KEY"],
+        credentialRefAllowlist: ["mcp-oauth:reports"],
       },
       scope: {
         agentKey: "panda",
@@ -78,6 +80,7 @@ describe("subagent spawn command", () => {
       execution: "isolated_environment",
       environmentId: "env-parent-owned",
       credentialAllowlist: ["BRAVE_API_KEY"],
+      credentialRefAllowlist: ["mcp-oauth:reports"],
       createdByIdentityId: "identity-1",
     });
     expect(result).toMatchObject({

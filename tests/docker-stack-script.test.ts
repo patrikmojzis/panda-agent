@@ -459,6 +459,7 @@ exit 42
     expect(compose).toContain('PANDA_CONTROL_ENABLED: "true"');
     expect(compose).toContain("PANDA_CONTROL_HOST: 0.0.0.0");
     expect(compose).toContain("PANDA_CONTROL_PORT: ${PANDA_CONTROL_PORT:-4767}");
+    expect(compose).toContain("PANDA_CONTROL_PUBLIC_URL: ${PANDA_CONTROL_PUBLIC_URL:-}");
     expect(compose).toContain("PANDA_CONTROL_UI_DIR: ${PANDA_CONTROL_UI_DIR:-/app/control-ui}");
     expect(compose).toContain('"${PANDA_CONTROL_PUBLISH_HOST:-127.0.0.1}:${PANDA_CONTROL_PUBLISH_PORT:-${PANDA_CONTROL_PORT:-4767}}:${PANDA_CONTROL_PORT:-4767}"');
   });

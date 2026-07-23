@@ -156,6 +156,39 @@ describe("generic MCP commands", () => {
     expect(deps.runner.listTools).toHaveBeenCalledOnce();
   });
 
+  it("requires the opaque OAuth grant ref before creating a runtime client", async () => {
+    const configs = new InMemoryMcpConfigStore({panda: {servers: {analytics: {
+      transport: "streamable-http",
+      enabled: true,
+      url: "http://127.0.0.1:3010/mcp",
+      auth: {
+        type: "oauth",
+        registration: {mode: "dynamic"},
+        scope: {mode: "explicit", values: ["resource:read"]},
+      },
+      timeoutMs: 5_000,
+    }}}});
+    const deps = dependencies({configs});
+    const dispatcher = new RuntimeCommandDispatcher({commands: [createMcpToolsCommand(deps)]});
+
+    const denied = await dispatcher.execute(request("mcp.tools", {server: "analytics"}, {
+      credentialPolicy: {mode: "allowlist", envKeys: [], credentialRefs: []},
+    }));
+    expect(denied).toMatchObject({ok: false, error: {code: "forbidden", details: {failureCode: "command_scope_denied"}}});
+    expect(deps.runner.listTools).not.toHaveBeenCalled();
+
+    const allowed = await dispatcher.execute(request("mcp.tools", {server: "analytics"}, {
+      credentialPolicy: {mode: "allowlist", envKeys: [], credentialRefs: ["mcp-oauth:analytics"]},
+    }));
+    expect(allowed.ok).toBe(true);
+    expect(deps.runner.listTools).toHaveBeenCalledWith(expect.objectContaining({
+      config: expect.objectContaining({
+        oauth: expect.objectContaining({agentKey: "panda", serverName: "analytics"}),
+      }),
+    }));
+    expect(deps.credentials.resolveCredential).not.toHaveBeenCalled();
+  });
+
   it.each([
     [async () => null, "not configured"],
     [async () => { throw new Error(`decrypt ${secret}`); }, "could not be decrypted"],

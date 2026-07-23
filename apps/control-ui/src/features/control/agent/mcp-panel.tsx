@@ -1,5 +1,5 @@
 import * as React from "react"
-import { Pencil, Plus, Power, Trash2 } from "lucide-react"
+import { Link2, Pencil, Plus, Power, Trash2, Unlink } from "lucide-react"
 
 import { RowActionsMenu } from "@/components/common/data-table"
 import { Badge } from "@/components/ui/badge"
@@ -36,6 +36,7 @@ import {
 import {
   controlApi,
   type McpHeaderValue,
+  type McpOAuthDiscovery,
   type McpServerPayload,
   type McpServerRow,
   type McpValueSource,
@@ -48,6 +49,15 @@ const statusLabels: Record<McpServerRow["status"], string> = {
   missing_credentials: "Missing credentials",
   credential_store_unavailable: "Credential store unavailable",
   credential_unreadable: "Credential unreadable",
+  authorization_required: "Authorization required",
+  authorizing: "Authorizing",
+  reauthorization_required: "Reconnect required",
+  unavailable: "OAuth unavailable",
+}
+
+type McpHttpServerRow = Extract<McpServerRow, { url: string }>
+type McpStreamableHttpServerRow = McpHttpServerRow & {
+  transport: "streamable-http"
 }
 
 type Draft = {
@@ -62,6 +72,11 @@ type Draft = {
   url: string
   headers: string
   bearerCredentialEnvKey: string
+  authMode: "none" | "bearer" | "oauth"
+  oauthRegistration: "dynamic" | "manual"
+  oauthScopeMode: "explicit" | "server-default"
+  oauthScopes: string
+  trustedOrigins: string
 }
 
 const emptyDraft: Draft = {
@@ -76,6 +91,11 @@ const emptyDraft: Draft = {
   url: "",
   headers: "[]",
   bearerCredentialEnvKey: "",
+  authMode: "none",
+  oauthRegistration: "dynamic",
+  oauthScopeMode: "explicit",
+  oauthScopes: "",
+  trustedOrigins: "",
 }
 
 function draftFor(row?: McpServerRow): Draft {
@@ -101,7 +121,21 @@ function draftFor(row?: McpServerRow): Draft {
     timeoutMs: String(row.timeoutMs),
     url: row.url,
     headers: JSON.stringify(row.headers ?? [], null, 2),
-    bearerCredentialEnvKey: row.auth?.credentialEnvKey ?? "",
+    bearerCredentialEnvKey:
+      row.auth?.type === "bearer" ? row.auth.credentialEnvKey : "",
+    authMode: row.auth?.type ?? "none",
+    oauthRegistration:
+      row.auth?.type === "oauth" ? row.auth.registration.mode : "dynamic",
+    oauthScopeMode:
+      row.auth?.type === "oauth" ? row.auth.scope.mode : "explicit",
+    oauthScopes:
+      row.auth?.type === "oauth" && row.auth.scope.mode === "explicit"
+        ? row.auth.scope.values.join("\n")
+        : "",
+    trustedOrigins:
+      row.auth?.type === "oauth"
+        ? (row.auth.trustedOrigins ?? []).join("\n")
+        : "",
   }
 }
 
@@ -154,14 +188,35 @@ function payloadFor(draft: Draft): McpServerPayload {
     enabled: draft.enabled,
     url: draft.url.trim(),
     ...(headers.length > 0 ? { headers } : {}),
-    ...(draft.bearerCredentialEnvKey
+    ...(draft.authMode === "bearer"
       ? {
           auth: {
             type: "bearer",
-            credentialEnvKey: draft.bearerCredentialEnvKey,
+            credentialEnvKey: draft.bearerCredentialEnvKey.trim(),
           },
         }
-      : {}),
+      : draft.authMode === "oauth"
+        ? {
+            auth: {
+              type: "oauth",
+              registration: { mode: draft.oauthRegistration },
+              scope:
+                draft.oauthScopeMode === "server-default"
+                  ? { mode: "server-default" }
+                  : {
+                      mode: "explicit",
+                      values: draft.oauthScopes
+                        .split(/\s+/)
+                        .map((value) => value.trim())
+                        .filter(Boolean),
+                    },
+              trustedOrigins: draft.trustedOrigins
+                .split(/\s+/)
+                .map((value) => value.trim())
+                .filter(Boolean),
+            },
+          }
+        : {}),
     timeoutMs,
   }
 }
@@ -223,6 +278,11 @@ function McpServerDialog({
       url: "",
       headers: "[]",
       bearerCredentialEnvKey: "",
+      authMode: "none",
+      oauthRegistration: "dynamic",
+      oauthScopeMode: "explicit",
+      oauthScopes: "",
+      trustedOrigins: "",
     }))
   }
   const submit = async (event: React.FormEvent) => {
@@ -358,21 +418,114 @@ function McpServerDialog({
                 />
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="mcp-bearer">Bearer credential reference</Label>
-                <Input
-                  id="mcp-bearer"
-                  list="mcp-credential-keys"
-                  value={draft.bearerCredentialEnvKey}
+                <Label htmlFor="mcp-auth-mode">Authentication</Label>
+                <select
+                  id="mcp-auth-mode"
+                  className="h-9 rounded-md border bg-background px-3 text-sm"
+                  value={draft.authMode}
                   onChange={(event) =>
-                    field("bearerCredentialEnvKey", event.target.value)
+                    field("authMode", event.target.value as Draft["authMode"])
                   }
-                />
-                <datalist id="mcp-credential-keys">
-                  {credentialKeys.map((key) => (
-                    <option key={key} value={key} />
-                  ))}
-                </datalist>
+                >
+                  <option value="none">None</option>
+                  <option value="bearer">Static bearer credential</option>
+                  {draft.transport === "streamable-http" ? (
+                    <option value="oauth">OAuth 2.1 + PKCE</option>
+                  ) : null}
+                </select>
               </div>
+              {draft.authMode === "bearer" ? (
+                <div className="grid gap-2">
+                  <Label htmlFor="mcp-bearer">
+                    Bearer credential reference
+                  </Label>
+                  <Input
+                    id="mcp-bearer"
+                    list="mcp-credential-keys"
+                    value={draft.bearerCredentialEnvKey}
+                    required
+                    onChange={(event) =>
+                      field("bearerCredentialEnvKey", event.target.value)
+                    }
+                  />
+                  <datalist id="mcp-credential-keys">
+                    {credentialKeys.map((key) => (
+                      <option key={key} value={key} />
+                    ))}
+                  </datalist>
+                </div>
+              ) : null}
+              {draft.authMode === "oauth" ? (
+                <>
+                  <div className="grid gap-2">
+                    <Label htmlFor="mcp-oauth-registration">
+                      OAuth client registration
+                    </Label>
+                    <select
+                      id="mcp-oauth-registration"
+                      className="h-9 rounded-md border bg-background px-3 text-sm"
+                      value={draft.oauthRegistration}
+                      onChange={(event) =>
+                        field(
+                          "oauthRegistration",
+                          event.target.value as Draft["oauthRegistration"]
+                        )
+                      }
+                    >
+                      <option value="dynamic">Dynamic registration</option>
+                      <option value="manual">Manual client</option>
+                    </select>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="mcp-oauth-scope-mode">Scope policy</Label>
+                    <select
+                      id="mcp-oauth-scope-mode"
+                      className="h-9 rounded-md border bg-background px-3 text-sm"
+                      value={draft.oauthScopeMode}
+                      onChange={(event) =>
+                        field(
+                          "oauthScopeMode",
+                          event.target.value as Draft["oauthScopeMode"]
+                        )
+                      }
+                    >
+                      <option value="explicit">Explicit scopes</option>
+                      <option value="server-default">
+                        Use server default (may grant broad access)
+                      </option>
+                    </select>
+                  </div>
+                  {draft.oauthScopeMode === "explicit" ? (
+                    <div className="grid gap-2">
+                      <Label htmlFor="mcp-oauth-scopes">OAuth scopes</Label>
+                      <Textarea
+                        id="mcp-oauth-scopes"
+                        className="min-h-24 font-mono text-xs"
+                        value={draft.oauthScopes}
+                        required
+                        placeholder="one scope per line"
+                        onChange={(event) =>
+                          field("oauthScopes", event.target.value)
+                        }
+                      />
+                    </div>
+                  ) : null}
+                  <div className="grid gap-2">
+                    <Label htmlFor="mcp-oauth-origins">
+                      Additional trusted OAuth origins
+                    </Label>
+                    <Textarea
+                      id="mcp-oauth-origins"
+                      className="min-h-20 font-mono text-xs"
+                      value={draft.trustedOrigins}
+                      placeholder="https://auth.example.com"
+                      onChange={(event) =>
+                        field("trustedOrigins", event.target.value)
+                      }
+                    />
+                  </div>
+                </>
+              ) : null}
               <div className="grid gap-2">
                 <Label htmlFor="mcp-headers">Headers JSON</Label>
                 <Textarea
@@ -415,12 +568,255 @@ function McpServerDialog({
   )
 }
 
+function McpOAuthDialog({
+  agentKey,
+  row,
+  open,
+  onOpenChange,
+  onChanged,
+}: {
+  agentKey: string
+  row: McpStreamableHttpServerRow
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onChanged: () => Promise<unknown>
+}) {
+  const auth = useAuth()
+  const oauth = row.auth?.type === "oauth" ? row.auth : null
+  const [discovery, setDiscovery] = React.useState<McpOAuthDiscovery | null>(
+    null
+  )
+  const [pending, setPending] = React.useState(false)
+  const [error, setError] = React.useState<string | null>(null)
+  const [clientId, setClientId] = React.useState("")
+  const [clientSecret, setClientSecret] = React.useState("")
+  const [tokenMethod, setTokenMethod] = React.useState<
+    "none" | "client_secret_basic" | "client_secret_post"
+  >("client_secret_basic")
+
+  const discover = async () => {
+    setPending(true)
+    setError(null)
+    try {
+      const result = await controlApi.discoverMcpOAuth(
+        agentKey,
+        row.serverName,
+        auth.csrfToken
+      )
+      setDiscovery(result.discovery)
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "OAuth discovery failed."
+      )
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const trustBlockedOrigins = async () => {
+    if (!oauth || !discovery) return
+    setPending(true)
+    setError(null)
+    try {
+      await controlApi.putMcpServer(
+        agentKey,
+        row.serverName,
+        {
+          transport: "streamable-http",
+          enabled: row.enabled,
+          url: row.url,
+          ...(row.headers ? { headers: row.headers } : {}),
+          timeoutMs: row.timeoutMs,
+          auth: {
+            ...oauth,
+            trustedOrigins: [
+              ...new Set([
+                ...(oauth.trustedOrigins ?? []),
+                ...discovery.blockedOrigins,
+              ]),
+            ],
+          },
+        },
+        auth.csrfToken
+      )
+      await onChanged()
+      setDiscovery(null)
+    } catch (caught) {
+      setError(
+        caught instanceof Error
+          ? caught.message
+          : "OAuth origin approval failed."
+      )
+    } finally {
+      setPending(false)
+    }
+  }
+
+  const connect = async () => {
+    if (!oauth) return
+    setPending(true)
+    setError(null)
+    try {
+      const result = await controlApi.startMcpOAuth(
+        agentKey,
+        row.serverName,
+        oauth.registration.mode === "manual" && clientId.trim()
+          ? {
+              manualClient: {
+                clientId: clientId.trim(),
+                ...(clientSecret ? { clientSecret } : {}),
+                tokenEndpointAuthMethod: tokenMethod,
+              },
+            }
+          : {},
+        auth.csrfToken
+      )
+      window.open(result.authorizationUrl, "_blank", "noopener,noreferrer")
+      await onChanged()
+      onOpenChange(false)
+    } catch (caught) {
+      setError(
+        caught instanceof Error ? caught.message : "OAuth connection failed."
+      )
+    } finally {
+      setPending(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Connect {row.serverName}</DialogTitle>
+          <DialogDescription>
+            Discover the server OAuth contract before opening its authorization
+            page.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="grid gap-4">
+          <Button
+            variant="outline"
+            disabled={pending}
+            onClick={() => void discover()}
+          >
+            Discover OAuth server
+          </Button>
+          {discovery ? (
+            <div className="grid gap-3 rounded-md border p-3 text-sm">
+              <p className="break-all">
+                <strong>Resource:</strong> {discovery.resource}
+              </p>
+              <p className="break-all">
+                <strong>Authorization server:</strong>{" "}
+                {discovery.authorizationServer}
+              </p>
+              <div>
+                <strong>Supported scopes</strong>
+                {discovery.supportedScopes.length > 0 ? (
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {discovery.supportedScopes.map((scope) => (
+                      <Badge key={scope} variant="outline">
+                        {scope}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-muted-foreground">
+                    The server did not advertise scopes.
+                  </p>
+                )}
+              </div>
+              {discovery.blockedOrigins.length > 0 ? (
+                <div className="grid gap-2">
+                  <p>
+                    Untrusted origins: {discovery.blockedOrigins.join(", ")}
+                  </p>
+                  <Button
+                    variant="outline"
+                    disabled={pending}
+                    onClick={() => void trustBlockedOrigins()}
+                  >
+                    Trust these exact origins
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {oauth?.registration.mode === "manual" ? (
+            <>
+              <div className="grid gap-2">
+                <Label htmlFor="mcp-oauth-client-id">Client ID</Label>
+                <Input
+                  id="mcp-oauth-client-id"
+                  value={clientId}
+                  onChange={(event) => setClientId(event.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Leave blank to reuse a previously stored registration.
+                </p>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="mcp-oauth-client-secret">Client secret</Label>
+                <Input
+                  id="mcp-oauth-client-secret"
+                  type="password"
+                  value={clientSecret}
+                  onChange={(event) => setClientSecret(event.target.value)}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="mcp-oauth-token-method">
+                  Token endpoint authentication
+                </Label>
+                <select
+                  id="mcp-oauth-token-method"
+                  className="h-9 rounded-md border bg-background px-3 text-sm"
+                  value={tokenMethod}
+                  onChange={(event) =>
+                    setTokenMethod(event.target.value as typeof tokenMethod)
+                  }
+                >
+                  <option value="client_secret_basic">
+                    client_secret_basic
+                  </option>
+                  <option value="client_secret_post">client_secret_post</option>
+                  <option value="none">none</option>
+                </select>
+              </div>
+            </>
+          ) : null}
+          {error ? (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          ) : null}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            disabled={
+              pending || !discovery || discovery.blockedOrigins.length > 0
+            }
+            onClick={() => void connect()}
+          >
+            Open authorization page
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 export function McpPanel({ agentKey }: { agentKey: string }) {
   const auth = useAuth()
   const servers = useAgentMcpServers(agentKey)
   const credentials = useAgentCredentials(agentKey, { per_page: 100 })
   const [editing, setEditing] = React.useState<McpServerRow | undefined>()
   const [dialogOpen, setDialogOpen] = React.useState(false)
+  const [oauthRow, setOauthRow] =
+    React.useState<McpStreamableHttpServerRow | null>(null)
   const invalidate = controlKeys.agents.detail(agentKey)
   const save = useToastMutation({
     mutationFn: ({
@@ -451,6 +847,12 @@ export function McpPanel({ agentKey }: { agentKey: string }) {
     success: "MCP server deleted",
     invalidate,
   })
+  const disconnectOAuth = useToastMutation({
+    mutationFn: (row: McpServerRow) =>
+      controlApi.disconnectMcpOAuth(agentKey, row.serverName, auth.csrfToken),
+    success: "MCP OAuth disconnected",
+    invalidate,
+  })
   const openCreate = () => {
     setEditing(undefined)
     setDialogOpen(true)
@@ -459,6 +861,14 @@ export function McpPanel({ agentKey }: { agentKey: string }) {
     setEditing(row)
     setDialogOpen(true)
   }
+  const rows = servers.data?.servers ?? []
+  const authorizing = rows.some((row) => row.status === "authorizing")
+  const refetchServers = servers.refetch
+  React.useEffect(() => {
+    if (!authorizing) return
+    const timer = window.setInterval(() => void refetchServers(), 3_000)
+    return () => window.clearInterval(timer)
+  }, [authorizing, refetchServers])
 
   if (servers.isLoading)
     return <p className="text-sm text-muted-foreground">Loading MCP servers…</p>
@@ -476,7 +886,6 @@ export function McpPanel({ agentKey }: { agentKey: string }) {
       </div>
     )
   }
-  const rows = servers.data?.servers ?? []
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
@@ -563,6 +972,32 @@ export function McpPanel({ agentKey }: { agentKey: string }) {
                   credential: {key}
                 </Badge>
               ))}
+              {row.transport === "streamable-http" &&
+              row.auth?.type === "oauth" ? (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setOauthRow(row as McpStreamableHttpServerRow)
+                    }
+                  >
+                    <Link2 className="size-4" />
+                    {row.status === "ready" ? "Reconnect" : "Connect"}
+                  </Button>
+                  {row.status === "ready" ||
+                  row.status === "reauthorization_required" ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={disconnectOAuth.isPending}
+                      onClick={() => disconnectOAuth.mutateAsync(row)}
+                    >
+                      <Unlink className="size-4" /> Disconnect
+                    </Button>
+                  ) : null}
+                </>
+              ) : null}
             </CardContent>
           </Card>
         ))
@@ -581,6 +1016,17 @@ export function McpPanel({ agentKey }: { agentKey: string }) {
           onSave={(serverName, payload) =>
             save.mutateAsync({ serverName, payload })
           }
+        />
+      ) : null}
+      {oauthRow ? (
+        <McpOAuthDialog
+          agentKey={agentKey}
+          row={oauthRow}
+          open={Boolean(oauthRow)}
+          onOpenChange={(open) => {
+            if (!open) setOauthRow(null)
+          }}
+          onChanged={() => servers.refetch()}
         />
       ) : null}
     </div>

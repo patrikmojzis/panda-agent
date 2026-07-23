@@ -3464,7 +3464,7 @@ Usage:
   panda subagent profile disable --help [--json]
   panda subagent list [--run-status running|completed|failed|all] [--limit <n>]
   panda subagent show <session-id>
-  panda subagent spawn (<task|@file|@->|--prompt <text|@file|@->) [--profile <slug>|--tool-group <group>...] [--context <text|@file|@->] [(--environment <environment-id> [--isolated]|--agent-workspace)] [--credential <env-key>...]
+  panda subagent spawn (<task|@file|@->|--prompt <text|@file|@->) [--profile <slug>|--tool-group <group>...] [--context <text|@file|@->] [(--environment <environment-id> [--isolated]|--agent-workspace)] [--credential <env-key>...] [--credential-ref <credential-ref>...]
   panda subagent spawn --json @payload.json
   panda subagent profile list [--include-disabled]
   panda subagent profile show <slug> [--include-disabled]
@@ -3616,6 +3616,7 @@ USAGE
 	      environment_id=""
 	      tool_groups_json="[]"
 	      credentials_json="[]"
+	      credential_refs_json="[]"
 	      if [ "${1:-}" != "" ] && [ "${1#--}" = "$1" ]; then
 	        prompt="$(read_text_input "$1")"
 	        prompt_set="true"
@@ -3666,6 +3667,11 @@ USAGE
 	            credentials_json="$(printf '%s' "$credentials_json" | jq -c --arg credential "$1" '. + [$credential]')"
 	            shift
 	            ;;
+	          --credential-ref)
+	            [ "$#" -gt 0 ] || die "panda subagent spawn --credential-ref requires an opaque credential ref."
+	            credential_refs_json="$(printf '%s' "$credential_refs_json" | jq -c --arg credentialRef "$1" '. + [$credentialRef]')"
+	            shift
+	            ;;
 	          *)
 	            die "Unknown panda subagent spawn option: $option"
 	            ;;
@@ -3690,13 +3696,15 @@ USAGE
 	        --arg environmentId "$environment_id" \
 	        --argjson toolGroups "$tool_groups_json" \
 	        --argjson credentialAllowlist "$credentials_json" \
+	        --argjson credentialRefAllowlist "$credential_refs_json" \
 	        '({prompt: $prompt})
 	         + (if $profile != "" then {profile: $profile} else {} end)
 	         + (if $contextSet == "true" then {context: $context} else {} end)
 	         + (if $execution != "" then {execution: $execution} else {} end)
 	         + (if $environmentId != "" then {environmentId: $environmentId} else {} end)
 	         + (if ($toolGroups | length) > 0 then {toolGroups: $toolGroups} else {} end)
-	         + (if ($credentialAllowlist | length) > 0 then {credentialAllowlist: $credentialAllowlist} else {} end)')"
+	         + (if ($credentialAllowlist | length) > 0 then {credentialAllowlist: $credentialAllowlist} else {} end)
+	         + (if ($credentialRefAllowlist | length) > 0 then {credentialRefAllowlist: $credentialRefAllowlist} else {} end)')"
 	      execute_json_command "$command_name" "$payload"
 	      exit $?
 	    fi

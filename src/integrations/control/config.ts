@@ -8,6 +8,30 @@ export interface ControlServerBinding {
   uiStaticDir?: string;
 }
 
+export function resolveControlPublicUrl(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const raw = env.PANDA_CONTROL_PUBLIC_URL?.trim();
+  if (!raw) return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error("PANDA_CONTROL_PUBLIC_URL must be a valid absolute URL.");
+  }
+  const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]" || url.hostname === "::1";
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+    throw new Error("PANDA_CONTROL_PUBLIC_URL must use HTTPS except on loopback hosts.");
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error("PANDA_CONTROL_PUBLIC_URL must not contain userinfo, query, or fragment.");
+  }
+  url.pathname = url.pathname.replace(/\/+$/, "");
+  return url.toString().replace(/\/$/, "");
+}
+
+export function buildControlMcpOAuthCallbackUrl(publicUrl: string): string {
+  return `${publicUrl}/api/control/mcp/oauth/callback`;
+}
+
 function readControlPort(value: string | undefined): number {
   if (!value) return DEFAULT_CONTROL_PORT;
   const parsed = Number(value);

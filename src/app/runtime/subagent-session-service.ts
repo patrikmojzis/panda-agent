@@ -82,6 +82,7 @@ export interface CreateSubagentSessionInput {
   execution?: SubagentExecutionMode;
   environmentId?: string;
   credentialAllowlist?: readonly string[];
+  credentialRefAllowlist?: readonly string[];
   sessionId?: string;
   threadId?: string;
   createdByIdentityId?: string;
@@ -143,9 +144,11 @@ function resolveProfileModel(profile: SubagentProfileSnapshot): {model?: string;
 }
 
 function buildCredentialPolicy(input: CreateSubagentSessionInput): ExecutionCredentialPolicy {
+  const credentialRefs = uniqueTrimmedStrings(input.credentialRefAllowlist ?? []);
   return {
     mode: "allowlist",
     envKeys: uniqueTrimmedStrings(input.credentialAllowlist ?? []),
+    ...(credentialRefs.length > 0 ? {credentialRefs} : {}),
   };
 }
 

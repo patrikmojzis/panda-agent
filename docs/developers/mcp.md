@@ -7,16 +7,19 @@ MCP is split at a narrow boundary:
 - `src/domain/control/mcp-service.ts` is the narrow authenticated Control surface. Do not add MCP mutations to `ControlOperatorService`.
 - `examples/mcp/fixture-server.mjs` is the checked-in stdio/Streamable HTTP/SSE fixture and is copied into the app image.
 
+OAuth connections are separate from public MCP config. `runtime.agent_mcp_oauth_connections` stores a versioned `CredentialCrypto` payload keyed by agent/server; `runtime.agent_mcp_oauth_attempts` stores one hashed-state, encrypted-PKCE attempt per agent/server for ten minutes. The runtime injects an SDK `OAuthClientProvider` only for Streamable HTTP and never opens a browser. Control owns discovery/start/callback/disconnect, while the callback consumes state before exchanging the code.
+
 The runtime does not read filesystem or environment-based MCP config. `PostgresMcpConfigStore` locks the owning agent row and current registry row in one transaction before every mutation, preventing concurrent read-modify-write loss. Persisted JSON is parsed strictly on reads; unknown or malformed fields fail closed.
 
-Credential grants travel in the signed command lease and `CommandScope`. Commands validate every referenced key before any resolution, process spawn, or fetch. Initial and refreshed disposable-environment leases preserve the same policy. Primary fallback is `all_agent`; absent policy is deny-all for MCP.
+Credential grants travel in the signed command lease and `CommandScope`. Commands validate every referenced key and opaque OAuth ref before decryption, process spawn, or fetch. Initial and refreshed disposable-environment leases preserve the same policy. Primary fallback is `all_agent`; absent policy is deny-all for MCP.
 
 The custom stdio adapter uses the SDK's public `Transport` interface and exported JSON-RPC serializer/parser so it can count each line before parsing. HTTP transports use one injected fetch wrapper for the configured origin, manual redirects, streaming body accounting, and SDK-owned session/protocol header propagation. Streamable HTTP attempts `terminateSession()` for at most two seconds within the absolute deadline; SSE closes its stream. Calls are never retried.
 
 ## Fresh checks
 
 ```bash
-pnpm vitest run tests/mcp-postgres.test.ts tests/mcp-commands.test.ts tests/mcp-transports.test.ts
+pnpm vitest run tests/mcp-postgres.test.ts tests/mcp-oauth-postgres.test.ts tests/mcp-oauth-http.test.ts tests/mcp-commands.test.ts tests/mcp-transports.test.ts
+pnpm vitest run tests/mcp-oauth-flow.test.ts
 pnpm vitest run tests/control-auth-http.test.ts -t "MCP servers"
 pnpm typecheck
 pnpm build

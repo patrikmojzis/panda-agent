@@ -520,7 +520,7 @@ describe("Panda command CLI discovery", () => {
   it("includes descriptor-backed JSON help for subagent.spawn", async () => {
     expect(subagentSpawnCommandDescriptor).toMatchObject({
       name: "subagent.spawn",
-      usage: "panda subagent spawn (<task|@file|@->|--prompt <text|@file|@->) [--profile <slug>|--tool-group <group>...] [--context <text|@file|@->] [(--environment <environment-id> [--isolated]|--agent-workspace)] [--credential <env-key>...]",
+      usage: "panda subagent spawn (<task|@file|@->|--prompt <text|@file|@->) [--profile <slug>|--tool-group <group>...] [--context <text|@file|@->] [(--environment <environment-id> [--isolated]|--agent-workspace)] [--credential <env-key>...] [--credential-ref <credential-ref>...]",
       inputModes: ["flags", "json", "stdin", "file"],
       arguments: expect.arrayContaining([
         expect.objectContaining({
@@ -2139,7 +2139,7 @@ describe("Panda command CLI discovery", () => {
 
     expect(JSON.parse(String(write.mock.calls[0]?.[0]))).toMatchObject({
       name: "subagent.spawn",
-      usage: "panda subagent spawn (<task|@file|@->|--prompt <text|@file|@->) [--profile <slug>|--tool-group <group>...] [--context <text|@file|@->] [(--environment <environment-id> [--isolated]|--agent-workspace)] [--credential <env-key>...]",
+      usage: "panda subagent spawn (<task|@file|@->|--prompt <text|@file|@->) [--profile <slug>|--tool-group <group>...] [--context <text|@file|@->] [(--environment <environment-id> [--isolated]|--agent-workspace)] [--credential <env-key>...] [--credential-ref <credential-ref>...]",
       inputModes: ["flags", "json", "stdin", "file"],
       resultShape: {
         sessionId: "string",

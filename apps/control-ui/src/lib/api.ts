@@ -70,9 +70,7 @@ export type AgentDetail = AgentRow & {
   wikiBindingSet: boolean
 }
 
-export type McpValueSource =
-  | { value: string }
-  | { credentialEnvKey: string }
+export type McpValueSource = { value: string } | { credentialEnvKey: string }
 
 export type McpHeaderValue = {
   name: string
@@ -86,6 +84,27 @@ export type McpServerStatus =
   | "missing_credentials"
   | "credential_store_unavailable"
   | "credential_unreadable"
+  | "authorization_required"
+  | "authorizing"
+  | "reauthorization_required"
+  | "unavailable"
+
+export type McpOAuthAuth = {
+  type: "oauth"
+  registration: { mode: "dynamic" } | { mode: "manual" }
+  scope: { mode: "explicit"; values: string[] } | { mode: "server-default" }
+  trustedOrigins?: string[]
+}
+
+export type McpOAuthDiscovery = {
+  resource: string
+  resourceMetadataUrl?: string
+  authorizationServer: string
+  supportedScopes: string[]
+  registrationEndpointAvailable: boolean
+  tokenEndpointAuthMethods: string[]
+  blockedOrigins: string[]
+}
 
 export type McpServerRow = {
   serverName: string
@@ -95,6 +114,17 @@ export type McpServerRow = {
   status: McpServerStatus
   createdAt?: string
   updatedAt?: string
+  oauth?: {
+    status:
+      | "authorization_required"
+      | "authorizing"
+      | "ready"
+      | "reauthorization_required"
+      | "unavailable"
+    issuer?: string
+    resource?: string
+    authorizedAt?: string
+  }
 } & (
   | {
       transport: "stdio"
@@ -107,13 +137,29 @@ export type McpServerRow = {
       transport: "streamable-http" | "sse"
       url: string
       headers?: McpHeaderValue[]
-      auth?: { type: "bearer"; credentialEnvKey: string }
+      auth?: { type: "bearer"; credentialEnvKey: string } | McpOAuthAuth
     }
 )
 
 export type McpServerPayload =
-  | Omit<Extract<McpServerRow, { transport: "stdio" }>, "serverName" | "credentialEnvKeys" | "status" | "createdAt" | "updatedAt">
-  | Omit<Extract<McpServerRow, { transport: "streamable-http" | "sse" }>, "serverName" | "credentialEnvKeys" | "status" | "createdAt" | "updatedAt">
+  | Omit<
+      Extract<McpServerRow, { transport: "stdio" }>,
+      | "serverName"
+      | "credentialEnvKeys"
+      | "status"
+      | "oauth"
+      | "createdAt"
+      | "updatedAt"
+    >
+  | Omit<
+      Extract<McpServerRow, { transport: "streamable-http" | "sse" }>,
+      | "serverName"
+      | "credentialEnvKeys"
+      | "status"
+      | "oauth"
+      | "createdAt"
+      | "updatedAt"
+    >
 
 export type SessionRow = {
   id: string
@@ -335,15 +381,37 @@ export type TelegramSetupStatus = {
     displayName?: string
     externalUsername?: string
     tokenStored: boolean
-    tokenValid: "not_checked" | "valid" | "invalid" | "missing_secret" | "unavailable"
+    tokenValid:
+      | "not_checked"
+      | "valid"
+      | "invalid"
+      | "missing_secret"
+      | "unavailable"
     validationError?: string
   }
   sessionBindings: { total: number; bindings: BindingRow[] }
   actorPairings: { total: number; pairings: ChannelActorPairingRow[] }
   agentPairings: { total: number; identities: AgentPairingRow[] }
-  worker: { enabled: boolean; reloadRequired: boolean; detail: string; smokeCommand: string }
-  trace: { collectorEnabled: boolean; serviceSelected: boolean; sourceEnvKey: string; sourceConfigured: boolean; detail: string }
-  checklist: Array<{ key: string; label: string; status: "done" | "warning" | "blocked" | "info"; detail: string; action?: string }>
+  worker: {
+    enabled: boolean
+    reloadRequired: boolean
+    detail: string
+    smokeCommand: string
+  }
+  trace: {
+    collectorEnabled: boolean
+    serviceSelected: boolean
+    sourceEnvKey: string
+    sourceConfigured: boolean
+    detail: string
+  }
+  checklist: Array<{
+    key: string
+    label: string
+    status: "done" | "warning" | "blocked" | "info"
+    detail: string
+    action?: string
+  }>
 }
 
 export type SkillRow = {
@@ -579,7 +647,12 @@ export type ScheduledTask = {
   title: string
   schedule: ScheduledTaskSchedule
   enabled: boolean
-  lifecycleStatus: "scheduled" | "disabled" | "running" | "completed" | "cancelled"
+  lifecycleStatus:
+    | "scheduled"
+    | "disabled"
+    | "running"
+    | "completed"
+    | "cancelled"
   nextFireAt: string | null
   completedAt: string | null
   cancelledAt: string | null
@@ -606,7 +679,13 @@ export type WatchLatestRun = {
 export type WatchRow = {
   id: string
   title: string
-  sourceKind: "mongodb_query" | "sql_query" | "http_json" | "http_html" | "imap_mailbox" | null
+  sourceKind:
+    | "mongodb_query"
+    | "sql_query"
+    | "http_json"
+    | "http_html"
+    | "imap_mailbox"
+    | null
   detectorKind: "new_items" | "snapshot_changed" | "percent_change" | null
   observationKind: "collection" | "snapshot" | "scalar" | null
   intervalMinutes: number
@@ -700,7 +779,11 @@ export async function apiGet<T>(path: string): Promise<T> {
 
 export async function apiWrite<T>(
   path: string,
-  options: { method?: "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown; csrfToken?: string | null } = {}
+  options: {
+    method?: "POST" | "PUT" | "PATCH" | "DELETE"
+    body?: unknown
+    csrfToken?: string | null
+  } = {}
 ): Promise<T> {
   return parseResponse<T>(
     await fetch(`/api/control${path}`, {
@@ -710,7 +793,8 @@ export async function apiWrite<T>(
         "content-type": "application/json",
         ...(options.csrfToken ? { "x-control-csrf": options.csrfToken } : {}),
       },
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      body:
+        options.body === undefined ? undefined : JSON.stringify(options.body),
     })
   )
 }
@@ -718,66 +802,146 @@ export async function apiWrite<T>(
 export const controlApi = {
   me: () => apiGet<{ session: ControlSession }>("/me"),
   bootstrap: () => apiGet<{ hasGrant: boolean }>("/bootstrap"),
-  login: (input: { token: string; remember?: boolean }) => apiWrite<{ session: ControlSession; csrfToken: string }>("/login", { body: input }),
-  devLogin: (body: DevLoginInput) => apiWrite<{ session: ControlSession; csrfToken: string }>("/dev-login", { body }),
-  logout: (csrfToken?: string | null) => apiWrite<{ ok: true }>("/logout", { csrfToken }),
-  failures: (params: TableParams) => apiGet<PaginatedResponse<WorkFailure>>(`/work-failures${qs(params)}`),
-  search: (params: Pick<TableParams, "search" | "per_page">) => apiGet<PaginatedResponse<GlobalSearchResult>>(`/search${qs(params)}`),
-  agents: (params: TableParams) => apiGet<PaginatedResponse<AgentRow>>(`/agents${qs(params)}`),
-  identities: (params: TableParams) => apiGet<PaginatedResponse<IdentityOptionRow>>(`/identities${qs(params)}`),
+  login: (input: { token: string; remember?: boolean }) =>
+    apiWrite<{ session: ControlSession; csrfToken: string }>("/login", {
+      body: input,
+    }),
+  devLogin: (body: DevLoginInput) =>
+    apiWrite<{ session: ControlSession; csrfToken: string }>("/dev-login", {
+      body,
+    }),
+  logout: (csrfToken?: string | null) =>
+    apiWrite<{ ok: true }>("/logout", { csrfToken }),
+  failures: (params: TableParams) =>
+    apiGet<PaginatedResponse<WorkFailure>>(`/work-failures${qs(params)}`),
+  search: (params: Pick<TableParams, "search" | "per_page">) =>
+    apiGet<PaginatedResponse<GlobalSearchResult>>(`/search${qs(params)}`),
+  agents: (params: TableParams) =>
+    apiGet<PaginatedResponse<AgentRow>>(`/agents${qs(params)}`),
+  identities: (params: TableParams) =>
+    apiGet<PaginatedResponse<IdentityOptionRow>>(`/identities${qs(params)}`),
   createIdentity: (body: Record<string, unknown>, csrfToken?: string | null) =>
-    apiWrite<{ identity: IdentityOptionRow }>("/identities", { body, csrfToken }),
-  issueControlGrant: (body: Record<string, unknown>, csrfToken?: string | null) =>
+    apiWrite<{ identity: IdentityOptionRow }>("/identities", {
+      body,
+      csrfToken,
+    }),
+  issueControlGrant: (
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ grant: ControlGrant; loginToken: string }>("/control-grants", {
       body,
       csrfToken,
     }),
-  updateIdentity: (identityId: string, body: Record<string, unknown>, csrfToken?: string | null) =>
-    apiWrite<{ identity: IdentityOptionRow }>(`/identities/${encodeURIComponent(identityId)}`, {
-      method: "PATCH",
-      body,
-      csrfToken,
-    }),
+  updateIdentity: (
+    identityId: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ identity: IdentityOptionRow }>(
+      `/identities/${encodeURIComponent(identityId)}`,
+      {
+        method: "PATCH",
+        body,
+        csrfToken,
+      }
+    ),
   disableIdentity: (identityId: string, csrfToken?: string | null) =>
-    apiWrite<{ identity: IdentityOptionRow }>(`/identities/${encodeURIComponent(identityId)}`, {
-      method: "DELETE",
-      csrfToken,
-    }),
-  agent: (agentKey: string) => apiGet<{ agent: AgentDetail }>(`/agents/${encodeURIComponent(agentKey)}`),
+    apiWrite<{ identity: IdentityOptionRow }>(
+      `/identities/${encodeURIComponent(identityId)}`,
+      {
+        method: "DELETE",
+        csrfToken,
+      }
+    ),
+  agent: (agentKey: string) =>
+    apiGet<{ agent: AgentDetail }>(`/agents/${encodeURIComponent(agentKey)}`),
   agentPairings: (agentKey: string, params: TableParams) =>
-    apiGet<PaginatedResponse<AgentPairingRow>>(`/agents/${encodeURIComponent(agentKey)}/pairings${qs(params)}`),
-  pairAgentIdentity: (agentKey: string, body: Record<string, unknown>, csrfToken?: string | null) =>
-    apiWrite<{ pairing: AgentPairingRow }>(`/agents/${encodeURIComponent(agentKey)}/pairings`, { body, csrfToken }),
-  deleteAgentPairing: (agentKey: string, row: Pick<AgentPairingRow, "identityId">, csrfToken?: string | null) =>
-    apiWrite<{ deleted: boolean }>(`/agents/${encodeURIComponent(agentKey)}/pairings/${encodeURIComponent(row.identityId)}`, {
-      method: "DELETE",
-      csrfToken,
-    }),
+    apiGet<PaginatedResponse<AgentPairingRow>>(
+      `/agents/${encodeURIComponent(agentKey)}/pairings${qs(params)}`
+    ),
+  pairAgentIdentity: (
+    agentKey: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ pairing: AgentPairingRow }>(
+      `/agents/${encodeURIComponent(agentKey)}/pairings`,
+      { body, csrfToken }
+    ),
+  deleteAgentPairing: (
+    agentKey: string,
+    row: Pick<AgentPairingRow, "identityId">,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ deleted: boolean }>(
+      `/agents/${encodeURIComponent(agentKey)}/pairings/${encodeURIComponent(row.identityId)}`,
+      {
+        method: "DELETE",
+        csrfToken,
+      }
+    ),
   sessions: (agentKey: string, params: TableParams) =>
-    apiGet<PaginatedResponse<SessionRow>>(`/agents/${encodeURIComponent(agentKey)}/sessions${qs(params)}`),
+    apiGet<PaginatedResponse<SessionRow>>(
+      `/agents/${encodeURIComponent(agentKey)}/sessions${qs(params)}`
+    ),
   session: (agentKey: string, sessionId: string) =>
-    apiGet<{ session: SessionDetail }>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}`),
+    apiGet<{ session: SessionDetail }>(
+      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}`
+    ),
   sessionTargets: (agentKey: string, sessionId: string) =>
-    apiGet<{ targets: ExecutionTarget[] }>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/targets`),
-  bindSessionTarget: (agentKey: string, sessionId: string, body: Record<string, unknown>, csrfToken?: string | null) =>
+    apiGet<{ targets: ExecutionTarget[] }>(
+      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/targets`
+    ),
+  bindSessionTarget: (
+    agentKey: string,
+    sessionId: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ target: ExecutionTarget; targets: ExecutionTarget[] }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/targets`,
       { body, csrfToken }
     ),
-  deleteSessionTarget: (agentKey: string, sessionId: string, alias: string, csrfToken?: string | null) =>
+  deleteSessionTarget: (
+    agentKey: string,
+    sessionId: string,
+    alias: string,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ deleted: boolean; targets: ExecutionTarget[] }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/targets/${encodeURIComponent(alias)}`,
       { method: "DELETE", csrfToken }
     ),
-  createSession: (agentKey: string, body: Record<string, unknown>, csrfToken?: string | null) =>
-    apiWrite<{ session: SessionRow }>(`/agents/${encodeURIComponent(agentKey)}/sessions`, { body, csrfToken }),
-  updateSession: (agentKey: string, sessionId: string, body: Record<string, unknown>, csrfToken?: string | null) =>
-    apiWrite<{ session: SessionRow }>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}`, {
-      method: "PATCH",
-      body,
-      csrfToken,
-    }),
-  updateSessionRuntimeConfig: (agentKey: string, sessionId: string, body: Record<string, unknown>, csrfToken?: string | null) =>
+  createSession: (
+    agentKey: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ session: SessionRow }>(
+      `/agents/${encodeURIComponent(agentKey)}/sessions`,
+      { body, csrfToken }
+    ),
+  updateSession: (
+    agentKey: string,
+    sessionId: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ session: SessionRow }>(
+      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}`,
+      {
+        method: "PATCH",
+        body,
+        csrfToken,
+      }
+    ),
+  updateSessionRuntimeConfig: (
+    agentKey: string,
+    sessionId: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ session: SessionDetail }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/runtime-config`,
       {
@@ -786,11 +950,20 @@ export const controlApi = {
         csrfToken,
       }
     ),
-  a2aBindings: (agentKey: string, sessionId: string, params: TableParams = {}) =>
+  a2aBindings: (
+    agentKey: string,
+    sessionId: string,
+    params: TableParams = {}
+  ) =>
     apiGet<PaginatedResponse<A2ABindingRow>>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/a2a-bindings${qs(params)}`
     ),
-  bindA2ASession: (agentKey: string, sessionId: string, body: Record<string, unknown>, csrfToken?: string | null) =>
+  bindA2ASession: (
+    agentKey: string,
+    sessionId: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ bindings: A2ABindingRow[] }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/a2a-bindings`,
       { body, csrfToken }
@@ -810,52 +983,148 @@ export const controlApi = {
         csrfToken,
       }
     ),
-  resetSession: (agentKey: string, sessionId: string, csrfToken?: string | null) =>
+  resetSession: (
+    agentKey: string,
+    sessionId: string,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ session: SessionRow; previousThreadId: string }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/reset`,
       { csrfToken }
     ),
   mcpServers: (agentKey: string) =>
-    apiGet<{ servers: McpServerRow[]; count: number }>(`/agents/${encodeURIComponent(agentKey)}/mcp-servers`),
-  putMcpServer: (agentKey: string, serverName: string, body: McpServerPayload, csrfToken?: string | null) =>
+    apiGet<{ servers: McpServerRow[]; count: number }>(
+      `/agents/${encodeURIComponent(agentKey)}/mcp-servers`
+    ),
+  putMcpServer: (
+    agentKey: string,
+    serverName: string,
+    body: McpServerPayload,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ server: McpServerRow }>(
       `/agents/${encodeURIComponent(agentKey)}/mcp-servers/${encodeURIComponent(serverName)}`,
       { method: "PUT", body, csrfToken }
     ),
-  deleteMcpServer: (agentKey: string, serverName: string, csrfToken?: string | null) =>
+  deleteMcpServer: (
+    agentKey: string,
+    serverName: string,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ deleted: boolean }>(
       `/agents/${encodeURIComponent(agentKey)}/mcp-servers/${encodeURIComponent(serverName)}`,
       { method: "DELETE", csrfToken }
     ),
+  discoverMcpOAuth: (
+    agentKey: string,
+    serverName: string,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ discovery: McpOAuthDiscovery }>(
+      `/agents/${encodeURIComponent(agentKey)}/mcp-servers/${encodeURIComponent(serverName)}/oauth/discover`,
+      { body: {}, csrfToken }
+    ),
+  startMcpOAuth: (
+    agentKey: string,
+    serverName: string,
+    body: {
+      manualClient?: {
+        clientId: string
+        clientSecret?: string
+        tokenEndpointAuthMethod:
+          | "none"
+          | "client_secret_basic"
+          | "client_secret_post"
+      }
+    },
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ authorizationUrl: string; expiresAt: string }>(
+      `/agents/${encodeURIComponent(agentKey)}/mcp-servers/${encodeURIComponent(serverName)}/oauth/start`,
+      { body, csrfToken }
+    ),
+  disconnectMcpOAuth: (
+    agentKey: string,
+    serverName: string,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ disconnected: boolean }>(
+      `/agents/${encodeURIComponent(agentKey)}/mcp-servers/${encodeURIComponent(serverName)}/oauth`,
+      { method: "DELETE", csrfToken }
+    ),
   credentials: (agentKey: string, params: TableParams) =>
-    apiGet<PaginatedResponse<CredentialRow>>(`/agents/${encodeURIComponent(agentKey)}/credentials${qs(params)}`),
-  setCredential: (agentKey: string, body: Record<string, unknown>, csrfToken?: string | null) =>
-    apiWrite<{ credential: CredentialRow }>(`/agents/${encodeURIComponent(agentKey)}/credentials`, { body, csrfToken }),
-  deleteCredential: (agentKey: string, envKey: string, csrfToken?: string | null) =>
-    apiWrite<{ deleted: boolean }>(`/agents/${encodeURIComponent(agentKey)}/credentials/${encodeURIComponent(envKey)}`, {
-      method: "DELETE",
-      csrfToken,
-    }),
+    apiGet<PaginatedResponse<CredentialRow>>(
+      `/agents/${encodeURIComponent(agentKey)}/credentials${qs(params)}`
+    ),
+  setCredential: (
+    agentKey: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ credential: CredentialRow }>(
+      `/agents/${encodeURIComponent(agentKey)}/credentials`,
+      { body, csrfToken }
+    ),
+  deleteCredential: (
+    agentKey: string,
+    envKey: string,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ deleted: boolean }>(
+      `/agents/${encodeURIComponent(agentKey)}/credentials/${encodeURIComponent(envKey)}`,
+      {
+        method: "DELETE",
+        csrfToken,
+      }
+    ),
   wikiBinding: (agentKey: string) =>
-    apiGet<{ binding: WikiBinding | null }>(`/agents/${encodeURIComponent(agentKey)}/wiki-binding`),
-  setWikiBinding: (agentKey: string, body: Record<string, unknown>, csrfToken?: string | null) =>
-    apiWrite<{ binding: WikiBinding }>(`/agents/${encodeURIComponent(agentKey)}/wiki-binding`, {
-      method: "PUT",
-      body,
-      csrfToken,
-    }),
+    apiGet<{ binding: WikiBinding | null }>(
+      `/agents/${encodeURIComponent(agentKey)}/wiki-binding`
+    ),
+  setWikiBinding: (
+    agentKey: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ binding: WikiBinding }>(
+      `/agents/${encodeURIComponent(agentKey)}/wiki-binding`,
+      {
+        method: "PUT",
+        body,
+        csrfToken,
+      }
+    ),
   clearWikiBinding: (agentKey: string, csrfToken?: string | null) =>
-    apiWrite<{ deleted: boolean }>(`/agents/${encodeURIComponent(agentKey)}/wiki-binding`, {
-      method: "DELETE",
-      csrfToken,
-    }),
+    apiWrite<{ deleted: boolean }>(
+      `/agents/${encodeURIComponent(agentKey)}/wiki-binding`,
+      {
+        method: "DELETE",
+        csrfToken,
+      }
+    ),
   connectors: (agentKey: string, params: TableParams) =>
-    apiGet<PaginatedResponse<ConnectorRow>>(`/agents/${encodeURIComponent(agentKey)}/connectors${qs(params)}`),
+    apiGet<PaginatedResponse<ConnectorRow>>(
+      `/agents/${encodeURIComponent(agentKey)}/connectors${qs(params)}`
+    ),
   telegramSetupStatus: (agentKey: string, accountKey: string) =>
-    apiGet<{ status: TelegramSetupStatus }>(`/agents/${encodeURIComponent(agentKey)}/telegram/setup-status?account_key=${encodeURIComponent(accountKey)}`),
-  upsertConnector: (agentKey: string, body: Record<string, unknown>, csrfToken?: string | null) =>
-    apiWrite<{ connector: ConnectorRow }>(`/agents/${encodeURIComponent(agentKey)}/connectors`, { body, csrfToken }),
-  setConnectorEnabled: (agentKey: string, row: Pick<ConnectorRow, "source" | "accountKey">, enabled: boolean, csrfToken?: string | null) =>
+    apiGet<{ status: TelegramSetupStatus }>(
+      `/agents/${encodeURIComponent(agentKey)}/telegram/setup-status?account_key=${encodeURIComponent(accountKey)}`
+    ),
+  upsertConnector: (
+    agentKey: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ connector: ConnectorRow }>(
+      `/agents/${encodeURIComponent(agentKey)}/connectors`,
+      { body, csrfToken }
+    ),
+  setConnectorEnabled: (
+    agentKey: string,
+    row: Pick<ConnectorRow, "source" | "accountKey">,
+    enabled: boolean,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ connector: ConnectorRow }>(
       `/agents/${encodeURIComponent(agentKey)}/connectors/${encodeURIComponent(row.source)}/${encodeURIComponent(row.accountKey)}/status`,
       {
@@ -865,10 +1134,23 @@ export const controlApi = {
       }
     ),
   bindings: (agentKey: string, params: TableParams) =>
-    apiGet<PaginatedResponse<BindingRow>>(`/agents/${encodeURIComponent(agentKey)}/bindings${qs(params)}`),
-  bindConversation: (agentKey: string, body: Record<string, unknown>, csrfToken?: string | null) =>
-    apiWrite<{ binding: BindingRow }>(`/agents/${encodeURIComponent(agentKey)}/bindings`, { body, csrfToken }),
-  deleteBinding: (agentKey: string, row: BindingRow, csrfToken?: string | null) =>
+    apiGet<PaginatedResponse<BindingRow>>(
+      `/agents/${encodeURIComponent(agentKey)}/bindings${qs(params)}`
+    ),
+  bindConversation: (
+    agentKey: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ binding: BindingRow }>(
+      `/agents/${encodeURIComponent(agentKey)}/bindings`,
+      { body, csrfToken }
+    ),
+  deleteBinding: (
+    agentKey: string,
+    row: BindingRow,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ deleted: boolean }>(
       `/agents/${encodeURIComponent(agentKey)}/bindings/${encodeURIComponent(row.source)}/${encodeURIComponent(
         row.connectorKey
@@ -876,33 +1158,68 @@ export const controlApi = {
       { method: "DELETE", csrfToken }
     ),
   emailRoutes: (agentKey: string, params: TableParams) =>
-    apiGet<PaginatedResponse<EmailRouteRow>>(`/agents/${encodeURIComponent(agentKey)}/email/routes${qs(params)}`),
-  setEmailRoute: (agentKey: string, body: Record<string, unknown>, csrfToken?: string | null) =>
-    apiWrite<{ route: EmailRouteRow }>(`/agents/${encodeURIComponent(agentKey)}/email/routes`, { body, csrfToken }),
-  deleteEmailRoute: (agentKey: string, row: Pick<EmailRouteRow, "accountKey" | "mailbox">, csrfToken?: string | null) =>
+    apiGet<PaginatedResponse<EmailRouteRow>>(
+      `/agents/${encodeURIComponent(agentKey)}/email/routes${qs(params)}`
+    ),
+  setEmailRoute: (
+    agentKey: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ route: EmailRouteRow }>(
+      `/agents/${encodeURIComponent(agentKey)}/email/routes`,
+      { body, csrfToken }
+    ),
+  deleteEmailRoute: (
+    agentKey: string,
+    row: Pick<EmailRouteRow, "accountKey" | "mailbox">,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ deleted: boolean }>(
       `/agents/${encodeURIComponent(agentKey)}/email/routes/${encodeURIComponent(row.accountKey)}`,
       { method: "DELETE", body: { mailbox: row.mailbox }, csrfToken }
     ),
   emailAllowedRecipients: (agentKey: string, params: TableParams) =>
-    apiGet<PaginatedResponse<EmailAllowedRecipientRow>>(`/agents/${encodeURIComponent(agentKey)}/email/allowlist${qs(params)}`),
-  addEmailAllowedRecipient: (agentKey: string, body: Record<string, unknown>, csrfToken?: string | null) =>
-    apiWrite<{ recipient: EmailAllowedRecipientRow }>(`/agents/${encodeURIComponent(agentKey)}/email/allowlist`, {
-      body,
-      csrfToken,
-    }),
-  deleteEmailAllowedRecipient: (agentKey: string, row: Pick<EmailAllowedRecipientRow, "accountKey" | "address">, csrfToken?: string | null) =>
+    apiGet<PaginatedResponse<EmailAllowedRecipientRow>>(
+      `/agents/${encodeURIComponent(agentKey)}/email/allowlist${qs(params)}`
+    ),
+  addEmailAllowedRecipient: (
+    agentKey: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ recipient: EmailAllowedRecipientRow }>(
+      `/agents/${encodeURIComponent(agentKey)}/email/allowlist`,
+      {
+        body,
+        csrfToken,
+      }
+    ),
+  deleteEmailAllowedRecipient: (
+    agentKey: string,
+    row: Pick<EmailAllowedRecipientRow, "accountKey" | "address">,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ deleted: boolean }>(
       `/agents/${encodeURIComponent(agentKey)}/email/allowlist/${encodeURIComponent(row.accountKey)}/${encodeURIComponent(row.address)}`,
       { method: "DELETE", csrfToken }
     ),
   discordActorPairings: (agentKey: string, params: TableParams) =>
-    apiGet<PaginatedResponse<DiscordActorPairingRow>>(`/agents/${encodeURIComponent(agentKey)}/discord/actor-pairings${qs(params)}`),
-  pairDiscordActor: (agentKey: string, body: Record<string, unknown>, csrfToken?: string | null) =>
-    apiWrite<{ pairing: DiscordActorPairingRow }>(`/agents/${encodeURIComponent(agentKey)}/discord/actor-pairings`, {
-      body,
-      csrfToken,
-    }),
+    apiGet<PaginatedResponse<DiscordActorPairingRow>>(
+      `/agents/${encodeURIComponent(agentKey)}/discord/actor-pairings${qs(params)}`
+    ),
+  pairDiscordActor: (
+    agentKey: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ pairing: DiscordActorPairingRow }>(
+      `/agents/${encodeURIComponent(agentKey)}/discord/actor-pairings`,
+      {
+        body,
+        csrfToken,
+      }
+    ),
   deleteDiscordActorPairing: (
     agentKey: string,
     row: Pick<DiscordActorPairingRow, "accountKey" | "externalActorId">,
@@ -913,15 +1230,27 @@ export const controlApi = {
       { method: "DELETE", csrfToken }
     ),
   channelActorPairings: (agentKey: string, params: TableParams) =>
-    apiGet<PaginatedResponse<ChannelActorPairingRow>>(`/agents/${encodeURIComponent(agentKey)}/channel-actor-pairings${qs(params)}`),
-  pairChannelActor: (agentKey: string, body: Record<string, unknown>, csrfToken?: string | null) =>
-    apiWrite<{ pairing: ChannelActorPairingRow }>(`/agents/${encodeURIComponent(agentKey)}/channel-actor-pairings`, {
-      body,
-      csrfToken,
-    }),
+    apiGet<PaginatedResponse<ChannelActorPairingRow>>(
+      `/agents/${encodeURIComponent(agentKey)}/channel-actor-pairings${qs(params)}`
+    ),
+  pairChannelActor: (
+    agentKey: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ pairing: ChannelActorPairingRow }>(
+      `/agents/${encodeURIComponent(agentKey)}/channel-actor-pairings`,
+      {
+        body,
+        csrfToken,
+      }
+    ),
   deleteChannelActorPairing: (
     agentKey: string,
-    row: Pick<ChannelActorPairingRow, "source" | "connectorKey" | "externalActorId">,
+    row: Pick<
+      ChannelActorPairingRow,
+      "source" | "connectorKey" | "externalActorId"
+    >,
     csrfToken?: string | null
   ) =>
     apiWrite<{ deleted: boolean }>(
@@ -931,56 +1260,130 @@ export const controlApi = {
       { method: "DELETE", csrfToken }
     ),
   skills: (agentKey: string, params: TableParams) =>
-    apiGet<PaginatedResponse<SkillRow>>(`/agents/${encodeURIComponent(agentKey)}/skills${qs(params)}`),
+    apiGet<PaginatedResponse<SkillRow>>(
+      `/agents/${encodeURIComponent(agentKey)}/skills${qs(params)}`
+    ),
   skill: (agentKey: string, skillKey: string) =>
-    apiGet<{ skill: SkillRow }>(`/agents/${encodeURIComponent(agentKey)}/skills/${encodeURIComponent(skillKey)}`),
-  setSkill: (agentKey: string, body: Record<string, unknown>, csrfToken?: string | null) =>
-    apiWrite<{ skill: SkillRow }>(`/agents/${encodeURIComponent(agentKey)}/skills`, { body, csrfToken }),
-  deleteSkill: (agentKey: string, skillKey: string, csrfToken?: string | null) =>
-    apiWrite<{ deleted: boolean }>(`/agents/${encodeURIComponent(agentKey)}/skills/${encodeURIComponent(skillKey)}`, {
-      method: "DELETE",
-      csrfToken,
-    }),
+    apiGet<{ skill: SkillRow }>(
+      `/agents/${encodeURIComponent(agentKey)}/skills/${encodeURIComponent(skillKey)}`
+    ),
+  setSkill: (
+    agentKey: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ skill: SkillRow }>(
+      `/agents/${encodeURIComponent(agentKey)}/skills`,
+      { body, csrfToken }
+    ),
+  deleteSkill: (
+    agentKey: string,
+    skillKey: string,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ deleted: boolean }>(
+      `/agents/${encodeURIComponent(agentKey)}/skills/${encodeURIComponent(skillKey)}`,
+      {
+        method: "DELETE",
+        csrfToken,
+      }
+    ),
   subagents: (agentKey: string, params: TableParams) =>
-    apiGet<PaginatedResponse<SubagentRow>>(`/agents/${encodeURIComponent(agentKey)}/subagents${qs(params)}`),
+    apiGet<PaginatedResponse<SubagentRow>>(
+      `/agents/${encodeURIComponent(agentKey)}/subagents${qs(params)}`
+    ),
   subagent: (agentKey: string, slug: string) =>
-    apiGet<{ subagent: SubagentRow }>(`/agents/${encodeURIComponent(agentKey)}/subagents/${encodeURIComponent(slug)}`),
-  setSubagent: (agentKey: string, body: Record<string, unknown>, csrfToken?: string | null) =>
-    apiWrite<{ subagent: SubagentRow }>(`/agents/${encodeURIComponent(agentKey)}/subagents`, { body, csrfToken }),
-  setSubagentEnabled: (agentKey: string, slug: string, enabled: boolean, csrfToken?: string | null) =>
-    apiWrite<{ subagent: SubagentRow }>(`/agents/${encodeURIComponent(agentKey)}/subagents/${encodeURIComponent(slug)}`, {
-      method: "PATCH",
-      body: { enabled },
-      csrfToken,
-    }),
+    apiGet<{ subagent: SubagentRow }>(
+      `/agents/${encodeURIComponent(agentKey)}/subagents/${encodeURIComponent(slug)}`
+    ),
+  setSubagent: (
+    agentKey: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ subagent: SubagentRow }>(
+      `/agents/${encodeURIComponent(agentKey)}/subagents`,
+      { body, csrfToken }
+    ),
+  setSubagentEnabled: (
+    agentKey: string,
+    slug: string,
+    enabled: boolean,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ subagent: SubagentRow }>(
+      `/agents/${encodeURIComponent(agentKey)}/subagents/${encodeURIComponent(slug)}`,
+      {
+        method: "PATCH",
+        body: { enabled },
+        csrfToken,
+      }
+    ),
   gatewaySources: (agentKey: string, params: TableParams) =>
-    apiGet<PaginatedResponse<GatewaySourceRow>>(`/agents/${encodeURIComponent(agentKey)}/gateway/sources${qs(params)}`),
-  createGatewaySource: (agentKey: string, body: Record<string, unknown>, csrfToken?: string | null) =>
-    apiWrite<{ source: GatewaySourceRow; clientSecret: string }>(`/agents/${encodeURIComponent(agentKey)}/gateway/sources`, {
-      body,
-      csrfToken,
-    }),
-  rotateGatewaySource: (agentKey: string, sourceId: string, csrfToken?: string | null) =>
+    apiGet<PaginatedResponse<GatewaySourceRow>>(
+      `/agents/${encodeURIComponent(agentKey)}/gateway/sources${qs(params)}`
+    ),
+  createGatewaySource: (
+    agentKey: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ source: GatewaySourceRow; clientSecret: string }>(
+      `/agents/${encodeURIComponent(agentKey)}/gateway/sources`,
+      {
+        body,
+        csrfToken,
+      }
+    ),
+  rotateGatewaySource: (
+    agentKey: string,
+    sourceId: string,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ source: GatewaySourceRow; clientSecret: string }>(
       `/agents/${encodeURIComponent(agentKey)}/gateway/sources/${encodeURIComponent(sourceId)}/rotate-secret`,
       { csrfToken }
     ),
-  setGatewaySourceSuspended: (agentKey: string, sourceId: string, suspended: boolean, reason: string, csrfToken?: string | null) =>
-    apiWrite<{ source: GatewaySourceRow }>(`/agents/${encodeURIComponent(agentKey)}/gateway/sources/${encodeURIComponent(sourceId)}`, {
-      method: "PATCH",
-      body: { suspended, reason },
-      csrfToken,
-    }),
-  gatewayDevices: (agentKey: string, sourceId: string, params: TableParams = {}) =>
+  setGatewaySourceSuspended: (
+    agentKey: string,
+    sourceId: string,
+    suspended: boolean,
+    reason: string,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ source: GatewaySourceRow }>(
+      `/agents/${encodeURIComponent(agentKey)}/gateway/sources/${encodeURIComponent(sourceId)}`,
+      {
+        method: "PATCH",
+        body: { suspended, reason },
+        csrfToken,
+      }
+    ),
+  gatewayDevices: (
+    agentKey: string,
+    sourceId: string,
+    params: TableParams = {}
+  ) =>
     apiGet<GatewayDevices>(
       `/agents/${encodeURIComponent(agentKey)}/gateway/sources/${encodeURIComponent(sourceId)}/devices${qs(params)}`
     ),
-  registerGatewayDevice: (agentKey: string, sourceId: string, body: Record<string, unknown>, csrfToken?: string | null) =>
+  registerGatewayDevice: (
+    agentKey: string,
+    sourceId: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ device: GatewayDeviceRow; token: string }>(
       `/agents/${encodeURIComponent(agentKey)}/gateway/sources/${encodeURIComponent(sourceId)}/devices`,
       { body, csrfToken }
     ),
-  setGatewayDeviceEnabled: (agentKey: string, sourceId: string, deviceId: string, enabled: boolean, csrfToken?: string | null) =>
+  setGatewayDeviceEnabled: (
+    agentKey: string,
+    sourceId: string,
+    deviceId: string,
+    enabled: boolean,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ device: GatewayDeviceRow }>(
       `/agents/${encodeURIComponent(agentKey)}/gateway/sources/${encodeURIComponent(sourceId)}/devices/${encodeURIComponent(deviceId)}`,
       {
@@ -989,43 +1392,91 @@ export const controlApi = {
         csrfToken,
       }
     ),
-  gatewayEventTypes: (agentKey: string, sourceId: string, params: TableParams = {}) =>
+  gatewayEventTypes: (
+    agentKey: string,
+    sourceId: string,
+    params: TableParams = {}
+  ) =>
     apiGet<PaginatedResponse<GatewayEventTypeRow>>(
       `/agents/${encodeURIComponent(agentKey)}/gateway/sources/${encodeURIComponent(sourceId)}/event-types${qs(params)}`
     ),
-  upsertGatewayEventType: (agentKey: string, sourceId: string, body: Record<string, unknown>, csrfToken?: string | null) =>
+  upsertGatewayEventType: (
+    agentKey: string,
+    sourceId: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ eventType: GatewayEventTypeRow }>(
       `/agents/${encodeURIComponent(agentKey)}/gateway/sources/${encodeURIComponent(sourceId)}/event-types`,
       { body, csrfToken }
     ),
-  deleteGatewayEventType: (agentKey: string, sourceId: string, type: string, csrfToken?: string | null) =>
+  deleteGatewayEventType: (
+    agentKey: string,
+    sourceId: string,
+    type: string,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ deleted: boolean }>(
       `/agents/${encodeURIComponent(agentKey)}/gateway/sources/${encodeURIComponent(sourceId)}/event-types/${encodeURIComponent(type)}`,
       { method: "DELETE", csrfToken }
     ),
-  gatewayEvents: (agentKey: string, params: TableParams & { sourceId?: string }) =>
-    apiGet<PaginatedResponse<GatewayEventRow>>(`/agents/${encodeURIComponent(agentKey)}/gateway/events${qs(params)}`),
-  sessionGatewayEvents: (agentKey: string, sessionId: string, params: TableParams) =>
+  gatewayEvents: (
+    agentKey: string,
+    params: TableParams & { sourceId?: string }
+  ) =>
+    apiGet<PaginatedResponse<GatewayEventRow>>(
+      `/agents/${encodeURIComponent(agentKey)}/gateway/events${qs(params)}`
+    ),
+  sessionGatewayEvents: (
+    agentKey: string,
+    sessionId: string,
+    params: TableParams
+  ) =>
     apiGet<PaginatedResponse<GatewayEventRow>>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/gateway-events${qs(params)}`
     ),
   briefing: (agentKey: string, sessionId: string) =>
-    apiGet<{ briefing: Briefing }>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`),
-  setBriefing: (agentKey: string, sessionId: string, content: string, csrfToken?: string | null) =>
-    apiWrite<{ briefing: Briefing }>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`, {
-      method: "PUT",
-      body: { content },
-      csrfToken,
-    }),
-  deleteBriefing: (agentKey: string, sessionId: string, csrfToken?: string | null) =>
-    apiWrite<{ briefing: Briefing }>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`, {
-      method: "DELETE",
-      body: { confirm: "clear-session-briefing" },
-      csrfToken,
-    }),
+    apiGet<{ briefing: Briefing }>(
+      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`
+    ),
+  setBriefing: (
+    agentKey: string,
+    sessionId: string,
+    content: string,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ briefing: Briefing }>(
+      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`,
+      {
+        method: "PUT",
+        body: { content },
+        csrfToken,
+      }
+    ),
+  deleteBriefing: (
+    agentKey: string,
+    sessionId: string,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ briefing: Briefing }>(
+      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`,
+      {
+        method: "DELETE",
+        body: { confirm: "clear-session-briefing" },
+        csrfToken,
+      }
+    ),
   sessionPrompts: (agentKey: string, sessionId: string) =>
-    apiGet<{ prompts: SessionPrompt[] }>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/prompts`),
-  setSessionPrompt: (agentKey: string, sessionId: string, slug: SessionPromptSlug, content: string, csrfToken?: string | null) =>
+    apiGet<{ prompts: SessionPrompt[] }>(
+      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/prompts`
+    ),
+  setSessionPrompt: (
+    agentKey: string,
+    sessionId: string,
+    slug: SessionPromptSlug,
+    content: string,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ prompt: SessionPrompt }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/prompts/${encodeURIComponent(slug)}`,
       {
@@ -1034,7 +1485,12 @@ export const controlApi = {
         csrfToken,
       }
     ),
-  deleteSessionPrompt: (agentKey: string, sessionId: string, slug: SessionPromptSlug, csrfToken?: string | null) =>
+  deleteSessionPrompt: (
+    agentKey: string,
+    sessionId: string,
+    slug: SessionPromptSlug,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ prompt: SessionPrompt }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/prompts/${encodeURIComponent(slug)}`,
       {
@@ -1044,13 +1500,23 @@ export const controlApi = {
       }
     ),
   heartbeat: (agentKey: string, sessionId: string) =>
-    apiGet<{ heartbeat: Heartbeat }>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/heartbeat`),
-  updateHeartbeat: (agentKey: string, sessionId: string, body: Record<string, unknown>, csrfToken?: string | null) =>
-    apiWrite<{ heartbeat: Heartbeat }>(`/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/heartbeat`, {
-      method: "PATCH",
-      body,
-      csrfToken,
-    }),
+    apiGet<{ heartbeat: Heartbeat }>(
+      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/heartbeat`
+    ),
+  updateHeartbeat: (
+    agentKey: string,
+    sessionId: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ heartbeat: Heartbeat }>(
+      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
+      {
+        method: "PATCH",
+        body,
+        csrfToken,
+      }
+    ),
   runtime: (agentKey: string, sessionId: string, params: TableParams = {}) =>
     apiGet<{ runtimeActivity: RuntimeActivity }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/runtime-activity${qs(params)}`
@@ -1067,21 +1533,42 @@ export const controlApi = {
     apiGet<{ modelCallUsage: ModelCallUsage }>(
       `/model-call-usage${qs(params)}`
     ),
-  scheduledTasks: (agentKey: string, sessionId: string, params: TableParams = {}) =>
+  scheduledTasks: (
+    agentKey: string,
+    sessionId: string,
+    params: TableParams = {}
+  ) =>
     apiGet<{ scheduledTasks: ScheduledTasks }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/scheduled-tasks${qs(params)}`
     ),
-  createScheduledTask: (agentKey: string, sessionId: string, body: Record<string, unknown>, csrfToken?: string | null) =>
+  createScheduledTask: (
+    agentKey: string,
+    sessionId: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ scheduledTask: ScheduledTask }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/scheduled-tasks`,
       { body, csrfToken }
     ),
-  updateScheduledTask: (agentKey: string, sessionId: string, taskId: string, body: Record<string, unknown>, csrfToken?: string | null) =>
+  updateScheduledTask: (
+    agentKey: string,
+    sessionId: string,
+    taskId: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ scheduledTask: ScheduledTask }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/scheduled-tasks/${encodeURIComponent(taskId)}`,
       { method: "PATCH", body, csrfToken }
     ),
-  cancelScheduledTask: (agentKey: string, sessionId: string, taskId: string, reason: string, csrfToken?: string | null) =>
+  cancelScheduledTask: (
+    agentKey: string,
+    sessionId: string,
+    taskId: string,
+    reason: string,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ scheduledTask: ScheduledTask }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/scheduled-tasks/${encodeURIComponent(taskId)}`,
       { method: "DELETE", body: { reason }, csrfToken }
@@ -1090,16 +1577,33 @@ export const controlApi = {
     apiGet<{ watches: Watches }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/watches${qs(params)}`
     ),
-  updateWatch: (agentKey: string, sessionId: string, watchId: string, body: Record<string, unknown>, csrfToken?: string | null) =>
+  updateWatch: (
+    agentKey: string,
+    sessionId: string,
+    watchId: string,
+    body: Record<string, unknown>,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ watch: WatchRow }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/watches/${encodeURIComponent(watchId)}`,
       { method: "PATCH", body, csrfToken }
     ),
-  disableWatch: (agentKey: string, sessionId: string, watchId: string, reason: string, csrfToken?: string | null) =>
+  disableWatch: (
+    agentKey: string,
+    sessionId: string,
+    watchId: string,
+    reason: string,
+    csrfToken?: string | null
+  ) =>
     apiWrite<{ watch: WatchRow }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/watches/${encodeURIComponent(watchId)}`,
       { method: "DELETE", body: { reason }, csrfToken }
     ),
-  audit: (params: TableParams & { eventType?: string; agentKey?: string; targetSessionId?: string }) =>
-    apiGet<PaginatedResponse<AuditEvent>>(`/audit-events${qs(params)}`),
+  audit: (
+    params: TableParams & {
+      eventType?: string
+      agentKey?: string
+      targetSessionId?: string
+    }
+  ) => apiGet<PaginatedResponse<AuditEvent>>(`/audit-events${qs(params)}`),
 }

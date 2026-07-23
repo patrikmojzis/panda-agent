@@ -18,6 +18,8 @@ describe("MCP Docker B2B contract", () => {
     expect(live).toContain("/api/control/dev-login");
     expect(live).toContain("/agents/panda/mcp-servers/fixture-stdio");
     expect(live).toContain("/agents/panda/mcp-servers/fixture-http");
+    expect(live).toContain("/agents/panda/mcp-servers/fixture-oauth/oauth/start");
+    expect(live).toContain("oauth-refreshed");
     expect(live).toContain("PANDA_COMMAND_ACCESS_FILE");
     expect(live).toContain('"--entrypoint", "/usr/local/bin/panda"');
     expect(live).toContain("runtime.agent_mcp_configs");
@@ -34,6 +36,7 @@ describe("MCP Docker B2B contract", () => {
     expect(core).toContain('writeAccessFile("primary-initial", await refreshCommandAccess(primarySession))');
     expect(core.match(/refreshCommandAccess\(primarySession\)/g)).toHaveLength(2);
     expect(core).toContain('credentialAllowlist: ["FIXTURE_SECRET"]');
+    expect(core).toContain('credentialRefAllowlist: ["mcp-oauth:fixture-oauth"]');
     expect(core).not.toContain("issueCommandLease");
     expect(core).not.toContain("credentialPolicy:");
     expect(core).not.toContain('kind: "subagent"');

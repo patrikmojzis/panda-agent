@@ -181,6 +181,7 @@ export interface CreateSubagentSessionRequestPayload extends BaseRuntimeRequestP
   execution?: RuntimeRequestSubagentExecution;
   environmentId?: string;
   credentialAllowlist?: readonly string[];
+  credentialRefAllowlist?: readonly string[];
   toolGroups?: readonly string[];
   model?: string;
   thinking?: ThinkingLevel;

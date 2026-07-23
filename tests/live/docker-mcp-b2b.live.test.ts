@@ -148,6 +148,7 @@ describeLive("Docker MCP built-app Control-to-shim B2B", () => {
       "-e", "PANDA_COMMAND_SERVER_HOST=0.0.0.0",
       "-e", "PANDA_COMMAND_SERVER_PORT=8096",
       "-e", `PANDA_COMMAND_SERVER_URL=http://${core}:8096`,
+      "-e", "PANDA_CONTROL_PUBLIC_URL=http://127.0.0.1:4767",
       appImage, "/app/examples/mcp/docker-b2b-core.mjs",
     ]);
     createdContainers.add(core);
@@ -209,11 +210,31 @@ describeLive("Docker MCP built-app Control-to-shim B2B", () => {
       timeoutMs: 10_000,
     });
     expect(http.status).toBe(200);
+    const oauth = await controlWrite("/agents/panda/mcp-servers/fixture-oauth", "PUT", {
+      transport: "streamable-http",
+      enabled: true,
+      url: "http://127.0.0.1:3011/mcp",
+      auth: {type: "oauth", registration: {mode: "dynamic"}, scope: {mode: "explicit", values: ["resource:read"]}},
+      timeoutMs: 10_000,
+    });
+    expect(oauth.status).toBe(200);
+    const discovery = await controlWrite("/agents/panda/mcp-servers/fixture-oauth/oauth/discover", "POST");
+    await expect(discovery.json()).resolves.toMatchObject({discovery: {supportedScopes: ["resource:read"], registrationEndpointAvailable: true}});
+    const started = await controlWrite("/agents/panda/mcp-servers/fixture-oauth/oauth/start", "POST", {});
+    const authorizationUrl = ((await started.json()) as {authorizationUrl: string}).authorizationUrl;
+    const authorization = await docker([
+      "exec", core, "node", "--input-type=module", "-e",
+      "const response = await fetch(process.argv[1], {redirect: 'manual'}); process.stdout.write(response.headers.get('location') ?? '');",
+      authorizationUrl,
+    ]);
+    const callback = new URL(authorization.stdout);
+    const completed = await fetch(`${controlBase}/api/control/mcp/oauth/callback${callback.search}`);
+    expect(completed.status).toBe(200);
     const persisted = await docker([
       "exec", postgres, "psql", "-U", "postgres", "-d", "panda", "-Atc",
       "SELECT count(*) FROM runtime.agent_mcp_configs AS configs CROSS JOIN LATERAL jsonb_object_keys(configs.config->'servers') AS server_keys(server_name) WHERE configs.agent_key='panda'",
     ]);
-    expect(persisted.stdout).toBe("2");
+    expect(persisted.stdout).toBe("3");
 
     const primaryInitial = await runShim("primary-initial", ["mcp", "tools", "fixture-stdio"]);
     expect(primaryInitial.exitCode).toBe(0);
@@ -257,12 +278,32 @@ describeLive("Docker MCP built-app Control-to-shim B2B", () => {
     expect(remote.stdout).toContain("[redacted]");
     expect(remote.stdout).not.toContain(fixtureSecret);
 
+    const oauthInitial = await runShim("subagent-allow", ["mcp", "tools", "fixture-oauth"]);
+    expect(oauthInitial.exitCode).toBe(0);
+    expect(oauthInitial.stdout).toContain("echo");
+    await docker([
+      "exec", core, "node", "--input-type=module", "-e",
+      "await fetch('http://127.0.0.1:3011/oauth/expire', {method: 'POST'});",
+    ]);
+    const oauthRefreshed = await runShim("subagent-allow", ["mcp", "call", "fixture-oauth", "echo", "--input", '{"message":"oauth-refreshed"}']);
+    expect(oauthRefreshed.exitCode).toBe(0);
+    expect(oauthRefreshed.stdout).toContain("oauth-refreshed");
+    const disconnectedOauth = await controlWrite("/agents/panda/mcp-servers/fixture-oauth/oauth", "DELETE");
+    await expect(disconnectedOauth.json()).resolves.toEqual({disconnected: true});
+    const oauthEvents = await docker([
+      "exec", core, "node", "--input-type=module", "-e",
+      "const response = await fetch('http://127.0.0.1:3011/oauth/events'); process.stdout.write(await response.text());",
+    ]);
+    expect(JSON.parse(oauthEvents.stdout)).toMatchObject({events: expect.arrayContaining([{type: "register"}, {type: "exchange"}, {type: "refresh", rotated: true}, {type: "revoke"}])});
+
     const deleteHttp = await controlWrite("/agents/panda/mcp-servers/fixture-http", "DELETE");
     expect(deleteHttp.status).toBe(200);
     await expect(deleteHttp.json()).resolves.toMatchObject({deleted: true});
     const deleteStdio = await controlWrite("/agents/panda/mcp-servers/fixture-stdio", "DELETE");
     expect(deleteStdio.status).toBe(200);
     await expect(deleteStdio.json()).resolves.toMatchObject({deleted: true});
+    const deleteOauth = await controlWrite("/agents/panda/mcp-servers/fixture-oauth", "DELETE");
+    expect(deleteOauth.status).toBe(200);
     const removed = await docker([
       "exec", postgres, "psql", "-U", "postgres", "-d", "panda", "-Atc",
       "SELECT count(DISTINCT configs.agent_key), count(server_keys.server_name) FROM runtime.agent_mcp_configs AS configs LEFT JOIN LATERAL jsonb_object_keys(configs.config->'servers') AS server_keys(server_name) ON true WHERE configs.agent_key='panda'",
