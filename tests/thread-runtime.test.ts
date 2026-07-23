@@ -3223,6 +3223,29 @@ describe("Thread runtime stores", () => {
     ]);
   });
 
+  it("keeps identical external message ids from separate connector accounts distinct", async () => {
+    const store = new TestThreadRuntimeStore();
+    await createRuntimeThread(store, { id: "connector-scoped-inputs", agentKey: "panda" });
+
+    const enqueue = (connectorKey: string) => store.enqueueInput("connector-scoped-inputs", {
+      message: stringToUserMessage(`hello from ${connectorKey}`),
+      source: "telegram",
+      channelId: "chat-1",
+      externalMessageId: "message-1",
+      metadata: {
+        route: {
+          source: "telegram",
+          connectorKey,
+          externalConversationId: "chat-1",
+        },
+      },
+    });
+
+    expect((await enqueue("bot-1")).inserted).toBe(true);
+    expect((await enqueue("bot-1")).inserted).toBe(false);
+    expect((await enqueue("bot-2")).inserted).toBe(true);
+  });
+
   it("persists input metadata from pending inputs into the transcript", async () => {
     const store = new TestThreadRuntimeStore();
     await createRuntimeThread(store, { id: "metadata-thread", agentKey: "panda" });

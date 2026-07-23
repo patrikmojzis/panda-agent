@@ -35,10 +35,11 @@ import {
     type ThreadUpdate,
 } from "../../src/domain/threads/runtime/types.js";
 import type {MediaDescriptor} from "../../src/domain/channels/types.js";
+import {resolveChannelRouteTarget} from "../../src/domain/channels/route-target.js";
 
 function matchesThreadInputIdentity(
-  left: Pick<ThreadInputPayload, "source" | "channelId" | "externalMessageId">,
-  right: Pick<ThreadInputPayload, "source" | "channelId" | "externalMessageId">,
+  left: Pick<ThreadInputPayload, "source" | "channelId" | "externalMessageId" | "metadata">,
+  right: Pick<ThreadInputPayload, "source" | "channelId" | "externalMessageId" | "metadata">,
 ): boolean {
   if (!left.externalMessageId || !right.externalMessageId) {
     return false;
@@ -46,7 +47,9 @@ function matchesThreadInputIdentity(
 
   return left.source === right.source
     && left.externalMessageId === right.externalMessageId
-    && (left.channelId ?? null) === (right.channelId ?? null);
+    && (left.channelId ?? null) === (right.channelId ?? null)
+    && (resolveChannelRouteTarget(left)?.target.connectorKey ?? null)
+      === (resolveChannelRouteTarget(right)?.target.connectorKey ?? null);
 }
 
 function cloneRecord<T extends object>(record: T): T {

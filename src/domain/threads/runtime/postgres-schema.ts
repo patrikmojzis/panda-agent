@@ -411,9 +411,20 @@ export function buildThreadRuntimeSchemaSql(
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_inputs_thread_order_idx`)}
     ON ${tables.inputs} (thread_id, applied_at, input_order);
 
-    CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_inputs_external_message_idx`)}
-    ON ${tables.inputs} (thread_id, source, COALESCE(channel_id, ''), external_message_id)
+    CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_inputs_external_message_connector_idx`)}
+    ON ${tables.inputs} (
+      thread_id,
+      source,
+      COALESCE(metadata -> 'route' ->> 'connectorKey', ''),
+      COALESCE(channel_id, ''),
+      external_message_id
+    )
     WHERE external_message_id IS NOT NULL;
+
+    DROP INDEX IF EXISTS ${quoteQualifiedIdentifier(
+      RUNTIME_SCHEMA,
+      `${tables.prefix}_inputs_external_message_idx`,
+    )};
 
     CREATE TABLE IF NOT EXISTS ${tables.runs} (
       id UUID PRIMARY KEY,

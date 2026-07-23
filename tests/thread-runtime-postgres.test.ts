@@ -634,6 +634,59 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(completedAfterAbort.error).toBe("recover me");
   });
 
+  it("migrates external message idempotency to connector account scope", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const {threadStore: store} = await createRuntimeStores(pool);
+    await pool.query(`
+      DROP INDEX "runtime"."runtime_inputs_external_message_connector_idx";
+      CREATE UNIQUE INDEX "runtime_inputs_external_message_idx"
+      ON "runtime"."inputs" (thread_id, source, COALESCE(channel_id, ''), external_message_id)
+      WHERE external_message_id IS NOT NULL
+    `);
+    const tables = buildThreadRuntimeTableNames();
+    const schemaSql = buildThreadRuntimeSchemaSql(tables, '"runtime"."identities"');
+    const migrationStart = schemaSql.indexOf(
+      'CREATE UNIQUE INDEX IF NOT EXISTS "runtime_inputs_external_message_connector_idx"',
+    );
+    const migrationEnd = schemaSql.indexOf(`CREATE TABLE IF NOT EXISTS ${tables.runs}`, migrationStart);
+    await pool.query(schemaSql.slice(migrationStart, migrationEnd));
+    await seedSession(pool, {
+      sessionId: "connector-idempotency-session",
+      threadId: "connector-idempotency-thread",
+    });
+    await store.createThread({
+      id: "connector-idempotency-thread",
+      sessionId: "connector-idempotency-session",
+    });
+
+    const enqueue = (connectorKey: string) => store.enqueueInput("connector-idempotency-thread", {
+      message: stringToUserMessage(`hello from ${connectorKey}`),
+      source: "telegram",
+      channelId: "chat-1",
+      externalMessageId: "message-1",
+      metadata: {
+        route: {
+          source: "telegram",
+          connectorKey,
+          externalConversationId: "chat-1",
+        },
+      },
+    });
+
+    expect((await enqueue("bot-1")).inserted).toBe(true);
+    expect((await enqueue("bot-1")).inserted).toBe(false);
+    expect((await enqueue("bot-2")).inserted).toBe(true);
+  });
 
   it("lists channel messages scoped by session and connector route metadata", async () => {
     const db = newDb();

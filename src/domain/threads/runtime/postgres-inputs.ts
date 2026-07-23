@@ -5,6 +5,7 @@ import {type ThreadRuntimeTableNames} from "./postgres-shared.js";
 import {parseInputRow, parseInputThreadIdRow, parseMessageRow} from "./postgres-rows.js";
 import type {PgPoolLike, PgQueryResult, PgQueryable} from "../../../lib/postgres-query.js";
 import {withTransaction} from "../../../lib/postgres-transaction.js";
+import {resolveChannelRouteTarget} from "../../channels/route-target.js";
 import type {ThreadInputDeliveryMode, ThreadInputPayload, ThreadMessageRecord,} from "./types.js";
 import {
   createThreadRuntimeJsonbPersistenceError,
@@ -29,6 +30,7 @@ export async function enqueueThreadInput(
   },
 ): Promise<ThreadEnqueueResult> {
   const { pool, tables, threadId, payload, deliveryMode } = options;
+  const connectorKey = resolveChannelRouteTarget(payload)?.target.connectorKey ?? "";
 
   if (payload.externalMessageId) {
     const existingResult = await pool.query(`
@@ -38,6 +40,7 @@ export async function enqueueThreadInput(
         AND source = $2
         AND (($3::text IS NULL AND channel_id IS NULL) OR channel_id = $3::text)
         AND external_message_id = $4
+        AND COALESCE(metadata -> 'route' ->> 'connectorKey', '') = $5
       ORDER BY input_order DESC
       LIMIT 1
     `, [
@@ -45,6 +48,7 @@ export async function enqueueThreadInput(
       payload.source,
       payload.channelId ?? null,
       payload.externalMessageId,
+      connectorKey,
     ]);
 
     const existingRow = existingResult.rows[0] as Record<string, unknown> | undefined;
