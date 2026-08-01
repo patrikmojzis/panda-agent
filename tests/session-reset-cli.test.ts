@@ -20,20 +20,31 @@ const sessionResetCliMocks = vi.hoisted(() => {
     readonly ensureSchema = vi.fn(async () => {});
     readonly enqueueRequest = vi.fn(async (input: unknown) => {
       state.enqueued.push(input);
-      return {id: "request-reset"};
+      return {id: "request-runtime"};
     });
-    readonly getRequest = vi.fn(async () => ({
-      id: "request-reset",
-      kind: "reset_session",
-      status: "completed",
-      payload: {},
-      result: {
-        threadId: "thread-new",
-        previousThreadId: "thread-old",
-      },
-      createdAt: 1,
-      updatedAt: 2,
-    }));
+    readonly getRequest = vi.fn(async () => {
+      const input = state.enqueued.at(-1) as {kind?: string} | undefined;
+      return {
+        id: "request-runtime",
+        kind: input?.kind ?? "reset_session",
+        status: "completed",
+        payload: {},
+        result: input?.kind === "compact_session"
+          ? {
+            compacted: true,
+            sessionId: "canonical-session",
+            threadId: "thread-current",
+            tokensBefore: 1200,
+            tokensAfter: 350,
+          }
+          : {
+            threadId: "thread-new",
+            previousThreadId: "thread-old",
+          },
+        createdAt: 1,
+        updatedAt: 2,
+      };
+    });
 
     constructor(_options: unknown) {}
   }
@@ -160,5 +171,54 @@ describe("Session reset CLI", () => {
         },
       },
     ]);
+  });
+
+  it("compacts the canonical session with optional instructions and JSON output", async () => {
+    const {pool, sessionStore, threadStore} = await createHarness();
+    pools.push(pool);
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    await sessionStore.createSession({
+      id: "canonical-session",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-current",
+      alias: "ops-inbox",
+    });
+    await threadStore.createThread({
+      id: "thread-current",
+      sessionId: "canonical-session",
+    });
+
+    await createProgram().parseAsync([
+      "session",
+      "compact",
+      "ops-inbox",
+      "--agent",
+      "panda",
+      "--instructions",
+      "Keep the incident timeline.",
+      "--json",
+      "--db-url",
+      "postgres://session-compact-test",
+    ], {from: "user"});
+
+    expect(sessionResetCliMocks.state.enqueued).toEqual([
+      {
+        kind: "compact_session",
+        payload: {
+          sessionId: "canonical-session",
+          customInstructions: "Keep the incident timeline.",
+        },
+      },
+    ]);
+    expect(write).toHaveBeenCalledWith(
+      `${JSON.stringify({
+        compacted: true,
+        sessionId: "canonical-session",
+        threadId: "thread-current",
+        tokensBefore: 1200,
+        tokensAfter: 350,
+      })}\n`,
+    );
   });
 });

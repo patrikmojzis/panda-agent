@@ -68,6 +68,7 @@ export interface DaemonLifecycleRuntime {
   controlRuntimeActivity: RuntimeServices["controlRuntimeActivity"];
   controlConnectorAccounts: RuntimeServices["controlConnectorAccounts"];
   controlModelCallTraces: RuntimeServices["controlModelCallTraces"];
+  sessionCompaction: RuntimeServices["sessionCompaction"];
   commandExecutor: RuntimeServices["commandExecutor"];
   commandLeases: RuntimeServices["commandLeases"];
   coordinator: Pick<RuntimeServices["coordinator"], "recoverOrphanedRuns" | "submitInput">;
@@ -415,6 +416,7 @@ export function createDaemonLifecycle(input: {
             runtimeActivity: input.context.runtime.controlRuntimeActivity,
             connectorAccounts: input.context.runtime.controlConnectorAccounts,
             modelCallTraces: input.context.runtime.controlModelCallTraces,
+            sessionCompaction: input.context.runtime.sessionCompaction,
             identityStore: input.context.runtime.identityStore,
             env: process.env,
             uiStaticDir: binding.uiStaticDir,

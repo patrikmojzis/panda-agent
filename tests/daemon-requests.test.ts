@@ -309,6 +309,34 @@ function expectFirstCallBefore(
 }
 
 describe("daemon request processor", () => {
+  it("routes session compaction through the session-targeted runtime service", async () => {
+    const context = createRequestContext();
+    const processor = createDaemonRequestProcessor(context, createThreadHelpers());
+
+    await expect(processor({
+      id: "request-compact-session",
+      kind: "compact_session",
+      status: "pending",
+      createdAt: 1,
+      updatedAt: 1,
+      payload: {
+        sessionId: "session-1",
+        customInstructions: "Keep the incident timeline.",
+      },
+    })).resolves.toEqual({
+      compacted: true,
+      sessionId: "session-1",
+      threadId: "thread-1",
+      tokensBefore: 100,
+      tokensAfter: 40,
+    });
+
+    expect(context.runtime.sessionCompaction.compactSession).toHaveBeenCalledWith(
+      "session-1",
+      "Keep the incident timeline.",
+    );
+  });
+
   it("routes TUI input through the terminal channel adapter", async () => {
     const store = new TestThreadRuntimeStore();
     await store.createThread({

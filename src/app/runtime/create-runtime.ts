@@ -53,6 +53,7 @@ import {SubagentSessionService} from "./subagent-session-service.js";
 import type {CommandCatalog} from "../../domain/commands/modules.js";
 import type {CommandCatalogModule} from "../../domain/commands/types.js";
 import {buildSubagentCommandDependencies} from "./command-dependencies.js";
+import {SessionCompactionService} from "./session-compaction-service.js";
 
 export {
   createPostgresPool,
@@ -157,6 +158,7 @@ export interface RuntimeServices {
   /** @deprecated Prefer commandCatalog.modules when raw module metadata is truly needed. */
   commandModules: readonly CommandCatalogModule<any>[];
   subagentSessions: SubagentSessionService;
+  sessionCompaction: SessionCompactionService;
   a2aBindings: A2ASessionBindingRepo;
   coordinator: ThreadRuntimeCoordinator;
   mainTools: readonly Tool[];
@@ -210,6 +212,11 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     environments: runtime.executionEnvironmentService,
     a2aBindings: runtime.a2aBindings,
     commandCatalog: runtime.commandCatalog,
+    coordinator,
+  });
+  const sessionCompaction = new SessionCompactionService({
+    sessions: runtime.sessionStore,
+    threads: runtime.store,
     coordinator,
   });
   runtime.commandExecutor.registerCommands([
@@ -267,6 +274,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     commandCatalog: runtime.commandCatalog,
     commandModules: runtime.commandModules,
     subagentSessions,
+    sessionCompaction,
     a2aBindings: runtime.a2aBindings,
     coordinator,
     mainTools,

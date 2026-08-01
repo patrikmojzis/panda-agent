@@ -1,6 +1,6 @@
 import * as React from "react"
 import { useParams, useSearchParams } from "react-router-dom"
-import { Pencil, RotateCw, SlidersHorizontal } from "lucide-react"
+import { Minimize2, Pencil, RotateCw, SlidersHorizontal } from "lucide-react"
 
 import {
   DetailPageContent,
@@ -45,6 +45,7 @@ import {
 } from "@/features/control/session-labels"
 import { controlApi, type SessionDetail } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { CompactSessionDialog } from "@/features/control/session/compact-session-dialog"
 
 function SessionPage() {
   const { agentKey = "", sessionId = "" } = useParams()
@@ -155,6 +156,7 @@ function SessionHeaderActions({
   const heartbeatConfigSheet = useHeartbeatConfigSheet()
   const heartbeat = useHeartbeat(agentKey, sessionId)
   const presence = heartbeat.data?.heartbeat
+  const [compactOpen, setCompactOpen] = React.useState(false)
   const reset = useToastMutation({
     mutationFn: () =>
       controlApi.resetSession(agentKey, sessionId, auth.csrfToken),
@@ -213,6 +215,12 @@ function SessionHeaderActions({
             },
           },
           {
+            disabled: !session,
+            icon: <Minimize2 className="size-4" />,
+            label: "Compact context",
+            onSelect: () => setCompactOpen(true),
+          },
+          {
             destructive: true,
             icon: <RotateCw className="size-4" />,
             label: "Reset session",
@@ -228,6 +236,13 @@ function SessionHeaderActions({
             onSelect: () => reset.mutateAsync(undefined),
           },
         ]}
+      />
+      <CompactSessionDialog
+        agentKey={agentKey}
+        sessionId={sessionId}
+        sessionLabel={friendlySessionLabel(session, sessionId)}
+        open={compactOpen}
+        onOpenChange={setCompactOpen}
       />
     </>
   )

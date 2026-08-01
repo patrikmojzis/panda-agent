@@ -23,6 +23,13 @@ interface SessionResetCliOptions extends SessionCliOptions {
   agent?: string;
 }
 
+interface SessionCompactCliOptions extends SessionResetCliOptions {
+  instructions?: string;
+  json?: boolean;
+}
+
+const SESSION_COMPACT_REQUEST_TIMEOUT_MS = 15 * 60_000;
+
 interface WithSessionResetStores {
   sessionStore: PostgresSessionStore;
   requests: RuntimeRequestRepo;
@@ -126,6 +133,45 @@ async function resetSessionCommand(sessionRef: string, options: SessionResetCliO
   });
 }
 
+async function compactSessionCommand(sessionRef: string, options: SessionCompactCliOptions): Promise<void> {
+  await withSessionResetStores(options, async ({sessionStore, requests, daemonState}) => {
+    await requireDaemonOnline(daemonState);
+    const session = await sessionStore.resolveSessionRef({
+      sessionRef,
+      agentKey: options.agent,
+    });
+    const request = await requests.enqueueRequest({
+      kind: "compact_session",
+      payload: {
+        sessionId: session.id,
+        customInstructions: options.instructions?.trim() ?? "",
+      },
+    });
+    const result = await waitForRequestResult(requests, request.id, SESSION_COMPACT_REQUEST_TIMEOUT_MS);
+    const output = {
+      compacted: result.compacted === true,
+      sessionId: session.id,
+      threadId: typeof result.threadId === "string" ? result.threadId : session.currentThreadId,
+      ...(typeof result.tokensBefore === "number" ? {tokensBefore: result.tokensBefore} : {}),
+      ...(typeof result.tokensAfter === "number" ? {tokensAfter: result.tokensAfter} : {}),
+    };
+
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(output)}\n`);
+      return;
+    }
+
+    if (!output.compacted) {
+      process.stdout.write(`Session ${output.sessionId} has no older context to compact.\nthread ${output.threadId}\n`);
+      return;
+    }
+
+    process.stdout.write(
+      `Compacted session ${output.sessionId}.\nthread ${output.threadId}\ntokens ${output.tokensBefore ?? "-"} -> ${output.tokensAfter ?? "-"}\n`,
+    );
+  });
+}
+
 export function registerSessionCommands(program: Command): void {
   const sessionProgram = program
     .command("session")
@@ -141,5 +187,17 @@ export function registerSessionCommands(program: Command): void {
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((sessionRef: string, options: SessionResetCliOptions) => {
       return resetSessionCommand(sessionRef, options);
+    });
+
+  sessionProgram
+    .command("compact")
+    .description("Compact the current thread of one session through the daemon")
+    .argument("<sessionRef>", "Session id, or alias when --agent is provided")
+    .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
+    .option("--instructions <text>", "Additional instructions for the compact summary")
+    .option("--json", "Render the compaction result as JSON")
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((sessionRef: string, options: SessionCompactCliOptions) => {
+      return compactSessionCommand(sessionRef, options);
     });
 }

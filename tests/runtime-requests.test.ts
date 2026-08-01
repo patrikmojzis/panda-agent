@@ -247,6 +247,35 @@ describe("RuntimeRequestRepo", () => {
     expect(request.payload).not.toHaveProperty("commandExternalMessageId");
   });
 
+  it("loads session compaction requests without requiring custom instructions", async () => {
+    const now = new Date();
+    const repo = new RuntimeRequestRepo({
+      pool: {
+        connect: vi.fn(),
+        query: vi.fn(async () => ({
+          rows: [{
+            id: "7a0b9429-d5bf-41dc-9224-088cff4d2137",
+            kind: "compact_session",
+            status: "pending",
+            payload: {sessionId: "session-1", customInstructions: ""},
+            result: null,
+            error: null,
+            claimed_at: null,
+            finished_at: null,
+            created_at: now,
+            updated_at: now,
+          }],
+        })),
+      },
+    });
+
+    await expect(repo.getRequest("7a0b9429-d5bf-41dc-9224-088cff4d2137"))
+      .resolves.toMatchObject({
+        kind: "compact_session",
+        payload: {sessionId: "session-1", customInstructions: ""},
+      });
+  });
+
   it("rejects malformed persisted payloads before claiming requests", async () => {
     const now = new Date();
     const queries: string[] = [];

@@ -1,5 +1,6 @@
+import * as React from "react"
 import type { ColumnDef } from "@tanstack/react-table"
-import { Pencil, Plus, RotateCw } from "lucide-react"
+import { Minimize2, Pencil, Plus, RotateCw } from "lucide-react"
 
 import {
   Cell,
@@ -33,6 +34,7 @@ import {
 } from "@/features/control/session-labels"
 import { controlApi, type SessionRow } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { CompactSessionDialog } from "@/features/control/session/compact-session-dialog"
 
 const sessionKindFilterOptions = [
   { label: "Main", value: "main" },
@@ -53,6 +55,9 @@ export function SessionsPanel({ agentKey }: { agentKey: string }) {
   const auth = useAuth()
   const createSessionSheet = useCreateSessionSheet()
   const updateSessionSheet = useUpdateSessionSheet()
+  const [compactTarget, setCompactTarget] = React.useState<SessionRow | null>(
+    null
+  )
   const table = useDataTableState(`agent:${agentKey}:sessions`, {
     sort_by: "updatedAt",
     sort_direction: "desc",
@@ -137,6 +142,11 @@ export function SessionsPanel({ agentKey }: { agentKey: string }) {
                 }),
             },
             {
+              label: "Compact context",
+              icon: <Minimize2 className="size-4" />,
+              onSelect: () => setCompactTarget(row.original),
+            },
+            {
               destructive: true,
               label: "Reset session",
               icon: <RotateCw className="size-4" />,
@@ -160,45 +170,58 @@ export function SessionsPanel({ agentKey }: { agentKey: string }) {
   ]
 
   return (
-    <DataTableView
-      columns={columns}
-      response={sessions.data}
-      state={table}
-      defaultColumnVisibility={sessionsDefaultColumnVisibility}
-      error={sessions.error}
-      filters={
-        <>
-          <SessionVisibilityFilter state={table} />
-          <SessionKindFilter state={table} />
-        </>
-      }
-      isFetching={sessions.isFetching}
-      isLoading={sessions.isLoading}
-      isPlaceholderData={sessions.isPlaceholderData}
-      onRetry={() => void sessions.refetch()}
-      rowKey={(row) => row.id}
-      getLink={(row) =>
-        `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(row.id)}`
-      }
-      emptyLabel="No sessions for this agent."
-      emptyDescription="Create a main or branch session when this agent needs a durable runtime lane."
-      mobileColumnVisibility={mobileHiddenColumns(
-        "heartbeatEnabled",
-        "currentThreadId",
-        "updatedAt"
-      )}
-      toolbarActions={
-        <Button
-          size="sm"
-          onClick={() =>
-            createSessionSheet.setOpen(true, { context: { agentKey } })
-          }
-        >
-          <Plus className="size-4" />
-          New session
-        </Button>
-      }
-    />
+    <>
+      <DataTableView
+        columns={columns}
+        response={sessions.data}
+        state={table}
+        defaultColumnVisibility={sessionsDefaultColumnVisibility}
+        error={sessions.error}
+        filters={
+          <>
+            <SessionVisibilityFilter state={table} />
+            <SessionKindFilter state={table} />
+          </>
+        }
+        isFetching={sessions.isFetching}
+        isLoading={sessions.isLoading}
+        isPlaceholderData={sessions.isPlaceholderData}
+        onRetry={() => void sessions.refetch()}
+        rowKey={(row) => row.id}
+        getLink={(row) =>
+          `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(row.id)}`
+        }
+        emptyLabel="No sessions for this agent."
+        emptyDescription="Create a main or branch session when this agent needs a durable runtime lane."
+        mobileColumnVisibility={mobileHiddenColumns(
+          "heartbeatEnabled",
+          "currentThreadId",
+          "updatedAt"
+        )}
+        toolbarActions={
+          <Button
+            size="sm"
+            onClick={() =>
+              createSessionSheet.setOpen(true, { context: { agentKey } })
+            }
+          >
+            <Plus className="size-4" />
+            New session
+          </Button>
+        }
+      />
+      {compactTarget ? (
+        <CompactSessionDialog
+          agentKey={agentKey}
+          sessionId={compactTarget.id}
+          sessionLabel={friendlySessionLabel(compactTarget)}
+          open
+          onOpenChange={(open) => {
+            if (!open) setCompactTarget(null)
+          }}
+        />
+      ) : null}
+    </>
   )
 }
 

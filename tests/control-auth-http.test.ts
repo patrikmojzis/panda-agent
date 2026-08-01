@@ -90,6 +90,15 @@ async function createHarness(options: {
   const controlConnectorAccounts = new ControlConnectorAccountsService({pool});
   const modelCallTraces = new PostgresModelCallTraceStore({pool});
   const controlModelCallTraces = new ControlModelCallTraceService({pool});
+  const sessionCompaction = {
+    compactSession: vi.fn(async (sessionId: string, _instructions = "") => ({
+      compacted: true,
+      sessionId,
+      threadId: sessionId === "session-panda" ? "thread-panda" : "thread-luna",
+      tokensBefore: 1_200,
+      tokensAfter: 350,
+    })),
+  };
   const a2aBindings = new A2ASessionBindingRepo({pool});
   const emailStore = new PostgresEmailStore({pool});
   const conversations = new ConversationRepo({pool});
@@ -173,11 +182,11 @@ async function createHarness(options: {
     INSERT INTO "runtime"."credentials" (id, env_key, agent_key, value_ciphertext, value_iv, value_tag, key_version)
     VALUES ('00000000-0000-0000-0000-000000000001', 'API_TOKEN', 'panda', '\\x5345435245545f53454e54494e454c', '\\x6976', '\\x746167', 1)
   `);
-  return {pool, identities, agents, sessions, executionEnvironments, a2aBindings, auth, reads, home, operator, controlMcp, mcpConfigs, briefings, heartbeats, scheduledTaskStore, watchStore, connectorAccountStore, credentialCrypto, emailStore, wikiBindingStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts, modelCallTraces, controlModelCallTraces};
+  return {pool, identities, agents, sessions, executionEnvironments, a2aBindings, auth, reads, home, operator, controlMcp, mcpConfigs, briefings, heartbeats, scheduledTaskStore, watchStore, connectorAccountStore, credentialCrypto, emailStore, wikiBindingStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts, modelCallTraces, controlModelCallTraces, sessionCompaction};
 }
 
 async function startHarnessServer(harness: Awaited<ReturnType<typeof createHarness>>, options: {env?: NodeJS.ProcessEnv} = {}) {
-  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, mcp: harness.controlMcp, briefings: harness.briefings, heartbeats: harness.heartbeats, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, modelCallTraces: harness.controlModelCallTraces, identityStore: harness.identities, env: options.env});
+  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, mcp: harness.controlMcp, briefings: harness.briefings, heartbeats: harness.heartbeats, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, modelCallTraces: harness.controlModelCallTraces, sessionCompaction: harness.sessionCompaction, identityStore: harness.identities, env: options.env});
   servers.push(server);
   return `http://${server.host}:${server.port}`;
 }
@@ -592,6 +601,7 @@ describe("Control auth HTTP", () => {
       runtimeActivity: harness.controlRuntimeActivity,
       connectorAccounts: harness.controlConnectorAccounts,
       modelCallTraces: harness.controlModelCallTraces,
+      sessionCompaction: harness.sessionCompaction,
       identityStore: harness.identities,
     });
     servers.push(server);
@@ -616,7 +626,7 @@ describe("Control auth HTTP", () => {
     await writeFile(join(staticDir, "index.html"), `<div id="root">Control UI shell</div>`);
     await writeFile(join(staticDir, "assets", "app.js"), "console.log('control-ui');");
     await writeFile(join(staticDir, "assets", "geist.woff2"), "font");
-    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, briefings: harness.briefings, heartbeats: harness.heartbeats, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, modelCallTraces: harness.controlModelCallTraces, identityStore: harness.identities, uiStaticDir: staticDir});
+    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, briefings: harness.briefings, heartbeats: harness.heartbeats, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, modelCallTraces: harness.controlModelCallTraces, sessionCompaction: harness.sessionCompaction, identityStore: harness.identities, uiStaticDir: staticDir});
     servers.push(server);
     const base = `http://${server.host}:${server.port}`;
 
@@ -939,6 +949,55 @@ describe("Control operator HTTP", () => {
     await expect(invalid.json()).resolves.toEqual({
       error: "Session runtime thinking must be default, off, low, medium, high, or xhigh.",
     });
+  });
+
+  it("compacts a visible session with bounded optional instructions", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+    const path = `${base}/api/control/agents/panda/sessions/session-panda/compact`;
+
+    const missingCsrf = await fetch(path, {
+      method: "POST",
+      headers: {cookie: auth.cookies},
+      body: JSON.stringify({instructions: "Keep the incident timeline."}),
+    });
+    expect(missingCsrf.status).toBe(403);
+
+    const compacted = await fetch(path, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({instructions: "Keep the incident timeline."}),
+    });
+    expect(compacted.status).toBe(200);
+    await expect(compacted.json()).resolves.toEqual({
+      compaction: {
+        compacted: true,
+        sessionId: "session-panda",
+        threadId: "thread-panda",
+        tokensBefore: 1_200,
+        tokensAfter: 350,
+      },
+    });
+    expect(harness.sessionCompaction.compactSession).toHaveBeenCalledWith(
+      "session-panda",
+      "Keep the incident timeline.",
+    );
+
+    const audit = await fetch(
+      `${base}/api/control/audit-events?eventType=control_operator_write&agentKey=panda`,
+      {headers: {cookie: auth.cookies}},
+    );
+    const auditText = JSON.stringify(await audit.json());
+    expect(auditText).toContain('"action":"compact"');
+    expect(auditText).not.toContain("Keep the incident timeline.");
+
+    const invalid = await fetch(path, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({instructions: 42}),
+    });
+    expect(invalid.status).toBe(400);
   });
 
   it("manages A2A session bindings through session workspace routes", async () => {

@@ -171,6 +171,15 @@ export interface StartControlServerOptions {
   runtimeActivity: ControlRuntimeActivityService;
   connectorAccounts: ControlConnectorAccountsService;
   modelCallTraces: ControlModelCallTraceService;
+  sessionCompaction: {
+    compactSession(sessionId: string, customInstructions?: string): Promise<{
+      compacted: boolean;
+      sessionId: string;
+      threadId: string;
+      tokensBefore?: number;
+      tokensAfter?: number;
+    }>;
+  };
   identityStore: Pick<IdentityStore, "getIdentity" | "getIdentityByHandle" | "listIdentities">;
   env?: NodeJS.ProcessEnv;
   uiStaticDir?: string;
@@ -1475,6 +1484,44 @@ export async function startControlServer(options: StartControlServerOptions): Pr
           writeJsonResponse(response, 200, {session: result.session, previousThreadId: result.previousThreadId});
         } catch (error) {
           throw new ControlHttpError(400, error instanceof Error ? error.message : "Control session reset failed.");
+        }
+        return;
+      }
+      const sessionCompactPath = matchSessionActionPath(path, "compact");
+      if (sessionCompactPath && request.method === "POST") {
+        requireCsrf(request, options.auth, session);
+        const body = await readBody(request);
+        const unknown = Object.keys(body).filter((key) => key !== "instructions");
+        if (unknown.length > 0) {
+          throw new ControlHttpError(400, `Unsupported session compact field: ${unknown[0]}.`);
+        }
+        if (body.instructions !== undefined && typeof body.instructions !== "string") {
+          throw new ControlHttpError(400, "Session compact instructions must be a string.");
+        }
+        const instructions = typeof body.instructions === "string" ? body.instructions.trim() : "";
+        if (instructions.length > 20_000) {
+          throw new ControlHttpError(400, "Session compact instructions must be at most 20000 characters.");
+        }
+        try {
+          const target = await options.operator.getSession(
+            session,
+            sessionCompactPath.agentKey,
+            sessionCompactPath.sessionId,
+          );
+          const compaction = await options.sessionCompaction.compactSession(target.id, instructions);
+          await recordOperatorAudit(options.auth, session, {
+            action: "compact",
+            agentKey: target.agentKey,
+            targetSessionId: target.id,
+            targetThreadId: compaction.threadId,
+            compacted: compaction.compacted,
+            instructionsProvided: instructions.length > 0,
+            tokensBefore: compaction.tokensBefore ?? null,
+            tokensAfter: compaction.tokensAfter ?? null,
+          });
+          writeJsonResponse(response, 200, {compaction});
+        } catch (error) {
+          throw new ControlHttpError(400, error instanceof Error ? error.message : "Control session compact failed.");
         }
         return;
       }

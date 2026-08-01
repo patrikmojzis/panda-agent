@@ -187,6 +187,14 @@ export type SessionDetail = SessionRow & {
   }
 }
 
+export type SessionCompactionResult = {
+  compacted: boolean
+  sessionId: string
+  threadId: string
+  tokensBefore?: number
+  tokensAfter?: number
+}
+
 export type ExecutionTarget = {
   alias: string
   kind: "persistent_agent_runner" | "disposable_container" | "local" | string
@@ -994,6 +1002,16 @@ export const controlApi = {
     apiWrite<{ session: SessionRow; previousThreadId: string }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/reset`,
       { csrfToken }
+    ),
+  compactSession: (
+    agentKey: string,
+    sessionId: string,
+    instructions: string,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ compaction: SessionCompactionResult }>(
+      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/compact`,
+      { body: { instructions }, csrfToken }
     ),
   mcpServers: (agentKey: string) =>
     apiGet<{ servers: McpServerRow[]; count: number; version: number }>(

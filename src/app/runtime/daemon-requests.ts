@@ -1,5 +1,6 @@
 import type {
   AbortThreadRequestPayload,
+  CompactSessionRequestPayload,
   CompactThreadRequestPayload,
   CreateBranchSessionRequestPayload,
   CreateSubagentSessionRequestPayload,
@@ -8,7 +9,6 @@ import type {
   TuiInputRequestPayload,
   UpdateThreadRequestPayload,
 } from "../../domain/threads/requests/types.js";
-import {compactThread} from "../../kernel/transcript/compaction.js";
 import type {ThreadRuntimeCoordinator} from "../../domain/threads/runtime/coordinator.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
@@ -25,10 +25,10 @@ import {
   handleWhatsAppMessageRequest,
   handleWhatsAppReactionRequest,
 } from "../../integrations/channels/whatsapp/request-handler.js";
-import {readMissingApiKeyMessageForModel} from "../../integrations/providers/shared/missing-api-key.js";
 import type {DaemonThreadHelpers} from "./daemon-threads.js";
 import {readSubagentSessionMetadata} from "../../domain/subagents/session-metadata.js";
 import {requireIdentityId} from "./daemon-shared.js";
+import type {SessionCompactionService} from "./session-compaction-service.js";
 
 export const UNSUPPORTED_CREATE_WORKER_SESSION_REQUEST_ERROR = "Unsupported runtime request create_worker_session after subagent hard cut.";
 
@@ -40,6 +40,7 @@ export interface DaemonRequestProcessorContext {
     >;
     identityStore: Pick<IdentityStore, "getIdentity" | "resolveIdentityBinding">;
     sessionStore: Pick<SessionStore, "getSession" | "updateSessionRuntimeConfig">;
+    sessionCompaction: Pick<SessionCompactionService, "compactSession" | "compactThread">;
     store: DaemonRequestStore;
   };
   a2aBindings: Parameters<typeof handleA2AMessageRequest>[1]["bindings"];
@@ -152,38 +153,13 @@ export function createDaemonRequestProcessor(
   const handleCompactThread = async (
     payload: CompactThreadRequestPayload,
   ): Promise<Record<string, unknown>> => {
-    const compacted = await context.runtime.coordinator.runExclusively(payload.threadId, async () => {
-      const thread = await context.runtime.store.getThread(payload.threadId);
-      const runConfig = await context.runtime.coordinator.resolveThreadRunConfig(thread);
-      const modelName = runConfig.model;
-      const apiKeyMessage = readMissingApiKeyMessageForModel(modelName);
-      if (apiKeyMessage) {
-        throw new Error(apiKeyMessage);
-      }
+    return {...await context.runtime.sessionCompaction.compactThread(payload.threadId, payload.customInstructions)};
+  };
 
-      if (await context.runtime.store.hasRunnableInputs(payload.threadId)) {
-        throw new Error("Wait for queued input to run before compacting.");
-      }
-
-      return compactThread({
-        store: context.runtime.store,
-        thread,
-        model: modelName,
-        thinking: runConfig.thinking,
-        customInstructions: payload.customInstructions,
-        trigger: "manual",
-      });
-    });
-
-    if (!compacted) {
-      return {compacted: false};
-    }
-
-    return {
-      compacted: true,
-      tokensBefore: compacted.tokensBefore,
-      tokensAfter: compacted.tokensAfter,
-    };
+  const handleCompactSession = async (
+    payload: CompactSessionRequestPayload,
+  ): Promise<Record<string, unknown>> => {
+    return {...await context.runtime.sessionCompaction.compactSession(payload.sessionId, payload.customInstructions)};
   };
 
   const handleResolveThreadRunConfig = async (
@@ -291,6 +267,8 @@ export function createDaemonRequestProcessor(
         return handleAbortThread(request.payload);
       case "compact_thread":
         return handleCompactThread(request.payload);
+      case "compact_session":
+        return handleCompactSession(request.payload);
       case "update_thread":
         return handleUpdateThread(request.payload);
       default:
