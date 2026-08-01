@@ -308,6 +308,15 @@ agent_command_shim_lookup_route() {
     'discord history')
       printf '%s\t%s\n' 'discord.history' 'discord history'
       ;;
+    'discord sticker list')
+      printf '%s\t%s\n' 'discord.sticker.list' 'discord sticker list'
+      ;;
+    'discord sticker send')
+      printf '%s\t%s\n' 'discord.sticker.send' 'discord sticker send'
+      ;;
+    'discord gif send')
+      printf '%s\t%s\n' 'discord.gif.send' 'discord gif send'
+      ;;
     'discord send')
       printf '%s\t%s\n' 'discord.send' 'discord send'
       ;;
@@ -484,6 +493,9 @@ agent_command_shim_print_root_usage_commands() {
   panda telegram sticker send --chat <conversation-id> --connector <key> (--ref <sticker-ref>|--file <path>|--file-id <id>)
   panda discord channel list [--connector <key>]
   panda discord history --channel <channel-id> [--connector <key>] [--direction inbound|outbound|all] [--limit <n>]
+  panda discord sticker list --channel <channel-id> --connector <key>
+  panda discord sticker send --channel <channel-id> --connector <key> --sticker <sticker-id>... [--thread <thread-id>] [--guild <guild-id>] [--reply-to-message-id <message-id>]
+  panda discord gif send --channel <channel-id> --connector <key> (--file <path>|--url <https-url>) [--caption <text>] [--thread <thread-id>] [--guild <guild-id>] [--reply-to-message-id <message-id>]
   panda discord send --channel <channel-id> --connector <key> [--thread <thread-id>] [--guild <guild-id>] (--text <text|@file|@->|--stdin|--image <path>|--file <path>)... [--reply-to-message-id <message-id>]
   panda whatsapp chat list [--connector <key>]
   panda whatsapp history --chat <jid-or-phone> [--connector <key>] [--direction inbound|outbound|all] [--limit <n>]
@@ -1566,6 +1578,36 @@ Detailed help is available only through the current agent command lease.
 Usage:
   panda discord history --json @payload.json
 PANDA_COMMAND_HELP_discord_history
+      ;;
+    'discord.sticker.list')
+      cat <<'PANDA_COMMAND_HELP_discord_sticker_list'
+Panda command: discord.sticker.list
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda discord sticker list --json @payload.json
+PANDA_COMMAND_HELP_discord_sticker_list
+      ;;
+    'discord.sticker.send')
+      cat <<'PANDA_COMMAND_HELP_discord_sticker_send'
+Panda command: discord.sticker.send
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda discord sticker send --json @payload.json
+PANDA_COMMAND_HELP_discord_sticker_send
+      ;;
+    'discord.gif.send')
+      cat <<'PANDA_COMMAND_HELP_discord_gif_send'
+Panda command: discord.gif.send
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda discord gif send --json @payload.json
+PANDA_COMMAND_HELP_discord_gif_send
       ;;
     'discord.send')
       cat <<'PANDA_COMMAND_HELP_discord_send'
@@ -3634,6 +3676,60 @@ PANDA_COMMAND_HELP_JSON_discord_channel_list
   "examples": []
 }
 PANDA_COMMAND_HELP_JSON_discord_history
+      ;;
+    'discord.sticker.list')
+      cat <<'PANDA_COMMAND_HELP_JSON_discord_sticker_list'
+{
+  "name": "discord.sticker.list",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda discord sticker list --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_discord_sticker_list
+      ;;
+    'discord.sticker.send')
+      cat <<'PANDA_COMMAND_HELP_JSON_discord_sticker_send'
+{
+  "name": "discord.sticker.send",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda discord sticker send --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_discord_sticker_send
+      ;;
+    'discord.gif.send')
+      cat <<'PANDA_COMMAND_HELP_JSON_discord_gif_send'
+{
+  "name": "discord.gif.send",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda discord gif send --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_discord_gif_send
       ;;
     'discord.send')
       cat <<'PANDA_COMMAND_HELP_JSON_discord_send'

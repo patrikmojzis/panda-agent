@@ -129,6 +129,43 @@ export interface DiscordAttachmentSummary {
   sizeBytes?: number;
 }
 
+export type DiscordMediaStatus = "downloaded" | "metadata_only" | "unsupported" | "failed";
+
+export type DiscordMediaReason =
+  | "no_trusted_media"
+  | "untrusted_url"
+  | "unsupported_format"
+  | "invalid_content_type"
+  | "too_large"
+  | "download_failed";
+
+export interface DiscordEmbedMediaSummary {
+  kind: "image" | "thumbnail" | "video";
+  contentType?: string;
+  width?: number;
+  height?: number;
+  status: DiscordMediaStatus;
+  reason?: DiscordMediaReason;
+}
+
+export interface DiscordEmbedSummary {
+  type: string;
+  title?: string;
+  description?: string;
+  providerName?: string;
+  media: readonly DiscordEmbedMediaSummary[];
+}
+
+export type DiscordStickerFormat = "png" | "apng" | "lottie" | "gif" | "unknown";
+
+export interface DiscordStickerSummary {
+  id: string;
+  name: string;
+  format: DiscordStickerFormat;
+  status: DiscordMediaStatus;
+  reason?: DiscordMediaReason;
+}
+
 export interface DiscordMessageRequestPayload extends BaseRuntimeRequestPayload {
   connectorKey: string;
   externalConversationId: string;
@@ -136,6 +173,8 @@ export interface DiscordMessageRequestPayload extends BaseRuntimeRequestPayload 
   externalMessageId: string;
   actualChannelId: string;
   attachmentSummaries: readonly DiscordAttachmentSummary[];
+  embedSummaries: readonly DiscordEmbedSummary[];
+  stickerSummaries: readonly DiscordStickerSummary[];
   media: readonly MediaDescriptor[];
   sentAt?: number;
   guildId?: string;

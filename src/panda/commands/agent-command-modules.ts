@@ -256,13 +256,23 @@ import {
 import {agentCommandPolicy, type AgentCommandPolicy} from "./agent-command-policy.js";
 import {
   createDiscordChannelListCommand,
+  createDiscordGifSendCommand,
   createDiscordHistoryCommand,
   createDiscordSendCommand,
+  createDiscordStickerListCommand,
+  createDiscordStickerSendCommand,
   type DiscordChannelListCommandServices,
+  type DiscordGifSendCommandServices,
+  type DiscordStickerCatalogReader,
+  type DiscordStickerSendCommandServices,
   discordChannelListCommandDescriptor,
+  discordGifSendCommandDescriptor,
   discordHistoryCommandDescriptor,
   discordSendCommandDescriptor,
+  discordStickerListCommandDescriptor,
+  discordStickerSendCommandDescriptor,
 } from "../../integrations/channels/discord/commands.js";
+import type {DiscordGifService} from "../../integrations/channels/discord/gifs.js";
 import {
   createTelegramChatInfoCommand,
   createTelegramChatListCommand,
@@ -372,8 +382,10 @@ type TelegramActionCommandQueue =
   & TelegramPinCommandQueue
   & TelegramUnpinCommandQueue
   & TelegramStickerSendCommandQueue;
+type ChannelActionCommandQueue = TelegramActionCommandQueue & DiscordStickerSendCommandServices;
 type OutboundCommandQueue =
   & ExplicitChannelSendCommandServices
+  & DiscordGifSendCommandServices
   & EmailSendCommandQueue
   & TelegramSendCommandQueue;
 type ChannelCommandConnectorAccounts =
@@ -426,7 +438,9 @@ export interface AgentCommandModuleDependencies {
   conversations?: ChannelCommandConversations;
   channelMessages?: ChannelCommandMessages;
   outboundDeliveries?: ChannelCommandDeliveries;
-  channelActions?: TelegramActionCommandQueue;
+  channelActions?: ChannelActionCommandQueue;
+  discordStickers?: DiscordStickerCatalogReader;
+  discordGifs?: DiscordGifService;
   telegramStickers?: TelegramStickerLibrary;
   email?: EmailCommandStore;
   a2aMessaging?: MessageAgentCommandQueue;
@@ -677,12 +691,28 @@ function requireOutboundDeliveries(dependencies: AgentCommandModuleDependencies)
   return dependencies.outboundDeliveries;
 }
 
-function requireChannelActions(dependencies: AgentCommandModuleDependencies): TelegramActionCommandQueue {
+function requireChannelActions(dependencies: AgentCommandModuleDependencies): ChannelActionCommandQueue {
   if (!dependencies.channelActions) {
     throw new Error("Agent command module requires channelActions.");
   }
 
   return dependencies.channelActions;
+}
+
+function requireDiscordStickers(dependencies: AgentCommandModuleDependencies): DiscordStickerCatalogReader {
+  if (!dependencies.discordStickers) {
+    throw new Error("Agent command module requires discordStickers.");
+  }
+
+  return dependencies.discordStickers;
+}
+
+function requireDiscordGifs(dependencies: AgentCommandModuleDependencies): DiscordGifService {
+  if (!dependencies.discordGifs) {
+    throw new Error("Agent command module requires discordGifs.");
+  }
+
+  return dependencies.discordGifs;
 }
 
 function requireTelegramStickers(dependencies: AgentCommandModuleDependencies): TelegramStickerLibrary {
@@ -1419,6 +1449,34 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
       messages: requireChannelMessages(dependencies),
       deliveries: requireOutboundDeliveries(dependencies),
     }),
+  ),
+  daemonChannelCommandModule(
+    discordStickerListCommandDescriptor,
+    ["discord", "sticker", "list"],
+    "@payload.json",
+    agentCommandPolicy(["communicate_human"]),
+    (dependencies) => createDiscordStickerListCommand({
+      conversations: requireConversations(dependencies),
+      stickers: requireDiscordStickers(dependencies),
+    }),
+  ),
+  daemonChannelCommandModule(
+    discordStickerSendCommandDescriptor,
+    ["discord", "sticker", "send"],
+    "@payload.json",
+    agentCommandPolicy(["communicate_human"]),
+    (dependencies) => createDiscordStickerSendCommand(requireChannelActions(dependencies)),
+  ),
+  daemonChannelCommandModule(
+    discordGifSendCommandDescriptor,
+    ["discord", "gif", "send"],
+    "@payload.json",
+    agentCommandPolicy(["communicate_human"]),
+    (dependencies) => createDiscordGifSendCommand(
+      requireOutboundDeliveries(dependencies),
+      requireCommandFileResolver(dependencies),
+      requireDiscordGifs(dependencies),
+    ),
   ),
   daemonChannelCommandModule(
     discordSendCommandDescriptor,

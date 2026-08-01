@@ -5775,10 +5775,16 @@ Usage:
   panda discord channel list [--connector <key>]
   panda discord history --help [--json]
   panda discord history --channel <channel-id> [--connector <key>] [--direction inbound|outbound|all] [--limit <n>]
+  panda discord sticker list --channel <channel-id> --connector <key>
+  panda discord sticker send --channel <channel-id> --connector <key> --sticker <sticker-id>... [--thread <thread-id>] [--guild <guild-id>] [--reply-to-message-id <message-id>]
+  panda discord gif send --channel <channel-id> --connector <key> (--file <path>|--url <https-url>) [--caption <text>] [--thread <thread-id>] [--guild <guild-id>] [--reply-to-message-id <message-id>]
   panda discord send --help [--json]
   panda discord send --channel <channel-id> --connector <key> [--thread <thread-id>] [--guild <guild-id>] (--text <text|@file|@->|--stdin|--image <path>|--file <path>)... [--reply-to-message-id <message-id>]
   panda discord channel list --json @payload.json
   panda discord history --json @payload.json
+  panda discord sticker list --json @payload.json
+  panda discord sticker send --json @payload.json
+  panda discord gif send --json @payload.json
   panda discord send --json @payload.json
 USAGE
 	        exit 0
@@ -5800,6 +5806,24 @@ USAGE
 	        [ "$channel_subcommand" = "list" ] || die "Unknown panda discord channel command. Try: panda discord channel list --help"
 	        command_name="discord.channel.list"
 	        subcommand="channel list"
+	        shift
+	        ;;
+	      sticker)
+	        shift
+	        sticker_subcommand="${1:-}"
+	        case "$sticker_subcommand" in
+	          list) command_name="discord.sticker.list" ;;
+	          send) command_name="discord.sticker.send" ;;
+	          *) die "Unknown panda discord sticker command. Try: panda discord sticker list --help" ;;
+	        esac
+	        subcommand="sticker $sticker_subcommand"
+	        shift
+	        ;;
+	      gif)
+	        shift
+	        [ "${1:-}" = "send" ] || die "Unknown panda discord gif command. Try: panda discord gif send --help"
+	        command_name="discord.gif.send"
+	        subcommand="gif send"
 	        shift
 	        ;;
 	      *) die "Unknown panda discord command. Try: panda discord channel list --help" ;;
@@ -5885,6 +5909,138 @@ USAGE
 	        + (if $connectorKey != "" then {connectorKey: $connectorKey} else {} end)
 	        + (if $direction != "" then {direction: $direction} else {} end)
 	        + (if $limit != "" then {limit: ($limit | tonumber)} else {} end)')"
+	      execute_json_command "$command_name" "$payload"
+	      exit $?
+	    fi
+	    if [ "$subcommand" = "sticker list" ]; then
+	      channel_id=""
+	      connector_key=""
+	      while [ "$#" -gt 0 ]; do
+	        case "$1" in
+	          --channel)
+	            [ "$#" -gt 1 ] || die "panda discord sticker list --channel requires a channel id."
+	            channel_id="$2"
+	            shift 2
+	            ;;
+	          --connector)
+	            [ "$#" -gt 1 ] || die "panda discord sticker list --connector requires a connector key."
+	            connector_key="$2"
+	            shift 2
+	            ;;
+	          *) die "Unknown panda discord sticker list option: $1" ;;
+	        esac
+	      done
+	      [ -n "$channel_id" ] || die "panda discord sticker list requires --channel <channel-id>."
+	      [ -n "$connector_key" ] || die "panda discord sticker list requires --connector <key>."
+	      payload="$(jq -n --arg channelId "$channel_id" --arg connectorKey "$connector_key" '{channelId: $channelId, connectorKey: $connectorKey}')"
+	      execute_json_command "$command_name" "$payload"
+	      exit $?
+	    fi
+	    if [ "$subcommand" = "sticker send" ]; then
+	      conversation_id=""
+	      connector_key=""
+	      thread_id=""
+	      guild_id=""
+	      reply_to_message_id=""
+	      sticker_ids_json="[]"
+	      while [ "$#" -gt 0 ]; do
+	        case "$1" in
+	          --channel)
+	            [ "$#" -gt 1 ] || die "panda discord sticker send --channel requires a channel id."
+	            conversation_id="$2"
+	            shift 2
+	            ;;
+	          --connector)
+	            [ "$#" -gt 1 ] || die "panda discord sticker send --connector requires a connector key."
+	            connector_key="$2"
+	            shift 2
+	            ;;
+	          --sticker)
+	            [ "$#" -gt 1 ] || die "panda discord sticker send --sticker requires a sticker id."
+	            sticker_ids_json="$(printf '%s' "$sticker_ids_json" | jq -c --arg id "$2" '. + [$id]')"
+	            shift 2
+	            ;;
+	          --thread)
+	            [ "$#" -gt 1 ] || die "panda discord sticker send --thread requires a thread id."
+	            thread_id="$2"
+	            shift 2
+	            ;;
+	          --guild)
+	            [ "$#" -gt 1 ] || die "panda discord sticker send --guild requires a guild id."
+	            guild_id="$2"
+	            shift 2
+	            ;;
+	          --reply-to-message-id)
+	            [ "$#" -gt 1 ] || die "panda discord sticker send --reply-to-message-id requires a message id."
+	            reply_to_message_id="$2"
+	            shift 2
+	            ;;
+	          *) die "Unknown panda discord sticker send option: $1" ;;
+	        esac
+	      done
+	      [ -n "$conversation_id" ] || die "panda discord sticker send requires --channel <channel-id>."
+	      [ -n "$connector_key" ] || die "panda discord sticker send requires --connector <key>."
+	      sticker_count="$(printf '%s' "$sticker_ids_json" | jq 'length')"
+	      [ "$sticker_count" -ge 1 ] && [ "$sticker_count" -le 3 ] || die "panda discord sticker send requires one to three --sticker values."
+	      payload="$(jq -n \
+	        --arg connectorKey "$connector_key" \
+	        --arg conversationId "$conversation_id" \
+	        --arg threadId "$thread_id" \
+	        --arg guildId "$guild_id" \
+	        --arg replyToMessageId "$reply_to_message_id" \
+	        --argjson stickerIds "$sticker_ids_json" \
+	        '{connectorKey: $connectorKey, conversationId: $conversationId, stickerIds: $stickerIds}
+	        + (if $threadId != "" then {threadId: $threadId} else {} end)
+	        + (if $guildId != "" then {guildId: $guildId} else {} end)
+	        + (if $replyToMessageId != "" then {replyToMessageId: $replyToMessageId} else {} end)')"
+	      execute_json_command "$command_name" "$payload"
+	      exit $?
+	    fi
+	    if [ "$subcommand" = "gif send" ]; then
+	      conversation_id=""
+	      connector_key=""
+	      file_path=""
+	      source_url=""
+	      caption=""
+	      thread_id=""
+	      guild_id=""
+	      reply_to_message_id=""
+	      while [ "$#" -gt 0 ]; do
+	        case "$1" in
+	          --channel) [ "$#" -gt 1 ] || die "panda discord gif send --channel requires a channel id."; conversation_id="$2"; shift 2 ;;
+	          --connector) [ "$#" -gt 1 ] || die "panda discord gif send --connector requires a connector key."; connector_key="$2"; shift 2 ;;
+	          --file) [ "$#" -gt 1 ] || die "panda discord gif send --file requires a path."; file_path="$2"; shift 2 ;;
+	          --url) [ "$#" -gt 1 ] || die "panda discord gif send --url requires an HTTPS URL."; source_url="$2"; shift 2 ;;
+	          --caption) [ "$#" -gt 1 ] || die "panda discord gif send --caption requires text."; caption="$2"; shift 2 ;;
+	          --thread) [ "$#" -gt 1 ] || die "panda discord gif send --thread requires a thread id."; thread_id="$2"; shift 2 ;;
+	          --guild) [ "$#" -gt 1 ] || die "panda discord gif send --guild requires a guild id."; guild_id="$2"; shift 2 ;;
+	          --reply-to-message-id) [ "$#" -gt 1 ] || die "panda discord gif send --reply-to-message-id requires a message id."; reply_to_message_id="$2"; shift 2 ;;
+	          *) die "Unknown panda discord gif send option: $1" ;;
+	        esac
+	      done
+	      [ -n "$conversation_id" ] || die "panda discord gif send requires --channel <channel-id>."
+	      [ -n "$connector_key" ] || die "panda discord gif send requires --connector <key>."
+	      if [ -n "$file_path" ] && [ -n "$source_url" ]; then
+	        die "panda discord gif send accepts exactly one of --file or --url."
+	      fi
+	      if [ -z "$file_path" ] && [ -z "$source_url" ]; then
+	        die "panda discord gif send requires exactly one of --file or --url."
+	      fi
+	      payload="$(jq -n \
+	        --arg connectorKey "$connector_key" \
+	        --arg conversationId "$conversation_id" \
+	        --arg filePath "$file_path" \
+	        --arg url "$source_url" \
+	        --arg caption "$caption" \
+	        --arg threadId "$thread_id" \
+	        --arg guildId "$guild_id" \
+	        --arg replyToMessageId "$reply_to_message_id" \
+	        '{connectorKey: $connectorKey, conversationId: $conversationId}
+	        + (if $filePath != "" then {filePath: $filePath} else {url: $url} end)
+	        + (if $caption != "" then {caption: $caption} else {} end)
+	        + (if $threadId != "" then {threadId: $threadId} else {} end)
+	        + (if $guildId != "" then {guildId: $guildId} else {} end)
+	        + (if $replyToMessageId != "" then {replyToMessageId: $replyToMessageId} else {} end)')"
 	      execute_json_command "$command_name" "$payload"
 	      exit $?
 	    fi

@@ -1,10 +1,10 @@
 {
   "files": [
     {
-      "bytes": 121064,
-      "lines": 4039,
+      "bytes": 124246,
+      "lines": 4135,
       "path": "scripts/agent-command-shim/routes.generated.sh",
-      "sha256": "6cd01e2afa880e0852c4e8a30e302c03c31595a5b62d0c3561271b362c534d3c"
+      "sha256": "8660b04e91ca389217b86835a1580fe68e249a4de23db35f60863e6f63bb2504"
     },
     {
       "bytes": 1166,
@@ -19,10 +19,10 @@
       "sha256": "90f5ef6dfaeebf09223f66734e27bc6563b2133246cace59746f129535bf7b40"
     },
     {
-      "bytes": 16335,
-      "lines": 429,
+      "bytes": 16889,
+      "lines": 440,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "ac7c85c778c52c447a01353e0a5b84600d028b31486faf185e53e589fabf242b"
+      "sha256": "5f0bc8393a8ee636d8279b8cc70094ea9d38958005ea0ac3bc481b8c7ef11bfd"
     },
     {
       "bytes": 12121,
@@ -67,10 +67,10 @@
       "sha256": "c6d98f315f2cfc237bbf5fdd6eb957112e92238bedd6e16956056d0a7939fb56"
     },
     {
-      "bytes": 58000,
-      "lines": 1624,
+      "bytes": 60125,
+      "lines": 1682,
       "path": "src/panda/commands/agent-command-modules.ts",
-      "sha256": "c5ba0410227054297c8c22e784af4022572770fadf2adf89cae9a19dad068365"
+      "sha256": "5121a7c8a48ea32776e2b879621ebd8e1ee13e588ab14c00111ba8c86030746b"
     },
     {
       "bytes": 572,
@@ -193,10 +193,10 @@
       "sha256": "7ce06cc5e05ee307c4877e8f9299a683f850c831de8001a2bc407c5778eca793"
     },
     {
-      "bytes": 2596,
-      "lines": 74,
+      "bytes": 5384,
+      "lines": 151,
       "path": "src/prompts/channels/discord.ts",
-      "sha256": "798b8a6796ce7bc20a6afff2870c4c2a5b59f2c9b413cc0e434a8c978c8a1e52"
+      "sha256": "551b75bd8daacd26ef15065faee876f7f34bb1c112b4a894712dd63e8ccc0a5a"
     },
     {
       "bytes": 1233,
@@ -414,6 +414,9 @@
         "telegram.sticker.send",
         "discord.channel.list",
         "discord.history",
+        "discord.sticker.list",
+        "discord.sticker.send",
+        "discord.gif.send",
         "discord.send",
         "whatsapp.chat.list",
         "whatsapp.history",

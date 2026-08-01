@@ -88,6 +88,8 @@ function discordMessageRequest(
       authorUsername: "patrik",
       authorDisplayName: "Patrik Display",
       attachmentSummaries: [],
+      embedSummaries: [],
+      stickerSummaries: [],
       media: [],
       ...overrides,
     },
@@ -621,7 +623,7 @@ describe("daemon request processor", () => {
 
     expect(harness.submitInput).toHaveBeenCalledWith("thread-1", expect.objectContaining({
       message: expect.objectContaining({
-        content: expect.stringContaining("Discord message with 1 attachment."),
+        content: expect.stringContaining("Discord message with one attachment."),
       }),
       metadata: expect.objectContaining({
         discord: expect.objectContaining({

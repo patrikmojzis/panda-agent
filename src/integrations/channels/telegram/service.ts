@@ -299,6 +299,8 @@ export class TelegramService {
           case "telegram_sticker_send":
             await this.sendStickerAction(action.payload);
             return;
+          case "discord_sticker_send":
+            throw new Error("Unsupported Discord action reached the Telegram worker.");
           default:
             rejectUnsupportedTelegramAction(action);
         }

@@ -60,7 +60,7 @@ interface FetchReadableWebPageResult {
   content: string;
 }
 
-interface FetchSafeHttpResourceOptions {
+export interface FetchSafeHttpResourceOptions {
   fetchImpl?: FetchImpl;
   lookupHostname?: LookupHostname;
   timeoutMs?: number;
@@ -72,9 +72,10 @@ interface FetchSafeHttpResourceOptions {
   headers?: Record<string, string>;
   body?: string;
   readErrorBody?: boolean;
+  allowedProtocols?: readonly string[];
 }
 
-interface FetchSafeHttpResourceResult {
+export interface FetchSafeHttpResourceResult {
   url: string;
   finalUrl: string;
   status: number;
@@ -421,7 +422,9 @@ export async function fetchSafeHttpResource(
     let response: FetchedResponse | null = null;
 
     while (true) {
-      const safeTarget = await resolveSafeHttpTarget(currentUrl, lookupHostname, "web.fetch");
+      const safeTarget = await resolveSafeHttpTarget(currentUrl, lookupHostname, "web.fetch", {
+        ...(options.allowedProtocols ? {allowedProtocols: options.allowedProtocols} : {}),
+      });
       response = options.fetchImpl
         ? await fetchWithCustomImpl(currentUrl, {
             fetchImpl: options.fetchImpl,

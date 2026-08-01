@@ -95,6 +95,11 @@ function createFixture(options: {
       order.push("schema:outbound");
     }),
   };
+  const channelActions = {
+    ensureSchema: vi.fn(async () => {
+      order.push("schema:actions");
+    }),
+  };
   const mediaStore = {
     writeMedia: vi.fn(async (input) => {
       order.push("media:write");
@@ -136,6 +141,7 @@ function createFixture(options: {
     connectorLeases,
     connectorStore,
     conversationRepo,
+    channelActions,
     outboundDeliveries,
     mediaStore,
     pool,
@@ -162,6 +168,7 @@ function createFixture(options: {
         bot: true,
       };
     }),
+    listGuildStickers: vi.fn(async () => []),
   };
   const lease = {
     release: vi.fn(async () => {
@@ -169,11 +176,28 @@ function createFixture(options: {
     }),
   };
   const outboundWorker = {
-    start: vi.fn(async () => {
+    start: vi.fn(async (startOptions?: {subscribeToNotifications?: boolean}) => {
       order.push("outbound:start");
+      expect(startOptions).toEqual({subscribeToNotifications: false});
     }),
     stop: vi.fn(async () => {
       order.push("outbound:stop");
+    }),
+    triggerDrain: vi.fn(async () => {}),
+  };
+  const actionWorker = {
+    start: vi.fn(async (startOptions?: {subscribeToNotifications?: boolean}) => {
+      order.push("action:start");
+      expect(startOptions).toEqual({subscribeToNotifications: false});
+    }),
+    stop: vi.fn(async () => {
+      order.push("action:stop");
+    }),
+    triggerDrain: vi.fn(async () => {}),
+  };
+  const notificationListener = {
+    close: vi.fn(async () => {
+      order.push("listener:close");
     }),
   };
   const gateway = {
@@ -199,6 +223,10 @@ function createFixture(options: {
       gatewayOptions = input;
       return gateway;
     }),
+    createActionWorker: vi.fn(() => {
+      order.push("action:create");
+      return actionWorker;
+    }),
     createOutboundWorker: vi.fn(() => {
       order.push("outbound:create");
       return outboundWorker;
@@ -208,6 +236,10 @@ function createFixture(options: {
     createStores: vi.fn(() => stores),
     observePool: vi.fn(() => ({stop: vi.fn()})),
     resolveCrypto: vi.fn(() => crypto),
+    startNotificationListener: vi.fn(async () => {
+      order.push("listener:start");
+      return notificationListener;
+    }),
   };
   const service = new DiscordService({
     accountKey: "ops",
@@ -218,6 +250,7 @@ function createFixture(options: {
   });
 
   return {
+    actionWorker,
     connectorStore,
     conversationRepo,
     dependencies,
@@ -230,6 +263,7 @@ function createFixture(options: {
     },
     lease,
     mediaStore,
+    notificationListener,
     order,
     outboundWorker,
     pool,
@@ -283,15 +317,19 @@ describe("DiscordService", () => {
       "schema:session",
       "schema:thread",
       "schema:conversation",
+      "schema:actions",
       "schema:outbound",
       "schema:requests",
       "schema:lease",
       "account:get",
       "secret:get",
       "token:validate",
-      "lease:acquire",
       "outbound:create",
+      "action:create",
+      "lease:acquire",
       "outbound:start",
+      "action:start",
+      "listener:start",
       "gateway:create",
       "gateway:start",
     ]);
@@ -312,6 +350,8 @@ describe("DiscordService", () => {
     await fixture.service.stop();
     expect(fixture.order).toEqual([
       "gateway:stop",
+      "listener:close",
+      "action:stop",
       "outbound:stop",
       "lease:release",
       "pool:end",
@@ -533,6 +573,7 @@ describe("DiscordService", () => {
     expect(fixture.connectorStore.getSecret).not.toHaveBeenCalled();
     expect(fixture.dependencies.acquireLease).not.toHaveBeenCalled();
     expect(fixture.outboundWorker.start).not.toHaveBeenCalled();
+    expect(fixture.actionWorker.start).not.toHaveBeenCalled();
     expect(fixture.gateway.start).not.toHaveBeenCalled();
     expect(fixture.pool.end).toHaveBeenCalledOnce();
   });
@@ -581,6 +622,8 @@ describe("DiscordService", () => {
 
     expect(fixture.order).toEqual([
       "gateway:stop",
+      "listener:close",
+      "action:stop",
       "outbound:stop",
       "lease:release",
       "pool:end",

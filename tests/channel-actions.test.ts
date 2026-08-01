@@ -265,6 +265,18 @@ describe("PostgresChannelActionStore", () => {
         },
       },
     },
+    {
+      channel: "discord",
+      connectorKey: "discord-bot-1",
+      kind: "discord_sticker_send",
+      payload: {
+        parentChannelId: "12345",
+        threadId: "23456",
+        guildId: "34567",
+        replyToMessageId: "45678",
+        stickerIds: ["56789", "67890"],
+      },
+    },
   ])("round-trips $kind payloads through persisted actions", async (input) => {
     const db = newDb();
     db.public.registerFunction({

@@ -8,7 +8,7 @@ In the Discord developer portal:
 
 - create a bot and copy its token
 - enable the Message Content Intent
-- invite the bot with permission to read, send, and attach files in the target channel
+- invite the bot with View Channel, Read Message History, Send Messages, and Attach Files in the target channel
 
 Set `CREDENTIALS_MASTER_KEY` before account commands, then store the token without printing it:
 
@@ -46,13 +46,52 @@ panda discord pair --account discord-main --identity alice --actor <discordUserI
 
 Use the stable Discord user id/snowflake for `--actor`, not a username or display name.
 
-## Attachments
+## Inbound media
 
-Inbound Discord attachments are summarized in runtime context. Supported Discord CDN/proxy media is downloaded into `downloaded_media` for tools such as `view_media` or `whisper`.
+Inbound attachments, embeds, and stickers are summarized separately in runtime context. Supported Discord CDN/proxy media is downloaded into `downloaded_media` for tools such as `view_media` or `whisper`. Embed-only and sticker-only messages wake the bound session normally.
 
-Discord `url`, `proxy_url`, and `proxyUrl` attachment fields are accepted. Unsupported, oversized, or failed downloads are reported as unavailable without exposing raw CDN/proxy URLs.
+Panda downloads at most one trusted visual candidate per embed. PNG, APNG, and GIF stickers use Discord's official sticker CDN; Lottie stickers remain identifiable metadata because Panda does not render Lottie. Inbound downloads keep the 25 MiB and 30-second limits.
+
+Discord `url`, `proxy_url`, and `proxyUrl` attachment fields are accepted. Unsupported, oversized, untrusted, or failed downloads are reported with stable status/reason codes without persisting or rendering raw CDN/proxy URLs.
 
 Outbound Discord messages can include files and images when the bot has the Attach Files permission.
+
+## Guild stickers
+
+List bot-visible stickers in the guild behind a channel already bound to the current session:
+
+```bash
+panda discord sticker list --channel <parentChannelId> --connector <connectorKey>
+```
+
+Send one to three native Discord stickers:
+
+```bash
+panda discord sticker send --channel <parentChannelId> --connector <connectorKey> \
+  --sticker <stickerId> --sticker <stickerId>
+```
+
+Thread, guild, and reply options match `panda discord send`. Sticker IDs are Discord snowflakes. PNG, APNG, Lottie, and GIF stickers are listable and sendable; Lottie is not rendered when received. The bot must be able to view the guild/channel and send messages there. Panda does not use undocumented client APIs or scrape Discord's picker.
+
+## GIFs
+
+Send one validated local GIF:
+
+```bash
+panda discord gif send --channel <parentChannelId> --connector <connectorKey> \
+  --file ./reaction.gif --caption "Mood"
+```
+
+Or send a direct public HTTPS GIF asset:
+
+```bash
+panda discord gif send --channel <parentChannelId> --connector <connectorKey> \
+  --url https://cdn.example/reaction.gif
+```
+
+Exactly one source is required. Local files must be at most 10 MiB and carry a `GIF87a` or `GIF89a` signature. Remote downloads use a 20-second timeout, at most three redirects, HTTPS at every hop, DNS pinning and private-network blocking, a 10 MiB limit, compatible MIME validation, and the same GIF signature check. Remote bytes are copied into the agent media root; the source URL is not persisted.
+
+URLs must point directly to GIF bytes. Provider search, Tenor/Klipy-style result pages, webpage scraping, and a durable GIF/sticker library are intentionally not supported.
 
 ## Run workers
 

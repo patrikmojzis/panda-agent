@@ -21,6 +21,7 @@ import type {
     ChannelActionKind,
     ChannelActionRecord,
     ChannelActionStatus,
+    DiscordStickerSendActionPayload,
     TelegramDeleteActionPayload,
     TelegramEditActionPayload,
     TelegramPinActionPayload,
@@ -45,6 +46,7 @@ function parseKind(value: unknown): ChannelActionKind {
     || value === "telegram_pin"
     || value === "telegram_unpin"
     || value === "telegram_sticker_send"
+    || value === "discord_sticker_send"
   ) {
     return value;
   }
@@ -221,6 +223,24 @@ function parseTelegramStickerSendPayload(value: unknown): TelegramStickerSendAct
   throw new Error(`Channel action telegram_sticker_send payload sticker type is invalid: ${String(sticker.type)}.`);
 }
 
+function parseDiscordStickerSendPayload(value: unknown): DiscordStickerSendActionPayload {
+  const kind = "discord_sticker_send";
+  const payload = readPayloadRecord(kind, value);
+  if (!Array.isArray(payload.stickerIds) || payload.stickerIds.length < 1 || payload.stickerIds.length > 3) {
+    throw new Error("Channel action discord_sticker_send payload sticker ids must contain 1-3 entries.");
+  }
+  const threadId = readOptionalPayloadString(kind, payload.threadId, "thread id");
+  const guildId = readOptionalPayloadString(kind, payload.guildId, "guild id");
+  const replyToMessageId = readOptionalPayloadString(kind, payload.replyToMessageId, "reply message id");
+  return {
+    parentChannelId: readRequiredPayloadString(kind, payload.parentChannelId, "parent channel id"),
+    ...(threadId ? {threadId} : {}),
+    ...(guildId ? {guildId} : {}),
+    ...(replyToMessageId ? {replyToMessageId} : {}),
+    stickerIds: payload.stickerIds.map((id) => readRequiredPayloadString(kind, id, "sticker id")),
+  };
+}
+
 function requireRecordKind<K extends ChannelActionKind>(
   record: ChannelActionRecord,
   kind: K,
@@ -291,6 +311,14 @@ function parseRecord(row: Record<string, unknown>): ChannelActionRecord {
       ...common,
       kind,
       payload: parseTelegramStickerSendPayload(row.payload),
+    };
+  }
+
+  if (kind === "discord_sticker_send") {
+    return {
+      ...common,
+      kind,
+      payload: parseDiscordStickerSendPayload(row.payload),
     };
   }
 

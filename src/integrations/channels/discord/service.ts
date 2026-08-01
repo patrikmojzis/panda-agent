@@ -1,6 +1,8 @@
 import type {Pool} from "pg";
 
 import {FileSystemMediaStore} from "../../../domain/channels/media-store.js";
+import {ChannelActionWorker} from "../../../domain/channels/actions/worker.js";
+import {PostgresChannelActionStore} from "../../../domain/channels/actions/postgres.js";
 import {ChannelOutboundDeliveryWorker} from "../../../domain/channels/deliveries/worker.js";
 import {PostgresOutboundDeliveryStore} from "../../../domain/channels/deliveries/postgres.js";
 import type {ChannelOutboundAdapter} from "../../../domain/channels/outbound.js";
@@ -38,8 +40,21 @@ import {
   type DiscordBoundMessageHandler,
   ingestDiscordMessageCreate,
 } from "./message-ingestion.js";
-import {downloadDiscordSupportedAttachments, type DiscordAttachmentDownloadResult} from "./media.js";
+import {
+  downloadDiscordSupportedAttachments,
+  downloadDiscordSupportedEmbeds,
+  downloadDiscordSupportedStickers,
+  type DiscordAttachmentDownloadResult,
+} from "./media.js";
 import {createDiscordOutboundAdapter} from "./outbound.js";
+import {sendDiscordStickerAction} from "./stickers.js";
+import {
+  startConnectorWorkerNotificationListener,
+  startConnectorWorkerRuntime,
+  stopConnectorWorkerRuntime,
+  type ConnectorWorkerRuntimeHandle,
+  type ConnectorWorkerRuntimeListener,
+} from "../worker-runtime.js";
 
 const DISCORD_POOL_MAX_FALLBACK = 5;
 
@@ -67,6 +82,7 @@ export interface DiscordWorkerStores {
   connectorLeases: PostgresConnectorLeaseRepo;
   connectorStore: PostgresConnectorAccountStore;
   conversationRepo: ConversationRepo;
+  channelActions: PostgresChannelActionStore;
   outboundDeliveries: PostgresOutboundDeliveryStore;
   mediaStore: FileSystemMediaStore;
   pool: DiscordPostgresPool;
@@ -83,7 +99,10 @@ export interface DiscordServiceGateway {
 export interface DiscordServiceOutboundWorker {
   start(options?: {subscribeToNotifications?: boolean}): Promise<void>;
   stop(): Promise<void>;
+  triggerDrain(): Promise<void>;
 }
+
+export type DiscordServiceActionWorker = DiscordServiceOutboundWorker;
 
 export interface DiscordServiceDependencies {
   acquireLease?: (options: AcquireManagedConnectorLeaseOptions) => Promise<ManagedConnectorLease>;
@@ -91,6 +110,12 @@ export interface DiscordServiceDependencies {
     botToken: string;
     client: Pick<DiscordWorkerRestClient, "getChannelMetadata">;
   }) => DiscordChannelResolver;
+  createActionWorker?: (options: {
+    botToken: string;
+    client: Pick<DiscordWorkerRestClient, "createMessage">;
+    connectorKey: string;
+    store: PostgresChannelActionStore;
+  }) => DiscordServiceActionWorker;
   createGateway?: (options: DiscordGatewayClientOptions) => DiscordServiceGateway;
   createOutboundWorker?: (options: {
     adapter: ChannelOutboundAdapter;
@@ -100,6 +125,12 @@ export interface DiscordServiceDependencies {
   createPool?: (input: DiscordServicePoolFactoryInput) => DiscordPostgresPool;
   createRestClient?: () => DiscordWorkerRestClient;
   createStores?: (pool: DiscordPostgresPool) => DiscordWorkerStores;
+  startNotificationListener?: (options: {
+    actionWorker: DiscordServiceActionWorker;
+    connectorKey: string;
+    outboundWorker: DiscordServiceOutboundWorker;
+    pool: DiscordPostgresPool;
+  }) => Promise<ConnectorWorkerRuntimeListener>;
   observePool?: (input: {
     applicationName: string;
     connectorKey?: string;
@@ -163,6 +194,7 @@ function createDefaultStores(pool: DiscordPostgresPool, dataDir: string): Discor
     connectorLeases: new PostgresConnectorLeaseRepo({pool}),
     connectorStore: new PostgresConnectorAccountStore({pool}),
     conversationRepo: new ConversationRepo({pool}),
+    channelActions: new PostgresChannelActionStore({pool}),
     outboundDeliveries: new PostgresOutboundDeliveryStore({pool}),
     mediaStore: new FileSystemMediaStore({
       rootDir: dataDir,
@@ -183,6 +215,32 @@ function createDefaultOutboundWorker(options: {
     adapter: options.adapter,
     connectorKey: options.connectorKey,
     store: options.store,
+  });
+}
+
+function createDefaultActionWorker(options: {
+  botToken: string;
+  client: Pick<DiscordWorkerRestClient, "createMessage">;
+  connectorKey: string;
+  store: PostgresChannelActionStore;
+  onError: (error: unknown, actionId?: string) => void;
+}): DiscordServiceActionWorker {
+  return new ChannelActionWorker({
+    store: options.store,
+    lookup: {
+      channel: DISCORD_SOURCE,
+      connectorKey: options.connectorKey,
+    },
+    dispatch: async (action) => {
+      if (action.kind !== "discord_sticker_send") {
+        throw new Error(`Unsupported Discord channel action ${action.kind}.`);
+      }
+      await sendDiscordStickerAction(action.payload, {
+        botToken: options.botToken,
+        client: options.client,
+      });
+    },
+    onError: options.onError,
   });
 }
 
@@ -231,8 +289,7 @@ export class DiscordService {
   private readonly poolMaxFallback?: number;
   private botTokenForRedaction: string | null = null;
   private gateway: DiscordServiceGateway | null = null;
-  private lease: ManagedConnectorLease | null = null;
-  private outboundWorker: DiscordServiceOutboundWorker | null = null;
+  private workerRuntime: ConnectorWorkerRuntimeHandle<DiscordServiceOutboundWorker, DiscordServiceActionWorker> | null = null;
   private poolObserver: PostgresPoolObserver | null = null;
   private runStopPromise: Promise<void> | null = null;
   private resolveRunStop: (() => void) | null = null;
@@ -322,6 +379,7 @@ export class DiscordService {
       stores.sessionStore,
       stores.threadStore,
       stores.conversationRepo,
+      stores.channelActions,
       stores.outboundDeliveries,
       stores.runtimeRequests,
       stores.connectorLeases,
@@ -405,6 +463,55 @@ export class DiscordService {
     });
   }
 
+  private createActionWorker(input: {
+    botToken: string;
+    connectorKey: string;
+    restClient: Pick<DiscordWorkerRestClient, "createMessage">;
+    stores: DiscordWorkerStores;
+  }): DiscordServiceActionWorker {
+    return (this.dependencies.createActionWorker ?? ((options) => createDefaultActionWorker({
+      ...options,
+      onError: (error, actionId) => {
+        this.log("channel_action_failed", {
+          connectorKey: input.connectorKey,
+          actionId: actionId ?? null,
+          message: errorMessage(error, this.botTokenForRedaction),
+        });
+      },
+    })))(
+      {
+        botToken: input.botToken,
+        client: input.restClient,
+        connectorKey: input.connectorKey,
+        store: input.stores.channelActions,
+      },
+    );
+  }
+
+  private startNotificationListener(input: {
+    actionWorker: DiscordServiceActionWorker;
+    connectorKey: string;
+    outboundWorker: DiscordServiceOutboundWorker;
+    stores: DiscordWorkerStores;
+  }): Promise<ConnectorWorkerRuntimeListener> {
+    if (this.dependencies.startNotificationListener) {
+      return this.dependencies.startNotificationListener({
+        actionWorker: input.actionWorker,
+        connectorKey: input.connectorKey,
+        outboundWorker: input.outboundWorker,
+        pool: input.stores.pool,
+      });
+    }
+    return startConnectorWorkerNotificationListener({
+      pool: input.stores.pool,
+      source: DISCORD_SOURCE,
+      connectorKey: input.connectorKey,
+      actionWorker: input.actionWorker,
+      outboundWorker: input.outboundWorker,
+      log: (event, payload) => this.log(event, payload),
+    });
+  }
+
   private async downloadSupportedAttachments(
     attachments: unknown,
     stores: DiscordWorkerStores,
@@ -463,6 +570,14 @@ export class DiscordService {
             input.stores,
             input.connectorKey,
           ),
+          downloadEmbeds: (embeds) => downloadDiscordSupportedEmbeds(embeds, {
+            connectorKey: input.connectorKey,
+            mediaStore: input.stores.mediaStore,
+          }),
+          downloadStickers: (stickerItems) => downloadDiscordSupportedStickers(stickerItems, {
+            connectorKey: input.connectorKey,
+            mediaStore: input.stores.mediaStore,
+          }),
           log: (event, eventPayload) => this.log(event, eventPayload),
           onBoundMessage,
           resolveParentChannelId: (actualChannelId) => channelResolver.resolveParentChannelId(actualChannelId),
@@ -472,7 +587,7 @@ export class DiscordService {
   }
 
   async start(): Promise<void> {
-    if (this.gateway || this.outboundWorker || this.lease) {
+    if (this.gateway || this.workerRuntime) {
       return;
     }
 
@@ -505,14 +620,36 @@ export class DiscordService {
         pool: stores.pool,
       });
 
-      this.lease = await this.acquireConnectorLease(stores, account.connectorKey);
-      this.outboundWorker = this.createOutboundWorker({
+      const outboundWorker = this.createOutboundWorker({
         botToken,
         connectorKey: account.connectorKey,
         restClient,
         stores,
       });
-      await this.outboundWorker.start();
+      const actionWorker = this.createActionWorker({
+        botToken,
+        connectorKey: account.connectorKey,
+        restClient,
+        stores,
+      });
+      this.workerRuntime = await startConnectorWorkerRuntime({
+        acquireLease: () => this.acquireConnectorLease(stores, account.connectorKey),
+        outboundWorker,
+        actionWorker,
+        startNotificationListener: () => this.startNotificationListener({
+          actionWorker,
+          connectorKey: account.connectorKey,
+          outboundWorker,
+          stores,
+        }),
+        onCleanupError: (step, cleanupError) => {
+          this.log("worker_cleanup_failed", {
+            accountKey: this.accountKey,
+            step: step.label,
+            message: errorMessage(cleanupError, this.botTokenForRedaction),
+          });
+        },
+      });
       this.gateway = this.createGateway({
         botToken,
         connectorKey: account.connectorKey,
@@ -542,13 +679,11 @@ export class DiscordService {
 
     this.stopping = true;
     const gateway = this.gateway;
-    const outboundWorker = this.outboundWorker;
-    const lease = this.lease;
+    const workerRuntime = this.workerRuntime;
     const stores = this.stores;
     const poolObserver = this.poolObserver;
     this.gateway = null;
-    this.outboundWorker = null;
-    this.lease = null;
+    this.workerRuntime = null;
     this.stores = null;
     this.poolObserver = null;
 
@@ -560,15 +695,15 @@ export class DiscordService {
         },
       },
       {
-        label: "outbound-worker",
+        label: "worker-runtime",
         run: async () => {
-          await outboundWorker?.stop();
-        },
-      },
-      {
-        label: "connector-lease",
-        run: async () => {
-          await lease?.release();
+          await stopConnectorWorkerRuntime(workerRuntime, (step, cleanupError) => {
+            this.log("worker_cleanup_failed", {
+              accountKey: this.accountKey,
+              step: step.label,
+              message: errorMessage(cleanupError, this.botTokenForRedaction),
+            });
+          });
         },
       },
       {

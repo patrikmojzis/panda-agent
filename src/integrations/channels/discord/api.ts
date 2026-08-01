@@ -29,6 +29,7 @@ export interface DiscordCreateMessageBody {
     parse: readonly string[];
   };
   message_reference?: DiscordMessageReferenceBody;
+  sticker_ids?: readonly string[];
 }
 
 export interface DiscordCreateMessageFile {
@@ -39,6 +40,16 @@ export interface DiscordCreateMessageFile {
 
 export interface DiscordCreatedMessage {
   id: string;
+}
+
+export interface DiscordGuildSticker {
+  id: string;
+  name: string;
+  description?: string;
+  tags: string;
+  formatType: 1 | 2 | 3 | 4;
+  available?: boolean;
+  guildId?: string;
 }
 
 export interface DiscordRestClient {
@@ -53,6 +64,7 @@ export interface DiscordWorkerRestClient extends DiscordRestClient {
     files?: readonly DiscordCreateMessageFile[],
   ): Promise<DiscordCreatedMessage>;
   getChannelMetadata(botToken: string, channelId: string): Promise<DiscordChannelMetadata>;
+  listGuildStickers(botToken: string, guildId: string): Promise<readonly DiscordGuildSticker[]>;
 }
 
 export interface DiscordApiFetchResponse {
@@ -176,6 +188,55 @@ function parseDiscordCreatedMessage(payload: unknown): DiscordCreatedMessage {
   };
 }
 
+function parseDiscordGuildSticker(payload: unknown, index: number): DiscordGuildSticker {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    throw new Error(`Discord guild sticker ${String(index + 1)} must be an object.`);
+  }
+  const record = payload as Record<string, unknown>;
+  const formatType = record.format_type;
+  if (formatType !== 1 && formatType !== 2 && formatType !== 3 && formatType !== 4) {
+    throw new Error(`Discord guild sticker ${String(index + 1)} format is invalid.`);
+  }
+  const description = readOptionalDiscordStringField(record, "description", "sticker description");
+  const available = record.available;
+  if (available !== undefined && typeof available !== "boolean") {
+    throw new Error(`Discord guild sticker ${String(index + 1)} available flag must be a boolean.`);
+  }
+  const guildId = readOptionalDiscordStringField(record, "guild_id", "sticker guild id");
+  return {
+    id: readDiscordStringField(record, "id", "sticker id"),
+    name: readDiscordStringField(record, "name", "sticker name"),
+    tags: readDiscordStringField(record, "tags", "sticker tags"),
+    formatType,
+    ...(description !== undefined ? {description} : {}),
+    ...(available !== undefined ? {available} : {}),
+    ...(guildId !== undefined ? {guildId} : {}),
+  };
+}
+
+function parseDiscordGuildStickers(payload: unknown): readonly DiscordGuildSticker[] {
+  if (!Array.isArray(payload)) {
+    throw new Error("Discord guild sticker response must be an array.");
+  }
+  return payload.map(parseDiscordGuildSticker);
+}
+
+async function discordResponseError(response: DiscordApiFetchResponse, operation: string): Promise<Error> {
+  let details = "";
+  try {
+    const payload = await response.json();
+    if (typeof payload === "object" && payload !== null && !Array.isArray(payload)) {
+      const record = payload as Record<string, unknown>;
+      const code = typeof record.code === "number" || typeof record.code === "string" ? String(record.code) : undefined;
+      const message = typeof record.message === "string" ? record.message.trim().slice(0, 200) : undefined;
+      details = [code ? `code ${code}` : undefined, message].filter(Boolean).join(": ");
+    }
+  } catch {
+    // Keep the status-only error when Discord does not return JSON.
+  }
+  return new Error(`${operation}: Discord API returned ${response.status}${details ? ` (${details})` : ""}.`);
+}
+
 async function defaultDiscordApiFetch(url: string, init: DiscordApiFetchInit): Promise<DiscordApiFetchResponse> {
   return fetch(url, init);
 }
@@ -268,7 +329,7 @@ export function createDiscordRestClient(options: CreateDiscordRestClientOptions 
       }
 
       if (!response.ok) {
-        throw new Error(`Discord channel lookup failed: Discord API returned ${response.status}.`);
+        throw await discordResponseError(response, "Discord channel lookup failed");
       }
 
       let payload: unknown;
@@ -279,6 +340,29 @@ export function createDiscordRestClient(options: CreateDiscordRestClientOptions 
       }
 
       return parseDiscordChannelMetadata(payload);
+    },
+
+    async listGuildStickers(botToken: string, guildId: string): Promise<readonly DiscordGuildSticker[]> {
+      const normalizedGuildId = requireNonEmptyString(guildId, "Discord guild id must not be empty.");
+      let response: DiscordApiFetchResponse;
+      try {
+        response = await fetcher(`${apiBaseUrl}/guilds/${encodeURIComponent(normalizedGuildId)}/stickers`, {
+          method: "GET",
+          headers: discordAuthorizationHeaders(botToken),
+        });
+      } catch {
+        throw new Error("Discord guild sticker lookup failed: request failed.");
+      }
+      if (!response.ok) {
+        throw await discordResponseError(response, "Discord guild sticker lookup failed");
+      }
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        throw new Error("Discord guild sticker lookup failed: invalid JSON response from Discord API.");
+      }
+      return parseDiscordGuildStickers(payload);
     },
 
     async createMessage(
@@ -301,7 +385,7 @@ export function createDiscordRestClient(options: CreateDiscordRestClientOptions 
       }
 
       if (!response.ok) {
-        throw new Error(`Discord message send failed: Discord API returned ${response.status}.`);
+        throw await discordResponseError(response, "Discord message send failed");
       }
 
       let payload: unknown;

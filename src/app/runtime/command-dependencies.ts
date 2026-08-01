@@ -48,6 +48,8 @@ export interface DaemonChannelCommandDependenciesInput {
   channelActions: {
     enqueueAction<K extends ChannelActionKind>(input: ChannelActionInput<K>): Promise<ChannelActionRecord<K>>;
   };
+  discordStickers: RequiredCommandDependency<"discordStickers">;
+  discordGifs: RequiredCommandDependency<"discordGifs">;
   telegramStickers: RequiredCommandDependency<"telegramStickers">;
   email: RequiredCommandDependency<"email">;
 }
@@ -123,6 +125,8 @@ export function buildDaemonChannelCommandDependencies(
       listConversationBindings: (filter) => input.conversations.listConversationBindings(filter),
     },
     channelActions,
+    discordStickers: input.discordStickers,
+    discordGifs: input.discordGifs,
     telegramStickers: input.telegramStickers,
     email: input.email,
   };

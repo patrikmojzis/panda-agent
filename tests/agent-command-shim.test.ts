@@ -131,7 +131,14 @@ import {
   telegramStickerSetSaveCommandDescriptor,
   telegramStickerSetShowCommandDescriptor,
 } from "../src/integrations/channels/telegram/sticker-commands.js";
-import {createDiscordChannelListCommand, createDiscordHistoryCommand, createDiscordSendCommand} from "../src/integrations/channels/discord/commands.js";
+import {
+  createDiscordChannelListCommand,
+  createDiscordGifSendCommand,
+  createDiscordHistoryCommand,
+  createDiscordSendCommand,
+  createDiscordStickerListCommand,
+  createDiscordStickerSendCommand,
+} from "../src/integrations/channels/discord/commands.js";
 import {createWhatsAppChatListCommand, createWhatsAppHistoryCommand, createWhatsAppSendCommand} from "../src/integrations/channels/whatsapp/commands.js";
 import {createVentSendCommand} from "../src/integrations/panda-trace/vent-commands.js";
 import {
@@ -2258,6 +2265,38 @@ describe("agent command shim", () => {
             conversations: store,
             messages: store,
             deliveries: store,
+          }),
+          createDiscordStickerListCommand({
+            conversations: store,
+            stickers: {
+              listGuildStickersForChannel: vi.fn(async () => ({
+                guildId: "323456789012345678",
+                stickers: [{
+                  id: "723456789012345678",
+                  name: "party-panda",
+                  description: "Party panda",
+                  tags: "party,panda",
+                  formatType: 1 as const,
+                  available: true,
+                }],
+              })),
+            },
+          }),
+          createDiscordStickerSendCommand(store),
+          createDiscordGifSendCommand({
+            enqueueDelivery: (input) => store.enqueueDelivery(input),
+            listConversationBindings: (filter) => store.listConversationBindings(filter),
+          }, {
+            async resolveReadablePath({file}) {
+              return {path: file.path, displayPath: file.path};
+            },
+          }, {
+            async validateLocalFile(filePath) {
+              return {path: filePath, filename: path.basename(filePath), sizeBytes: 9};
+            },
+            async downloadRemoteGif() {
+              return {path: "/safe/remote.gif", filename: "remote.gif", sizeBytes: 9};
+            },
           }),
           createDiscordSendCommand({
             enqueueDelivery: (input) => store.enqueueDelivery(input),
@@ -7001,6 +7040,54 @@ printf '{"ok":true,"output":%s}\\n' "$body"
         connectorKey: "discord-main",
         conversationId: "123456789012345678",
       },
+    });
+  });
+
+  it("executes Discord sticker list/send and GIF send through native args", async () => {
+    const server = await startWatchServer();
+
+    const listed = await execFileAsync(shimPath, [
+      "discord", "sticker", "list",
+      "--channel", "123456789012345678",
+      "--connector", "discord-main",
+    ], {env: shimEnv(server)});
+    expect(JSON.parse(listed.stdout)).toMatchObject({
+      ok: true,
+      guildId: "323456789012345678",
+      count: 1,
+      stickers: [{id: "723456789012345678", format: "png"}],
+    });
+
+    const sent = await execFileAsync(shimPath, [
+      "discord", "sticker", "send",
+      "--channel", "123456789012345678",
+      "--connector", "discord-main",
+      "--sticker", "723456789012345678",
+      "--sticker", "823456789012345678",
+      "--thread", "223456789012345678",
+      "--guild", "323456789012345678",
+      "--reply-to-message-id", "423456789012345678",
+    ], {env: shimEnv(server)});
+    expect(JSON.parse(sent.stdout)).toEqual({
+      ok: true,
+      status: "queued",
+      actionId: "action-1",
+      stickerCount: 2,
+    });
+
+    const gif = await execFileAsync(shimPath, [
+      "discord", "gif", "send",
+      "--channel", "123456789012345678",
+      "--connector", "discord-main",
+      "--url", "https://cdn.example/reaction.gif",
+      "--caption", "Mood",
+    ], {env: shimEnv(server)});
+    expect(JSON.parse(gif.stdout)).toEqual({
+      ok: true,
+      status: "queued",
+      deliveryId: "delivery-outbound",
+      source: "remote",
+      sizeBytes: 9,
     });
   });
 

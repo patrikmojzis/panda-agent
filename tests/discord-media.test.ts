@@ -4,6 +4,8 @@ import type {WriteMediaInput} from "../src/domain/channels/media-store.js";
 import {
   DISCORD_ATTACHMENT_DOWNLOAD_LIMIT_BYTES,
   downloadDiscordSupportedAttachments,
+  downloadDiscordSupportedEmbeds,
+  downloadDiscordSupportedStickers,
 } from "../src/integrations/channels/discord/media.js";
 
 function createMediaStore() {
@@ -263,6 +265,142 @@ describe("Discord inbound attachment downloads", () => {
       reason: "Discord attachment download failed.",
     })]);
     expect(JSON.stringify(result)).not.toContain(privateUrl);
+    expect(mediaStore.writeMedia).not.toHaveBeenCalled();
+  });
+});
+
+describe("Discord inbound embed and sticker media", () => {
+  it("downloads one trusted Discord-proxied GIF embed without persisting source URLs", async () => {
+    const mediaStore = createMediaStore();
+    const privateUrl = "https://klipy.example/private-page";
+    const proxyUrl = "https://media.discordapp.net/external/private-preview.gif";
+    const fetchImpl = vi.fn(async () => new Response(Buffer.from("GIF89a"), {
+      headers: {"content-type": "image/gif", "content-length": "6"},
+    }));
+
+    const result = await downloadDiscordSupportedEmbeds([{
+      type: "gifv",
+      title: "Reaction",
+      provider: {name: "Klipy", url: privateUrl},
+      video: {
+        url: privateUrl,
+        proxy_url: proxyUrl,
+        content_type: "image/gif",
+        width: 320,
+        height: 240,
+      },
+    }], {connectorKey: "bot-1", mediaStore, fetchImpl});
+
+    expect(result.summaries).toEqual([{
+      type: "gifv",
+      title: "Reaction",
+      providerName: "Klipy",
+      media: [{
+        kind: "video",
+        contentType: "image/gif",
+        width: 320,
+        height: 240,
+        status: "downloaded",
+      }],
+    }]);
+    expect(result.media).toHaveLength(1);
+    expect(fetchImpl).toHaveBeenCalledWith(proxyUrl, expect.objectContaining({
+      redirect: "error",
+      signal: expect.any(AbortSignal),
+    }));
+    expect(mediaStore.writeMedia).toHaveBeenCalledWith(expect.objectContaining({
+      mimeType: "image/gif",
+      metadata: {
+        discordMediaKind: "embed",
+        discordEmbedIndex: 0,
+        discordEmbedType: "gifv",
+      },
+    }));
+    expect(JSON.stringify(result)).not.toContain(privateUrl);
+    expect(JSON.stringify(result)).not.toContain(proxyUrl);
+  });
+
+  it("keeps untrusted embed media as explicit metadata without fetching it", async () => {
+    const mediaStore = createMediaStore();
+    const fetchImpl = vi.fn();
+    const result = await downloadDiscordSupportedEmbeds([{
+      type: "image",
+      image: {url: "https://example.invalid/private.gif", content_type: "image/gif"},
+    }], {connectorKey: "bot-1", mediaStore, fetchImpl});
+
+    expect(result).toEqual({
+      media: [],
+      summaries: [{
+        type: "image",
+        media: [{
+          kind: "image",
+          contentType: "image/gif",
+          status: "metadata_only",
+          reason: "untrusted_url",
+        }],
+      }],
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("redacts Discord media URLs from embed text and skips empty visual candidates", async () => {
+    const mediaStore = createMediaStore();
+    const proxyUrl = "https://media.discordapp.net/external/safe.gif";
+    const result = await downloadDiscordSupportedEmbeds([{
+      type: "gifv",
+      title: "Preview https://cdn.discordapp.com/attachments/private.gif?token=secret",
+      video: {width: 320},
+      image: {proxy_url: proxyUrl, content_type: "image/gif"},
+    }], {
+      connectorKey: "bot-1",
+      mediaStore,
+      fetchImpl: vi.fn(async () => new Response("GIF89a", {headers: {"content-type": "image/gif"}})),
+    });
+
+    expect(result.summaries[0]).toMatchObject({
+      title: "Preview [discord-media]",
+      media: [{kind: "image", status: "downloaded"}],
+    });
+    expect(JSON.stringify(result.summaries)).not.toContain("discordapp.com");
+  });
+
+  it("downloads PNG and GIF stickers while keeping Lottie metadata-only", async () => {
+    const mediaStore = createMediaStore();
+    const fetchImpl = vi.fn(async (url: string) => new Response(
+      Buffer.from(url.endsWith(".gif") ? "GIF89a" : "png"),
+      {headers: {"content-type": url.endsWith(".gif") ? "image/gif" : "image/png"}},
+    ));
+    const result = await downloadDiscordSupportedStickers([
+      {id: "1", name: "Static", format_type: 1},
+      {id: "2", name: "Animated", format_type: 4},
+      {id: "3", name: "Lottie", format_type: 3},
+    ], {connectorKey: "bot-1", mediaStore, fetchImpl});
+
+    expect(result.media).toHaveLength(2);
+    expect(result.summaries).toEqual([
+      {id: "1", name: "Static", format: "png", status: "downloaded"},
+      {id: "2", name: "Animated", format: "gif", status: "downloaded"},
+      {id: "3", name: "Lottie", format: "lottie", status: "unsupported", reason: "unsupported_format"},
+    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("marks Discord media with invalid response MIME as unsupported", async () => {
+    const mediaStore = createMediaStore();
+    const result = await downloadDiscordSupportedEmbeds([{
+      type: "gifv",
+      video: {proxy_url: "https://media.discordapp.net/external/not-media", content_type: "image/gif"},
+    }], {
+      connectorKey: "bot-1",
+      mediaStore,
+      fetchImpl: vi.fn(async () => new Response("<html>", {headers: {"content-type": "text/html"}})),
+    });
+
+    expect(result.media).toEqual([]);
+    expect(result.summaries[0]?.media[0]).toMatchObject({
+      status: "unsupported",
+      reason: "invalid_content_type",
+    });
     expect(mediaStore.writeMedia).not.toHaveBeenCalled();
   });
 });

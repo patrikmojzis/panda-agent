@@ -1,10 +1,21 @@
 import type {MediaDescriptor} from "../../../domain/channels/types.js";
-import type {DiscordMessageRequestPayload, DiscordAttachmentSummary} from "../../../domain/threads/requests/types.js";
+import type {
+  DiscordMessageRequestPayload,
+  DiscordAttachmentSummary,
+  DiscordEmbedSummary,
+  DiscordStickerSummary,
+} from "../../../domain/threads/requests/types.js";
 import type {ConversationBinding, ConversationLookup} from "../../../domain/sessions/conversations/types.js";
 import type {JsonObject} from "../../../lib/json.js";
 import {firstNonEmptyString, requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
 import {DISCORD_SOURCE} from "./config.js";
-import type {DiscordAttachmentDownloadResult} from "./media.js";
+import {
+  readDiscordEmbedSummaries,
+  readDiscordStickerSummaries,
+  type DiscordAttachmentDownloadResult,
+  type DiscordEmbedDownloadResult,
+  type DiscordStickerDownloadResult,
+} from "./media.js";
 
 export interface DiscordMessageAuthorPayload {
   id?: unknown;
@@ -36,6 +47,8 @@ export interface DiscordMessageCreatePayload {
   content?: unknown;
   timestamp?: unknown;
   attachments?: unknown;
+  embeds?: unknown;
+  sticker_items?: unknown;
   message_reference?: unknown;
   [key: string]: unknown;
 }
@@ -74,6 +87,8 @@ export interface IngestDiscordMessageCreateOptions {
   connectorKey: string;
   conversationRepo: DiscordConversationBindingReader;
   downloadAttachments?: (attachments: unknown) => Promise<DiscordAttachmentDownloadResult>;
+  downloadEmbeds?: (embeds: unknown) => Promise<DiscordEmbedDownloadResult>;
+  downloadStickers?: (stickerItems: unknown) => Promise<DiscordStickerDownloadResult>;
   log: (event: string, payload: Record<string, unknown>) => void;
   onBoundMessage: DiscordBoundMessageHandler;
   resolveParentChannelId(actualChannelId: string): Promise<DiscordParentChannelResolution | null>;
@@ -210,10 +225,12 @@ function buildDeliveryContext(
 
 function buildRequestPayload(input: {
   attachmentSummaries: readonly DiscordAttachmentSummary[];
+  embedSummaries: readonly DiscordEmbedSummary[];
   externalActorId: string;
   media: readonly MediaDescriptor[];
   payload: DiscordMessageCreatePayload;
   route: DiscordMessageRouteEnvelope;
+  stickerSummaries: readonly DiscordStickerSummary[];
 }): DiscordMessageRequestPayload {
   const author = input.payload.author;
   const safeAuthor = typeof author === "object" && author !== null && !Array.isArray(author)
@@ -234,6 +251,8 @@ function buildRequestPayload(input: {
     externalMessageId: input.route.externalMessageId,
     actualChannelId: input.route.actualChannelId,
     attachmentSummaries: input.attachmentSummaries,
+    embedSummaries: input.embedSummaries,
+    stickerSummaries: input.stickerSummaries,
     media: input.media,
     ...(sentAt !== undefined ? {sentAt} : {}),
     ...(input.route.guildId !== undefined ? {guildId: input.route.guildId} : {}),
@@ -282,6 +301,40 @@ async function downloadBoundAttachments(
   } catch {
     logRouteDrop(options.log, "media_download_failed", route, "attachment_download_failed");
     return {media: [], unavailable: []};
+  }
+}
+
+async function downloadBoundEmbeds(
+  embeds: unknown,
+  summaries: readonly DiscordEmbedSummary[],
+  route: DiscordMessageRouteEnvelope,
+  options: IngestDiscordMessageCreateOptions,
+): Promise<DiscordEmbedDownloadResult> {
+  if (!options.downloadEmbeds || summaries.length === 0) {
+    return {media: [], summaries};
+  }
+  try {
+    return await options.downloadEmbeds(embeds);
+  } catch {
+    logRouteDrop(options.log, "media_download_failed", route, "embed_download_failed");
+    return {media: [], summaries};
+  }
+}
+
+async function downloadBoundStickers(
+  stickerItems: unknown,
+  summaries: readonly DiscordStickerSummary[],
+  route: DiscordMessageRouteEnvelope,
+  options: IngestDiscordMessageCreateOptions,
+): Promise<DiscordStickerDownloadResult> {
+  if (!options.downloadStickers || summaries.length === 0) {
+    return {media: [], summaries};
+  }
+  try {
+    return await options.downloadStickers(stickerItems);
+  } catch {
+    logRouteDrop(options.log, "media_download_failed", route, "sticker_download_failed");
+    return {media: [], summaries};
   }
 }
 
@@ -368,19 +421,25 @@ export async function ingestDiscordMessageCreate(
   }
 
   const attachmentSummaries = readAttachmentSummaries(payload.attachments);
+  const embedSummaries = readDiscordEmbedSummaries(payload.embeds);
+  const stickerSummaries = readDiscordStickerSummaries(payload.sticker_items);
   const text = trimToUndefined(payload.content);
-  if (!text && attachmentSummaries.length === 0) {
+  if (!text && attachmentSummaries.length === 0 && embedSummaries.length === 0 && stickerSummaries.length === 0) {
     logRouteDrop(options.log, "message_dropped", route, "unsupported_message_shape");
     return {status: "dropped", reason: "unsupported_message_shape"};
   }
 
   const mediaDownload = await downloadBoundAttachments(payload.attachments, attachmentSummaries, route, options);
+  const embedDownload = await downloadBoundEmbeds(payload.embeds, embedSummaries, route, options);
+  const stickerDownload = await downloadBoundStickers(payload.sticker_items, stickerSummaries, route, options);
   const requestPayload = buildRequestPayload({
     attachmentSummaries,
+    embedSummaries: embedDownload.summaries,
     externalActorId,
-    media: mediaDownload.media,
+    media: [...mediaDownload.media, ...embedDownload.media, ...stickerDownload.media],
     payload,
     route,
+    stickerSummaries: stickerDownload.summaries,
   });
 
   await options.onBoundMessage({

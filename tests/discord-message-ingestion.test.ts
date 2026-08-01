@@ -52,6 +52,8 @@ describe("Discord message ingestion privacy preflight", () => {
     const log = vi.fn();
     const onBoundMessage = vi.fn();
     const downloadAttachments = vi.fn();
+    const downloadEmbeds = vi.fn();
+    const downloadStickers = vi.fn();
     const getConversationBinding = vi.fn(async () => null);
     const payload = messagePayload({
       channel_id: "thread-1",
@@ -68,6 +70,8 @@ describe("Discord message ingestion privacy preflight", () => {
       connectorKey: "bot-1",
       conversationRepo: {getConversationBinding},
       downloadAttachments,
+      downloadEmbeds,
+      downloadStickers,
       log,
       onBoundMessage,
       resolveParentChannelId: vi.fn(async () => ({
@@ -85,6 +89,8 @@ describe("Discord message ingestion privacy preflight", () => {
     });
     expect(onBoundMessage).not.toHaveBeenCalled();
     expect(downloadAttachments).not.toHaveBeenCalled();
+    expect(downloadEmbeds).not.toHaveBeenCalled();
+    expect(downloadStickers).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith("message_dropped", expect.objectContaining({
       reason: "unbound_conversation",
       connectorKey: "bot-1",
@@ -168,6 +174,12 @@ describe("Discord message ingestion privacy preflight", () => {
           contentType: "image/png",
           sizeBytes: 123,
         }],
+        embedSummaries: [{
+          type: "unknown",
+          title: "private embed",
+          media: [],
+        }],
+        stickerSummaries: [],
       }),
       route: expect.objectContaining({
         source: "discord",
@@ -185,7 +197,7 @@ describe("Discord message ingestion privacy preflight", () => {
     expect(callbackPayload).not.toContain("payload");
     expect(callbackPayload).not.toContain("url");
     expect(callbackPayload).not.toContain("proxy_" + "url");
-    expect(callbackPayload).not.toContain("private embed");
+    expect(callbackPayload).toContain("private embed");
   });
 
   it("ignores self-authored messages before resolving parents or checking bindings", async () => {
@@ -320,7 +332,7 @@ describe("Discord message ingestion privacy preflight", () => {
     expect(onBoundMessage).not.toHaveBeenCalled();
   });
 
-  it("drops embed-only unsupported shapes after binding using only safe route logs", async () => {
+  it("queues embed-only messages after binding without leaking embed content to route logs", async () => {
     const log = vi.fn();
     const onBoundMessage = vi.fn();
 
@@ -337,12 +349,11 @@ describe("Discord message ingestion privacy preflight", () => {
       resolveParentChannelId: vi.fn(async () => ({parentChannelId: "channel-1"})),
     });
 
-    expect(result).toEqual({status: "dropped", reason: "unsupported_message_shape"});
-    expect(onBoundMessage).not.toHaveBeenCalled();
-    expect(log).toHaveBeenCalledWith("message_dropped", expect.objectContaining({
-      reason: "unsupported_message_shape",
-      externalConversationId: "channel-1",
-      externalMessageId: "message-1",
+    expect(result.status).toBe("bound");
+    expect(onBoundMessage).toHaveBeenCalledWith(expect.objectContaining({
+      requestPayload: expect.objectContaining({
+        embedSummaries: [{type: "unknown", title: "PRIVATE_EMBED_TITLE", media: []}],
+      }),
     }));
     expect(stringifyLogCalls(log)).not.toContain("PRIVATE_EMBED_TITLE");
   });

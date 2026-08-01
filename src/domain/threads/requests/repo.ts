@@ -230,6 +230,120 @@ function parseDiscordAttachmentSummaries(
   return value.map((entry, index) => parseDiscordAttachmentSummary(entry, `${label} ${index + 1}`));
 }
 
+function parseDiscordMediaStatus(
+  value: unknown,
+  label: string,
+): RuntimeRequestPayloadByKind["discord_message"]["embedSummaries"][number]["media"][number]["status"] {
+  if (value === "downloaded" || value === "metadata_only" || value === "unsupported" || value === "failed") {
+    return value;
+  }
+  throw new Error(`Runtime request ${label} is invalid.`);
+}
+
+function parseDiscordMediaReason(
+  value: unknown,
+  label: string,
+): RuntimeRequestPayloadByKind["discord_message"]["embedSummaries"][number]["media"][number]["reason"] {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (
+    value === "no_trusted_media"
+    || value === "untrusted_url"
+    || value === "unsupported_format"
+    || value === "invalid_content_type"
+    || value === "too_large"
+    || value === "download_failed"
+  ) {
+    return value;
+  }
+  throw new Error(`Runtime request ${label} is invalid.`);
+}
+
+function parseDiscordEmbedMediaSummary(
+  value: unknown,
+  label: string,
+): RuntimeRequestPayloadByKind["discord_message"]["embedSummaries"][number]["media"][number] {
+  const record = parseJsonObject(value, label);
+  const kind = parseRequiredString(record.kind, `${label} kind`);
+  if (kind !== "image" && kind !== "thumbnail" && kind !== "video") {
+    throw new Error(`Runtime request ${label} kind is invalid.`);
+  }
+  const width = parseOptionalNumber(record.width, `${label} width`);
+  const height = parseOptionalNumber(record.height, `${label} height`);
+  if ((width !== undefined && width < 0) || (height !== undefined && height < 0)) {
+    throw new Error(`Runtime request ${label} dimensions must not be negative.`);
+  }
+  const reason = parseDiscordMediaReason(record.reason, `${label} reason`);
+  return {
+    kind,
+    ...(parseOptionalString(record.contentType) !== undefined
+      ? {contentType: parseOptionalString(record.contentType)}
+      : {}),
+    ...(width !== undefined ? {width} : {}),
+    ...(height !== undefined ? {height} : {}),
+    status: parseDiscordMediaStatus(record.status, `${label} status`),
+    ...(reason !== undefined ? {reason} : {}),
+  };
+}
+
+function parseDiscordEmbedSummaries(
+  value: unknown,
+  label: string,
+): RuntimeRequestPayloadByKind["discord_message"]["embedSummaries"] {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`Runtime request ${label} must be an array.`);
+  }
+  return value.slice(0, 10).map((entry, index) => {
+    const entryLabel = `${label} ${index + 1}`;
+    const record = parseJsonObject(entry, entryLabel);
+    if (!Array.isArray(record.media)) {
+      throw new Error(`Runtime request ${entryLabel} media must be an array.`);
+    }
+    return {
+      type: parseRequiredString(record.type, `${entryLabel} type`),
+      title: parseOptionalString(record.title),
+      description: parseOptionalString(record.description),
+      providerName: parseOptionalString(record.providerName),
+      media: record.media.slice(0, 1).map((media, mediaIndex) => parseDiscordEmbedMediaSummary(
+        media,
+        `${entryLabel} media ${mediaIndex + 1}`,
+      )),
+    };
+  });
+}
+
+function parseDiscordStickerSummaries(
+  value: unknown,
+  label: string,
+): RuntimeRequestPayloadByKind["discord_message"]["stickerSummaries"] {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`Runtime request ${label} must be an array.`);
+  }
+  return value.slice(0, 3).map((entry, index) => {
+    const entryLabel = `${label} ${index + 1}`;
+    const record = parseJsonObject(entry, entryLabel);
+    const format = parseRequiredString(record.format, `${entryLabel} format`);
+    if (format !== "png" && format !== "apng" && format !== "lottie" && format !== "gif" && format !== "unknown") {
+      throw new Error(`Runtime request ${entryLabel} format is invalid.`);
+    }
+    const reason = parseDiscordMediaReason(record.reason, `${entryLabel} reason`);
+    return {
+      id: parseRequiredString(record.id, `${entryLabel} id`),
+      name: parseRequiredString(record.name, `${entryLabel} name`),
+      format,
+      status: parseDiscordMediaStatus(record.status, `${entryLabel} status`),
+      ...(reason !== undefined ? {reason} : {}),
+    };
+  });
+}
+
 function parsePathHints(value: unknown, label: string) {
   if (value === undefined || value === null) {
     return undefined;
@@ -431,6 +545,8 @@ function parsePayload<K extends RuntimeRequestKind>(
         externalMessageId: parseRequiredString(payload.externalMessageId, "Discord message id"),
         actualChannelId: parseRequiredString(payload.actualChannelId, "Discord actual channel id"),
         attachmentSummaries: parseDiscordAttachmentSummaries(payload.attachmentSummaries, "Discord attachment summaries"),
+        embedSummaries: parseDiscordEmbedSummaries(payload.embedSummaries, "Discord embed summaries"),
+        stickerSummaries: parseDiscordStickerSummaries(payload.stickerSummaries, "Discord sticker summaries"),
         media: parseOptionalMediaArray(payload.media, "Discord media"),
         guildId: parseOptionalString(payload.guildId),
         threadId: parseOptionalString(payload.threadId),

@@ -2,7 +2,12 @@ import type {MediaDescriptor, RememberedRoute} from "../../../domain/channels/ty
 import type {IdentityStore} from "../../../domain/identity/store.js";
 import type {SessionRouteRepo} from "../../../domain/sessions/routes/repo.js";
 import type {SessionStore} from "../../../domain/sessions/store.js";
-import type {DiscordAttachmentSummary, DiscordMessageRequestPayload} from "../../../domain/threads/requests/types.js";
+import type {
+  DiscordAttachmentSummary,
+  DiscordEmbedSummary,
+  DiscordMessageRequestPayload,
+  DiscordStickerSummary,
+} from "../../../domain/threads/requests/types.js";
 import type {ThreadRuntimeCoordinator} from "../../../domain/threads/runtime/coordinator.js";
 import type {ThreadRecord} from "../../../domain/threads/runtime/types.js";
 import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
@@ -101,6 +106,33 @@ function serializeAttachmentSummary(summary: DiscordAttachmentSummary): JsonObje
   };
 }
 
+function serializeEmbedSummary(summary: DiscordEmbedSummary): JsonObject {
+  return {
+    type: summary.type,
+    title: summary.title ?? null,
+    description: summary.description ?? null,
+    providerName: summary.providerName ?? null,
+    media: summary.media.map((item) => ({
+      kind: item.kind,
+      contentType: item.contentType ?? null,
+      width: item.width ?? null,
+      height: item.height ?? null,
+      status: item.status,
+      reason: item.reason ?? null,
+    })),
+  };
+}
+
+function serializeStickerSummary(summary: DiscordStickerSummary): JsonObject {
+  return {
+    id: summary.id,
+    name: summary.name,
+    format: summary.format,
+    status: summary.status,
+    reason: summary.reason ?? null,
+  };
+}
+
 function buildMetadata(
   payload: DiscordMessageRequestPayload,
   sentAt: string | undefined,
@@ -132,6 +164,8 @@ function buildMetadata(
         isBot: payload.authorIsBot ?? null,
       },
       attachments: payload.attachmentSummaries.map(serializeAttachmentSummary),
+      embeds: payload.embedSummaries.map(serializeEmbedSummary),
+      stickers: payload.stickerSummaries.map(serializeStickerSummary),
       media: media.map((descriptor) => serializeMediaDescriptor(descriptor)),
     },
   };
@@ -150,7 +184,13 @@ export async function handleDiscordMessageRequest(
     return {status: "dropped", reason: "unbound_conversation"};
   }
 
-  if (!(payload.text?.trim()) && payload.attachmentSummaries.length === 0 && payload.media.length === 0) {
+  if (
+    !(payload.text?.trim())
+    && payload.attachmentSummaries.length === 0
+    && payload.embedSummaries.length === 0
+    && payload.stickerSummaries.length === 0
+    && payload.media.length === 0
+  ) {
     return {status: "dropped", reason: "unsupported_message_shape"};
   }
 
@@ -180,6 +220,8 @@ export async function handleDiscordMessageRequest(
     authorIsBot: payload.authorIsBot,
     replyToMessageId: payload.replyToMessageId,
     attachments: payload.attachmentSummaries,
+    embeds: payload.embedSummaries,
+    stickers: payload.stickerSummaries,
     media: media.map((descriptor) => describeMediaDescriptor(descriptor)),
     body: payload.text,
   });

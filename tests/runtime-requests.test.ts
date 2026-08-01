@@ -21,6 +21,8 @@ function validDiscordPayload(overrides: Partial<DiscordMessageRequestPayload> = 
     actualChannelId: "channel-1",
     text: "hello",
     attachmentSummaries: [],
+    embedSummaries: [],
+    stickerSummaries: [],
     media: [],
     ...overrides,
   };
@@ -488,6 +490,7 @@ describe("RuntimeRequestRepo", () => {
 
     expect(request.kind).toBe("discord_message");
     expect(request.payload).toEqual({
+      identityId: undefined,
       connectorKey: "bot-1",
       sentAt: 1_768_000_000_000,
       externalConversationId: "channel-1",
@@ -500,6 +503,8 @@ describe("RuntimeRequestRepo", () => {
         contentType: "application/pdf",
         sizeBytes: 123,
       }],
+      embedSummaries: [],
+      stickerSummaries: [],
       media: [{
         id: "media-1",
         source: "discord",
@@ -562,6 +567,8 @@ describe("RuntimeRequestRepo", () => {
     ["message id", {externalMessageId: " "}, "Discord message id"],
     ["actual channel id", {actualChannelId: " "}, "Discord actual channel id"],
     ["attachment summaries", {attachmentSummaries: {}}, "Discord attachment summaries must be an array"],
+    ["embed summaries", {embedSummaries: {}}, "Discord embed summaries must be an array"],
+    ["sticker summaries", {stickerSummaries: "bad"}, "Discord sticker summaries must be an array"],
     ["negative attachment size", {attachmentSummaries: [{id: "attachment-1", sizeBytes: -1}]}, "Discord attachment summaries 1 size must not be negative"],
     ["non-finite attachment size", {attachmentSummaries: [{id: "attachment-1", sizeBytes: Number.POSITIVE_INFINITY}]}, "Discord attachment summaries 1 size must be a finite number"],
     ["media", {media: {}}, "Discord media must be an array"],

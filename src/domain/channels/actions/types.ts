@@ -44,6 +44,14 @@ export type TelegramStickerSendActionPayload = {
       };
 };
 
+export interface DiscordStickerSendActionPayload {
+  parentChannelId: string;
+  threadId?: string;
+  guildId?: string;
+  replyToMessageId?: string;
+  stickerIds: readonly string[];
+}
+
 export interface ChannelActionPayloadByKind {
   typing: ChannelTypingRequest;
   telegram_reaction: TelegramReactionActionPayload;
@@ -52,6 +60,7 @@ export interface ChannelActionPayloadByKind {
   telegram_pin: TelegramPinActionPayload;
   telegram_unpin: TelegramUnpinActionPayload;
   telegram_sticker_send: TelegramStickerSendActionPayload;
+  discord_sticker_send: DiscordStickerSendActionPayload;
 }
 
 export type ChannelActionKind = keyof ChannelActionPayloadByKind;
