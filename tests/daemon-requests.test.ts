@@ -190,6 +190,22 @@ function createRequestContext(input: {
       sessionStore: {
         getSession: input.getSession ?? vi.fn(async (sessionId: string) => createSession(sessionId, currentThreadId)),
       },
+      sessionCompaction: {
+        compactSession: vi.fn(async (sessionId: string) => ({
+          compacted: true,
+          sessionId,
+          threadId: currentThreadId,
+          tokensBefore: 100,
+          tokensAfter: 40,
+        })),
+        compactThread: vi.fn(async (threadId: string) => ({
+          compacted: true,
+          sessionId: "session-1",
+          threadId,
+          tokensBefore: 100,
+          tokensAfter: 40,
+        })),
+      },
       store: input.store ?? new TestThreadRuntimeStore(),
     },
     a2aBindings: {
@@ -615,6 +631,7 @@ describe("daemon request processor", () => {
         filename: "report.pdf",
         contentType: "application/pdf",
         sizeBytes: 456,
+        status: "metadata_only",
       }],
     }))).resolves.toEqual({
       status: "queued",
@@ -632,6 +649,9 @@ describe("daemon request processor", () => {
             filename: "report.pdf",
             contentType: "application/pdf",
             sizeBytes: 456,
+            status: "metadata_only",
+            reason: null,
+            httpStatus: null,
           }],
         }),
       }),
@@ -666,6 +686,7 @@ describe("daemon request processor", () => {
         filename: "image.png",
         contentType: "image/png",
         sizeBytes: 5,
+        status: "downloaded",
       }],
       media: [stagedMedia],
     }))).resolves.toEqual({
@@ -688,6 +709,9 @@ describe("daemon request processor", () => {
             filename: "image.png",
             contentType: "image/png",
             sizeBytes: 5,
+            status: "downloaded",
+            reason: null,
+            httpStatus: null,
           }],
           media: [expect.objectContaining({
             id: "media-1",

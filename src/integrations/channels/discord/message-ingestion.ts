@@ -173,6 +173,7 @@ function readAttachmentSummaries(value: unknown): readonly DiscordAttachmentSumm
       ...(filename !== undefined ? {filename} : {}),
       ...(contentType !== undefined ? {contentType} : {}),
       ...(size !== undefined ? {sizeBytes: size} : {}),
+      status: "metadata_only",
     });
   }
 
@@ -293,14 +294,22 @@ async function downloadBoundAttachments(
   options: IngestDiscordMessageCreateOptions,
 ): Promise<DiscordAttachmentDownloadResult> {
   if (!options.downloadAttachments || attachmentSummaries.length === 0) {
-    return {media: [], unavailable: []};
+    return {media: [], summaries: attachmentSummaries, unavailable: []};
   }
 
   try {
     return await options.downloadAttachments(attachments);
   } catch {
     logRouteDrop(options.log, "media_download_failed", route, "attachment_download_failed");
-    return {media: [], unavailable: []};
+    return {
+      media: [],
+      summaries: attachmentSummaries.map((summary) => ({
+        ...summary,
+        status: "failed",
+        reason: "download_failed",
+      })),
+      unavailable: [],
+    };
   }
 }
 
@@ -433,7 +442,7 @@ export async function ingestDiscordMessageCreate(
   const embedDownload = await downloadBoundEmbeds(payload.embeds, embedSummaries, route, options);
   const stickerDownload = await downloadBoundStickers(payload.sticker_items, stickerSummaries, route, options);
   const requestPayload = buildRequestPayload({
-    attachmentSummaries,
+    attachmentSummaries: mediaDownload.summaries,
     embedSummaries: embedDownload.summaries,
     externalActorId,
     media: [...mediaDownload.media, ...embedDownload.media, ...stickerDownload.media],

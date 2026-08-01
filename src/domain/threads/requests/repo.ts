@@ -43,6 +43,7 @@ const runtimeRequestKinds = [
   "reset_session",
   "abort_thread",
   "compact_thread",
+  "compact_session",
   "update_thread",
 ] as const satisfies readonly RuntimeRequestKind[];
 
@@ -192,9 +193,23 @@ function parseOptionalMediaArray(
   return parseMediaArray(value, label);
 }
 
+function mediaHasDiscordAttachmentId(
+  media: readonly RuntimeRequestPayloadByKind["discord_message"]["media"][number][],
+  attachmentId: string,
+): boolean {
+  return media.some((descriptor) => {
+    const metadata = descriptor.metadata;
+    return typeof metadata === "object"
+      && metadata !== null
+      && !Array.isArray(metadata)
+      && (metadata as Record<string, unknown>).discordAttachmentId === attachmentId;
+  });
+}
+
 function parseDiscordAttachmentSummary(
   value: unknown,
   label: string,
+  media: readonly RuntimeRequestPayloadByKind["discord_message"]["media"][number][],
 ): RuntimeRequestPayloadByKind["discord_message"]["attachmentSummaries"][number] {
   const record = parseJsonObject(value, label);
   const sizeBytes = Object.hasOwn(record, "sizeBytes")
@@ -204,11 +219,24 @@ function parseDiscordAttachmentSummary(
     throw new Error(`Runtime request ${label} size must not be negative.`);
   }
 
+  const id = parseRequiredString(record.id, `${label} id`);
+  const reason = parseDiscordMediaReason(record.reason, `${label} reason`);
+  const httpStatus = Object.hasOwn(record, "httpStatus") && record.httpStatus !== null
+    ? parseRequiredNumber(record.httpStatus, `${label} HTTP status`)
+    : undefined;
+  if (httpStatus !== undefined && (!Number.isInteger(httpStatus) || httpStatus < 100 || httpStatus > 599)) {
+    throw new Error(`Runtime request ${label} HTTP status is invalid.`);
+  }
   const summary = {
-    id: parseRequiredString(record.id, `${label} id`),
+    id,
     filename: parseOptionalString(record.filename),
     contentType: parseOptionalString(record.contentType),
     sizeBytes,
+    status: record.status === undefined || record.status === null
+      ? mediaHasDiscordAttachmentId(media, id) ? "downloaded" as const : "metadata_only" as const
+      : parseDiscordMediaStatus(record.status, `${label} status`),
+    reason,
+    httpStatus,
   };
 
   return {
@@ -216,18 +244,22 @@ function parseDiscordAttachmentSummary(
     ...(summary.filename !== undefined ? {filename: summary.filename} : {}),
     ...(summary.contentType !== undefined ? {contentType: summary.contentType} : {}),
     ...(summary.sizeBytes !== undefined ? {sizeBytes: summary.sizeBytes} : {}),
+    status: summary.status,
+    ...(summary.reason !== undefined ? {reason: summary.reason} : {}),
+    ...(summary.httpStatus !== undefined ? {httpStatus: summary.httpStatus} : {}),
   };
 }
 
 function parseDiscordAttachmentSummaries(
   value: unknown,
   label: string,
+  media: readonly RuntimeRequestPayloadByKind["discord_message"]["media"][number][],
 ): RuntimeRequestPayloadByKind["discord_message"]["attachmentSummaries"] {
   if (!Array.isArray(value)) {
     throw new Error(`Runtime request ${label} must be an array.`);
   }
 
-  return value.map((entry, index) => parseDiscordAttachmentSummary(entry, `${label} ${index + 1}`));
+  return value.map((entry, index) => parseDiscordAttachmentSummary(entry, `${label} ${index + 1}`, media));
 }
 
 function parseDiscordMediaStatus(
@@ -252,8 +284,12 @@ function parseDiscordMediaReason(
     || value === "untrusted_url"
     || value === "unsupported_format"
     || value === "invalid_content_type"
+    || value === "invalid_signature"
     || value === "too_large"
+    || value === "timeout"
+    || value === "http_error"
     || value === "download_failed"
+    || value === "storage_failed"
   ) {
     return value;
   }
@@ -535,7 +571,8 @@ function parsePayload<K extends RuntimeRequestKind>(
         pushName: parseOptionalString(payload.pushName),
       } as RuntimeRequestPayloadByKind[K];
 
-    case "discord_message":
+    case "discord_message": {
+      const media = parseOptionalMediaArray(payload.media, "Discord media");
       return {
         identityId,
         connectorKey: parseRequiredString(payload.connectorKey, "Discord connector key"),
@@ -544,10 +581,10 @@ function parsePayload<K extends RuntimeRequestKind>(
         externalActorId: parseRequiredString(payload.externalActorId, "Discord actor id"),
         externalMessageId: parseRequiredString(payload.externalMessageId, "Discord message id"),
         actualChannelId: parseRequiredString(payload.actualChannelId, "Discord actual channel id"),
-        attachmentSummaries: parseDiscordAttachmentSummaries(payload.attachmentSummaries, "Discord attachment summaries"),
+        attachmentSummaries: parseDiscordAttachmentSummaries(payload.attachmentSummaries, "Discord attachment summaries", media),
         embedSummaries: parseDiscordEmbedSummaries(payload.embedSummaries, "Discord embed summaries"),
         stickerSummaries: parseDiscordStickerSummaries(payload.stickerSummaries, "Discord sticker summaries"),
-        media: parseOptionalMediaArray(payload.media, "Discord media"),
+        media,
         guildId: parseOptionalString(payload.guildId),
         threadId: parseOptionalString(payload.threadId),
         parentChannelId: parseOptionalString(payload.parentChannelId),
@@ -559,6 +596,7 @@ function parsePayload<K extends RuntimeRequestKind>(
         replyToMessageId: parseOptionalString(payload.replyToMessageId),
         deliveryContext: parseOptionalJsonObject(payload.deliveryContext, "Discord delivery context"),
       } as RuntimeRequestPayloadByKind[K];
+    }
 
     case "tui_input":
       return {
@@ -650,7 +688,14 @@ function parsePayload<K extends RuntimeRequestKind>(
       return {
         identityId,
         threadId: parseRequiredString(payload.threadId, "thread id"),
-        customInstructions: parseRequiredString(payload.customInstructions, "compact instructions"),
+        customInstructions: parseOptionalString(payload.customInstructions) ?? "",
+      } as RuntimeRequestPayloadByKind[K];
+
+    case "compact_session":
+      return {
+        identityId,
+        sessionId: parseRequiredString(payload.sessionId, "session id"),
+        customInstructions: parseOptionalString(payload.customInstructions) ?? "",
       } as RuntimeRequestPayloadByKind[K];
 
     case "update_thread":

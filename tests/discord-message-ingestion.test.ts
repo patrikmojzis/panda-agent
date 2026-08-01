@@ -173,6 +173,7 @@ describe("Discord message ingestion privacy preflight", () => {
           filename: "private-file-name.png",
           contentType: "image/png",
           sizeBytes: 123,
+          status: "metadata_only",
         }],
         embedSummaries: [{
           type: "unknown",
@@ -387,6 +388,7 @@ describe("Discord message ingestion privacy preflight", () => {
         filename: "report.pdf",
         contentType: "application/pdf",
         sizeBytes: 456,
+        status: "metadata_only",
       }],
     });
     expect(callbackPayload).not.toHaveProperty("text");
@@ -407,10 +409,16 @@ describe("Discord message ingestion privacy preflight", () => {
     }];
     const downloadAttachments = vi.fn(async () => ({
       media,
+      summaries: [
+        {id: "attachment-1", filename: "image.png", contentType: "image/png", sizeBytes: 5, status: "downloaded" as const},
+        {id: "attachment-2", filename: "failed.png", contentType: "image/png", sizeBytes: 5, status: "failed" as const, reason: "download_failed" as const},
+      ],
       unavailable: [{
         id: "attachment-2",
         contentType: "image/png",
-        reason: "Discord attachment download failed.",
+        status: "failed" as const,
+        reason: "download_failed" as const,
+        attempts: [{candidate: "cdn" as const, reason: "download_failed" as const}],
       }],
     }));
     const onBoundMessage = vi.fn();
@@ -448,8 +456,8 @@ describe("Discord message ingestion privacy preflight", () => {
     expect(onBoundMessage).toHaveBeenCalledWith(expect.objectContaining({
       requestPayload: expect.objectContaining({
         attachmentSummaries: [
-          expect.objectContaining({id: "attachment-1"}),
-          expect.objectContaining({id: "attachment-2"}),
+          expect.objectContaining({id: "attachment-1", status: "downloaded"}),
+          expect.objectContaining({id: "attachment-2", status: "failed", reason: "download_failed"}),
         ],
         media,
       }),

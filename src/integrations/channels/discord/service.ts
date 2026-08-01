@@ -527,6 +527,12 @@ export class DiscordService {
           contentType: item.contentType ?? null,
           sizeBytes: item.sizeBytes ?? null,
           reason: item.reason,
+          httpStatus: item.httpStatus ?? null,
+          attempts: item.attempts.map((attempt) => ({
+            candidate: attempt.candidate,
+            reason: attempt.reason,
+            httpStatus: attempt.httpStatus ?? null,
+          })),
         });
       },
     });

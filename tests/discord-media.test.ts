@@ -8,6 +8,9 @@ import {
   downloadDiscordSupportedStickers,
 } from "../src/integrations/channels/discord/media.js";
 
+const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01]);
+const JPEG_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0x01]);
+
 function createMediaStore() {
   return {
     writeMedia: vi.fn(async (input: WriteMediaInput) => ({
@@ -29,16 +32,16 @@ describe("Discord inbound attachment downloads", () => {
     const mediaStore = createMediaStore();
     const cdnUrl = "https://cdn.discordapp.com/attachments/channel/attachment/private.png?ex=secret";
     const proxyUrl = "https://media.discordapp.net/attachments/channel/attachment/proxy.png?ex=secret";
-    const fetchImpl = vi.fn(async () => new Response(Buffer.from("image"), {
+    const fetchImpl = vi.fn(async () => new Response(PNG_BYTES, {
       status: 200,
-      headers: {"content-length": "5"},
+      headers: {"content-length": String(PNG_BYTES.byteLength), "content-type": "image/png"},
     }));
 
     const result = await downloadDiscordSupportedAttachments([{
       id: "attachment-1",
       filename: "../../private.png",
       content_type: "image/png",
-      size: 5,
+      size: PNG_BYTES.byteLength,
       url: cdnUrl,
       proxy_url: proxyUrl,
     }], {
@@ -49,14 +52,15 @@ describe("Discord inbound attachment downloads", () => {
 
     expect(result.media).toHaveLength(1);
     expect(result.unavailable).toEqual([]);
-    expect(fetchImpl).toHaveBeenCalledWith(cdnUrl, expect.objectContaining({
+    expect(fetchImpl).toHaveBeenCalledWith(proxyUrl, expect.objectContaining({
+      redirect: "error",
       signal: expect.any(AbortSignal),
     }));
     expect(mediaStore.writeMedia).toHaveBeenCalledWith(expect.objectContaining({
       source: "discord",
       connectorKey: "bot-1",
       mimeType: "image/png",
-      sizeBytes: 5,
+      sizeBytes: PNG_BYTES.byteLength,
       hintFilename: "../../private.png",
       metadata: {
         discordAttachmentId: "attachment-1",
@@ -71,16 +75,16 @@ describe("Discord inbound attachment downloads", () => {
   it("downloads proxy-only Discord attachments with normalized metadata aliases", async () => {
     const mediaStore = createMediaStore();
     const proxyUrl = "https://media.discordapp.net/attachments/channel/attachment/photo.jpg?ex=secret";
-    const fetchImpl = vi.fn(async () => new Response(Buffer.from("photo"), {
+    const fetchImpl = vi.fn(async () => new Response(JPEG_BYTES, {
       status: 200,
-      headers: {"content-length": "5"},
+      headers: {"content-length": String(JPEG_BYTES.byteLength), "content-type": "image/jpeg; charset=binary"},
     }));
 
     const result = await downloadDiscordSupportedAttachments([{
       id: "attachment-1",
       filename: "photo.jpg",
       contentType: "image/jpeg",
-      sizeBytes: 5,
+      sizeBytes: 999,
       proxy_url: proxyUrl,
     }], {
       connectorKey: "bot-1",
@@ -97,7 +101,7 @@ describe("Discord inbound attachment downloads", () => {
       source: "discord",
       connectorKey: "bot-1",
       mimeType: "image/jpeg",
-      sizeBytes: 5,
+      sizeBytes: JPEG_BYTES.byteLength,
       hintFilename: "photo.jpg",
       metadata: {
         discordAttachmentId: "attachment-1",
@@ -105,6 +109,152 @@ describe("Discord inbound attachment downloads", () => {
     }));
     expect(JSON.stringify(mediaStore.writeMedia.mock.calls[0]?.[0])).not.toContain(proxyUrl);
     expect(JSON.stringify(result)).not.toContain(proxyUrl);
+  });
+
+  it("falls back from a failed proxy to the trusted CDN URL", async () => {
+    const mediaStore = createMediaStore();
+    const proxyUrl = "https://media.discordapp.net/attachments/channel/attachment/photo.jpeg?proxy=secret";
+    const cdnUrl = "https://cdn.discordapp.com/attachments/channel/attachment/photo.jpeg?cdn=secret";
+    const fetchImpl = vi.fn(async (url: string) => url === proxyUrl
+      ? new Response("forbidden", {status: 403})
+      : new Response(JPEG_BYTES, {
+        status: 200,
+        headers: {"content-type": "image/jpeg", "content-length": String(JPEG_BYTES.byteLength)},
+      }));
+
+    const result = await downloadDiscordSupportedAttachments([{
+      id: "attachment-1",
+      filename: "photo.jpeg",
+      content_type: "image/jpeg",
+      size: 999,
+      proxy_url: proxyUrl,
+      url: cdnUrl,
+    }], {connectorKey: "bot-1", mediaStore, fetchImpl});
+
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([proxyUrl, cdnUrl]);
+    expect(result.media).toHaveLength(1);
+    expect(result.summaries).toEqual([expect.objectContaining({
+      id: "attachment-1",
+      sizeBytes: 999,
+      status: "downloaded",
+    })]);
+    expect(mediaStore.writeMedia).toHaveBeenCalledWith(expect.objectContaining({
+      mimeType: "image/jpeg",
+      sizeBytes: JPEG_BYTES.byteLength,
+    }));
+    expect(JSON.stringify(result)).not.toContain("secret");
+  });
+
+  it("accepts octet-stream JPEG bytes only when the signature matches", async () => {
+    const mediaStore = createMediaStore();
+    const fetchImpl = vi.fn(async () => new Response(JPEG_BYTES, {
+      status: 200,
+      headers: {"content-type": "application/octet-stream"},
+    }));
+
+    const result = await downloadDiscordSupportedAttachments([{
+      id: "attachment-1",
+      filename: "photo.jpeg",
+      content_type: "image/jpeg",
+      url: "https://cdn.discordapp.com/attachments/channel/attachment/photo.jpeg",
+    }], {connectorKey: "bot-1", mediaStore, fetchImpl});
+
+    expect(result.summaries).toEqual([expect.objectContaining({status: "downloaded"})]);
+    expect(mediaStore.writeMedia).toHaveBeenCalledWith(expect.objectContaining({mimeType: "image/jpeg"}));
+  });
+
+  it.each([
+    ["HTML content type", "text/html", JPEG_BYTES, "invalid_content_type"],
+    ["HTML bytes", "image/jpeg", Buffer.from("<html>not an image</html>"), "invalid_signature"],
+    ["wrong image signature", "image/png", JPEG_BYTES, "invalid_signature"],
+  ])("rejects %s without leaking its signed URL", async (_label, contentType, bytes, reason) => {
+    const mediaStore = createMediaStore();
+    const privateUrl = "https://cdn.discordapp.com/attachments/channel/attachment/private.jpeg?token=secret";
+    const result = await downloadDiscordSupportedAttachments([{
+      id: "attachment-1",
+      filename: "private.jpeg",
+      content_type: "image/jpeg",
+      url: privateUrl,
+    }], {
+      connectorKey: "bot-1",
+      mediaStore,
+      fetchImpl: vi.fn(async () => new Response(bytes, {headers: {"content-type": contentType}})),
+    });
+
+    expect(result.unavailable).toEqual([expect.objectContaining({reason, status: "unsupported"})]);
+    expect(mediaStore.writeMedia).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain(privateUrl);
+    expect(JSON.stringify(result)).not.toContain("token=secret");
+  });
+
+  it("keeps one deadline active while reading the response body", async () => {
+    const mediaStore = createMediaStore();
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => new Response(new ReadableStream({
+      start(controller) {
+        init?.signal?.addEventListener("abort", () => controller.error(new Error("aborted")), {once: true});
+      },
+    }), {headers: {"content-type": "image/jpeg"}}));
+
+    const result = await downloadDiscordSupportedAttachments([{
+      id: "attachment-1",
+      filename: "slow.jpeg",
+      content_type: "image/jpeg",
+      url: "https://cdn.discordapp.com/attachments/channel/attachment/slow.jpeg",
+    }], {connectorKey: "bot-1", mediaStore, fetchImpl, timeoutMs: 5});
+
+    expect(result.unavailable).toEqual([expect.objectContaining({reason: "timeout", status: "failed"})]);
+    expect(mediaStore.writeMedia).not.toHaveBeenCalled();
+  });
+
+  it("keeps three JPEG attachments from one message in input order", async () => {
+    const mediaStore = createMediaStore();
+    const attachments = ["one.jpeg", "two.jpeg", "three.jpeg"].map((filename, index) => ({
+      id: `attachment-${String(index + 1)}`,
+      filename,
+      content_type: "image/jpeg",
+      size: 100 + index,
+      proxy_url: `https://media.discordapp.net/attachments/channel/${String(index + 1)}/${filename}?secret=${String(index)}`,
+    }));
+    const result = await downloadDiscordSupportedAttachments(attachments, {
+      connectorKey: "bot-1",
+      mediaStore,
+      fetchImpl: vi.fn(async () => new Response(JPEG_BYTES, {headers: {"content-type": "image/jpeg"}})),
+    });
+
+    expect(result.media).toHaveLength(3);
+    expect(result.summaries.map((summary) => [summary.id, summary.status])).toEqual([
+      ["attachment-1", "downloaded"],
+      ["attachment-2", "downloaded"],
+      ["attachment-3", "downloaded"],
+    ]);
+    expect(mediaStore.writeMedia.mock.calls.map(([input]) => input.hintFilename)).toEqual([
+      "one.jpeg",
+      "two.jpeg",
+      "three.jpeg",
+    ]);
+    expect(JSON.stringify(result)).not.toContain("secret=");
+  });
+
+  it("reports storage failures without trying a second download candidate", async () => {
+    const mediaStore = createMediaStore();
+    mediaStore.writeMedia.mockRejectedValueOnce(new Error("private storage path"));
+    const fetchImpl = vi.fn(async () => new Response(JPEG_BYTES, {headers: {"content-type": "image/jpeg"}}));
+    const result = await downloadDiscordSupportedAttachments([{
+      id: "attachment-1",
+      filename: "photo.jpeg",
+      content_type: "image/jpeg",
+      proxy_url: "https://media.discordapp.net/attachments/channel/attachment/photo.jpeg?proxy=secret",
+      url: "https://cdn.discordapp.com/attachments/channel/attachment/photo.jpeg?cdn=secret",
+    }], {connectorKey: "bot-1", mediaStore, fetchImpl});
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(result.unavailable).toEqual([expect.objectContaining({
+      reason: "storage_failed",
+      status: "failed",
+      attempts: [{candidate: "proxy", reason: "storage_failed"}],
+    })]);
+    expect(JSON.stringify(result)).not.toContain("private storage path");
+    expect(JSON.stringify(result)).not.toContain("secret");
   });
 
   it("skips non-Discord attachment URLs before fetch", async () => {
@@ -128,7 +278,7 @@ describe("Discord inbound attachment downloads", () => {
     expect(result.media).toEqual([]);
     expect(result.unavailable).toEqual([expect.objectContaining({
       id: "attachment-1",
-      reason: "Discord attachment URL is not a supported CDN URL.",
+      reason: "untrusted_url",
     })]);
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(mediaStore.writeMedia).not.toHaveBeenCalled();
@@ -161,13 +311,15 @@ describe("Discord inbound attachment downloads", () => {
       filename: "photo.jpg",
       contentType: "image/jpeg",
       sizeBytes: 5,
-      reason: "Discord attachment does not include a downloadable CDN URL.",
+      status: "metadata_only",
+      reason: "no_trusted_media",
+      attempts: [],
     }]);
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(mediaStore.writeMedia).not.toHaveBeenCalled();
     expect(onUnavailable).toHaveBeenCalledWith(expect.objectContaining({
       id: "attachment-1",
-      reason: "Discord attachment does not include a downloadable CDN URL.",
+      reason: "no_trusted_media",
     }));
   });
 
@@ -189,7 +341,7 @@ describe("Discord inbound attachment downloads", () => {
     expect(result.media).toEqual([]);
     expect(result.unavailable).toEqual([expect.objectContaining({
       id: "attachment-1",
-      reason: "Discord attachment exceeds the 25 MB download limit.",
+      reason: "too_large",
     })]);
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(mediaStore.writeMedia).not.toHaveBeenCalled();
@@ -202,9 +354,9 @@ describe("Discord inbound attachment downloads", () => {
         return new Response("missing", {status: 404});
       }
 
-      return new Response(Buffer.from("ok"), {
+      return new Response(PNG_BYTES, {
         status: 200,
-        headers: {"content-length": "2"},
+        headers: {"content-length": String(PNG_BYTES.byteLength), "content-type": "image/png"},
       });
     });
 
@@ -213,14 +365,14 @@ describe("Discord inbound attachment downloads", () => {
         id: "attachment-ok",
         filename: "ok.png",
         content_type: "image/png",
-        size: 2,
+        size: PNG_BYTES.byteLength,
         url: "https://cdn.discordapp.com/attachments/channel/attachment/ok.png",
       },
       {
         id: "attachment-missing",
         filename: "missing.png",
         content_type: "image/png",
-        size: 2,
+        size: PNG_BYTES.byteLength,
         url: "https://cdn.discordapp.com/attachments/channel/attachment/missing.png",
       },
     ], {
@@ -236,7 +388,7 @@ describe("Discord inbound attachment downloads", () => {
     });
     expect(result.unavailable).toEqual([expect.objectContaining({
       id: "attachment-missing",
-      reason: "Discord attachment download failed.",
+      reason: "http_error",
     })]);
     expect(mediaStore.writeMedia).toHaveBeenCalledOnce();
   });
@@ -262,7 +414,7 @@ describe("Discord inbound attachment downloads", () => {
     expect(result.media).toEqual([]);
     expect(result.unavailable).toEqual([expect.objectContaining({
       id: "attachment-1",
-      reason: "Discord attachment download failed.",
+      reason: "download_failed",
     })]);
     expect(JSON.stringify(result)).not.toContain(privateUrl);
     expect(mediaStore.writeMedia).not.toHaveBeenCalled();

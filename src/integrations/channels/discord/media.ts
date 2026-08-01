@@ -1,9 +1,11 @@
 import type {WriteMediaInput} from "../../../domain/channels/media-store.js";
 import type {MediaDescriptor} from "../../../domain/channels/types.js";
 import type {
+  DiscordAttachmentSummary,
   DiscordEmbedMediaSummary,
   DiscordEmbedSummary,
   DiscordMediaReason,
+  DiscordMediaStatus,
   DiscordStickerFormat,
   DiscordStickerSummary,
 } from "../../../domain/threads/requests/types.js";
@@ -19,12 +21,25 @@ const DISCORD_ATTACHMENT_CDN_HOSTS = new Set([
   "media.discordapp.net",
 ]);
 
+export type DiscordAttachmentCandidateKind = "proxy" | "cdn";
+
+export interface DiscordAttachmentDownloadCandidate {
+  kind: DiscordAttachmentCandidateKind;
+  url: string;
+}
+
 export interface DiscordAttachmentDownloadPart {
   id: string;
-  url: string;
+  candidates: readonly DiscordAttachmentDownloadCandidate[];
   mimeType: string;
   sizeBytes?: number;
   hintFilename?: string;
+}
+
+export interface DiscordAttachmentDownloadAttempt {
+  candidate: DiscordAttachmentCandidateKind;
+  reason: DiscordMediaReason;
+  httpStatus?: number;
 }
 
 export interface DiscordUnavailableAttachment {
@@ -32,11 +47,15 @@ export interface DiscordUnavailableAttachment {
   contentType?: string;
   filename?: string;
   sizeBytes?: number;
-  reason: string;
+  status: DiscordMediaStatus;
+  reason: DiscordMediaReason;
+  httpStatus?: number;
+  attempts: readonly DiscordAttachmentDownloadAttempt[];
 }
 
 export interface DiscordAttachmentDownloadResult {
   media: readonly MediaDescriptor[];
+  summaries: readonly DiscordAttachmentSummary[];
   unavailable: readonly DiscordUnavailableAttachment[];
 }
 
@@ -58,6 +77,7 @@ export interface DownloadDiscordSupportedAttachmentsOptions {
   connectorKey: string;
   mediaStore: DiscordMediaStore;
   fetchImpl?: typeof fetch;
+  timeoutMs?: number;
   onUnavailable?: (item: DiscordUnavailableAttachment) => void;
 }
 
@@ -80,8 +100,21 @@ function readAttachmentContentType(attachment: Record<string, unknown>): string 
   );
 }
 
-function readAttachmentDownloadUrl(attachment: Record<string, unknown>): string | undefined {
-  return firstNonEmptyString(attachment.url, attachment.proxy_url, attachment.proxyUrl);
+function readAttachmentDownloadCandidates(
+  attachment: Record<string, unknown>,
+): readonly DiscordAttachmentDownloadCandidate[] {
+  const raw: readonly DiscordAttachmentDownloadCandidate[] = [
+    {kind: "proxy", url: firstNonEmptyString(attachment.proxy_url, attachment.proxyUrl) ?? ""},
+    {kind: "cdn", url: firstNonEmptyString(attachment.url) ?? ""},
+  ];
+  const seen = new Set<string>();
+  return raw.filter((candidate) => {
+    if (!candidate.url || seen.has(candidate.url)) {
+      return false;
+    }
+    seen.add(candidate.url);
+    return true;
+  });
 }
 
 function readAttachmentFilename(attachment: Record<string, unknown>): string | undefined {
@@ -285,34 +318,53 @@ function readContentLength(headers: Headers): number | undefined {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
+function mediaStatusForReason(reason: DiscordMediaReason): Exclude<DiscordMediaStatus, "downloaded"> {
+  if (reason === "no_trusted_media" || reason === "untrusted_url") {
+    return "metadata_only";
+  }
+  if (reason === "unsupported_format" || reason === "invalid_content_type" || reason === "invalid_signature") {
+    return "unsupported";
+  }
+  return "failed";
+}
+
 function buildUnavailableAttachment(
   part: Pick<DiscordAttachmentDownloadPart, "id" | "mimeType" | "sizeBytes" | "hintFilename">,
-  reason: string,
+  reason: DiscordMediaReason,
+  attempts: readonly DiscordAttachmentDownloadAttempt[] = [],
+  httpStatus?: number,
 ): DiscordUnavailableAttachment {
   return {
     id: part.id,
     contentType: part.mimeType,
     filename: part.hintFilename,
     sizeBytes: part.sizeBytes,
+    status: mediaStatusForReason(reason),
     reason,
+    ...(httpStatus !== undefined ? {httpStatus} : {}),
+    attempts,
   };
 }
 
 function markUnavailable(
   part: Pick<DiscordAttachmentDownloadPart, "id" | "mimeType" | "sizeBytes" | "hintFilename">,
-  reason: string,
+  reason: DiscordMediaReason,
   options: DownloadDiscordSupportedAttachmentsOptions,
+  attempts: readonly DiscordAttachmentDownloadAttempt[] = [],
+  httpStatus?: number,
 ): {unavailable: DiscordUnavailableAttachment} {
-  const unavailable = buildUnavailableAttachment(part, reason);
+  const unavailable = buildUnavailableAttachment(part, reason, attempts, httpStatus);
   options.onUnavailable?.(unavailable);
   return {unavailable};
 }
+
+class DiscordResponseTooLargeError extends Error {}
 
 async function readCappedResponseBytes(response: Response, maxBytes: number): Promise<Uint8Array> {
   if (!response.body) {
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (bytes.byteLength > maxBytes) {
-      throw new Error("Discord attachment response exceeded download limit.");
+      throw new DiscordResponseTooLargeError("Discord attachment response exceeded download limit.");
     }
 
     return bytes;
@@ -335,7 +387,7 @@ async function readCappedResponseBytes(response: Response, maxBytes: number): Pr
       totalBytes += value.byteLength;
       if (totalBytes > maxBytes) {
         await reader.cancel().catch(() => undefined);
-        throw new Error("Discord attachment response exceeded download limit.");
+        throw new DiscordResponseTooLargeError("Discord attachment response exceeded download limit.");
       }
       chunks.push(value);
     }
@@ -378,59 +430,65 @@ async function downloadDiscordVisualMedia(
     throw new DiscordVisualDownloadError("untrusted_url");
   }
   const controller = new globalThis.AbortController();
-  const timeout = setTimeout(() => controller.abort(), DISCORD_ATTACHMENT_DOWNLOAD_TIMEOUT_MS);
+  const timeout = setTimeout(
+    () => controller.abort(),
+    options.timeoutMs ?? DISCORD_ATTACHMENT_DOWNLOAD_TIMEOUT_MS,
+  );
   timeout.unref?.();
 
-  let response: Response;
   try {
-    response = await (options.fetchImpl ?? fetch)(normalizedUrl.toString(), {
-      redirect: "error",
-      signal: controller.signal,
+    let response: Response;
+    try {
+      response = await (options.fetchImpl ?? fetch)(normalizedUrl.toString(), {
+        redirect: "error",
+        signal: controller.signal,
+      });
+    } catch {
+      throw new DiscordVisualDownloadError(controller.signal.aborted ? "timeout" : "download_failed");
+    }
+    if (!response.ok) {
+      throw new DiscordVisualDownloadError("download_failed");
+    }
+
+    const contentType = baseContentType(response.headers.get("content-type"));
+    const accepted = input.acceptedContentTypes?.map((value) => value.toLowerCase());
+    if (!contentType || (accepted
+      ? !accepted.includes(contentType)
+      : !contentType.startsWith("image/") && !contentType.startsWith("video/"))) {
+      throw new DiscordVisualDownloadError("invalid_content_type");
+    }
+    const contentLength = readContentLength(response.headers);
+    if (contentLength !== undefined && contentLength > DISCORD_ATTACHMENT_DOWNLOAD_LIMIT_BYTES) {
+      throw new DiscordVisualDownloadError("too_large");
+    }
+
+    let bytes: Uint8Array;
+    try {
+      bytes = await readCappedResponseBytes(response, DISCORD_ATTACHMENT_DOWNLOAD_LIMIT_BYTES);
+    } catch (error) {
+      throw new DiscordVisualDownloadError(
+        controller.signal.aborted
+          ? "timeout"
+          : error instanceof DiscordResponseTooLargeError ? "too_large" : "download_failed",
+      );
+    }
+    const descriptor = await options.mediaStore.writeMedia({
+      bytes,
+      source: DISCORD_SOURCE,
+      connectorKey: options.connectorKey,
+      mimeType: contentType,
+      sizeBytes: bytes.byteLength,
+      hintFilename: input.hintFilename,
+      metadata: input.metadata,
     });
-  } catch {
-    throw new DiscordVisualDownloadError("download_failed");
+    return {descriptor, contentType};
   } finally {
     clearTimeout(timeout);
   }
-  if (!response.ok) {
-    throw new DiscordVisualDownloadError("download_failed");
-  }
-
-  const contentType = baseContentType(response.headers.get("content-type"));
-  const accepted = input.acceptedContentTypes?.map((value) => value.toLowerCase());
-  if (!contentType || (accepted
-    ? !accepted.includes(contentType)
-    : !contentType.startsWith("image/") && !contentType.startsWith("video/"))) {
-    throw new DiscordVisualDownloadError("invalid_content_type");
-  }
-  const contentLength = readContentLength(response.headers);
-  if (contentLength !== undefined && contentLength > DISCORD_ATTACHMENT_DOWNLOAD_LIMIT_BYTES) {
-    throw new DiscordVisualDownloadError("too_large");
-  }
-
-  let bytes: Uint8Array;
-  try {
-    bytes = await readCappedResponseBytes(response, DISCORD_ATTACHMENT_DOWNLOAD_LIMIT_BYTES);
-  } catch {
-    throw new DiscordVisualDownloadError("too_large");
-  }
-  const descriptor = await options.mediaStore.writeMedia({
-    bytes,
-    source: DISCORD_SOURCE,
-    connectorKey: options.connectorKey,
-    mimeType: contentType,
-    sizeBytes: bytes.byteLength,
-    hintFilename: input.hintFilename,
-    metadata: input.metadata,
-  });
-  return {descriptor, contentType};
 }
 
 function failedMediaStatus(reason: DiscordMediaReason): "metadata_only" | "unsupported" | "failed" {
-  if (reason === "no_trusted_media" || reason === "untrusted_url") {
-    return "metadata_only";
-  }
-  return reason === "unsupported_format" || reason === "invalid_content_type" ? "unsupported" : "failed";
+  return mediaStatusForReason(reason);
 }
 
 function replaceEmbedMediaStatus(
@@ -562,8 +620,8 @@ function collectDiscordAttachmentDownloadItems(value: unknown): readonly Discord
     const contentType = readAttachmentContentType(attachment);
     const filename = readAttachmentFilename(attachment);
     const sizeBytes = readAttachmentDeclaredSizeBytes(attachment);
-    const url = readAttachmentDownloadUrl(attachment);
-    if (!url) {
+    const candidates = readAttachmentDownloadCandidates(attachment);
+    if (candidates.length === 0) {
       items.push({
         kind: "unavailable",
         unavailable: {
@@ -571,7 +629,9 @@ function collectDiscordAttachmentDownloadItems(value: unknown): readonly Discord
           ...(contentType !== undefined ? {contentType} : {}),
           ...(filename !== undefined ? {filename} : {}),
           ...(sizeBytes !== undefined ? {sizeBytes} : {}),
-          reason: "Discord attachment does not include a downloadable CDN URL.",
+          status: "metadata_only",
+          reason: "no_trusted_media",
+          attempts: [],
         },
       });
       continue;
@@ -581,7 +641,7 @@ function collectDiscordAttachmentDownloadItems(value: unknown): readonly Discord
       kind: "download",
       part: {
         id,
-        url,
+        candidates,
         mimeType: contentType ?? "application/octet-stream",
         ...(sizeBytes !== undefined ? {sizeBytes} : {}),
         ...(filename !== undefined ? {hintFilename: filename} : {}),
@@ -597,57 +657,128 @@ export function collectDiscordAttachmentDownloadParts(value: unknown): readonly 
     .flatMap((item) => item.kind === "download" ? [item.part] : []);
 }
 
-async function downloadDiscordAttachmentPart(
-  part: DiscordAttachmentDownloadPart,
-  options: DownloadDiscordSupportedAttachmentsOptions,
-): Promise<MediaDescriptor> {
-  const normalizedUrl = normalizeAttachmentUrl(part.url);
-  if (!normalizedUrl) {
-    throw new Error("Discord attachment URL is not a supported CDN URL.");
+const JPEG_MIME_TYPE = "image/jpeg";
+const SUPPORTED_ATTACHMENT_IMAGE_TYPES = new Set([
+  JPEG_MIME_TYPE,
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
+
+function normalizeImageMimeType(value: string | undefined): string | undefined {
+  const normalized = baseContentType(value);
+  if (normalized === "image/jpg" || normalized === "image/pjpeg") {
+    return JPEG_MIME_TYPE;
+  }
+  return normalized;
+}
+
+function bytesStartWith(bytes: Uint8Array, signature: readonly number[]): boolean {
+  return signature.every((value, index) => bytes[index] === value);
+}
+
+function detectSupportedImageMimeType(bytes: Uint8Array): string | undefined {
+  if (bytesStartWith(bytes, [0xff, 0xd8, 0xff])) {
+    return JPEG_MIME_TYPE;
+  }
+  if (bytesStartWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) {
+    return "image/png";
+  }
+  if (bytesStartWith(bytes, [0x47, 0x49, 0x46, 0x38, 0x37, 0x61])
+    || bytesStartWith(bytes, [0x47, 0x49, 0x46, 0x38, 0x39, 0x61])) {
+    return "image/gif";
+  }
+  if (bytesStartWith(bytes, [0x52, 0x49, 0x46, 0x46])
+    && bytesStartWith(bytes.subarray(8), [0x57, 0x45, 0x42, 0x50])) {
+    return "image/webp";
+  }
+  return undefined;
+}
+
+class DiscordAttachmentDownloadError extends Error {
+  readonly reason: DiscordMediaReason;
+  readonly httpStatus?: number;
+
+  constructor(reason: DiscordMediaReason, httpStatus?: number) {
+    super(reason);
+    this.reason = reason;
+    this.httpStatus = httpStatus;
+  }
+}
+
+function resolveDownloadedAttachmentMimeType(
+  declaredMimeType: string,
+  responseContentType: string | null,
+  bytes: Uint8Array,
+): string {
+  const declared = normalizeImageMimeType(declaredMimeType);
+  if (!declared?.startsWith("image/")) {
+    return declaredMimeType;
   }
 
-  const controller = new globalThis.AbortController();
-  const timeout = setTimeout(() => {
-    controller.abort();
-  }, DISCORD_ATTACHMENT_DOWNLOAD_TIMEOUT_MS);
-  timeout.unref?.();
+  const response = normalizeImageMimeType(responseContentType ?? undefined);
+  const detected = detectSupportedImageMimeType(bytes);
+  if (response === "application/octet-stream") {
+    if (!detected || detected !== declared) {
+      throw new DiscordAttachmentDownloadError("invalid_signature");
+    }
+    return detected;
+  }
+  if (!response || !SUPPORTED_ATTACHMENT_IMAGE_TYPES.has(response)) {
+    throw new DiscordAttachmentDownloadError("invalid_content_type");
+  }
+  if (!detected || detected !== response) {
+    throw new DiscordAttachmentDownloadError("invalid_signature");
+  }
+  return response;
+}
+
+async function downloadDiscordAttachmentCandidate(
+  part: DiscordAttachmentDownloadPart,
+  candidate: DiscordAttachmentDownloadCandidate,
+  signal: AbortSignal,
+  options: DownloadDiscordSupportedAttachmentsOptions,
+): Promise<{bytes: Uint8Array; mimeType: string}> {
+  const normalizedUrl = normalizeAttachmentUrl(candidate.url);
+  if (!normalizedUrl) {
+    throw new DiscordAttachmentDownloadError("untrusted_url");
+  }
 
   let response: Response;
   try {
     response = await (options.fetchImpl ?? fetch)(normalizedUrl.toString(), {
-      signal: controller.signal,
+      redirect: "error",
+      signal,
     });
   } catch {
-    throw new Error("Discord attachment download request failed.");
-  } finally {
-    clearTimeout(timeout);
+    throw new DiscordAttachmentDownloadError(signal.aborted ? "timeout" : "download_failed");
   }
-
   if (!response.ok) {
-    throw new Error(`Discord attachment download returned HTTP ${response.status}.`);
+    throw new DiscordAttachmentDownloadError("http_error", response.status);
   }
-
   const contentLength = readContentLength(response.headers);
   if (contentLength !== undefined && contentLength > DISCORD_ATTACHMENT_DOWNLOAD_LIMIT_BYTES) {
-    throw new Error("Discord attachment response exceeded download limit.");
+    throw new DiscordAttachmentDownloadError("too_large");
   }
 
-  const bytes = await readCappedResponseBytes(response, DISCORD_ATTACHMENT_DOWNLOAD_LIMIT_BYTES);
-  if (part.sizeBytes !== undefined && bytes.byteLength !== part.sizeBytes) {
-    throw new Error("Discord attachment payload size did not match declared size.");
+  let bytes: Uint8Array;
+  try {
+    bytes = await readCappedResponseBytes(response, DISCORD_ATTACHMENT_DOWNLOAD_LIMIT_BYTES);
+  } catch (error) {
+    throw new DiscordAttachmentDownloadError(
+      signal.aborted
+        ? "timeout"
+        : error instanceof DiscordResponseTooLargeError ? "too_large" : "download_failed",
+    );
   }
-
-  return options.mediaStore.writeMedia({
+  return {
     bytes,
-    source: DISCORD_SOURCE,
-    connectorKey: options.connectorKey,
-    mimeType: part.mimeType,
-    sizeBytes: part.sizeBytes,
-    hintFilename: part.hintFilename,
-    metadata: {
-      discordAttachmentId: part.id,
-    },
-  });
+    mimeType: resolveDownloadedAttachmentMimeType(part.mimeType, response.headers.get("content-type"), bytes),
+  };
+}
+
+function isTerminalAttachmentFailure(reason: DiscordMediaReason): boolean {
+  return reason === "too_large" || reason === "timeout" || reason === "storage_failed";
 }
 
 async function downloadDiscordAttachmentOrUnavailable(
@@ -655,19 +786,69 @@ async function downloadDiscordAttachmentOrUnavailable(
   options: DownloadDiscordSupportedAttachmentsOptions,
 ): Promise<{media: MediaDescriptor} | {unavailable: DiscordUnavailableAttachment}> {
   if (part.sizeBytes !== undefined && part.sizeBytes > DISCORD_ATTACHMENT_DOWNLOAD_LIMIT_BYTES) {
-    return markUnavailable(part, "Discord attachment exceeds the 25 MB download limit.", options);
+    return markUnavailable(part, "too_large", options);
   }
 
-  if (!normalizeAttachmentUrl(part.url)) {
-    return markUnavailable(part, "Discord attachment URL is not a supported CDN URL.", options);
+  const candidates = part.candidates.filter((candidate) => normalizeAttachmentUrl(candidate.url));
+  if (candidates.length === 0) {
+    return markUnavailable(part, "untrusted_url", options);
   }
 
+  const controller = new globalThis.AbortController();
+  const timeout = setTimeout(
+    () => controller.abort(),
+    options.timeoutMs ?? DISCORD_ATTACHMENT_DOWNLOAD_TIMEOUT_MS,
+  );
+  timeout.unref?.();
+  const attempts: DiscordAttachmentDownloadAttempt[] = [];
   try {
-    return {
-      media: await downloadDiscordAttachmentPart(part, options),
-    };
-  } catch {
-    return markUnavailable(part, "Discord attachment download failed.", options);
+    for (const candidate of candidates) {
+      try {
+        const downloaded = await downloadDiscordAttachmentCandidate(part, candidate, controller.signal, options);
+        let media: MediaDescriptor;
+        try {
+          media = await options.mediaStore.writeMedia({
+            bytes: downloaded.bytes,
+            source: DISCORD_SOURCE,
+            connectorKey: options.connectorKey,
+            mimeType: downloaded.mimeType,
+            sizeBytes: downloaded.bytes.byteLength,
+            hintFilename: part.hintFilename,
+            metadata: {
+              discordAttachmentId: part.id,
+            },
+          });
+        } catch {
+          const attempt = {candidate: candidate.kind, reason: "storage_failed" as const};
+          attempts.push(attempt);
+          return markUnavailable(part, attempt.reason, options, attempts);
+        }
+        return {media};
+      } catch (error) {
+        const failure = error instanceof DiscordAttachmentDownloadError
+          ? error
+          : new DiscordAttachmentDownloadError("download_failed");
+        const attempt = {
+          candidate: candidate.kind,
+          reason: failure.reason,
+          ...(failure.httpStatus !== undefined ? {httpStatus: failure.httpStatus} : {}),
+        };
+        attempts.push(attempt);
+        if (isTerminalAttachmentFailure(failure.reason)) {
+          return markUnavailable(part, failure.reason, options, attempts, failure.httpStatus);
+        }
+      }
+    }
+    const finalAttempt = attempts.at(-1);
+    return markUnavailable(
+      part,
+      finalAttempt?.reason ?? "download_failed",
+      options,
+      attempts,
+      finalAttempt?.httpStatus,
+    );
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -676,26 +857,53 @@ export async function downloadDiscordSupportedAttachments(
   options: DownloadDiscordSupportedAttachmentsOptions,
 ): Promise<DiscordAttachmentDownloadResult> {
   const media: MediaDescriptor[] = [];
+  const summaries: DiscordAttachmentSummary[] = [];
   const unavailable: DiscordUnavailableAttachment[] = [];
 
   for (const item of collectDiscordAttachmentDownloadItems(attachments)) {
     if (item.kind === "unavailable") {
       options.onUnavailable?.(item.unavailable);
       unavailable.push(item.unavailable);
+      summaries.push({
+        id: item.unavailable.id,
+        ...(item.unavailable.filename !== undefined ? {filename: item.unavailable.filename} : {}),
+        ...(item.unavailable.contentType !== undefined ? {contentType: item.unavailable.contentType} : {}),
+        ...(item.unavailable.sizeBytes !== undefined ? {sizeBytes: item.unavailable.sizeBytes} : {}),
+        status: item.unavailable.status,
+        reason: item.unavailable.reason,
+        ...(item.unavailable.httpStatus !== undefined ? {httpStatus: item.unavailable.httpStatus} : {}),
+      });
       continue;
     }
 
     const result = await downloadDiscordAttachmentOrUnavailable(item.part, options);
     if ("media" in result) {
       media.push(result.media);
+      summaries.push({
+        id: item.part.id,
+        ...(item.part.hintFilename !== undefined ? {filename: item.part.hintFilename} : {}),
+        ...(item.part.mimeType !== undefined ? {contentType: item.part.mimeType} : {}),
+        ...(item.part.sizeBytes !== undefined ? {sizeBytes: item.part.sizeBytes} : {}),
+        status: "downloaded",
+      });
       continue;
     }
 
     unavailable.push(result.unavailable);
+    summaries.push({
+      id: result.unavailable.id,
+      ...(result.unavailable.filename !== undefined ? {filename: result.unavailable.filename} : {}),
+      ...(result.unavailable.contentType !== undefined ? {contentType: result.unavailable.contentType} : {}),
+      ...(result.unavailable.sizeBytes !== undefined ? {sizeBytes: result.unavailable.sizeBytes} : {}),
+      status: result.unavailable.status,
+      reason: result.unavailable.reason,
+      ...(result.unavailable.httpStatus !== undefined ? {httpStatus: result.unavailable.httpStatus} : {}),
+    });
   }
 
   return {
     media,
+    summaries,
     unavailable,
   };
 }

@@ -127,6 +127,9 @@ export interface DiscordAttachmentSummary {
   filename?: string;
   contentType?: string;
   sizeBytes?: number;
+  status: DiscordMediaStatus;
+  reason?: DiscordMediaReason;
+  httpStatus?: number;
 }
 
 export type DiscordMediaStatus = "downloaded" | "metadata_only" | "unsupported" | "failed";
@@ -136,8 +139,12 @@ export type DiscordMediaReason =
   | "untrusted_url"
   | "unsupported_format"
   | "invalid_content_type"
+  | "invalid_signature"
   | "too_large"
-  | "download_failed";
+  | "timeout"
+  | "http_error"
+  | "download_failed"
+  | "storage_failed";
 
 export interface DiscordEmbedMediaSummary {
   kind: "image" | "thumbnail" | "video";
@@ -275,6 +282,11 @@ export interface CompactThreadRequestPayload extends BaseRuntimeRequestPayload {
   customInstructions: string;
 }
 
+export interface CompactSessionRequestPayload extends BaseRuntimeRequestPayload {
+  sessionId: string;
+  customInstructions: string;
+}
+
 export type RuntimeThreadUpdate = ThreadUpdate & Omit<UpdateSessionRuntimeConfigInput, "sessionId">;
 
 export interface UpdateThreadRequestPayload extends BaseRuntimeRequestPayload {
@@ -298,6 +310,7 @@ export interface RuntimeRequestPayloadByKind {
   reset_session: ResetSessionRequestPayload;
   abort_thread: AbortThreadRequestPayload;
   compact_thread: CompactThreadRequestPayload;
+  compact_session: CompactSessionRequestPayload;
   update_thread: UpdateThreadRequestPayload;
 }
 

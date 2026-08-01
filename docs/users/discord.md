@@ -48,11 +48,11 @@ Use the stable Discord user id/snowflake for `--actor`, not a username or displa
 
 ## Inbound media
 
-Inbound attachments, embeds, and stickers are summarized separately in runtime context. Supported Discord CDN/proxy media is downloaded into `downloaded_media` for tools such as `view_media` or `whisper`. Embed-only and sticker-only messages wake the bound session normally.
+Inbound attachments, embeds, and stickers are summarized separately in runtime context. Supported Discord CDN/proxy media is downloaded into `downloaded_media` for tools such as `view_media` or `whisper`. Multiple images can be sent in one Discord message; Panda exposes one local path per successful item and the agent inspects each path. Embed-only and sticker-only messages wake the bound session normally.
 
 Panda downloads at most one trusted visual candidate per embed. PNG, APNG, and GIF stickers use Discord's official sticker CDN; Lottie stickers remain identifiable metadata because Panda does not render Lottie. Inbound downloads keep the 25 MiB and 30-second limits.
 
-Discord `url`, `proxy_url`, and `proxyUrl` attachment fields are accepted. Unsupported, oversized, untrusted, or failed downloads are reported with stable status/reason codes without persisting or rendering raw CDN/proxy URLs.
+Discord `proxy_url`, `proxyUrl`, and `url` attachment fields are accepted. Panda prefers a trusted proxy and falls back to the trusted CDN URL, validates supported image MIME/signatures, and stores the actual downloaded byte size. Unsupported, oversized, untrusted, or failed downloads are reported with stable status/reason codes without persisting or rendering raw CDN/proxy URLs.
 
 Outbound Discord messages can include files and images when the bot has the Attach Files permission.
 

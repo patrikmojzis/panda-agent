@@ -5,6 +5,9 @@ interface DiscordAttachmentSummaryPromptInput {
   filename?: string;
   contentType?: string;
   sizeBytes?: number;
+  status: string;
+  reason?: string;
+  httpStatus?: number;
 }
 
 interface DiscordEmbedSummaryPromptInput {
@@ -39,7 +42,7 @@ function formatMaybeNumber(value: number | undefined): string {
 }
 
 function formatAttachment(summary: DiscordAttachmentSummaryPromptInput): string {
-  return `- id=${summary.id} filename=${formatMaybeValue(summary.filename)} content_type=${formatMaybeValue(summary.contentType)} size_bytes=${formatMaybeNumber(summary.sizeBytes)}`;
+  return `- id=${summary.id} filename=${formatMaybeValue(summary.filename)} content_type=${formatMaybeValue(summary.contentType)} size_bytes=${formatMaybeNumber(summary.sizeBytes)} status=${summary.status} reason=${formatMaybeValue(summary.reason)} http_status=${formatMaybeNumber(summary.httpStatus)}`;
 }
 
 function formatEmbed(summary: DiscordEmbedSummaryPromptInput): string {
@@ -104,6 +107,9 @@ export function renderDiscordInboundText(options: {
     ? "- none"
     : options.attachments.map(formatAttachment).join("\n");
   const downloadedMedia = !options.media?.length ? "- none" : options.media.join("\n");
+  const mediaNote = (options.media?.length ?? 0) > 1
+    ? `media_note: all ${String(options.media!.length)} downloaded media files belong to this message; inspect each path with view_media and do not ask for separate uploads.`
+    : undefined;
   const embeds = options.embeds.length === 0 ? "- none" : options.embeds.map(formatEmbed).join("\n");
   const stickers = options.stickers.length === 0 ? "- none" : options.stickers.map(formatSticker).join("\n");
   const trimmedBody = options.body?.trim() ?? "";
@@ -144,6 +150,7 @@ stickers:
 ${stickers}
 downloaded_media:
 ${downloadedMedia}
+${mediaNote ?? ""}
 </runtime-channel-context>
 
 ${body}

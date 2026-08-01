@@ -502,6 +502,7 @@ describe("RuntimeRequestRepo", () => {
         filename: "report.pdf",
         contentType: "application/pdf",
         sizeBytes: 123,
+        status: "downloaded",
       }],
       embedSummaries: [],
       stickerSummaries: [],
@@ -560,6 +561,40 @@ describe("RuntimeRequestRepo", () => {
     });
   });
 
+  it("defaults legacy Discord attachment status from matching durable media", async () => {
+    const {repo} = createEnqueueRepo();
+    const withoutMedia = await repo.enqueueRequest({
+      kind: "discord_message",
+      payload: validDiscordPayload({
+        attachmentSummaries: [{id: "attachment-metadata", filename: "photo.jpeg"}] as never,
+        media: [],
+      }),
+    });
+    expect(withoutMedia.payload.attachmentSummaries).toEqual([{
+      id: "attachment-metadata",
+      filename: "photo.jpeg",
+      status: "metadata_only",
+    }]);
+
+    const withMedia = await repo.enqueueRequest({
+      kind: "discord_message",
+      payload: validDiscordPayload({
+        attachmentSummaries: [{id: "attachment-downloaded", filename: "photo.jpeg"}] as never,
+        media: [{
+          id: "media-legacy",
+          source: "discord",
+          connectorKey: "bot-1",
+          mimeType: "image/jpeg",
+          sizeBytes: 5,
+          localPath: "/tmp/photo.jpg",
+          metadata: {discordAttachmentId: "attachment-downloaded"},
+          createdAt: 1,
+        }],
+      }),
+    });
+    expect(withMedia.payload.attachmentSummaries[0]).toMatchObject({status: "downloaded"});
+  });
+
   it.each([
     ["connector key", {connectorKey: " "}, "Discord connector key"],
     ["conversation id", {externalConversationId: " "}, "Discord conversation id"],
@@ -569,6 +604,7 @@ describe("RuntimeRequestRepo", () => {
     ["attachment summaries", {attachmentSummaries: {}}, "Discord attachment summaries must be an array"],
     ["embed summaries", {embedSummaries: {}}, "Discord embed summaries must be an array"],
     ["sticker summaries", {stickerSummaries: "bad"}, "Discord sticker summaries must be an array"],
+    ["attachment HTTP status", {attachmentSummaries: [{id: "attachment-1", status: "failed", reason: "http_error", httpStatus: 999}]}, "Discord attachment summaries 1 HTTP status is invalid"],
     ["negative attachment size", {attachmentSummaries: [{id: "attachment-1", sizeBytes: -1}]}, "Discord attachment summaries 1 size must not be negative"],
     ["non-finite attachment size", {attachmentSummaries: [{id: "attachment-1", sizeBytes: Number.POSITIVE_INFINITY}]}, "Discord attachment summaries 1 size must be a finite number"],
     ["media", {media: {}}, "Discord media must be an array"],

@@ -103,6 +103,9 @@ function serializeAttachmentSummary(summary: DiscordAttachmentSummary): JsonObje
     filename: summary.filename ?? null,
     contentType: summary.contentType ?? null,
     sizeBytes: summary.sizeBytes ?? null,
+    status: summary.status,
+    reason: summary.reason ?? null,
+    httpStatus: summary.httpStatus ?? null,
   };
 }
 

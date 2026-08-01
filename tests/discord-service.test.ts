@@ -11,6 +11,7 @@ import {
 
 const privateToken = "discord-private-token-fragment-ABCDEFGH";
 const connectorKey = "123456789012345678";
+const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01]);
 
 function collectWrites(write: {mock: {calls: unknown[][]}}): string {
   return write.mock.calls.map((call) => String(call[0])).join("");
@@ -419,6 +420,9 @@ describe("DiscordService", () => {
         attachmentSummaries: [{
           id: "attachment-1",
           filename: "report.pdf",
+          contentType: "application/octet-stream",
+          status: "metadata_only",
+          reason: "untrusted_url",
         }],
       }),
     });
@@ -437,9 +441,9 @@ describe("DiscordService", () => {
     await fixture.service.start();
     fixture.order.length = 0;
     const proxyUrl = "https://media.discordapp.net/attachments/channel/attachment/image.png?secret=1";
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(Buffer.from("media"), {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(PNG_BYTES, {
       status: 200,
-      headers: {"content-length": "5"},
+      headers: {"content-length": String(PNG_BYTES.byteLength), "content-type": "image/png"},
     })));
 
     fixture.conversationRepo.getConversationBinding.mockResolvedValue({
@@ -463,7 +467,7 @@ describe("DiscordService", () => {
         id: "attachment-2",
         filename: "image.png",
         content_type: "image/png",
-        size: 5,
+        size: PNG_BYTES.byteLength,
         proxy_url: proxyUrl,
       }],
     });
@@ -473,7 +477,7 @@ describe("DiscordService", () => {
       source: "discord",
       connectorKey,
       mimeType: "image/png",
-      sizeBytes: 5,
+      sizeBytes: PNG_BYTES.byteLength,
       hintFilename: "image.png",
       metadata: {
         discordAttachmentId: "attachment-2",
@@ -488,7 +492,8 @@ describe("DiscordService", () => {
           id: "attachment-2",
           filename: "image.png",
           contentType: "image/png",
-          sizeBytes: 5,
+          sizeBytes: PNG_BYTES.byteLength,
+          status: "downloaded",
         }],
         media: [expect.objectContaining({
           id: "media-discord-1",
@@ -551,13 +556,15 @@ describe("DiscordService", () => {
           filename: "image.png",
           contentType: "image/png",
           sizeBytes: 5,
+          status: "metadata_only",
+          reason: "no_trusted_media",
         }],
         media: [],
       }),
     });
     const output = collectWrites(write);
     expect(output).toContain("media_download_skipped");
-    expect(output).toContain("Discord attachment does not include a downloadable CDN URL.");
+    expect(output).toContain('"reason":"no_trusted_media"');
     expect(output).toContain('"attachmentId":"attachment-3"');
     expect(output).toContain("message_queued");
     expect(output).not.toContain(privateToken);
