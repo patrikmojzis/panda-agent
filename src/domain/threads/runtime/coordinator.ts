@@ -4,7 +4,7 @@ import {sleep} from "../../../lib/async.js";
 import {runThreadStep, Thread, type ThreadResumeState, type ThreadStepResult} from "../../../kernel/agent/thread.js";
 import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
 import {resolveModelRuntimeBudget} from "../../../kernel/models/model-context-policy.js";
-import {ContextWindowExceededError} from "../../../kernel/agent/exceptions.js";
+import {ContextWindowExceededError, ProviderRuntimeError} from "../../../kernel/agent/exceptions.js";
 import {resolveRuntimeDefaultModelSelector} from "../../../kernel/models/default-model.js";
 import type {ThreadRunEvent} from "../../../kernel/agent/types.js";
 import type {LlmModelCallTracer} from "../../../kernel/agent/runtime.js";
@@ -726,6 +726,38 @@ export class ThreadRuntimeCoordinator {
     }
   }
 
+  private async recoverProviderContextOverflow(options: {
+    run: ThreadRunRecord;
+    thread: ThreadRecord;
+    definition: ResolvedThreadDefinition;
+    transcript: readonly ThreadMessageRecord[];
+  }): Promise<boolean> {
+    const modelConfig = this.resolveModelConfig(options.definition);
+
+    try {
+      await compactThread({
+        store: this.store,
+        thread: options.thread,
+        transcript: options.transcript,
+        model: modelConfig.model,
+        thinking: modelConfig.thinking,
+        trigger: "auto",
+      });
+      await this.clearAutoCompactionState(options.thread);
+      return true;
+    } catch (error) {
+      await this.recordAutoCompactionFailure({
+        thread: options.thread,
+        run: options.run,
+        reason: stringifyUnknown(error, { preferErrorMessage: true }),
+        now: Date.now(),
+        diagnostics: error instanceof CompactThreadError ? error.diagnostics : undefined,
+        blocked: true,
+      });
+      return false;
+    }
+  }
+
   private async runUntilIdle(threadId: string): Promise<ThreadRunAttemptResult> {
     const lease = await this.leaseManager.tryAcquire(threadId);
     if (!lease) {
@@ -750,6 +782,7 @@ export class ThreadRuntimeCoordinator {
     let resumeState: ThreadResumeState | undefined;
     let inputApplyScope: ThreadInputApplyScope = "all";
     let autoCompactionAttemptedThisRun = false;
+    let overflowRecoveryAttemptedThisRun = false;
     const runMessages: ThreadMessageRecord[] = [];
     // Stop once is a bit too eager for Panda's current autonomy model.
     // Eligible input waves get one blind extra step before we finally let the
@@ -757,7 +790,7 @@ export class ThreadRuntimeCoordinator {
     let idleRerollAvailable = false;
 
     try {
-      while (true) {
+      runLoop: while (true) {
         const appliedInputs = await this.store.applyPendingInputs(threadId, inputApplyScope);
         if (appliedInputs.length > 0) {
           runMessages.push(...appliedInputs);
@@ -819,29 +852,51 @@ export class ThreadRuntimeCoordinator {
         const step = runThreadStep(executor);
         let stepResult: ThreadStepResult | undefined;
 
-        while (true) {
-          const next = await step.next();
-          if (next.done) {
-            stepResult = next.value;
-            break;
-          }
+        try {
+          while (true) {
+            const next = await step.next();
+            if (next.done) {
+              stepResult = next.value;
+              break;
+            }
 
-          const event = next.value;
-          if (isPersistedThreadMessage(event)) {
-            const persisted = await this.store.appendRuntimeMessage(threadId, {
-              message: sanitizePersistedMessage(event, definition.agent.tools),
-              source: runtimeSourceForMessage(event),
+            const event = next.value;
+            if (isPersistedThreadMessage(event)) {
+              const persisted = await this.store.appendRuntimeMessage(threadId, {
+                message: sanitizePersistedMessage(event, definition.agent.tools),
+                source: runtimeSourceForMessage(event),
+                runId: run.id,
+              });
+              runMessages.push(persisted);
+            }
+
+            await this.emit({
+              type: "thread_event",
+              threadId,
               runId: run.id,
+              event,
             });
-            runMessages.push(persisted);
+          }
+        } catch (error) {
+          const isRecoverableOverflow = error instanceof ProviderRuntimeError
+            && error.failureKind === "provider_context_overflow"
+            && !overflowRecoveryAttemptedThisRun;
+          if (!isRecoverableOverflow) {
+            throw error;
           }
 
-          await this.emit({
-            type: "thread_event",
-            threadId,
-            runId: run.id,
-            event,
+          overflowRecoveryAttemptedThisRun = true;
+          autoCompactionAttemptedThisRun = true;
+          const recovered = await this.recoverProviderContextOverflow({
+            run,
+            thread,
+            definition,
+            transcript,
           });
+          if (recovered) {
+            continue runLoop;
+          }
+          throw error;
         }
 
         resumeState = stepResult?.resumeState;

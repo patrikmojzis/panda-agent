@@ -13,6 +13,7 @@ const MAX_RUN_LIMIT = 100;
 
 const FAILURE_CATEGORY_TOKENS = [
   "provider_abort",
+  "provider_context_overflow",
   "provider_timeout",
   "provider_server_error",
   "provider_transport_terminated",

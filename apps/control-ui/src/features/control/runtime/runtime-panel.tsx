@@ -55,6 +55,7 @@ const runtimeStatusFilterOptions = [
 
 const runtimeFailureCategoryFilterOptions = [
   { label: "Provider abort", value: "provider_abort" },
+  { label: "Provider context overflow", value: "provider_context_overflow" },
   { label: "Provider timeout", value: "provider_timeout" },
   { label: "Provider server error", value: "provider_server_error" },
   {

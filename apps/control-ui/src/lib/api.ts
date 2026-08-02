@@ -533,6 +533,7 @@ export type RuntimeRun = {
   abortRequestedAt: string | null
   failureCategory:
     | "provider_abort"
+    | "provider_context_overflow"
     | "provider_timeout"
     | "provider_server_error"
     | "provider_transport_terminated"

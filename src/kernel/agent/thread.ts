@@ -1,4 +1,4 @@
-import type {AssistantMessage, Message, ThinkingLevel, ToolCall, ToolResultMessage,} from "@earendil-works/pi-ai";
+import {isContextOverflow, type AssistantMessage, type Message, type ThinkingLevel, type ToolCall, type ToolResultMessage,} from "@earendil-works/pi-ai";
 
 import type {Agent} from "./agent.js";
 import {
@@ -349,6 +349,32 @@ function providerFailureSignalText(input: {
     .toLowerCase();
 }
 
+function hasProviderContextOverflowSignal(input: {
+  message: string;
+  providerCode?: string;
+  providerType?: string;
+}): boolean {
+  const errorMessage = providerFailureSignalText(input);
+  return isContextOverflow({
+    role: "assistant",
+    content: [],
+    api: "openai-responses",
+    provider: "openai",
+    model: "context-overflow-detector",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0},
+    },
+    stopReason: "error",
+    errorMessage,
+    timestamp: 0,
+  });
+}
+
 function hasProviderFailureDenySignal(input: {
   message: string;
   status?: number;
@@ -419,6 +445,10 @@ function classifyProviderRuntimeFailure(input: {
 
   if (hasProviderAbortSignal(input)) {
     return "provider_abort";
+  }
+
+  if (hasProviderContextOverflowSignal(input)) {
+    return "provider_context_overflow";
   }
 
   if (hasProviderFailureDenySignal(input)) {

@@ -391,6 +391,51 @@ describe("Thread", () => {
     expect(error.message).not.toContain("detail=");
   });
 
+  it.each([
+    [
+      "OpenAI/Codex",
+      "openai-codex/gpt-5.6-sol",
+      "openai-codex",
+      "gpt-5.6-sol",
+      "Your input exceeds the context window of this model. Please adjust your input and try again.",
+    ],
+    [
+      "Anthropic",
+      "anthropic/claude-opus-4-7",
+      "anthropic",
+      "claude-opus-4-7",
+      "prompt is too long: 213462 tokens > 200000 maximum",
+    ],
+  ])("classifies %s context overflow without transient retries", async (
+    _label,
+    model,
+    providerName,
+    modelId,
+    errorMessage,
+  ) => {
+    const complete = vi.fn().mockResolvedValue(createAssistantMessage([], {
+      stopReason: "error",
+      errorMessage,
+    }));
+    const thread = new Thread({
+      agent: new Agent({name: "overflow", instructions: "Reply briefly"}),
+      model,
+      messages: [stringToUserMessage("hi")],
+      runtime: {
+        complete,
+        stream: vi.fn(() => { throw new Error("stream not expected"); }),
+      },
+    });
+
+    await expect(thread.runToCompletion()).rejects.toMatchObject({
+      providerName,
+      modelId,
+      failureKind: "provider_context_overflow",
+      retryable: false,
+    });
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
   it("fails closed for installed terminal assistant diagnostics after retry exhaustion", async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, "random").mockReturnValue(0);

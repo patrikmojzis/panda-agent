@@ -2354,6 +2354,151 @@ describe("ThreadRuntimeCoordinator", () => {
     });
   });
 
+  it("compacts and retries once after an exact provider context overflow", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "test-key");
+
+    const compactRuntime = vi.spyOn(PiAiRuntime.prototype, "complete").mockResolvedValue(
+      message("<summary>\nIntent:\n- continue after overflow\n</summary>"),
+    );
+    const overflow = createAssistantMessage([], {
+      stopReason: "error",
+      errorMessage: "Your input exceeds the context window of this model. Please adjust your input and try again.",
+    });
+    const runtime = createMockRuntime(
+      overflow,
+      message("recovered after overflow"),
+      message("Nothing else to do."),
+    );
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("overflow-recovery-agent", {
+      agent: new Agent({name: "overflow-recovery-agent", instructions: "Reply briefly"}),
+      model: TEST_MODEL_WINDOW_5000,
+      runtime,
+    });
+
+    await createRuntimeThread(store, {
+      id: "thread-overflow-recovery",
+      agentKey: "overflow-recovery-agent",
+    });
+    await seedAutoCompactionTranscript(store, "thread-overflow-recovery");
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-overflow-recovery", {
+      message: stringToUserMessage("new request"),
+      source: "tui",
+    });
+    await coordinator.waitForIdle("thread-overflow-recovery");
+
+    expect(compactRuntime).toHaveBeenCalledTimes(1);
+    expect(runtime.complete).toHaveBeenCalledTimes(3);
+    expect(JSON.stringify(runtime.complete.mock.calls[0]?.[0].context.messages)).toContain("old request");
+    expect(JSON.stringify(runtime.complete.mock.calls[1]?.[0].context.messages)).not.toContain("old request");
+    expect(JSON.stringify(runtime.complete.mock.calls[1]?.[0].context.messages)).toContain("new request");
+
+    const [run] = await store.listRuns("thread-overflow-recovery");
+    expect(run).toMatchObject({status: "completed", error: undefined});
+    const transcript = await store.loadTranscript("thread-overflow-recovery");
+    expect(transcript.findLast((entry) => entry.source === "compact")?.metadata).toMatchObject({
+      kind: "compact_boundary",
+      trigger: "auto",
+    });
+  });
+
+  it("does not compact or retry twice when the rebuilt request still overflows", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "test-key");
+
+    const compactRuntime = vi.spyOn(PiAiRuntime.prototype, "complete").mockResolvedValue(
+      message("<summary>\nIntent:\n- continue after overflow\n</summary>"),
+    );
+    const overflow = createAssistantMessage([], {
+      stopReason: "error",
+      errorMessage: "Your input exceeds the context window of this model. Please adjust your input and try again.",
+    });
+    const runtime = createMockRuntime(overflow, overflow);
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("repeated-overflow-agent", {
+      agent: new Agent({name: "repeated-overflow-agent", instructions: "Reply briefly"}),
+      model: TEST_MODEL_WINDOW_5000,
+      runtime,
+    });
+
+    await createRuntimeThread(store, {
+      id: "thread-repeated-overflow",
+      agentKey: "repeated-overflow-agent",
+    });
+    await seedAutoCompactionTranscript(store, "thread-repeated-overflow");
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-repeated-overflow", {
+      message: stringToUserMessage("new request"),
+      source: "tui",
+    });
+    await expect(coordinator.waitForIdle("thread-repeated-overflow")).rejects.toMatchObject({
+      failureKind: "provider_context_overflow",
+    });
+
+    expect(compactRuntime).toHaveBeenCalledTimes(1);
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
+    const [run] = await store.listRuns("thread-repeated-overflow");
+    expect(run?.status).toBe("failed");
+  });
+
+  it("does not retry an unchanged request when overflow compaction cannot split the transcript", async () => {
+    vi.stubEnv("OPENAI_API_KEY", "test-key");
+
+    const compactRuntime = vi.spyOn(PiAiRuntime.prototype, "complete").mockResolvedValue(
+      message("<summary>should not run</summary>"),
+    );
+    const overflow = createAssistantMessage([], {
+      stopReason: "error",
+      errorMessage: "Your input exceeds the context window of this model. Please adjust your input and try again.",
+    });
+    const runtime = createMockRuntime(overflow);
+    const store = new TestThreadRuntimeStore();
+    const registry = new TestThreadDefinitionRegistry().register("overflow-nosplit-agent", {
+      agent: new Agent({name: "overflow-nosplit-agent", instructions: "Reply briefly"}),
+      model: TEST_MODEL_WINDOW_5000,
+      runtime,
+    });
+
+    await createRuntimeThread(store, {
+      id: "thread-overflow-nosplit",
+      agentKey: "overflow-nosplit-agent",
+    });
+
+    const coordinator = new ThreadRuntimeCoordinator({
+      store,
+      leaseManager: new SelectiveLeaseManager(),
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-overflow-nosplit", {
+      message: stringToUserMessage("single request"),
+      source: "tui",
+    });
+    await expect(coordinator.waitForIdle("thread-overflow-nosplit")).rejects.toMatchObject({
+      failureKind: "provider_context_overflow",
+    });
+
+    expect(compactRuntime).not.toHaveBeenCalled();
+    expect(runtime.complete).toHaveBeenCalledTimes(1);
+    const thread = await store.getThread("thread-overflow-nosplit");
+    expect(thread.runtimeState?.autoCompaction).toMatchObject({
+      consecutiveFailures: 1,
+      lastAttempt: expect.objectContaining({outcome: "no_split", trigger: "auto"}),
+    });
+  });
+
   it("continues after auto-compaction failure when over trigger but under hard window", async () => {
     vi.stubEnv("OPENAI_API_KEY", "test-key");
 

@@ -572,6 +572,7 @@ function parseRuntimeActivityFailureCategory(value: string | null): ControlRunti
   if (value === null || value.trim() === "") return undefined;
   if (
     value === "provider_abort"
+    || value === "provider_context_overflow"
     || value === "provider_timeout"
     || value === "provider_server_error"
     || value === "provider_transport_terminated"

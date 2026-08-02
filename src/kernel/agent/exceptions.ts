@@ -33,6 +33,7 @@ export class ContextWindowExceededError extends AgentError {
 
 export type ProviderRuntimeFailureKind =
   | "provider_abort"
+  | "provider_context_overflow"
   | "provider_timeout"
   | "provider_server_error"
   | "provider_transport_terminated"
