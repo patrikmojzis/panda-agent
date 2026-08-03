@@ -155,6 +155,7 @@ exec "${jqPath}" "$@"
   async function runScript(args: string[], options: {
     envFile: string;
     pathPrefix: string;
+    env?: Record<string, string>;
   }): Promise<ScriptResult> {
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
@@ -166,6 +167,7 @@ exec "${jqPath}" "$@"
           ...process.env,
           PATH: options.pathPrefix,
           WIKI_ENV_FILE: options.envFile,
+          ...options.env,
         },
       });
 
@@ -209,6 +211,35 @@ exec "${jqPath}" "$@"
     expect(logs).toContain("docker compose --env-file");
     expect(logs).toContain("exec -T panda-core panda wiki binding set claw --group-id 7 --namespace agents/claw --stdin");
     expect(logs).not.toContain("pnpm");
+  });
+
+  it("stores bindings through panda-core when compose transport is required", async () => {
+    const logPath = path.join(await makeTempDir("panda-wiki-log-"), "commands.log");
+    const binDir = await createCommandStubs(logPath);
+    await writeFile(path.join(binDir, "pnpm"), `#!/usr/bin/env bash
+printf 'host pnpm must not run\n' >&2
+exit 99
+`, {mode: 0o755});
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://agent@example/panda",
+      "CREDENTIALS_MASTER_KEY=test-master-key",
+      "PANDA_AGENTS=claw",
+      "WIKI_ADMIN_EMAIL=admin@localhost",
+      "WIKI_ADMIN_PASSWORD=secret",
+      "WIKI_PUBLISH_PORT=3100",
+      "WIKI_DB_URL=postgresql://wiki@example/wiki",
+    ].join("\n"));
+
+    const result = await runScript(["bootstrap", "claw"], {
+      envFile,
+      pathPrefix: binDir,
+      env: {PANDA_WIKI_BINDING_TRANSPORT: "compose"},
+    });
+
+    expectScriptSuccess(result);
+    const logs = await readFile(logPath, "utf8");
+    expect(logs).toContain("exec -T panda-core panda wiki binding set claw");
+    expect(result.stderr).not.toContain("host pnpm must not run");
   });
 
   it("grants namespace-scoped asset read, write, and manage permissions during bootstrap", async () => {

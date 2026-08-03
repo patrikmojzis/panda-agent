@@ -149,6 +149,7 @@ set -euo pipefail
 printf '%s\\n' "$*" >> "${logPath}"
 printf 'DATABASE_URL=%s\\n' "\${DATABASE_URL-}" >> "${logPath}"
 printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
+printf 'PANDA_WIKI_BINDING_TRANSPORT=%s\\n' "\${PANDA_WIKI_BINDING_TRANSPORT-}" >> "${logPath}"
 `, {mode: 0o755});
     return stubPath;
   }
@@ -1728,7 +1729,9 @@ exit 42
     });
 
     expect(upResult.exitCode).toBe(0);
-    expect(await readFile(wikiLogPath, "utf8")).toContain("bootstrap claw luna");
+    const wikiLog = await readFile(wikiLogPath, "utf8");
+    expect(wikiLog).toContain("bootstrap claw luna");
+    expect(wikiLog).toContain("PANDA_WIKI_BINDING_TRANSPORT=compose");
   });
 
   it("loads env files without shell-breaking URLs and passes them intact to wiki bootstrap", async () => {

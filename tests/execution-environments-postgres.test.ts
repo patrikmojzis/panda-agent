@@ -542,7 +542,14 @@ describe("PostgresExecutionEnvironmentStore", () => {
         mode: "all_agent",
       },
       toolPolicy: {
-        allowedTools: expect.arrayContaining(["bash", "view_media", "mcp.*"]),
+        allowedTools: expect.arrayContaining([
+          "bash",
+          "view_media",
+          "mcp.*",
+          "discord.voice.join",
+          "discord.voice.leave",
+          "discord.voice.status",
+        ]),
         bash: {
           allowed: true,
         },

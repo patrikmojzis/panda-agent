@@ -30,6 +30,7 @@ Optional env:
   WIKI_DB_URL=postgresql://user:pass@host:5432/panda_wiki
   WIKI_DB_SSL_CERT_FILE=/path/to/ca.crt
   WIKI_DB_SSL_CA=<single-line certificate body>
+  PANDA_WIKI_BINDING_TRANSPORT=auto|compose
 EOF
 }
 
@@ -76,13 +77,19 @@ require_command() {
 
 persist_wiki_binding() {
   local agent_key=$1 group_id=$2 namespace=$3 token=$4
+  local binding_transport="${PANDA_WIKI_BINDING_TRANSPORT:-auto}"
   local stack_compose="$repo_root/examples/docker-compose.remote-bash.external-db.yml"
   local runners_compose="$repo_root/.generated/docker-compose.remote-bash.external-db.runners.yml"
 
   [[ -n "$(trim "${DATABASE_URL:-}")" ]] || die "DATABASE_URL is required to store Panda wiki bindings."
   [[ -n "$(trim "${CREDENTIALS_MASTER_KEY:-}")" ]] || die "CREDENTIALS_MASTER_KEY is required to encrypt Panda wiki bindings."
 
-  if command -v pnpm >/dev/null 2>&1; then
+  case "$binding_transport" in
+    auto|compose) ;;
+    *) die "PANDA_WIKI_BINDING_TRANSPORT must be auto or compose." ;;
+  esac
+
+  if [[ "$binding_transport" == "auto" ]] && command -v pnpm >/dev/null 2>&1; then
     (
       cd "$repo_root"
       printf '%s' "$token" | pnpm exec tsx src/app/cli.ts \
@@ -94,7 +101,7 @@ persist_wiki_binding() {
     return 0
   fi
 
-  [[ -f "$stack_compose" ]] || die "pnpm is not installed and panda-core compose file is missing: $stack_compose"
+  [[ -f "$stack_compose" ]] || die "panda-core compose file is missing: $stack_compose"
 
   local -a panda_compose_args=(
     "$docker_bin" compose
