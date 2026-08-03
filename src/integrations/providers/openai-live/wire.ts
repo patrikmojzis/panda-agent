@@ -5,7 +5,7 @@ import type {OpenAILiveAuth} from "./auth.js";
 import {OPENAI_LIVE_MODEL} from "./types.js";
 
 const CALL_URL = "https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas";
-const CODEX_COMPAT_VERSION = "0.145.0";
+const PANDA_LIVE_VERSION = "0.1.0";
 const MAX_SDP_BYTES = 256 * 1024;
 const MAX_ERROR_BYTES = 16 * 1024;
 const APPEND_BYTES = 500;
@@ -13,12 +13,19 @@ const RESULT_CHARS = 1_800;
 const VOICES = new Set(["juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol", "cove"]);
 
 export interface OpenAILiveRequestIds {realtimeSessionId: string; sessionId: string; threadId: string}
-export interface OpenAILiveSession {model: typeof OPENAI_LIVE_MODEL; instructions: string; audio: {output: {voice: string}}; delegation: {type: "client"}}
+export interface OpenAILiveInitialItem {role: "user" | "assistant"; text: string}
+export interface OpenAILiveSession {
+  model: typeof OPENAI_LIVE_MODEL;
+  instructions: string;
+  audio: {output: {voice: string}};
+  delegation: {type: "client"};
+  initial_items?: Array<{type: "message"; role: "user" | "assistant"; content: Array<{type: "input_text" | "output_text"; text: string}>}>;
+}
 
 export type OpenAILiveEvent =
   | {kind: "session_started"; expiresAt?: number}
   | {kind: "delegation"; id: string; prompt: string}
-  | {kind: "output_item"; id: string}
+  | {kind: "transcript"; role: "user" | "assistant"; text: string}
   | {kind: "audio_cleared"}
   | {kind: "error"; message: string; fatalAuth: boolean}
   | {kind: "ignored"; type: string};
@@ -35,13 +42,13 @@ export function buildHeaders(auth: OpenAILiveAuth, ids: OpenAILiveRequestIds): R
     "session-id": ids.sessionId,
     "thread-id": ids.threadId,
     "x-session-id": ids.realtimeSessionId,
-    originator: "codex_cli_rs",
-    version: CODEX_COMPAT_VERSION,
-    "User-Agent": `codex_cli_rs/${CODEX_COMPAT_VERSION}`,
+    originator: "panda-agent",
+    version: PANDA_LIVE_VERSION,
+    "User-Agent": `panda-agent/${PANDA_LIVE_VERSION}`,
   };
 }
 
-export function buildSession(voice = "cove"): OpenAILiveSession {
+export function buildSession(voice = "cove", initialItems: readonly OpenAILiveInitialItem[] = []): OpenAILiveSession {
   if (!VOICES.has(voice)) throw new Error("Unsupported GPT-Live V3 voice.");
   return {
     model: OPENAI_LIVE_MODEL,
@@ -53,6 +60,13 @@ export function buildSession(voice = "cove"): OpenAILiveSession {
     ].join(" "),
     audio: {output: {voice}},
     delegation: {type: "client"},
+    ...(initialItems.length > 0 ? {
+      initial_items: initialItems.map((item) => ({
+        type: "message" as const,
+        role: item.role,
+        content: [{type: item.role === "user" ? "input_text" as const : "output_text" as const, text: item.text}],
+      })),
+    } : {}),
   };
 }
 
@@ -78,9 +92,9 @@ async function boundedText(response: Response, maxBytes: number): Promise<string
   return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
 }
 
-export async function createOpenAILiveCall(input: {auth: OpenAILiveAuth; ids: OpenAILiveRequestIds; offerSdp: string; voice: string; signal: AbortSignal; fetchImpl?: typeof fetch}): Promise<{answerSdp: string; sidebandUrl: string}> {
+export async function createOpenAILiveCall(input: {auth: OpenAILiveAuth; ids: OpenAILiveRequestIds; offerSdp: string; voice: string; initialItems?: readonly OpenAILiveInitialItem[]; signal: AbortSignal; fetchImpl?: typeof fetch}): Promise<{answerSdp: string; sidebandUrl: string}> {
   if (Buffer.byteLength(input.offerSdp) > MAX_SDP_BYTES) throw new Error("GPT-Live SDP offer exceeded the configured limit.");
-  const body = JSON.stringify({sdp: input.offerSdp, session: buildSession(input.voice)});
+  const body = JSON.stringify({sdp: input.offerSdp, session: buildSession(input.voice, input.initialItems)});
   const response = await (input.fetchImpl ?? fetch)(CALL_URL, {method: "POST", headers: {...buildHeaders(input.auth, input.ids), "Content-Type": "application/json"}, body, signal: input.signal});
   if (!response.ok) {
     await boundedText(response, MAX_ERROR_BYTES).catch(() => "");
@@ -109,13 +123,13 @@ export function parseOpenAILiveEvent(text: string): OpenAILiveEvent | null {
     return {kind: "session_started", ...(typeof session?.expires_at === "number" ? {expiresAt: session.expires_at} : {})};
   }
   if (payload.type === "output_audio_buffer.cleared") return {kind: "audio_cleared"};
-  if (payload.type === "response.output_item.added" || payload.type === "conversation.item.created" || payload.type === "conversation.item.added") {
-    const item = isRecord(payload.item) ? payload.item : undefined;
-    if (typeof item?.id === "string" && (item.role === "assistant" || item.type === "message")) return {kind: "output_item", id: item.id};
+  if (payload.type === "turn.done") {
+    const turn = isRecord(payload.turn) ? payload.turn : undefined;
+    if ((turn?.role === "user" || turn?.role === "assistant") && typeof turn.transcript === "string") {
+      const text = turn.transcript.trim().slice(0, 8_000);
+      return text ? {kind: "transcript", role: turn.role, text} : {kind: "ignored", type: payload.type};
+    }
     return {kind: "ignored", type: payload.type};
-  }
-  if (payload.type === "output_audio.delta" || payload.type === "response.output_audio.delta" || payload.type === "conversation.output_audio.delta") {
-    return typeof payload.item_id === "string" ? {kind: "output_item", id: payload.item_id} : {kind: "ignored", type: payload.type};
   }
   if (payload.type === "delegation.created") {
     const item = isRecord(payload.item) ? payload.item : undefined;
@@ -134,6 +148,14 @@ export function parseOpenAILiveEvent(text: string): OpenAILiveEvent | null {
 }
 
 export function delegationAppendMessages(delegationId: string, text: string): string[] {
+  return contextAppendMessages(text, delegationId);
+}
+
+export function sessionSpeechMessages(text: string): string[] {
+  return contextAppendMessages(text);
+}
+
+function contextAppendMessages(text: string, delegationId?: string): string[] {
   let prefix = text.slice(0, RESULT_CHARS - 16);
   if (/\p{Surrogate}$/u.test(prefix)) prefix = prefix.slice(0, -1);
   const bounded = text.length > RESULT_CHARS ? `${prefix.trimEnd()} [truncated]` : text;
@@ -144,5 +166,10 @@ export function delegationAppendMessages(delegationId: string, text: string): st
     current += character;
   }
   if (current) chunks.push(current);
-  return chunks.map((chunk) => JSON.stringify({type: "delegation.context.append", delegation_item_id: delegationId, channel: "speakable", content: [{type: "input_text", text: chunk}]}));
+  return chunks.map((chunk) => JSON.stringify({
+    type: delegationId ? "delegation.context.append" : "session.context.append",
+    ...(delegationId ? {delegation_item_id: delegationId} : {}),
+    channel: "speakable",
+    content: [{type: "input_text", text: chunk}],
+  }));
 }

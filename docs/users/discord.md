@@ -144,7 +144,7 @@ CODEX_HOST_HOME=/home/you/.codex
 PANDA_DISCORD_DB_POOL_MAX=4
 ```
 
-The worker reads `CODEX_HOME/auth.json` afresh when joining and requires ChatGPT/Codex OAuth with a `chatgpt_account_id`. It never refreshes, stores, or logs that token. An expired or rejected token disconnects voice with `auth_unavailable`.
+The worker reads `CODEX_HOME/auth.json` afresh for every provider connection and requires ChatGPT/Codex OAuth with a `chatgpt_account_id`. It never refreshes, stores, or logs that token. An expired token or HTTP 401 disconnects voice with `auth_unavailable`; the backend's overloaded HTTP 403 is reported as `provider_startup_failed`, not as a Discord permission error.
 
 From a Discord-bound Panda session:
 
@@ -156,4 +156,6 @@ panda discord voice leave [--channel <voiceChannelId>] [--connector <connectorKe
 
 The target voice channel need not be text-bound, but the invoking session must already have a conversation binding for the connector. Panda accepts humans and other bots, ignores only itself, limits utterances to 60 seconds and 30 accepted utterances per minute, and supports barge-in. Delegated prompts and Panda answers are durable; PCM and casual voice chatter are not.
 
-Voice sessions are capped at eight per process, expire after 30 minutes, and are not restored after worker restart. This integration targets an undocumented experimental protocol and carries no compatibility guarantee.
+The private GPT-Live sideband can reset independently of Discord. Panda keeps the Discord voice connection alive, creates a fresh provider session, and carries over only a small in-memory window of completed voice turns. If a durable Panda answer finishes during that rotation, the latest answer waits for the replacement provider and is still spoken. Unexpected audio, Discord, and provider failures are logged and tear down owned resources cleanly.
+
+Voice sessions are capped at eight per process, expire 30 minutes after the original join even if the provider reconnects, and are not restored after worker restart. This integration targets an undocumented experimental protocol and carries no compatibility guarantee.

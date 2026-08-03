@@ -35,11 +35,20 @@ The call request uses:
 - `Authorization: Bearer <Codex OAuth access token>`
 - `ChatGPT-Account-ID: <account id>`
 - `OpenAI-Alpha: quicksilver=v2`
-- bounded session/thread correlation headers and the Codex originator header
+- bounded session/thread correlation headers and honest `panda-agent` client attribution
 
 The session is created with `gpt-live-1-codex`, voice `cove`, and client-managed
 delegation. The sideband does not send another `session.update`; the session was
 already supplied during call creation.
+
+On 2026-08-04, the same Codex OAuth and Werift peer reproduced an abnormal
+sideband reset after about 40 seconds through the official Codex app-server.
+That reset is therefore treated as an upstream provider-lifecycle event, not a
+Discord disconnect or a Panda signaling mismatch. Panda rotates only the
+GPT-Live bridge, re-resolves OAuth, seeds the replacement with a bounded
+in-memory window of completed transcripts, and keeps the Discord connection
+alive. The owning voice session still has one absolute 30-minute lifetime from
+its original join.
 
 ## Scope
 
@@ -88,6 +97,11 @@ Update `src/integrations/providers/openai-live/bridge.ts`:
   rollback conditions
 - preserve barge-in, delegation correlation, stale-result suppression, and
   complete teardown
+- buffer sideband events that arrive immediately after open so `session.started`,
+  transcript, delegation, and error events cannot race listener installation
+- recover abnormal provider closure inside the existing Discord connection;
+  queue the latest durable result across that rotation and speak it through a
+  session-level handoff when its original delegation id belonged to the old call
 
 ### 4. Keep authentication deliberately read-only
 

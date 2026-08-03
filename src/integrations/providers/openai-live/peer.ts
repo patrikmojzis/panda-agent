@@ -87,6 +87,7 @@ export class OpenAILiveRtpReorderBuffer<T> {
 
 /** Linear PCM16 resampler used only at the Discord/GPT-Live transport boundary. */
 export function resamplePcm16(input: Int16Array, sourceRate: number, targetRate: number): Int16Array {
+  if (input.length === 0) return new Int16Array();
   if (sourceRate === targetRate) return new Int16Array(input);
   const length = Math.max(1, Math.round(input.length * targetRate / sourceRate));
   const output = new Int16Array(length);
@@ -131,12 +132,20 @@ export class WeriftOpenAILiveAudioPeer implements OpenAILiveAudioPeer {
     signal?.throwIfAborted();
     const peer = new werift.RTCPeerConnection({codecs: {audio: [werift.useOPUS({payloadType: 111})], video: []}});
     const transceiver = peer.addTransceiver("audio", {direction: "sendrecv"});
-    const [encoder, decoder] = await Promise.all([
-      opus.createEncoder({application: opus.Application.Voip, channels: CHANNELS, sampleRate: PROVIDER_RATE, frameSize: FRAME_SAMPLES}),
-      opus.createDecoder({channels: CHANNELS, sampleRate: PROVIDER_RATE}),
-    ]);
-    signal?.throwIfAborted();
-    return new WeriftOpenAILiveAudioPeer({callbacks, werift, peer, transceiver, encoder, decoder});
+    let encoder: Awaited<ReturnType<Libopus["createEncoder"]>> | undefined;
+    let decoder: Awaited<ReturnType<Libopus["createDecoder"]>> | undefined;
+    try {
+      encoder = await opus.createEncoder({application: opus.Application.Voip, channels: CHANNELS, sampleRate: PROVIDER_RATE, frameSize: FRAME_SAMPLES});
+      signal?.throwIfAborted();
+      decoder = await opus.createDecoder({channels: CHANNELS, sampleRate: PROVIDER_RATE});
+      signal?.throwIfAborted();
+      return new WeriftOpenAILiveAudioPeer({callbacks, werift, peer, transceiver, encoder, decoder});
+    } catch (error) {
+      encoder?.free();
+      decoder?.free();
+      await peer.close().catch(() => undefined);
+      throw error;
+    }
   }
 
   private closed = false;
@@ -162,6 +171,7 @@ export class WeriftOpenAILiveAudioPeer implements OpenAILiveAudioPeer {
         this.startPump();
       }
       if (["failed", "disconnected", "closed"].includes(status)) {
+        this.connected = false;
         this.connectionError = new Error(`GPT-Live WebRTC media connection ${status}.`);
         this.settleConnectionWaiters(this.connectionError);
         state.callbacks.onError(this.connectionError);
@@ -203,7 +213,8 @@ export class WeriftOpenAILiveAudioPeer implements OpenAILiveAudioPeer {
 
   sendAudio(audio: Buffer): void {
     if (this.closed || audio.length < 2) return;
-    this.pending = Buffer.concat([this.pending, Buffer.from(audio)]);
+    const evenAudio = audio.subarray(0, audio.length - audio.length % 2);
+    this.pending = Buffer.concat([this.pending, Buffer.from(evenAudio)]);
     if (this.pending.length > MAX_PENDING_BYTES) this.pending = this.pending.subarray(this.pending.length - MAX_PENDING_BYTES);
   }
 
@@ -224,6 +235,7 @@ export class WeriftOpenAILiveAudioPeer implements OpenAILiveAudioPeer {
     if (track.kind !== "audio" || this.tracks.has(track.uuid)) return;
     this.tracks.add(track.uuid);
     track.onReceiveRtp.subscribe((packet) => {
+      if (this.closed) return;
       if (this.inboundSsrc !== undefined && this.inboundSsrc !== packet.header.ssrc) this.inboundReorder.reset();
       this.inboundSsrc = packet.header.ssrc;
       this.processInbound(this.inboundReorder.push(packet.header.sequenceNumber, packet));
@@ -238,6 +250,7 @@ export class WeriftOpenAILiveAudioPeer implements OpenAILiveAudioPeer {
   }
 
   private processInbound(outputs: OpenAILiveRtpOutput<RtpPacket>[]): void {
+    if (this.closed) return;
     for (const output of outputs) {
       try {
         const decoded = output.kind === "loss"
@@ -261,6 +274,7 @@ export class WeriftOpenAILiveAudioPeer implements OpenAILiveAudioPeer {
 
   private startPump(): void {
     if (this.timer) return;
+    this.sendFrame();
     this.timer = setInterval(() => this.sendFrame(), FRAME_MS);
     this.timer.unref?.();
   }

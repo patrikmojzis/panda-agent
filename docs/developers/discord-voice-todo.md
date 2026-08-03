@@ -12,3 +12,5 @@
   - This follow-up requires a deliberately writable auth store; the initial
     backend-route change keeps the Codex mount read-only and fails expired auth
     as `auth_unavailable`.
+  - Provider recovery already reloads the read-only file before each new call;
+    it does not mutate or refresh credentials.

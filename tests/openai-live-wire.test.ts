@@ -1,7 +1,7 @@
 import {describe, expect, it, vi} from "vitest";
 
 import {resolveOpenAILiveAuth} from "../src/integrations/providers/openai-live/auth.js";
-import {buildHeaders, createOpenAILiveCall, createRequestIds, delegationAppendMessages, parseOpenAILiveEvent} from "../src/integrations/providers/openai-live/wire.js";
+import {buildHeaders, createOpenAILiveCall, createRequestIds, delegationAppendMessages, parseOpenAILiveEvent, sessionSpeechMessages} from "../src/integrations/providers/openai-live/wire.js";
 
 function jwt(payload: Record<string, unknown>): string {
   return `${Buffer.from("{}").toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
@@ -21,9 +21,9 @@ describe("experimental OpenAI GPT-Live wire", () => {
         "Content-Type": "application/json",
         "OpenAI-Alpha": "quicksilver=v2",
         "chatgpt-account-id": "acct-1",
-        originator: "codex_cli_rs",
-        version: "0.145.0",
-        "User-Agent": "codex_cli_rs/0.145.0",
+        originator: "panda-agent",
+        version: "0.1.0",
+        "User-Agent": "panda-agent/0.1.0",
       });
       expect(JSON.parse(String(init?.body))).toEqual({
         sdp: "offer-sdp",
@@ -32,11 +32,19 @@ describe("experimental OpenAI GPT-Live wire", () => {
           audio: {output: {voice: "cove"}},
           delegation: {type: "client"},
           instructions: expect.stringContaining("Wait silently until a participant speaks"),
+          initial_items: [
+            {type: "message", role: "user", content: [{type: "input_text", text: "hello"}]},
+            {type: "message", role: "assistant", content: [{type: "output_text", text: "hi"}]},
+          ],
         }),
       });
       return new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}});
     });
-    await expect(createOpenAILiveCall({auth: {token: "secret", accountId: "acct-1"}, ids: createRequestIds(), offerSdp: "offer-sdp", voice: "cove", signal: new AbortController().signal, fetchImpl})).resolves.toEqual({answerSdp: "answer-sdp", sidebandUrl: "wss://api.openai.com/v1/live/rtc_test"});
+    await expect(createOpenAILiveCall({
+      auth: {token: "secret", accountId: "acct-1"}, ids: createRequestIds(), offerSdp: "offer-sdp", voice: "cove",
+      initialItems: [{role: "user", text: "hello"}, {role: "assistant", text: "hi"}],
+      signal: new AbortController().signal, fetchImpl,
+    })).resolves.toEqual({answerSdp: "answer-sdp", sidebandUrl: "wss://api.openai.com/v1/live/rtc_test"});
   });
 
   it("rejects unsupported V3 voices before making a provider request", async () => {
@@ -55,11 +63,12 @@ describe("experimental OpenAI GPT-Live wire", () => {
     const messages = delegationAppendMessages("delegation-1", "é".repeat(800));
     expect(messages.length).toBeGreaterThan(1);
     expect(messages.every((message) => Buffer.byteLength(JSON.parse(message).content[0].text) <= 500)).toBe(true);
+    expect(JSON.parse(sessionSpeechMessages("done")[0]!)).toMatchObject({type: "session.context.append", channel: "speakable"});
   });
 
-  it("tracks assistant output items used to truncate barged-in audio", () => {
-    expect(parseOpenAILiveEvent(JSON.stringify({type: "response.output_item.added", item: {id: "item-1", type: "message", role: "assistant"}}))).toEqual({kind: "output_item", id: "item-1"});
-    expect(parseOpenAILiveEvent(JSON.stringify({type: "output_audio.delta", item_id: "item-2", audio: "ignored-media-copy"}))).toEqual({kind: "output_item", id: "item-2"});
+  it("captures completed transcripts for bounded in-memory provider recovery", () => {
+    expect(parseOpenAILiveEvent(JSON.stringify({type: "turn.done", turn: {role: "user", transcript: "hello there"}}))).toEqual({kind: "transcript", role: "user", text: "hello there"});
+    expect(parseOpenAILiveEvent(JSON.stringify({type: "turn.done", turn: {role: "assistant", transcript: "hi"}}))).toEqual({kind: "transcript", role: "assistant", text: "hi"});
   });
 
   it("never exposes the OAuth bearer through structured errors", () => {
