@@ -113,13 +113,6 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
 
   interrupt(): void {
     this.options.onClearAudio();
-    if (this.socket?.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify({type: "response.cancel"}));
-      if (this.activeOutputItemId && this.playedOutputMs > 0) {
-        this.socket.send(JSON.stringify({type: "conversation.item.truncate", item_id: this.activeOutputItemId, content_index: 0, audio_end_ms: Math.floor(this.playedOutputMs)}));
-      }
-      this.socket.send(JSON.stringify({type: "output_audio_buffer.clear"}));
-    }
     this.activeOutputItemId = undefined;
     this.playedOutputMs = 0;
   }

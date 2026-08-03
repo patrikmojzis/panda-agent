@@ -20,12 +20,13 @@ class FakeSocket extends EventEmitter {
 }
 
 describe("OpenAI GPT-Live bridge", () => {
-  it("waits for sideband and WebRTC without requiring session.started, then supports barge-in", async () => {
+  it("waits for sideband and WebRTC without requiring session.started, then clears local playback on barge-in", async () => {
     const mediaReady = deferred();
     const socket = new FakeSocket();
     const waitUntilConnected = vi.fn(async () => mediaReady.promise);
+    const onClearAudio = vi.fn();
     const bridge = new OpenAILiveRealtimeVoiceBridge({
-      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio: vi.fn(), onClose: vi.fn(), log: vi.fn(),
+      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio, onClose: vi.fn(), log: vi.fn(),
       resolveAuth: () => ({token: "secret", accountId: "acct-1"}),
       fetchImpl: vi.fn(async () => new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}})),
       createPeer: vi.fn(async () => ({createOffer: async () => "offer-sdp", applyAnswer: async () => undefined, waitUntilConnected, sendAudio: vi.fn(), close: vi.fn()})),
@@ -49,11 +50,8 @@ describe("OpenAI GPT-Live bridge", () => {
     socket.emit("message", Buffer.from(JSON.stringify({type: "response.output_item.added", item: {id: "item-1", type: "message", role: "assistant"}})), false);
     bridge.noteAudioPlayed(40);
     bridge.interrupt();
-    expect(socket.sent.map((value) => JSON.parse(value))).toEqual(expect.arrayContaining([
-      {type: "response.cancel"},
-      {type: "conversation.item.truncate", item_id: "item-1", content_index: 0, audio_end_ms: 40},
-      {type: "output_audio_buffer.clear"},
-    ]));
+    expect(onClearAudio).toHaveBeenCalledOnce();
+    expect(socket.sent).toEqual([]);
     bridge.close();
   });
 
