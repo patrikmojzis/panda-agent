@@ -1625,7 +1625,8 @@ bootstrap_wiki_if_configured() {
 
   (
     cd "$repo_root"
-    PANDA_WIKI_BINDING_TRANSPORT=compose \
+    PANDA_DOCKER_BIN="$docker_bin" \
+      PANDA_WIKI_BINDING_TRANSPORT=compose \
       WIKI_ENV_FILE="$host_env_file" \
       "$wiki_local_script" bootstrap "${normalized_agents[@]}"
   )
