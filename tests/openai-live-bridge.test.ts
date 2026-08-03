@@ -78,6 +78,35 @@ describe("OpenAI GPT-Live bridge", () => {
     expect(closePeer).toHaveBeenCalled();
   });
 
+  it("reports the failing transport without exposing bearer credentials", async () => {
+    const socket = new FakeSocket();
+    const log = vi.fn();
+    const onClose = vi.fn();
+    let failMedia!: (error: Error) => void;
+    const bridge = new OpenAILiveRealtimeVoiceBridge({
+      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio: vi.fn(), onClose, log,
+      resolveAuth: () => ({token: "secret", accountId: "acct-1"}),
+      fetchImpl: vi.fn(async () => new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}})),
+      createPeer: vi.fn(async (callbacks) => {
+        failMedia = callbacks.onError;
+        return {createOffer: async () => "offer-sdp", applyAnswer: async () => undefined, waitUntilConnected: async () => undefined, sendAudio: vi.fn(), close: vi.fn()};
+      }),
+      createSocket: () => {
+        queueMicrotask(() => {
+          socket.readyState = WebSocket.OPEN;
+          socket.emit("open");
+        });
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    await bridge.connect();
+    failMedia(new Error("Discord output failed with Bearer top-secret"));
+
+    expect(log).toHaveBeenCalledWith("gpt_live_failed", {source: "media", message: "Discord output failed with Bearer [redacted]"});
+    expect(onClose).toHaveBeenCalledWith("provider_failed");
+  });
+
   it("reorders packets, drops duplicates, handles wraparound, and emits bounded loss markers", () => {
     const reorder = new OpenAILiveRtpReorderBuffer<string>();
     expect(reorder.push(10, "a")).toEqual([{kind: "packet", packet: "a"}]);

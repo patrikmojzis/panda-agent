@@ -8,6 +8,7 @@ const CONNECT_TIMEOUT_MS = 30_000;
 const SESSION_TTL_MS = 30 * 60_000;
 const MAX_SESSIONS = 8;
 const activeOwners = new Set<object>();
+type RealtimeVoiceFailureSource = "media" | "sideband" | "session";
 
 export interface RealtimeVoiceDelegation {id: string; prompt: string}
 export interface RealtimeVoiceBridge {
@@ -37,6 +38,10 @@ export interface RealtimeVoiceBridgeOptions {
 function rawText(data: RawData): string {
   if (Array.isArray(data)) return Buffer.concat(data).toString("utf8");
   return Buffer.from(data as ArrayBuffer).toString("utf8");
+}
+
+function safeErrorMessage(error: Error): string {
+  return error.message.replace(/Bearer\s+\S+/gi, "Bearer [redacted]").slice(0, 500);
 }
 
 function waitForOpen(socket: WebSocket, signal: AbortSignal): Promise<void> {
@@ -80,7 +85,7 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
     const signal = AbortSignal.any([this.abort.signal, AbortSignal.timeout(CONNECT_TIMEOUT_MS)]);
     try {
       const factory = this.options.createPeer ?? ((callbacks, createSignal) => WeriftOpenAILiveAudioPeer.create(callbacks, createSignal));
-      this.peer = await factory({onAudio: this.options.onAudio, onError: (error) => this.fail(error)}, signal);
+      this.peer = await factory({onAudio: this.options.onAudio, onError: (error) => this.fail(error, "media")}, signal);
       const offerSdp = await this.peer.createOffer();
       const auth = (this.options.resolveAuth ?? (() => resolveOpenAILiveAuth(this.options.env)))();
       this.ids = createRequestIds();
@@ -135,9 +140,12 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
       try {
         await waitForOpen(socket, signal);
         this.socket = socket;
-        socket.on("message", (data, isBinary) => { if (isBinary) return this.fail(new Error("GPT-Live sideband sent binary data.")); this.handleEvent(rawText(data)); });
-        socket.on("error", (error) => this.fail(error));
-        socket.on("close", (code) => { if (!this.closed) this.fail(new Error(`GPT-Live sideband closed (${code}).`)); });
+        socket.on("message", (data, isBinary) => { if (isBinary) return this.fail(new Error("GPT-Live sideband sent binary data."), "sideband"); this.handleEvent(rawText(data)); });
+        socket.on("error", (error) => this.fail(error, "sideband"));
+        socket.on("close", (code, reason) => {
+          const detail = reason?.length > 0 ? `: ${reason.toString("utf8").slice(0, 200)}` : ".";
+          if (!this.closed) this.fail(new Error(`GPT-Live sideband closed (${code})${detail}`), "sideband");
+        });
         return;
       } catch (error) {
         if (this.socket === socket) this.socket = undefined;
@@ -164,7 +172,7 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
       return;
     }
     if (event.kind === "error") {
-      if (event.fatalAuth) this.fail(new Error("Codex OAuth became unavailable."));
+      if (event.fatalAuth) this.fail(new Error("Codex OAuth became unavailable."), "sideband");
       else this.options.log("gpt_live_sideband_error", {message: event.message});
       return;
     }
@@ -172,7 +180,9 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
     void Promise.resolve(this.options.onDelegation(event)).catch((error: unknown) => this.options.log("gpt_live_delegation_failed", {message: error instanceof Error ? error.message : String(error)}));
   }
 
-  private fail(error: Error): void {
+  private fail(error: Error, source: RealtimeVoiceFailureSource): void {
+    if (this.closed) return;
+    this.options.log("gpt_live_failed", {source, message: safeErrorMessage(error)});
     if (this.startup) {
       this.startup.reject(error);
       this.abort.abort(error);
@@ -186,7 +196,7 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
     if (this.expiryAt !== undefined && expiresAt >= this.expiryAt) return;
     if (this.expiry) clearTimeout(this.expiry);
     this.expiryAt = expiresAt;
-    this.expiry = setTimeout(() => this.fail(new Error("GPT-Live session expired.")), Math.max(0, expiresAt - Date.now()));
+    this.expiry = setTimeout(() => this.fail(new Error("GPT-Live session expired."), "session"), Math.max(0, expiresAt - Date.now()));
     this.expiry.unref?.();
   }
 
