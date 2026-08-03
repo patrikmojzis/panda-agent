@@ -86,6 +86,50 @@ describe("DiscordVoiceSessionManager fake end-to-end", () => {
       .rejects.toThrow('"failureCode":"permission_denied"');
   });
 
+  it("replaces a failed GPT-Live bridge without leaving Discord voice", async () => {
+    const player = {state: {status: "playing"}, play: vi.fn(), stop: vi.fn()};
+    const connection = {
+      receiver: {speaking: new EventEmitter(), subscribe: vi.fn()},
+      subscribe: vi.fn(),
+      destroy: vi.fn(),
+    };
+    const encoder = {encode: vi.fn(() => new Uint8Array([1])), free: vi.fn()};
+    const bridgeOptions: RealtimeVoiceBridgeOptions[] = [];
+    const bridges: RealtimeVoiceBridge[] = [];
+    const createBridge = (options: RealtimeVoiceBridgeOptions): RealtimeVoiceBridge => {
+      bridgeOptions.push(options);
+      const bridge: RealtimeVoiceBridge = {
+        connect: vi.fn(async () => undefined), sendAudio: vi.fn(), noteAudioPlayed: vi.fn(), interrupt: vi.fn(), close: vi.fn(),
+        appendDelegationResult: vi.fn(() => true), getActiveDelegationId: vi.fn(),
+      };
+      bridges.push(bridge);
+      return bridge;
+    };
+    const store = {
+      markConnectorSessionsDisconnected: vi.fn(async () => 0), failRunningControls: vi.fn(async () => 0),
+      upsertSession: vi.fn(async (input) => ({...input, startedAt: 1, updatedAt: 1})),
+      markSessionDisconnected: vi.fn(async () => undefined),
+    };
+    const manager = new DiscordVoiceSessionManager({
+      connectorKey: "bot-1", botToken: "discord-secret", gatewayAdapter: vi.fn(() => (() => ({sendPayload: () => true, destroy: () => undefined}))),
+      restClient: {getChannelMetadata: vi.fn(async () => ({id: "12345", type: 2, guildId: "guild-1"}))},
+      store: store as never, requests: {enqueueRequest: vi.fn()} as never, log: vi.fn(), createBridge,
+      openVoiceTransport: vi.fn(async () => ({connection: connection as never, output: new PassThrough(), player: player as never, outputEncoder: encoder as never})),
+    });
+
+    await manager.start();
+    await manager.handle({id: "control-1", connectorKey: "bot-1", operation: "join", sessionId: "session-1", agentKey: "panda", channelId: "12345", status: "running", createdAt: 1, updatedAt: 1});
+    bridgeOptions[0]!.onClose("provider_failed");
+
+    await vi.waitFor(() => expect(bridges).toHaveLength(2));
+    expect(bridges[1]!.connect).toHaveBeenCalledOnce();
+    expect(connection.destroy).not.toHaveBeenCalled();
+
+    bridgeOptions[1]!.onClose("auth_unavailable");
+    await vi.waitFor(() => expect(connection.destroy).toHaveBeenCalledOnce());
+    expect(store.markSessionDisconnected).toHaveBeenCalledWith("bot-1", "guild-1", "error", "auth_unavailable");
+  });
+
   it("rolls back a join whose control became terminal before completion", async () => {
     const control = {id: "control-1", connectorKey: "bot-1", operation: "join" as const, sessionId: "session-1", agentKey: "panda", channelId: "12345", status: "running" as const, createdAt: 1, updatedAt: 1};
     const result = {ok: true, state: "connected", connectorKey: "bot-1", guildId: "guild-1", channelId: "12345", sessionId: "session-1", voiceSessionId: "voice-1", model: "gpt-live-1-codex"};

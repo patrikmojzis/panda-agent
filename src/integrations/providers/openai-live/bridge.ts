@@ -182,7 +182,7 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
 
   private fail(error: Error, source: RealtimeVoiceFailureSource): void {
     if (this.closed) return;
-    this.options.log("gpt_live_failed", {source, message: safeErrorMessage(error)});
+    this.options.log("gpt_live_failed", {failureSource: source, message: safeErrorMessage(error)});
     if (this.startup) {
       this.startup.reject(error);
       this.abort.abort(error);

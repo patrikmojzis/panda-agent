@@ -5,6 +5,7 @@ import type {OpenAILiveAuth} from "./auth.js";
 import {OPENAI_LIVE_MODEL} from "./types.js";
 
 const CALL_URL = "https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas";
+const CODEX_COMPAT_VERSION = "0.145.0";
 const MAX_SDP_BYTES = 256 * 1024;
 const MAX_ERROR_BYTES = 16 * 1024;
 const APPEND_BYTES = 500;
@@ -35,6 +36,8 @@ export function buildHeaders(auth: OpenAILiveAuth, ids: OpenAILiveRequestIds): R
     "thread-id": ids.threadId,
     "x-session-id": ids.realtimeSessionId,
     originator: "codex_cli_rs",
+    version: CODEX_COMPAT_VERSION,
+    "User-Agent": `codex_cli_rs/${CODEX_COMPAT_VERSION}`,
   };
 }
 
@@ -44,6 +47,7 @@ export function buildSession(voice = "cove"): OpenAILiveSession {
     model: OPENAI_LIVE_MODEL,
     instructions: [
       "You are Panda's low-latency voice front end in a Discord voice channel.",
+      "Wait silently until a participant speaks; do not greet merely because the session connected.",
       "Respond naturally to casual conversation. Delegate substantive requests, memory questions, and every action requiring tools to the client.",
       "Never claim an action succeeded unless the client result says so. Keep spoken replies concise.",
     ].join(" "),

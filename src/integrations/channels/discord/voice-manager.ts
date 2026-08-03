@@ -26,6 +26,7 @@ const MAX_UTTERANCE_MS = 60_000;
 const MAX_UTTERANCES_PER_MINUTE = 30;
 const VOICE_READY_TIMEOUT_MS = 15_000;
 const VOICE_RECONNECT_GRACE_MS = 15_000;
+const PROVIDER_RECONNECT_DELAYS_MS = [0, 500, 1_500] as const;
 
 interface ActiveVoiceSession {
   connectorKey: string;
@@ -41,6 +42,9 @@ interface ActiveVoiceSession {
   outputPending: Buffer;
   player: ReturnType<typeof createAudioPlayer>;
   speakers: DiscordVoiceSpeakerArbiter;
+  bridgeGeneration: number;
+  failedBridgeGeneration?: number;
+  providerRecovery?: Promise<void>;
   closing: boolean;
 }
 
@@ -63,6 +67,10 @@ export interface DiscordVoiceManagerOptions {
 }
 
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+
+function safeFailureMessage(error: unknown): string {
+  return errorMessage(error).replace(/Bearer\s+\S+/gi, "Bearer [redacted]").slice(0, 500);
+}
 
 function classifyFailure(error: unknown): string {
   const message = errorMessage(error).toLowerCase();
@@ -195,17 +203,10 @@ export class DiscordVoiceSessionManager {
       session = {
         connectorKey: control.connectorKey, guildId: channel.guildId, channelId: channel.channelId, sessionId: control.sessionId,
         agentKey: control.agentKey, voiceSessionId, connection, output, outputEncoder, outputPending: Buffer.alloc(0), player,
-        speakers: new DiscordVoiceSpeakerArbiter(), closing: false,
+        speakers: new DiscordVoiceSpeakerArbiter(), bridgeGeneration: 0, closing: false,
         bridge: undefined as unknown as RealtimeVoiceBridge,
       };
-      session.bridge = bridgeFactory({
-        env: this.options.env, voice: this.options.env?.PANDA_DISCORD_VOICE_VOICE ?? "cove",
-        onAudio: (audio) => this.writeOutput(session!, audio),
-        onDelegation: (delegation) => this.delegate(session!, delegation.id, delegation.prompt),
-        onClearAudio: () => this.clearPlayback(session!),
-        onClose: (reason) => { if (!session!.closing) void this.stopGuild(session!.guildId, reason); },
-        log: this.options.log,
-      });
+      session.bridge = this.createBridge(session, bridgeFactory);
       connection.subscribe(player);
       player.play(createAudioResource(output, {inputType: StreamType.Opus}));
       this.sessions.set(channel.guildId, session);
@@ -286,6 +287,61 @@ export class DiscordVoiceSessionManager {
     session.output = new PassThrough();
     session.outputPending = Buffer.alloc(0);
     session.player.play(createAudioResource(session.output, {inputType: StreamType.Opus}));
+  }
+
+  private createBridge(session: ActiveVoiceSession, bridgeFactory = this.options.createBridge ?? ((options) => new OpenAILiveRealtimeVoiceBridge(options))): RealtimeVoiceBridge {
+    const generation = ++session.bridgeGeneration;
+    return bridgeFactory({
+      env: this.options.env, voice: this.options.env?.PANDA_DISCORD_VOICE_VOICE ?? "cove",
+      onAudio: (audio) => this.writeOutput(session, audio),
+      onDelegation: (delegation) => this.delegate(session, delegation.id, delegation.prompt),
+      onClearAudio: () => this.clearPlayback(session),
+      onClose: (reason) => {
+        if (session.closing || session.bridgeGeneration !== generation) return;
+        if (reason === "provider_failed") {
+          session.failedBridgeGeneration = generation;
+          this.recoverProvider(session);
+        }
+        else void this.stopGuild(session.guildId, reason);
+      },
+      log: this.options.log,
+    });
+  }
+
+  private recoverProvider(session: ActiveVoiceSession): void {
+    if (session.providerRecovery || session.closing || this.sessions.get(session.guildId) !== session) return;
+    session.providerRecovery = this.runProviderRecovery(session)
+      .catch(async (error: unknown) => {
+        this.options.log("voice_provider_recovery_failed", {connectorKey: session.connectorKey, guildId: session.guildId, channelId: session.channelId, message: safeFailureMessage(error)});
+        await this.stopGuild(session.guildId, "provider_failed").catch((stopError: unknown) => this.options.log("voice_disconnect_failed", {connectorKey: session.connectorKey, guildId: session.guildId, message: safeFailureMessage(stopError)}));
+      })
+      .finally(() => {
+        session.providerRecovery = undefined;
+        if (session.failedBridgeGeneration === session.bridgeGeneration) this.recoverProvider(session);
+      });
+  }
+
+  private async runProviderRecovery(session: ActiveVoiceSession): Promise<void> {
+    this.clearPlayback(session);
+    for (const [index, delayMs] of PROVIDER_RECONNECT_DELAYS_MS.entries()) {
+      if (delayMs > 0) await new Promise<void>((resolve) => { const timer = setTimeout(resolve, delayMs); timer.unref?.(); });
+      if (session.closing || this.sessions.get(session.guildId) !== session) return;
+      const bridge = this.createBridge(session);
+      session.bridge = bridge;
+      try {
+        await bridge.connect();
+        if (session.closing || this.sessions.get(session.guildId) !== session) { bridge.close(); return; }
+        if (session.failedBridgeGeneration === session.bridgeGeneration) continue;
+        session.failedBridgeGeneration = undefined;
+        this.options.log("voice_provider_reconnected", {connectorKey: session.connectorKey, guildId: session.guildId, channelId: session.channelId, attempt: index + 1});
+        return;
+      } catch (error) {
+        const failureCode = classifyFailure(error);
+        this.options.log("voice_provider_reconnect_failed", {connectorKey: session.connectorKey, guildId: session.guildId, channelId: session.channelId, attempt: index + 1, failureCode, message: safeFailureMessage(error)});
+        if (failureCode === "auth_unavailable") { await this.stopGuild(session.guildId, failureCode); return; }
+      }
+    }
+    await this.stopGuild(session.guildId, "provider_failed");
   }
 
   private async delegate(session: ActiveVoiceSession, delegationId: string, prompt: string): Promise<void> {

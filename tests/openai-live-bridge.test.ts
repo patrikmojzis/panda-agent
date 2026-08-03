@@ -103,7 +103,7 @@ describe("OpenAI GPT-Live bridge", () => {
     await bridge.connect();
     failMedia(new Error("Discord output failed with Bearer top-secret"));
 
-    expect(log).toHaveBeenCalledWith("gpt_live_failed", {source: "media", message: "Discord output failed with Bearer [redacted]"});
+    expect(log).toHaveBeenCalledWith("gpt_live_failed", {failureSource: "media", message: "Discord output failed with Bearer [redacted]"});
     expect(onClose).toHaveBeenCalledWith("provider_failed");
   });
 

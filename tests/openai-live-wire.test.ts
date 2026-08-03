@@ -22,6 +22,8 @@ describe("experimental OpenAI GPT-Live wire", () => {
         "OpenAI-Alpha": "quicksilver=v2",
         "chatgpt-account-id": "acct-1",
         originator: "codex_cli_rs",
+        version: "0.145.0",
+        "User-Agent": "codex_cli_rs/0.145.0",
       });
       expect(JSON.parse(String(init?.body))).toEqual({
         sdp: "offer-sdp",
@@ -29,6 +31,7 @@ describe("experimental OpenAI GPT-Live wire", () => {
           model: "gpt-live-1-codex",
           audio: {output: {voice: "cove"}},
           delegation: {type: "client"},
+          instructions: expect.stringContaining("Wait silently until a participant speaks"),
         }),
       });
       return new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}});
