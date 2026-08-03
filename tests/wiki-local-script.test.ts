@@ -233,7 +233,10 @@ exit 99
     const result = await runScript(["bootstrap", "claw"], {
       envFile,
       pathPrefix: binDir,
-      env: {PANDA_WIKI_BINDING_TRANSPORT: "compose"},
+      env: {
+        PANDA_WIKI_BINDING_TRANSPORT: "compose",
+        WIKI_DOCKER_BIN: path.join(binDir, "docker"),
+      },
     });
 
     expectScriptSuccess(result);
