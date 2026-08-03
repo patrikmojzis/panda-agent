@@ -1,6 +1,7 @@
 import process from "node:process";
 
 import WebSocket from "ws";
+import type {DiscordGatewayAdapterCreator, DiscordGatewayAdapterLibraryMethods} from "@discordjs/voice";
 
 import {isRecord} from "../../../lib/records.js";
 import {requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
@@ -208,6 +209,7 @@ export class DiscordGatewayClient {
   private socket: DiscordGatewaySocket | null = null;
   private stopped = true;
   private fatalReported = false;
+  private readonly voiceAdapters = new Map<string, DiscordGatewayAdapterLibraryMethods>();
 
   constructor(options: DiscordGatewayClientOptions) {
     this.options = {
@@ -286,6 +288,38 @@ export class DiscordGatewayClient {
     if (socket && socket.readyState !== WebSocket.CLOSING && socket.readyState !== WebSocket.CLOSED) {
       socket.close(1000, "Panda Discord worker stopped.");
     }
+    this.destroyVoiceAdapters();
+  }
+
+  /** Bridges @discordjs/voice onto Panda's existing raw Gateway connection. */
+  createVoiceAdapterCreator(guildId: string): DiscordGatewayAdapterCreator {
+    return (methods) => {
+      this.voiceAdapters.get(guildId)?.destroy();
+      this.voiceAdapters.set(guildId, methods);
+      return {
+        sendPayload: (payload: unknown): boolean => {
+          const socket = this.socket;
+          if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+          void this.send(payload).catch((error: unknown) => {
+            this.options.log("gateway_voice_payload_failed", {
+              connectorKey: this.options.connectorKey,
+              guildId,
+              message: error instanceof Error ? error.message : String(error),
+            });
+            methods.destroy();
+          });
+          return true;
+        },
+        destroy: () => {
+          if (this.voiceAdapters.get(guildId) === methods) this.voiceAdapters.delete(guildId);
+        },
+      };
+    };
+  }
+
+  private destroyVoiceAdapters(): void {
+    for (const adapter of this.voiceAdapters.values()) adapter.destroy();
+    this.voiceAdapters.clear();
   }
 
   private clearHeartbeat(): void {
@@ -391,6 +425,20 @@ export class DiscordGatewayClient {
       case "THREAD_UPDATE":
         this.options.channelResolver?.rememberGatewayChannel(payload.d);
         return;
+      case "VOICE_SERVER_UPDATE": {
+        const guildId = isRecord(payload.d) ? trimToUndefined(payload.d.guild_id) : undefined;
+        if (guildId) this.voiceAdapters.get(guildId)?.onVoiceServerUpdate(payload.d as never);
+        return;
+      }
+      case "VOICE_STATE_UPDATE": {
+        if (!isRecord(payload.d)) return;
+        const guildId = trimToUndefined(payload.d.guild_id);
+        const userId = trimToUndefined(payload.d.user_id);
+        if (guildId && userId === this.options.connectorKey) {
+          this.voiceAdapters.get(guildId)?.onVoiceStateUpdate(payload.d as never);
+        }
+        return;
+      }
       default:
         return;
     }
@@ -417,6 +465,7 @@ export class DiscordGatewayClient {
     }
 
     this.fatalReported = true;
+    this.destroyVoiceAdapters();
     await this.options.onFatal?.(error);
   }
 }

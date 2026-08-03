@@ -121,6 +121,7 @@ function createDaemonLifecycleContext(overrides: DaemonLifecycleContextOverrides
     scheduledTaskRunner: createStartStopService(),
     watchRunner: createStartStopService(),
     sessionHeartbeatRunner: createStartStopService(),
+    discordVoice: {close: vi.fn(async () => undefined)},
     runtime,
   };
 
@@ -267,6 +268,7 @@ describe("createDaemonLifecycle", () => {
           order.push("heartbeat-stop");
         }),
       },
+      discordVoice: {close: vi.fn(async () => { order.push("voice-store-close"); })},
       runtime: {
         close: vi.fn(async () => {
           order.push("runtime-close");
@@ -306,6 +308,7 @@ describe("createDaemonLifecycle", () => {
         "watch-stop",
         "heartbeat-stop",
         "release",
+        "voice-store-close",
         "runtime-close",
       ]);
       expect(context.runtime.coordinator.recoverOrphanedRuns).toHaveBeenCalledWith(

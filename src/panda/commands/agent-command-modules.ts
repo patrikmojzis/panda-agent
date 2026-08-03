@@ -274,6 +274,15 @@ import {
 } from "../../integrations/channels/discord/commands.js";
 import type {DiscordGifService} from "../../integrations/channels/discord/gifs.js";
 import {
+  createDiscordVoiceJoinCommand,
+  createDiscordVoiceLeaveCommand,
+  createDiscordVoiceStatusCommand,
+  discordVoiceJoinCommandDescriptor,
+  discordVoiceLeaveCommandDescriptor,
+  discordVoiceStatusCommandDescriptor,
+  type DiscordVoiceCommandServices,
+} from "../../integrations/channels/discord/voice-commands.js";
+import {
   createTelegramChatInfoCommand,
   createTelegramChatListCommand,
   createTelegramDeleteCommand,
@@ -441,6 +450,7 @@ export interface AgentCommandModuleDependencies {
   channelActions?: ChannelActionCommandQueue;
   discordStickers?: DiscordStickerCatalogReader;
   discordGifs?: DiscordGifService;
+  discordVoice?: DiscordVoiceCommandServices["voice"];
   telegramStickers?: TelegramStickerLibrary;
   email?: EmailCommandStore;
   a2aMessaging?: MessageAgentCommandQueue;
@@ -713,6 +723,16 @@ function requireDiscordGifs(dependencies: AgentCommandModuleDependencies): Disco
   }
 
   return dependencies.discordGifs;
+}
+
+function discordVoiceCommandServices(dependencies: AgentCommandModuleDependencies): DiscordVoiceCommandServices {
+  if (!dependencies.discordVoice) throw new Error("Agent command module requires discordVoice.");
+  return {
+    env: dependencies.env ?? process.env,
+    connectorAccounts: requireConnectorAccounts(dependencies),
+    conversations: requireConversations(dependencies),
+    voice: dependencies.discordVoice,
+  };
 }
 
 function requireTelegramStickers(dependencies: AgentCommandModuleDependencies): TelegramStickerLibrary {
@@ -1437,6 +1457,27 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
       connectorAccounts: requireConnectorAccounts(dependencies),
       conversations: requireConversations(dependencies),
     }),
+  ),
+  daemonChannelCommandModule(
+    discordVoiceJoinCommandDescriptor,
+    ["discord", "voice", "join"],
+    "@payload.json",
+    agentCommandPolicy(["communicate_human"]),
+    (dependencies) => createDiscordVoiceJoinCommand(discordVoiceCommandServices(dependencies)),
+  ),
+  daemonChannelCommandModule(
+    discordVoiceLeaveCommandDescriptor,
+    ["discord", "voice", "leave"],
+    "@payload.json",
+    agentCommandPolicy(["communicate_human"]),
+    (dependencies) => createDiscordVoiceLeaveCommand(discordVoiceCommandServices(dependencies)),
+  ),
+  daemonChannelCommandModule(
+    discordVoiceStatusCommandDescriptor,
+    ["discord", "voice", "status"],
+    "{}",
+    agentCommandPolicy(["communicate_human"]),
+    (dependencies) => createDiscordVoiceStatusCommand(discordVoiceCommandServices(dependencies)),
   ),
   daemonChannelCommandModule(
     discordHistoryCommandDescriptor,

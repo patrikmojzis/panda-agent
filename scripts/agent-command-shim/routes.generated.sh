@@ -305,6 +305,15 @@ agent_command_shim_lookup_route() {
     'discord channel list')
       printf '%s\t%s\n' 'discord.channel.list' 'discord channel list'
       ;;
+    'discord voice join')
+      printf '%s\t%s\n' 'discord.voice.join' 'discord voice join'
+      ;;
+    'discord voice leave')
+      printf '%s\t%s\n' 'discord.voice.leave' 'discord voice leave'
+      ;;
+    'discord voice status')
+      printf '%s\t%s\n' 'discord.voice.status' 'discord voice status'
+      ;;
     'discord history')
       printf '%s\t%s\n' 'discord.history' 'discord history'
       ;;
@@ -492,6 +501,9 @@ agent_command_shim_print_root_usage_commands() {
   panda telegram sticker set save <set-name> --connector <key> (--all|--sticker <sticker-ref>...) [--tag <tag>...] [--description <text>]
   panda telegram sticker send --chat <conversation-id> --connector <key> (--ref <sticker-ref>|--file <path>|--file-id <id>)
   panda discord channel list [--connector <key>]
+  panda discord voice join --channel <voice-channel-id> [--connector <key>]
+  panda discord voice leave [--channel <voice-channel-id>] [--connector <key>]
+  panda discord voice status [--connector <key>]
   panda discord history --channel <channel-id> [--connector <key>] [--direction inbound|outbound|all] [--limit <n>]
   panda discord sticker list --channel <channel-id> --connector <key>
   panda discord sticker send --channel <channel-id> --connector <key> --sticker <sticker-id>... [--thread <thread-id>] [--guild <guild-id>] [--reply-to-message-id <message-id>]
@@ -1568,6 +1580,36 @@ Detailed help is available only through the current agent command lease.
 Usage:
   panda discord channel list --json @payload.json
 PANDA_COMMAND_HELP_discord_channel_list
+      ;;
+    'discord.voice.join')
+      cat <<'PANDA_COMMAND_HELP_discord_voice_join'
+Panda command: discord.voice.join
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda discord voice join --json @payload.json
+PANDA_COMMAND_HELP_discord_voice_join
+      ;;
+    'discord.voice.leave')
+      cat <<'PANDA_COMMAND_HELP_discord_voice_leave'
+Panda command: discord.voice.leave
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda discord voice leave --json @payload.json
+PANDA_COMMAND_HELP_discord_voice_leave
+      ;;
+    'discord.voice.status')
+      cat <<'PANDA_COMMAND_HELP_discord_voice_status'
+Panda command: discord.voice.status
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda discord voice status --json @payload.json
+PANDA_COMMAND_HELP_discord_voice_status
       ;;
     'discord.history')
       cat <<'PANDA_COMMAND_HELP_discord_history'
@@ -3658,6 +3700,60 @@ PANDA_COMMAND_HELP_JSON_telegram_sticker_send
   "examples": []
 }
 PANDA_COMMAND_HELP_JSON_discord_channel_list
+      ;;
+    'discord.voice.join')
+      cat <<'PANDA_COMMAND_HELP_JSON_discord_voice_join'
+{
+  "name": "discord.voice.join",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda discord voice join --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_discord_voice_join
+      ;;
+    'discord.voice.leave')
+      cat <<'PANDA_COMMAND_HELP_JSON_discord_voice_leave'
+{
+  "name": "discord.voice.leave",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda discord voice leave --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_discord_voice_leave
+      ;;
+    'discord.voice.status')
+      cat <<'PANDA_COMMAND_HELP_JSON_discord_voice_status'
+{
+  "name": "discord.voice.status",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda discord voice status --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_discord_voice_status
       ;;
     'discord.history')
       cat <<'PANDA_COMMAND_HELP_JSON_discord_history'

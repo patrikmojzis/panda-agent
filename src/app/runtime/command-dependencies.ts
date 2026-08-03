@@ -50,6 +50,7 @@ export interface DaemonChannelCommandDependenciesInput {
   };
   discordStickers: RequiredCommandDependency<"discordStickers">;
   discordGifs: RequiredCommandDependency<"discordGifs">;
+  discordVoice: RequiredCommandDependency<"discordVoice">;
   telegramStickers: RequiredCommandDependency<"telegramStickers">;
   email: RequiredCommandDependency<"email">;
 }
@@ -127,6 +128,7 @@ export function buildDaemonChannelCommandDependencies(
     channelActions,
     discordStickers: input.discordStickers,
     discordGifs: input.discordGifs,
+    discordVoice: input.discordVoice,
     telegramStickers: input.telegramStickers,
     email: input.email,
   };

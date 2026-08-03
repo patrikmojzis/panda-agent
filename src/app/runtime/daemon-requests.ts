@@ -16,6 +16,8 @@ import type {SessionRouteRepo} from "../../domain/sessions/routes/repo.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
 import {handleA2AMessageRequest} from "../../integrations/channels/a2a/request-handler.js";
 import {handleDiscordMessageRequest} from "../../integrations/channels/discord/request-handler.js";
+import {handleDiscordVoiceDelegationRequest} from "../../integrations/channels/discord/voice-request-handler.js";
+import type {DiscordVoiceStore} from "../../integrations/channels/discord/voice-postgres.js";
 import {
   handleTelegramReactionRequest,
   handleTelegramRuntimeMessageRequest,
@@ -45,6 +47,7 @@ export interface DaemonRequestProcessorContext {
   };
   a2aBindings: Parameters<typeof handleA2AMessageRequest>[1]["bindings"];
   sessionRoutes: Pick<SessionRouteRepo, "saveLastRoute">;
+  discordVoice: DiscordVoiceStore;
 }
 
 type DaemonRequestStore = Pick<
@@ -212,6 +215,13 @@ export function createDaemonRequestProcessor(
           routes: context.sessionRoutes,
           sessions: context.runtime.sessionStore,
           threads,
+        });
+      case "discord_voice_delegation":
+        return handleDiscordVoiceDelegationRequest(request.payload, {
+          voice: context.discordVoice,
+          coordinator: context.runtime.coordinator,
+          sessions: context.runtime.sessionStore,
+          identityStore: context.runtime.identityStore,
         });
       case "telegram_message":
         return handleTelegramRuntimeMessageRequest(request.payload, {

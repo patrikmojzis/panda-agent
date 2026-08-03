@@ -123,9 +123,13 @@ services:
       DATABASE_URL: ${DATABASE_URL}
       CREDENTIALS_MASTER_KEY: ${CREDENTIALS_MASTER_KEY:-}
       PANDA_DISCORD_DB_POOL_MAX: ${PANDA_DISCORD_DB_POOL_MAX:-2}
+      PANDA_DISCORD_VOICE_EXPERIMENTAL: ${PANDA_DISCORD_VOICE_EXPERIMENTAL:-false}
+      PANDA_DISCORD_VOICE_VOICE: ${PANDA_DISCORD_VOICE_VOICE:-cove}
+      CODEX_HOME: /root/.codex
       TZ: ${TZ:-UTC}
     volumes:
       - ${HOME}/.panda:/root/.panda
+      - ${CODEX_HOST_HOME:-${HOME}/.codex}:/root/.codex:ro
       - /etc/ssl/certs/panda-postgres-ca.crt:/etc/ssl/certs/panda-postgres-ca.crt:ro
     depends_on:
       panda-core:

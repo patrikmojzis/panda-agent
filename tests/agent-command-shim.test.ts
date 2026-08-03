@@ -139,6 +139,11 @@ import {
   createDiscordStickerListCommand,
   createDiscordStickerSendCommand,
 } from "../src/integrations/channels/discord/commands.js";
+import {
+  createDiscordVoiceJoinCommand,
+  createDiscordVoiceLeaveCommand,
+  createDiscordVoiceStatusCommand,
+} from "../src/integrations/channels/discord/voice-commands.js";
 import {createWhatsAppChatListCommand, createWhatsAppHistoryCommand, createWhatsAppSendCommand} from "../src/integrations/channels/whatsapp/commands.js";
 import {createVentSendCommand} from "../src/integrations/panda-trace/vent-commands.js";
 import {
@@ -1885,6 +1890,12 @@ describe("agent command shim", () => {
     const audioDir = await mkdtemp(path.join(os.tmpdir(), "panda-command-audio-"));
     directories.push(audioDir);
     await writeFile(path.join(audioDir, "voice.mp3"), Buffer.from("fake-audio-data"));
+    const voiceStore = {
+      enqueueControl: vi.fn(async (input: {connectorKey: string; operation: "join" | "leave"; sessionId: string; agentKey: string; channelId?: string}) => ({...input, id: "voice-control-1", status: "pending" as const, createdAt: 1, updatedAt: 1})),
+      waitForControl: vi.fn(async () => ({id: "voice-control-1", connectorKey: "discord-main", operation: "join" as const, sessionId: "session-main", agentKey: "panda", channelId: "123456789012345678", status: "completed" as const, result: {ok: true, state: "connected", connectorKey: "discord-main", guildId: "323456789012345678", channelId: "123456789012345678", sessionId: "session-main", model: "gpt-live-1-codex"}, createdAt: 1, updatedAt: 2})),
+      listSessions: vi.fn(async () => []),
+    };
+    const voiceServices = {env: {PANDA_DISCORD_VOICE_EXPERIMENTAL: "true"}, connectorAccounts: store, conversations: store, voice: voiceStore};
     const server = await startCommandHttpServer({
       executor: new RuntimeCommandDispatcher({
         commands: [
@@ -2269,6 +2280,9 @@ describe("agent command shim", () => {
             messages: store,
             deliveries: store,
           }),
+          createDiscordVoiceJoinCommand(voiceServices),
+          createDiscordVoiceLeaveCommand(voiceServices),
+          createDiscordVoiceStatusCommand(voiceServices),
           createDiscordStickerListCommand({
             conversations: store,
             stickers: {
@@ -7124,6 +7138,15 @@ printf '{"ok":true,"output":%s}\\n' "$body"
         },
       ],
     });
+  });
+
+  it("executes Discord voice join and status through native args", async () => {
+    const server = await startWatchServer();
+    const joined = await execFileAsync(shimPath, ["discord", "voice", "join", "--channel", "123456789012345678", "--connector", "discord-main"], {env: shimEnv(server)});
+    expect(JSON.parse(joined.stdout)).toMatchObject({state: "connected", channelId: "123456789012345678", model: "gpt-live-1-codex"});
+
+    const status = await execFileAsync(shimPath, ["discord", "voice", "status", "--connector", "discord-main"], {env: shimEnv(server)});
+    expect(JSON.parse(status.stdout)).toMatchObject({enabled: true, count: 0, sessions: []});
   });
 
   it("executes discord.history through native args", async () => {

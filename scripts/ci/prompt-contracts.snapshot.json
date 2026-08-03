@@ -1,10 +1,10 @@
 {
   "files": [
     {
-      "bytes": 124246,
-      "lines": 4135,
+      "bytes": 127198,
+      "lines": 4231,
       "path": "scripts/agent-command-shim/routes.generated.sh",
-      "sha256": "8660b04e91ca389217b86835a1580fe68e249a4de23db35f60863e6f63bb2504"
+      "sha256": "ada6ba9091464c51c53e7d217f43e9f240d4a668aa745f045ecede2ac70e2242"
     },
     {
       "bytes": 1166,
@@ -19,10 +19,10 @@
       "sha256": "122894ded7441c87257e7d1aa957a5916cf8c0f3780ffeea7f38946b27d0ae76"
     },
     {
-      "bytes": 16889,
-      "lines": 440,
+      "bytes": 18120,
+      "lines": 466,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "5f0bc8393a8ee636d8279b8cc70094ea9d38958005ea0ac3bc481b8c7ef11bfd"
+      "sha256": "06f2571751642b614c13e63d01d291ebbdecefb2b9534d52bfd53698f5a58958"
     },
     {
       "bytes": 12121,
@@ -67,10 +67,10 @@
       "sha256": "c6d98f315f2cfc237bbf5fdd6eb957112e92238bedd6e16956056d0a7939fb56"
     },
     {
-      "bytes": 60125,
-      "lines": 1682,
+      "bytes": 61748,
+      "lines": 1723,
       "path": "src/panda/commands/agent-command-modules.ts",
-      "sha256": "5121a7c8a48ea32776e2b879621ebd8e1ee13e588ab14c00111ba8c86030746b"
+      "sha256": "352d95b4784f97c8602b4183590ae23370c9ea962440848ecfab927f3d36272b"
     },
     {
       "bytes": 572,
@@ -191,6 +191,12 @@
       "lines": 96,
       "path": "src/prompts/channels/a2a.ts",
       "sha256": "7ce06cc5e05ee307c4877e8f9299a683f850c831de8001a2bc407c5778eca793"
+    },
+    {
+      "bytes": 625,
+      "lines": 19,
+      "path": "src/prompts/channels/discord-voice.ts",
+      "sha256": "160a6030189bb5ef2c2047c2ea6b102b74e954491eec2e8b5d5d8db3f2083c74"
     },
     {
       "bytes": 5829,
@@ -413,6 +419,9 @@
         "telegram.sticker.set.save",
         "telegram.sticker.send",
         "discord.channel.list",
+        "discord.voice.join",
+        "discord.voice.leave",
+        "discord.voice.status",
         "discord.history",
         "discord.sticker.list",
         "discord.sticker.send",

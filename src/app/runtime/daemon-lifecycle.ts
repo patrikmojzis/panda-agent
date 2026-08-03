@@ -90,6 +90,7 @@ export interface DaemonLifecycleContext {
   scheduledTaskRunner: StartStopService;
   watchRunner: StartStopService;
   sessionHeartbeatRunner: StartStopService;
+  discordVoice: {close(): Promise<void>};
 }
 
 export function createDaemonLifecycle(input: {
@@ -226,6 +227,12 @@ export function createDaemonLifecycle(input: {
         {
           label: "daemon-lease",
           run: releaseLease,
+        },
+        {
+          label: "discord-voice-store",
+          run: async () => {
+            await input.context.discordVoice.close();
+          },
         },
         {
           label: "runtime",

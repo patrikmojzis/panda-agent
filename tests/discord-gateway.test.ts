@@ -62,6 +62,26 @@ function createGatewayFixture() {
 }
 
 describe("DiscordGatewayClient", () => {
+  it("bridges Discord voice state payloads through the raw Gateway adapter", async () => {
+    const fixture = createGatewayFixture();
+    await fixture.client.start();
+    const methods = {
+      destroy: vi.fn(),
+      onVoiceServerUpdate: vi.fn(),
+      onVoiceStateUpdate: vi.fn(),
+    };
+    const adapter = fixture.client.createVoiceAdapterCreator("guild-1")(methods);
+
+    expect(adapter.sendPayload({op: 4, d: {guild_id: "guild-1", channel_id: "voice-1"}})).toBe(true);
+    fixture.sockets[0]!.emit("message", Buffer.from(JSON.stringify({op: 0, t: "VOICE_SERVER_UPDATE", d: {guild_id: "guild-1", token: "voice-token"}})));
+    fixture.sockets[0]!.emit("message", Buffer.from(JSON.stringify({op: 0, t: "VOICE_STATE_UPDATE", d: {guild_id: "guild-1", user_id: "connector-1", channel_id: "voice-1"}})));
+    await flushPromises();
+
+    expect(JSON.parse(fixture.sockets[0]!.sent[0]!)).toMatchObject({op: 4, d: {guild_id: "guild-1"}});
+    expect(methods.onVoiceServerUpdate).toHaveBeenCalledWith(expect.objectContaining({guild_id: "guild-1"}));
+    expect(methods.onVoiceStateUpdate).toHaveBeenCalledWith(expect.objectContaining({user_id: "connector-1"}));
+  });
+
   it("reconnects without reporting fatal when Discord closes the Gateway with 1001 or 1006", async () => {
     const fixture = createGatewayFixture();
     await fixture.client.start();

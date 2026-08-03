@@ -42,6 +42,8 @@ import {WHATSAPP_SOURCE} from "../../integrations/channels/whatsapp/config.js";
 import {createDiscordRestClient} from "../../integrations/channels/discord/api.js";
 import {createDiscordStickerCatalogReader} from "../../integrations/channels/discord/stickers.js";
 import {createDiscordGifService} from "../../integrations/channels/discord/gifs.js";
+import {DiscordVoiceStore} from "../../integrations/channels/discord/voice-postgres.js";
+import {createDiscordVoiceRuntimeEventHandler} from "../../integrations/channels/discord/voice-request-handler.js";
 import {resolveAgentMediaDir} from "./data-dir.js";
 import {readPositiveIntegerEnv} from "./database.js";
 import {trimToNull} from "../../lib/strings.js";
@@ -65,6 +67,7 @@ interface DaemonContext {
   scheduledTaskRunner: ScheduledTaskRunner;
   watchRunner: WatchRunner;
   sessionHeartbeatRunner: HeartbeatRunner;
+  discordVoice: DiscordVoiceStore;
 }
 
 function resolveDaemonCommandCatalog(
@@ -98,6 +101,7 @@ export async function bootstrapDaemonContext(
   let a2aBindings!: A2ASessionBindingRepo;
   let a2aMessagingService!: A2AMessagingService;
   let runtimeForNotifications: RuntimeServices | undefined;
+  let discordVoiceForEvents: DiscordVoiceStore | undefined;
   const notificationPokesInFlight = new Set<string>();
 
   const typingDispatcher = new ChannelTypingDispatcher([
@@ -129,13 +133,26 @@ export async function bootstrapDaemonContext(
   const readonlyPostgresCommandAllowed = Boolean(
     trimToNull(options.readOnlyDbUrl) ?? trimToNull(process.env.READONLY_DATABASE_URL),
   );
+  const typingEventHandler = createChannelTypingEventHandler(typingDispatcher);
+  let voiceEventHandler: ((event: import("../../domain/threads/runtime/coordinator.js").ThreadRuntimeEvent) => Promise<void>) | undefined;
   const runtime = await createRuntime({
     dbUrl: options.dbUrl,
     readOnlyDbUrl: options.readOnlyDbUrl,
     cwd: options.cwd,
     maxSubagentDepth: options.maxSubagentDepth,
     ...(commandCatalog ? {commandCatalog} : {}),
-    onEvent: createChannelTypingEventHandler(typingDispatcher),
+    onEvent: async (event) => {
+      await typingEventHandler(event);
+      try {
+        await voiceEventHandler?.(event);
+      } catch (error) {
+        console.error("Discord voice runtime event handling failed", {
+          eventType: event.type,
+          threadId: event.threadId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
     onStoreNotification: (notification) => {
       const runtime = runtimeForNotifications;
       if (!runtime || notificationPokesInFlight.has(notification.threadId)) {
@@ -266,6 +283,13 @@ export async function bootstrapDaemonContext(
       crypto: resolveCredentialCrypto(),
     });
     const discordGifs = createDiscordGifService();
+    const discordVoice = new DiscordVoiceStore({pool: runtime.pool, notificationPool: runtime.notificationPool});
+    await discordVoice.ensureSchema();
+    discordVoiceForEvents = discordVoice;
+    voiceEventHandler = createDiscordVoiceRuntimeEventHandler({
+      getVoiceStore: () => discordVoiceForEvents,
+      store: runtime.store,
+    });
 
     sessionRoutes = new SessionRouteRepo({
       pool: runtime.pool,
@@ -290,6 +314,7 @@ export async function bootstrapDaemonContext(
         channelActions,
         discordStickers,
         discordGifs,
+        discordVoice,
         telegramStickers,
         email: runtime.email,
       }),
@@ -432,6 +457,7 @@ export async function bootstrapDaemonContext(
       scheduledTaskRunner,
       watchRunner,
       sessionHeartbeatRunner,
+      discordVoice,
     };
   } catch (error) {
     await runtime.close();

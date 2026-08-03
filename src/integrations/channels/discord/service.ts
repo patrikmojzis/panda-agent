@@ -48,6 +48,9 @@ import {
 } from "./media.js";
 import {createDiscordOutboundAdapter} from "./outbound.js";
 import {sendDiscordStickerAction} from "./stickers.js";
+import {DiscordVoiceStore} from "./voice-postgres.js";
+import {DiscordVoiceControlWorker, DiscordVoiceSessionManager} from "./voice-manager.js";
+import type {DiscordGatewayAdapterCreator} from "@discordjs/voice";
 import {
   startConnectorWorkerNotificationListener,
   startConnectorWorkerRuntime,
@@ -56,7 +59,7 @@ import {
   type ConnectorWorkerRuntimeListener,
 } from "../worker-runtime.js";
 
-const DISCORD_POOL_MAX_FALLBACK = 5;
+const DISCORD_POOL_MAX_FALLBACK = 6;
 
 type DiscordPostgresPool = Pool & PgPoolLike<PgListenClient>;
 
@@ -89,12 +92,16 @@ export interface DiscordWorkerStores {
   runtimeRequests: RuntimeRequestRepo;
   sessionStore: PostgresSessionStore;
   threadStore: PostgresThreadRuntimeStore;
+  voice?: DiscordVoiceStore;
 }
 
 export interface DiscordServiceGateway {
   start(): Promise<void>;
   stop(): Promise<void>;
+  createVoiceAdapterCreator?(guildId: string): DiscordGatewayAdapterCreator;
 }
+
+export interface DiscordServiceVoiceWorker {start(): Promise<void>; stop(): Promise<void>}
 
 export interface DiscordServiceOutboundWorker {
   start(options?: {subscribeToNotifications?: boolean}): Promise<void>;
@@ -125,6 +132,14 @@ export interface DiscordServiceDependencies {
   createPool?: (input: DiscordServicePoolFactoryInput) => DiscordPostgresPool;
   createRestClient?: () => DiscordWorkerRestClient;
   createStores?: (pool: DiscordPostgresPool) => DiscordWorkerStores;
+  createVoiceWorker?: (options: {
+    botToken: string;
+    connectorKey: string;
+    gateway: DiscordServiceGateway;
+    restClient: Pick<DiscordWorkerRestClient, "getChannelMetadata">;
+    stores: DiscordWorkerStores;
+    log(event: string, payload: Record<string, unknown>): void;
+  }) => DiscordServiceVoiceWorker;
   startNotificationListener?: (options: {
     actionWorker: DiscordServiceActionWorker;
     connectorKey: string;
@@ -203,6 +218,7 @@ function createDefaultStores(pool: DiscordPostgresPool, dataDir: string): Discor
     runtimeRequests: new RuntimeRequestRepo({pool}),
     sessionStore: new PostgresSessionStore({pool}),
     threadStore: new PostgresThreadRuntimeStore({pool}),
+    voice: new DiscordVoiceStore({pool}),
   };
 }
 
@@ -294,6 +310,7 @@ export class DiscordService {
   private runStopPromise: Promise<void> | null = null;
   private resolveRunStop: (() => void) | null = null;
   private stores: DiscordWorkerStores | null = null;
+  private voiceWorker: DiscordServiceVoiceWorker | null = null;
   private stopping = false;
 
   constructor(options: DiscordServiceOptions) {
@@ -383,6 +400,7 @@ export class DiscordService {
       stores.outboundDeliveries,
       stores.runtimeRequests,
       stores.connectorLeases,
+      ...(stores.voice ? [stores.voice] : []),
     ]);
   }
 
@@ -663,6 +681,34 @@ export class DiscordService {
         stores,
       });
       await this.gateway.start();
+      if (process.env.PANDA_DISCORD_VOICE_EXPERIMENTAL?.trim().toLowerCase() === "true") {
+        const gateway = this.gateway;
+        if (!gateway.createVoiceAdapterCreator) throw new Error("Discord Gateway voice adapter is unavailable.");
+        if (!stores.voice) throw new Error("Discord voice store is unavailable.");
+        this.voiceWorker = this.dependencies.createVoiceWorker?.({
+          botToken,
+          connectorKey: account.connectorKey,
+          gateway,
+          restClient,
+          stores,
+          log: (event, payload) => this.log(event, payload),
+        }) ?? new DiscordVoiceControlWorker({
+          connectorKey: account.connectorKey,
+          store: stores.voice,
+          manager: new DiscordVoiceSessionManager({
+            connectorKey: account.connectorKey,
+            botToken,
+            env: process.env,
+            gatewayAdapter: (guildId) => gateway.createVoiceAdapterCreator!(guildId),
+            restClient,
+            store: stores.voice,
+            requests: stores.runtimeRequests,
+            log: (event, payload) => this.log(event, payload),
+          }),
+          log: (event, payload) => this.log(event, payload),
+        });
+        await this.voiceWorker.start();
+      }
       this.log("worker_started", {
         accountKey: this.accountKey,
         connectorKey: account.connectorKey,
@@ -688,12 +734,18 @@ export class DiscordService {
     const workerRuntime = this.workerRuntime;
     const stores = this.stores;
     const poolObserver = this.poolObserver;
+    const voiceWorker = this.voiceWorker;
     this.gateway = null;
     this.workerRuntime = null;
     this.stores = null;
     this.poolObserver = null;
+    this.voiceWorker = null;
 
     await runCleanupSteps([
+      {
+        label: "voice-worker",
+        run: async () => { await voiceWorker?.stop(); },
+      },
       {
         label: "gateway",
         run: async () => {

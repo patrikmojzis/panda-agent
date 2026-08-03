@@ -10,6 +10,8 @@ In the Discord developer portal:
 - enable the Message Content Intent
 - invite the bot with View Channel, Read Message History, Send Messages, and Attach Files in the target channel
 
+For experimental voice, also grant Connect and Speak. Panda enables the Guild Voice States Gateway intent automatically.
+
 Set `CREDENTIALS_MASTER_KEY` before account commands, then store the token without printing it:
 
 ```bash
@@ -128,3 +130,30 @@ Then run the stack normally:
 The stack runs `panda discord run --all-enabled`. It also adds a Wiki.js dependency so the Discord runner container is started before Wiki.js.
 
 Budget Postgres connections explicitly: Discord opens one worker pool per enabled account, so the Discord ceiling is `enabled Discord accounts x PANDA_DISCORD_DB_POOL_MAX`.
+
+## Experimental voice
+
+Discord voice creates private `gpt-live-1-codex` calls through the ChatGPT Codex backend and controls them over the direct GPT-Live sideband. It does not go through `pi-ai` or require `codex app-server`. The text-bound Panda session remains the durable brain, while raw audio and casual GPT-Live conversation stay transient.
+
+Opt in explicitly and mount the Codex OAuth home read-only:
+
+```bash
+PANDA_DISCORD_VOICE_EXPERIMENTAL=true
+PANDA_DISCORD_VOICE_VOICE=cove
+CODEX_HOST_HOME=/home/you/.codex
+PANDA_DISCORD_DB_POOL_MAX=4
+```
+
+The worker reads `CODEX_HOME/auth.json` afresh when joining and requires ChatGPT/Codex OAuth with a `chatgpt_account_id`. It never refreshes, stores, or logs that token. An expired or rejected token disconnects voice with `auth_unavailable`.
+
+From a Discord-bound Panda session:
+
+```bash
+panda discord voice join --channel <voiceChannelId> [--connector <connectorKey>]
+panda discord voice status [--connector <connectorKey>]
+panda discord voice leave [--channel <voiceChannelId>] [--connector <connectorKey>]
+```
+
+The target voice channel need not be text-bound, but the invoking session must already have a conversation binding for the connector. Panda accepts humans and other bots, ignores only itself, limits utterances to 60 seconds and 30 accepted utterances per minute, and supports barge-in. Delegated prompts and Panda answers are durable; PCM and casual voice chatter are not.
+
+Voice sessions are capped at eight per process, expire after 30 minutes, and are not restored after worker restart. This integration targets an undocumented experimental protocol and carries no compatibility guarantee.

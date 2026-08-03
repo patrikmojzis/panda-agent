@@ -5,12 +5,14 @@ export const DISCORD_GATEWAY_URL = "wss://gateway.discord.gg";
 export const DISCORD_MESSAGE_CONTENT_LIMIT = 2_000;
 
 export const DISCORD_GATEWAY_INTENTS = {
+  guildVoiceStates: 1 << 7,
   guildMessages: 1 << 9,
   directMessages: 1 << 12,
   messageContent: 1 << 15,
 } as const;
 
 export const DISCORD_DEFAULT_GATEWAY_INTENTS =
-  DISCORD_GATEWAY_INTENTS.guildMessages
+  DISCORD_GATEWAY_INTENTS.guildVoiceStates
+  | DISCORD_GATEWAY_INTENTS.guildMessages
   | DISCORD_GATEWAY_INTENTS.directMessages
   | DISCORD_GATEWAY_INTENTS.messageContent;
