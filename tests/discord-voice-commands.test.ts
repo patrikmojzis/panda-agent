@@ -36,6 +36,19 @@ describe("Discord voice commands", () => {
     expect(result.output).toMatchObject({state: "connected", model: "gpt-live-1-codex"});
   });
 
+  it("derives a stable control idempotency key from the parent tool call", async () => {
+    const deps = services();
+    const request = {command: "discord.voice.join" as const, input: {channelId: "12345"}, scope: {...scope, parentToolCallId: "tool-call-1"}};
+
+    await createDiscordVoiceJoinCommand(deps).execute(request);
+    await createDiscordVoiceJoinCommand(deps).execute(request);
+
+    const first = vi.mocked(deps.voice.enqueueControl).mock.calls[0]![0];
+    const second = vi.mocked(deps.voice.enqueueControl).mock.calls[1]![0];
+    expect(first.idempotencyKey).toMatch(/^discord_voice:session-1:tool-call-1:/);
+    expect(second.idempotencyKey).toBe(first.idempotencyKey);
+  });
+
   it("requires connector selection when more than one bound Discord connector matches", async () => {
     const command = createDiscordVoiceJoinCommand(services({connectors: ["bot-1", "bot-2"]}));
     await expect(command.execute({command: "discord.voice.join", input: {channelId: "12345"}, scope})).rejects.toMatchObject({pandaCommandErrorCode: "conflict", pandaCommandErrorDetails: {failureCode: "connector_ambiguous"}});
@@ -45,12 +58,12 @@ describe("Discord voice commands", () => {
     await expect(createDiscordVoiceJoinCommand(services({enabled: false})).execute({command: "discord.voice.join", input: {channelId: "12345"}, scope})).rejects.toEqual(expect.objectContaining<Partial<CommandStructuredError>>({pandaCommandErrorCode: "command_failed", pandaCommandErrorDetails: {failureCode: "voice_disabled", retryable: false}}));
   });
 
-  it("terminally fails a timed-out control so the worker cannot complete it later", async () => {
+  it("leaves durable control state authoritative when the local waiter times out", async () => {
     const deps = services();
     vi.mocked(deps.voice.waitForControl).mockRejectedValueOnce(new Error("timeout"));
     await expect(createDiscordVoiceJoinCommand(deps).execute({command: "discord.voice.join", input: {channelId: "12345"}, scope}))
       .rejects.toMatchObject({pandaCommandErrorDetails: {failureCode: "timeout", retryable: true}});
-    expect(deps.voice.failControl).toHaveBeenCalledWith("control-1", expect.stringContaining('"failureCode":"timeout"'));
+    expect(deps.voice.failControl).not.toHaveBeenCalled();
   });
 
   it("rejects channel-less leave when there is not exactly one owned session", async () => {

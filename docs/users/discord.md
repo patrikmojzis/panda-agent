@@ -10,7 +10,7 @@ In the Discord developer portal:
 - enable the Message Content Intent
 - invite the bot with View Channel, Read Message History, Send Messages, and Attach Files in the target channel
 
-For experimental voice, also grant Connect and Speak. Panda enables the Guild Voice States Gateway intent automatically.
+For experimental voice, the bot also needs View Channel, Connect, and Speak in the target voice channel. Panda enables the Guild Voice States Gateway intent automatically.
 
 Set `CREDENTIALS_MASTER_KEY` before account commands, then store the token without printing it:
 
@@ -140,11 +140,12 @@ Opt in explicitly and mount the Codex OAuth home read-only:
 ```bash
 PANDA_DISCORD_VOICE_EXPERIMENTAL=true
 PANDA_DISCORD_VOICE_VOICE=cove
+PANDA_DISCORD_VOICE_SIDEBAND_PING_MS=0
 CODEX_HOST_HOME=/home/you/.codex
-PANDA_DISCORD_DB_POOL_MAX=4
+PANDA_DISCORD_DB_POOL_MAX=2
 ```
 
-The worker reads `CODEX_HOME/auth.json` afresh for every provider connection and requires ChatGPT/Codex OAuth with a `chatgpt_account_id`. It never refreshes, stores, or logs that token. An expired token or HTTP 401 disconnects voice with `auth_unavailable`; the backend's overloaded HTTP 403 is reported as `provider_startup_failed`, not as a Discord permission error.
+The worker reads `CODEX_HOME/auth.json` afresh for every provider connection and requires ChatGPT/Codex OAuth with a `chatgpt_account_id`. The mount is read-only: Panda never refreshes, stores, or logs that token and has no API-key or public Realtime fallback. An expired token or HTTP 401 disconnects voice with `auth_unavailable`; the backend's overloaded HTTP 403 is reported as `provider_startup_failed`, not as a Discord permission error. Sideband ping frames are disabled by default; enable them only when the deployment's network path needs them.
 
 From a Discord-bound Panda session:
 
@@ -155,12 +156,14 @@ panda discord voice status [--connector <connectorKey>]
 panda discord voice leave [--turn <voiceTurnId>] [--channel <voiceChannelId>] [--connector <connectorKey>]
 ```
 
-The target voice channel need not be text-bound, but the invoking session must already have a conversation binding for the connector. `join` reminds the agent that it may call `discord.voice.send` at any time. A delegated task should use short `progress` sends while work continues and exactly one concise `final` send when it is done. The command infers the voice turn from the current run when unambiguous; `--turn` selects it explicitly. Without a matching delegation, the same command appends standalone session context so GPT-Live can speak a proactive update.
+The target voice channel need not be text-bound, but the invoking session must already have a conversation binding for the connector. `join` reminds the agent that it may call `discord.voice.send` at any time. A delegated task should use short `progress` sends while work continues and exactly one concise `final` send when it is done. The command infers the voice turn from the current run when unambiguous; `--turn` selects it explicitly. A delegated send requires a current provider binding for that exact source utterance and fails with `provider_unavailable` if it cannot be correlated safely. A proactive send without a voice turn uses standalone session context.
 
 Only explicit `discord.voice.send` deliveries are handed back to GPT-Live. Ordinary assistant transcript text remains Panda's internal working space and is never harvested as a voice response. Delegated prompts and explicit final answers are durable; PCM and casual GPT-Live chatter are not. Panda accepts humans and other bots, ignores only itself, limits utterances to 60 seconds and 30 accepted utterances per minute, and supports barge-in.
 
 When GPT-Live delegates a leave request, Panda uses `discord.voice.leave --turn <voiceTurnId>` so the durable turn completes as the worker disconnects. A successful leave does not require a final voice send afterward.
 
-The private GPT-Live sideband can reset independently of Discord. Panda keeps the Discord voice connection alive and creates a fresh provider session without replaying casual transcripts as executable input. Active identical delegations are rebound to their existing durable voice turn rather than waking Panda twice. After a provider replacement, an explicit send falls back to standalone session context until the provider creates a current delegation binding. Unexpected audio, Discord, and provider failures are logged and tear down owned resources cleanly.
+The private GPT-Live sideband can reset independently of Discord. Panda keeps the Discord voice connection alive and tries fresh provider sessions after 0, 500, and 1,500 milliseconds without replaying casual transcripts as executable input. A new provider generation discards the previous generation's transient audio attribution; it never guesses ownership from matching prompt text. Durable Panda work continues, but a delegated send from the old generation fails safely with `provider_unavailable`; a proactive send remains available. Four provider failures within five minutes open the room circuit and disconnect it. Unexpected audio, Discord, and provider failures tear down owned resources cleanly.
 
-Voice sessions are capped at eight per process, expire 30 minutes after the original join even if the provider reconnects, and are not restored after worker restart. This integration targets an undocumented experimental protocol and carries no compatibility guarantee.
+`discord voice status` reports lifecycle state plus `ready`, `degraded`, `recovering`, or `error` health. Bounded reasons are `gateway_not_ready`, `gateway_heartbeat_stale`, `discord_voice_not_ready`, `provider_connecting`, `provider_recovering`, `provider_unavailable`, `notification_listener_reconnecting`, `postgres_pool_waiting`, `audio_dropped`, and `playback_failed`. Useful structured events are `discord_voice_health`, `voice_provider_reconnected`, `voice_provider_reconnect_failed`, `voice_provider_circuit_open`, `voice_utterance_dropped`, `voice_playback_failed`, and `voice_disconnected`.
+
+Stable command failures include `voice_disabled`, `worker_unavailable`, `auth_unavailable`, `invalid_channel`, `permission_denied`, `session_conflict`, `voice_session_unavailable`, `voice_turn_conflict`, `provider_startup_failed`, `provider_unavailable`, and `timeout`. Voice sessions are capped at eight per process, expire 30 minutes after the original join even if the provider reconnects, and are not restored after worker restart. A restart fails active controls and active delegated turns because their speech outcome may be ambiguous; it never replays them. This integration targets an undocumented experimental protocol and carries no compatibility guarantee.

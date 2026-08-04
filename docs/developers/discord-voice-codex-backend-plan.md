@@ -1,5 +1,7 @@
 # Discord Voice Codex Backend Plan
 
+Status: implemented. This is a historical contract record; use `docs/users/discord.md` and the current code/tests for operational behavior.
+
 ## Outcome
 
 Make Panda establish `gpt-live-1-codex` sessions without running `codex
@@ -45,10 +47,13 @@ On 2026-08-04, the same Codex OAuth and Werift peer reproduced an abnormal
 sideband reset after about 40 seconds through the official Codex app-server.
 That reset is therefore treated as an upstream provider-lifecycle event, not a
 Discord disconnect or a Panda signaling mismatch. Panda rotates only the
-GPT-Live bridge, re-resolves OAuth, seeds the replacement with a bounded
-in-memory window of completed transcripts, and keeps the Discord connection
-alive. The owning voice session still has one absolute 30-minute lifetime from
-its original join.
+GPT-Live bridge, re-resolves OAuth, and keeps the Discord connection alive
+without seeding casual transcripts into the replacement. The replacement
+discards old transient attribution rather than matching prompt text; old
+durable work remains recorded but cannot be spoken as a delegated result on the
+new provider generation.
+The owning voice session still has one absolute 30-minute lifetime from its
+original join.
 
 ## Scope
 
@@ -99,9 +104,9 @@ Update `src/integrations/providers/openai-live/bridge.ts`:
   complete teardown
 - buffer sideband events that arrive immediately after open so `session.started`,
   transcript, delegation, and error events cannot race listener installation
-- recover abnormal provider closure inside the existing Discord connection;
-  queue the latest durable result across that rotation and speak it through a
-  session-level handoff when its original delegation id belonged to the old call
+- recover abnormal provider closure inside the existing Discord connection
+- discard transient attribution at provider-generation boundaries; delegated
+  sends never fall back to session-level context
 
 ### 4. Keep authentication deliberately read-only
 

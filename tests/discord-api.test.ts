@@ -108,6 +108,24 @@ describe("Discord REST createMessage", () => {
   });
 });
 
+describe("Discord REST Gateway discovery", () => {
+  it("validates the Gateway bot sharding and session-start response", async () => {
+    const fetcher = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({url: "wss://gateway.discord.gg", shards: 2, session_start_limit: {total: 1_000, remaining: 999, reset_after: 60_000, max_concurrency: 1}}),
+    }));
+    const client = createDiscordRestClient({apiBaseUrl: "https://discord.example/api/v10", fetcher});
+    await expect(client.getGatewayBot!(privateToken)).resolves.toMatchObject({url: "wss://gateway.discord.gg", shards: 2, session_start_limit: {remaining: 999}});
+    expect(fetcher).toHaveBeenCalledWith("https://discord.example/api/v10/gateway/bot", expect.objectContaining({method: "GET"}));
+  });
+
+  it("rejects malformed Gateway discovery without leaking the token", async () => {
+    const client = createDiscordRestClient({fetcher: vi.fn(async () => ({ok: true, status: 200, json: async () => ({url: "nope", shards: 0})}))});
+    await expect(client.getGatewayBot!(privateToken)).rejects.not.toThrow(privateToken);
+  });
+});
+
 describe("Discord REST guild stickers", () => {
   it("lists and normalizes bot-visible guild stickers", async () => {
     const fetcher = vi.fn(async () => ({

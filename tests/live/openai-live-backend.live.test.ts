@@ -12,7 +12,7 @@ describeLive("experimental GPT-Live ChatGPT backend", () => {
       onAudio: () => undefined,
       onDelegation: () => undefined,
       onClearAudio: () => undefined,
-      onClose: (reason) => closeReasons.push(reason),
+      onFailure: (failure) => closeReasons.push(failure.code),
       log: () => undefined,
     });
 
@@ -22,6 +22,6 @@ describeLive("experimental GPT-Live ChatGPT backend", () => {
       bridge.close();
     }
 
-    expect(closeReasons).toEqual(["completed"]);
+    expect(closeReasons).toEqual([]);
   });
 });

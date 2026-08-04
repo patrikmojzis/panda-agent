@@ -72,6 +72,7 @@ export function startConnectorWorkerNotificationListener(input: {
   outboundWorker: ChannelWorkerNotificationListenerOptions["outboundWorker"];
   pool: ChannelWorkerNotificationListenerOptions["pool"];
   source: string;
+  additionalChannels?: ChannelWorkerNotificationListenerOptions["additionalChannels"];
 }): Promise<PostgresNotificationListenerHandle> {
   return startChannelWorkerNotificationListener({
     pool: input.pool,
@@ -79,6 +80,7 @@ export function startConnectorWorkerNotificationListener(input: {
     connectorKey: input.connectorKey,
     actionWorker: input.actionWorker,
     outboundWorker: input.outboundWorker,
+    additionalChannels: input.additionalChannels,
     onError: async (error) => {
       input.log("worker_notification_listener_failed", {
         connectorKey: input.connectorKey,

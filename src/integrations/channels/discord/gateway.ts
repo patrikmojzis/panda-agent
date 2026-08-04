@@ -1,28 +1,18 @@
-import process from "node:process";
-
-import WebSocket from "ws";
 import type {DiscordGatewayAdapterCreator, DiscordGatewayAdapterLibraryMethods} from "@discordjs/voice";
+import {WebSocketManager, WebSocketShardEvents} from "@discordjs/ws";
 
 import {isRecord} from "../../../lib/records.js";
 import {requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
-import type {DiscordChannelMetadata, DiscordWorkerRestClient} from "./api.js";
+import type {DiscordChannelMetadata, DiscordGatewayBotInfo, DiscordWorkerRestClient} from "./api.js";
 import {
   DISCORD_DEFAULT_GATEWAY_INTENTS,
-  DISCORD_GATEWAY_URL,
 } from "./config.js";
 import type {
   DiscordMessageCreatePayload,
   DiscordParentChannelResolution,
 } from "./message-ingestion.js";
+import type {DiscordVoiceGatewayHealth} from "./voice-health.js";
 
-const DISCORD_GATEWAY_VERSION = 10;
-const DISCORD_GATEWAY_ENCODING = "json";
-const DISCORD_OPCODE_DISPATCH = 0;
-const DISCORD_OPCODE_HEARTBEAT = 1;
-const DISCORD_OPCODE_IDENTIFY = 2;
-const DISCORD_OPCODE_HELLO = 10;
-const DISCORD_CLOSE_GOING_AWAY = 1001;
-const DISCORD_CLOSE_ABNORMAL = 1006;
 const GUILD_TEXT_CHANNEL = 0;
 const GUILD_NEWS_CHANNEL = 5;
 const NEWS_THREAD_CHANNEL = 10;
@@ -31,29 +21,17 @@ const PRIVATE_THREAD_CHANNEL = 12;
 const GUILD_FORUM_CHANNEL = 15;
 const GUILD_MEDIA_CHANNEL = 16;
 
-export interface DiscordGatewaySocket {
-  readonly readyState: number;
-  close(code?: number, reason?: string): void;
-  on(event: "open", listener: () => void): this;
-  on(event: "message", listener: (data: WebSocket.RawData) => void): this;
-  on(event: "close", listener: (code: number, reason: Buffer) => void): this;
-  on(event: "error", listener: (error: Error) => void): this;
-  send(data: string, callback?: (error?: Error) => void): void;
-}
-
-export type DiscordGatewaySocketFactory = (url: string) => DiscordGatewaySocket;
-
 export interface DiscordGatewayClientOptions {
   accountKey: string;
   botToken: string;
   channelResolver?: DiscordChannelResolver;
   connectorKey: string;
-  gatewayUrl?: string;
   intents?: number;
   log: (event: string, payload: Record<string, unknown>) => void;
   onFatal?: (error: Error) => Promise<void> | void;
   onMessageCreate: (payload: DiscordMessageCreatePayload) => Promise<void> | void;
-  socketFactory?: DiscordGatewaySocketFactory;
+  fetchGatewayInformation: () => Promise<DiscordGatewayBotInfo>;
+  managerFactory?: (options: ConstructorParameters<typeof WebSocketManager>[0]) => WebSocketManager;
 }
 
 interface DiscordGatewayDispatchEnvelope {
@@ -61,26 +39,6 @@ interface DiscordGatewayDispatchEnvelope {
   d?: unknown;
   s?: unknown;
   t?: unknown;
-}
-
-function createDefaultSocket(url: string): DiscordGatewaySocket {
-  return new WebSocket(url);
-}
-
-function rawMessageToText(data: WebSocket.RawData): string {
-  if (typeof data === "string") {
-    return data;
-  }
-
-  if (Array.isArray(data)) {
-    return Buffer.concat(data).toString("utf8");
-  }
-
-  if (Buffer.isBuffer(data)) {
-    return data.toString("utf8");
-  }
-
-  return Buffer.from(new Uint8Array(data)).toString("utf8");
 }
 
 function normalizeDiscordChannelMetadata(payload: unknown): DiscordChannelMetadata | null {
@@ -179,34 +137,17 @@ export class DiscordChannelResolver {
   }
 }
 
-function parseGatewayPayload(data: WebSocket.RawData): DiscordGatewayDispatchEnvelope | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(rawMessageToText(data)) as unknown;
-  } catch {
-    return null;
-  }
-
-  return isRecord(parsed) ? parsed : null;
-}
-
-function buildGatewayUrl(baseUrl: string): string {
-  const url = new URL(baseUrl);
-  url.searchParams.set("v", String(DISCORD_GATEWAY_VERSION));
-  url.searchParams.set("encoding", DISCORD_GATEWAY_ENCODING);
-  return url.toString();
-}
-
-function compactCloseReason(reason: Buffer): string {
-  return reason.toString("utf8").slice(0, 120);
-}
-
 export class DiscordGatewayClient {
-  private readonly options: Required<Pick<DiscordGatewayClientOptions, "gatewayUrl" | "intents" | "socketFactory">>
-    & Omit<DiscordGatewayClientOptions, "gatewayUrl" | "intents" | "socketFactory">;
-  private heartbeatTimer: NodeJS.Timeout | null = null;
-  private sequence: number | null = null;
-  private socket: DiscordGatewaySocket | null = null;
+  private readonly options: DiscordGatewayClientOptions & {intents: number};
+  private manager: WebSocketManager | null = null;
+  private startPromise: Promise<void> | null = null;
+  private shardCount = 1;
+  private readonly readyShards = new Set<number>();
+  private state: DiscordVoiceGatewayHealth["state"] = "closed";
+  private readyAt: number | null = null;
+  private lastHeartbeatSentAt: number | null = null;
+  private lastHeartbeatAckAt: number | null = null;
+  private reconnectCount = 0;
   private stopped = true;
   private fatalReported = false;
   private readonly voiceAdapters = new Map<string, DiscordGatewayAdapterLibraryMethods>();
@@ -214,80 +155,50 @@ export class DiscordGatewayClient {
   constructor(options: DiscordGatewayClientOptions) {
     this.options = {
       ...options,
-      gatewayUrl: options.gatewayUrl ?? DISCORD_GATEWAY_URL,
       intents: options.intents ?? DISCORD_DEFAULT_GATEWAY_INTENTS,
-      socketFactory: options.socketFactory ?? createDefaultSocket,
     };
   }
 
   async start(): Promise<void> {
-    if (this.socket) {
-      return;
-    }
-
+    if (this.startPromise) return this.startPromise;
     this.stopped = false;
     this.fatalReported = false;
-    const socket = this.options.socketFactory(buildGatewayUrl(this.options.gatewayUrl));
-    this.socket = socket;
-
-    socket.on("message", (data) => {
-      void this.handleSocketMessage(data).catch(() => {
-        this.options.log("gateway_message_handler_failed", {
-          connectorKey: this.options.connectorKey,
-          accountKey: this.options.accountKey,
-          message: "Discord Gateway message handler failed.",
-        });
-        void this.reportFatal(new Error("Discord Gateway message handler failed."));
-      });
+    this.state = "opening";
+    const pseudoRest = {get: async () => this.options.fetchGatewayInformation()};
+    const manager = (this.options.managerFactory ?? ((input) => new WebSocketManager(input)))({
+      token: this.options.botToken,
+      intents: this.options.intents as never,
+      rest: pseudoRest as never,
+      identifyProperties: {os: process.platform, browser: "panda-agent", device: "panda-agent"},
+      handshakeTimeout: 30_000,
+      helloTimeout: 30_000,
+      readyTimeout: 30_000,
     });
-    socket.on("error", (error) => {
-      this.options.log("gateway_error", {
-        connectorKey: this.options.connectorKey,
-        accountKey: this.options.accountKey,
-        message: error.message,
-      });
-    });
-    socket.on("close", (code, reason) => {
-      this.clearHeartbeat();
-      this.socket = null;
-      this.options.log("gateway_closed", {
-        connectorKey: this.options.connectorKey,
-        accountKey: this.options.accountKey,
-        code,
-        reason: compactCloseReason(reason),
-      });
-      if (this.stopped) {
-        return;
+    this.manager = manager;
+    this.attachManager(manager);
+    this.startPromise = (async () => {
+      try {
+        this.shardCount = await manager.getShardCount();
+        await manager.connect();
+        if (this.stopped || this.manager !== manager) throw new Error("Discord Gateway startup stopped.");
+        if (this.readyShards.size < this.shardCount) throw new Error("Discord Gateway connected without all shards becoming ready.");
+        this.state = "ready";
+      } catch (error) {
+        if (!this.stopped) await this.reportFatal(error instanceof Error ? error : new Error(String(error)));
+        throw error;
       }
-
-      if (code === DISCORD_CLOSE_GOING_AWAY || code === DISCORD_CLOSE_ABNORMAL) {
-        void this.reconnectAfterRecoverableClose(code);
-        return;
-      }
-
-      void this.reportFatal(new Error(`Discord Gateway closed with code ${code}.`));
-    });
-
-    await new Promise<void>((resolve, reject) => {
-      const handleOpen = () => {
-        resolve();
-      };
-      socket.on("open", handleOpen);
-      if (socket.readyState === WebSocket.OPEN) {
-        resolve();
-      }
-      socket.on("error", reject);
-    });
+    })();
+    return this.startPromise;
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
-    this.clearHeartbeat();
-    const socket = this.socket;
-    this.socket = null;
-    if (socket && socket.readyState !== WebSocket.CLOSING && socket.readyState !== WebSocket.CLOSED) {
-      socket.close(1000, "Panda Discord worker stopped.");
-    }
+    this.state = "closed";
+    this.readyShards.clear();
+    const manager = this.manager;
+    this.manager = null;
+    this.startPromise = null;
+    await manager?.destroy({code: 1000, reason: "Panda Discord worker stopped."});
     this.destroyVoiceAdapters();
   }
 
@@ -298,9 +209,10 @@ export class DiscordGatewayClient {
       this.voiceAdapters.set(guildId, methods);
       return {
         sendPayload: (payload: unknown): boolean => {
-          const socket = this.socket;
-          if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-          void this.send(payload).catch((error: unknown) => {
+          const manager = this.manager;
+          const shardId = this.shardForGuild(guildId);
+          if (!manager || !this.readyShards.has(shardId)) return false;
+          void Promise.resolve(manager.send(shardId, payload as never)).catch((error: unknown) => {
             this.options.log("gateway_voice_payload_failed", {
               connectorKey: this.options.connectorKey,
               guildId,
@@ -317,102 +229,65 @@ export class DiscordGatewayClient {
     };
   }
 
+  getHealthSnapshot(now = Date.now()): DiscordVoiceGatewayHealth {
+    return {
+      state: this.state,
+      readyAt: this.readyAt,
+      sequence: null,
+      lastHeartbeatSentAt: this.lastHeartbeatSentAt,
+      lastHeartbeatAckAt: this.lastHeartbeatAckAt,
+      heartbeatAckAgeMs: this.lastHeartbeatAckAt === null ? null : Math.max(0, now - this.lastHeartbeatAckAt),
+      reconnectCount: this.reconnectCount,
+    };
+  }
+
   private destroyVoiceAdapters(): void {
     for (const adapter of this.voiceAdapters.values()) adapter.destroy();
     this.voiceAdapters.clear();
   }
 
-  private clearHeartbeat(): void {
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer);
-      this.heartbeatTimer = null;
-    }
-  }
-
-  private send(payload: unknown): Promise<void> {
-    const socket = this.socket;
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      throw new Error("Discord Gateway socket is not open.");
-    }
-
-    return new Promise((resolve, reject) => {
-      socket.send(JSON.stringify(payload), (error?: Error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-
-        resolve();
+  private attachManager(manager: WebSocketManager): void {
+    manager.on(WebSocketShardEvents.Ready, (_payload, shardId) => {
+      if (this.stopped || this.manager !== manager) return;
+      this.readyShards.add(shardId);
+      this.readyAt ??= Date.now();
+      if (this.readyShards.size >= this.shardCount) this.state = "ready";
+    });
+    manager.on(WebSocketShardEvents.Resumed, (shardId) => {
+      if (this.stopped || this.manager !== manager) return;
+      this.readyShards.add(shardId);
+      if (this.readyShards.size >= this.shardCount) this.state = "ready";
+      this.options.log("gateway_resumed", {connectorKey: this.options.connectorKey, accountKey: this.options.accountKey, shardId});
+    });
+    manager.on(WebSocketShardEvents.HeartbeatComplete, (stats) => {
+      if (this.stopped || this.manager !== manager) return;
+      this.lastHeartbeatSentAt = stats.heartbeatAt;
+      this.lastHeartbeatAckAt = stats.ackAt;
+    });
+    manager.on(WebSocketShardEvents.Closed, (code, shardId) => {
+      if (this.stopped || this.manager !== manager) return;
+      this.readyShards.delete(shardId);
+      this.state = "resuming";
+      this.reconnectCount += 1;
+      this.options.log("gateway_closed", {connectorKey: this.options.connectorKey, accountKey: this.options.accountKey, code, shardId});
+      if (code === 4004 || (code >= 4010 && code <= 4014)) void this.reportFatal(new Error(`Discord Gateway closed with terminal code ${code}.`));
+    });
+    const onError = (error: Error, shardId: number) => {
+      if (this.stopped || this.manager !== manager) return;
+      this.options.log("gateway_error", {connectorKey: this.options.connectorKey, accountKey: this.options.accountKey, shardId, message: error.message.slice(0, 300)});
+    };
+    manager.on(WebSocketShardEvents.Error, onError);
+    manager.on(WebSocketShardEvents.SocketError, onError);
+    manager.on(WebSocketShardEvents.Dispatch, (payload) => {
+      if (this.stopped || this.manager !== manager) return;
+      void this.handleDispatch(payload as unknown as DiscordGatewayDispatchEnvelope).catch((error: unknown) => {
+        this.options.log("gateway_message_handler_failed", {connectorKey: this.options.connectorKey, accountKey: this.options.accountKey, message: error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300)});
       });
     });
   }
 
-  private startHeartbeat(intervalMs: number): void {
-    this.clearHeartbeat();
-    this.heartbeatTimer = setInterval(() => {
-      void this.send({
-        op: DISCORD_OPCODE_HEARTBEAT,
-        d: this.sequence,
-      }).catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        this.options.log("gateway_heartbeat_failed", {
-          connectorKey: this.options.connectorKey,
-          accountKey: this.options.accountKey,
-          message,
-        });
-        void this.reportFatal(error instanceof Error ? error : new Error(message));
-      });
-    }, intervalMs);
-    this.heartbeatTimer.unref?.();
-  }
-
-  private async identify(): Promise<void> {
-    await this.send({
-      op: DISCORD_OPCODE_IDENTIFY,
-      d: {
-        token: this.options.botToken,
-        intents: this.options.intents,
-        properties: {
-          os: process.platform,
-          browser: "panda-agent",
-          device: "panda-agent",
-        },
-      },
-    });
-  }
-
-  private async handleSocketMessage(data: WebSocket.RawData): Promise<void> {
-    const payload = parseGatewayPayload(data);
-    if (!payload) {
-      this.options.log("gateway_payload_dropped", {
-        connectorKey: this.options.connectorKey,
-        accountKey: this.options.accountKey,
-        reason: "invalid_json",
-      });
-      return;
-    }
-
-    if (typeof payload.s === "number") {
-      this.sequence = payload.s;
-    }
-
-    if (payload.op === DISCORD_OPCODE_HELLO) {
-      const hello = isRecord(payload.d) ? payload.d : null;
-      const heartbeatInterval = hello?.heartbeat_interval;
-      if (typeof heartbeatInterval !== "number" || heartbeatInterval <= 0) {
-        await this.reportFatal(new Error("Discord Gateway Hello did not include a heartbeat interval."));
-        return;
-      }
-
-      this.startHeartbeat(heartbeatInterval);
-      await this.identify();
-      return;
-    }
-
-    if (payload.op !== DISCORD_OPCODE_DISPATCH || typeof payload.t !== "string") {
-      return;
-    }
-
+  private async handleDispatch(payload: DiscordGatewayDispatchEnvelope): Promise<void> {
+    if (typeof payload.t !== "string") return;
     switch (payload.t) {
       case "MESSAGE_CREATE":
         if (isRecord(payload.d)) {
@@ -444,19 +319,9 @@ export class DiscordGatewayClient {
     }
   }
 
-  private async reconnectAfterRecoverableClose(code: number): Promise<void> {
-    this.options.log("gateway_reconnecting", {
-      connectorKey: this.options.connectorKey,
-      accountKey: this.options.accountKey,
-      code,
-    });
-
-    try {
-      await this.start();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      await this.reportFatal(new Error(`Discord Gateway reconnect failed after close code ${code}: ${message}`));
-    }
+  private shardForGuild(guildId: string): number {
+    try { return Number((BigInt(guildId) >> 22n) % BigInt(this.shardCount)); }
+    catch { return 0; }
   }
 
   private async reportFatal(error: Error): Promise<void> {

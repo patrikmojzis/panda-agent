@@ -21,16 +21,38 @@ const MAX_EARLY_FRAMES = 32;
 const MAX_EARLY_FRAME_BYTES = 1024 * 1024;
 const MAX_SEEN_DELEGATIONS = 2_048;
 const activeOwners = new Set<object>();
-type RealtimeVoiceFailureSource = "media" | "sideband" | "session";
+export type RealtimeVoiceFailureSource = "media" | "sideband" | "session";
+export interface RealtimeVoiceFailure {
+  source: RealtimeVoiceFailureSource;
+  code: "auth_unavailable" | "access_denied" | "session_expired" | "capacity" | "transport_failed";
+  retryable: boolean;
+  message: string;
+  status?: number;
+}
 type SidebandTerminal = {kind: "error"; error: Error} | {kind: "close"; code: number; reason: string};
 
 export interface RealtimeVoiceDelegation {id: string; prompt: string}
+export interface RealtimeVoiceBridgeHealth {
+  state: "connecting" | "connected" | "failed" | "closed";
+  sidebandState: "connecting" | "open" | "failed" | "closed";
+  sidebandOpenedAt: number | null;
+  sidebandAgeMs: number | null;
+  lastPingAt: number | null;
+  lastPongAt: number | null;
+  pongAgeMs: number | null;
+  lastCloseCode: number | null;
+  lastCloseOpenForMs: number | null;
+  malformedEvents: number;
+  unknownEvents: number;
+  media?: ReturnType<NonNullable<OpenAILiveAudioPeer["getHealthSnapshot"]>>;
+}
 export interface RealtimeVoiceBridge {
-  connect(): Promise<void>;
+  connect(signal?: AbortSignal): Promise<void>;
   sendAudio(pcm24kMono: Buffer): void;
   interrupt(): void;
   appendDelegationContext(delegationId: string, text: string, channel: OpenAILiveContextChannel): boolean;
   appendSessionContext(text: string, channel: OpenAILiveContextChannel): boolean;
+  getHealthSnapshot?(): RealtimeVoiceBridgeHealth;
   close(): void;
 }
 
@@ -41,12 +63,15 @@ export interface RealtimeVoiceBridgeOptions {
   onAudio(audio: Buffer): void;
   onDelegation(delegation: RealtimeVoiceDelegation): Promise<void> | void;
   onClearAudio(): void;
-  onClose(reason: string): void;
+  onTurnDone?(input: {role: "user" | "assistant" | "unknown"}): void;
+  onFailure(failure: RealtimeVoiceFailure): void;
   log(event: string, payload: Record<string, unknown>): void;
   fetchImpl?: typeof fetch;
   resolveAuth?: () => OpenAILiveAuth;
   createPeer?: (callbacks: {onAudio(audio: Buffer): void; onError(error: Error): void}, signal: AbortSignal) => Promise<OpenAILiveAudioPeer>;
   createSocket?: (url: string, headers: Record<string, string>) => WebSocket;
+  sidebandPingMs?: number;
+  now?: () => number;
 }
 
 function rawText(data: RawData): string {
@@ -70,6 +95,25 @@ function sanitizedError(error: unknown): Error {
   const sanitized = new Error(safeErrorMessage(original));
   if ("status" in original && typeof original.status === "number") Object.assign(sanitized, {status: original.status});
   return sanitized;
+}
+
+function classifyRealtimeFailure(error: Error, source: RealtimeVoiceFailureSource): RealtimeVoiceFailure {
+  const status = "status" in error && typeof error.status === "number" ? error.status : undefined;
+  const message = safeErrorMessage(error);
+  const normalized = message.toLowerCase();
+  if (status === 401 || normalized.includes("oauth") || normalized.includes("token")) {
+    return {source, code: "auth_unavailable", retryable: false, message, ...(status === undefined ? {} : {status})};
+  }
+  if (status === 403) return {source, code: "access_denied", retryable: false, message, status};
+  if (source === "session") return {source, code: "session_expired", retryable: false, message, ...(status === undefined ? {} : {status})};
+  if (status === 429) return {source, code: "capacity", retryable: true, message, status};
+  return {
+    source,
+    code: "transport_failed",
+    retryable: status === undefined || status >= 500,
+    message,
+    ...(status === undefined ? {} : {status}),
+  };
 }
 
 function waitForOpen(socket: WebSocket, signal: AbortSignal): Promise<() => SidebandTerminal | undefined> {
@@ -103,20 +147,6 @@ function waitForOpen(socket: WebSocket, signal: AbortSignal): Promise<() => Side
   });
 }
 
-function retryDelay(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const onAbort = () => finish(signal.reason instanceof Error ? signal.reason : new Error("GPT-Live startup stopped."));
-    const finish = (error?: Error) => {
-      clearTimeout(timer); signal.removeEventListener("abort", onAbort);
-      error ? reject(error) : resolve();
-    };
-    const timer = setTimeout(finish, ms);
-    timer.unref?.();
-    signal.addEventListener("abort", onAbort, {once: true});
-    if (signal.aborted) onAbort();
-  });
-}
-
 function abortFailure(signal: AbortSignal): {promise: Promise<never>; dispose(): void} {
   let rejectPromise!: (error: Error) => void;
   const promise = new Promise<never>((_, reject) => { rejectPromise = reject; });
@@ -136,23 +166,37 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
   private expiry?: NodeJS.Timeout;
   private expiryAt?: number;
   private sidebandOpenedAt?: number;
+  private sidebandPing?: NodeJS.Timeout;
+  private lastPingAt?: number;
+  private lastPongAt?: number;
+  private lastCloseCode?: number;
+  private lastCloseOpenForMs?: number;
+  private malformedEvents = 0;
+  private unknownEvents = 0;
+  private state: RealtimeVoiceBridgeHealth["state"] = "connecting";
+  private sidebandState: RealtimeVoiceBridgeHealth["sidebandState"] = "connecting";
   private startup?: {reject(error: Error): void};
   private closed = false;
   private reserved = false;
   private connectPromise?: Promise<void>;
+  private failureEmitted = false;
 
   constructor(private readonly options: RealtimeVoiceBridgeOptions) {}
 
-  connect(): Promise<void> {
-    this.connectPromise ??= this.connectInternal();
+  connect(signal?: AbortSignal): Promise<void> {
+    this.connectPromise ??= this.connectInternal(signal);
     return this.connectPromise;
   }
 
-  private async connectInternal(): Promise<void> {
+  private async connectInternal(externalSignal?: AbortSignal): Promise<void> {
     if (this.closed) throw new Error("GPT-Live bridge is closed.");
     if (activeOwners.size >= MAX_SESSIONS) throw new Error("GPT-Live session limit reached.");
     activeOwners.add(this); this.reserved = true;
-    const signal = AbortSignal.any([this.abort.signal, AbortSignal.timeout(this.options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS)]);
+    const signal = AbortSignal.any([
+      this.abort.signal,
+      AbortSignal.timeout(this.options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS),
+      ...(externalSignal ? [externalSignal] : []),
+    ]);
     const startupFailure = new Promise<never>((_, reject) => { this.startup = {reject}; });
     const aborted = abortFailure(signal);
     const startedAt = Date.now();
@@ -163,6 +207,7 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
         aborted.promise,
       ]);
       this.startup = undefined;
+      this.state = "connected";
       this.scheduleExpiry(SESSION_TTL_MS);
       this.options.log("gpt_live_connected", {connectDurationMs: Date.now() - startedAt});
     } catch (error) {
@@ -203,6 +248,24 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
 
   sendAudio(audio: Buffer): void { this.peer?.sendAudio(audio); }
 
+  getHealthSnapshot(): RealtimeVoiceBridgeHealth {
+    const now = this.options.now?.() ?? Date.now();
+    return {
+      state: this.state,
+      sidebandState: this.sidebandState,
+      sidebandOpenedAt: this.sidebandOpenedAt ?? null,
+      sidebandAgeMs: this.sidebandOpenedAt === undefined ? null : Math.max(0, now - this.sidebandOpenedAt),
+      lastPingAt: this.lastPingAt ?? null,
+      lastPongAt: this.lastPongAt ?? null,
+      pongAgeMs: this.lastPongAt === undefined ? null : Math.max(0, now - this.lastPongAt),
+      lastCloseCode: this.lastCloseCode ?? null,
+      lastCloseOpenForMs: this.lastCloseOpenForMs ?? null,
+      malformedEvents: this.malformedEvents,
+      unknownEvents: this.unknownEvents,
+      ...(this.peer?.getHealthSnapshot ? {media: this.peer.getHealthSnapshot()} : {}),
+    };
+  }
+
   interrupt(): void {
     this.options.onClearAudio();
   }
@@ -218,63 +281,79 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
     return this.sendMessages(sessionContextMessages(text, channel));
   }
 
-  close(): void { this.teardown("completed"); }
+  close(): void { this.teardown(); }
 
   private async connectSideband(url: string, auth: OpenAILiveAuth, ids: OpenAILiveRequestIds, signal: AbortSignal): Promise<void> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      const headers = buildHeaders(auth, ids);
-      const socket = this.options.createSocket?.(url, headers) ?? new WebSocket(url, {headers, maxPayload: MAX_SIDEBAND_PAYLOAD_BYTES});
-      const bufferedFrames: Array<{data: RawData; isBinary: boolean}> = [];
-      let bufferedBytes = 0;
-      const bufferFrame = (data: RawData, isBinary: boolean) => {
-        const bytes = rawByteLength(data);
-        if (bufferedFrames.length >= MAX_EARLY_FRAMES || bufferedBytes + bytes > MAX_EARLY_FRAME_BYTES) {
-          socket.off("message", bufferFrame);
-          socket.close(1009, "sideband startup buffer exceeded");
-          return;
-        }
-        bufferedBytes += bytes;
-        bufferedFrames.push({data, isBinary});
-      };
-      socket.on("message", bufferFrame);
-      try {
-        const detachTerminal = await waitForOpen(socket, signal);
-        this.socket = socket;
-        this.sidebandOpenedAt = Date.now();
-        socket.on("message", (data, isBinary) => { if (isBinary) return this.fail(new Error("GPT-Live sideband sent binary data."), "sideband"); this.handleEvent(rawText(data)); });
-        socket.on("error", (error) => this.fail(error, "sideband"));
-        socket.on("close", (code, reason) => {
-          const detail = reason?.length > 0 ? `: ${reason.toString("utf8").slice(0, 200)}` : ".";
-          if (!this.closed) {
-            this.options.log("gpt_live_sideband_closed", {code, openForMs: this.sidebandOpenedAt === undefined ? undefined : Date.now() - this.sidebandOpenedAt, hasReason: reason?.length > 0});
-            this.fail(new Error(`GPT-Live sideband closed (${code})${detail}`), "sideband");
-          }
-        });
+    const headers = buildHeaders(auth, ids);
+    const socket = this.options.createSocket?.(url, headers) ?? new WebSocket(url, {headers, maxPayload: MAX_SIDEBAND_PAYLOAD_BYTES});
+    const bufferedFrames: Array<{data: RawData; isBinary: boolean}> = [];
+    let bufferedBytes = 0;
+    const bufferFrame = (data: RawData, isBinary: boolean) => {
+      const bytes = rawByteLength(data);
+      if (bufferedFrames.length >= MAX_EARLY_FRAMES || bufferedBytes + bytes > MAX_EARLY_FRAME_BYTES) {
         socket.off("message", bufferFrame);
-        const terminal = detachTerminal();
-        for (const frame of bufferedFrames) {
-          if (frame.isBinary) throw new Error("GPT-Live sideband sent binary data during startup.");
-          this.handleEvent(rawText(frame.data));
-        }
-        if (terminal?.kind === "error") throw terminal.error;
-        if (terminal?.kind === "close") throw new Error(`GPT-Live sideband closed (${terminal.code})${terminal.reason ? `: ${terminal.reason}` : "."}`);
+        socket.close(1009, "sideband startup buffer exceeded");
         return;
-      } catch (error) {
-        socket.off("message", bufferFrame);
-        if (this.socket === socket) this.socket = undefined;
-        lastError = error;
-        socket.on("error", () => undefined);
-        socket.close();
-        if (attempt < 2) await retryDelay(200 * 2 ** attempt, signal);
       }
+      bufferedBytes += bytes;
+      bufferedFrames.push({data, isBinary});
+    };
+    socket.on("message", bufferFrame);
+    try {
+      const detachTerminal = await waitForOpen(socket, signal);
+      this.socket = socket;
+      this.sidebandOpenedAt = this.options.now?.() ?? Date.now();
+      this.sidebandState = "open";
+      this.startSidebandPing(socket);
+      socket.on("message", (data, isBinary) => { if (isBinary) return this.fail(new Error("GPT-Live sideband sent binary data."), "sideband"); this.handleEvent(rawText(data)); });
+      socket.on("error", (error) => this.fail(error, "sideband"));
+      socket.on("close", (code, reason) => {
+        const detail = reason?.length > 0 ? `: ${reason.toString("utf8").slice(0, 200)}` : ".";
+        if (!this.closed) {
+          const now = this.options.now?.() ?? Date.now();
+          this.lastCloseCode = code;
+          this.lastCloseOpenForMs = this.sidebandOpenedAt === undefined ? undefined : now - this.sidebandOpenedAt;
+          this.sidebandState = "failed";
+          this.options.log("gpt_live_sideband_closed", {code, openForMs: this.lastCloseOpenForMs, hasReason: reason?.length > 0});
+          this.fail(new Error(`GPT-Live sideband closed (${code})${detail}`), "sideband");
+        }
+      });
+      socket.off("message", bufferFrame);
+      const terminal = detachTerminal();
+      for (const frame of bufferedFrames) {
+        if (frame.isBinary) throw new Error("GPT-Live sideband sent binary data during startup.");
+        this.handleEvent(rawText(frame.data));
+      }
+      if (terminal?.kind === "error") throw terminal.error;
+      if (terminal?.kind === "close") throw new Error(`GPT-Live sideband closed (${terminal.code})${terminal.reason ? `: ${terminal.reason}` : "."}`);
+      return;
+    } catch (error) {
+      socket.off("message", bufferFrame);
+      if (this.socket === socket) this.socket = undefined;
+      socket.on("error", () => undefined);
+      socket.close();
+      throw error;
     }
-    throw lastError;
   }
 
   private handleEvent(text: string): void {
     const event = parseOpenAILiveEvent(text);
-    if (!event || event.kind === "ignored") return;
+    if (event.kind === "malformed") {
+      this.malformedEvents += 1;
+      this.options.log("gpt_live_sideband_event_dropped", {reason: event.reason, malformedEvents: this.malformedEvents});
+      return;
+    }
+    if (event.kind === "ignored") {
+      this.unknownEvents += 1;
+      if (this.unknownEvents <= 10 || this.unknownEvents % 100 === 0) this.options.log("gpt_live_sideband_event_ignored", {type: event.type, unknownEvents: this.unknownEvents});
+      return;
+    }
+    if (event.kind === "transcript_metadata") return;
+    if (event.kind === "turn_done") {
+      this.options.log("gpt_live_turn_done", {role: event.role, transcriptChars: event.transcriptChars, transcriptBytes: event.transcriptBytes, truncated: event.truncated});
+      this.options.onTurnDone?.({role: event.role});
+      return;
+    }
     if (event.kind === "session_started") {
       if (event.expiresAt !== undefined) {
         const expiresInMs = Math.max(0, event.expiresAt * 1000 - Date.now());
@@ -311,12 +390,19 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
   private fail(error: Error, source: RealtimeVoiceFailureSource): void {
     if (this.closed) return;
     this.options.log("gpt_live_failed", {failureSource: source, message: safeErrorMessage(error)});
+    this.state = "failed";
+    if (source === "sideband") this.sidebandState = "failed";
     if (this.startup) {
       this.startup.reject(error);
       this.abort.abort(error);
       return;
     }
-    this.teardown(error.message.toLowerCase().includes("oauth") ? "auth_unavailable" : "provider_failed");
+    const failure = classifyRealtimeFailure(error, source);
+    this.teardown();
+    if (!this.failureEmitted) {
+      this.failureEmitted = true;
+      this.options.onFailure(failure);
+    }
   }
 
   private scheduleExpiry(delayMs: number): void {
@@ -327,22 +413,25 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
     this.expiry = setTimeout(() => {
       if (this.closed) return;
       this.options.log("gpt_live_expired", {failureSource: "session"});
-      this.teardown("session_expired");
+      this.fail(new Error("GPT-Live session expired."), "session");
     }, Math.max(0, expiresAt - Date.now()));
     this.expiry.unref?.();
   }
 
-  private teardown(reason: string): void {
+  private teardown(): void {
     if (this.closed) return;
     this.closed = true;
-    this.startup?.reject(new Error(`GPT-Live bridge closed during startup: ${reason}.`));
+    if (this.state !== "failed") this.state = "closed";
+    if (this.sidebandState !== "failed") this.sidebandState = "closed";
+    this.startup?.reject(new Error("GPT-Live bridge closed during startup."));
     this.startup = undefined;
     this.abort.abort();
     this.release();
-    this.options.onClose(reason);
   }
 
   private release(): void {
+    if (this.sidebandPing) clearInterval(this.sidebandPing);
+    this.sidebandPing = undefined;
     if (this.expiry) clearTimeout(this.expiry);
     this.expiry = undefined;
     this.expiryAt = undefined;
@@ -356,5 +445,20 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
     }
     if (socket && socket.readyState < WebSocket.CLOSING) socket.close(1000, "session stopped");
     if (this.reserved) { activeOwners.delete(this); this.reserved = false; }
+  }
+
+  private startSidebandPing(socket: WebSocket): void {
+    if (this.sidebandPing) clearInterval(this.sidebandPing);
+    const configured = this.options.sidebandPingMs
+      ?? Number.parseInt(this.options.env?.PANDA_DISCORD_VOICE_SIDEBAND_PING_MS ?? "0", 10);
+    if (!Number.isFinite(configured) || configured <= 0 || typeof socket.ping !== "function") return;
+    socket.on("pong", () => { this.lastPongAt = this.options.now?.() ?? Date.now(); });
+    this.sidebandPing = setInterval(() => {
+      if (socket.readyState !== WebSocket.OPEN) return;
+      this.lastPingAt = this.options.now?.() ?? Date.now();
+      try { socket.ping(); }
+      catch (error) { this.fail(error instanceof Error ? error : new Error(String(error)), "sideband"); }
+    }, configured);
+    this.sidebandPing.unref?.();
   }
 }

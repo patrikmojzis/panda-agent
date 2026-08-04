@@ -65,7 +65,15 @@ describe("experimental OpenAI GPT-Live wire", () => {
   });
 
   it("does not turn completed transcripts into recoverable executable input", () => {
-    expect(parseOpenAILiveEvent(JSON.stringify({type: "turn.done", turn: {role: "user", transcript: "hello there"}}))).toEqual({kind: "ignored", type: "turn.done"});
+    const parsed = parseOpenAILiveEvent(JSON.stringify({type: "turn.done", turn: {role: "user", transcript: "hello there"}}));
+    expect(parsed).toEqual({kind: "turn_done", role: "user", transcriptChars: 11, transcriptBytes: 11, truncated: false});
+    expect(JSON.stringify(parsed)).not.toContain("hello there");
+  });
+
+  it("reports malformed and transcript events without retaining transcript text", () => {
+    expect(parseOpenAILiveEvent("not json")).toEqual({kind: "malformed", reason: "invalid_json"});
+    expect(parseOpenAILiveEvent(JSON.stringify({type: "conversation.item.input_audio_transcription.completed", transcript: "čau panda"})))
+      .toEqual({kind: "transcript_metadata", type: "conversation.item.input_audio_transcription.completed", role: "unknown", transcriptChars: 9, transcriptBytes: 10, truncated: false});
   });
 
   it("never exposes the OAuth bearer through structured errors", () => {

@@ -6,7 +6,7 @@ function turn() {
   return {
     id: "11111111-1111-1111-1111-111111111111", voiceSessionId: "22222222-2222-2222-2222-222222222222", delegationId: "delegation-1",
     connectorKey: "bot-1", guildId: "guild-1", channelId: "voice-1", sessionId: "session-1", agentKey: "panda",
-    externalActorId: "user-1", prompt: "check the deployment", status: "pending" as const, createdAt: 1, updatedAt: 1,
+    externalActorId: "user-1", sourceUtteranceId: "33333333-3333-4333-8333-333333333333", prompt: "check the deployment", status: "pending" as const, createdAt: 1, updatedAt: 1,
   };
 }
 
@@ -32,10 +32,11 @@ describe("Discord voice durable handoff", () => {
     expect(JSON.stringify(submitInput.mock.calls[0]![1])).toContain(`discord voice leave --turn ${turn().id}`);
   });
 
-  it("correlates applied inputs to a run and fails a completed turn that omitted explicit final context", async () => {
+  it("correlates applied inputs to a run and leaves a completed run awaiting explicit final context", async () => {
     const voice = {
       assignTurnsToRun: vi.fn(async () => undefined),
       listRunningTurns: vi.fn(async () => [{...turn(), status: "running", runId: "run-1"}]),
+      markTurnsAwaitingFinal: vi.fn(async () => undefined),
       failTurn: vi.fn(async () => undefined),
     };
     const handler = createDiscordVoiceRuntimeEventHandler({
@@ -45,7 +46,8 @@ describe("Discord voice durable handoff", () => {
     await handler({type: "run_finished", threadId: "thread-1", run: {id: "run-1", threadId: "thread-1", status: "completed", startedAt: 1, finishedAt: 2}});
     expect(voice.assignTurnsToRun).toHaveBeenCalledWith([turn().id], "run-1");
     expect(voice.assignTurnsToRun).toHaveBeenCalledOnce();
-    expect(voice.failTurn).toHaveBeenCalledWith(turn().id, "Panda completed without sending final Discord voice context.");
+    expect(voice.markTurnsAwaitingFinal).toHaveBeenCalledWith("run-1");
+    expect(voice.failTurn).not.toHaveBeenCalled();
   });
 
   it("marks delegated work failed when its Panda run fails", async () => {

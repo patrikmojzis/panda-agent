@@ -19,10 +19,10 @@
       "sha256": "122894ded7441c87257e7d1aa957a5916cf8c0f3780ffeea7f38946b27d0ae76"
     },
     {
-      "bytes": 18092,
+      "bytes": 18048,
       "lines": 465,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "9d3c91f65699545381b7b9e49f71a1c03024618c0828cd472160908d23c11806"
+      "sha256": "efb08742979128c04516532893f61014d538071e3d0fb59234aa9fde32cc0729"
     },
     {
       "bytes": 12121,

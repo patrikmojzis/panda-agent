@@ -283,7 +283,7 @@ export async function bootstrapDaemonContext(
       crypto: resolveCredentialCrypto(),
     });
     const discordGifs = createDiscordGifService();
-    const discordVoice = new DiscordVoiceStore({pool: runtime.pool, notificationPool: runtime.notificationPool});
+    const discordVoice = new DiscordVoiceStore({pool: runtime.pool});
     await discordVoice.ensureSchema();
     discordVoiceForEvents = discordVoice;
     voiceEventHandler = createDiscordVoiceRuntimeEventHandler({

@@ -812,6 +812,7 @@ export class RuntimeRequestRepo {
 
   async enqueueRequest<K extends RuntimeRequestKind>(
     input: CreateRuntimeRequestInput<K>,
+    options: {idempotencyKey?: string} = {},
   ): Promise<RuntimeRequestRecord<K>> {
     const {kind, serialized} = serializePayload(input);
     const result = await this.pool.query(`
@@ -819,18 +820,22 @@ export class RuntimeRequestRepo {
         id,
         kind,
         status,
-        payload
+        payload,
+        idempotency_key
       ) VALUES (
         $1,
         $2,
         'pending',
-        $3::jsonb
+        $3::jsonb,
+        $4
       )
+      ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key=EXCLUDED.idempotency_key
       RETURNING *
     `, [
       randomUUID(),
       kind,
       serialized,
+      options.idempotencyKey ?? null,
     ]);
 
     const record = parseRecord<K>(result.rows[0] as Record<string, unknown>);

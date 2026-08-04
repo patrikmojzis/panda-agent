@@ -126,6 +126,7 @@
   },
   "dependencies": {
     "@discordjs/voice": "0.19.2",
+    "@discordjs/ws": "2.0.4",
     "@earendil-works/pi-ai": "^0.80.10",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@mozilla/readability": "^0.6.0",

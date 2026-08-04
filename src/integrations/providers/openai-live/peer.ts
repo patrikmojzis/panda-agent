@@ -24,7 +24,20 @@ export interface OpenAILiveAudioPeer {
   applyAnswer(sdp: string): Promise<void>;
   waitUntilConnected(signal: AbortSignal): Promise<void>;
   sendAudio(pcm24kMono: Buffer): void;
+  getHealthSnapshot?(): OpenAILiveAudioPeerHealth;
   close(): void;
+}
+
+export interface OpenAILiveAudioPeerHealth {
+  state: "connecting" | "connected" | "failed" | "closed";
+  lastRtpAt: number | null;
+  receivedPackets: number;
+  lossMarkers: number;
+  plcFrames: number;
+  decodeFailures: number;
+  ssrcChanges: number;
+  pendingInputMs: number;
+  droppedInputMs: number;
 }
 
 export interface OpenAILiveAudioCallbacks {onAudio(pcm24kMono: Buffer): void; onError(error: Error): void}
@@ -126,6 +139,62 @@ function providerToRelay(stereo: Int16Array): Buffer {
   return samplesToBuffer(resamplePcm16(mono, PROVIDER_RATE, RELAY_RATE));
 }
 
+class RelayPcmQueue {
+  private readonly chunks: Buffer[] = [];
+  private headOffset = 0;
+  private bytes = 0;
+
+  constructor(private readonly maxBytes: number, private readonly frameBytes: number) {}
+
+  get byteLength(): number { return this.bytes; }
+
+  push(input: Buffer): number {
+    if (input.length === 0) return 0;
+    this.chunks.push(Buffer.from(input));
+    this.bytes += input.length;
+    const excess = Math.max(0, this.bytes - this.maxBytes);
+    if (excess === 0) return 0;
+    const dropped = Math.min(this.bytes, Math.ceil(excess / this.frameBytes) * this.frameBytes);
+    this.discard(dropped);
+    return dropped;
+  }
+
+  shiftPadded(size: number): Buffer {
+    const output = Buffer.alloc(size);
+    let written = 0;
+    while (written < size && this.bytes > 0) {
+      const chunk = this.chunks[0]!;
+      const available = chunk.length - this.headOffset;
+      const copied = Math.min(size - written, available);
+      chunk.copy(output, written, this.headOffset, this.headOffset + copied);
+      written += copied;
+      this.headOffset += copied;
+      this.bytes -= copied;
+      if (this.headOffset === chunk.length) { this.chunks.shift(); this.headOffset = 0; }
+    }
+    return output;
+  }
+
+  clear(): void {
+    this.chunks.length = 0;
+    this.headOffset = 0;
+    this.bytes = 0;
+  }
+
+  private discard(size: number): void {
+    let remaining = Math.min(size, this.bytes);
+    while (remaining > 0) {
+      const chunk = this.chunks[0]!;
+      const available = chunk.length - this.headOffset;
+      const discarded = Math.min(remaining, available);
+      this.headOffset += discarded;
+      this.bytes -= discarded;
+      remaining -= discarded;
+      if (this.headOffset === chunk.length) { this.chunks.shift(); this.headOffset = 0; }
+    }
+  }
+}
+
 export class WeriftOpenAILiveAudioPeer implements OpenAILiveAudioPeer {
   static async create(callbacks: OpenAILiveAudioCallbacks, signal?: AbortSignal): Promise<WeriftOpenAILiveAudioPeer> {
     const [werift, opus] = await Promise.all([import("werift"), import("libopus-wasm")]);
@@ -151,7 +220,7 @@ export class WeriftOpenAILiveAudioPeer implements OpenAILiveAudioPeer {
   private closed = false;
   private connected = false;
   private timer?: NodeJS.Timeout;
-  private pending = Buffer.alloc(0);
+  private readonly pending = new RelayPcmQueue(MAX_PENDING_BYTES, RELAY_FRAME_BYTES);
   private sequence = randomInt(0x1_0000);
   private timestamp = randomInt(0x1_0000_0000);
   private readonly tracks = new Set<string>();
@@ -160,6 +229,14 @@ export class WeriftOpenAILiveAudioPeer implements OpenAILiveAudioPeer {
   private inboundSsrc?: number;
   private inboundFlushTimer?: NodeJS.Timeout;
   private connectionError?: Error;
+  private mediaState: OpenAILiveAudioPeerHealth["state"] = "connecting";
+  private lastRtpAt?: number;
+  private receivedPackets = 0;
+  private lossMarkers = 0;
+  private plcFrames = 0;
+  private decodeFailures = 0;
+  private ssrcChanges = 0;
+  private droppedInputBytes = 0;
 
   private constructor(private readonly state: {callbacks: OpenAILiveAudioCallbacks; werift: Werift; peer: Peer; transceiver: Transceiver; encoder: Awaited<ReturnType<Libopus["createEncoder"]>>; decoder: Awaited<ReturnType<Libopus["createDecoder"]>>}) {
     state.peer.onTrack.subscribe((track) => this.attachTrack(track));
@@ -167,11 +244,13 @@ export class WeriftOpenAILiveAudioPeer implements OpenAILiveAudioPeer {
       if (this.closed) return;
       if (status === "connected") {
         this.connected = true;
+        this.mediaState = "connected";
         this.settleConnectionWaiters();
         this.startPump();
       }
       if (["failed", "disconnected", "closed"].includes(status)) {
         this.connected = false;
+        this.mediaState = status === "closed" ? "closed" : "failed";
         this.connectionError = new Error(`GPT-Live WebRTC media connection ${status}.`);
         this.settleConnectionWaiters(this.connectionError);
         state.callbacks.onError(this.connectionError);
@@ -214,18 +293,32 @@ export class WeriftOpenAILiveAudioPeer implements OpenAILiveAudioPeer {
   sendAudio(audio: Buffer): void {
     if (this.closed || audio.length < 2) return;
     const evenAudio = audio.subarray(0, audio.length - audio.length % 2);
-    this.pending = Buffer.concat([this.pending, Buffer.from(evenAudio)]);
-    if (this.pending.length > MAX_PENDING_BYTES) this.pending = this.pending.subarray(this.pending.length - MAX_PENDING_BYTES);
+    this.droppedInputBytes += this.pending.push(evenAudio);
+  }
+
+  getHealthSnapshot(): OpenAILiveAudioPeerHealth {
+    return {
+      state: this.mediaState,
+      lastRtpAt: this.lastRtpAt ?? null,
+      receivedPackets: this.receivedPackets,
+      lossMarkers: this.lossMarkers,
+      plcFrames: this.plcFrames,
+      decodeFailures: this.decodeFailures,
+      ssrcChanges: this.ssrcChanges,
+      pendingInputMs: Math.round(this.pending.byteLength / (RELAY_RATE * 2) * 1_000),
+      droppedInputMs: Math.round(this.droppedInputBytes / (RELAY_RATE * 2) * 1_000),
+    };
   }
 
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.mediaState = "closed";
     if (this.timer) clearInterval(this.timer);
     if (this.inboundFlushTimer) clearTimeout(this.inboundFlushTimer);
     this.settleConnectionWaiters(new Error("GPT-Live WebRTC media connection is closed."));
     this.inboundReorder.reset();
-    this.pending = Buffer.alloc(0);
+    this.pending.clear();
     this.state.encoder.free();
     this.state.decoder.free();
     void this.state.peer.close().catch(() => undefined);
@@ -236,16 +329,16 @@ export class WeriftOpenAILiveAudioPeer implements OpenAILiveAudioPeer {
     this.tracks.add(track.uuid);
     track.onReceiveRtp.subscribe((packet) => {
       if (this.closed) return;
-      if (this.inboundSsrc !== undefined && this.inboundSsrc !== packet.header.ssrc) this.inboundReorder.reset();
+      this.lastRtpAt = Date.now();
+      this.receivedPackets += 1;
+      if (this.inboundSsrc !== undefined && this.inboundSsrc !== packet.header.ssrc) {
+        this.ssrcChanges += 1;
+        this.inboundReorder.reset();
+        this.clearInboundFlushTimer();
+      }
       this.inboundSsrc = packet.header.ssrc;
       this.processInbound(this.inboundReorder.push(packet.header.sequenceNumber, packet));
-      if (this.inboundReorder.hasPending && !this.inboundFlushTimer) {
-        this.inboundFlushTimer = setTimeout(() => {
-          this.inboundFlushTimer = undefined;
-          this.processInbound(this.inboundReorder.flush());
-        }, RTP_REORDER_FLUSH_MS);
-        this.inboundFlushTimer.unref?.();
-      }
+      this.refreshInboundFlushTimer();
     });
   }
 
@@ -253,12 +346,14 @@ export class WeriftOpenAILiveAudioPeer implements OpenAILiveAudioPeer {
     if (this.closed) return;
     for (const output of outputs) {
       try {
+        if (output.kind === "loss") this.lossMarkers += 1;
         const decoded = output.kind === "loss"
-          ? this.state.decoder.decodePacketLoss(FRAME_SAMPLES)
+          ? (this.plcFrames += 1, this.state.decoder.decodePacketLoss(FRAME_SAMPLES))
           : this.state.decoder.decode(this.state.werift.dePacketizeRtpPackets("opus", [output.packet]).data, {maxFrameSize: 5_760});
         this.state.callbacks.onAudio(providerToRelay(decoded));
       } catch (error) {
-        try { this.state.callbacks.onAudio(providerToRelay(this.state.decoder.decodePacketLoss(FRAME_SAMPLES))); }
+        this.decodeFailures += 1;
+        try { this.plcFrames += 1; this.state.callbacks.onAudio(providerToRelay(this.state.decoder.decodePacketLoss(FRAME_SAMPLES))); }
         catch { this.state.callbacks.onError(errorOf(error)); }
       }
     }
@@ -281,10 +376,7 @@ export class WeriftOpenAILiveAudioPeer implements OpenAILiveAudioPeer {
 
   private sendFrame(): void {
     if (!this.connected || this.closed) return;
-    const frame = Buffer.alloc(RELAY_FRAME_BYTES);
-    const bytes = Math.min(frame.length, this.pending.length);
-    this.pending.copy(frame, 0, 0, bytes);
-    this.pending = this.pending.subarray(bytes);
+    const frame = this.pending.shiftPadded(RELAY_FRAME_BYTES);
     try {
       const encoded = this.state.encoder.encode(relayToProvider(frame), {frameSize: FRAME_SAMPLES});
       const packet = new this.state.werift.RtpPacket(new this.state.werift.RtpHeader({payloadType: 111, sequenceNumber: this.sequence, timestamp: this.timestamp}), Buffer.from(encoded));
@@ -292,5 +384,24 @@ export class WeriftOpenAILiveAudioPeer implements OpenAILiveAudioPeer {
       this.timestamp = (this.timestamp + FRAME_SAMPLES) >>> 0;
       void this.state.transceiver.sender.sendRtp(packet).catch((error: unknown) => this.state.callbacks.onError(errorOf(error)));
     } catch (error) { this.state.callbacks.onError(errorOf(error)); }
+  }
+
+  private refreshInboundFlushTimer(): void {
+    if (!this.inboundReorder.hasPending) {
+      this.clearInboundFlushTimer();
+      return;
+    }
+    if (this.inboundFlushTimer) return;
+    this.inboundFlushTimer = setTimeout(() => {
+      this.inboundFlushTimer = undefined;
+      this.processInbound(this.inboundReorder.flush());
+      this.refreshInboundFlushTimer();
+    }, RTP_REORDER_FLUSH_MS);
+    this.inboundFlushTimer.unref?.();
+  }
+
+  private clearInboundFlushTimer(): void {
+    if (this.inboundFlushTimer) clearTimeout(this.inboundFlushTimer);
+    this.inboundFlushTimer = undefined;
   }
 }

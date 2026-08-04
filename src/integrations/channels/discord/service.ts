@@ -48,9 +48,10 @@ import {
 } from "./media.js";
 import {createDiscordOutboundAdapter} from "./outbound.js";
 import {sendDiscordStickerAction} from "./stickers.js";
-import {DiscordVoiceStore} from "./voice-postgres.js";
+import {DISCORD_VOICE_NOTIFICATION_CHANNEL, DiscordVoiceStore, parseDiscordVoiceNotification} from "./voice-postgres.js";
 import {DiscordVoiceControlWorker, DiscordVoiceSessionManager} from "./voice-manager.js";
 import type {DiscordGatewayAdapterCreator} from "@discordjs/voice";
+import type {DiscordVoiceGatewayHealth} from "./voice-health.js";
 import {
   startConnectorWorkerNotificationListener,
   startConnectorWorkerRuntime,
@@ -99,9 +100,10 @@ export interface DiscordServiceGateway {
   start(): Promise<void>;
   stop(): Promise<void>;
   createVoiceAdapterCreator?(guildId: string): DiscordGatewayAdapterCreator;
+  getHealthSnapshot?(): DiscordVoiceGatewayHealth;
 }
 
-export interface DiscordServiceVoiceWorker {start(): Promise<void>; stop(): Promise<void>}
+export interface DiscordServiceVoiceWorker {start(): Promise<void>; stop(): Promise<void>; triggerDrain(): Promise<void>}
 
 export interface DiscordServiceOutboundWorker {
   start(options?: {subscribeToNotifications?: boolean}): Promise<void>;
@@ -527,6 +529,16 @@ export class DiscordService {
       actionWorker: input.actionWorker,
       outboundWorker: input.outboundWorker,
       log: (event, payload) => this.log(event, payload),
+      ...(input.stores.voice ? {additionalChannels: [{
+        channel: DISCORD_VOICE_NOTIFICATION_CHANNEL,
+        label: "Discord voice control notification callback",
+        parse: parseDiscordVoiceNotification,
+        listener: async (notification: unknown) => {
+          const parsed = notification as ReturnType<typeof parseDiscordVoiceNotification>;
+          if (parsed?.connectorKey !== input.connectorKey) return;
+          await this.voiceWorker?.triggerDrain();
+        },
+      }]} : {}),
     });
   }
 
@@ -559,7 +571,7 @@ export class DiscordService {
   private createGateway(input: {
     botToken: string;
     connectorKey: string;
-    restClient: Pick<DiscordWorkerRestClient, "getChannelMetadata">;
+    restClient: Pick<DiscordWorkerRestClient, "getChannelMetadata" | "getGatewayBot">;
     stores: DiscordWorkerStores;
   }): DiscordServiceGateway {
     const channelResolver = (this.dependencies.createChannelResolver ?? ((options) => new DiscordChannelResolver(options)))({
@@ -576,6 +588,10 @@ export class DiscordService {
       botToken: input.botToken,
       channelResolver,
       connectorKey: input.connectorKey,
+      fetchGatewayInformation: async () => {
+        if (!input.restClient.getGatewayBot) throw new Error("Discord REST adapter does not support Gateway discovery.");
+        return input.restClient.getGatewayBot(input.botToken);
+      },
       log: (event, payload) => this.log(event, payload),
       onFatal: async (error) => {
         this.log("gateway_fatal", {
@@ -703,8 +719,21 @@ export class DiscordService {
             restClient,
             store: stores.voice,
             requests: stores.runtimeRequests,
+            getInfrastructureHealth: () => ({
+              ...(gateway.getHealthSnapshot ? {gateway: gateway.getHealthSnapshot()} : {}),
+              ...(this.workerRuntime?.notificationListener?.getSnapshot
+                ? {listener: this.workerRuntime.notificationListener.getSnapshot()}
+                : {}),
+              pool: {
+                max: poolConfig.max,
+                totalCount: stores.pool.totalCount,
+                idleCount: stores.pool.idleCount,
+                waitingCount: stores.pool.waitingCount,
+              },
+            }),
             log: (event, payload) => this.log(event, payload),
           }),
+          log: (event, payload) => this.log(event, payload),
         });
         await this.voiceWorker.start();
       }

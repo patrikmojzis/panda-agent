@@ -96,6 +96,29 @@ describe("startPostgresNotificationListener", () => {
     expect(client.release).toHaveBeenCalledTimes(1);
   });
 
+  it("uses the same client for connector-local additional channels", async () => {
+    const handlers = new Map<string, (value: unknown) => void>();
+    const client = new FakeNotificationClient(handlers);
+    const pool: NotificationPool = {connect: vi.fn(async () => client)};
+    const onVoice = vi.fn();
+    const handle = await startPostgresNotificationListener({
+      pool,
+      additionalChannels: [{
+        channel: "runtime_discord_voice_events",
+        label: "Discord voice test notification",
+        parse: (payload) => payload ? JSON.parse(payload) as unknown : null,
+        listener: onVoice,
+      }],
+    });
+
+    expect(pool.connect).toHaveBeenCalledOnce();
+    expect(client.query).toHaveBeenCalledWith("LISTEN runtime_discord_voice_events");
+    handlers.get("notification")?.({channel: "runtime_discord_voice_events", payload: JSON.stringify({kind: "control", connectorKey: "bot-1"})});
+    await waitFor(() => expect(onVoice).toHaveBeenCalledWith({kind: "control", connectorKey: "bot-1"}));
+    await handle.close();
+    expect(client.release).toHaveBeenCalledOnce();
+  });
+
   it("reconnects action and delivery LISTEN channels on post-start client errors", async () => {
     const firstHandlers = new Map<string, (value: unknown) => void>();
     const secondHandlers = new Map<string, (value: unknown) => void>();

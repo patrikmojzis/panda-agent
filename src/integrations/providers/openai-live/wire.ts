@@ -26,7 +26,10 @@ export type OpenAILiveEvent =
   | {kind: "session_started"; expiresAt?: number}
   | {kind: "delegation"; id: string; prompt: string}
   | {kind: "audio_cleared"}
+  | {kind: "turn_done"; role: "user" | "assistant" | "unknown"; transcriptChars: number; transcriptBytes: number; truncated: boolean}
+  | {kind: "transcript_metadata"; type: string; role: "user" | "assistant" | "unknown"; transcriptChars: number; transcriptBytes: number; truncated: boolean}
   | {kind: "error"; message: string; fatalAuth: boolean}
+  | {kind: "malformed"; reason: "invalid_json" | "invalid_shape" | "oversized"}
   | {kind: "ignored"; type: string};
 
 export function createRequestIds(): OpenAILiveRequestIds {
@@ -106,16 +109,39 @@ export async function createOpenAILiveCall(input: {auth: OpenAILiveAuth; ids: Op
   return {answerSdp, sidebandUrl: `wss://api.openai.com/v1/live/${callId}`};
 }
 
-export function parseOpenAILiveEvent(text: string): OpenAILiveEvent | null {
-  if (Buffer.byteLength(text) > 1024 * 1024) return null;
+function metadataRole(value: unknown): "user" | "assistant" | "unknown" {
+  return value === "user" || value === "assistant" ? value : "unknown";
+}
+
+function transcriptMetadata(record: Record<string, unknown>): {transcriptChars: number; transcriptBytes: number; truncated: boolean} {
+  const candidate = typeof record.transcript === "string"
+    ? record.transcript
+    : typeof record.text === "string"
+      ? record.text
+      : "";
+  const transcriptChars = Math.min(candidate.length, MAX_DELEGATION_PROMPT_CHARS);
+  const bounded = candidate.slice(0, transcriptChars);
+  return {transcriptChars, transcriptBytes: Buffer.byteLength(bounded), truncated: candidate.length > transcriptChars};
+}
+
+export function parseOpenAILiveEvent(text: string): OpenAILiveEvent {
+  if (Buffer.byteLength(text) > 1024 * 1024) return {kind: "malformed", reason: "oversized"};
   let payload: unknown;
-  try { payload = JSON.parse(text) as unknown; } catch { return null; }
-  if (!isRecord(payload) || typeof payload.type !== "string") return null;
+  try { payload = JSON.parse(text) as unknown; } catch { return {kind: "malformed", reason: "invalid_json"}; }
+  if (!isRecord(payload) || typeof payload.type !== "string") return {kind: "malformed", reason: "invalid_shape"};
   if (payload.type === "session.started") {
     const session = isRecord(payload.session) ? payload.session : undefined;
     return {kind: "session_started", ...(typeof session?.expires_at === "number" ? {expiresAt: session.expires_at} : {})};
   }
   if (payload.type === "output_audio_buffer.cleared") return {kind: "audio_cleared"};
+  if (payload.type === "turn.done") {
+    const turn = isRecord(payload.turn) ? payload.turn : {};
+    return {kind: "turn_done", role: metadataRole(turn.role), ...transcriptMetadata(turn)};
+  }
+  if (payload.type.toLowerCase().includes("transcript")) {
+    const item = isRecord(payload.item) ? payload.item : isRecord(payload.delta) ? payload.delta : payload;
+    return {kind: "transcript_metadata", type: payload.type.slice(0, 120), role: metadataRole(item.role ?? payload.role), ...transcriptMetadata(item)};
+  }
   if (payload.type === "delegation.created") {
     const item = isRecord(payload.item) ? payload.item : undefined;
     if (item?.type !== "delegation" || item.target !== "client" || typeof item.id !== "string" || !Array.isArray(item.content)) return {kind: "ignored", type: payload.type};
@@ -129,7 +155,7 @@ export function parseOpenAILiveEvent(text: string): OpenAILiveEvent | null {
     const message = typeof detail.message === "string" ? detail.message.trim().slice(0, 500) : "GPT-Live sideband error";
     return {kind: "error", message, fatalAuth: status === 401 || status === "401" || ["invalid_token", "token_expired", "authentication_error"].includes(code)};
   }
-  return {kind: "ignored", type: payload.type};
+  return {kind: "ignored", type: payload.type.slice(0, 120)};
 }
 
 export function delegationContextMessages(delegationId: string, text: string, channel: OpenAILiveContextChannel): string[] {

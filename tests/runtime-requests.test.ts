@@ -72,6 +72,14 @@ describe("RuntimeRequestRepo", () => {
     media: [],
   };
 
+  it("persists the caller's idempotency key when enqueueing", async () => {
+    const {pool, repo} = createEnqueueRepo();
+
+    await repo.enqueueRequest({kind: "discord_message", payload: validDiscordPayload()}, {idempotencyKey: "discord_voice_delegation:turn-1"});
+
+    expect(pool.query.mock.calls[0]![1]![3]).toBe("discord_voice_delegation:turn-1");
+  });
+
   it("uses the notification pool for LISTEN clients", async () => {
     const queryPool = {
       connect: vi.fn(async () => {

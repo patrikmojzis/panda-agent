@@ -78,9 +78,11 @@ export function createDiscordVoiceRuntimeEventHandler(options: {
     }
     if (event.type !== "run_finished") return;
     const turns = await voice.listRunningTurns(event.run.id);
-    const error = event.run.status === "completed"
-      ? "Panda completed without sending final Discord voice context."
-      : event.run.error ?? "Panda voice delegation failed.";
+    if (event.run.status === "completed") {
+      await voice.markTurnsAwaitingFinal(event.run.id);
+      return;
+    }
+    const error = event.run.error ?? "Panda voice delegation failed.";
     await Promise.all(turns.map((turn) => voice.failTurn(turn.id, error)));
   };
 }

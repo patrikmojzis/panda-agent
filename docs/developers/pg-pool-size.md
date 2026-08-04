@@ -30,7 +30,7 @@ Today the expensive pieces are not just burst traffic. They are the always-on cl
 - `panda-core` uses `PANDA_CORE_THREAD_LEASE_DB_POOL_MAX` for advisory-lock thread leases. Default: `4`.
 - `panda-core` has a separate readonly pool, but it is lazy and only exists after the readonly tool is actually used.
 - `panda-telegram/<connectorKey>` keeps one shared worker `LISTEN` client.
-- `panda-discord/<accountKey>` runs one pool per enabled Discord account in all-enabled mode.
+- `panda-discord/<accountKey>` runs one pool per enabled Discord account in all-enabled mode. Its action, delivery, and voice notification channels share one long-lived `LISTEN` client; voice does not pin another client.
 - `panda-whatsapp/<connectorKey>` keeps one shared worker `LISTEN` client.
 - Connector ownership uses lease rows with TTL, not pinned advisory-lock sessions.
 - Docker healthchecks hit local HTTP endpoints, not the database.
@@ -68,7 +68,7 @@ That is intentionally explicit. It gives Panda room to breathe without pretendin
 
 The first real fixes are in:
 
-- Connector action and delivery workers share one `LISTEN` client per process.
+- Connector action, delivery, and Discord voice workers share one `LISTEN` client per process.
 - Connector ownership uses `runtime.connector_leases` with expiry and renewal.
 - `panda-core` splits query, notification, and advisory-lock traffic into separate pools.
 - `panda-core` no longer pays for `panda/core-ro` at boot.

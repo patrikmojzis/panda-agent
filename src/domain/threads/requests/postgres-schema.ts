@@ -12,6 +12,7 @@ export async function ensurePostgresRuntimeRequestSchema(pool: PgQueryable): Pro
       kind TEXT NOT NULL,
       status TEXT NOT NULL,
       payload JSONB NOT NULL,
+      idempotency_key TEXT,
       result JSONB,
       error TEXT,
       claimed_at TIMESTAMPTZ,
@@ -19,6 +20,11 @@ export async function ensurePostgresRuntimeRequestSchema(pool: PgQueryable): Pro
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
+  `);
+  await pool.query(`ALTER TABLE ${tables.runtimeRequests} ADD COLUMN IF NOT EXISTS idempotency_key TEXT`);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_runtime_requests_idempotency_idx`)}
+    ON ${tables.runtimeRequests} (idempotency_key)
   `);
   await pool.query(`
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_runtime_requests_pending_idx`)}

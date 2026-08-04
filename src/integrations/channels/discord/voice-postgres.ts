@@ -1,7 +1,6 @@
 import {randomUUID} from "node:crypto";
 
 import {isJsonObject, type JsonObject} from "../../../lib/json.js";
-import {listenPostgresChannel} from "../../../lib/postgres-listen.js";
 import {buildRuntimeRelationNames, CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier} from "../../../lib/postgres-relations.js";
 import type {PgListenClient, PgPoolLike, PgQueryable} from "../../../lib/postgres-query.js";
 import {optionalTimestampMillis, requireTimestampMillis} from "../../../lib/postgres-values.js";
@@ -20,8 +19,9 @@ import {
   type DiscordVoiceTurnRecord,
   type DiscordVoiceTurnStatus,
 } from "./voice-types.js";
+import type {DiscordVoiceHealthReason, DiscordVoiceOperationalState} from "./voice-health.js";
 
-const VOICE_NOTIFICATION_CHANNEL = "runtime_discord_voice_events";
+export const DISCORD_VOICE_NOTIFICATION_CHANNEL = "runtime_discord_voice_events";
 
 const tables = buildRuntimeRelationNames({
   controls: "discord_voice_controls",
@@ -52,6 +52,24 @@ function parseSessionState(value: unknown): DiscordVoiceSessionState {
   throw new Error(`Unsupported Discord voice session state ${String(value)}.`);
 }
 
+function parseHealthState(value: unknown): DiscordVoiceOperationalState | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value === "connecting" || value === "ready" || value === "degraded" || value === "recovering" || value === "error") return value;
+  throw new Error(`Unsupported Discord voice health state ${String(value)}.`);
+}
+
+const HEALTH_REASONS = new Set<DiscordVoiceHealthReason>([
+  "gateway_not_ready", "gateway_heartbeat_stale", "discord_voice_not_ready", "provider_connecting",
+  "provider_recovering", "provider_unavailable", "notification_listener_reconnecting",
+  "postgres_pool_waiting", "audio_dropped", "playback_failed",
+]);
+
+function parseHealthReasons(value: unknown): DiscordVoiceHealthReason[] {
+  const parsed = typeof value === "string" ? JSON.parse(value) as unknown : value;
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter((reason): reason is DiscordVoiceHealthReason => typeof reason === "string" && HEALTH_REASONS.has(reason as DiscordVoiceHealthReason)).slice(0, 6);
+}
+
 function parseSendMode(value: unknown): DiscordVoiceSendMode | undefined {
   if (value === undefined || value === null) return undefined;
   if (value === "progress" || value === "final") return value;
@@ -59,7 +77,7 @@ function parseSendMode(value: unknown): DiscordVoiceSendMode | undefined {
 }
 
 function parseTurnStatus(value: unknown): DiscordVoiceTurnStatus {
-  if (value === "pending" || value === "queued" || value === "running" || value === "completed" || value === "failed") return value;
+  if (value === "pending" || value === "queued" || value === "running" || value === "awaiting_final" || value === "final_sending" || value === "completed" || value === "failed") return value;
   throw new Error(`Unsupported Discord voice turn status ${String(value)}.`);
 }
 
@@ -74,6 +92,7 @@ function parseControl(row: Record<string, unknown>): DiscordVoiceControlRecord {
     text: optionalString(row.text),
     mode: parseSendMode(row.mode),
     voiceTurnId: optionalString(row.voice_turn_id),
+    idempotencyKey: optionalString(row.idempotency_key),
     status: parseControlStatus(row.status),
     result: parseJsonObject(row.result),
     error: optionalString(row.error),
@@ -96,6 +115,9 @@ function parseSession(row: Record<string, unknown>): DiscordVoiceSessionRecord {
     state: parseSessionState(row.state),
     model,
     lastError: optionalString(row.last_error),
+    health: parseHealthState(row.health_state),
+    healthReasons: parseHealthReasons(row.health_reasons),
+    healthObservedAt: optionalTimestampMillis(row.health_observed_at, "Discord voice health_observed_at is invalid."),
     startedAt: requireTimestampMillis(row.started_at, "Discord voice session started_at is invalid."),
     updatedAt: requireTimestampMillis(row.updated_at, "Discord voice session updated_at is invalid."),
   };
@@ -113,11 +135,16 @@ function parseTurn(row: Record<string, unknown>): DiscordVoiceTurnRecord {
     agentKey: requiredString(row.agent_key, "Discord voice agent key is missing."),
     externalActorId: optionalString(row.external_actor_id),
     identityId: optionalString(row.identity_id),
+    // Rows created before utterance attribution shipped use the turn UUID as a
+    // stable fallback. New rows always persist the actual source utterance UUID.
+    sourceUtteranceId: optionalString(row.source_utterance_id) ?? requiredString(row.id, "Discord voice source utterance id is missing."),
     prompt: requiredString(row.prompt, "Discord voice delegation prompt is missing."),
     status: parseTurnStatus(row.status),
     threadId: optionalString(row.thread_id),
     runId: optionalString(row.run_id),
     resultText: optionalString(row.result_text),
+    finalControlId: optionalString(row.final_control_id),
+    finalText: optionalString(row.final_text),
     error: optionalString(row.error),
     createdAt: requireTimestampMillis(row.created_at, "Discord voice turn created_at is invalid."),
     updatedAt: requireTimestampMillis(row.updated_at, "Discord voice turn updated_at is invalid."),
@@ -131,7 +158,7 @@ export async function ensureDiscordVoiceSchema(pool: PgQueryable): Promise<void>
     CREATE TABLE IF NOT EXISTS ${tables.controls} (
       id UUID PRIMARY KEY, connector_key TEXT NOT NULL, operation TEXT NOT NULL,
       session_id TEXT NOT NULL, agent_key TEXT NOT NULL, channel_id TEXT,
-      text TEXT, mode TEXT, voice_turn_id UUID,
+      text TEXT, mode TEXT, voice_turn_id UUID, idempotency_key TEXT,
       status TEXT NOT NULL, result JSONB, error TEXT, completed_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
@@ -139,44 +166,52 @@ export async function ensureDiscordVoiceSchema(pool: PgQueryable): Promise<void>
   await pool.query(`ALTER TABLE ${tables.controls} ADD COLUMN IF NOT EXISTS text TEXT`);
   await pool.query(`ALTER TABLE ${tables.controls} ADD COLUMN IF NOT EXISTS mode TEXT`);
   await pool.query(`ALTER TABLE ${tables.controls} ADD COLUMN IF NOT EXISTS voice_turn_id UUID`);
+  await pool.query(`ALTER TABLE ${tables.controls} ADD COLUMN IF NOT EXISTS idempotency_key TEXT`);
   await pool.query(`CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_discord_voice_controls_pending_idx`)} ON ${tables.controls} (connector_key, status, created_at, id)`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_discord_voice_controls_idempotency_idx`)} ON ${tables.controls} (idempotency_key)`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${tables.sessions} (
       connector_key TEXT NOT NULL, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL,
       session_id TEXT NOT NULL, agent_key TEXT NOT NULL, voice_session_id UUID NOT NULL,
       state TEXT NOT NULL, model TEXT NOT NULL, last_error TEXT,
+      health_state TEXT, health_reasons JSONB NOT NULL DEFAULT '[]'::jsonb, health_observed_at TIMESTAMPTZ,
       started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (connector_key, guild_id)
     )
   `);
+  await pool.query(`ALTER TABLE ${tables.sessions} ADD COLUMN IF NOT EXISTS health_state TEXT`);
+  await pool.query(`ALTER TABLE ${tables.sessions} ADD COLUMN IF NOT EXISTS health_reasons JSONB NOT NULL DEFAULT '[]'::jsonb`);
+  await pool.query(`ALTER TABLE ${tables.sessions} ADD COLUMN IF NOT EXISTS health_observed_at TIMESTAMPTZ`);
   await pool.query(`CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_discord_voice_sessions_owner_idx`)} ON ${tables.sessions} (session_id, connector_key, state)`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${tables.turns} (
       id UUID PRIMARY KEY, voice_session_id UUID NOT NULL, delegation_id TEXT NOT NULL,
       connector_key TEXT NOT NULL, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL,
-      session_id TEXT NOT NULL, agent_key TEXT NOT NULL, external_actor_id TEXT, identity_id TEXT,
+      session_id TEXT NOT NULL, agent_key TEXT NOT NULL, external_actor_id TEXT, identity_id TEXT, source_utterance_id UUID,
       prompt TEXT NOT NULL, status TEXT NOT NULL, thread_id UUID, run_id UUID,
-      result_text TEXT, error TEXT, completed_at TIMESTAMPTZ,
+      result_text TEXT, final_control_id UUID, final_text TEXT, error TEXT, completed_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await pool.query(`ALTER TABLE ${tables.turns} ADD COLUMN IF NOT EXISTS source_utterance_id UUID`);
+  await pool.query(`ALTER TABLE ${tables.turns} ADD COLUMN IF NOT EXISTS final_control_id UUID`);
+  await pool.query(`ALTER TABLE ${tables.turns} ADD COLUMN IF NOT EXISTS final_text TEXT`);
   await pool.query(`CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_discord_voice_turns_run_idx`)} ON ${tables.turns} (run_id, status)`);
+  // Legacy turns have no source utterance. Partial indexes establish the new
+  // invariant without making historical duplicate rows a startup blocker.
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_discord_voice_turns_delegation_idx`)} ON ${tables.turns} (voice_session_id, delegation_id) WHERE source_utterance_id IS NOT NULL`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_discord_voice_turns_utterance_idx`)} ON ${tables.turns} (voice_session_id, source_utterance_id) WHERE source_utterance_id IS NOT NULL`);
 }
 
 export interface DiscordVoiceStoreOptions {
   pool: PgPoolLike<PgListenClient>;
-  notificationPool?: PgPoolLike<PgListenClient>;
 }
 
 export class DiscordVoiceStore {
   private readonly pool: PgPoolLike<PgListenClient>;
-  private readonly notificationPool: PgPoolLike<PgListenClient>;
-  private controlWaitListener?: Promise<() => Promise<void>>;
-  private readonly controlWaiters = new Map<string, Set<(record: DiscordVoiceControlRecord) => void>>();
 
   constructor(options: DiscordVoiceStoreOptions) {
     this.pool = options.pool;
-    this.notificationPool = options.notificationPool ?? options.pool;
   }
 
   ensureSchema(): Promise<void> {
@@ -184,14 +219,16 @@ export class DiscordVoiceStore {
   }
 
   private async notify(notification: DiscordVoiceNotification): Promise<void> {
-    await this.pool.query("SELECT pg_notify($1, $2)", [VOICE_NOTIFICATION_CHANNEL, JSON.stringify(notification)]);
+    await this.pool.query("SELECT pg_notify($1, $2)", [DISCORD_VOICE_NOTIFICATION_CHANNEL, JSON.stringify(notification)]);
   }
 
   async enqueueControl(input: DiscordVoiceControlInput): Promise<DiscordVoiceControlRecord> {
     const result = await this.pool.query(`
-      INSERT INTO ${tables.controls} (id, connector_key, operation, session_id, agent_key, channel_id, text, mode, voice_turn_id, status)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending') RETURNING *
-    `, [randomUUID(), input.connectorKey, input.operation, input.sessionId, input.agentKey, input.channelId ?? null, input.text ?? null, input.mode ?? null, input.voiceTurnId ?? null]);
+      INSERT INTO ${tables.controls} (id, connector_key, operation, session_id, agent_key, channel_id, text, mode, voice_turn_id, idempotency_key, status)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending')
+      ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key=EXCLUDED.idempotency_key
+      RETURNING *
+    `, [randomUUID(), input.connectorKey, input.operation, input.sessionId, input.agentKey, input.channelId ?? null, input.text ?? null, input.mode ?? null, input.voiceTurnId ?? null, input.idempotencyKey ?? null]);
     const record = parseControl(result.rows[0] as Record<string, unknown>);
     await this.notify({kind: "control", connectorKey: record.connectorKey, controlId: record.id});
     return record;
@@ -242,63 +279,41 @@ export class DiscordVoiceStore {
     return result.rowCount ?? 0;
   }
 
-  async waitForControl(id: string, timeoutMs = 35_000): Promise<DiscordVoiceControlRecord> {
-    const existing = await this.getControl(id);
-    if (existing.status === "completed" || existing.status === "failed") return existing;
-    await this.ensureControlWaitListener();
-    return new Promise<DiscordVoiceControlRecord>((resolve, reject) => {
-      let settled = false;
-      const finish = (record: DiscordVoiceControlRecord) => {
-        if (settled || (record.status !== "completed" && record.status !== "failed")) return;
-        settled = true;
-        clearTimeout(timer);
-        const waiters = this.controlWaiters.get(id);
-        waiters?.delete(finish);
-        if (waiters?.size === 0) this.controlWaiters.delete(id);
-        resolve(record);
-      };
-      const waiters = this.controlWaiters.get(id) ?? new Set();
-      waiters.add(finish);
-      this.controlWaiters.set(id, waiters);
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        waiters.delete(finish);
-        if (waiters.size === 0) this.controlWaiters.delete(id);
-        reject(new Error(`Timed out waiting for Discord voice control ${id}.`));
-      }, timeoutMs);
-      timer.unref?.();
-      void this.getControl(id).then(finish, reject);
-    });
-  }
-
-  private async ensureControlWaitListener(): Promise<void> {
-    this.controlWaitListener ??= this.listen(async (notification) => {
-      if (notification.kind !== "control" || !this.controlWaiters.has(notification.controlId)) return;
-      const record = await this.getControl(notification.controlId);
-      for (const waiter of this.controlWaiters.get(notification.controlId) ?? []) waiter(record);
-    }).catch((error: unknown) => {
-      this.controlWaitListener = undefined;
-      throw error;
-    });
-    await this.controlWaitListener;
+  async waitForControl(id: string, options: number | {timeoutMs?: number; signal?: AbortSignal} = 35_000): Promise<DiscordVoiceControlRecord> {
+    const timeoutMs = typeof options === "number" ? options : options.timeoutMs ?? 35_000;
+    const signal = typeof options === "number" ? undefined : options.signal;
+    const deadline = Date.now() + timeoutMs;
+    let delayMs = 250;
+    while (true) {
+      signal?.throwIfAborted();
+      const record = await this.getControl(id);
+      if (record.status === "completed" || record.status === "failed") return record;
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) break;
+      await abortableDelay(Math.min(delayMs, remainingMs), signal);
+      delayMs = Math.min(1_000, delayMs * 2);
+    }
+    const finalRecord = await this.getControl(id);
+    if (finalRecord.status === "completed" || finalRecord.status === "failed") return finalRecord;
+    throw new Error(`Timed out waiting for Discord voice control ${id}.`);
   }
 
   async close(): Promise<void> {
-    const listener = this.controlWaitListener;
-    this.controlWaitListener = undefined;
-    if (listener) await (await listener)();
-    this.controlWaiters.clear();
+    // This store owns no long-lived clients; retained for daemon cleanup symmetry.
   }
 
-  async upsertSession(input: Omit<DiscordVoiceSessionRecord, "startedAt" | "updatedAt">): Promise<DiscordVoiceSessionRecord> {
+  async upsertSession(input: Omit<DiscordVoiceSessionRecord, "startedAt" | "updatedAt" | "healthReasons"> & {healthReasons?: readonly DiscordVoiceHealthReason[]}): Promise<DiscordVoiceSessionRecord> {
     const result = await this.pool.query(`
-      INSERT INTO ${tables.sessions} (connector_key,guild_id,channel_id,session_id,agent_key,voice_session_id,state,model,last_error)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-      ON CONFLICT (connector_key,guild_id) DO UPDATE SET channel_id=EXCLUDED.channel_id,session_id=EXCLUDED.session_id,agent_key=EXCLUDED.agent_key,voice_session_id=EXCLUDED.voice_session_id,state=EXCLUDED.state,model=EXCLUDED.model,last_error=EXCLUDED.last_error,started_at=CASE WHEN ${tables.sessions}.voice_session_id=EXCLUDED.voice_session_id THEN ${tables.sessions}.started_at ELSE NOW() END,updated_at=NOW()
+      INSERT INTO ${tables.sessions} (connector_key,guild_id,channel_id,session_id,agent_key,voice_session_id,state,model,last_error,health_state,health_reasons,health_observed_at)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)
+      ON CONFLICT (connector_key,guild_id) DO UPDATE SET channel_id=EXCLUDED.channel_id,session_id=EXCLUDED.session_id,agent_key=EXCLUDED.agent_key,voice_session_id=EXCLUDED.voice_session_id,state=EXCLUDED.state,model=EXCLUDED.model,last_error=EXCLUDED.last_error,health_state=EXCLUDED.health_state,health_reasons=EXCLUDED.health_reasons,health_observed_at=EXCLUDED.health_observed_at,started_at=CASE WHEN ${tables.sessions}.voice_session_id=EXCLUDED.voice_session_id THEN ${tables.sessions}.started_at ELSE NOW() END,updated_at=NOW()
       RETURNING *
-    `, [input.connectorKey,input.guildId,input.channelId,input.sessionId,input.agentKey,input.voiceSessionId,input.state,input.model,input.lastError ?? null]);
+    `, [input.connectorKey,input.guildId,input.channelId,input.sessionId,input.agentKey,input.voiceSessionId,input.state,input.model,input.lastError ?? null,input.health ?? null,JSON.stringify(input.healthReasons ?? []),input.healthObservedAt ? new Date(input.healthObservedAt) : null]);
     return parseSession(result.rows[0] as Record<string, unknown>);
+  }
+
+  async updateSessionHealth(input: {connectorKey: string; guildId: string; voiceSessionId: string; health: DiscordVoiceOperationalState; reasons: readonly DiscordVoiceHealthReason[]; observedAt: number}): Promise<void> {
+    await this.pool.query(`UPDATE ${tables.sessions} SET health_state=$4,health_reasons=$5::jsonb,health_observed_at=$6,updated_at=NOW() WHERE connector_key=$1 AND guild_id=$2 AND voice_session_id=$3`, [input.connectorKey,input.guildId,input.voiceSessionId,input.health,JSON.stringify(input.reasons.slice(0,6)),new Date(input.observedAt)]);
   }
 
   async listSessions(filter: {sessionId?: string; connectorKey?: string; activeOnly?: boolean} = {}): Promise<readonly DiscordVoiceSessionRecord[]> {
@@ -320,12 +335,16 @@ export class DiscordVoiceStore {
     return result.rowCount ?? 0;
   }
 
-  async createTurn(input: DiscordVoiceTurnInput): Promise<DiscordVoiceTurnRecord> {
+  async createOrGetTurn(input: DiscordVoiceTurnInput): Promise<{turn: DiscordVoiceTurnRecord; created: boolean}> {
     const result = await this.pool.query(`
-      INSERT INTO ${tables.turns} (id,voice_session_id,delegation_id,connector_key,guild_id,channel_id,session_id,agent_key,external_actor_id,identity_id,prompt,status)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending') RETURNING *
-    `, [input.id,input.voiceSessionId,input.delegationId,input.connectorKey,input.guildId,input.channelId,input.sessionId,input.agentKey,input.externalActorId ?? null,input.identityId ?? null,input.prompt]);
-    return parseTurn(result.rows[0] as Record<string, unknown>);
+      INSERT INTO ${tables.turns} (id,voice_session_id,delegation_id,connector_key,guild_id,channel_id,session_id,agent_key,external_actor_id,identity_id,source_utterance_id,prompt,status)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending')
+      ON CONFLICT DO NOTHING RETURNING *
+    `, [input.id,input.voiceSessionId,input.delegationId,input.connectorKey,input.guildId,input.channelId,input.sessionId,input.agentKey,input.externalActorId ?? null,input.identityId ?? null,input.sourceUtteranceId,input.prompt]);
+    if (result.rows[0]) return {turn: parseTurn(result.rows[0] as Record<string, unknown>), created: true};
+    const existing = await this.pool.query(`SELECT * FROM ${tables.turns} WHERE voice_session_id=$1 AND (source_utterance_id=$2 OR delegation_id=$3) ORDER BY created_at LIMIT 1`, [input.voiceSessionId,input.sourceUtteranceId,input.delegationId]);
+    if (!existing.rows[0]) throw new Error("Discord voice turn conflict could not be resolved.");
+    return {turn: parseTurn(existing.rows[0] as Record<string, unknown>), created: false};
   }
 
   async getTurn(id: string): Promise<DiscordVoiceTurnRecord> {
@@ -345,34 +364,69 @@ export class DiscordVoiceStore {
     await this.pool.query(`UPDATE ${tables.turns} SET status='running',run_id=$1,updated_at=NOW() WHERE id IN (${placeholders}) AND status IN ('pending','queued')`, [runId, ...turnIds]);
   }
 
+  async markTurnsAwaitingFinal(runId: string): Promise<void> {
+    await this.pool.query(`UPDATE ${tables.turns} SET status='awaiting_final',updated_at=NOW() WHERE run_id=$1 AND status='running'`, [runId]);
+  }
+
   async listRunningTurns(runId: string): Promise<readonly DiscordVoiceTurnRecord[]> {
     const result = await this.pool.query(`SELECT * FROM ${tables.turns} WHERE run_id=$1 AND status='running' ORDER BY created_at`, [runId]);
     return result.rows.map((row) => parseTurn(row as Record<string, unknown>));
   }
 
   async completeTurn(id: string, text: string): Promise<DiscordVoiceTurnRecord> {
-    const result = await this.pool.query(`UPDATE ${tables.turns} SET status='completed',result_text=$2,error=NULL,completed_at=NOW(),updated_at=NOW() WHERE id=$1 RETURNING *`, [id,text]);
-    return parseTurn(result.rows[0] as Record<string, unknown>);
+    const result = await this.pool.query(`UPDATE ${tables.turns} SET status='completed',result_text=$2,error=NULL,completed_at=NOW(),updated_at=NOW() WHERE id=$1 AND status IN ('pending','queued','running','awaiting_final') RETURNING *`, [id,text]);
+    return result.rows[0] ? parseTurn(result.rows[0] as Record<string, unknown>) : this.getTurn(id);
+  }
+
+  async reserveFinalDelivery(id: string, controlId: string, text: string): Promise<{turn: DiscordVoiceTurnRecord; reserved: boolean}> {
+    const result = await this.pool.query(`UPDATE ${tables.turns} SET status='final_sending',final_control_id=$2,final_text=$3,updated_at=NOW() WHERE id=$1 AND status IN ('pending','queued','running','awaiting_final') RETURNING *`, [id,controlId,text]);
+    return result.rows[0]
+      ? {turn: parseTurn(result.rows[0] as Record<string, unknown>), reserved: true}
+      : {turn: await this.getTurn(id), reserved: false};
+  }
+
+  async releaseFinalDelivery(id: string, controlId: string): Promise<DiscordVoiceTurnRecord> {
+    const result = await this.pool.query(`UPDATE ${tables.turns} SET status='awaiting_final',final_control_id=NULL,final_text=NULL,updated_at=NOW() WHERE id=$1 AND status='final_sending' AND final_control_id=$2 RETURNING *`, [id,controlId]);
+    return result.rows[0] ? parseTurn(result.rows[0] as Record<string, unknown>) : this.getTurn(id);
+  }
+
+  async completeReservedFinal(id: string, controlId: string): Promise<DiscordVoiceTurnRecord> {
+    const result = await this.pool.query(`UPDATE ${tables.turns} SET status='completed',result_text=final_text,error=NULL,completed_at=NOW(),updated_at=NOW() WHERE id=$1 AND status='final_sending' AND final_control_id=$2 RETURNING *`, [id,controlId]);
+    return result.rows[0] ? parseTurn(result.rows[0] as Record<string, unknown>) : this.getTurn(id);
   }
 
   async failTurn(id: string, error: string): Promise<DiscordVoiceTurnRecord> {
-    const result = await this.pool.query(`UPDATE ${tables.turns} SET status='failed',error=$2,completed_at=NOW(),updated_at=NOW() WHERE id=$1 RETURNING *`, [id,error.slice(0,1000)]);
-    return parseTurn(result.rows[0] as Record<string, unknown>);
+    const result = await this.pool.query(`UPDATE ${tables.turns} SET status='failed',error=$2,completed_at=NOW(),updated_at=NOW() WHERE id=$1 AND status NOT IN ('completed','failed') RETURNING *`, [id,error.slice(0,1000)]);
+    return result.rows[0] ? parseTurn(result.rows[0] as Record<string, unknown>) : this.getTurn(id);
   }
 
-  listen(listener: (notification: DiscordVoiceNotification) => Promise<void> | void): Promise<() => Promise<void>> {
-    return listenPostgresChannel({
-      pool: this.notificationPool,
-      channel: VOICE_NOTIFICATION_CHANNEL,
-      label: "Discord voice notification",
-      parse: (payload): DiscordVoiceNotification | null => {
-        if (!payload) return null;
-        const parsed = JSON.parse(payload) as unknown;
-        if (!isJsonObject(parsed)) return null;
-        if (parsed.kind === "control" && typeof parsed.connectorKey === "string" && typeof parsed.controlId === "string") return parsed as unknown as DiscordVoiceControlNotification;
-        return null;
-      },
-      listener,
-    });
+  async failConnectorActiveTurns(connectorKey: string, error: string): Promise<number> {
+    const result = await this.pool.query(`UPDATE ${tables.turns} SET status='failed',error=$2,completed_at=NOW(),updated_at=NOW() WHERE connector_key=$1 AND status NOT IN ('completed','failed')`, [connectorKey,error.slice(0,1000)]);
+    return result.rowCount ?? 0;
   }
+
+}
+
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => finish(signal?.reason instanceof Error ? signal.reason : new Error("Discord voice control wait was aborted."));
+    const finish = (error?: Error) => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      error ? reject(error) : resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    timer.unref?.();
+    signal?.addEventListener("abort", onAbort, {once: true});
+    if (signal?.aborted) onAbort();
+  });
+}
+
+export function parseDiscordVoiceNotification(payload: string | undefined): DiscordVoiceNotification | null {
+  if (!payload) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(payload) as unknown; } catch { return null; }
+  if (!isJsonObject(parsed)) return null;
+  if (parsed.kind === "control" && typeof parsed.connectorKey === "string" && typeof parsed.controlId === "string") return parsed as unknown as DiscordVoiceControlNotification;
+  return null;
 }

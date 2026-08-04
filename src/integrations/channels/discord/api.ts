@@ -16,6 +16,12 @@ export interface DiscordChannelMetadata {
   guildId?: string;
 }
 
+export interface DiscordGatewayBotInfo {
+  url: string;
+  shards: number;
+  session_start_limit: {total: number; remaining: number; reset_after: number; max_concurrency: number};
+}
+
 export interface DiscordMessageReferenceBody {
   message_id: string;
   channel_id: string;
@@ -57,6 +63,7 @@ export interface DiscordRestClient {
 }
 
 export interface DiscordWorkerRestClient extends DiscordRestClient {
+  getGatewayBot?(botToken: string): Promise<DiscordGatewayBotInfo>;
   createMessage(
     botToken: string,
     channelId: string,
@@ -178,6 +185,30 @@ function parseDiscordChannelMetadata(payload: unknown): DiscordChannelMetadata {
   };
 }
 
+function parseDiscordGatewayBotInfo(payload: unknown): DiscordGatewayBotInfo {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) throw new Error("Discord Gateway response must be an object.");
+  const record = payload as Record<string, unknown>;
+  const limit = record.session_start_limit;
+  if (typeof limit !== "object" || limit === null || Array.isArray(limit)) throw new Error("Discord Gateway session start limit is missing or invalid.");
+  const startLimit = limit as Record<string, unknown>;
+  const number = (value: unknown, label: string, minimum: number): number => {
+    if (typeof value !== "number" || !Number.isInteger(value) || value < minimum) throw new Error(`Discord Gateway ${label} is missing or invalid.`);
+    return value;
+  };
+  const url = readDiscordStringField(record, "url", "Gateway URL");
+  try { new URL(url); } catch { throw new Error("Discord Gateway URL is invalid."); }
+  return {
+    url,
+    shards: number(record.shards, "shard count", 1),
+    session_start_limit: {
+      total: number(startLimit.total, "session total", 0),
+      remaining: number(startLimit.remaining, "session remaining", 0),
+      reset_after: number(startLimit.reset_after, "session reset interval", 0),
+      max_concurrency: number(startLimit.max_concurrency, "session max concurrency", 1),
+    },
+  };
+}
+
 function parseDiscordCreatedMessage(payload: unknown): DiscordCreatedMessage {
   if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
     throw new Error("Discord message response must be an object.");
@@ -291,6 +322,18 @@ export function createDiscordRestClient(options: CreateDiscordRestClientOptions 
   const fetcher = options.fetcher ?? defaultDiscordApiFetch;
 
   return {
+    async getGatewayBot(botToken: string): Promise<DiscordGatewayBotInfo> {
+      let response: DiscordApiFetchResponse;
+      try {
+        response = await fetcher(`${apiBaseUrl}/gateway/bot`, {method: "GET", headers: discordAuthorizationHeaders(botToken)});
+      } catch {
+        throw new Error("Discord Gateway lookup failed: request failed.");
+      }
+      if (!response.ok) throw await discordResponseError(response, "Discord Gateway lookup failed");
+      try { return parseDiscordGatewayBotInfo(await response.json()); }
+      catch (error) { throw error instanceof Error ? error : new Error("Discord Gateway lookup failed: invalid JSON response from Discord API."); }
+    },
+
     async getCurrentUser(botToken: string): Promise<DiscordCurrentUser> {
       let response: DiscordApiFetchResponse;
       try {

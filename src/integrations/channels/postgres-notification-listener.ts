@@ -9,6 +9,7 @@ import type {DeliveryNotification} from "../../domain/channels/deliveries/types.
 import {
   startPostgresListener,
   type PostgresListenSnapshot,
+  type PostgresListenerChannel,
   type PostgresListenerHandle,
 } from "../../lib/postgres-listen.js";
 import type {PgListenClient, PgPoolLike} from "../../lib/postgres-query.js";
@@ -24,6 +25,7 @@ interface StartPostgresNotificationListenerOptions {
   onError?: (error: unknown) => Promise<void> | void;
   onStateChange?: (snapshot: PostgresListenSnapshot) => Promise<void> | void;
   reconnectDelayMs?: number;
+  additionalChannels?: readonly PostgresListenerChannel[];
 }
 
 interface ChannelWorkerNotificationTarget {
@@ -39,6 +41,7 @@ interface StartChannelWorkerNotificationListenerOptions {
   onError?: (error: unknown) => Promise<void> | void;
   onStateChange?: (snapshot: PostgresListenSnapshot) => Promise<void> | void;
   reconnectDelayMs?: number;
+  additionalChannels?: readonly PostgresListenerChannel[];
 }
 
 export function startChannelWorkerNotificationListener(
@@ -63,6 +66,7 @@ export function startChannelWorkerNotificationListener(
     onError: options.onError,
     onStateChange: options.onStateChange,
     reconnectDelayMs: options.reconnectDelayMs,
+    additionalChannels: options.additionalChannels,
   });
 }
 
@@ -84,6 +88,7 @@ export function startPostgresNotificationListener(
           await options.onActionNotification?.(notification as ActionNotification);
         },
       },
+      ...(options.additionalChannels ?? []),
       {
         channel: deliveryChannel,
         label: "Channel delivery notification callback",

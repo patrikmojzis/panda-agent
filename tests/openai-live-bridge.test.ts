@@ -25,8 +25,9 @@ describe("OpenAI GPT-Live bridge", () => {
     const socket = new FakeSocket();
     const waitUntilConnected = vi.fn(async () => mediaReady.promise);
     const onClearAudio = vi.fn();
+    const onFailure = vi.fn();
     const bridge = new OpenAILiveRealtimeVoiceBridge({
-      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio, onClose: vi.fn(), log: vi.fn(),
+      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio, onFailure, log: vi.fn(),
       resolveAuth: () => ({token: "secret", accountId: "acct-1"}),
       fetchImpl: vi.fn(async () => new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}})),
       createPeer: vi.fn(async () => ({createOffer: async () => "offer-sdp", applyAnswer: async () => undefined, waitUntilConnected, sendAudio: vi.fn(), close: vi.fn()})),
@@ -52,13 +53,14 @@ describe("OpenAI GPT-Live bridge", () => {
     expect(socket.sent).toEqual([]);
     bridge.close();
     expect(socket.sent).toEqual([JSON.stringify({type: "session.close"})]);
+    expect(onFailure).not.toHaveBeenCalled();
   });
 
   it("retains sideband events emitted immediately after open", async () => {
     const socket = new FakeSocket();
     const onDelegation = vi.fn();
     const bridge = new OpenAILiveRealtimeVoiceBridge({
-      onAudio: vi.fn(), onDelegation, onClearAudio: vi.fn(), onClose: vi.fn(), log: vi.fn(),
+      onAudio: vi.fn(), onDelegation, onClearAudio: vi.fn(), onFailure: vi.fn(), log: vi.fn(),
       resolveAuth: () => ({token: "secret", accountId: "acct-1"}),
       fetchImpl: vi.fn(async () => new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}})),
       createPeer: vi.fn(async () => ({createOffer: async () => "offer-sdp", applyAnswer: async () => undefined, waitUntilConnected: async () => undefined, sendAudio: vi.fn(), close: vi.fn()})),
@@ -94,7 +96,7 @@ describe("OpenAI GPT-Live bridge", () => {
     const socket = new FakeSocket();
     const closePeer = vi.fn();
     const bridge = new OpenAILiveRealtimeVoiceBridge({
-      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio: vi.fn(), onClose: vi.fn(), log: vi.fn(),
+      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio: vi.fn(), onFailure: vi.fn(), log: vi.fn(),
       resolveAuth: () => ({token: "secret", accountId: "acct-1"}),
       fetchImpl: vi.fn(async () => new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}})),
       createPeer: vi.fn(async () => ({createOffer: async () => "offer-sdp", applyAnswer: async () => undefined, waitUntilConnected: async () => mediaReady.promise, sendAudio: vi.fn(), close: closePeer})),
@@ -116,7 +118,7 @@ describe("OpenAI GPT-Live bridge", () => {
     const closePeer = vi.fn();
     const bridge = new OpenAILiveRealtimeVoiceBridge({
       connectTimeoutMs: 5,
-      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio: vi.fn(), onClose: vi.fn(), log: vi.fn(),
+      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio: vi.fn(), onFailure: vi.fn(), log: vi.fn(),
       createPeer: vi.fn(async () => ({
         createOffer: () => new Promise<string>(() => undefined),
         applyAnswer: async () => undefined, waitUntilConnected: async () => undefined, sendAudio: vi.fn(), close: closePeer,
@@ -138,7 +140,7 @@ describe("OpenAI GPT-Live bridge", () => {
     }) => void;
     const bridge = new OpenAILiveRealtimeVoiceBridge({
       connectTimeoutMs: 5,
-      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio: vi.fn(), onClose: vi.fn(), log: vi.fn(),
+      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio: vi.fn(), onFailure: vi.fn(), log: vi.fn(),
       createPeer: vi.fn(() => new Promise((resolve) => { resolvePeer = resolve; })),
     });
 
@@ -150,13 +152,27 @@ describe("OpenAI GPT-Live bridge", () => {
     await vi.waitFor(() => expect(closePeer).toHaveBeenCalledOnce());
   });
 
+  it("honors an external room cancellation during startup without reporting provider failure", async () => {
+    const onFailure = vi.fn();
+    const controller = new AbortController();
+    const bridge = new OpenAILiveRealtimeVoiceBridge({
+      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio: vi.fn(), onFailure, log: vi.fn(),
+      createPeer: vi.fn(() => new Promise(() => undefined)),
+    });
+
+    const connecting = bridge.connect(controller.signal);
+    controller.abort(new Error("room closed"));
+    await expect(connecting).rejects.toThrow("room closed");
+    expect(onFailure).not.toHaveBeenCalled();
+  });
+
   it("reports the failing transport without exposing bearer credentials", async () => {
     const socket = new FakeSocket();
     const log = vi.fn();
-    const onClose = vi.fn();
+    const onFailure = vi.fn();
     let failMedia!: (error: Error) => void;
     const bridge = new OpenAILiveRealtimeVoiceBridge({
-      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio: vi.fn(), onClose, log,
+      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio: vi.fn(), onFailure, log,
       resolveAuth: () => ({token: "secret", accountId: "acct-1"}),
       fetchImpl: vi.fn(async () => new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}})),
       createPeer: vi.fn(async (callbacks) => {
@@ -174,9 +190,11 @@ describe("OpenAI GPT-Live bridge", () => {
 
     await bridge.connect();
     failMedia(new Error("Discord output failed with Bearer top-secret"));
+    failMedia(new Error("duplicate failure"));
 
     expect(log).toHaveBeenCalledWith("gpt_live_failed", {failureSource: "media", message: "Discord output failed with Bearer [redacted]"});
-    expect(onClose).toHaveBeenCalledWith("provider_failed");
+    expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({source: "media", code: "transport_failed", retryable: true}));
+    expect(onFailure).toHaveBeenCalledOnce();
   });
 
   it("reorders packets, drops duplicates, handles wraparound, and emits bounded loss markers", () => {
