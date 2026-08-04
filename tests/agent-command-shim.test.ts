@@ -142,6 +142,7 @@ import {
 import {
   createDiscordVoiceJoinCommand,
   createDiscordVoiceLeaveCommand,
+  createDiscordVoiceSendCommand,
   createDiscordVoiceStatusCommand,
 } from "../src/integrations/channels/discord/voice-commands.js";
 import {createWhatsAppChatListCommand, createWhatsAppHistoryCommand, createWhatsAppSendCommand} from "../src/integrations/channels/whatsapp/commands.js";
@@ -1890,10 +1891,23 @@ describe("agent command shim", () => {
     const audioDir = await mkdtemp(path.join(os.tmpdir(), "panda-command-audio-"));
     directories.push(audioDir);
     await writeFile(path.join(audioDir, "voice.mp3"), Buffer.from("fake-audio-data"));
+    let lastVoiceControl: Record<string, unknown> = {};
+    const voiceSession = {connectorKey: "discord-main", guildId: "323456789012345678", channelId: "123456789012345678", sessionId: "session-main", agentKey: "panda", voiceSessionId: "22222222-2222-4222-8222-222222222222", state: "connected" as const, model: "gpt-live-1-codex", startedAt: 1, updatedAt: 1};
     const voiceStore = {
-      enqueueControl: vi.fn(async (input: {connectorKey: string; operation: "join" | "leave"; sessionId: string; agentKey: string; channelId?: string}) => ({...input, id: "voice-control-1", status: "pending" as const, createdAt: 1, updatedAt: 1})),
-      waitForControl: vi.fn(async () => ({id: "voice-control-1", connectorKey: "discord-main", operation: "join" as const, sessionId: "session-main", agentKey: "panda", channelId: "123456789012345678", status: "completed" as const, result: {ok: true, state: "connected", connectorKey: "discord-main", guildId: "323456789012345678", channelId: "123456789012345678", sessionId: "session-main", model: "gpt-live-1-codex"}, createdAt: 1, updatedAt: 2})),
-      listSessions: vi.fn(async () => []),
+      enqueueControl: vi.fn(async (input: Record<string, unknown>) => {
+        lastVoiceControl = input;
+        return {...input, id: "voice-control-1", status: "pending" as const, createdAt: 1, updatedAt: 1};
+      }),
+      waitForControl: vi.fn(async () => ({
+        ...lastVoiceControl, id: "voice-control-1", status: "completed" as const, createdAt: 1, updatedAt: 2,
+        result: lastVoiceControl.operation === "send"
+          ? {ok: true, state: "sent", connectorKey: "discord-main", guildId: voiceSession.guildId, channelId: voiceSession.channelId, sessionId: "session-main", model: "gpt-live-1-codex", mode: lastVoiceControl.mode, delivery: "session"}
+          : {ok: true, state: "connected", connectorKey: "discord-main", guildId: voiceSession.guildId, channelId: voiceSession.channelId, sessionId: "session-main", model: "gpt-live-1-codex"},
+      })),
+      failControl: vi.fn(),
+      listSessions: vi.fn(async () => [voiceSession]),
+      getTurn: vi.fn(),
+      listRunningTurns: vi.fn(async () => []),
     };
     const voiceServices = {env: {PANDA_DISCORD_VOICE_EXPERIMENTAL: "true"}, connectorAccounts: store, conversations: store, voice: voiceStore};
     const server = await startCommandHttpServer({
@@ -2282,6 +2296,7 @@ describe("agent command shim", () => {
           }),
           createDiscordVoiceJoinCommand(voiceServices),
           createDiscordVoiceLeaveCommand(voiceServices),
+          createDiscordVoiceSendCommand(voiceServices),
           createDiscordVoiceStatusCommand(voiceServices),
           createDiscordStickerListCommand({
             conversations: store,
@@ -7140,13 +7155,16 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     });
   });
 
-  it("executes Discord voice join and status through native args", async () => {
+  it("executes Discord voice join, send, and status through native args", async () => {
     const server = await startWatchServer();
     const joined = await execFileAsync(shimPath, ["discord", "voice", "join", "--channel", "123456789012345678", "--connector", "discord-main"], {env: shimEnv(server)});
     expect(JSON.parse(joined.stdout)).toMatchObject({state: "connected", channelId: "123456789012345678", model: "gpt-live-1-codex"});
 
+    const sent = await execFileAsync(shimPath, ["discord", "voice", "send", "--text", "Still checking.", "--mode", "progress", "--channel", "123456789012345678", "--connector", "discord-main"], {env: shimEnv(server)});
+    expect(JSON.parse(sent.stdout)).toMatchObject({state: "sent", mode: "progress", delivery: "session"});
+
     const status = await execFileAsync(shimPath, ["discord", "voice", "status", "--connector", "discord-main"], {env: shimEnv(server)});
-    expect(JSON.parse(status.stdout)).toMatchObject({enabled: true, count: 0, sessions: []});
+    expect(JSON.parse(status.stdout)).toMatchObject({enabled: true, count: 1, sessions: [{channelId: "123456789012345678"}]});
   });
 
   it("executes discord.history through native args", async () => {

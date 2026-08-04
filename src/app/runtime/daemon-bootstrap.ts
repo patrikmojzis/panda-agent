@@ -288,7 +288,6 @@ export async function bootstrapDaemonContext(
     discordVoiceForEvents = discordVoice;
     voiceEventHandler = createDiscordVoiceRuntimeEventHandler({
       getVoiceStore: () => discordVoiceForEvents,
-      store: runtime.store,
     });
 
     sessionRoutes = new SessionRouteRepo({

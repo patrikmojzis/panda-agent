@@ -3,9 +3,7 @@ import {submitCurrentSessionInput} from "../../../domain/sessions/current-thread
 import type {SessionStore} from "../../../domain/sessions/store.js";
 import type {DiscordVoiceDelegationRequestPayload} from "../../../domain/threads/requests/types.js";
 import type {ThreadRuntimeCoordinator, ThreadRuntimeEvent} from "../../../domain/threads/runtime/coordinator.js";
-import type {ThreadRuntimeStore} from "../../../domain/threads/runtime/store.js";
 import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
-import {joinMessageTextParts} from "../../../kernel/agent/helpers/message-text.js";
 import {isRecord} from "../../../lib/records.js";
 import {renderDiscordVoiceDelegation} from "../../../prompts/channels/discord-voice.js";
 import type {DiscordVoiceStore} from "./voice-postgres.js";
@@ -39,7 +37,7 @@ export async function handleDiscordVoiceDelegationRequest(
         externalMessageId: turn.id,
         ...(turn.externalActorId ? {actorId: turn.externalActorId} : {}),
         ...(identityId ? {identityId} : {}),
-        message: stringToUserMessage(renderDiscordVoiceDelegation({prompt: turn.prompt, connectorKey: turn.connectorKey, guildId: turn.guildId, channelId: turn.channelId, speakerId: turn.externalActorId})),
+        message: stringToUserMessage(renderDiscordVoiceDelegation({prompt: turn.prompt, connectorKey: turn.connectorKey, guildId: turn.guildId, channelId: turn.channelId, voiceTurnId: turn.id, speakerId: turn.externalActorId})),
         metadata: {
           discordVoice: {
             connectorKey: turn.connectorKey,
@@ -69,7 +67,6 @@ function voiceTurnId(message: {metadata?: unknown}): string | undefined {
 
 export function createDiscordVoiceRuntimeEventHandler(options: {
   getVoiceStore(): DiscordVoiceStore | undefined;
-  store: Pick<ThreadRuntimeStore, "loadTranscript">;
 }): (event: ThreadRuntimeEvent) => Promise<void> {
   return async (event) => {
     const voice = options.getVoiceStore();
@@ -81,23 +78,9 @@ export function createDiscordVoiceRuntimeEventHandler(options: {
     }
     if (event.type !== "run_finished") return;
     const turns = await voice.listRunningTurns(event.run.id);
-    if (turns.length === 0) return;
-    if (event.run.status !== "completed") {
-      await Promise.all(turns.map((turn) => voice.failTurn(turn.id, event.run.error ?? "Panda voice delegation failed.")));
-      return;
-    }
-    const transcript = await options.store.loadTranscript(event.threadId);
-    const answer = transcript
-      .filter((entry) => entry.runId === event.run.id && entry.message.role === "assistant")
-      .map((entry) => entry.message.role === "assistant" ? joinMessageTextParts(entry.message.content) : "")
-      .filter(Boolean)
-      .join("\n\n")
-      .trim()
-      .slice(0, 8_000);
-    if (!answer) {
-      await Promise.all(turns.map((turn) => voice.failTurn(turn.id, "Panda produced no speakable answer.")));
-      return;
-    }
-    await Promise.all(turns.map((turn) => voice.completeTurn(turn.id, answer)));
+    const error = event.run.status === "completed"
+      ? "Panda completed without sending final Discord voice context."
+      : event.run.error ?? "Panda voice delegation failed.";
+    await Promise.all(turns.map((turn) => voice.failTurn(turn.id, error)));
   };
 }

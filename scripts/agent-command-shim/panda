@@ -5777,6 +5777,7 @@ Usage:
   panda discord history --channel <channel-id> [--connector <key>] [--direction inbound|outbound|all] [--limit <n>]
   panda discord voice join --channel <voice-channel-id> [--connector <key>]
   panda discord voice leave [--channel <voice-channel-id>] [--connector <key>]
+  panda discord voice send --text <message> [--mode progress|final] [--turn <voice-turn-id>] [--channel <voice-channel-id>] [--connector <key>]
   panda discord voice status [--connector <key>]
   panda discord sticker list --channel <channel-id> --connector <key>
   panda discord sticker send --channel <channel-id> --connector <key> --sticker <sticker-id>... [--thread <thread-id>] [--guild <guild-id>] [--reply-to-message-id <message-id>]
@@ -5787,6 +5788,7 @@ Usage:
   panda discord history --json @payload.json
   panda discord voice join --json @payload.json
   panda discord voice leave --json @payload.json
+  panda discord voice send --json @payload.json
   panda discord voice status --json @payload.json
   panda discord sticker list --json @payload.json
   panda discord sticker send --json @payload.json
@@ -5812,6 +5814,7 @@ USAGE
 	        case "$voice_subcommand" in
 	          join) command_name="discord.voice.join" ;;
 	          leave) command_name="discord.voice.leave" ;;
+	          send) command_name="discord.voice.send" ;;
 	          status) command_name="discord.voice.status" ;;
 	          *) die "Unknown panda discord voice command. Try: panda discord voice status --help" ;;
 	        esac
@@ -5905,6 +5908,57 @@ USAGE
 	        --arg channelId "$channel_id" \
 	        --arg connectorKey "$connector_key" \
 	        '{}
+	        + (if $channelId != "" then {channelId: $channelId} else {} end)
+	        + (if $connectorKey != "" then {connectorKey: $connectorKey} else {} end)')"
+	      execute_json_command "$command_name" "$payload"
+	      exit $?
+	    fi
+	    if [ "$subcommand" = "voice send" ]; then
+	      text=""
+	      mode=""
+	      voice_turn_id=""
+	      channel_id=""
+	      connector_key=""
+	      while [ "$#" -gt 0 ]; do
+	        case "$1" in
+	          --text)
+	            [ "$#" -gt 1 ] || die "panda discord voice send --text requires a message."
+	            text="$2"
+	            shift 2
+	            ;;
+	          --mode)
+	            [ "$#" -gt 1 ] || die "panda discord voice send --mode requires progress or final."
+	            mode="$2"
+	            shift 2
+	            ;;
+	          --turn)
+	            [ "$#" -gt 1 ] || die "panda discord voice send --turn requires a voice turn id."
+	            voice_turn_id="$2"
+	            shift 2
+	            ;;
+	          --channel)
+	            [ "$#" -gt 1 ] || die "panda discord voice send --channel requires a channel id."
+	            channel_id="$2"
+	            shift 2
+	            ;;
+	          --connector)
+	            [ "$#" -gt 1 ] || die "panda discord voice send --connector requires a connector key."
+	            connector_key="$2"
+	            shift 2
+	            ;;
+	          *) die "Unknown panda discord voice send option: $1" ;;
+	        esac
+	      done
+	      [ -n "$text" ] || die "panda discord voice send requires --text <message>."
+	      payload="$(jq -n \
+	        --arg text "$text" \
+	        --arg mode "$mode" \
+	        --arg voiceTurnId "$voice_turn_id" \
+	        --arg channelId "$channel_id" \
+	        --arg connectorKey "$connector_key" \
+	        '{text: $text}
+	        + (if $mode != "" then {mode: $mode} else {} end)
+	        + (if $voiceTurnId != "" then {voiceTurnId: $voiceTurnId} else {} end)
 	        + (if $channelId != "" then {channelId: $channelId} else {} end)
 	        + (if $connectorKey != "" then {connectorKey: $connectorKey} else {} end)')"
 	      execute_json_command "$command_name" "$payload"

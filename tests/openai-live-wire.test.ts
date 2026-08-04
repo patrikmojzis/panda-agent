@@ -1,7 +1,7 @@
 import {describe, expect, it, vi} from "vitest";
 
 import {resolveOpenAILiveAuth} from "../src/integrations/providers/openai-live/auth.js";
-import {buildHeaders, createOpenAILiveCall, createRequestIds, delegationAppendMessages, parseOpenAILiveEvent, sessionSpeechMessages} from "../src/integrations/providers/openai-live/wire.js";
+import {buildHeaders, createOpenAILiveCall, createRequestIds, delegationContextMessages, parseOpenAILiveEvent, sessionContextMessages} from "../src/integrations/providers/openai-live/wire.js";
 
 function jwt(payload: Record<string, unknown>): string {
   return `${Buffer.from("{}").toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
@@ -60,10 +60,11 @@ describe("experimental OpenAI GPT-Live wire", () => {
 
   it("parses bounded client delegations and chunks speakable results", () => {
     expect(parseOpenAILiveEvent(JSON.stringify({type: "delegation.created", item: {type: "delegation", target: "client", id: "delegation-1", content: [{type: "input_text", text: "check memory"}]}}))).toEqual({kind: "delegation", id: "delegation-1", prompt: "check memory"});
-    const messages = delegationAppendMessages("delegation-1", "é".repeat(800));
+    const messages = delegationContextMessages("delegation-1", "é".repeat(800), "commentary");
     expect(messages.length).toBeGreaterThan(1);
     expect(messages.every((message) => Buffer.byteLength(JSON.parse(message).content[0].text) <= 500)).toBe(true);
-    expect(JSON.parse(sessionSpeechMessages("done")[0]!)).toMatchObject({type: "session.context.append", channel: "speakable"});
+    expect(JSON.parse(messages[0]!)).toMatchObject({type: "delegation.context.append", channel: "commentary"});
+    expect(JSON.parse(sessionContextMessages("done", "speakable")[0]!)).toMatchObject({type: "session.context.append", channel: "speakable"});
   });
 
   it("captures completed transcripts for bounded in-memory provider recovery", () => {

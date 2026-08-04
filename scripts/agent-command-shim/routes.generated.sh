@@ -311,6 +311,9 @@ agent_command_shim_lookup_route() {
     'discord voice leave')
       printf '%s\t%s\n' 'discord.voice.leave' 'discord voice leave'
       ;;
+    'discord voice send')
+      printf '%s\t%s\n' 'discord.voice.send' 'discord voice send'
+      ;;
     'discord voice status')
       printf '%s\t%s\n' 'discord.voice.status' 'discord voice status'
       ;;
@@ -503,6 +506,7 @@ agent_command_shim_print_root_usage_commands() {
   panda discord channel list [--connector <key>]
   panda discord voice join --channel <voice-channel-id> [--connector <key>]
   panda discord voice leave [--channel <voice-channel-id>] [--connector <key>]
+  panda discord voice send --text <message> [--mode progress|final] [--turn <voice-turn-id>] [--channel <voice-channel-id>] [--connector <key>]
   panda discord voice status [--connector <key>]
   panda discord history --channel <channel-id> [--connector <key>] [--direction inbound|outbound|all] [--limit <n>]
   panda discord sticker list --channel <channel-id> --connector <key>
@@ -1600,6 +1604,16 @@ Detailed help is available only through the current agent command lease.
 Usage:
   panda discord voice leave --json @payload.json
 PANDA_COMMAND_HELP_discord_voice_leave
+      ;;
+    'discord.voice.send')
+      cat <<'PANDA_COMMAND_HELP_discord_voice_send'
+Panda command: discord.voice.send
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda discord voice send --json @payload.json
+PANDA_COMMAND_HELP_discord_voice_send
       ;;
     'discord.voice.status')
       cat <<'PANDA_COMMAND_HELP_discord_voice_status'
@@ -3736,6 +3750,24 @@ PANDA_COMMAND_HELP_JSON_discord_voice_join
   "examples": []
 }
 PANDA_COMMAND_HELP_JSON_discord_voice_leave
+      ;;
+    'discord.voice.send')
+      cat <<'PANDA_COMMAND_HELP_JSON_discord_voice_send'
+{
+  "name": "discord.voice.send",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda discord voice send --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_discord_voice_send
       ;;
     'discord.voice.status')
       cat <<'PANDA_COMMAND_HELP_JSON_discord_voice_status'

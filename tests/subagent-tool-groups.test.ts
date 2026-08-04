@@ -64,6 +64,7 @@ describe("subagent tool groups", () => {
             "discord.channel.list",
             "discord.voice.join",
             "discord.voice.leave",
+            "discord.voice.send",
             "discord.voice.status",
             "discord.history",
             "discord.sticker.list",

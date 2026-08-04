@@ -276,9 +276,11 @@ import type {DiscordGifService} from "../../integrations/channels/discord/gifs.j
 import {
   createDiscordVoiceJoinCommand,
   createDiscordVoiceLeaveCommand,
+  createDiscordVoiceSendCommand,
   createDiscordVoiceStatusCommand,
   discordVoiceJoinCommandDescriptor,
   discordVoiceLeaveCommandDescriptor,
+  discordVoiceSendCommandDescriptor,
   discordVoiceStatusCommandDescriptor,
   type DiscordVoiceCommandServices,
 } from "../../integrations/channels/discord/voice-commands.js";
@@ -1471,6 +1473,13 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
     "@payload.json",
     agentCommandPolicy(["communicate_human"]),
     (dependencies) => createDiscordVoiceLeaveCommand(discordVoiceCommandServices(dependencies)),
+  ),
+  daemonChannelCommandModule(
+    discordVoiceSendCommandDescriptor,
+    ["discord", "voice", "send"],
+    "@payload.json",
+    agentCommandPolicy(["communicate_human"]),
+    (dependencies) => createDiscordVoiceSendCommand(discordVoiceCommandServices(dependencies)),
   ),
   daemonChannelCommandModule(
     discordVoiceStatusCommandDescriptor,

@@ -705,7 +705,6 @@ export class DiscordService {
             requests: stores.runtimeRequests,
             log: (event, payload) => this.log(event, payload),
           }),
-          log: (event, payload) => this.log(event, payload),
         });
         await this.voiceWorker.start();
       }

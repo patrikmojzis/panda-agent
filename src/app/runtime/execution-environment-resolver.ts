@@ -119,6 +119,7 @@ function defaultPersistentToolPolicy(session: Pick<SessionRecord, "kind">): Exec
       "discord.send",
       "discord.voice.join",
       "discord.voice.leave",
+      "discord.voice.send",
       "discord.voice.status",
       "whatsapp.chat.list",
       "whatsapp.history",

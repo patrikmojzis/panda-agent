@@ -6,9 +6,10 @@ import {
   buildHeaders,
   createOpenAILiveCall,
   createRequestIds,
-  delegationAppendMessages,
+  delegationContextMessages,
   parseOpenAILiveEvent,
-  sessionSpeechMessages,
+  sessionContextMessages,
+  type OpenAILiveContextChannel,
   type OpenAILiveInitialItem,
   type OpenAILiveRequestIds,
 } from "./wire.js";
@@ -28,8 +29,8 @@ export interface RealtimeVoiceBridge {
   connect(): Promise<void>;
   sendAudio(pcm24kMono: Buffer): void;
   interrupt(): void;
-  appendDelegationResult(delegationId: string, text: string): boolean;
-  appendSpeech(text: string): boolean;
+  appendDelegationContext(delegationId: string, text: string, channel: OpenAILiveContextChannel): boolean;
+  appendSessionContext(text: string, channel: OpenAILiveContextChannel): boolean;
   close(): void;
 }
 
@@ -132,7 +133,7 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
   private peer?: OpenAILiveAudioPeer;
   private socket?: WebSocket;
   private ids?: OpenAILiveRequestIds;
-  private activeDelegationId?: string;
+  private readonly activeDelegationIds = new Set<string>();
   private expiry?: NodeJS.Timeout;
   private expiryAt?: number;
   private startup?: {reject(error: Error): void};
@@ -204,14 +205,15 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
     this.options.onClearAudio();
   }
 
-  appendDelegationResult(delegationId: string, text: string): boolean {
-    if (delegationId !== this.activeDelegationId || this.socket?.readyState !== WebSocket.OPEN) return false;
-    this.activeDelegationId = undefined;
-    return this.sendMessages(delegationAppendMessages(delegationId, text));
+  appendDelegationContext(delegationId: string, text: string, channel: OpenAILiveContextChannel): boolean {
+    if (!this.activeDelegationIds.has(delegationId) || this.socket?.readyState !== WebSocket.OPEN) return false;
+    const sent = this.sendMessages(delegationContextMessages(delegationId, text, channel));
+    if (sent && channel === "speakable") this.activeDelegationIds.delete(delegationId);
+    return sent;
   }
 
-  appendSpeech(text: string): boolean {
-    return this.sendMessages(sessionSpeechMessages(text));
+  appendSessionContext(text: string, channel: OpenAILiveContextChannel): boolean {
+    return this.sendMessages(sessionContextMessages(text, channel));
   }
 
   close(): void { this.teardown("completed"); }
@@ -278,7 +280,7 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
       else this.options.log("gpt_live_sideband_error", {message: safeErrorMessage(new Error(event.message))});
       return;
     }
-    this.activeDelegationId = event.id;
+    this.activeDelegationIds.add(event.id);
     void Promise.resolve(this.options.onDelegation({id: event.id, prompt: event.prompt})).catch((error: unknown) => this.options.log("gpt_live_delegation_failed", {message: safeErrorMessage(error instanceof Error ? error : new Error(String(error)))}));
   }
 
@@ -333,6 +335,7 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
     this.expiry = undefined;
     this.expiryAt = undefined;
     this.peer?.close(); this.peer = undefined;
+    this.activeDelegationIds.clear();
     const socket = this.socket; this.socket = undefined;
     if (socket?.readyState === WebSocket.OPEN) {
       try { socket.send(JSON.stringify({type: "session.close"})); } catch { /* Best-effort provider cleanup. */ }

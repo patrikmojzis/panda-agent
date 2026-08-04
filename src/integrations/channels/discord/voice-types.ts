@@ -3,7 +3,8 @@ import {OPENAI_LIVE_MODEL} from "../../providers/openai-live/types.js";
 
 export const DISCORD_VOICE_MODEL = OPENAI_LIVE_MODEL;
 
-export type DiscordVoiceControlOperation = "join" | "leave";
+export type DiscordVoiceControlOperation = "join" | "leave" | "send";
+export type DiscordVoiceSendMode = "progress" | "final";
 export type DiscordVoiceControlStatus = "pending" | "running" | "completed" | "failed";
 export type DiscordVoiceSessionState = "connecting" | "connected" | "disconnected" | "error";
 export type DiscordVoiceTurnStatus = "pending" | "queued" | "running" | "completed" | "failed";
@@ -14,6 +15,9 @@ export interface DiscordVoiceControlInput {
   sessionId: string;
   agentKey: string;
   channelId?: string;
+  text?: string;
+  mode?: DiscordVoiceSendMode;
+  voiceTurnId?: string;
 }
 
 export interface DiscordVoiceControlRecord extends DiscordVoiceControlInput {
@@ -71,10 +75,4 @@ export interface DiscordVoiceControlNotification {
   controlId: string;
 }
 
-export interface DiscordVoiceTurnNotification {
-  kind: "turn";
-  connectorKey: string;
-  turnId: string;
-}
-
-export type DiscordVoiceNotification = DiscordVoiceControlNotification | DiscordVoiceTurnNotification;
+export type DiscordVoiceNotification = DiscordVoiceControlNotification;

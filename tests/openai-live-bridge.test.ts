@@ -77,8 +77,15 @@ describe("OpenAI GPT-Live bridge", () => {
     await bridge.connect();
     expect(onTranscript).toHaveBeenCalledWith("user", "hello");
     expect(onDelegation).toHaveBeenCalledWith({id: "delegation-1", prompt: "check status"});
-    expect(bridge.appendDelegationResult("delegation-1", "healthy")).toBe(true);
-    expect(bridge.appendDelegationResult("delegation-1", "duplicate")).toBe(false);
+    expect(bridge.appendDelegationContext("delegation-1", "still checking", "commentary")).toBe(true);
+    expect(bridge.appendDelegationContext("delegation-1", "healthy", "speakable")).toBe(true);
+    expect(bridge.appendDelegationContext("delegation-1", "duplicate", "speakable")).toBe(false);
+    expect(socket.sent.slice(-2).map((message) => JSON.parse(message))).toEqual([
+      expect.objectContaining({type: "delegation.context.append", delegation_item_id: "delegation-1", channel: "commentary"}),
+      expect.objectContaining({type: "delegation.context.append", delegation_item_id: "delegation-1", channel: "speakable"}),
+    ]);
+    expect(bridge.appendSessionContext("proactive update", "speakable")).toBe(true);
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({type: "session.context.append", channel: "speakable"});
     bridge.close();
   });
 

@@ -14,6 +14,7 @@ const VOICES = new Set(["juniper", "maple", "spruce", "ember", "vale", "breeze",
 
 export interface OpenAILiveRequestIds {realtimeSessionId: string; sessionId: string; threadId: string}
 export interface OpenAILiveInitialItem {role: "user" | "assistant"; text: string}
+export type OpenAILiveContextChannel = "commentary" | "speakable";
 export interface OpenAILiveSession {
   model: typeof OPENAI_LIVE_MODEL;
   instructions: string;
@@ -147,15 +148,15 @@ export function parseOpenAILiveEvent(text: string): OpenAILiveEvent | null {
   return {kind: "ignored", type: payload.type};
 }
 
-export function delegationAppendMessages(delegationId: string, text: string): string[] {
-  return contextAppendMessages(text, delegationId);
+export function delegationContextMessages(delegationId: string, text: string, channel: OpenAILiveContextChannel): string[] {
+  return contextAppendMessages(text, channel, delegationId);
 }
 
-export function sessionSpeechMessages(text: string): string[] {
-  return contextAppendMessages(text);
+export function sessionContextMessages(text: string, channel: OpenAILiveContextChannel): string[] {
+  return contextAppendMessages(text, channel);
 }
 
-function contextAppendMessages(text: string, delegationId?: string): string[] {
+function contextAppendMessages(text: string, channel: OpenAILiveContextChannel, delegationId?: string): string[] {
   let prefix = text.slice(0, RESULT_CHARS - 16);
   if (/\p{Surrogate}$/u.test(prefix)) prefix = prefix.slice(0, -1);
   const bounded = text.length > RESULT_CHARS ? `${prefix.trimEnd()} [truncated]` : text;
@@ -169,7 +170,7 @@ function contextAppendMessages(text: string, delegationId?: string): string[] {
   return chunks.map((chunk) => JSON.stringify({
     type: delegationId ? "delegation.context.append" : "session.context.append",
     ...(delegationId ? {delegation_item_id: delegationId} : {}),
-    channel: "speakable",
+    channel,
     content: [{type: "input_text", text: chunk}],
   }));
 }

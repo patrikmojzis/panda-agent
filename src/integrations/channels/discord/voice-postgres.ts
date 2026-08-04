@@ -11,12 +11,12 @@ import {
   type DiscordVoiceControlInput,
   type DiscordVoiceControlNotification,
   type DiscordVoiceControlRecord,
+  type DiscordVoiceSendMode,
   type DiscordVoiceControlStatus,
   type DiscordVoiceNotification,
   type DiscordVoiceSessionRecord,
   type DiscordVoiceSessionState,
   type DiscordVoiceTurnInput,
-  type DiscordVoiceTurnNotification,
   type DiscordVoiceTurnRecord,
   type DiscordVoiceTurnStatus,
 } from "./voice-types.js";
@@ -52,6 +52,12 @@ function parseSessionState(value: unknown): DiscordVoiceSessionState {
   throw new Error(`Unsupported Discord voice session state ${String(value)}.`);
 }
 
+function parseSendMode(value: unknown): DiscordVoiceSendMode | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (value === "progress" || value === "final") return value;
+  throw new Error(`Unsupported Discord voice send mode ${String(value)}.`);
+}
+
 function parseTurnStatus(value: unknown): DiscordVoiceTurnStatus {
   if (value === "pending" || value === "queued" || value === "running" || value === "completed" || value === "failed") return value;
   throw new Error(`Unsupported Discord voice turn status ${String(value)}.`);
@@ -61,10 +67,13 @@ function parseControl(row: Record<string, unknown>): DiscordVoiceControlRecord {
   return {
     id: requiredString(row.id, "Discord voice control id is missing."),
     connectorKey: requiredString(row.connector_key, "Discord voice connector key is missing."),
-    operation: row.operation === "join" || row.operation === "leave" ? row.operation : (() => { throw new Error("Invalid Discord voice operation."); })(),
+    operation: row.operation === "join" || row.operation === "leave" || row.operation === "send" ? row.operation : (() => { throw new Error("Invalid Discord voice operation."); })(),
     sessionId: requiredString(row.session_id, "Discord voice session id is missing."),
     agentKey: requiredString(row.agent_key, "Discord voice agent key is missing."),
     channelId: optionalString(row.channel_id),
+    text: optionalString(row.text),
+    mode: parseSendMode(row.mode),
+    voiceTurnId: optionalString(row.voice_turn_id),
     status: parseControlStatus(row.status),
     result: parseJsonObject(row.result),
     error: optionalString(row.error),
@@ -122,10 +131,14 @@ export async function ensureDiscordVoiceSchema(pool: PgQueryable): Promise<void>
     CREATE TABLE IF NOT EXISTS ${tables.controls} (
       id UUID PRIMARY KEY, connector_key TEXT NOT NULL, operation TEXT NOT NULL,
       session_id TEXT NOT NULL, agent_key TEXT NOT NULL, channel_id TEXT,
+      text TEXT, mode TEXT, voice_turn_id UUID,
       status TEXT NOT NULL, result JSONB, error TEXT, completed_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await pool.query(`ALTER TABLE ${tables.controls} ADD COLUMN IF NOT EXISTS text TEXT`);
+  await pool.query(`ALTER TABLE ${tables.controls} ADD COLUMN IF NOT EXISTS mode TEXT`);
+  await pool.query(`ALTER TABLE ${tables.controls} ADD COLUMN IF NOT EXISTS voice_turn_id UUID`);
   await pool.query(`CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_discord_voice_controls_pending_idx`)} ON ${tables.controls} (connector_key, status, created_at, id)`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${tables.sessions} (
@@ -176,9 +189,9 @@ export class DiscordVoiceStore {
 
   async enqueueControl(input: DiscordVoiceControlInput): Promise<DiscordVoiceControlRecord> {
     const result = await this.pool.query(`
-      INSERT INTO ${tables.controls} (id, connector_key, operation, session_id, agent_key, channel_id, status)
-      VALUES ($1,$2,$3,$4,$5,$6,'pending') RETURNING *
-    `, [randomUUID(), input.connectorKey, input.operation, input.sessionId, input.agentKey, input.channelId ?? null]);
+      INSERT INTO ${tables.controls} (id, connector_key, operation, session_id, agent_key, channel_id, text, mode, voice_turn_id, status)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending') RETURNING *
+    `, [randomUUID(), input.connectorKey, input.operation, input.sessionId, input.agentKey, input.channelId ?? null, input.text ?? null, input.mode ?? null, input.voiceTurnId ?? null]);
     const record = parseControl(result.rows[0] as Record<string, unknown>);
     await this.notify({kind: "control", connectorKey: record.connectorKey, controlId: record.id});
     return record;
@@ -312,9 +325,7 @@ export class DiscordVoiceStore {
       INSERT INTO ${tables.turns} (id,voice_session_id,delegation_id,connector_key,guild_id,channel_id,session_id,agent_key,external_actor_id,identity_id,prompt,status)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending') RETURNING *
     `, [input.id,input.voiceSessionId,input.delegationId,input.connectorKey,input.guildId,input.channelId,input.sessionId,input.agentKey,input.externalActorId ?? null,input.identityId ?? null,input.prompt]);
-    const record = parseTurn(result.rows[0] as Record<string, unknown>);
-    await this.notify({kind: "turn", connectorKey: record.connectorKey, turnId: record.id});
-    return record;
+    return parseTurn(result.rows[0] as Record<string, unknown>);
   }
 
   async getTurn(id: string): Promise<DiscordVoiceTurnRecord> {
@@ -341,16 +352,12 @@ export class DiscordVoiceStore {
 
   async completeTurn(id: string, text: string): Promise<DiscordVoiceTurnRecord> {
     const result = await this.pool.query(`UPDATE ${tables.turns} SET status='completed',result_text=$2,error=NULL,completed_at=NOW(),updated_at=NOW() WHERE id=$1 RETURNING *`, [id,text]);
-    const record = parseTurn(result.rows[0] as Record<string, unknown>);
-    await this.notify({kind: "turn", connectorKey: record.connectorKey, turnId: record.id});
-    return record;
+    return parseTurn(result.rows[0] as Record<string, unknown>);
   }
 
   async failTurn(id: string, error: string): Promise<DiscordVoiceTurnRecord> {
     const result = await this.pool.query(`UPDATE ${tables.turns} SET status='failed',error=$2,completed_at=NOW(),updated_at=NOW() WHERE id=$1 RETURNING *`, [id,error.slice(0,1000)]);
-    const record = parseTurn(result.rows[0] as Record<string, unknown>);
-    await this.notify({kind: "turn", connectorKey: record.connectorKey, turnId: record.id});
-    return record;
+    return parseTurn(result.rows[0] as Record<string, unknown>);
   }
 
   listen(listener: (notification: DiscordVoiceNotification) => Promise<void> | void): Promise<() => Promise<void>> {
@@ -363,7 +370,6 @@ export class DiscordVoiceStore {
         const parsed = JSON.parse(payload) as unknown;
         if (!isJsonObject(parsed)) return null;
         if (parsed.kind === "control" && typeof parsed.connectorKey === "string" && typeof parsed.controlId === "string") return parsed as unknown as DiscordVoiceControlNotification;
-        if (parsed.kind === "turn" && typeof parsed.connectorKey === "string" && typeof parsed.turnId === "string") return parsed as unknown as DiscordVoiceTurnNotification;
         return null;
       },
       listener,

@@ -3,6 +3,7 @@ export function renderDiscordVoiceDelegation(input: {
   connectorKey: string;
   guildId: string;
   channelId: string;
+  voiceTurnId: string;
   speakerId?: string;
 }): string {
   return [
@@ -10,9 +11,11 @@ export function renderDiscordVoiceDelegation(input: {
     `Connector: ${input.connectorKey}`,
     `Guild: ${input.guildId}`,
     `Voice channel: ${input.channelId}`,
+    `Voice turn: ${input.voiceTurnId}`,
     `Speaker: ${input.speakerId ?? "unknown"}`,
-    "Your final answer will be spoken aloud by the voice bridge. Be concise and conversational.",
-    "Do not call discord.send for this answer; returning final assistant text is the delivery mechanism.",
+    "Only `panda discord voice send` delivers your words to this voice conversation; ordinary assistant text is not spoken.",
+    `For longer work, send brief progress with \`panda discord voice send --turn ${input.voiceTurnId} --mode progress --text <message>\`.`,
+    `When done, send the concise answer with \`panda discord voice send --turn ${input.voiceTurnId} --mode final --text <message>\`. Do not use \`discord.send\`.`,
     "",
     input.prompt,
   ].join("\n");

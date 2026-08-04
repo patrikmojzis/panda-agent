@@ -20,6 +20,10 @@ describe("DiscordVoiceStore", () => {
     expect(await store.claimNextControl("bot-1")).toMatchObject({id: control.id, status: "running"});
     expect(await store.completeControl(control.id, {ok: true, state: "connected"})).toMatchObject({status: "completed", result: {ok: true, state: "connected"}});
 
+    const send = await store.enqueueControl({connectorKey: "bot-1", operation: "send", sessionId: "session-1", agentKey: "panda", channelId: "12345", text: "Still checking.", mode: "progress", voiceTurnId: "11111111-1111-4111-8111-111111111111"});
+    expect(await store.claimNextControl("bot-1")).toMatchObject({id: send.id, operation: "send", text: "Still checking.", mode: "progress", voiceTurnId: "11111111-1111-4111-8111-111111111111"});
+    await store.completeControl(send.id, {ok: true, state: "sent"});
+
     await store.upsertSession({connectorKey: "bot-1", guildId: "guild-1", channelId: "12345", sessionId: "session-1", agentKey: "panda", voiceSessionId: "22222222-2222-2222-2222-222222222222", state: "connected", model: "gpt-live-1-codex"});
     await expect(store.listSessions({sessionId: "session-1", activeOnly: true})).resolves.toHaveLength(1);
 
