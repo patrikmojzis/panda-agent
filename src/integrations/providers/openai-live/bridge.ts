@@ -10,7 +10,6 @@ import {
   parseOpenAILiveEvent,
   sessionContextMessages,
   type OpenAILiveContextChannel,
-  type OpenAILiveInitialItem,
   type OpenAILiveRequestIds,
 } from "./wire.js";
 
@@ -20,6 +19,7 @@ const MAX_SESSIONS = 8;
 const MAX_SIDEBAND_PAYLOAD_BYTES = 16 * 1024 * 1024;
 const MAX_EARLY_FRAMES = 32;
 const MAX_EARLY_FRAME_BYTES = 1024 * 1024;
+const MAX_SEEN_DELEGATIONS = 2_048;
 const activeOwners = new Set<object>();
 type RealtimeVoiceFailureSource = "media" | "sideband" | "session";
 type SidebandTerminal = {kind: "error"; error: Error} | {kind: "close"; code: number; reason: string};
@@ -37,11 +37,9 @@ export interface RealtimeVoiceBridge {
 export interface RealtimeVoiceBridgeOptions {
   env?: NodeJS.ProcessEnv;
   voice?: string;
-  initialItems?: readonly OpenAILiveInitialItem[];
   connectTimeoutMs?: number;
   onAudio(audio: Buffer): void;
   onDelegation(delegation: RealtimeVoiceDelegation): Promise<void> | void;
-  onTranscript?(role: "user" | "assistant", text: string): void;
   onClearAudio(): void;
   onClose(reason: string): void;
   log(event: string, payload: Record<string, unknown>): void;
@@ -134,8 +132,10 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
   private socket?: WebSocket;
   private ids?: OpenAILiveRequestIds;
   private readonly activeDelegationIds = new Set<string>();
+  private readonly seenDelegationIds = new Set<string>();
   private expiry?: NodeJS.Timeout;
   private expiryAt?: number;
+  private sidebandOpenedAt?: number;
   private startup?: {reject(error: Error): void};
   private closed = false;
   private reserved = false;
@@ -155,6 +155,7 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
     const signal = AbortSignal.any([this.abort.signal, AbortSignal.timeout(this.options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS)]);
     const startupFailure = new Promise<never>((_, reject) => { this.startup = {reject}; });
     const aborted = abortFailure(signal);
+    const startedAt = Date.now();
     try {
       await Promise.race([
         this.establish(signal),
@@ -163,6 +164,7 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
       ]);
       this.startup = undefined;
       this.scheduleExpiry(SESSION_TTL_MS);
+      this.options.log("gpt_live_connected", {connectDurationMs: Date.now() - startedAt});
     } catch (error) {
       this.closed = true;
       this.startup = undefined;
@@ -189,7 +191,7 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
     const auth = (this.options.resolveAuth ?? (() => resolveOpenAILiveAuth(this.options.env)))();
     this.ids = createRequestIds();
     const call = await createOpenAILiveCall({
-      auth, ids: this.ids, offerSdp, voice: this.options.voice ?? "cove", initialItems: this.options.initialItems,
+      auth, ids: this.ids, offerSdp, voice: this.options.voice ?? "cove",
       signal, fetchImpl: this.options.fetchImpl,
     });
     await this.peer.applyAnswer(call.answerSdp);
@@ -239,11 +241,15 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
       try {
         const detachTerminal = await waitForOpen(socket, signal);
         this.socket = socket;
+        this.sidebandOpenedAt = Date.now();
         socket.on("message", (data, isBinary) => { if (isBinary) return this.fail(new Error("GPT-Live sideband sent binary data."), "sideband"); this.handleEvent(rawText(data)); });
         socket.on("error", (error) => this.fail(error, "sideband"));
         socket.on("close", (code, reason) => {
           const detail = reason?.length > 0 ? `: ${reason.toString("utf8").slice(0, 200)}` : ".";
-          if (!this.closed) this.fail(new Error(`GPT-Live sideband closed (${code})${detail}`), "sideband");
+          if (!this.closed) {
+            this.options.log("gpt_live_sideband_closed", {code, openForMs: this.sidebandOpenedAt === undefined ? undefined : Date.now() - this.sidebandOpenedAt, hasReason: reason?.length > 0});
+            this.fail(new Error(`GPT-Live sideband closed (${code})${detail}`), "sideband");
+          }
         });
         socket.off("message", bufferFrame);
         const terminal = detachTerminal();
@@ -270,16 +276,22 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
     const event = parseOpenAILiveEvent(text);
     if (!event || event.kind === "ignored") return;
     if (event.kind === "session_started") {
-      if (event.expiresAt !== undefined) this.scheduleExpiry(Math.min(SESSION_TTL_MS, Math.max(0, event.expiresAt * 1000 - Date.now())));
+      if (event.expiresAt !== undefined) {
+        const expiresInMs = Math.max(0, event.expiresAt * 1000 - Date.now());
+        this.options.log("gpt_live_session_started", {expiresInMs});
+        this.scheduleExpiry(Math.min(SESSION_TTL_MS, expiresInMs));
+      }
       return;
     }
     if (event.kind === "audio_cleared") { this.options.onClearAudio(); return; }
-    if (event.kind === "transcript") { this.options.onTranscript?.(event.role, event.text); return; }
     if (event.kind === "error") {
       if (event.fatalAuth) this.fail(new Error("Codex OAuth became unavailable."), "sideband");
       else this.options.log("gpt_live_sideband_error", {message: safeErrorMessage(new Error(event.message))});
       return;
     }
+    if (this.seenDelegationIds.has(event.id)) return;
+    this.seenDelegationIds.add(event.id);
+    if (this.seenDelegationIds.size > MAX_SEEN_DELEGATIONS) this.seenDelegationIds.delete(this.seenDelegationIds.values().next().value!);
     this.activeDelegationIds.add(event.id);
     void Promise.resolve(this.options.onDelegation({id: event.id, prompt: event.prompt})).catch((error: unknown) => this.options.log("gpt_live_delegation_failed", {message: safeErrorMessage(error instanceof Error ? error : new Error(String(error)))}));
   }
@@ -336,6 +348,8 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
     this.expiryAt = undefined;
     this.peer?.close(); this.peer = undefined;
     this.activeDelegationIds.clear();
+    this.seenDelegationIds.clear();
+    this.sidebandOpenedAt = undefined;
     const socket = this.socket; this.socket = undefined;
     if (socket?.readyState === WebSocket.OPEN) {
       try { socket.send(JSON.stringify({type: "session.close"})); } catch { /* Best-effort provider cleanup. */ }

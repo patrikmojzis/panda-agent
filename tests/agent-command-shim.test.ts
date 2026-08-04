@@ -1893,6 +1893,7 @@ describe("agent command shim", () => {
     await writeFile(path.join(audioDir, "voice.mp3"), Buffer.from("fake-audio-data"));
     let lastVoiceControl: Record<string, unknown> = {};
     const voiceSession = {connectorKey: "discord-main", guildId: "323456789012345678", channelId: "123456789012345678", sessionId: "session-main", agentKey: "panda", voiceSessionId: "22222222-2222-4222-8222-222222222222", state: "connected" as const, model: "gpt-live-1-codex", startedAt: 1, updatedAt: 1};
+    const voiceTurn = {id: "11111111-1111-4111-8111-111111111111", voiceSessionId: voiceSession.voiceSessionId, delegationId: "delegation-1", connectorKey: "discord-main", guildId: voiceSession.guildId, channelId: voiceSession.channelId, sessionId: "session-main", agentKey: "panda", prompt: "leave voice", status: "running" as const, createdAt: 1, updatedAt: 1};
     const voiceStore = {
       enqueueControl: vi.fn(async (input: Record<string, unknown>) => {
         lastVoiceControl = input;
@@ -1902,11 +1903,11 @@ describe("agent command shim", () => {
         ...lastVoiceControl, id: "voice-control-1", status: "completed" as const, createdAt: 1, updatedAt: 2,
         result: lastVoiceControl.operation === "send"
           ? {ok: true, state: "sent", connectorKey: "discord-main", guildId: voiceSession.guildId, channelId: voiceSession.channelId, sessionId: "session-main", model: "gpt-live-1-codex", mode: lastVoiceControl.mode, delivery: "session"}
-          : {ok: true, state: "connected", connectorKey: "discord-main", guildId: voiceSession.guildId, channelId: voiceSession.channelId, sessionId: "session-main", model: "gpt-live-1-codex"},
+          : {ok: true, state: lastVoiceControl.operation === "leave" ? "disconnected" : "connected", connectorKey: "discord-main", guildId: voiceSession.guildId, channelId: voiceSession.channelId, sessionId: "session-main", model: "gpt-live-1-codex"},
       })),
       failControl: vi.fn(),
       listSessions: vi.fn(async () => [voiceSession]),
-      getTurn: vi.fn(),
+      getTurn: vi.fn(async () => voiceTurn),
       listRunningTurns: vi.fn(async () => []),
     };
     const voiceServices = {env: {PANDA_DISCORD_VOICE_EXPERIMENTAL: "true"}, connectorAccounts: store, conversations: store, voice: voiceStore};
@@ -7155,7 +7156,7 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     });
   });
 
-  it("executes Discord voice join, send, and status through native args", async () => {
+  it("executes Discord voice join, send, status, and delegated leave through native args", async () => {
     const server = await startWatchServer();
     const joined = await execFileAsync(shimPath, ["discord", "voice", "join", "--channel", "123456789012345678", "--connector", "discord-main"], {env: shimEnv(server)});
     expect(JSON.parse(joined.stdout)).toMatchObject({state: "connected", channelId: "123456789012345678", model: "gpt-live-1-codex"});
@@ -7165,6 +7166,9 @@ printf '{"ok":true,"output":%s}\\n' "$body"
 
     const status = await execFileAsync(shimPath, ["discord", "voice", "status", "--connector", "discord-main"], {env: shimEnv(server)});
     expect(JSON.parse(status.stdout)).toMatchObject({enabled: true, count: 1, sessions: [{channelId: "123456789012345678"}]});
+
+    const left = await execFileAsync(shimPath, ["discord", "voice", "leave", "--turn", "11111111-1111-4111-8111-111111111111", "--channel", "123456789012345678", "--connector", "discord-main"], {env: shimEnv(server)});
+    expect(JSON.parse(left.stdout)).toMatchObject({state: "disconnected", channelId: "123456789012345678"});
   });
 
   it("executes discord.history through native args", async () => {

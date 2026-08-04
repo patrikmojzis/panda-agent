@@ -1,10 +1,10 @@
 {
   "files": [
     {
-      "bytes": 128245,
+      "bytes": 128270,
       "lines": 4263,
       "path": "scripts/agent-command-shim/routes.generated.sh",
-      "sha256": "48ef21372d89d865946997f7ac15a69bd0aef08669fabad0de934c95dd262f4f"
+      "sha256": "f49b6b19d6fdd6cebb0c5732898f2ac66c3ce47eac9581e37cb09cbfb5277633"
     },
     {
       "bytes": 1166,
@@ -193,10 +193,10 @@
       "sha256": "7ce06cc5e05ee307c4877e8f9299a683f850c831de8001a2bc407c5778eca793"
     },
     {
-      "bytes": 913,
-      "lines": 22,
+      "bytes": 1198,
+      "lines": 23,
       "path": "src/prompts/channels/discord-voice.ts",
-      "sha256": "46a5a7eec7de5058ad07b659cf4e410f867b0d228595979f915eb082e3811663"
+      "sha256": "3df821689a19b1c53148b5ace7b3d5c7fcd5f1ba236acc7c6c9124a899ac5a52"
     },
     {
       "bytes": 5829,

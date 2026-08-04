@@ -16,6 +16,7 @@ describe("DiscordVoiceSessionManager fake end-to-end", () => {
     const arbiter = new DiscordVoiceSpeakerArbiter();
     expect(arbiter.start("bot-1", "bot-1", 1)).toBe("self");
     expect(arbiter.start("user-1", "bot-1", 1)).toBe("accepted");
+    expect(arbiter.start("user-1", "bot-1", 2)).toBe("continued");
     expect(arbiter.start("user-2", "bot-1", 2)).toBe("overlap");
     arbiter.finish("user-1");
     for (let index = 1; index < 30; index += 1) {
@@ -82,8 +83,11 @@ describe("DiscordVoiceSessionManager fake end-to-end", () => {
     await manager.handle({id: "control-proactive", connectorKey: "bot-1", operation: "send", sessionId: "session-1", agentKey: "panda", channelId: "12345", text: "One more thing.", mode: "final", status: "running", createdAt: 4, updatedAt: 4});
     expect(appendSessionContext).toHaveBeenCalledWith("One more thing.", "speakable");
 
-    const left = await manager.handle({id: "control-2", connectorKey: "bot-1", operation: "leave", sessionId: "session-1", agentKey: "panda", channelId: "12345", status: "running", createdAt: 2, updatedAt: 2});
-    expect(left).toMatchObject({state: "disconnected", channelId: "12345"});
+    await bridgeOptions.onDelegation({id: "delegation-leave", prompt: "leave voice"});
+    const leaveTurnId = store.createTurn.mock.calls[1]![0].id;
+    const left = await manager.handle({id: "control-2", connectorKey: "bot-1", operation: "leave", sessionId: "session-1", agentKey: "panda", channelId: "12345", voiceTurnId: leaveTurnId, status: "running", createdAt: 2, updatedAt: 2});
+    expect(left).toMatchObject({state: "disconnected", channelId: "12345", voiceTurnId: leaveTurnId});
+    expect(store.completeTurn).toHaveBeenLastCalledWith(leaveTurnId, "Left the Discord voice channel.");
     expect(connection.destroy).toHaveBeenCalled();
     expect(bridge.close).toHaveBeenCalled();
   });
@@ -134,6 +138,38 @@ describe("DiscordVoiceSessionManager fake end-to-end", () => {
     await manager.stop();
   });
 
+  it("retains incoming PCM while Discord playback is backpressured", async () => {
+    const player = fakePlayer();
+    const output = new PassThrough({highWaterMark: 1});
+    const encoder = {encode: vi.fn(() => new Uint8Array([1, 2, 3])), free: vi.fn()};
+    const connection = {receiver: {speaking: new EventEmitter(), subscribe: vi.fn()}, subscribe: vi.fn(), destroy: vi.fn()};
+    let bridgeOptions!: RealtimeVoiceBridgeOptions;
+    const bridge: RealtimeVoiceBridge = {
+      connect: vi.fn(async () => undefined), sendAudio: vi.fn(), interrupt: vi.fn(), close: vi.fn(),
+      appendDelegationContext: vi.fn(() => true), appendSessionContext: vi.fn(() => true),
+    };
+    const store = {
+      markConnectorSessionsDisconnected: vi.fn(async () => 0), failRunningControls: vi.fn(async () => 0),
+      upsertSession: vi.fn(async (input) => ({...input, startedAt: 1, updatedAt: 1})), markSessionDisconnected: vi.fn(async () => undefined),
+    };
+    const manager = new DiscordVoiceSessionManager({
+      connectorKey: "bot-1", botToken: "discord-secret", gatewayAdapter: vi.fn(() => (() => ({sendPayload: () => true, destroy: () => undefined}))),
+      restClient: {getChannelMetadata: vi.fn(async () => ({id: "12345", type: 2, guildId: "guild-1"}))},
+      store: store as never, requests: {enqueueRequest: vi.fn()} as never, log: vi.fn(),
+      createBridge: (options) => { bridgeOptions = options; return bridge; },
+      openVoiceTransport: vi.fn(async () => ({connection: connection as never, output, player: player as never, outputEncoder: encoder as never})),
+    });
+
+    await manager.start();
+    await manager.handle({id: "control-1", connectorKey: "bot-1", operation: "join", sessionId: "session-1", agentKey: "panda", channelId: "12345", status: "running", createdAt: 1, updatedAt: 1});
+    bridgeOptions.onAudio(Buffer.alloc(960));
+    bridgeOptions.onAudio(Buffer.alloc(960));
+    expect(encoder.encode).toHaveBeenCalledOnce();
+    output.emit("drain");
+    await vi.waitFor(() => expect(encoder.encode).toHaveBeenCalledTimes(2));
+    await manager.stop();
+  });
+
   it("preserves Discord permission failures from channel lookup", async () => {
     const store = {markConnectorSessionsDisconnected: vi.fn(async () => 0), failRunningControls: vi.fn(async () => 0)};
     const manager = new DiscordVoiceSessionManager({
@@ -171,7 +207,7 @@ describe("DiscordVoiceSessionManager fake end-to-end", () => {
     expect(store.markSessionDisconnected).toHaveBeenCalledWith("bot-1", "guild-1", "error", "provider_startup_failed");
   });
 
-  it("replaces a failed GPT-Live bridge without leaving Discord voice", async () => {
+  it("reconnects GPT-Live fresh and rebinds duplicate active work without waking Panda twice", async () => {
     const player = fakePlayer();
     const connection = {
       receiver: {speaking: new EventEmitter(), subscribe: vi.fn()},
@@ -183,10 +219,9 @@ describe("DiscordVoiceSessionManager fake end-to-end", () => {
     const bridges: RealtimeVoiceBridge[] = [];
     const createBridge = (options: RealtimeVoiceBridgeOptions): RealtimeVoiceBridge => {
       bridgeOptions.push(options);
-      const isFirst = bridges.length === 0;
       const bridge: RealtimeVoiceBridge = {
         connect: vi.fn(async () => undefined), sendAudio: vi.fn(), interrupt: vi.fn(), close: vi.fn(),
-        appendDelegationContext: vi.fn(() => isFirst), appendSessionContext: vi.fn(() => true),
+        appendDelegationContext: vi.fn(() => true), appendSessionContext: vi.fn(() => true),
       };
       bridges.push(bridge);
       return bridge;
@@ -199,24 +234,28 @@ describe("DiscordVoiceSessionManager fake end-to-end", () => {
       getTurn: vi.fn(async (id: string) => ({id, voiceSessionId: store.createTurn.mock.calls[0]![0].voiceSessionId, delegationId: "delegation-1", connectorKey: "bot-1", guildId: "guild-1", channelId: "12345", sessionId: "session-1", agentKey: "panda", prompt: "check status", status: "running", createdAt: 1, updatedAt: 1})),
       completeTurn: vi.fn(async (id: string, text: string) => ({...await store.getTurn(id), status: "completed", resultText: text})),
     };
+    const enqueueRequest = vi.fn();
     const manager = new DiscordVoiceSessionManager({
       connectorKey: "bot-1", botToken: "discord-secret", gatewayAdapter: vi.fn(() => (() => ({sendPayload: () => true, destroy: () => undefined}))),
       restClient: {getChannelMetadata: vi.fn(async () => ({id: "12345", type: 2, guildId: "guild-1"}))},
-      store: store as never, requests: {enqueueRequest: vi.fn()} as never, log: vi.fn(), createBridge,
+      store: store as never, requests: {enqueueRequest} as never, log: vi.fn(), createBridge,
       openVoiceTransport: vi.fn(async () => ({connection: connection as never, output: new PassThrough(), player: player as never, outputEncoder: encoder as never})),
     });
 
     await manager.start();
     await manager.handle({id: "control-1", connectorKey: "bot-1", operation: "join", sessionId: "session-1", agentKey: "panda", channelId: "12345", status: "running", createdAt: 1, updatedAt: 1});
-    bridgeOptions[0]!.onTranscript?.("user", "Are we healthy?");
-    bridgeOptions[0]!.onTranscript?.("assistant", "Let me check.");
     await bridgeOptions[0]!.onDelegation({id: "delegation-1", prompt: "check status"});
     bridgeOptions[0]!.onClose("provider_failed");
 
     await vi.waitFor(() => expect(bridges).toHaveLength(2));
     expect(bridges[1]!.connect).toHaveBeenCalledOnce();
     expect(connection.destroy).not.toHaveBeenCalled();
-    expect(bridgeOptions[1]!.initialItems).toEqual([{role: "user", text: "Are we healthy?"}, {role: "assistant", text: "Let me check."}]);
+    expect(bridgeOptions[1]).not.toHaveProperty("initialItems");
+    expect(player.stop).not.toHaveBeenCalled();
+
+    await bridgeOptions[1]!.onDelegation({id: "delegation-2", prompt: "  CHECK   STATUS "});
+    expect(store.createTurn).toHaveBeenCalledOnce();
+    expect(enqueueRequest).toHaveBeenCalledOnce();
 
     encoder.encode.mockClear();
     bridgeOptions[0]!.onAudio(Buffer.alloc(960));
@@ -226,8 +265,11 @@ describe("DiscordVoiceSessionManager fake end-to-end", () => {
 
     const turnId = store.createTurn.mock.calls[0]![0].id;
     await manager.handle({id: "control-send", connectorKey: "bot-1", operation: "send", sessionId: "session-1", agentKey: "panda", channelId: "12345", text: "Everything is healthy.", mode: "final", voiceTurnId: turnId, status: "running", createdAt: 2, updatedAt: 2});
-    expect(bridges[1]!.appendDelegationContext).toHaveBeenCalledWith("delegation-1", "Everything is healthy.", "speakable");
-    expect(bridges[1]!.appendSessionContext).toHaveBeenCalledWith("Everything is healthy.", "speakable");
+    expect(bridges[1]!.appendDelegationContext).toHaveBeenCalledWith("delegation-2", "Everything is healthy.", "speakable");
+    expect(bridges[1]!.appendSessionContext).not.toHaveBeenCalled();
+
+    await bridgeOptions[1]!.onDelegation({id: "delegation-3", prompt: "check status"});
+    expect(store.createTurn).toHaveBeenCalledTimes(2);
 
     bridgeOptions[1]!.onClose("auth_unavailable");
     await vi.waitFor(() => expect(connection.destroy).toHaveBeenCalledOnce());

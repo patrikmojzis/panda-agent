@@ -505,7 +505,7 @@ agent_command_shim_print_root_usage_commands() {
   panda telegram sticker send --chat <conversation-id> --connector <key> (--ref <sticker-ref>|--file <path>|--file-id <id>)
   panda discord channel list [--connector <key>]
   panda discord voice join --channel <voice-channel-id> [--connector <key>]
-  panda discord voice leave [--channel <voice-channel-id>] [--connector <key>]
+  panda discord voice leave [--turn <voice-turn-id>] [--channel <voice-channel-id>] [--connector <key>]
   panda discord voice send --text <message> [--mode progress|final] [--turn <voice-turn-id>] [--channel <voice-channel-id>] [--connector <key>]
   panda discord voice status [--connector <key>]
   panda discord history --channel <channel-id> [--connector <key>] [--direction inbound|outbound|all] [--limit <n>]

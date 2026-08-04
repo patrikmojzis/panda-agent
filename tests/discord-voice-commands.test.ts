@@ -57,6 +57,22 @@ describe("Discord voice commands", () => {
     await expect(createDiscordVoiceLeaveCommand(services()).execute({command: "discord.voice.leave", input: {}, scope})).rejects.toMatchObject({pandaCommandErrorCode: "conflict", pandaCommandErrorDetails: {failureCode: "leave_ambiguous"}});
   });
 
+  it("preserves invalid-channel semantics for an explicit leave target", async () => {
+    const session = {connectorKey: "bot-1", guildId: "guild-1", channelId: "12345", sessionId: "session-1", agentKey: "panda", voiceSessionId: "22222222-2222-4222-8222-222222222222", state: "connected", model: "gpt-live-1-codex", startedAt: 1, updatedAt: 1};
+    await expect(createDiscordVoiceLeaveCommand(services({sessions: [session]})).execute({command: "discord.voice.leave", input: {channelId: "99999"}, scope}))
+      .rejects.toMatchObject({pandaCommandErrorCode: "command_failed", pandaCommandErrorDetails: {failureCode: "invalid_channel", retryable: false}});
+  });
+
+  it("completes the current delegated turn by leaving its voice session", async () => {
+    const session = {connectorKey: "bot-1", guildId: "guild-1", channelId: "12345", sessionId: "session-1", agentKey: "panda", voiceSessionId: "22222222-2222-4222-8222-222222222222", state: "connected", model: "gpt-live-1-codex", startedAt: 1, updatedAt: 1};
+    const turn = {id: "11111111-1111-4111-8111-111111111111", voiceSessionId: session.voiceSessionId, delegationId: "delegation-1", connectorKey: "bot-1", guildId: "guild-1", channelId: "12345", sessionId: "session-1", agentKey: "panda", prompt: "leave voice", status: "running", runId: "run-1", createdAt: 1, updatedAt: 1};
+    const deps = services({sessions: [session], turns: [turn]});
+
+    await createDiscordVoiceLeaveCommand(deps).execute({command: "discord.voice.leave", input: {}, scope: {...scope, runId: "run-1"}});
+
+    expect(deps.voice.enqueueControl).toHaveBeenCalledWith({connectorKey: "bot-1", operation: "leave", sessionId: "session-1", agentKey: "panda", channelId: "12345", voiceTurnId: turn.id});
+  });
+
   it("reports only sessions owned by the invoking durable session", async () => {
     const session = {connectorKey: "bot-1", guildId: "guild-1", channelId: "12345", sessionId: "session-1", agentKey: "panda", voiceSessionId: "11111111-1111-1111-1111-111111111111", state: "connected", model: "gpt-live-1-codex", startedAt: 1, updatedAt: 1};
     const result = await createDiscordVoiceStatusCommand(services({sessions: [session]})).execute({command: "discord.voice.status", input: {}, scope});

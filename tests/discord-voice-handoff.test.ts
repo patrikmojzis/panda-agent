@@ -29,6 +29,7 @@ describe("Discord voice durable handoff", () => {
     expect(submitted.metadata).not.toHaveProperty("route");
     expect(JSON.stringify(submitInput.mock.calls[0]![1])).toContain(`discord voice send --turn ${turn().id} --mode progress`);
     expect(JSON.stringify(submitInput.mock.calls[0]![1])).toContain(`discord voice send --turn ${turn().id} --mode final`);
+    expect(JSON.stringify(submitInput.mock.calls[0]![1])).toContain(`discord voice leave --turn ${turn().id}`);
   });
 
   it("correlates applied inputs to a run and fails a completed turn that omitted explicit final context", async () => {

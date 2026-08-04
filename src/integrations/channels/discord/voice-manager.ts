@@ -19,9 +19,8 @@ import type {RuntimeRequestRepo} from "../../../domain/threads/requests/repo.js"
 import type {DiscordChannelMetadata, DiscordWorkerRestClient} from "./api.js";
 import {OpenAILiveRealtimeVoiceBridge, type RealtimeVoiceBridge} from "../../providers/openai-live/bridge.js";
 import {resamplePcm16} from "../../providers/openai-live/peer.js";
-import type {OpenAILiveInitialItem} from "../../providers/openai-live/wire.js";
 import type {DiscordVoiceStore} from "./voice-postgres.js";
-import {DISCORD_VOICE_MODEL, type DiscordVoiceControlRecord} from "./voice-types.js";
+import {DISCORD_VOICE_MODEL, type DiscordVoiceControlRecord, type DiscordVoiceTurnRecord} from "./voice-types.js";
 
 const MAX_UTTERANCE_MS = 60_000;
 const MAX_UTTERANCES_PER_MINUTE = 30;
@@ -31,12 +30,72 @@ const VOICE_SESSION_TTL_MS = 30 * 60_000;
 const PROVIDER_RECONNECT_DELAYS_MS = [0, 500, 1_500] as const;
 const MAX_PENDING_INPUT_BYTES = 64 * 1024;
 const MAX_PENDING_OUTPUT_BYTES = 24_000 * 2 * 5;
-const MAX_TRANSCRIPT_ITEMS = 12;
-const MAX_TRANSCRIPT_ITEM_CHARS = 1_000;
-const MAX_TRANSCRIPT_CHARS = 6_000;
 const VOICE_JOIN_GUIDANCE = "Voice is live. Speak at any time with `panda discord voice send --text <message>`. For longer delegated work, send brief `--mode progress` updates and finish with `--mode final`.";
 
 type VoiceInputStream = ReturnType<VoiceConnection["receiver"]["subscribe"]>;
+
+interface ActiveVoiceTurnBinding {
+  voiceTurnId: string;
+  promptKey: string;
+  delegationId: string;
+  bridgeGeneration: number;
+  creating: boolean;
+}
+
+class DiscordVoicePcmQueue {
+  private readonly chunks: Buffer[] = [];
+  private headOffset = 0;
+  private bytes = 0;
+
+  constructor(private readonly maxBytes: number) {}
+
+  get byteLength(): number { return this.bytes; }
+
+  push(input: Buffer): number {
+    if (input.length === 0) return 0;
+    this.chunks.push(Buffer.from(input));
+    this.bytes += input.length;
+    const dropped = Math.max(0, this.bytes - this.maxBytes);
+    if (dropped > 0) this.discard(dropped);
+    return dropped;
+  }
+
+  shift(size: number): Buffer | undefined {
+    if (this.bytes < size) return undefined;
+    const output = Buffer.allocUnsafe(size);
+    let written = 0;
+    while (written < size) {
+      const chunk = this.chunks[0]!;
+      const available = chunk.length - this.headOffset;
+      const copied = Math.min(size - written, available);
+      chunk.copy(output, written, this.headOffset, this.headOffset + copied);
+      written += copied;
+      this.headOffset += copied;
+      this.bytes -= copied;
+      if (this.headOffset === chunk.length) { this.chunks.shift(); this.headOffset = 0; }
+    }
+    return output;
+  }
+
+  clear(): void {
+    this.chunks.length = 0;
+    this.headOffset = 0;
+    this.bytes = 0;
+  }
+
+  private discard(size: number): void {
+    let remaining = size;
+    while (remaining > 0) {
+      const chunk = this.chunks[0]!;
+      const available = chunk.length - this.headOffset;
+      const discarded = Math.min(remaining, available);
+      this.headOffset += discarded;
+      this.bytes -= discarded;
+      remaining -= discarded;
+      if (this.headOffset === chunk.length) { this.chunks.shift(); this.headOffset = 0; }
+    }
+  }
+}
 
 interface ActiveVoiceSession {
   connectorKey: string;
@@ -49,12 +108,15 @@ interface ActiveVoiceSession {
   bridge: RealtimeVoiceBridge;
   output: PassThrough;
   outputEncoder: OpusEncoderHandle;
-  outputPending: Buffer;
+  outputPending: DiscordVoicePcmQueue;
   outputBackpressured: boolean;
+  outputDroppedBytes: number;
+  lastOutputDropLogAt: number;
   player: ReturnType<typeof createAudioPlayer>;
   speakers: DiscordVoiceSpeakerArbiter;
   inputStreams: Set<VoiceInputStream>;
-  recentTranscript: OpenAILiveInitialItem[];
+  turnBindingsByPrompt: Map<string, ActiveVoiceTurnBinding>;
+  turnBindingsById: Map<string, ActiveVoiceTurnBinding>;
   bridgeGeneration: number;
   failedBridgeGeneration?: number;
   providerRecovery?: Promise<void>;
@@ -114,8 +176,9 @@ export class DiscordVoiceSpeakerArbiter {
   lastSpeakerId?: string;
   private acceptedAt: number[] = [];
 
-  start(userId: string, connectorUserId: string, now = Date.now()): "accepted" | "self" | "overlap" | "rate_limit" {
+  start(userId: string, connectorUserId: string, now = Date.now()): "accepted" | "continued" | "self" | "overlap" | "rate_limit" {
     if (userId === connectorUserId) return "self";
+    if (this.activeSpeakerId === userId) return "continued";
     if (this.activeSpeakerId) return "overlap";
     this.acceptedAt = this.acceptedAt.filter((value) => value > now - 60_000);
     if (this.acceptedAt.length >= MAX_UTTERANCES_PER_MINUTE) return "rate_limit";
@@ -128,6 +191,14 @@ export class DiscordVoiceSpeakerArbiter {
   finish(userId: string): void {
     if (this.activeSpeakerId === userId) this.activeSpeakerId = undefined;
   }
+}
+
+function activeVoiceTurn(turn: DiscordVoiceTurnRecord): boolean {
+  return turn.status === "pending" || turn.status === "queued" || turn.status === "running";
+}
+
+function voicePromptKey(prompt: string): string {
+  return prompt.normalize("NFKC").trim().replace(/\s+/gu, " ").toLowerCase();
 }
 
 function requireVoiceChannel(metadata: DiscordChannelMetadata): {guildId: string; channelId: string} {
@@ -236,8 +307,9 @@ export class DiscordVoiceSessionManager {
       const bridgeFactory = this.options.createBridge ?? ((options) => new OpenAILiveRealtimeVoiceBridge(options));
       session = {
         connectorKey: control.connectorKey, guildId: channel.guildId, channelId: channel.channelId, sessionId: control.sessionId,
-        agentKey: control.agentKey, voiceSessionId, connection, output, outputEncoder, outputPending: Buffer.alloc(0), player,
-        outputBackpressured: false, speakers: new DiscordVoiceSpeakerArbiter(), inputStreams: new Set(), recentTranscript: [],
+        agentKey: control.agentKey, voiceSessionId, connection, output, outputEncoder, outputPending: new DiscordVoicePcmQueue(MAX_PENDING_OUTPUT_BYTES), player,
+        outputBackpressured: false, outputDroppedBytes: 0, lastOutputDropLogAt: 0,
+        speakers: new DiscordVoiceSpeakerArbiter(), inputStreams: new Set(), turnBindingsByPrompt: new Map(), turnBindingsById: new Map(),
         bridgeGeneration: 0, closing: false,
         bridge: undefined as unknown as RealtimeVoiceBridge,
       };
@@ -266,11 +338,19 @@ export class DiscordVoiceSessionManager {
   }
 
   private async leave(control: DiscordVoiceControlRecord): Promise<Record<string, unknown>> {
-    const session = [...this.sessions.values()].find((candidate) => candidate.sessionId === control.sessionId && (!control.channelId || candidate.channelId === control.channelId));
+    const session = [...this.sessions.values()].find((candidate) => candidate.sessionId === control.sessionId && candidate.agentKey === control.agentKey && (!control.channelId || candidate.channelId === control.channelId));
     if (!session) throw new Error(controlError("invalid_channel", "No owned active Discord voice session matched."));
+    if (control.voiceTurnId) {
+      const turn = await this.options.store.getTurn(control.voiceTurnId);
+      if (!activeVoiceTurn(turn) || turn.sessionId !== session.sessionId || turn.agentKey !== session.agentKey || turn.voiceSessionId !== session.voiceSessionId) {
+        throw new Error(controlError("voice_turn_conflict", "The Discord voice turn is not active or does not belong to this voice session."));
+      }
+      await this.options.store.completeTurn(turn.id, "Left the Discord voice channel.");
+      this.releaseTurnBinding(session, turn.id);
+    }
     const result = this.result(session, "disconnected");
     await this.stopGuild(session.guildId, "requested");
-    return result;
+    return {...result, ...(control.voiceTurnId ? {voiceTurnId: control.voiceTurnId} : {})};
   }
 
   private async send(control: DiscordVoiceControlRecord): Promise<Record<string, unknown>> {
@@ -288,16 +368,19 @@ export class DiscordVoiceSessionManager {
     let sent = false;
     if (control.voiceTurnId) {
       turn = await this.options.store.getTurn(control.voiceTurnId);
-      const active = turn.status === "pending" || turn.status === "queued" || turn.status === "running";
-      if (!active || turn.sessionId !== session.sessionId || turn.agentKey !== session.agentKey || turn.voiceSessionId !== session.voiceSessionId) {
+      if (!activeVoiceTurn(turn) || turn.sessionId !== session.sessionId || turn.agentKey !== session.agentKey || turn.voiceSessionId !== session.voiceSessionId) {
         throw new Error(controlError("voice_turn_conflict", "The Discord voice turn is not active or does not belong to this voice session."));
       }
-      sent = session.bridge.appendDelegationContext(turn.delegationId, control.text, channel);
+      const binding = session.turnBindingsById.get(turn.id);
+      if (binding?.bridgeGeneration === session.bridgeGeneration) sent = session.bridge.appendDelegationContext(binding.delegationId, control.text, channel);
       if (sent) delivery = "delegation";
     }
     if (!sent) sent = session.bridge.appendSessionContext(control.text, channel);
     if (!sent) throw new Error(controlError("provider_unavailable", "GPT-Live is not ready to accept voice context."));
-    if (turn && control.mode === "final") await this.options.store.completeTurn(turn.id, control.text);
+    if (turn && control.mode === "final") {
+      await this.options.store.completeTurn(turn.id, control.text);
+      this.releaseTurnBinding(session, turn.id);
+    }
     this.options.log("voice_context_sent", {connectorKey: session.connectorKey, guildId: session.guildId, channelId: session.channelId, mode: control.mode, delivery, ...(turn ? {voiceTurnId: turn.id} : {})});
     return {ok: true, state: "sent", connectorKey: session.connectorKey, guildId: session.guildId, channelId: session.channelId, sessionId: session.sessionId, voiceSessionId: session.voiceSessionId, model: DISCORD_VOICE_MODEL, mode: control.mode, delivery, ...(turn ? {voiceTurnId: turn.id} : {})};
   }
@@ -310,7 +393,7 @@ export class DiscordVoiceSessionManager {
     session.connection.receiver.speaking.on("start", (userId) => {
       const decision = session.speakers.start(userId, this.options.connectorKey);
       if (decision !== "accepted") {
-        if (decision !== "self") this.options.log("voice_utterance_dropped", {connectorKey: session.connectorKey, guildId: session.guildId, channelId: session.channelId, speakerId: userId, reason: decision});
+        if (decision !== "self" && decision !== "continued") this.options.log("voice_utterance_dropped", {connectorKey: session.connectorKey, guildId: session.guildId, channelId: session.channelId, speakerId: userId, reason: decision});
         return;
       }
       session.bridge.interrupt();
@@ -404,19 +487,14 @@ export class DiscordVoiceSessionManager {
 
   private writeOutput(session: ActiveVoiceSession, audio: Buffer): void {
     if (session.closing) return;
+    const droppedBytes = session.outputPending.push(audio);
+    if (droppedBytes > 0) this.recordOutputDrop(session, droppedBytes);
     if (session.outputBackpressured) {
       if (!this.outputEnded(session.output)) return;
       session.outputBackpressured = false;
     }
-    if (audio.length > 0) {
-      session.outputPending = Buffer.concat([session.outputPending, audio]);
-      if (session.outputPending.length > MAX_PENDING_OUTPUT_BYTES) {
-        session.outputPending = session.outputPending.subarray(session.outputPending.length - MAX_PENDING_OUTPUT_BYTES);
-      }
-    }
-    while (session.outputPending.length >= 960) {
-      const frame = session.outputPending.subarray(0, 960);
-      session.outputPending = session.outputPending.subarray(960);
+    while (session.outputPending.byteLength >= 960) {
+      const frame = session.outputPending.shift(960)!;
       const output = this.ensurePlayableOutput(session);
       if (!output.write(Buffer.from(session.outputEncoder.encode(livePcmToDiscord(frame), {frameSize: 960})))) {
         session.outputBackpressured = true;
@@ -429,6 +507,15 @@ export class DiscordVoiceSessionManager {
         break;
       }
     }
+  }
+
+  private recordOutputDrop(session: ActiveVoiceSession, bytes: number): void {
+    session.outputDroppedBytes += bytes;
+    const now = Date.now();
+    if (now - session.lastOutputDropLogAt < 1_000) return;
+    this.options.log("voice_output_audio_dropped", {connectorKey: session.connectorKey, guildId: session.guildId, channelId: session.channelId, bytes: session.outputDroppedBytes, reason: "backpressure_limit"});
+    session.outputDroppedBytes = 0;
+    session.lastOutputDropLogAt = now;
   }
 
   private ensurePlayableOutput(session: ActiveVoiceSession): PassThrough {
@@ -449,7 +536,7 @@ export class DiscordVoiceSessionManager {
     session.player.stop(true);
     session.output.destroy();
     session.output = new PassThrough();
-    session.outputPending = Buffer.alloc(0);
+    session.outputPending.clear();
     session.outputBackpressured = false;
   }
 
@@ -457,13 +544,11 @@ export class DiscordVoiceSessionManager {
     const generation = ++session.bridgeGeneration;
     return bridgeFactory({
       env: this.options.env, voice: this.options.env?.PANDA_DISCORD_VOICE_VOICE ?? "cove",
-      initialItems: session.recentTranscript,
       onAudio: (audio) => {
         if (!this.isCurrentBridge(session, generation)) return;
         try { this.writeOutput(session, audio); } catch (error) { this.handlePlaybackFailure(session, error); }
       },
-      onDelegation: (delegation) => this.isCurrentBridge(session, generation) ? this.delegate(session, delegation.id, delegation.prompt) : undefined,
-      onTranscript: (role, text) => { if (this.isCurrentBridge(session, generation)) this.appendTranscript(session, role, text); },
+      onDelegation: (delegation) => this.isCurrentBridge(session, generation) ? this.delegate(session, generation, delegation.id, delegation.prompt) : undefined,
       onClearAudio: () => {
         if (!this.isCurrentBridge(session, generation)) return;
         try { this.clearPlayback(session); } catch (error) { this.handlePlaybackFailure(session, error); }
@@ -484,16 +569,6 @@ export class DiscordVoiceSessionManager {
     return !session.closing && session.bridgeGeneration === generation && this.sessions.get(session.guildId) === session;
   }
 
-  private appendTranscript(session: ActiveVoiceSession, role: "user" | "assistant", rawText: string): void {
-    const text = rawText.trim().slice(0, MAX_TRANSCRIPT_ITEM_CHARS);
-    if (!text) return;
-    session.recentTranscript.push({role, text});
-    let total = session.recentTranscript.reduce((sum, item) => sum + item.text.length, 0);
-    while (session.recentTranscript.length > MAX_TRANSCRIPT_ITEMS || total > MAX_TRANSCRIPT_CHARS) {
-      total -= session.recentTranscript.shift()?.text.length ?? 0;
-    }
-  }
-
   private recoverProvider(session: ActiveVoiceSession): void {
     if (session.providerRecovery || session.closing || this.sessions.get(session.guildId) !== session) return;
     session.providerRecovery = this.runProviderRecovery(session)
@@ -508,10 +583,6 @@ export class DiscordVoiceSessionManager {
   }
 
   private async runProviderRecovery(session: ActiveVoiceSession): Promise<void> {
-    try { this.clearPlayback(session); } catch (error) {
-      this.handlePlaybackFailure(session, error);
-      return;
-    }
     for (const [index, delayMs] of PROVIDER_RECONNECT_DELAYS_MS.entries()) {
       if (delayMs > 0) await new Promise<void>((resolve) => { const timer = setTimeout(resolve, delayMs); timer.unref?.(); });
       if (session.closing || this.sessions.get(session.guildId) !== session) return;
@@ -533,15 +604,41 @@ export class DiscordVoiceSessionManager {
     await this.stopGuild(session.guildId, "provider_failed");
   }
 
-  private async delegate(session: ActiveVoiceSession, delegationId: string, prompt: string): Promise<void> {
+  private async delegate(session: ActiveVoiceSession, bridgeGeneration: number, delegationId: string, prompt: string): Promise<void> {
+    const promptKey = voicePromptKey(prompt);
+    const existing = session.turnBindingsByPrompt.get(promptKey);
+    if (existing) {
+      if (existing.creating || activeVoiceTurn(await this.options.store.getTurn(existing.voiceTurnId))) {
+        existing.delegationId = delegationId;
+        existing.bridgeGeneration = bridgeGeneration;
+        this.options.log("voice_delegation_rebound", {connectorKey: session.connectorKey, guildId: session.guildId, channelId: session.channelId, voiceTurnId: existing.voiceTurnId});
+        return;
+      }
+      this.releaseTurnBinding(session, existing.voiceTurnId);
+    }
     const id = randomUUID();
+    const binding: ActiveVoiceTurnBinding = {voiceTurnId: id, promptKey, delegationId, bridgeGeneration, creating: true};
+    session.turnBindingsByPrompt.set(promptKey, binding);
+    session.turnBindingsById.set(id, binding);
+    let turnCreated = false;
     try {
       await this.options.store.createTurn({id, voiceSessionId: session.voiceSessionId, delegationId, connectorKey: session.connectorKey, guildId: session.guildId, channelId: session.channelId, sessionId: session.sessionId, agentKey: session.agentKey, externalActorId: session.speakers.lastSpeakerId, prompt});
+      turnCreated = true;
+      binding.creating = false;
+      await this.options.requests.enqueueRequest({kind: "discord_voice_delegation", payload: {voiceTurnId: id}});
     } catch (error) {
+      this.releaseTurnBinding(session, id);
+      if (turnCreated) await this.options.store.failTurn(id, "Failed to enqueue the Discord voice delegation.").catch(() => undefined);
       throw error;
     }
-    await this.options.requests.enqueueRequest({kind: "discord_voice_delegation", payload: {voiceTurnId: id}});
     this.options.log("voice_delegation_queued", {connectorKey: session.connectorKey, guildId: session.guildId, channelId: session.channelId, voiceTurnId: id});
+  }
+
+  private releaseTurnBinding(session: ActiveVoiceSession, voiceTurnId: string): void {
+    const binding = session.turnBindingsById.get(voiceTurnId);
+    if (!binding) return;
+    session.turnBindingsById.delete(voiceTurnId);
+    if (session.turnBindingsByPrompt.get(binding.promptKey) === binding) session.turnBindingsByPrompt.delete(binding.promptKey);
   }
 
   private stopGuildSafely(guildId: string, reason: string): void {

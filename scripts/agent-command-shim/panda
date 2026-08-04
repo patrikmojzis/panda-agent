@@ -5776,7 +5776,7 @@ Usage:
   panda discord history --help [--json]
   panda discord history --channel <channel-id> [--connector <key>] [--direction inbound|outbound|all] [--limit <n>]
   panda discord voice join --channel <voice-channel-id> [--connector <key>]
-  panda discord voice leave [--channel <voice-channel-id>] [--connector <key>]
+  panda discord voice leave [--turn <voice-turn-id>] [--channel <voice-channel-id>] [--connector <key>]
   panda discord voice send --text <message> [--mode progress|final] [--turn <voice-turn-id>] [--channel <voice-channel-id>] [--connector <key>]
   panda discord voice status [--connector <key>]
   panda discord sticker list --channel <channel-id> --connector <key>
@@ -5885,6 +5885,7 @@ USAGE
 	    if [ "$subcommand" = "voice join" ] || [ "$subcommand" = "voice leave" ] || [ "$subcommand" = "voice status" ]; then
 	      channel_id=""
 	      connector_key=""
+	      voice_turn_id=""
 	      while [ "$#" -gt 0 ]; do
 	        case "$1" in
 	          --channel)
@@ -5898,6 +5899,12 @@ USAGE
 	            connector_key="$2"
 	            shift 2
 	            ;;
+	          --turn)
+	            [ "$subcommand" = "voice leave" ] || die "panda discord $subcommand does not accept --turn."
+	            [ "$#" -gt 1 ] || die "panda discord voice leave --turn requires a voice turn id."
+	            voice_turn_id="$2"
+	            shift 2
+	            ;;
 	          *) die "Unknown panda discord $subcommand option: $1" ;;
 	        esac
 	      done
@@ -5907,9 +5914,11 @@ USAGE
 	      payload="$(jq -n \
 	        --arg channelId "$channel_id" \
 	        --arg connectorKey "$connector_key" \
+	        --arg voiceTurnId "$voice_turn_id" \
 	        '{}
 	        + (if $channelId != "" then {channelId: $channelId} else {} end)
-	        + (if $connectorKey != "" then {connectorKey: $connectorKey} else {} end)')"
+	        + (if $connectorKey != "" then {connectorKey: $connectorKey} else {} end)
+	        + (if $voiceTurnId != "" then {voiceTurnId: $voiceTurnId} else {} end)')"
 	      execute_json_command "$command_name" "$payload"
 	      exit $?
 	    fi

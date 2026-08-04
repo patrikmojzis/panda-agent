@@ -152,13 +152,15 @@ From a Discord-bound Panda session:
 panda discord voice join --channel <voiceChannelId> [--connector <connectorKey>]
 panda discord voice send --text <message> [--mode progress|final] [--turn <voiceTurnId>] [--channel <voiceChannelId>] [--connector <connectorKey>]
 panda discord voice status [--connector <connectorKey>]
-panda discord voice leave [--channel <voiceChannelId>] [--connector <connectorKey>]
+panda discord voice leave [--turn <voiceTurnId>] [--channel <voiceChannelId>] [--connector <connectorKey>]
 ```
 
 The target voice channel need not be text-bound, but the invoking session must already have a conversation binding for the connector. `join` reminds the agent that it may call `discord.voice.send` at any time. A delegated task should use short `progress` sends while work continues and exactly one concise `final` send when it is done. The command infers the voice turn from the current run when unambiguous; `--turn` selects it explicitly. Without a matching delegation, the same command appends standalone session context so GPT-Live can speak a proactive update.
 
 Only explicit `discord.voice.send` deliveries are handed back to GPT-Live. Ordinary assistant transcript text remains Panda's internal working space and is never harvested as a voice response. Delegated prompts and explicit final answers are durable; PCM and casual GPT-Live chatter are not. Panda accepts humans and other bots, ignores only itself, limits utterances to 60 seconds and 30 accepted utterances per minute, and supports barge-in.
 
-The private GPT-Live sideband can reset independently of Discord. Panda keeps the Discord voice connection alive, creates a fresh provider session, and carries over only a bounded in-memory window of voice conversation context. After a provider replacement, an explicit send falls back to standalone session context because the replacement no longer owns the old delegation id. Unexpected audio, Discord, and provider failures are logged and tear down owned resources cleanly.
+When GPT-Live delegates a leave request, Panda uses `discord.voice.leave --turn <voiceTurnId>` so the durable turn completes as the worker disconnects. A successful leave does not require a final voice send afterward.
+
+The private GPT-Live sideband can reset independently of Discord. Panda keeps the Discord voice connection alive and creates a fresh provider session without replaying casual transcripts as executable input. Active identical delegations are rebound to their existing durable voice turn rather than waking Panda twice. After a provider replacement, an explicit send falls back to standalone session context until the provider creates a current delegation binding. Unexpected audio, Discord, and provider failures are logged and tear down owned resources cleanly.
 
 Voice sessions are capped at eight per process, expire 30 minutes after the original join even if the provider reconnects, and are not restored after worker restart. This integration targets an undocumented experimental protocol and carries no compatibility guarantee.

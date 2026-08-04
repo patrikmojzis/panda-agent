@@ -8,25 +8,23 @@ const CALL_URL = "https://chatgpt.com/backend-api/codex/realtime/calls?intent=qu
 const PANDA_LIVE_VERSION = "0.1.0";
 const MAX_SDP_BYTES = 256 * 1024;
 const MAX_ERROR_BYTES = 16 * 1024;
+const MAX_DELEGATION_PROMPT_CHARS = 8_000;
 const APPEND_BYTES = 500;
 const RESULT_CHARS = 1_800;
 const VOICES = new Set(["juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol", "cove"]);
 
 export interface OpenAILiveRequestIds {realtimeSessionId: string; sessionId: string; threadId: string}
-export interface OpenAILiveInitialItem {role: "user" | "assistant"; text: string}
 export type OpenAILiveContextChannel = "commentary" | "speakable";
 export interface OpenAILiveSession {
   model: typeof OPENAI_LIVE_MODEL;
   instructions: string;
   audio: {output: {voice: string}};
   delegation: {type: "client"};
-  initial_items?: Array<{type: "message"; role: "user" | "assistant"; content: Array<{type: "input_text" | "output_text"; text: string}>}>;
 }
 
 export type OpenAILiveEvent =
   | {kind: "session_started"; expiresAt?: number}
   | {kind: "delegation"; id: string; prompt: string}
-  | {kind: "transcript"; role: "user" | "assistant"; text: string}
   | {kind: "audio_cleared"}
   | {kind: "error"; message: string; fatalAuth: boolean}
   | {kind: "ignored"; type: string};
@@ -49,7 +47,7 @@ export function buildHeaders(auth: OpenAILiveAuth, ids: OpenAILiveRequestIds): R
   };
 }
 
-export function buildSession(voice = "cove", initialItems: readonly OpenAILiveInitialItem[] = []): OpenAILiveSession {
+export function buildSession(voice = "cove"): OpenAILiveSession {
   if (!VOICES.has(voice)) throw new Error("Unsupported GPT-Live V3 voice.");
   return {
     model: OPENAI_LIVE_MODEL,
@@ -57,17 +55,11 @@ export function buildSession(voice = "cove", initialItems: readonly OpenAILiveIn
       "You are Panda's low-latency voice front end in a Discord voice channel.",
       "Wait silently until a participant speaks; do not greet merely because the session connected.",
       "Respond naturally to casual conversation. Delegate substantive requests, memory questions, and every action requiring tools to the client.",
+      "If a participant asks you to leave or disconnect from voice, delegate that request to the client; you cannot leave the channel yourself.",
       "Never claim an action succeeded unless the client result says so. Keep spoken replies concise.",
     ].join(" "),
     audio: {output: {voice}},
     delegation: {type: "client"},
-    ...(initialItems.length > 0 ? {
-      initial_items: initialItems.map((item) => ({
-        type: "message" as const,
-        role: item.role,
-        content: [{type: item.role === "user" ? "input_text" as const : "output_text" as const, text: item.text}],
-      })),
-    } : {}),
   };
 }
 
@@ -93,9 +85,9 @@ async function boundedText(response: Response, maxBytes: number): Promise<string
   return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
 }
 
-export async function createOpenAILiveCall(input: {auth: OpenAILiveAuth; ids: OpenAILiveRequestIds; offerSdp: string; voice: string; initialItems?: readonly OpenAILiveInitialItem[]; signal: AbortSignal; fetchImpl?: typeof fetch}): Promise<{answerSdp: string; sidebandUrl: string}> {
+export async function createOpenAILiveCall(input: {auth: OpenAILiveAuth; ids: OpenAILiveRequestIds; offerSdp: string; voice: string; signal: AbortSignal; fetchImpl?: typeof fetch}): Promise<{answerSdp: string; sidebandUrl: string}> {
   if (Buffer.byteLength(input.offerSdp) > MAX_SDP_BYTES) throw new Error("GPT-Live SDP offer exceeded the configured limit.");
-  const body = JSON.stringify({sdp: input.offerSdp, session: buildSession(input.voice, input.initialItems)});
+  const body = JSON.stringify({sdp: input.offerSdp, session: buildSession(input.voice)});
   const response = await (input.fetchImpl ?? fetch)(CALL_URL, {method: "POST", headers: {...buildHeaders(input.auth, input.ids), "Content-Type": "application/json"}, body, signal: input.signal});
   if (!response.ok) {
     await boundedText(response, MAX_ERROR_BYTES).catch(() => "");
@@ -124,18 +116,10 @@ export function parseOpenAILiveEvent(text: string): OpenAILiveEvent | null {
     return {kind: "session_started", ...(typeof session?.expires_at === "number" ? {expiresAt: session.expires_at} : {})};
   }
   if (payload.type === "output_audio_buffer.cleared") return {kind: "audio_cleared"};
-  if (payload.type === "turn.done") {
-    const turn = isRecord(payload.turn) ? payload.turn : undefined;
-    if ((turn?.role === "user" || turn?.role === "assistant") && typeof turn.transcript === "string") {
-      const text = turn.transcript.trim().slice(0, 8_000);
-      return text ? {kind: "transcript", role: turn.role, text} : {kind: "ignored", type: payload.type};
-    }
-    return {kind: "ignored", type: payload.type};
-  }
   if (payload.type === "delegation.created") {
     const item = isRecord(payload.item) ? payload.item : undefined;
     if (item?.type !== "delegation" || item.target !== "client" || typeof item.id !== "string" || !Array.isArray(item.content)) return {kind: "ignored", type: payload.type};
-    const prompt = item.content.filter(isRecord).filter((part) => part.type === "input_text").map((part) => typeof part.text === "string" ? part.text : "").join("").trim();
+    const prompt = item.content.filter(isRecord).filter((part) => part.type === "input_text").map((part) => typeof part.text === "string" ? part.text : "").join("").trim().slice(0, MAX_DELEGATION_PROMPT_CHARS);
     return prompt ? {kind: "delegation", id: item.id, prompt} : {kind: "ignored", type: payload.type};
   }
   if (payload.type === "error") {

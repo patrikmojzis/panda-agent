@@ -22,6 +22,7 @@ export interface DiscordVoiceCommandServices {
 }
 
 interface VoiceCommandInput {connectorKey?: string; channelId?: string}
+interface VoiceLeaveCommandInput extends VoiceCommandInput {voiceTurnId?: string}
 interface VoiceSendCommandInput extends VoiceCommandInput {text: string; mode: DiscordVoiceSendMode; voiceTurnId?: string}
 
 function normalizeSnowflake(value: unknown, label: string): string {
@@ -35,6 +36,12 @@ function optionalString(value: unknown, label: string): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "string" || !value.trim()) throw new Error(`${label} must not be empty.`);
   return value.trim();
+}
+
+function optionalVoiceTurnId(value: unknown): string | undefined {
+  const voiceTurnId = optionalString(value, "voiceTurnId");
+  if (voiceTurnId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(voiceTurnId)) throw new Error("voiceTurnId must be a UUID.");
+  return voiceTurnId;
 }
 
 function parseInput(input: unknown, options: {channel: "required" | "optional" | "forbidden"}): VoiceCommandInput {
@@ -60,9 +67,19 @@ function parseSendInput(input: unknown): VoiceSendCommandInput {
   if (text.length > MAX_VOICE_CONTEXT_CHARS) throw new Error(`discord.voice.send text must not exceed ${String(MAX_VOICE_CONTEXT_CHARS)} characters.`);
   const mode = input.mode === undefined ? "final" : input.mode;
   if (mode !== "progress" && mode !== "final") throw new Error("discord.voice.send mode must be progress or final.");
-  const voiceTurnId = optionalString(input.voiceTurnId, "voiceTurnId");
-  if (voiceTurnId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(voiceTurnId)) throw new Error("voiceTurnId must be a UUID.");
+  const voiceTurnId = optionalVoiceTurnId(input.voiceTurnId);
   return {text, mode, ...(connectorKey ? {connectorKey} : {}), ...(channelId ? {channelId} : {}), ...(voiceTurnId ? {voiceTurnId} : {})};
+}
+
+function parseLeaveInput(input: unknown): VoiceLeaveCommandInput {
+  if (!isRecord(input)) throw new Error("Discord voice command input must be a JSON object.");
+  const allowed = new Set(["connectorKey", "channelId", "voiceTurnId"]);
+  const unexpected = Object.keys(input).find((key) => !allowed.has(key));
+  if (unexpected) throw new Error(`Discord voice command input contains unsupported field ${unexpected}.`);
+  const connectorKey = optionalString(input.connectorKey, "connectorKey");
+  const channelId = input.channelId === undefined ? undefined : normalizeSnowflake(input.channelId, "channel");
+  const voiceTurnId = optionalVoiceTurnId(input.voiceTurnId);
+  return {...(connectorKey ? {connectorKey} : {}), ...(channelId ? {channelId} : {}), ...(voiceTurnId ? {voiceTurnId} : {})};
 }
 
 function enabled(env: NodeJS.ProcessEnv): boolean {
@@ -120,19 +137,10 @@ function failedControl(control: DiscordVoiceControlRecord): never {
   throw new CommandStructuredError(conflict ? "conflict" : "command_failed", message, {failureCode, retryable});
 }
 
-async function runControl(operation: "join" | "leave", input: VoiceCommandInput, request: CommandRequest, services: DiscordVoiceCommandServices): Promise<JsonObject> {
+async function runJoin(input: VoiceCommandInput, request: CommandRequest, services: DiscordVoiceCommandServices): Promise<JsonObject> {
   if (!enabled(services.env)) throw new CommandStructuredError("command_failed", "Discord voice is disabled.", {failureCode: "voice_disabled", retryable: false});
   const connectorKey = await resolveBoundConnector(input, request, services);
-  if (operation === "leave" && !input.channelId) {
-    const owned = await services.voice.listSessions({sessionId: request.scope.sessionId, connectorKey, activeOnly: true});
-    if (owned.length !== 1) {
-      throw new CommandStructuredError("conflict", "Discord voice leave is ambiguous; pass --channel or inspect status.", {
-        failureCode: "leave_ambiguous", retryable: false, sessions: owned.map(serializeSession),
-      });
-    }
-    input = {...input, channelId: owned[0]!.channelId};
-  }
-  return enqueueAndWait({connectorKey, operation, sessionId: request.scope.sessionId, agentKey: request.scope.agentKey, channelId: input.channelId}, services);
+  return enqueueAndWait({connectorKey, operation: "join", sessionId: request.scope.sessionId, agentKey: request.scope.agentKey, channelId: input.channelId}, services);
 }
 
 async function enqueueAndWait(input: DiscordVoiceControlInput, services: DiscordVoiceCommandServices): Promise<JsonObject> {
@@ -151,6 +159,43 @@ function activeTurn(turn: DiscordVoiceTurnRecord): boolean {
   return turn.status === "pending" || turn.status === "queued" || turn.status === "running";
 }
 
+async function resolveActiveTurn(input: {voiceTurnId?: string}, request: CommandRequest, services: DiscordVoiceCommandServices, session: DiscordVoiceSessionRecord): Promise<DiscordVoiceTurnRecord | undefined> {
+  if (input.voiceTurnId) {
+    const turn = await services.voice.getTurn(input.voiceTurnId).catch(() => undefined);
+    if (!turn || !activeTurn(turn) || turn.sessionId !== request.scope.sessionId || turn.agentKey !== request.scope.agentKey || turn.voiceSessionId !== session.voiceSessionId) {
+      throw new CommandStructuredError("conflict", "The requested Discord voice turn is not active in this voice session.", {failureCode: "voice_turn_conflict", retryable: false});
+    }
+    return turn;
+  }
+  if (!request.scope.runId) return undefined;
+  const turns = (await services.voice.listRunningTurns(request.scope.runId))
+    .filter((candidate) => candidate.sessionId === request.scope.sessionId && candidate.voiceSessionId === session.voiceSessionId);
+  if (turns.length > 1) {
+    throw new CommandStructuredError("conflict", "Multiple Discord voice turns belong to this run; pass --turn <voice-turn-id>.", {
+      failureCode: "voice_turn_ambiguous", retryable: false, voiceTurnIds: turns.map((candidate) => candidate.id),
+    });
+  }
+  return turns[0];
+}
+
+async function runLeave(input: VoiceLeaveCommandInput, request: CommandRequest, services: DiscordVoiceCommandServices): Promise<JsonObject> {
+  if (!enabled(services.env)) throw new CommandStructuredError("command_failed", "Discord voice is disabled.", {failureCode: "voice_disabled", retryable: false});
+  const connectorKey = await resolveBoundConnector(input, request, services);
+  const owned = await services.voice.listSessions({sessionId: request.scope.sessionId, connectorKey, activeOnly: true});
+  const matching = input.channelId ? owned.filter((session) => session.channelId === input.channelId) : owned;
+  if (input.channelId && matching.length === 0) {
+    throw new CommandStructuredError("command_failed", "No owned active Discord voice session matched that channel.", {failureCode: "invalid_channel", retryable: false});
+  }
+  if (matching.length !== 1) {
+    throw new CommandStructuredError("conflict", "Discord voice leave is ambiguous; pass --channel or inspect status.", {
+      failureCode: "leave_ambiguous", retryable: false, sessions: matching.map(serializeSession),
+    });
+  }
+  const session = matching[0]!;
+  const turn = await resolveActiveTurn(input, request, services, session);
+  return enqueueAndWait({connectorKey, operation: "leave", sessionId: request.scope.sessionId, agentKey: request.scope.agentKey, channelId: session.channelId, ...(turn ? {voiceTurnId: turn.id} : {})}, services);
+}
+
 async function runSend(input: VoiceSendCommandInput, request: CommandRequest, services: DiscordVoiceCommandServices): Promise<JsonObject> {
   if (!enabled(services.env)) throw new CommandStructuredError("command_failed", "Discord voice is disabled.", {failureCode: "voice_disabled", retryable: false});
   const connectorKey = await resolveBoundConnector(input, request, services);
@@ -167,22 +212,7 @@ async function runSend(input: VoiceSendCommandInput, request: CommandRequest, se
     });
   }
   const session = sessions[0]!;
-  let turn: DiscordVoiceTurnRecord | undefined;
-  if (input.voiceTurnId) {
-    turn = await services.voice.getTurn(input.voiceTurnId).catch(() => undefined);
-    if (!turn || !activeTurn(turn) || turn.sessionId !== request.scope.sessionId || turn.voiceSessionId !== session.voiceSessionId) {
-      throw new CommandStructuredError("conflict", "The requested Discord voice turn is not active in this voice session.", {failureCode: "voice_turn_conflict", retryable: false});
-    }
-  } else if (request.scope.runId) {
-    const turns = (await services.voice.listRunningTurns(request.scope.runId))
-      .filter((candidate) => candidate.sessionId === request.scope.sessionId && candidate.voiceSessionId === session.voiceSessionId);
-    if (turns.length > 1) {
-      throw new CommandStructuredError("conflict", "Multiple Discord voice turns belong to this run; pass --turn <voice-turn-id>.", {
-        failureCode: "voice_turn_ambiguous", retryable: false, voiceTurnIds: turns.map((candidate) => candidate.id),
-      });
-    }
-    turn = turns[0];
-  }
+  const turn = await resolveActiveTurn(input, request, services, session);
   return enqueueAndWait({
     connectorKey, operation: "send", sessionId: request.scope.sessionId, agentKey: request.scope.agentKey,
     channelId: session.channelId, text: input.text, mode: input.mode, ...(turn ? {voiceTurnId: turn.id} : {}),
@@ -208,12 +238,13 @@ export const discordVoiceLeaveCommandDescriptor: CommandDescriptor = {
   name: DISCORD_VOICE_LEAVE_COMMAND_NAME,
   summary: "Leave a Discord voice channel.",
   description: "Stops a transient Discord GPT-Live voice session owned by the current Panda session.",
-  usage: "panda discord voice leave [--channel <voice-channel-id>] [--connector <key>]",
+  usage: "panda discord voice leave [--turn <voice-turn-id>] [--channel <voice-channel-id>] [--connector <key>]",
   inputModes: ["flags", "json", "stdin", "file"], outputModes: ["json", "text"],
   arguments: [
     {name: "channel", description: "Optional voice channel id.", valueType: "string", valueName: "voice-channel-id"},
     {name: "connector", description: "Discord connector key; inferred when unambiguous.", valueType: "string", valueName: "key"},
-    {name: "json", description: "Structured input containing optional channelId and connectorKey.", valueType: "json"},
+    {name: "turn", description: "Delegated voice turn completed by leaving; inferred from the current run when unambiguous.", valueType: "string", valueName: "voice-turn-id"},
+    {name: "json", description: "Structured input containing optional channelId, connectorKey, and voiceTurnId.", valueType: "json"},
   ],
   examples: [{description: "Leave the only owned voice session", command: "panda discord voice leave"}],
   requiredCapabilities: [DISCORD_VOICE_LEAVE_COMMAND_NAME], resultShape: {ok: "boolean", state: "disconnected", connectorKey: "string", guildId: "string", channelId: "string", sessionId: "string", model: DISCORD_VOICE_MODEL},
@@ -252,11 +283,11 @@ export const discordVoiceStatusCommandDescriptor: CommandDescriptor = {
 };
 
 export function createDiscordVoiceJoinCommand(services: DiscordVoiceCommandServices): RegisteredCommand {
-  return {descriptor: discordVoiceJoinCommandDescriptor, async execute(request) { return {ok: true, command: DISCORD_VOICE_JOIN_COMMAND_NAME, output: await runControl("join", parseInput(request.input, {channel: "required"}), request, services)}; }};
+  return {descriptor: discordVoiceJoinCommandDescriptor, async execute(request) { return {ok: true, command: DISCORD_VOICE_JOIN_COMMAND_NAME, output: await runJoin(parseInput(request.input, {channel: "required"}), request, services)}; }};
 }
 
 export function createDiscordVoiceLeaveCommand(services: DiscordVoiceCommandServices): RegisteredCommand {
-  return {descriptor: discordVoiceLeaveCommandDescriptor, async execute(request) { return {ok: true, command: DISCORD_VOICE_LEAVE_COMMAND_NAME, output: await runControl("leave", parseInput(request.input, {channel: "optional"}), request, services)}; }};
+  return {descriptor: discordVoiceLeaveCommandDescriptor, async execute(request) { return {ok: true, command: DISCORD_VOICE_LEAVE_COMMAND_NAME, output: await runLeave(parseLeaveInput(request.input), request, services)}; }};
 }
 
 export function createDiscordVoiceSendCommand(services: DiscordVoiceCommandServices): RegisteredCommand {

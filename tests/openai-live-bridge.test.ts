@@ -57,9 +57,8 @@ describe("OpenAI GPT-Live bridge", () => {
   it("retains sideband events emitted immediately after open", async () => {
     const socket = new FakeSocket();
     const onDelegation = vi.fn();
-    const onTranscript = vi.fn();
     const bridge = new OpenAILiveRealtimeVoiceBridge({
-      onAudio: vi.fn(), onDelegation, onTranscript, onClearAudio: vi.fn(), onClose: vi.fn(), log: vi.fn(),
+      onAudio: vi.fn(), onDelegation, onClearAudio: vi.fn(), onClose: vi.fn(), log: vi.fn(),
       resolveAuth: () => ({token: "secret", accountId: "acct-1"}),
       fetchImpl: vi.fn(async () => new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}})),
       createPeer: vi.fn(async () => ({createOffer: async () => "offer-sdp", applyAnswer: async () => undefined, waitUntilConnected: async () => undefined, sendAudio: vi.fn(), close: vi.fn()})),
@@ -67,15 +66,16 @@ describe("OpenAI GPT-Live bridge", () => {
         queueMicrotask(() => {
           socket.readyState = WebSocket.OPEN;
           socket.emit("open");
-          socket.emit("message", Buffer.from(JSON.stringify({type: "turn.done", turn: {role: "user", transcript: "hello"}})), false);
-          socket.emit("message", Buffer.from(JSON.stringify({type: "delegation.created", item: {type: "delegation", target: "client", id: "delegation-1", content: [{type: "input_text", text: "check status"}]}})), false);
+          const delegation = Buffer.from(JSON.stringify({type: "delegation.created", item: {type: "delegation", target: "client", id: "delegation-1", content: [{type: "input_text", text: "check status"}]}}));
+          socket.emit("message", delegation, false);
+          socket.emit("message", delegation, false);
         });
         return socket as unknown as WebSocket;
       },
     });
 
     await bridge.connect();
-    expect(onTranscript).toHaveBeenCalledWith("user", "hello");
+    expect(onDelegation).toHaveBeenCalledOnce();
     expect(onDelegation).toHaveBeenCalledWith({id: "delegation-1", prompt: "check status"});
     expect(bridge.appendDelegationContext("delegation-1", "still checking", "commentary")).toBe(true);
     expect(bridge.appendDelegationContext("delegation-1", "healthy", "speakable")).toBe(true);

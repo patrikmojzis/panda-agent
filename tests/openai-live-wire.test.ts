@@ -32,17 +32,14 @@ describe("experimental OpenAI GPT-Live wire", () => {
           audio: {output: {voice: "cove"}},
           delegation: {type: "client"},
           instructions: expect.stringContaining("Wait silently until a participant speaks"),
-          initial_items: [
-            {type: "message", role: "user", content: [{type: "input_text", text: "hello"}]},
-            {type: "message", role: "assistant", content: [{type: "output_text", text: "hi"}]},
-          ],
         }),
       });
+      expect(JSON.parse(String(init?.body)).session).not.toHaveProperty("initial_items");
+      expect(JSON.parse(String(init?.body)).session.instructions).toContain("asks you to leave or disconnect from voice");
       return new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}});
     });
     await expect(createOpenAILiveCall({
       auth: {token: "secret", accountId: "acct-1"}, ids: createRequestIds(), offerSdp: "offer-sdp", voice: "cove",
-      initialItems: [{role: "user", text: "hello"}, {role: "assistant", text: "hi"}],
       signal: new AbortController().signal, fetchImpl,
     })).resolves.toEqual({answerSdp: "answer-sdp", sidebandUrl: "wss://api.openai.com/v1/live/rtc_test"});
   });
@@ -67,9 +64,8 @@ describe("experimental OpenAI GPT-Live wire", () => {
     expect(JSON.parse(sessionContextMessages("done", "speakable")[0]!)).toMatchObject({type: "session.context.append", channel: "speakable"});
   });
 
-  it("captures completed transcripts for bounded in-memory provider recovery", () => {
-    expect(parseOpenAILiveEvent(JSON.stringify({type: "turn.done", turn: {role: "user", transcript: "hello there"}}))).toEqual({kind: "transcript", role: "user", text: "hello there"});
-    expect(parseOpenAILiveEvent(JSON.stringify({type: "turn.done", turn: {role: "assistant", transcript: "hi"}}))).toEqual({kind: "transcript", role: "assistant", text: "hi"});
+  it("does not turn completed transcripts into recoverable executable input", () => {
+    expect(parseOpenAILiveEvent(JSON.stringify({type: "turn.done", turn: {role: "user", transcript: "hello there"}}))).toEqual({kind: "ignored", type: "turn.done"});
   });
 
   it("never exposes the OAuth bearer through structured errors", () => {
