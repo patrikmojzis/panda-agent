@@ -59,9 +59,12 @@ export interface DiscordVoiceDiagnosticSnapshot {
   };
   playback: {
     state: string;
+    playerState: string;
+    phase: string;
     responseEpoch: number;
     queuedMs: number;
     droppedMs: number;
+    suppressedMs: number;
     underruns: number;
     lastAudioAt: number | null;
   };

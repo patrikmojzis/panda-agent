@@ -1,6 +1,7 @@
 import {randomUUID} from "node:crypto";
 
 import {isRecord} from "../../../lib/records.js";
+import type {LiveVoiceHistoryItem} from "../../voice/live-voice-session.js";
 import type {OpenAILiveAuth} from "./auth.js";
 import {OPENAI_LIVE_MODEL} from "./types.js";
 
@@ -11,6 +12,8 @@ const MAX_ERROR_BYTES = 16 * 1024;
 const MAX_DELEGATION_PROMPT_CHARS = 8_000;
 const APPEND_BYTES = 500;
 const RESULT_CHARS = 1_800;
+const MAX_INITIAL_ITEMS = 32;
+const MAX_INITIAL_CHARS = 8_192;
 const VOICES = new Set(["juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol", "cove"]);
 
 export interface OpenAILiveRequestIds {realtimeSessionId: string; sessionId: string; threadId: string}
@@ -19,14 +22,15 @@ export interface OpenAILiveSession {
   model: typeof OPENAI_LIVE_MODEL;
   instructions: string;
   audio: {output: {voice: string}};
-  delegation: {type: "client"};
+  delegation: {type: "client"; ack_filler?: boolean};
+  initial_items?: Array<{type: "message"; role: "user" | "assistant"; content: Array<{type: "input_text" | "output_text"; text: string}>}>;
 }
 
 export type OpenAILiveEvent =
   | {kind: "session_started"; expiresAt?: number}
   | {kind: "delegation"; id: string; prompt: string}
   | {kind: "audio_cleared"}
-  | {kind: "turn_done"; role: "user" | "assistant" | "unknown"; transcriptChars: number; transcriptBytes: number; truncated: boolean}
+  | {kind: "turn_done"; role: "user" | "assistant" | "unknown"; transcript?: string; transcriptChars: number; transcriptBytes: number; truncated: boolean}
   | {kind: "transcript_metadata"; type: string; role: "user" | "assistant" | "unknown"; transcriptChars: number; transcriptBytes: number; truncated: boolean}
   | {kind: "error"; message: string; fatalAuth: boolean}
   | {kind: "malformed"; reason: "invalid_json" | "invalid_shape" | "oversized"}
@@ -50,8 +54,9 @@ export function buildHeaders(auth: OpenAILiveAuth, ids: OpenAILiveRequestIds): R
   };
 }
 
-export function buildSession(voice = "cove"): OpenAILiveSession {
+export function buildSession(voice = "cove", options: {initialItems?: readonly LiveVoiceHistoryItem[]; delegationAckFiller?: boolean} = {}): OpenAILiveSession {
   if (!VOICES.has(voice)) throw new Error("Unsupported GPT-Live V3 voice.");
+  const initialItems = boundedInitialItems(options.initialItems ?? []);
   return {
     model: OPENAI_LIVE_MODEL,
     instructions: [
@@ -62,8 +67,27 @@ export function buildSession(voice = "cove"): OpenAILiveSession {
       "Never claim an action succeeded unless the client result says so. Keep spoken replies concise.",
     ].join(" "),
     audio: {output: {voice}},
-    delegation: {type: "client"},
+    delegation: {type: "client", ...(options.delegationAckFiller === undefined ? {} : {ack_filler: options.delegationAckFiller})},
+    ...(initialItems.length === 0 ? {} : {initial_items: initialItems}),
   };
+}
+
+function boundedInitialItems(items: readonly LiveVoiceHistoryItem[]): NonNullable<OpenAILiveSession["initial_items"]> {
+  const selected = items.slice(-MAX_INITIAL_ITEMS);
+  const output: NonNullable<OpenAILiveSession["initial_items"]> = [];
+  let remaining = MAX_INITIAL_CHARS;
+  for (const item of [...selected].reverse()) {
+    const text = item.text.trim().slice(0, remaining);
+    if (!text) continue;
+    output.unshift({
+      type: "message",
+      role: item.role,
+      content: [{type: item.role === "assistant" ? "output_text" : "input_text", text}],
+    });
+    remaining -= text.length;
+    if (remaining === 0) break;
+  }
+  return output;
 }
 
 async function boundedText(response: Response, maxBytes: number): Promise<string> {
@@ -88,9 +112,9 @@ async function boundedText(response: Response, maxBytes: number): Promise<string
   return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
 }
 
-export async function createOpenAILiveCall(input: {auth: OpenAILiveAuth; ids: OpenAILiveRequestIds; offerSdp: string; voice: string; signal: AbortSignal; fetchImpl?: typeof fetch}): Promise<{answerSdp: string; sidebandUrl: string}> {
+export async function createOpenAILiveCall(input: {auth: OpenAILiveAuth; ids: OpenAILiveRequestIds; offerSdp: string; voice: string; initialItems?: readonly LiveVoiceHistoryItem[]; delegationAckFiller?: boolean; signal: AbortSignal; fetchImpl?: typeof fetch}): Promise<{answerSdp: string; sidebandUrl: string}> {
   if (Buffer.byteLength(input.offerSdp) > MAX_SDP_BYTES) throw new Error("GPT-Live SDP offer exceeded the configured limit.");
-  const body = JSON.stringify({sdp: input.offerSdp, session: buildSession(input.voice)});
+  const body = JSON.stringify({sdp: input.offerSdp, session: buildSession(input.voice, {initialItems: input.initialItems, delegationAckFiller: input.delegationAckFiller})});
   const response = await (input.fetchImpl ?? fetch)(CALL_URL, {method: "POST", headers: {...buildHeaders(input.auth, input.ids), "Content-Type": "application/json"}, body, signal: input.signal});
   if (!response.ok) {
     await boundedText(response, MAX_ERROR_BYTES).catch(() => "");
@@ -113,7 +137,7 @@ function metadataRole(value: unknown): "user" | "assistant" | "unknown" {
   return value === "user" || value === "assistant" ? value : "unknown";
 }
 
-function transcriptMetadata(record: Record<string, unknown>): {transcriptChars: number; transcriptBytes: number; truncated: boolean} {
+function transcriptMetadata(record: Record<string, unknown>): {transcript?: string; transcriptChars: number; transcriptBytes: number; truncated: boolean} {
   const candidate = typeof record.transcript === "string"
     ? record.transcript
     : typeof record.text === "string"
@@ -121,7 +145,7 @@ function transcriptMetadata(record: Record<string, unknown>): {transcriptChars: 
       : "";
   const transcriptChars = Math.min(candidate.length, MAX_DELEGATION_PROMPT_CHARS);
   const bounded = candidate.slice(0, transcriptChars);
-  return {transcriptChars, transcriptBytes: Buffer.byteLength(bounded), truncated: candidate.length > transcriptChars};
+  return {...(bounded ? {transcript: bounded} : {}), transcriptChars, transcriptBytes: Buffer.byteLength(bounded), truncated: candidate.length > transcriptChars};
 }
 
 export function parseOpenAILiveEvent(text: string): OpenAILiveEvent {
@@ -140,7 +164,8 @@ export function parseOpenAILiveEvent(text: string): OpenAILiveEvent {
   }
   if (payload.type.toLowerCase().includes("transcript")) {
     const item = isRecord(payload.item) ? payload.item : isRecord(payload.delta) ? payload.delta : payload;
-    return {kind: "transcript_metadata", type: payload.type.slice(0, 120), role: metadataRole(item.role ?? payload.role), ...transcriptMetadata(item)};
+    const {transcript: _transcript, ...metadata} = transcriptMetadata(item);
+    return {kind: "transcript_metadata", type: payload.type.slice(0, 120), role: metadataRole(item.role ?? payload.role), ...metadata};
   }
   if (payload.type === "delegation.created") {
     const item = isRecord(payload.item) ? payload.item : undefined;

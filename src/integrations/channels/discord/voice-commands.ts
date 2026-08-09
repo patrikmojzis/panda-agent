@@ -130,6 +130,7 @@ function serializeSession(session: DiscordVoiceSessionRecord): JsonObject {
     healthReasons: [...(session.healthReasons ?? [])],
     healthObservedAt: session.healthObservedAt ?? null,
     healthAgeMs: session.healthObservedAt ? Math.max(0, Date.now() - session.healthObservedAt) : null,
+    diagnostics: session.diagnostics ?? null,
     ...(session.lastError ? {lastError: session.lastError} : {}),
   };
 }

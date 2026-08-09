@@ -1,6 +1,4 @@
 import {randomUUID} from "node:crypto";
-import {DrainLoop} from "../../../lib/drain-loop.js";
-
 import {
   AudioPlayerStatus,
   EndBehaviorType,
@@ -14,13 +12,15 @@ import {
 import {createDecoder, createEncoder, Application, type OpusDecoderHandle, type OpusEncoderHandle} from "libopus-wasm";
 
 import type {RuntimeRequestRepo} from "../../../domain/threads/requests/repo.js";
+import {DrainLoop} from "../../../lib/drain-loop.js";
+import {LiveVoiceSession} from "../../voice/live-voice-session.js";
+import {hasAudiblePcm16, resamplePcm16} from "../../voice/pcm.js";
 import type {DiscordChannelMetadata, DiscordWorkerRestClient} from "./api.js";
 import {OpenAILiveRealtimeVoiceBridge, type RealtimeVoiceBridge, type RealtimeVoiceFailure} from "../../providers/openai-live/bridge.js";
-import {resamplePcm16} from "../../providers/openai-live/peer.js";
 import type {DiscordVoiceStore} from "./voice-postgres.js";
 import {DISCORD_VOICE_MODEL, type DiscordVoiceControlRecord, type DiscordVoiceTurnRecord} from "./voice-types.js";
 import {deriveDiscordVoiceHealth, type DiscordVoiceDiagnosticSnapshot, type DiscordVoiceInfrastructureHealth} from "./voice-health.js";
-import {DiscordVoicePlayback} from "./discord-voice-playback.js";
+import {DISCORD_VOICE_MAX_MISSED_FRAMES, DiscordVoicePlayback} from "./discord-voice-playback.js";
 
 const MAX_UTTERANCE_MS = 60_000;
 const MAX_UTTERANCES_PER_MINUTE = 30;
@@ -30,10 +30,12 @@ const VOICE_SESSION_TTL_MS = 30 * 60_000;
 const PROVIDER_RECONNECT_DELAYS_MS = [0, 500, 1_500] as const;
 const PROVIDER_FAILURE_WINDOW_MS = 5 * 60_000;
 const MAX_PROVIDER_FAILURES_PER_WINDOW = 4;
+const PLAYBACK_FAILURE_WINDOW_MS = 60_000;
+const MAX_PLAYBACK_FAILURES_PER_WINDOW = 4;
 const MAX_PENDING_INPUT_BYTES = 64 * 1024;
 const MAX_PROVIDER_INPUT_BYTES = 24_000 * 2;
 const LIVE_PCM_BYTES_PER_MS = 24_000 * 2 / 1_000;
-const CAPTURE_SILENCE_MS = 1_000;
+const CAPTURE_SILENCE_MS = 500;
 const HEALTH_LOG_INTERVAL_MS = 10_000;
 const HEALTH_PERSIST_INTERVAL_MS = 30_000;
 const VOICE_JOIN_GUIDANCE = "Voice is live. Speak at any time with `panda discord voice send --text <message>`. For longer delegated work, send brief `--mode progress` updates and finish with `--mode final`.";
@@ -133,6 +135,8 @@ interface ActiveVoiceSession {
   providerRecovery?: Promise<void>;
   providerInputPending: DiscordVoicePcmQueue;
   providerFailureTimes: number[];
+  playbackFailureTimes: number[];
+  live: LiveVoiceSession;
   lifecycleEpoch: number;
   expiry?: NodeJS.Timeout;
   healthTimer?: NodeJS.Timeout;
@@ -146,6 +150,7 @@ interface ActiveVoiceSession {
     outputDroppedMs: number;
     playbackUnderruns: number;
     playbackFailed: boolean;
+    playerState: string;
     lastOutputAt?: number;
     captureSpeakerId?: string;
     captureUtteranceId?: string;
@@ -324,7 +329,7 @@ async function openVoiceTransport(input: {channelId: string; guildId: string; ad
   const connection = joinVoiceChannel({...input, selfDeaf: false, selfMute: false});
   try {
     await entersState(connection, VoiceConnectionStatus.Ready, VOICE_READY_TIMEOUT_MS);
-    const player = createAudioPlayer();
+    const player = createAudioPlayer({behaviors: {maxMissedFrames: DISCORD_VOICE_MAX_MISSED_FRAMES}});
     const outputEncoder = await createEncoder({application: Application.Voip, channels: 2, sampleRate: 48_000, frameSize: 960});
     return {connection, player, outputEncoder};
   } catch (error) {
@@ -415,6 +420,8 @@ export class DiscordVoiceSessionManager {
         bridgeGeneration: 0,
         providerInputPending: new DiscordVoicePcmQueue(MAX_PROVIDER_INPUT_BYTES),
         providerFailureTimes: [],
+        playbackFailureTimes: [],
+        live: new LiveVoiceSession(),
         lifecycleEpoch: epoch,
         closing: false,
         health: {
@@ -427,6 +434,7 @@ export class DiscordVoiceSessionManager {
           outputDroppedMs: 0,
           playbackUnderruns: 0,
           playbackFailed: false,
+          playerState: player.state.status,
           captureQueuedMs: 0,
           captureDroppedMs: 0,
           captureDroppedPackets: 0,
@@ -600,9 +608,12 @@ export class DiscordVoiceSessionManager {
       },
       playback: {
         state: session.health.playbackState,
+        playerState: session.health.playerState,
+        phase: session.live.getSnapshot().phase,
         responseEpoch: session.health.responseEpoch,
         queuedMs: session.playback.getSnapshot().queuedMs,
         droppedMs: session.health.outputDroppedMs,
+        suppressedMs: Math.round(session.live.getSnapshot().suppressedOutputBytes / LIVE_PCM_BYTES_PER_MS),
         underruns: session.health.playbackUnderruns,
         lastAudioAt: session.health.lastOutputAt ?? null,
       },
@@ -645,6 +656,7 @@ export class DiscordVoiceSessionManager {
       health: health.state,
       reasons: health.reasons,
       observedAt: now,
+      diagnostics: snapshot,
     });
   }
 
@@ -655,7 +667,6 @@ export class DiscordVoiceSessionManager {
         if (decision !== "self" && decision !== "continued") this.options.log("voice_utterance_dropped", {connectorKey: session.connectorKey, guildId: session.guildId, channelId: session.channelId, speakerId: userId, reason: decision});
         return;
       }
-      session.bridge.interrupt();
       const utteranceId = randomUUID();
       const attribution: VoiceUtteranceAttribution = {
         id: utteranceId,
@@ -691,7 +702,10 @@ export class DiscordVoiceSessionManager {
           const pcm = discordPcmToLive(decoder.decode(packet, {maxFrameSize: 5_760}));
           if (pcm.length === 0) return;
           if (!attributionCommitted) {
+            if (!hasAudiblePcm16(pcm)) return;
             attributionCommitted = true;
+            session.live.beginInput();
+            session.bridge.interrupt();
             // A completed, undelegated predecessor was casual speech. Retire it
             // before admitting the next provider user turn.
             session.utteranceAttributions = session.utteranceAttributions.filter((candidate) => !candidate.turnDone);
@@ -731,6 +745,7 @@ export class DiscordVoiceSessionManager {
         pendingBytes = 0;
         decoder?.free();
         decoder = undefined;
+        if (attributionCommitted) session.live.endInput();
       };
       stream.on("data", onData);
       stream.once("end", release);
@@ -758,6 +773,12 @@ export class DiscordVoiceSessionManager {
     session.player.on("stateChange", (_oldState, newState) => {
       const state = session.playback.getSnapshot().state;
       if (newState.status === AudioPlayerStatus.Idle && (state === "streaming" || state === "preroll")) session.health.playbackUnderruns += 1;
+      session.health.playerState = newState.status;
+      if (newState.status === AudioPlayerStatus.Idle) {
+        session.playback.handlePlayerIdle();
+        session.live.outputIdle();
+      }
+      if (newState.status === AudioPlayerStatus.Playing) session.health.playbackFailed = false;
       this.syncPlaybackHealth(session);
       void this.reportHealth(session, true);
     });
@@ -766,8 +787,18 @@ export class DiscordVoiceSessionManager {
   private handlePlaybackFailure(session: ActiveVoiceSession, error: unknown): void {
     if (session.closing) return;
     session.health.playbackFailed = true;
+    const now = Date.now();
+    session.playbackFailureTimes = session.playbackFailureTimes.filter((failedAt) => failedAt > now - PLAYBACK_FAILURE_WINDOW_MS);
+    session.playbackFailureTimes.push(now);
     this.options.log("voice_playback_failed", {connectorKey: session.connectorKey, guildId: session.guildId, channelId: session.channelId, message: safeFailureMessage(error)});
-    this.stopGuildSafely(session.guildId, "discord_audio_failed");
+    session.playback.reset();
+    session.live.outputIdle();
+    this.syncPlaybackHealth(session);
+    void this.reportHealth(session, true);
+    if (session.playbackFailureTimes.length >= MAX_PLAYBACK_FAILURES_PER_WINDOW) {
+      this.options.log("voice_playback_circuit_open", {connectorKey: session.connectorKey, guildId: session.guildId, channelId: session.channelId, failures: session.playbackFailureTimes.length, windowMs: PLAYBACK_FAILURE_WINDOW_MS});
+      this.stopGuildSafely(session.guildId, "discord_audio_failed");
+    }
   }
 
   private syncPlaybackHealth(session: ActiveVoiceSession): void {
@@ -802,6 +833,7 @@ export class DiscordVoiceSessionManager {
   private clearPlayback(session: ActiveVoiceSession): void {
     if (session.closing) return;
     session.playback.interrupt();
+    session.live.outputIdle();
     this.syncPlaybackHealth(session);
     void this.reportHealth(session, true);
   }
@@ -814,10 +846,16 @@ export class DiscordVoiceSessionManager {
     const generation = ++session.bridgeGeneration;
     const lifecycleEpoch = session.lifecycleEpoch;
     return bridgeFactory({
-      env: this.options.env, voice: this.options.env?.PANDA_DISCORD_VOICE_VOICE ?? "cove",
+      env: this.options.env,
+      voice: this.options.env?.PANDA_DISCORD_VOICE_VOICE ?? "cove",
+      initialItems: session.live.initialItems(),
       onAudio: (audio) => {
         if (!this.isCurrentBridge(session, lifecycleEpoch, generation)) return;
         session.health.lastOutputAt = Date.now();
+        if (!session.live.acceptOutput(audio.length)) {
+          this.syncPlaybackHealth(session);
+          return;
+        }
         session.playback.pushPcm(audio);
         this.syncPlaybackHealth(session);
       },
@@ -826,8 +864,9 @@ export class DiscordVoiceSessionManager {
         if (!this.isCurrentBridge(session, lifecycleEpoch, generation)) return;
         try { this.clearPlayback(session); } catch (error) { this.handlePlaybackFailure(session, error); }
       },
-      onTurnDone: ({role}) => {
+      onTurnDone: ({role, transcript}) => {
         if (!this.isCurrentBridge(session, lifecycleEpoch, generation)) return;
+        session.live.noteTurnDone({role, transcript});
         if (role === "user") {
           const attribution = session.utteranceAttributions.find((candidate) => candidate.bridgeGeneration === generation && !candidate.turnDone);
           if (attribution) {
@@ -836,11 +875,10 @@ export class DiscordVoiceSessionManager {
           }
           return;
         }
-        if (role !== "assistant") return;
-        session.playback.finishResponse();
-        this.syncPlaybackHealth(session);
-        session.health.delegationUpdatedAt = Date.now();
-        void this.reportHealth(session, true);
+        if (role === "assistant") {
+          session.health.delegationUpdatedAt = Date.now();
+          void this.reportHealth(session, true);
+        }
       },
       onFailure: (failure) => {
         if (!this.isCurrentBridge(session, lifecycleEpoch, generation)) return;
@@ -878,6 +916,7 @@ export class DiscordVoiceSessionManager {
     session.health.connected = false;
     session.health.providerReconnectCount += 1;
     session.playback.reset();
+    session.live.outputIdle();
     this.syncPlaybackHealth(session);
     void this.reportHealth(session, true);
     this.recoverProvider(session);
@@ -1057,6 +1096,7 @@ export class DiscordVoiceSessionManager {
 
   private disposeSessionResources(session: ActiveVoiceSession): void {
     session.bridge.close();
+    session.live.close();
     session.providerInputPending.clear();
     for (const stream of session.inputStreams) stream.destroy();
     session.inputStreams.clear();

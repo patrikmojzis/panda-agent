@@ -25,7 +25,23 @@ describe("DiscordVoiceStore", () => {
     await store.completeControl(send.id, {ok: true, state: "sent"});
 
     await store.upsertSession({connectorKey: "bot-1", guildId: "guild-1", channelId: "12345", sessionId: "session-1", agentKey: "panda", voiceSessionId: "22222222-2222-2222-2222-222222222222", state: "connected", model: "gpt-live-1-codex"});
-    await expect(store.listSessions({sessionId: "session-1", activeOnly: true})).resolves.toHaveLength(1);
+    await store.updateSessionHealth({
+      connectorKey: "bot-1", guildId: "guild-1", voiceSessionId: "22222222-2222-2222-2222-222222222222", health: "ready", reasons: [], observedAt: 1,
+      diagnostics: {
+        version: 1, observedAt: 1, state: "ready", reasons: [],
+        identity: {connectorKey: "bot-1", guildId: "guild-1", channelId: "12345", voiceSessionId: "22222222-2222-2222-2222-222222222222"},
+        gateway: null,
+        discordVoice: {state: "ready", stateAt: 1, dave: "unknown"},
+        provider: {generation: 1, state: "connected", sidebandState: "open", sidebandOpenedAt: 1, sidebandAgeMs: 0, lastPingAt: null, lastPongAt: null, pongAgeMs: null, lastRtpAt: 1, rtpAgeMs: 0, reconnectCount: 0, lastCloseCode: null, lastCloseOpenForMs: null, malformedEvents: 0, unknownEvents: 0},
+        playback: {state: "idle", playerState: "idle", phase: "listening", responseEpoch: 1, queuedMs: 0, droppedMs: 0, suppressedMs: 0, underruns: 0, lastAudioAt: 1},
+        capture: {state: "idle", speakerId: null, utteranceId: null, queuedMs: 0, droppedMs: 0, droppedPackets: 0, lastAudioAt: null},
+        delegation: {delegationId: null, voiceTurnId: null, runId: null, deliveryControlId: null, status: null, updatedAt: null},
+        postgres: {listenerStatus: "listening", listenerLastConnectedAt: 1, listenerLastErrorAt: null, poolMax: 2, poolTotal: 1, poolIdle: 1, poolWaiting: 0},
+      },
+    });
+    await expect(store.listSessions({sessionId: "session-1", activeOnly: true})).resolves.toEqual([
+      expect.objectContaining({health: "ready", diagnostics: expect.objectContaining({playback: expect.objectContaining({phase: "listening"})})}),
+    ]);
 
     const {turn} = await store.createOrGetTurn({id: "11111111-1111-1111-1111-111111111111", voiceSessionId: "22222222-2222-2222-2222-222222222222", delegationId: "delegation-1", connectorKey: "bot-1", guildId: "guild-1", channelId: "12345", sessionId: "session-1", agentKey: "panda", sourceUtteranceId: "55555555-5555-4555-8555-555555555555", prompt: "check status"});
     expect(await store.markTurnQueued(turn.id, "33333333-3333-3333-3333-333333333333")).toMatchObject({status: "queued"});
@@ -34,6 +50,11 @@ describe("DiscordVoiceStore", () => {
     expect(await store.listRunningTurns("44444444-4444-4444-4444-444444444444")).toHaveLength(1);
     expect(await store.reserveFinalDelivery(turn.id, "66666666-6666-4666-8666-666666666666", "All healthy.")).toMatchObject({reserved: true, turn: {status: "final_sending"}});
     expect(await store.completeReservedFinal(turn.id, "66666666-6666-4666-8666-666666666666")).toMatchObject({status: "completed", resultText: "All healthy."});
+
+    await store.upsertSession({connectorKey: "bot-1", guildId: "guild-1", channelId: "12345", sessionId: "session-1", agentKey: "panda", voiceSessionId: "77777777-7777-4777-8777-777777777777", state: "connecting", model: "gpt-live-1-codex"});
+    await expect(store.listSessions({sessionId: "session-1", activeOnly: true})).resolves.toEqual([
+      expect.objectContaining({voiceSessionId: "77777777-7777-4777-8777-777777777777", diagnostics: undefined}),
+    ]);
   });
 
   it("does not overwrite a terminal control during timeout/completion races", async () => {

@@ -1,5 +1,7 @@
 import {randomInt} from "node:crypto";
 
+import {resamplePcm16} from "../../voice/pcm.js";
+
 const PROVIDER_RATE = 48_000;
 const RELAY_RATE = 24_000;
 const CHANNELS = 2;
@@ -96,22 +98,6 @@ export class OpenAILiveRtpReorderBuffer<T> {
     }
     return output;
   }
-}
-
-/** Linear PCM16 resampler used only at the Discord/GPT-Live transport boundary. */
-export function resamplePcm16(input: Int16Array, sourceRate: number, targetRate: number): Int16Array {
-  if (input.length === 0) return new Int16Array();
-  if (sourceRate === targetRate) return new Int16Array(input);
-  const length = Math.max(1, Math.round(input.length * targetRate / sourceRate));
-  const output = new Int16Array(length);
-  for (let index = 0; index < length; index += 1) {
-    const position = index * sourceRate / targetRate;
-    const left = Math.min(input.length - 1, Math.floor(position));
-    const right = Math.min(input.length - 1, left + 1);
-    const fraction = position - left;
-    output[index] = Math.round((input[left] ?? 0) * (1 - fraction) + (input[right] ?? 0) * fraction);
-  }
-  return output;
 }
 
 function bufferToSamples(buffer: Buffer): Int16Array {

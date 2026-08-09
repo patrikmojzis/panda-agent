@@ -1,5 +1,6 @@
 import WebSocket, {type RawData} from "ws";
 
+import type {LiveVoiceHistoryItem} from "../../voice/live-voice-session.js";
 import {resolveOpenAILiveAuth, type OpenAILiveAuth} from "./auth.js";
 import {WeriftOpenAILiveAudioPeer, type OpenAILiveAudioPeer} from "./peer.js";
 import {
@@ -59,11 +60,13 @@ export interface RealtimeVoiceBridge {
 export interface RealtimeVoiceBridgeOptions {
   env?: NodeJS.ProcessEnv;
   voice?: string;
+  initialItems?: readonly LiveVoiceHistoryItem[];
+  delegationAckFiller?: boolean;
   connectTimeoutMs?: number;
   onAudio(audio: Buffer): void;
   onDelegation(delegation: RealtimeVoiceDelegation): Promise<void> | void;
   onClearAudio(): void;
-  onTurnDone?(input: {role: "user" | "assistant" | "unknown"}): void;
+  onTurnDone?(input: {role: "user" | "assistant" | "unknown"; transcript?: string}): void;
   onFailure(failure: RealtimeVoiceFailure): void;
   log(event: string, payload: Record<string, unknown>): void;
   fetchImpl?: typeof fetch;
@@ -95,6 +98,14 @@ function sanitizedError(error: unknown): Error {
   const sanitized = new Error(safeErrorMessage(original));
   if ("status" in original && typeof original.status === "number") Object.assign(sanitized, {status: original.status});
   return sanitized;
+}
+
+function optionalBoolean(value: string | undefined): boolean | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  throw new Error("GPT-Live delegation acknowledgement setting must be true or false.");
 }
 
 function classifyRealtimeFailure(error: Error, source: RealtimeVoiceFailureSource): RealtimeVoiceFailure {
@@ -237,6 +248,9 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
     this.ids = createRequestIds();
     const call = await createOpenAILiveCall({
       auth, ids: this.ids, offerSdp, voice: this.options.voice ?? "cove",
+      ...(this.options.initialItems ? {initialItems: this.options.initialItems} : {}),
+      delegationAckFiller: this.options.delegationAckFiller
+        ?? optionalBoolean(this.options.env?.PANDA_DISCORD_VOICE_DELEGATION_ACK_FILLER),
       signal, fetchImpl: this.options.fetchImpl,
     });
     await this.peer.applyAnswer(call.answerSdp);
@@ -351,7 +365,7 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
     if (event.kind === "transcript_metadata") return;
     if (event.kind === "turn_done") {
       this.options.log("gpt_live_turn_done", {role: event.role, transcriptChars: event.transcriptChars, transcriptBytes: event.transcriptBytes, truncated: event.truncated});
-      this.options.onTurnDone?.({role: event.role});
+      this.options.onTurnDone?.({role: event.role, ...(event.transcript === undefined ? {} : {transcript: event.transcript})});
       return;
     }
     if (event.kind === "session_started") {

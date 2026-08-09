@@ -45,6 +45,7 @@ export interface DiscordVoiceSessionRecord {
   health?: DiscordVoiceOperationalState;
   healthReasons: readonly DiscordVoiceHealthReason[];
   healthObservedAt?: number;
+  diagnostics?: JsonObject;
   startedAt: number;
   updatedAt: number;
 }

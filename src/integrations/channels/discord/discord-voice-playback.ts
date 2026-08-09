@@ -3,14 +3,16 @@ import {Readable} from "node:stream";
 import {AudioPlayerStatus, StreamType, createAudioResource, type createAudioPlayer} from "@discordjs/voice";
 import type {OpusEncoderHandle} from "libopus-wasm";
 
-import {resamplePcm16} from "../../providers/openai-live/peer.js";
+import {hasAudiblePcm16, resamplePcm16} from "../../voice/pcm.js";
 
 const LIVE_FRAME_BYTES = 960;
 const DISCORD_FRAME_SAMPLES = 960;
 const DEFAULT_PREROLL_FRAMES = 4;
-const DEFAULT_END_QUIET_MS = 80;
-const DEFAULT_INTERRUPT_QUARANTINE_MS = 150;
+const DEFAULT_END_QUIET_MS = 300;
 const MAX_QUEUED_PACKETS = 250;
+
+/** Bounded 20 ms Discord player misses tolerated while GPT-Live RTP catches up. */
+export const DISCORD_VOICE_MAX_MISSED_FRAMES = 16;
 
 export type DiscordVoicePlaybackState = "idle" | "preroll" | "streaming" | "ending" | "closed";
 
@@ -21,7 +23,7 @@ export interface DiscordVoicePlaybackSnapshot {
   queuedPackets: number;
   queuedMs: number;
   interrupts: number;
-  quarantinedChunks: number;
+  silentLeadingChunks: number;
   overruns: number;
 }
 
@@ -30,10 +32,8 @@ interface DiscordVoicePlaybackOptions {
   encoder: OpusEncoderHandle;
   onError(error: Error): void;
   onStateChange?(): void;
-  now?: () => number;
   prerollFrames?: number;
   endQuietMs?: number;
-  interruptQuarantineMs?: number;
 }
 
 function errorOf(error: unknown): Error { return error instanceof Error ? error : new Error(String(error)); }
@@ -61,9 +61,8 @@ export class DiscordVoicePlayback {
   private sourceEpoch?: number;
   private sealed = false;
   private endTimer?: NodeJS.Timeout;
-  private quarantineUntil = 0;
   private interrupts = 0;
-  private quarantinedChunks = 0;
+  private silentLeadingChunks = 0;
   private overruns = 0;
   private encoderFreed = false;
 
@@ -71,14 +70,14 @@ export class DiscordVoicePlayback {
 
   pushPcm(input: Buffer): void {
     if (this.state === "closed" || input.length === 0) return;
-    const now = this.options.now?.() ?? Date.now();
-    if (now < this.quarantineUntil) {
-      this.quarantinedChunks += 1;
+    if (this.state === "idle" && input.length >= 2 && !hasAudiblePcm16(input)) {
+      this.silentLeadingChunks += 1;
       this.changed();
       return;
     }
     if (this.state === "idle") this.beginResponse();
-    if (this.state === "ending") this.scheduleSeal();
+    if (this.sealed) this.sealed = false;
+    this.scheduleSeal();
     const pcm = this.residual.length > 0 ? Buffer.concat([this.residual, input]) : Buffer.from(input);
     let offset = 0;
     try {
@@ -88,7 +87,7 @@ export class DiscordVoicePlayback {
         if (this.state === "idle") return;
       }
       this.residual = Buffer.from(pcm.subarray(offset));
-      if (this.state === "preroll" && this.packets.length >= (this.options.prerollFrames ?? DEFAULT_PREROLL_FRAMES)) this.startPlayback();
+      if (!this.source && this.packets.length >= (this.options.prerollFrames ?? DEFAULT_PREROLL_FRAMES)) this.startPlayback();
       this.drainPackets();
       this.changed();
     } catch (error) {
@@ -96,18 +95,24 @@ export class DiscordVoicePlayback {
     }
   }
 
-  finishResponse(): void {
-    if (this.state === "idle" || this.state === "closed") return;
-    this.state = "ending";
-    this.scheduleSeal();
-    this.changed();
-  }
-
   interrupt(): void {
     if (this.state === "closed") return;
     this.interrupts += 1;
-    this.quarantineUntil = (this.options.now?.() ?? Date.now()) + (this.options.interruptQuarantineMs ?? DEFAULT_INTERRUPT_QUARANTINE_MS);
     this.resetResponse(true);
+    this.changed();
+  }
+
+  handlePlayerIdle(): void {
+    if (this.state === "closed") return;
+    const source = this.source;
+    this.source = undefined;
+    this.sourceEpoch = undefined;
+    if (source && !source.destroyed) source.destroy();
+    if (this.packets.length > 0) {
+      this.startPlayback();
+      return;
+    }
+    if (this.sealed) this.finishResponseEpoch();
     this.changed();
   }
 
@@ -125,7 +130,7 @@ export class DiscordVoicePlayback {
       queuedPackets: this.packets.length,
       queuedMs: this.packets.length * 20,
       interrupts: this.interrupts,
-      quarantinedChunks: this.quarantinedChunks,
+      silentLeadingChunks: this.silentLeadingChunks,
       overruns: this.overruns,
     };
   }
@@ -145,7 +150,6 @@ export class DiscordVoicePlayback {
     this.responseEpoch += 1;
     this.state = "preroll";
     this.residual = Buffer.alloc(0);
-    this.packets = [];
     this.sealed = false;
   }
 
@@ -163,7 +167,11 @@ export class DiscordVoicePlayback {
   }
 
   private startPlayback(): void {
-    if (this.source || this.state === "idle" || this.state === "closed") return;
+    if (this.source?.destroyed || this.source?.readableEnded) {
+      this.source = undefined;
+      this.sourceEpoch = undefined;
+    }
+    if (this.source || this.packets.length === 0 || this.state === "idle" || this.state === "closed") return;
     const epoch = this.responseEpoch;
     const source = new Readable({
       objectMode: true,
@@ -174,7 +182,10 @@ export class DiscordVoicePlayback {
     this.sourceEpoch = epoch;
     source.once("end", () => this.finishSource(epoch, source));
     source.once("close", () => this.finishSource(epoch, source));
-    source.once("error", (error) => this.options.onError(error));
+    source.once("error", (error) => {
+      this.finishSource(epoch, source);
+      this.options.onError(error);
+    });
     this.options.player.play(createAudioResource(source, {inputType: StreamType.Opus}));
     if (this.state !== "ending") this.state = "streaming";
     this.drainPackets();
@@ -182,11 +193,13 @@ export class DiscordVoicePlayback {
 
   private drainPackets(): void {
     const source = this.source;
-    if (!source || source.destroyed) return;
+    if (!source || source.destroyed || source.readableEnded) {
+      if (source) this.finishSource(this.sourceEpoch ?? -1, source);
+      return;
+    }
     while (this.packets.length > 0) {
       if (!source.push(this.packets.shift()!)) break;
     }
-    if (this.sealed && this.packets.length === 0) source.push(null);
   }
 
   private scheduleSeal(): void {
@@ -209,8 +222,9 @@ export class DiscordVoicePlayback {
       }
       this.sealed = true;
       this.state = "ending";
-      this.startPlayback();
+      if (this.packets.length > 0) this.startPlayback();
       this.drainPackets();
+      if (!this.source && this.packets.length === 0) this.finishResponseEpoch();
       this.changed();
     } catch (error) {
       this.options.onError(errorOf(error));
@@ -221,11 +235,16 @@ export class DiscordVoicePlayback {
     if (this.sourceEpoch !== epoch || this.source !== source) return;
     this.source = undefined;
     this.sourceEpoch = undefined;
+    if (this.packets.length > 0) this.startPlayback();
+    else if (this.sealed) this.finishResponseEpoch();
+    this.changed();
+  }
+
+  private finishResponseEpoch(): void {
     this.residual = Buffer.alloc(0);
     this.packets = [];
     this.sealed = false;
     if (this.state !== "closed") this.state = "idle";
-    this.changed();
   }
 
   private resetResponse(stopPlayer: boolean): void {

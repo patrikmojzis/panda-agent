@@ -43,7 +43,12 @@ describe("DiscordVoiceSessionManager fake end-to-end", () => {
       destroy: vi.fn(),
     };
     const encoder = {encode: vi.fn(() => new Uint8Array([1, 2, 3])), free: vi.fn()};
-    const createInputDecoder = vi.fn(async () => ({decode: vi.fn(() => new Int16Array(1_920)), free: vi.fn()}));
+    let inputDecoderCount = 0;
+    const createInputDecoder = vi.fn(async () => {
+      inputDecoderCount += 1;
+      const sample = inputDecoderCount === 1 ? 0 : 100;
+      return {decode: vi.fn(() => new Int16Array(1_920).fill(sample)), free: vi.fn()};
+    });
     let bridgeOptions!: RealtimeVoiceBridgeOptions;
     const appendDelegationContext = vi.fn(() => true);
     const appendSessionContext = vi.fn(() => true);
@@ -77,11 +82,16 @@ describe("DiscordVoiceSessionManager fake end-to-end", () => {
     await manager.start();
     const joined = await manager.handle({id: "control-1", connectorKey: "bot-1", operation: "join", sessionId: "session-1", agentKey: "panda", channelId: "12345", status: "running", createdAt: 1, updatedAt: 1});
     expect(joined).toMatchObject({state: "connected", guildId: "guild-1", channelId: "12345", model: "gpt-live-1-codex", guidance: expect.stringContaining("discord voice send")});
-    bridgeOptions.onAudio(Buffer.alloc(960));
+    bridgeOptions.onAudio(Buffer.alloc(960, 1));
     expect(encoder.encode).toHaveBeenCalled();
 
     connection.receiver.speaking.emit("start", "zero-audio-user");
     await vi.waitFor(() => expect(inputStreams).toHaveLength(1));
+    await vi.waitFor(() => expect(createInputDecoder).toHaveBeenCalledOnce());
+    inputStreams[0]!.write(Buffer.from([1, 2, 3]));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(bridge.sendAudio).not.toHaveBeenCalled();
+    expect(bridge.interrupt).not.toHaveBeenCalled();
     inputStreams[0]!.destroy();
     await new Promise<void>((resolve) => setImmediate(resolve));
     connection.receiver.speaking.emit("start", "user-1");
@@ -164,7 +174,7 @@ describe("DiscordVoiceSessionManager fake end-to-end", () => {
     await manager.start();
     await manager.handle({id: "control-1", connectorKey: "bot-1", operation: "join", sessionId: "session-1", agentKey: "panda", channelId: "12345", status: "running", createdAt: 1, updatedAt: 1});
 
-    bridgeOptions.onAudio(Buffer.alloc(960 * 4));
+    bridgeOptions.onAudio(Buffer.alloc(960 * 4, 1));
     expect(player.play).toHaveBeenCalledOnce();
     const source = player.play.mock.calls[0]![0].playStream;
     expect(source.readableObjectMode).toBe(true);
@@ -199,7 +209,7 @@ describe("DiscordVoiceSessionManager fake end-to-end", () => {
 
     await manager.start();
     await manager.handle({id: "control-1", connectorKey: "bot-1", operation: "join", sessionId: "session-1", agentKey: "panda", channelId: "12345", status: "running", createdAt: 1, updatedAt: 1});
-    bridgeOptions.onAudio(Buffer.alloc(960 * 4));
+    bridgeOptions.onAudio(Buffer.alloc(960 * 4, 1));
     expect(encoder.encode).toHaveBeenCalledTimes(4);
     await manager.stop();
   });
@@ -294,7 +304,7 @@ describe("DiscordVoiceSessionManager fake end-to-end", () => {
       destroy: vi.fn(),
     };
     const encoder = {encode: vi.fn(() => new Uint8Array([1])), free: vi.fn()};
-    const createInputDecoder = vi.fn(async () => ({decode: vi.fn(() => new Int16Array(1_920)), free: vi.fn()}));
+    const createInputDecoder = vi.fn(async () => ({decode: vi.fn(() => new Int16Array(1_920).fill(100)), free: vi.fn()}));
     const bridgeOptions: RealtimeVoiceBridgeOptions[] = [];
     const bridges: RealtimeVoiceBridge[] = [];
     const createBridge = (options: RealtimeVoiceBridgeOptions): RealtimeVoiceBridge => {
@@ -333,14 +343,14 @@ describe("DiscordVoiceSessionManager fake end-to-end", () => {
     await vi.waitFor(() => expect(inputStreams).toHaveLength(1));
     inputStreams[0]!.write(Buffer.from([1, 2, 3]));
     await vi.waitFor(() => expect(bridges[0]!.sendAudio).toHaveBeenCalledOnce());
-    bridgeOptions[0]!.onTurnDone?.({role: "user"});
+    bridgeOptions[0]!.onTurnDone?.({role: "user", transcript: "check status"});
     await bridgeOptions[0]!.onDelegation({id: "delegation-1", prompt: "check status"});
     bridgeOptions[0]!.onFailure({source: "sideband", code: "transport_failed", retryable: true, message: "closed"});
 
     await vi.waitFor(() => expect(bridges).toHaveLength(2));
     expect(bridges[1]!.connect).toHaveBeenCalledOnce();
     expect(connection.destroy).not.toHaveBeenCalled();
-    expect(bridgeOptions[1]).not.toHaveProperty("initialItems");
+    expect(bridgeOptions[1]).toMatchObject({initialItems: [{role: "user", text: "check status"}]});
     expect(player.stop).toHaveBeenCalledWith(true);
 
     await bridgeOptions[0]!.onDelegation({id: "stale-delegation", prompt: "ignore this"});
@@ -354,9 +364,9 @@ describe("DiscordVoiceSessionManager fake end-to-end", () => {
     expect(enqueueRequest).toHaveBeenCalledOnce();
 
     encoder.encode.mockClear();
-    bridgeOptions[0]!.onAudio(Buffer.alloc(960));
+    bridgeOptions[0]!.onAudio(Buffer.alloc(960, 1));
     expect(encoder.encode).not.toHaveBeenCalled();
-    bridgeOptions[1]!.onAudio(Buffer.alloc(960));
+    bridgeOptions[1]!.onAudio(Buffer.alloc(960, 1));
     expect(encoder.encode).toHaveBeenCalledOnce();
 
     const turnId = store.createOrGetTurn.mock.calls[0]![0].id;
@@ -365,6 +375,8 @@ describe("DiscordVoiceSessionManager fake end-to-end", () => {
 
     inputStreams[0]!.destroy();
     await new Promise<void>((resolve) => setImmediate(resolve));
+    bridgeOptions[1]!.onAudio(Buffer.alloc(960, 1));
+    expect(encoder.encode).toHaveBeenCalledTimes(2);
     connection.receiver.speaking.emit("start", "user-1");
     await vi.waitFor(() => expect(inputStreams).toHaveLength(2));
     inputStreams[1]!.write(Buffer.from([1, 2, 3]));
@@ -430,7 +442,7 @@ describe("DiscordVoiceSessionManager fake end-to-end", () => {
       appendDelegationContext: vi.fn(() => true), appendSessionContext: vi.fn(() => true),
     };
     let resolveDecoder!: (decoder: {decode: ReturnType<typeof vi.fn>; free: ReturnType<typeof vi.fn>}) => void;
-    const decoder = {decode: vi.fn(() => new Int16Array(1_920)), free: vi.fn()};
+    const decoder = {decode: vi.fn(() => new Int16Array(1_920).fill(100)), free: vi.fn()};
     const createInputDecoder = vi.fn(() => new Promise((resolve) => { resolveDecoder = resolve; }));
     const store = {
       markConnectorSessionsDisconnected: vi.fn(async () => 0), failRunningControls: vi.fn(async () => 0),
@@ -456,7 +468,7 @@ describe("DiscordVoiceSessionManager fake end-to-end", () => {
     await vi.waitFor(() => expect(decoder.free).toHaveBeenCalledOnce());
   });
 
-  it("disconnects cleanly on playback failure and at the absolute voice-session TTL", async () => {
+  it("recovers one playback resource failure, opens a repeated-failure circuit, and keeps the absolute TTL", async () => {
     const run = async (failure: "player" | "ttl") => {
       const player = fakePlayer();
       const connection = {receiver: {speaking: new EventEmitter(), subscribe: vi.fn()}, subscribe: vi.fn(), destroy: vi.fn()};
@@ -477,7 +489,12 @@ describe("DiscordVoiceSessionManager fake end-to-end", () => {
       });
       await manager.start();
       await manager.handle({id: "control-1", connectorKey: "bot-1", operation: "join", sessionId: "session-1", agentKey: "panda", channelId: "12345", status: "running", createdAt: 1, updatedAt: 1});
-      if (failure === "player") player.emit("error", new Error("bad Opus frame"));
+      if (failure === "player") {
+        player.emit("error", new Error("bad Opus frame"));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(connection.destroy).not.toHaveBeenCalled();
+        for (let index = 0; index < 3; index += 1) player.emit("error", new Error(`bad Opus frame ${String(index + 2)}`));
+      }
       await vi.waitFor(() => expect(connection.destroy).toHaveBeenCalledOnce());
       return store;
     };

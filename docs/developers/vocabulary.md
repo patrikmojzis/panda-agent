@@ -54,6 +54,16 @@ explicit connector account plus conversation target/binding; do not rely on
 remembered-route or default-account guessing. See
 [Identity](./identity.md), [Email](./email.md), and [WhatsApp](./whatsapp.md).
 
+## Live voice session vs call transport
+
+A **live voice session** owns channel-neutral turn arbitration, barge-in state,
+and bounded transient reconnect history.
+
+A **call transport** owns the connector-specific join lifecycle, participant
+provenance, native codec, and media path. Discord voice is the first call
+transport; it is not the owner of reusable live-turn semantics. See
+[Live Voice](./live-voice.md).
+
 ## Gateway vs control plane
 
 The **gateway** is public ingress for registered external sources and devices. It

@@ -4,7 +4,8 @@ import {describe, expect, it, vi} from "vitest";
 import WebSocket from "ws";
 
 import {OpenAILiveRealtimeVoiceBridge} from "../src/integrations/providers/openai-live/bridge.js";
-import {OpenAILiveRtpReorderBuffer, resamplePcm16} from "../src/integrations/providers/openai-live/peer.js";
+import {OpenAILiveRtpReorderBuffer} from "../src/integrations/providers/openai-live/peer.js";
+import {resamplePcm16} from "../src/integrations/voice/pcm.js";
 
 function deferred(): {promise: Promise<void>; resolve(): void} {
   let resolve!: () => void;
@@ -88,6 +89,31 @@ describe("OpenAI GPT-Live bridge", () => {
     ]);
     expect(bridge.appendSessionContext("proactive update", "speakable")).toBe(true);
     expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({type: "session.context.append", channel: "speakable"});
+    bridge.close();
+  });
+
+  it("forwards completed turn text only through the transient callback without logging it", async () => {
+    const socket = new FakeSocket();
+    const onTurnDone = vi.fn();
+    const log = vi.fn();
+    const bridge = new OpenAILiveRealtimeVoiceBridge({
+      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio: vi.fn(), onFailure: vi.fn(), onTurnDone, log,
+      resolveAuth: () => ({token: "secret", accountId: "acct-1"}),
+      fetchImpl: vi.fn(async () => new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}})),
+      createPeer: vi.fn(async () => ({createOffer: async () => "offer-sdp", applyAnswer: async () => undefined, waitUntilConnected: async () => undefined, sendAudio: vi.fn(), close: vi.fn()})),
+      createSocket: () => {
+        queueMicrotask(() => {
+          socket.readyState = WebSocket.OPEN;
+          socket.emit("open");
+          socket.emit("message", Buffer.from(JSON.stringify({type: "turn.done", turn: {role: "assistant", transcript: "private casual answer"}})), false);
+        });
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    await bridge.connect();
+    expect(onTurnDone).toHaveBeenCalledWith({role: "assistant", transcript: "private casual answer"});
+    expect(JSON.stringify(log.mock.calls)).not.toContain("private casual answer");
     bridge.close();
   });
 

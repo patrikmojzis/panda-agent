@@ -322,6 +322,10 @@ Public surfaces are security-sensitive:
   across redirects.
 - Channel adapters own provider-specific command parsing, media/reaction policy,
   socket/polling lifecycle, and worker lease choreography.
+  Live call adapters share channel-neutral turn arbitration and PCM shaping from
+  `src/integrations/voice`; connector calls, participant provenance, native
+  codecs, and provider wire details remain in their concrete adapters. See
+  [Live Voice](./live-voice.md).
   WhatsApp pairing depends on the small auth-promotion seam it uses: account
   creds plus `promoteTo`. Do not require the full auth-state handle in pairing
   code or tests.

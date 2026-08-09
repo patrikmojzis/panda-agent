@@ -1,7 +1,7 @@
 import {describe, expect, it, vi} from "vitest";
 
 import {resolveOpenAILiveAuth} from "../src/integrations/providers/openai-live/auth.js";
-import {buildHeaders, createOpenAILiveCall, createRequestIds, delegationContextMessages, parseOpenAILiveEvent, sessionContextMessages} from "../src/integrations/providers/openai-live/wire.js";
+import {buildHeaders, buildSession, createOpenAILiveCall, createRequestIds, delegationContextMessages, parseOpenAILiveEvent, sessionContextMessages} from "../src/integrations/providers/openai-live/wire.js";
 
 function jwt(payload: Record<string, unknown>): string {
   return `${Buffer.from("{}").toString("base64url")}.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
@@ -64,10 +64,9 @@ describe("experimental OpenAI GPT-Live wire", () => {
     expect(JSON.parse(sessionContextMessages("done", "speakable")[0]!)).toMatchObject({type: "session.context.append", channel: "speakable"});
   });
 
-  it("does not turn completed transcripts into recoverable executable input", () => {
+  it("retains only bounded completed-turn text for transient reconnect context", () => {
     const parsed = parseOpenAILiveEvent(JSON.stringify({type: "turn.done", turn: {role: "user", transcript: "hello there"}}));
-    expect(parsed).toEqual({kind: "turn_done", role: "user", transcriptChars: 11, transcriptBytes: 11, truncated: false});
-    expect(JSON.stringify(parsed)).not.toContain("hello there");
+    expect(parsed).toEqual({kind: "turn_done", role: "user", transcript: "hello there", transcriptChars: 11, transcriptBytes: 11, truncated: false});
   });
 
   it("reports malformed and transcript events without retaining transcript text", () => {
@@ -80,5 +79,41 @@ describe("experimental OpenAI GPT-Live wire", () => {
     const headers = buildHeaders({token: "private-token", accountId: "acct-1"}, createRequestIds());
     expect(headers.Authorization).toBe("Bearer private-token");
     expect(JSON.stringify(parseOpenAILiveEvent(JSON.stringify({type: "error", error: {status: 401, message: "unauthorized"}})))).not.toContain("private-token");
+  });
+
+  it("seeds a replacement call with bounded role-bearing history and optional delegation acknowledgement", async () => {
+    const fetchImpl = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const session = JSON.parse(String(init?.body)).session;
+      expect(session.initial_items).toEqual([
+        {type: "message", role: "user", content: [{type: "input_text", text: "what is the weather?"}]},
+        {type: "message", role: "assistant", content: [{type: "output_text", text: "It is sunny."}]},
+      ]);
+      expect(session.delegation).toEqual({type: "client", ack_filler: true});
+      return new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}});
+    });
+
+    await createOpenAILiveCall({
+      auth: {token: "secret", accountId: "acct-1"}, ids: createRequestIds(), offerSdp: "offer-sdp", voice: "cove",
+      initialItems: [{role: "user", text: "what is the weather?"}, {role: "assistant", text: "It is sunny."}],
+      delegationAckFiller: true,
+      signal: new AbortController().signal,
+      fetchImpl,
+    });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the most recent reconnect history within the provider payload bound", () => {
+    const history = Array.from({length: 40}, (_, index) => ({
+      role: index % 2 === 0 ? "user" as const : "assistant" as const,
+      text: `${index}:`.padEnd(1_000, "x"),
+    }));
+
+    const items = buildSession("cove", {initialItems: history}).initial_items ?? [];
+    const text = items.flatMap((item) => item.content.map((content) => content.text));
+
+    expect(items.length).toBeLessThanOrEqual(32);
+    expect(text.reduce((total, item) => total + item.length, 0)).toBeLessThanOrEqual(8_192);
+    expect(text.at(-1)).toContain("39:");
+    expect(text.some((item) => item.includes("0:"))).toBe(false);
   });
 });

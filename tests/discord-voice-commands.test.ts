@@ -87,9 +87,9 @@ describe("Discord voice commands", () => {
   });
 
   it("reports only sessions owned by the invoking durable session", async () => {
-    const session = {connectorKey: "bot-1", guildId: "guild-1", channelId: "12345", sessionId: "session-1", agentKey: "panda", voiceSessionId: "11111111-1111-1111-1111-111111111111", state: "connected", model: "gpt-live-1-codex", startedAt: 1, updatedAt: 1};
+    const session = {connectorKey: "bot-1", guildId: "guild-1", channelId: "12345", sessionId: "session-1", agentKey: "panda", voiceSessionId: "11111111-1111-1111-1111-111111111111", state: "connected", model: "gpt-live-1-codex", diagnostics: {version: 1, playback: {phase: "listening"}}, startedAt: 1, updatedAt: 1};
     const result = await createDiscordVoiceStatusCommand(services({sessions: [session]})).execute({command: "discord.voice.status", input: {}, scope});
-    expect(result.output).toMatchObject({enabled: true, count: 1, sessions: [{guildId: "guild-1", channelId: "12345"}]});
+    expect(result.output).toMatchObject({enabled: true, count: 1, sessions: [{guildId: "guild-1", channelId: "12345", diagnostics: {playback: {phase: "listening"}}}]});
   });
 
   it("sends delegated progress through the active voice session and infers the turn from the run", async () => {

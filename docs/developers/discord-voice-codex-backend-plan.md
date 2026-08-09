@@ -47,9 +47,11 @@ On 2026-08-04, the same Codex OAuth and Werift peer reproduced an abnormal
 sideband reset after about 40 seconds through the official Codex app-server.
 That reset is therefore treated as an upstream provider-lifecycle event, not a
 Discord disconnect or a Panda signaling mismatch. Panda rotates only the
-GPT-Live bridge, re-resolves OAuth, and keeps the Discord connection alive
-without seeding casual transcripts into the replacement. The replacement
-discards old transient attribution rather than matching prompt text; old
+GPT-Live bridge, re-resolves OAuth, and keeps the Discord connection alive.
+The original implementation did not seed casual transcripts. The later live
+voice reliability pass supplies a bounded in-memory completed-turn tail as
+role-bearing `initial_items`; it still does not replay transcripts as executable
+input. The replacement discards old transient attribution rather than matching prompt text; old
 durable work remains recorded but cannot be spoken as a delegated result on the
 new provider generation.
 The owning voice session still has one absolute 30-minute lifetime from its

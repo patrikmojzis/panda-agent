@@ -19,7 +19,7 @@ import {
   type DiscordVoiceTurnRecord,
   type DiscordVoiceTurnStatus,
 } from "./voice-types.js";
-import type {DiscordVoiceHealthReason, DiscordVoiceOperationalState} from "./voice-health.js";
+import type {DiscordVoiceDiagnosticSnapshot, DiscordVoiceHealthReason, DiscordVoiceOperationalState} from "./voice-health.js";
 
 export const DISCORD_VOICE_NOTIFICATION_CHANNEL = "runtime_discord_voice_events";
 
@@ -118,6 +118,7 @@ function parseSession(row: Record<string, unknown>): DiscordVoiceSessionRecord {
     health: parseHealthState(row.health_state),
     healthReasons: parseHealthReasons(row.health_reasons),
     healthObservedAt: optionalTimestampMillis(row.health_observed_at, "Discord voice health_observed_at is invalid."),
+    diagnostics: parseJsonObject(row.diagnostics),
     startedAt: requireTimestampMillis(row.started_at, "Discord voice session started_at is invalid."),
     updatedAt: requireTimestampMillis(row.updated_at, "Discord voice session updated_at is invalid."),
   };
@@ -174,7 +175,7 @@ export async function ensureDiscordVoiceSchema(pool: PgQueryable): Promise<void>
       connector_key TEXT NOT NULL, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL,
       session_id TEXT NOT NULL, agent_key TEXT NOT NULL, voice_session_id UUID NOT NULL,
       state TEXT NOT NULL, model TEXT NOT NULL, last_error TEXT,
-      health_state TEXT, health_reasons JSONB NOT NULL DEFAULT '[]'::jsonb, health_observed_at TIMESTAMPTZ,
+      health_state TEXT, health_reasons JSONB NOT NULL DEFAULT '[]'::jsonb, health_observed_at TIMESTAMPTZ, diagnostics JSONB,
       started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (connector_key, guild_id)
     )
@@ -182,6 +183,7 @@ export async function ensureDiscordVoiceSchema(pool: PgQueryable): Promise<void>
   await pool.query(`ALTER TABLE ${tables.sessions} ADD COLUMN IF NOT EXISTS health_state TEXT`);
   await pool.query(`ALTER TABLE ${tables.sessions} ADD COLUMN IF NOT EXISTS health_reasons JSONB NOT NULL DEFAULT '[]'::jsonb`);
   await pool.query(`ALTER TABLE ${tables.sessions} ADD COLUMN IF NOT EXISTS health_observed_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE ${tables.sessions} ADD COLUMN IF NOT EXISTS diagnostics JSONB`);
   await pool.query(`CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_discord_voice_sessions_owner_idx`)} ON ${tables.sessions} (session_id, connector_key, state)`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${tables.turns} (
@@ -306,14 +308,14 @@ export class DiscordVoiceStore {
     const result = await this.pool.query(`
       INSERT INTO ${tables.sessions} (connector_key,guild_id,channel_id,session_id,agent_key,voice_session_id,state,model,last_error,health_state,health_reasons,health_observed_at)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12)
-      ON CONFLICT (connector_key,guild_id) DO UPDATE SET channel_id=EXCLUDED.channel_id,session_id=EXCLUDED.session_id,agent_key=EXCLUDED.agent_key,voice_session_id=EXCLUDED.voice_session_id,state=EXCLUDED.state,model=EXCLUDED.model,last_error=EXCLUDED.last_error,health_state=EXCLUDED.health_state,health_reasons=EXCLUDED.health_reasons,health_observed_at=EXCLUDED.health_observed_at,started_at=CASE WHEN ${tables.sessions}.voice_session_id=EXCLUDED.voice_session_id THEN ${tables.sessions}.started_at ELSE NOW() END,updated_at=NOW()
+      ON CONFLICT (connector_key,guild_id) DO UPDATE SET channel_id=EXCLUDED.channel_id,session_id=EXCLUDED.session_id,agent_key=EXCLUDED.agent_key,voice_session_id=EXCLUDED.voice_session_id,state=EXCLUDED.state,model=EXCLUDED.model,last_error=EXCLUDED.last_error,health_state=EXCLUDED.health_state,health_reasons=EXCLUDED.health_reasons,health_observed_at=EXCLUDED.health_observed_at,diagnostics=NULL,started_at=CASE WHEN ${tables.sessions}.voice_session_id=EXCLUDED.voice_session_id THEN ${tables.sessions}.started_at ELSE NOW() END,updated_at=NOW()
       RETURNING *
     `, [input.connectorKey,input.guildId,input.channelId,input.sessionId,input.agentKey,input.voiceSessionId,input.state,input.model,input.lastError ?? null,input.health ?? null,JSON.stringify(input.healthReasons ?? []),input.healthObservedAt ? new Date(input.healthObservedAt) : null]);
     return parseSession(result.rows[0] as Record<string, unknown>);
   }
 
-  async updateSessionHealth(input: {connectorKey: string; guildId: string; voiceSessionId: string; health: DiscordVoiceOperationalState; reasons: readonly DiscordVoiceHealthReason[]; observedAt: number}): Promise<void> {
-    await this.pool.query(`UPDATE ${tables.sessions} SET health_state=$4,health_reasons=$5::jsonb,health_observed_at=$6,updated_at=NOW() WHERE connector_key=$1 AND guild_id=$2 AND voice_session_id=$3`, [input.connectorKey,input.guildId,input.voiceSessionId,input.health,JSON.stringify(input.reasons.slice(0,6)),new Date(input.observedAt)]);
+  async updateSessionHealth(input: {connectorKey: string; guildId: string; voiceSessionId: string; health: DiscordVoiceOperationalState; reasons: readonly DiscordVoiceHealthReason[]; observedAt: number; diagnostics?: DiscordVoiceDiagnosticSnapshot}): Promise<void> {
+    await this.pool.query(`UPDATE ${tables.sessions} SET health_state=$4,health_reasons=$5::jsonb,health_observed_at=$6,diagnostics=$7::jsonb,updated_at=NOW() WHERE connector_key=$1 AND guild_id=$2 AND voice_session_id=$3`, [input.connectorKey,input.guildId,input.voiceSessionId,input.health,JSON.stringify(input.reasons.slice(0,6)),new Date(input.observedAt),input.diagnostics ? JSON.stringify(input.diagnostics) : null]);
   }
 
   async listSessions(filter: {sessionId?: string; connectorKey?: string; activeOnly?: boolean} = {}): Promise<readonly DiscordVoiceSessionRecord[]> {
