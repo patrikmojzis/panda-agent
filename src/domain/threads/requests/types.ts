@@ -197,8 +197,8 @@ export interface DiscordMessageRequestPayload extends BaseRuntimeRequestPayload 
   deliveryContext?: JsonObject;
 }
 
-export interface DiscordVoiceDelegationRequestPayload extends BaseRuntimeRequestPayload {
-  voiceTurnId: string;
+export interface LiveVoiceDelegationRequestPayload extends BaseRuntimeRequestPayload {
+  liveVoiceTurnId: string;
 }
 
 export interface TuiInputRequestPayload extends BaseRuntimeRequestPayload {
@@ -305,7 +305,7 @@ export interface RuntimeRequestPayloadByKind {
   whatsapp_message: WhatsAppMessageRequestPayload;
   whatsapp_reaction: WhatsAppReactionRequestPayload;
   discord_message: DiscordMessageRequestPayload;
-  discord_voice_delegation: DiscordVoiceDelegationRequestPayload;
+  live_voice_delegation: LiveVoiceDelegationRequestPayload;
   tui_input: TuiInputRequestPayload;
   create_branch_session: CreateBranchSessionRequestPayload;
   create_subagent_session: CreateSubagentSessionRequestPayload;

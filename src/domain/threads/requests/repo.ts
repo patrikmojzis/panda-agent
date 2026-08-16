@@ -34,7 +34,7 @@ const runtimeRequestKinds = [
   "whatsapp_message",
   "whatsapp_reaction",
   "discord_message",
-  "discord_voice_delegation",
+  "live_voice_delegation",
   "tui_input",
   "create_branch_session",
   "create_subagent_session",
@@ -599,10 +599,10 @@ function parsePayload<K extends RuntimeRequestKind>(
       } as RuntimeRequestPayloadByKind[K];
     }
 
-    case "discord_voice_delegation":
+    case "live_voice_delegation":
       return {
         identityId,
-        voiceTurnId: parseRequiredString(payload.voiceTurnId, "Discord voice turn id"),
+        liveVoiceTurnId: parseRequiredString(payload.liveVoiceTurnId, "Live voice turn id"),
       } as RuntimeRequestPayloadByKind[K];
 
     case "tui_input":

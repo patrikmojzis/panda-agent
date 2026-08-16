@@ -75,9 +75,15 @@ describe("RuntimeRequestRepo", () => {
   it("persists the caller's idempotency key when enqueueing", async () => {
     const {pool, repo} = createEnqueueRepo();
 
-    await repo.enqueueRequest({kind: "discord_message", payload: validDiscordPayload()}, {idempotencyKey: "discord_voice_delegation:turn-1"});
+    await repo.enqueueRequest({kind: "discord_message", payload: validDiscordPayload()}, {idempotencyKey: "live_voice_delegation:turn-1"});
 
-    expect(pool.query.mock.calls[0]![1]![3]).toBe("discord_voice_delegation:turn-1");
+    expect(pool.query.mock.calls[0]![1]![3]).toBe("live_voice_delegation:turn-1");
+  });
+
+  it("normalizes generic live voice delegation requests", async () => {
+    const {repo} = createEnqueueRepo();
+    const request = await repo.enqueueRequest({kind: "live_voice_delegation", payload: {liveVoiceTurnId: "11111111-1111-4111-8111-111111111111"}});
+    expect(request).toMatchObject({kind: "live_voice_delegation", payload: {liveVoiceTurnId: "11111111-1111-4111-8111-111111111111"}});
   });
 
   it("uses the notification pool for LISTEN clients", async () => {

@@ -56,8 +56,9 @@ remembered-route or default-account guessing. See
 
 ## Live voice session vs call transport
 
-A **live voice session** owns channel-neutral turn arbitration, barge-in state,
-and bounded transient reconnect history.
+A **live voice session** is the durable, transport-neutral ownership record for
+one live call. A **live voice call** owns its in-process turn arbitration,
+barge-in, provider lifecycle, delivery, and bounded reconnect history.
 
 A **call transport** owns the connector-specific join lifecycle, participant
 provenance, native codec, and media path. Discord voice is the first call

@@ -1892,9 +1892,9 @@ describe("agent command shim", () => {
     directories.push(audioDir);
     await writeFile(path.join(audioDir, "voice.mp3"), Buffer.from("fake-audio-data"));
     let lastVoiceControl: Record<string, unknown> = {};
-    const voiceSession = {connectorKey: "discord-main", guildId: "323456789012345678", channelId: "123456789012345678", sessionId: "session-main", agentKey: "panda", voiceSessionId: "22222222-2222-4222-8222-222222222222", state: "connected" as const, model: "gpt-live-1-codex", startedAt: 1, updatedAt: 1};
-    const voiceTurn = {id: "11111111-1111-4111-8111-111111111111", voiceSessionId: voiceSession.voiceSessionId, delegationId: "delegation-1", connectorKey: "discord-main", guildId: voiceSession.guildId, channelId: voiceSession.channelId, sessionId: "session-main", agentKey: "panda", prompt: "leave voice", status: "running" as const, createdAt: 1, updatedAt: 1};
-    const voiceStore = {
+    const voiceSession = {id: "22222222-2222-4222-8222-222222222222", source: "discord", connectorKey: "discord-main", scopeKey: "323456789012345678", roomKey: "123456789012345678", sessionId: "session-main", agentKey: "panda", provider: "openai-live", state: "connected" as const, model: "gpt-live-1-codex", healthReasons: [], startedAt: 1, updatedAt: 1};
+    const voiceTurn = {id: "11111111-1111-4111-8111-111111111111", liveVoiceSessionId: voiceSession.id, providerDelegationId: "delegation-1", sourceUtteranceId: "33333333-3333-4333-8333-333333333333", sessionId: "session-main", agentKey: "panda", prompt: "leave voice", status: "running" as const, createdAt: 1, updatedAt: 1};
+    const voiceControls = {
       enqueueControl: vi.fn(async (input: Record<string, unknown>) => {
         lastVoiceControl = input;
         return {...input, id: "voice-control-1", status: "pending" as const, createdAt: 1, updatedAt: 1};
@@ -1902,15 +1902,16 @@ describe("agent command shim", () => {
       waitForControl: vi.fn(async () => ({
         ...lastVoiceControl, id: "voice-control-1", status: "completed" as const, createdAt: 1, updatedAt: 2,
         result: lastVoiceControl.operation === "send"
-          ? {ok: true, state: "sent", connectorKey: "discord-main", guildId: voiceSession.guildId, channelId: voiceSession.channelId, sessionId: "session-main", model: "gpt-live-1-codex", mode: lastVoiceControl.mode, delivery: "session"}
-          : {ok: true, state: lastVoiceControl.operation === "leave" ? "disconnected" : "connected", connectorKey: "discord-main", guildId: voiceSession.guildId, channelId: voiceSession.channelId, sessionId: "session-main", model: "gpt-live-1-codex"},
+          ? {ok: true, state: "sent", connectorKey: "discord-main", guildId: voiceSession.scopeKey, channelId: voiceSession.roomKey, sessionId: "session-main", model: "gpt-live-1-codex", mode: lastVoiceControl.mode, delivery: "session"}
+          : {ok: true, state: lastVoiceControl.operation === "leave" ? "disconnected" : "connected", connectorKey: "discord-main", guildId: voiceSession.scopeKey, channelId: voiceSession.roomKey, sessionId: "session-main", model: "gpt-live-1-codex"},
       })),
-      failControl: vi.fn(),
+    };
+    const liveVoice = {
       listSessions: vi.fn(async () => [voiceSession]),
       getTurn: vi.fn(async () => voiceTurn),
       listRunningTurns: vi.fn(async () => []),
     };
-    const voiceServices = {env: {PANDA_DISCORD_VOICE_EXPERIMENTAL: "true"}, connectorAccounts: store, conversations: store, voice: voiceStore};
+    const voiceServices = {env: {PANDA_DISCORD_VOICE_EXPERIMENTAL: "true"}, connectorAccounts: store, conversations: store, voice: {controls: voiceControls, live: liveVoice}};
     const server = await startCommandHttpServer({
       executor: new RuntimeCommandDispatcher({
         commands: [

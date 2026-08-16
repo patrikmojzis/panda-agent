@@ -18,6 +18,7 @@ import {resolveCredentialCrypto, type CredentialCrypto} from "../../../domain/cr
 import {ConversationRepo} from "../../../domain/sessions/conversations/repo.js";
 import {PostgresSessionStore} from "../../../domain/sessions/postgres.js";
 import {RuntimeRequestRepo} from "../../../domain/threads/requests/repo.js";
+import {LiveVoiceRepo} from "../../../domain/live-voice/repo.js";
 import {PostgresThreadRuntimeStore} from "../../../domain/threads/runtime/postgres.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
 import {ensureSchemas} from "../../../lib/postgres-bootstrap.js";
@@ -48,10 +49,10 @@ import {
 } from "./media.js";
 import {createDiscordOutboundAdapter} from "./outbound.js";
 import {sendDiscordStickerAction} from "./stickers.js";
-import {DISCORD_VOICE_NOTIFICATION_CHANNEL, DiscordVoiceStore, parseDiscordVoiceNotification} from "./voice-postgres.js";
+import {DISCORD_VOICE_NOTIFICATION_CHANNEL, DiscordVoiceControlRepo, parseDiscordVoiceNotification} from "./voice-postgres.js";
 import {DiscordVoiceControlWorker, DiscordVoiceSessionManager} from "./voice-manager.js";
 import type {DiscordGatewayAdapterCreator} from "@discordjs/voice";
-import type {DiscordVoiceGatewayHealth} from "./voice-health.js";
+import type {DiscordVoiceGatewayHealth} from "./voice-transport-health.js";
 import {
   startConnectorWorkerNotificationListener,
   startConnectorWorkerRuntime,
@@ -93,7 +94,8 @@ export interface DiscordWorkerStores {
   runtimeRequests: RuntimeRequestRepo;
   sessionStore: PostgresSessionStore;
   threadStore: PostgresThreadRuntimeStore;
-  voice?: DiscordVoiceStore;
+  voiceControls?: DiscordVoiceControlRepo;
+  liveVoice?: LiveVoiceRepo;
 }
 
 export interface DiscordServiceGateway {
@@ -220,7 +222,8 @@ function createDefaultStores(pool: DiscordPostgresPool, dataDir: string): Discor
     runtimeRequests: new RuntimeRequestRepo({pool}),
     sessionStore: new PostgresSessionStore({pool}),
     threadStore: new PostgresThreadRuntimeStore({pool}),
-    voice: new DiscordVoiceStore({pool}),
+    voiceControls: new DiscordVoiceControlRepo({pool}),
+    liveVoice: new LiveVoiceRepo({pool}),
   };
 }
 
@@ -402,7 +405,8 @@ export class DiscordService {
       stores.outboundDeliveries,
       stores.runtimeRequests,
       stores.connectorLeases,
-      ...(stores.voice ? [stores.voice] : []),
+      ...(stores.voiceControls ? [stores.voiceControls] : []),
+      ...(stores.liveVoice ? [stores.liveVoice] : []),
     ]);
   }
 
@@ -529,7 +533,7 @@ export class DiscordService {
       actionWorker: input.actionWorker,
       outboundWorker: input.outboundWorker,
       log: (event, payload) => this.log(event, payload),
-      ...(input.stores.voice ? {additionalChannels: [{
+      ...(input.stores.voiceControls ? {additionalChannels: [{
         channel: DISCORD_VOICE_NOTIFICATION_CHANNEL,
         label: "Discord voice control notification callback",
         parse: parseDiscordVoiceNotification,
@@ -700,7 +704,7 @@ export class DiscordService {
       if (process.env.PANDA_DISCORD_VOICE_EXPERIMENTAL?.trim().toLowerCase() === "true") {
         const gateway = this.gateway;
         if (!gateway.createVoiceAdapterCreator) throw new Error("Discord Gateway voice adapter is unavailable.");
-        if (!stores.voice) throw new Error("Discord voice store is unavailable.");
+        if (!stores.voiceControls || !stores.liveVoice) throw new Error("Discord voice repositories are unavailable.");
         this.voiceWorker = this.dependencies.createVoiceWorker?.({
           botToken,
           connectorKey: account.connectorKey,
@@ -710,14 +714,15 @@ export class DiscordService {
           log: (event, payload) => this.log(event, payload),
         }) ?? new DiscordVoiceControlWorker({
           connectorKey: account.connectorKey,
-          store: stores.voice,
+          controls: stores.voiceControls,
           manager: new DiscordVoiceSessionManager({
             connectorKey: account.connectorKey,
             botToken,
             env: process.env,
             gatewayAdapter: (guildId) => gateway.createVoiceAdapterCreator!(guildId),
             restClient,
-            store: stores.voice,
+            controls: stores.voiceControls,
+            voice: stores.liveVoice,
             requests: stores.runtimeRequests,
             getInfrastructureHealth: () => ({
               ...(gateway.getHealthSnapshot ? {gateway: gateway.getHealthSnapshot()} : {}),

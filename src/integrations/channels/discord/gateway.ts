@@ -11,7 +11,7 @@ import type {
   DiscordMessageCreatePayload,
   DiscordParentChannelResolution,
 } from "./message-ingestion.js";
-import type {DiscordVoiceGatewayHealth} from "./voice-health.js";
+import type {DiscordVoiceGatewayHealth} from "./voice-transport-health.js";
 
 const GUILD_TEXT_CHANNEL = 0;
 const GUILD_NEWS_CHANNEL = 5;

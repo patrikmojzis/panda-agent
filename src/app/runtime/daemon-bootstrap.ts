@@ -42,8 +42,9 @@ import {WHATSAPP_SOURCE} from "../../integrations/channels/whatsapp/config.js";
 import {createDiscordRestClient} from "../../integrations/channels/discord/api.js";
 import {createDiscordStickerCatalogReader} from "../../integrations/channels/discord/stickers.js";
 import {createDiscordGifService} from "../../integrations/channels/discord/gifs.js";
-import {DiscordVoiceStore} from "../../integrations/channels/discord/voice-postgres.js";
-import {createDiscordVoiceRuntimeEventHandler} from "../../integrations/channels/discord/voice-request-handler.js";
+import {DiscordVoiceControlRepo} from "../../integrations/channels/discord/voice-postgres.js";
+import {LiveVoiceRepo} from "../../domain/live-voice/repo.js";
+import {createLiveVoiceRuntimeEventHandler} from "../../integrations/voice/request-handler.js";
 import {resolveAgentMediaDir} from "./data-dir.js";
 import {readPositiveIntegerEnv} from "./database.js";
 import {trimToNull} from "../../lib/strings.js";
@@ -67,7 +68,8 @@ interface DaemonContext {
   scheduledTaskRunner: ScheduledTaskRunner;
   watchRunner: WatchRunner;
   sessionHeartbeatRunner: HeartbeatRunner;
-  discordVoice: DiscordVoiceStore;
+  liveVoice: LiveVoiceRepo;
+  discordVoice: {controls: DiscordVoiceControlRepo; live: LiveVoiceRepo; close(): Promise<void>};
 }
 
 function resolveDaemonCommandCatalog(
@@ -101,7 +103,7 @@ export async function bootstrapDaemonContext(
   let a2aBindings!: A2ASessionBindingRepo;
   let a2aMessagingService!: A2AMessagingService;
   let runtimeForNotifications: RuntimeServices | undefined;
-  let discordVoiceForEvents: DiscordVoiceStore | undefined;
+  let liveVoiceForEvents: LiveVoiceRepo | undefined;
   const notificationPokesInFlight = new Set<string>();
 
   const typingDispatcher = new ChannelTypingDispatcher([
@@ -146,7 +148,7 @@ export async function bootstrapDaemonContext(
       try {
         await voiceEventHandler?.(event);
       } catch (error) {
-        console.error("Discord voice runtime event handling failed", {
+        console.error("Live voice runtime event handling failed", {
           eventType: event.type,
           threadId: event.threadId,
           error: error instanceof Error ? error.message : String(error),
@@ -283,12 +285,19 @@ export async function bootstrapDaemonContext(
       crypto: resolveCredentialCrypto(),
     });
     const discordGifs = createDiscordGifService();
-    const discordVoice = new DiscordVoiceStore({pool: runtime.pool});
-    await discordVoice.ensureSchema();
-    discordVoiceForEvents = discordVoice;
-    voiceEventHandler = createDiscordVoiceRuntimeEventHandler({
-      getVoiceStore: () => discordVoiceForEvents,
+    const discordVoiceControls = new DiscordVoiceControlRepo({pool: runtime.pool});
+    const liveVoice = new LiveVoiceRepo({pool: runtime.pool});
+    await Promise.all([discordVoiceControls.ensureSchema(), liveVoice.ensureSchema()]);
+    await liveVoice.hardCutLegacyDiscordTables();
+    liveVoiceForEvents = liveVoice;
+    voiceEventHandler = createLiveVoiceRuntimeEventHandler({
+      getVoiceRepo: () => liveVoiceForEvents,
     });
+    const discordVoice = {
+      controls: discordVoiceControls,
+      live: liveVoice,
+      async close(): Promise<void> { await Promise.all([discordVoiceControls.close(), liveVoice.close()]); },
+    };
 
     sessionRoutes = new SessionRouteRepo({
       pool: runtime.pool,
@@ -456,6 +465,7 @@ export async function bootstrapDaemonContext(
       scheduledTaskRunner,
       watchRunner,
       sessionHeartbeatRunner,
+      liveVoice,
       discordVoice,
     };
   } catch (error) {

@@ -1,6 +1,13 @@
 import WebSocket, {type RawData} from "ws";
 
 import type {LiveVoiceHistoryItem} from "../../voice/live-voice-session.js";
+import type {
+  LiveVoiceContextChannel,
+  LiveVoiceProviderFailure,
+  LiveVoiceProviderFailureSource,
+  LiveVoiceProviderHealth,
+  LiveVoiceProviderSession,
+} from "../../voice/provider.js";
 import {resolveOpenAILiveAuth, type OpenAILiveAuth} from "./auth.js";
 import {WeriftOpenAILiveAudioPeer, type OpenAILiveAudioPeer} from "./peer.js";
 import {
@@ -10,7 +17,6 @@ import {
   delegationContextMessages,
   parseOpenAILiveEvent,
   sessionContextMessages,
-  type OpenAILiveContextChannel,
   type OpenAILiveRequestIds,
 } from "./wire.js";
 
@@ -22,52 +28,19 @@ const MAX_EARLY_FRAMES = 32;
 const MAX_EARLY_FRAME_BYTES = 1024 * 1024;
 const MAX_SEEN_DELEGATIONS = 2_048;
 const activeOwners = new Set<object>();
-export type RealtimeVoiceFailureSource = "media" | "sideband" | "session";
-export interface RealtimeVoiceFailure {
-  source: RealtimeVoiceFailureSource;
-  code: "auth_unavailable" | "access_denied" | "session_expired" | "capacity" | "transport_failed";
-  retryable: boolean;
-  message: string;
-  status?: number;
-}
 type SidebandTerminal = {kind: "error"; error: Error} | {kind: "close"; code: number; reason: string};
 
-export interface RealtimeVoiceDelegation {id: string; prompt: string}
-export interface RealtimeVoiceBridgeHealth {
-  state: "connecting" | "connected" | "failed" | "closed";
-  sidebandState: "connecting" | "open" | "failed" | "closed";
-  sidebandOpenedAt: number | null;
-  sidebandAgeMs: number | null;
-  lastPingAt: number | null;
-  lastPongAt: number | null;
-  pongAgeMs: number | null;
-  lastCloseCode: number | null;
-  lastCloseOpenForMs: number | null;
-  malformedEvents: number;
-  unknownEvents: number;
-  media?: ReturnType<NonNullable<OpenAILiveAudioPeer["getHealthSnapshot"]>>;
-}
-export interface RealtimeVoiceBridge {
-  connect(signal?: AbortSignal): Promise<void>;
-  sendAudio(pcm24kMono: Buffer): void;
-  interrupt(): void;
-  appendDelegationContext(delegationId: string, text: string, channel: OpenAILiveContextChannel): boolean;
-  appendSessionContext(text: string, channel: OpenAILiveContextChannel): boolean;
-  getHealthSnapshot?(): RealtimeVoiceBridgeHealth;
-  close(): void;
-}
-
-export interface RealtimeVoiceBridgeOptions {
+export interface OpenAILiveRealtimeVoiceBridgeOptions {
   env?: NodeJS.ProcessEnv;
   voice?: string;
   initialItems?: readonly LiveVoiceHistoryItem[];
   delegationAckFiller?: boolean;
   connectTimeoutMs?: number;
   onAudio(audio: Buffer): void;
-  onDelegation(delegation: RealtimeVoiceDelegation): Promise<void> | void;
+  onDelegation(delegation: {id: string; prompt: string}): Promise<void> | void;
   onClearAudio(): void;
   onTurnDone?(input: {role: "user" | "assistant" | "unknown"; transcript?: string}): void;
-  onFailure(failure: RealtimeVoiceFailure): void;
+  onFailure(failure: LiveVoiceProviderFailure): void;
   log(event: string, payload: Record<string, unknown>): void;
   fetchImpl?: typeof fetch;
   resolveAuth?: () => OpenAILiveAuth;
@@ -108,7 +81,7 @@ function optionalBoolean(value: string | undefined): boolean | undefined {
   throw new Error("GPT-Live delegation acknowledgement setting must be true or false.");
 }
 
-function classifyRealtimeFailure(error: Error, source: RealtimeVoiceFailureSource): RealtimeVoiceFailure {
+function classifyRealtimeFailure(error: Error, source: LiveVoiceProviderFailureSource): LiveVoiceProviderFailure {
   const status = "status" in error && typeof error.status === "number" ? error.status : undefined;
   const message = safeErrorMessage(error);
   const normalized = message.toLowerCase();
@@ -167,7 +140,7 @@ function abortFailure(signal: AbortSignal): {promise: Promise<never>; dispose():
   return {promise, dispose: () => signal.removeEventListener("abort", onAbort)};
 }
 
-export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
+export class OpenAILiveRealtimeVoiceBridge implements LiveVoiceProviderSession {
   private readonly abort = new AbortController();
   private peer?: OpenAILiveAudioPeer;
   private socket?: WebSocket;
@@ -184,15 +157,15 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
   private lastCloseOpenForMs?: number;
   private malformedEvents = 0;
   private unknownEvents = 0;
-  private state: RealtimeVoiceBridgeHealth["state"] = "connecting";
-  private sidebandState: RealtimeVoiceBridgeHealth["sidebandState"] = "connecting";
+  private state: LiveVoiceProviderHealth["state"] = "connecting";
+  private sidebandState: LiveVoiceProviderHealth["sidebandState"] = "connecting";
   private startup?: {reject(error: Error): void};
   private closed = false;
   private reserved = false;
   private connectPromise?: Promise<void>;
   private failureEmitted = false;
 
-  constructor(private readonly options: RealtimeVoiceBridgeOptions) {}
+  constructor(private readonly options: OpenAILiveRealtimeVoiceBridgeOptions) {}
 
   connect(signal?: AbortSignal): Promise<void> {
     this.connectPromise ??= this.connectInternal(signal);
@@ -262,7 +235,7 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
 
   sendAudio(audio: Buffer): void { this.peer?.sendAudio(audio); }
 
-  getHealthSnapshot(): RealtimeVoiceBridgeHealth {
+  getHealthSnapshot(): LiveVoiceProviderHealth {
     const now = this.options.now?.() ?? Date.now();
     return {
       state: this.state,
@@ -284,14 +257,14 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
     this.options.onClearAudio();
   }
 
-  appendDelegationContext(delegationId: string, text: string, channel: OpenAILiveContextChannel): boolean {
+  appendDelegationContext(delegationId: string, text: string, channel: LiveVoiceContextChannel): boolean {
     if (!this.activeDelegationIds.has(delegationId) || this.socket?.readyState !== WebSocket.OPEN) return false;
     const sent = this.sendMessages(delegationContextMessages(delegationId, text, channel));
     if (sent && channel === "speakable") this.activeDelegationIds.delete(delegationId);
     return sent;
   }
 
-  appendSessionContext(text: string, channel: OpenAILiveContextChannel): boolean {
+  appendSessionContext(text: string, channel: LiveVoiceContextChannel): boolean {
     return this.sendMessages(sessionContextMessages(text, channel));
   }
 
@@ -401,7 +374,7 @@ export class OpenAILiveRealtimeVoiceBridge implements RealtimeVoiceBridge {
     }
   }
 
-  private fail(error: Error, source: RealtimeVoiceFailureSource): void {
+  private fail(error: Error, source: LiveVoiceProviderFailureSource): void {
     if (this.closed) return;
     this.options.log("gpt_live_failed", {failureSource: source, message: safeErrorMessage(error)});
     this.state = "failed";

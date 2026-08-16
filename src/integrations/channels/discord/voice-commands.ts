@@ -3,12 +3,14 @@ import {createHash} from "node:crypto";
 import {CommandStructuredError, commandScopeDenied} from "../../../domain/commands/errors.js";
 import type {CommandDescriptor, CommandRequest, RegisteredCommand} from "../../../domain/commands/types.js";
 import type {ConnectorAccountListFilter, ConnectorAccountRecord} from "../../../domain/connectors/types.js";
+import type {LiveVoiceRepo} from "../../../domain/live-voice/repo.js";
+import {isActiveLiveVoiceTurn, type LiveVoiceSessionRecord, type LiveVoiceTurnRecord} from "../../../domain/live-voice/types.js";
 import type {ConversationBinding, ConversationBindingListFilter} from "../../../domain/sessions/conversations/types.js";
 import {isJsonObject, type JsonObject} from "../../../lib/json.js";
 import {isRecord} from "../../../lib/records.js";
 import {DISCORD_SOURCE} from "./config.js";
-import type {DiscordVoiceStore} from "./voice-postgres.js";
-import {DISCORD_VOICE_MODEL, type DiscordVoiceControlInput, type DiscordVoiceControlRecord, type DiscordVoiceSendMode, type DiscordVoiceSessionRecord, type DiscordVoiceTurnRecord} from "./voice-types.js";
+import type {DiscordVoiceControlRepo} from "./voice-postgres.js";
+import {DISCORD_VOICE_MODEL, type DiscordVoiceControlInput, type DiscordVoiceControlRecord, type DiscordVoiceSendMode} from "./voice-types.js";
 
 export const DISCORD_VOICE_JOIN_COMMAND_NAME = "discord.voice.join";
 export const DISCORD_VOICE_LEAVE_COMMAND_NAME = "discord.voice.leave";
@@ -26,7 +28,10 @@ export interface DiscordVoiceCommandServices {
   env: NodeJS.ProcessEnv;
   connectorAccounts: {listAccounts(filter?: ConnectorAccountListFilter): Promise<readonly ConnectorAccountRecord[]>};
   conversations: {listConversationBindings(filter: ConversationBindingListFilter): Promise<readonly ConversationBinding[]>};
-  voice: Pick<DiscordVoiceStore, "enqueueControl" | "waitForControl" | "failControl" | "listSessions" | "getTurn" | "listRunningTurns">;
+  voice: {
+    controls: Pick<DiscordVoiceControlRepo, "enqueueControl" | "waitForControl">;
+    live: Pick<LiveVoiceRepo, "listSessions" | "getTurn" | "listRunningTurns">;
+  };
 }
 
 interface VoiceCommandInput {connectorKey?: string; channelId?: string}
@@ -117,13 +122,13 @@ async function resolveBoundConnector(
   return keys[0]!;
 }
 
-function serializeSession(session: DiscordVoiceSessionRecord): JsonObject {
+function serializeSession(session: LiveVoiceSessionRecord): JsonObject {
   return {
     connectorKey: session.connectorKey,
-    guildId: session.guildId,
-    channelId: session.channelId,
+    guildId: session.scopeKey,
+    channelId: session.roomKey,
     sessionId: session.sessionId,
-    voiceSessionId: session.voiceSessionId,
+    voiceSessionId: session.id,
     state: session.state,
     model: session.model,
     health: session.health ?? "connecting",
@@ -157,10 +162,10 @@ async function runJoin(input: VoiceCommandInput, request: CommandRequest, servic
 }
 
 async function enqueueAndWait(input: DiscordVoiceControlInput, services: DiscordVoiceCommandServices, signal?: AbortSignal): Promise<JsonObject> {
-  const control = await services.voice.enqueueControl(input);
+  const control = await services.voice.controls.enqueueControl(input);
   let terminal: DiscordVoiceControlRecord;
   try {
-    terminal = await services.voice.waitForControl(control.id, {timeoutMs: 60_000, signal});
+    terminal = await services.voice.controls.waitForControl(control.id, {timeoutMs: 60_000, signal});
   } catch {
     const aborted = signal?.aborted === true;
     throw new CommandStructuredError("command_failed", aborted ? "Discord voice command was cancelled." : "Timed out waiting for the Discord voice worker.", {
@@ -174,21 +179,17 @@ async function enqueueAndWait(input: DiscordVoiceControlInput, services: Discord
   return terminal.result ?? {ok: true, connectorKey: input.connectorKey, channelId: input.channelId ?? null, sessionId: input.sessionId, model: DISCORD_VOICE_MODEL};
 }
 
-function activeTurn(turn: DiscordVoiceTurnRecord): boolean {
-  return turn.status === "pending" || turn.status === "queued" || turn.status === "running" || turn.status === "awaiting_final";
-}
-
-async function resolveActiveTurn(input: {voiceTurnId?: string}, request: CommandRequest, services: DiscordVoiceCommandServices, session: DiscordVoiceSessionRecord): Promise<DiscordVoiceTurnRecord | undefined> {
+async function resolveActiveTurn(input: {voiceTurnId?: string}, request: CommandRequest, services: DiscordVoiceCommandServices, session: LiveVoiceSessionRecord): Promise<LiveVoiceTurnRecord | undefined> {
   if (input.voiceTurnId) {
-    const turn = await services.voice.getTurn(input.voiceTurnId).catch(() => undefined);
-    if (!turn || !activeTurn(turn) || turn.sessionId !== request.scope.sessionId || turn.agentKey !== request.scope.agentKey || turn.voiceSessionId !== session.voiceSessionId) {
+    const turn = await services.voice.live.getTurn(input.voiceTurnId).catch(() => undefined);
+    if (!turn || !isActiveLiveVoiceTurn(turn) || turn.sessionId !== request.scope.sessionId || turn.agentKey !== request.scope.agentKey || turn.liveVoiceSessionId !== session.id) {
       throw new CommandStructuredError("conflict", "The requested Discord voice turn is not active in this voice session.", {failureCode: "voice_turn_conflict", retryable: false});
     }
     return turn;
   }
   if (!request.scope.runId) return undefined;
-  const turns = (await services.voice.listRunningTurns(request.scope.runId))
-    .filter((candidate) => candidate.sessionId === request.scope.sessionId && candidate.voiceSessionId === session.voiceSessionId);
+  const turns = (await services.voice.live.listRunningTurns(request.scope.runId))
+    .filter((candidate) => candidate.sessionId === request.scope.sessionId && candidate.liveVoiceSessionId === session.id);
   if (turns.length > 1) {
     throw new CommandStructuredError("conflict", "Multiple Discord voice turns belong to this run; pass --turn <voice-turn-id>.", {
       failureCode: "voice_turn_ambiguous", retryable: false, voiceTurnIds: turns.map((candidate) => candidate.id),
@@ -200,8 +201,8 @@ async function resolveActiveTurn(input: {voiceTurnId?: string}, request: Command
 async function runLeave(input: VoiceLeaveCommandInput, request: CommandRequest, services: DiscordVoiceCommandServices): Promise<JsonObject> {
   if (!enabled(services.env)) throw new CommandStructuredError("command_failed", "Discord voice is disabled.", {failureCode: "voice_disabled", retryable: false});
   const connectorKey = await resolveBoundConnector(input, request, services);
-  const owned = await services.voice.listSessions({sessionId: request.scope.sessionId, connectorKey, activeOnly: true});
-  const matching = input.channelId ? owned.filter((session) => session.channelId === input.channelId) : owned;
+  const owned = await services.voice.live.listSessions({sessionId: request.scope.sessionId, source: DISCORD_SOURCE, connectorKey, activeOnly: true});
+  const matching = input.channelId ? owned.filter((session) => session.roomKey === input.channelId) : owned;
   if (input.channelId && matching.length === 0) {
     throw new CommandStructuredError("command_failed", "No owned active Discord voice session matched that channel.", {failureCode: "invalid_channel", retryable: false});
   }
@@ -212,14 +213,14 @@ async function runLeave(input: VoiceLeaveCommandInput, request: CommandRequest, 
   }
   const session = matching[0]!;
   const turn = await resolveActiveTurn(input, request, services, session);
-  return enqueueAndWait(withControlIdempotency({connectorKey, operation: "leave", sessionId: request.scope.sessionId, agentKey: request.scope.agentKey, channelId: session.channelId, ...(turn ? {voiceTurnId: turn.id} : {})}, request), services, request.signal);
+  return enqueueAndWait(withControlIdempotency({connectorKey, operation: "leave", sessionId: request.scope.sessionId, agentKey: request.scope.agentKey, channelId: session.roomKey, ...(turn ? {voiceTurnId: turn.id} : {})}, request), services, request.signal);
 }
 
 async function runSend(input: VoiceSendCommandInput, request: CommandRequest, services: DiscordVoiceCommandServices): Promise<JsonObject> {
   if (!enabled(services.env)) throw new CommandStructuredError("command_failed", "Discord voice is disabled.", {failureCode: "voice_disabled", retryable: false});
   const connectorKey = await resolveBoundConnector(input, request, services);
-  const sessions = (await services.voice.listSessions({sessionId: request.scope.sessionId, connectorKey, activeOnly: true}))
-    .filter((session) => !input.channelId || session.channelId === input.channelId);
+  const sessions = (await services.voice.live.listSessions({sessionId: request.scope.sessionId, source: DISCORD_SOURCE, connectorKey, activeOnly: true}))
+    .filter((session) => !input.channelId || session.roomKey === input.channelId);
   if (sessions.length === 0) {
     throw new CommandStructuredError("command_failed", "No matching Discord voice session is active; join voice first.", {
       failureCode: "voice_session_unavailable", retryable: false,
@@ -234,7 +235,7 @@ async function runSend(input: VoiceSendCommandInput, request: CommandRequest, se
   const turn = await resolveActiveTurn(input, request, services, session);
   return enqueueAndWait(withControlIdempotency({
     connectorKey, operation: "send", sessionId: request.scope.sessionId, agentKey: request.scope.agentKey,
-    channelId: session.channelId, text: input.text, mode: input.mode, ...(turn ? {voiceTurnId: turn.id} : {}),
+    channelId: session.roomKey, text: input.text, mode: input.mode, ...(turn ? {voiceTurnId: turn.id} : {}),
   }, request), services, request.signal);
 }
 
@@ -317,7 +318,7 @@ export function createDiscordVoiceStatusCommand(services: DiscordVoiceCommandSer
   return {descriptor: discordVoiceStatusCommandDescriptor, async execute(request) {
     const input = parseInput(request.input, {channel: "forbidden"});
     const connectorKey = await resolveBoundConnector(input, request, services);
-    const sessions = await services.voice.listSessions({sessionId: request.scope.sessionId, connectorKey, activeOnly: true});
+    const sessions = await services.voice.live.listSessions({sessionId: request.scope.sessionId, source: DISCORD_SOURCE, connectorKey, activeOnly: true});
     return {ok: true, command: DISCORD_VOICE_STATUS_COMMAND_NAME, output: {ok: true, enabled: enabled(services.env), count: sessions.length, sessions: sessions.map(serializeSession)}};
   }};
 }
