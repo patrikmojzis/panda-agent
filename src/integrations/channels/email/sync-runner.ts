@@ -10,10 +10,10 @@ import type {ThreadRuntimeCoordinator} from "../../../domain/threads/runtime/coo
 import type {
     EmailAccountRecord,
     EmailAccountSyncState,
-    EmailAttachmentInput,
     EmailMessageRecord,
     EmailRecipientInput,
-    EmailStore
+    EmailStore,
+    RecordEmailMessageResult,
 } from "../../../domain/email/types.js";
 import {parseEmailAuthenticationHeaders} from "../../../domain/email/auth.js";
 import {
@@ -23,6 +23,11 @@ import {
 import {DrainLoop} from "../../../lib/drain-loop.js";
 import {collapseWhitespace, trimToUndefined} from "../../../lib/strings.js";
 import {renderEmailEventPrompt} from "../../../prompts/runtime/email-events.js";
+import {
+  type EmailAttachmentMediaWriter,
+  prepareInboundEmailAttachments,
+  removeInboundEmailAttachmentFiles,
+} from "./attachment-storage.js";
 
 const DEFAULT_EMAIL_POLL_INTERVAL_MS = 60_000;
 const EMAIL_EVENT_SOURCE = "email_event";
@@ -37,6 +42,7 @@ export interface EmailSyncRunnerOptions {
   credentialResolver: EmailSyncCredentialResolver;
   pollIntervalMs?: number;
   backfillLimit?: number;
+  createMediaWriter: (agentKey: string) => EmailAttachmentMediaWriter;
   syncAccount?: (account: EmailAccountRecord) => Promise<readonly EmailMessageRecord[]>;
   onError?: (error: unknown, accountKey?: string) => Promise<void> | void;
 }
@@ -108,15 +114,6 @@ function recipients(parsed: ParsedMail): readonly EmailRecipientInput[] {
   return [...from, ...replyTo, ...to, ...cc];
 }
 
-function attachments(parsed: ParsedMail): readonly EmailAttachmentInput[] {
-  return parsed.attachments.map((attachment) => ({
-    filename: trimToUndefined(attachment.filename),
-    mimeType: trimToUndefined(attachment.contentType),
-    sizeBytes: attachment.size,
-    contentId: trimToUndefined(attachment.contentId),
-  }));
-}
-
 function headerValueToString(value: unknown): string | undefined {
   if (typeof value === "string") {
     return trimToUndefined(value);
@@ -183,6 +180,7 @@ export class EmailSyncRunner {
   private readonly sessions: Pick<SessionStore, "getMainSession" | "getSession">;
   private readonly coordinator: EmailSyncCoordinator;
   private readonly credentialResolver: EmailSyncCredentialResolver;
+  private readonly createMediaWriter: (agentKey: string) => EmailAttachmentMediaWriter;
   private readonly backfillLimit: number;
   private readonly syncAccountFn?: (account: EmailAccountRecord) => Promise<readonly EmailMessageRecord[]>;
   private readonly onError?: (error: unknown, accountKey?: string) => Promise<void> | void;
@@ -193,6 +191,7 @@ export class EmailSyncRunner {
     this.sessions = options.sessions;
     this.coordinator = options.coordinator;
     this.credentialResolver = options.credentialResolver;
+    this.createMediaWriter = options.createMediaWriter;
     this.backfillLimit = options.backfillLimit ?? DEFAULT_EMAIL_BACKFILL_LIMIT;
     this.syncAccountFn = options.syncAccount;
     this.onError = options.onError;
@@ -263,9 +262,10 @@ export class EmailSyncRunner {
       await client.connect();
       let accountState = account.syncState;
       const visibleMessages: EmailMessageRecord[] = [];
+      const mediaWriter = this.createMediaWriter(account.agentKey);
 
       for (const mailbox of account.mailboxes) {
-        const messages = await this.syncMailbox(client, account, mailbox, accountState);
+        const messages = await this.syncMailbox(client, account, mailbox, accountState, mediaWriter);
         accountState = messages.nextState;
         visibleMessages.push(...messages.visible);
       }
@@ -282,6 +282,7 @@ export class EmailSyncRunner {
     account: EmailAccountRecord,
     mailbox: string,
     accountState: EmailAccountSyncState,
+    mediaWriter: EmailAttachmentMediaWriter,
   ): Promise<{visible: EmailMessageRecord[]; nextState: EmailAccountSyncState}> {
     const lock = await client.getMailboxLock(mailbox, {readOnly: true});
     try {
@@ -349,29 +350,50 @@ export class EmailSyncRunner {
           : message.internalDate instanceof Date
             ? message.internalDate.getTime()
             : new Date(String(message.internalDate ?? Date.now())).getTime();
-        const recorded = await this.store.recordMessage({
-          agentKey: account.agentKey,
+        const preparedAttachments = await prepareInboundEmailAttachments(parsed.attachments, {
           accountKey: account.accountKey,
-          ...(targetSessionId ? {sessionId: targetSessionId} : {}),
-          ...(route ? {routeId: route.id} : {}),
-          direction: "inbound",
-          mailbox,
-          uid,
-          uidValidity,
-          messageIdHeader: parsed.messageId,
-          inReplyTo: parsed.inReplyTo,
-          referencesHeader: referencesHeader(parsed.references),
-          subject: parsed.subject,
-          fromName: from?.name,
-          fromAddress: from?.address,
-          replyToAddress: replyTo?.address,
-          receivedAt,
-          bodyText: bodyText(parsed),
-          authenticationResults: authResultsHeader,
-          ...auth,
-          recipients: recipients(parsed),
-          attachments: attachments(parsed),
+          mediaWriter,
+          persistBytes: initialized,
         });
+        let recorded: RecordEmailMessageResult;
+        try {
+          recorded = await this.store.recordMessage({
+            agentKey: account.agentKey,
+            accountKey: account.accountKey,
+            ...(targetSessionId ? {sessionId: targetSessionId} : {}),
+            ...(route ? {routeId: route.id} : {}),
+            direction: "inbound",
+            mailbox,
+            uid,
+            uidValidity,
+            messageIdHeader: parsed.messageId,
+            inReplyTo: parsed.inReplyTo,
+            referencesHeader: referencesHeader(parsed.references),
+            subject: parsed.subject,
+            fromName: from?.name,
+            fromAddress: from?.address,
+            replyToAddress: replyTo?.address,
+            receivedAt,
+            bodyText: bodyText(parsed),
+            authenticationResults: authResultsHeader,
+            ...auth,
+            recipients: recipients(parsed),
+            attachments: preparedAttachments.attachments,
+          });
+        } catch (error) {
+          try {
+            await removeInboundEmailAttachmentFiles(preparedAttachments.writtenPaths);
+          } catch (cleanupError) {
+            throw new AggregateError(
+              [error, cleanupError],
+              "Email message persistence failed and attachment cleanup did not complete.",
+            );
+          }
+          throw error;
+        }
+        if (!recorded.inserted) {
+          await removeInboundEmailAttachmentFiles(preparedAttachments.writtenPaths);
+        }
         if (initialized && recorded.inserted) {
           visible.push(recorded.message);
         }

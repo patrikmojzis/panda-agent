@@ -954,13 +954,15 @@ describe("ensureReadonlySessionQuerySchema", () => {
     ]);
 
     const attachmentsResult = await pool.query(
-      "SELECT filename, mime_type, size_bytes FROM \"session\".\"email_attachments\"",
+      "SELECT filename, mime_type, size_bytes, storage_status, storage_reason FROM \"session\".\"email_attachments\"",
     );
     expect(attachmentsResult.rows).toEqual([
       {
         filename: "brief.txt",
         mime_type: "text/plain",
         size_bytes: 42,
+        storage_status: "metadata_only",
+        storage_reason: "legacy",
       },
     ]);
   });

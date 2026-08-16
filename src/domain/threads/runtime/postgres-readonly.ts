@@ -739,6 +739,8 @@ export async function ensureReadonlySessionQuerySchema(
       attachment.size_bytes,
       attachment.local_path,
       attachment.content_id,
+      attachment.storage_status,
+      attachment.storage_reason,
       attachment.created_at
     FROM ${emailTables.emailAttachments} AS attachment
     INNER JOIN ${emailTables.emailMessages} AS message ON message.id = attachment.message_id

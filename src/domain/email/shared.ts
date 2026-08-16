@@ -2,6 +2,9 @@ export const EMAIL_SOURCE = "email";
 export const EMAIL_CONNECTOR_KEY = "smtp";
 export const DEFAULT_EMAIL_MAILBOXES = ["INBOX"] as const;
 export const DEFAULT_EMAIL_BACKFILL_LIMIT = 100;
+export const MAX_EMAIL_ATTACHMENTS = 10;
+export const MAX_EMAIL_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+export const MAX_EMAIL_TOTAL_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 export const EMAIL_EXTERNAL_CONTENT_MARKER = "=====EXTERNAL CONTENT=====";
 
 /** Normalizes user-facing email account handles used by tools and CLI. */

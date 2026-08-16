@@ -1758,6 +1758,7 @@ describe("agent command shim", () => {
           mimeType: "application/pdf",
           sizeBytes: 11,
           localPath: emailAttachmentSource,
+          storageStatus: "stored" as const,
           createdAt: 1,
         }]
         : []),
@@ -1768,6 +1769,7 @@ describe("agent command shim", () => {
         mimeType: "application/pdf",
         sizeBytes: 11,
         localPath: emailAttachmentSource,
+        storageStatus: "stored" as const,
         createdAt: 1,
       })),
       assertRecipientsAllowed: vi.fn(async () => {}),
@@ -6662,6 +6664,7 @@ printf '{"ok":true,"output":%s}\\n' "$body"
             filename: "invoice.pdf",
             mimeType: "application/pdf",
             sizeBytes: 11,
+            storageStatus: "stored",
           },
         ],
       },

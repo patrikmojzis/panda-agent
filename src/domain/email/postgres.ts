@@ -12,7 +12,7 @@ import {
     normalizeEmailAddress,
     normalizeEmailMailbox,
 } from "./shared.js";
-import {normalizeEmailMessageInput} from "./message-input.js";
+import {normalizeEmailMessageInput, type NormalizedEmailAttachmentInput} from "./message-input.js";
 import {ensurePostgresEmailSchema} from "./postgres-schema.js";
 import {buildEmailTableNames, type EmailTableNames} from "./postgres-shared.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
@@ -21,8 +21,9 @@ import type {
     EmailAccountSendOwnershipInput,
     EmailAccountSyncState,
     EmailAllowedRecipientRecord,
-    EmailAttachmentInput,
     EmailAttachmentRecord,
+    EmailAttachmentStorageReason,
+    EmailAttachmentStorageStatus,
     EmailAuthSummary,
     EmailAuthVerdict,
     EmailEndpointConfig,
@@ -197,6 +198,32 @@ function parseOptionalNonNegativeInteger(field: string, value: unknown): number 
   return requireNonNegativeInteger(value, `Email ${field}`);
 }
 
+function parseAttachmentStorageStatus(value: unknown): EmailAttachmentStorageStatus {
+  if (value === "stored" || value === "metadata_only") {
+    return value;
+  }
+
+  throw new Error(`Unsupported email attachment storage status ${String(value)}.`);
+}
+
+function parseOptionalAttachmentStorageReason(value: unknown): EmailAttachmentStorageReason | undefined {
+  if (value === null || value === undefined) {
+    return undefined;
+  }
+  if (
+    value === "backfill"
+    || value === "inline"
+    || value === "too_many_attachments"
+    || value === "attachment_too_large"
+    || value === "total_size_limit"
+    || value === "legacy"
+  ) {
+    return value;
+  }
+
+  throw new Error(`Unsupported email attachment storage reason ${String(value)}.`);
+}
+
 function parseAccountRow(row: Record<string, unknown>): EmailAccountRecord {
   return {
     agentKey: requireTrimmed("account agent key", row.agent_key),
@@ -308,6 +335,8 @@ function parseAttachmentRow(row: Record<string, unknown>): EmailAttachmentRecord
     sizeBytes: parseOptionalNonNegativeInteger("attachment size", row.size_bytes),
     localPath: parseOptionalString("attachment local path", row.local_path),
     contentId: parseOptionalString("attachment content id", row.content_id),
+    storageStatus: parseAttachmentStorageStatus(row.storage_status),
+    storageReason: parseOptionalAttachmentStorageReason(row.storage_reason),
     createdAt: requireTimestampMillis(row.created_at, "Email attachment created_at must be a valid timestamp."),
   };
 }
@@ -915,7 +944,7 @@ export class PostgresEmailStore implements EmailStore {
   private async insertAttachments(
     client: PgClientLike,
     messageId: string,
-    attachments: readonly EmailAttachmentInput[],
+    attachments: readonly NormalizedEmailAttachmentInput[],
   ): Promise<void> {
     for (const attachment of attachments) {
       await client.query(`
@@ -926,8 +955,10 @@ export class PostgresEmailStore implements EmailStore {
           mime_type,
           size_bytes,
           local_path,
-          content_id
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+          content_id,
+          storage_status,
+          storage_reason
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
       `, [
         randomUUID(),
         messageId,
@@ -936,6 +967,8 @@ export class PostgresEmailStore implements EmailStore {
         attachment.sizeBytes ?? null,
         trimToUndefined(attachment.localPath) ?? null,
         trimToUndefined(attachment.contentId) ?? null,
+        attachment.storageStatus,
+        attachment.storageReason ?? null,
       ]);
     }
   }

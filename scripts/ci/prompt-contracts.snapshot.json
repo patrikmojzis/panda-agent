@@ -19,10 +19,10 @@
       "sha256": "122894ded7441c87257e7d1aa957a5916cf8c0f3780ffeea7f38946b27d0ae76"
     },
     {
-      "bytes": 18563,
-      "lines": 475,
+      "bytes": 18688,
+      "lines": 478,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "0bef899026c206f2d9f48702c0dba3c0a40bda3b1a2a6d4bdd56a367207b551d"
+      "sha256": "6c569cb1483cad03a4bbdfd3f8aed927469e860de06fa4bb3ccbbad2591a01b4"
     },
     {
       "bytes": 12121,
@@ -349,10 +349,10 @@
       "sha256": "5a17505e5742f50c39e974b64c1eb09891441078706ccd1f5ee651e66ccb9358"
     },
     {
-      "bytes": 1652,
+      "bytes": 1707,
       "lines": 38,
       "path": "src/prompts/runtime/email-events.ts",
-      "sha256": "ac1d9090f3ec3d7c6c28716e72ff5e199a2f84e6ae765ba10776174024ec549b"
+      "sha256": "e209892260a5cdd1058cd1fe86e3ab9d95b009c0f553ba92d7825d0a63cacd33"
     },
     {
       "bytes": 673,

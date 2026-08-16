@@ -10,14 +10,17 @@ import type {
 } from "../../../domain/channels/types.js";
 import type {ChannelOutboundAdapter} from "../../../domain/channels/outbound.js";
 import {isEmailSendPayload, type EmailSendPayload, type EmailSendRecipientPayload} from "../../../domain/email/send-payload.js";
-import {EMAIL_CONNECTOR_KEY, EMAIL_SOURCE, normalizeEmailAddress} from "../../../domain/email/shared.js";
+import {
+  EMAIL_CONNECTOR_KEY,
+  EMAIL_SOURCE,
+  MAX_EMAIL_ATTACHMENT_BYTES,
+  MAX_EMAIL_ATTACHMENTS,
+  MAX_EMAIL_TOTAL_ATTACHMENT_BYTES,
+  normalizeEmailAddress,
+} from "../../../domain/email/shared.js";
 import type {EmailStore} from "../../../domain/email/types.js";
 import {isRecord} from "../../../lib/records.js";
 import {assertPathReadable} from "../../../lib/fs.js";
-
-const MAX_EMAIL_ATTACHMENTS = 10;
-const MAX_EMAIL_ATTACHMENT_BYTES = 20 * 1024 * 1024;
-const MAX_EMAIL_TOTAL_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
 export interface EmailSendMailInput {
   account: {

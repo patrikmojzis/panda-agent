@@ -14,6 +14,8 @@ Inbound body text is wrapped with `=====EXTERNAL CONTENT=====` markers before pe
 Message input normalization, including inbound trust markers, auth summary fallback, recipient normalization, attachment normalization, and thread-key derivation, lives in `src/domain/email/message-input.ts`; `PostgresEmailStore` should persist normalized email records, not own those policies inline.
 V1 does not do live DNS verification or trusted-auth-server matching itself; it parses `Authentication-Results` verdicts into `auth_spf`, `auth_dkim`, and `auth_dmarc`, uses failures to set `auth_summary = 'suspicious'`, and otherwise leaves inbound `auth_summary = 'unknown'`.
 
+Newly observed non-inline attachments are stored under `DATA_DIR/agents/<agent-key>/media/email/<account-key>/<YYYY-MM>/` and fetched explicitly with `panda email attachments fetch`. Initial-backfill attachments and inline/related MIME parts remain metadata-only. Inbound storage uses the same limits as outbound mail: 10 eligible attachments, 20 MB per file, and 50 MB stored per message. Policy-rejected attachments retain a stable storage reason, and stored files are retained indefinitely with their email history.
+
 Outbound mail goes through `runtime.outbound_deliveries` with `channel = "email"` and connector key `smtp`.
 The email adapter verifies the configured from address, enforces recipient allowlists and attachment limits again before SMTP send, and records successful outbound mail into email history.
 Queued email metadata uses the internal `email_send` payload kind and must pass the `EmailSendPayload` contract in `src/domain/email/send-payload.ts`; do not cast outbound metadata directly inside the adapter.

@@ -99,6 +99,8 @@ export async function ensurePostgresEmailSchema(pool: PgQueryable): Promise<void
       size_bytes INTEGER CHECK (size_bytes IS NULL OR size_bytes >= 0),
       local_path TEXT,
       content_id TEXT,
+      storage_status TEXT NOT NULL DEFAULT 'metadata_only',
+      storage_reason TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
@@ -109,6 +111,39 @@ export async function ensurePostgresEmailSchema(pool: PgQueryable): Promise<void
   await pool.query(`
     ALTER TABLE ${tables.emailMessages}
     ADD COLUMN IF NOT EXISTS route_id UUID
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.emailAttachments}
+    ADD COLUMN IF NOT EXISTS storage_status TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.emailAttachments}
+    ADD COLUMN IF NOT EXISTS storage_reason TEXT
+  `);
+  await pool.query(`
+    UPDATE ${tables.emailAttachments}
+    SET storage_status = CASE
+      WHEN local_path IS NOT NULL THEN 'stored'
+      ELSE 'metadata_only'
+    END
+    WHERE storage_status IS NULL
+  `);
+  await pool.query(`
+    UPDATE ${tables.emailAttachments}
+    SET storage_reason = CASE
+      WHEN storage_status = 'stored' THEN NULL
+      ELSE COALESCE(storage_reason, 'legacy')
+    END
+    WHERE (storage_status = 'stored' AND storage_reason IS NOT NULL)
+      OR (storage_status = 'metadata_only' AND storage_reason IS NULL)
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.emailAttachments}
+    ALTER COLUMN storage_status SET DEFAULT 'metadata_only'
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.emailAttachments}
+    ALTER COLUMN storage_status SET NOT NULL
   `);
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_email_accounts_key_idx`)}
@@ -237,5 +272,33 @@ export async function ensurePostgresEmailSchema(pool: PgQueryable): Promise<void
     FOREIGN KEY (route_id)
     REFERENCES ${tables.emailRoutes}(id)
     ON DELETE SET NULL
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.emailAttachments}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_email_attachments_storage_status_check`)}
+    CHECK (storage_status IN ('stored', 'metadata_only'))
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.emailAttachments}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_email_attachments_storage_reason_check`)}
+    CHECK (
+      storage_reason IS NULL
+      OR storage_reason IN (
+        'backfill',
+        'inline',
+        'too_many_attachments',
+        'attachment_too_large',
+        'total_size_limit',
+        'legacy'
+      )
+    )
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.emailAttachments}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_email_attachments_storage_shape_check`)}
+    CHECK (
+      (storage_status = 'stored' AND local_path IS NOT NULL AND storage_reason IS NULL)
+      OR (storage_status = 'metadata_only' AND local_path IS NULL AND storage_reason IS NOT NULL)
+    )
   `);
 }

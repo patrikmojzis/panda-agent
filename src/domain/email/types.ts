@@ -99,6 +99,14 @@ export type EmailMessageDirection = "inbound" | "outbound";
 export type EmailRecipientRole = "from" | "reply_to" | "to" | "cc";
 export type EmailAuthVerdict = "pass" | "fail" | "softfail" | "neutral" | "none" | "temperror" | "permerror" | "unknown";
 export type EmailAuthSummary = "trusted" | "suspicious" | "unknown";
+export type EmailAttachmentStorageStatus = "stored" | "metadata_only";
+export type EmailAttachmentStorageReason =
+  | "backfill"
+  | "inline"
+  | "too_many_attachments"
+  | "attachment_too_large"
+  | "total_size_limit"
+  | "legacy";
 
 export interface EmailRecipientInput {
   role: EmailRecipientRole;
@@ -112,6 +120,8 @@ export interface EmailAttachmentInput {
   sizeBytes?: number;
   localPath?: string;
   contentId?: string;
+  storageStatus?: EmailAttachmentStorageStatus;
+  storageReason?: EmailAttachmentStorageReason;
 }
 
 export interface EmailMessageRecord {
@@ -198,6 +208,8 @@ export interface EmailAttachmentRecord {
   sizeBytes?: number;
   localPath?: string;
   contentId?: string;
+  storageStatus: EmailAttachmentStorageStatus;
+  storageReason?: EmailAttachmentStorageReason;
   createdAt: number;
 }
 

@@ -9,6 +9,7 @@ import {
 } from "./shared.js";
 import type {
     EmailAttachmentInput,
+    EmailAttachmentStorageStatus,
     EmailAuthSummary,
     EmailRecipientInput,
     RecordEmailMessageInput,
@@ -16,7 +17,7 @@ import type {
 
 export interface NormalizedEmailMessageInput {
   recipients: readonly EmailRecipientInput[];
-  attachments: readonly EmailAttachmentInput[];
+  attachments: readonly NormalizedEmailAttachmentInput[];
   bodyText?: string;
   bodyExcerpt?: string;
   authSummary: EmailAuthSummary;
@@ -24,6 +25,10 @@ export interface NormalizedEmailMessageInput {
   replyToAddress?: string;
   threadKey: string;
 }
+
+export type NormalizedEmailAttachmentInput = Omit<EmailAttachmentInput, "storageStatus"> & {
+  storageStatus: EmailAttachmentStorageStatus;
+};
 
 function normalizeBodyExcerpt(bodyText: string | undefined): string | undefined {
   const collapsed = collapseWhitespace(bodyText ?? "");
@@ -75,14 +80,27 @@ function normalizeRecipients(recipients: readonly EmailRecipientInput[] | undefi
   }));
 }
 
-function normalizeAttachments(attachments: readonly EmailAttachmentInput[] | undefined): readonly EmailAttachmentInput[] {
-  return (attachments ?? []).map((attachment) => ({
-    filename: trimToUndefined(attachment.filename),
-    mimeType: trimToUndefined(attachment.mimeType),
-    sizeBytes: attachment.sizeBytes === undefined ? undefined : Math.max(0, Math.floor(attachment.sizeBytes)),
-    localPath: trimToUndefined(attachment.localPath),
-    contentId: trimToUndefined(attachment.contentId),
-  }));
+function normalizeAttachments(attachments: readonly EmailAttachmentInput[] | undefined): readonly NormalizedEmailAttachmentInput[] {
+  return (attachments ?? []).map((attachment) => {
+    const localPath = trimToUndefined(attachment.localPath);
+    const storageStatus = attachment.storageStatus ?? (localPath ? "stored" : "metadata_only");
+    if (storageStatus === "stored" && !localPath) {
+      throw new Error("Stored email attachments require a local path.");
+    }
+    if (storageStatus === "metadata_only" && localPath) {
+      throw new Error("Metadata-only email attachments must not include a local path.");
+    }
+
+    return {
+      filename: trimToUndefined(attachment.filename),
+      mimeType: trimToUndefined(attachment.mimeType),
+      sizeBytes: attachment.sizeBytes === undefined ? undefined : Math.max(0, Math.floor(attachment.sizeBytes)),
+      localPath,
+      contentId: trimToUndefined(attachment.contentId),
+      storageStatus,
+      storageReason: storageStatus === "stored" ? undefined : attachment.storageReason ?? "legacy",
+    };
+  });
 }
 
 /** Normalizes email message input before persistence, including inbound trust markers. */

@@ -229,6 +229,8 @@ describe("PostgresEmailStore", () => {
       expect.objectContaining({
         filename: "brief.txt",
         localPath: "/tmp/brief.txt",
+        storageStatus: "stored",
+        storageReason: undefined,
       }),
     ]);
     await expect(email.getMessageAttachment(storedAttachments[0]!.id)).resolves.toMatchObject({

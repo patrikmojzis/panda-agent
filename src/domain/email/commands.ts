@@ -17,7 +17,14 @@ import type {
   CommandSuccess,
   RegisteredCommand,
 } from "../commands/types.js";
-import {EMAIL_CONNECTOR_KEY, EMAIL_SOURCE, normalizeEmailAddress} from "./shared.js";
+import {
+  EMAIL_CONNECTOR_KEY,
+  EMAIL_SOURCE,
+  MAX_EMAIL_ATTACHMENT_BYTES,
+  MAX_EMAIL_ATTACHMENTS,
+  MAX_EMAIL_TOTAL_ATTACHMENT_BYTES,
+  normalizeEmailAddress,
+} from "./shared.js";
 import {emailSendPayloadToJsonObject, type EmailSendPayload, type EmailSendRecipientPayload} from "./send-payload.js";
 import type {
   EmailAccountRecord,
@@ -36,9 +43,6 @@ export const EMAIL_SEARCH_COMMAND_NAME = "email.search";
 export const EMAIL_SEND_COMMAND_NAME = "email.send";
 export const EMAIL_ATTACHMENTS_FETCH_COMMAND_NAME = "email.attachments.fetch";
 
-const MAX_EMAIL_ATTACHMENTS = 10;
-const MAX_EMAIL_ATTACHMENT_BYTES = 20 * 1024 * 1024;
-const MAX_EMAIL_TOTAL_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 const MAX_EMAIL_MESSAGE_LIMIT = 50;
 const MAX_RECIPIENTS = 20;
 
@@ -493,6 +497,8 @@ function serializeAttachment(attachment: EmailAttachmentRecord): JsonObject {
     ...(attachment.mimeType ? {mimeType: attachment.mimeType} : {}),
     ...(attachment.sizeBytes !== undefined ? {sizeBytes: attachment.sizeBytes} : {}),
     ...(attachment.contentId ? {contentId: attachment.contentId} : {}),
+    storageStatus: attachment.storageStatus,
+    ...(attachment.storageReason ? {storageReason: attachment.storageReason} : {}),
   };
 }
 
@@ -892,7 +898,8 @@ export async function executeEmailAttachmentFetchCommand(
     );
   }
   if (!attachment.localPath) {
-    throw new Error(`Email attachment ${attachment.id} has no stored local file path.`);
+    const reason = attachment.storageReason ? ` (${attachment.storageReason})` : "";
+    throw new Error(`Email attachment ${attachment.id} is metadata-only${reason} and has no stored local file.`);
   }
 
   const sourceStat = await stat(attachment.localPath);

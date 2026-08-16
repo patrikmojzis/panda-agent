@@ -72,6 +72,12 @@ Those views are scoped to the current session. A routed branch sees its routed e
 
 Fresh sends use the current session's account ownership. An account-level route moves fresh-send ownership to that routed session; a mailbox-only route does not. Replies are allowed only for messages visible to the current session.
 
+## Attachments
+
+Panda stores non-inline attachments for new mail after the account's initial mailbox sync. Initial-backfill attachments, embedded inline images, and policy-rejected files remain visible as metadata but cannot be fetched. `panda email read <email-id>` reports `storageStatus` and, when unavailable, `storageReason` for every attachment.
+
+Stored inbound attachments are limited to 10 files per message, 20 MB per file, and 50 MB total. Files live under the agent's media directory and are retained indefinitely. Use `panda email attachments fetch <attachment-id> --save <path>` to copy a stored attachment into the current workspace.
+
 ## Authentication Warnings
 
 Inbound email is external content. Panda stores provider-derived `auth_spf`, `auth_dkim`, `auth_dmarc`, and `auth_summary` fields.

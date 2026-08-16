@@ -344,6 +344,7 @@ describe("email.attachments.fetch command", () => {
       mimeType: "application/pdf",
       sizeBytes: 11,
       localPath: sourcePath,
+      storageStatus: "stored",
       createdAt: 1,
     };
     const store: EmailReadCommandStore = {
@@ -395,6 +396,7 @@ describe("email.attachments.fetch command", () => {
         filename: "invoice.pdf",
         mimeType: "application/pdf",
         messageId: "message-1",
+        storageStatus: "stored",
       },
       saved: {
         path: resolvedSavedPath,
@@ -410,5 +412,49 @@ describe("email.attachments.fetch command", () => {
       mimeType: "application/pdf",
       bytes: 11,
     });
+  });
+
+  it("explains why a metadata-only attachment cannot be fetched", async () => {
+    const message: EmailMessageRecord = {
+      id: "message-1",
+      agentKey: "panda",
+      accountKey: "work",
+      sessionId: "session-a",
+      direction: "inbound",
+      threadKey: "thread-1",
+      authSummary: "unknown",
+      hasAttachments: true,
+      createdAt: 1,
+    };
+    const attachment: EmailAttachmentRecord = {
+      id: "attachment-1",
+      messageId: message.id,
+      filename: "old.pdf",
+      mimeType: "application/pdf",
+      sizeBytes: 11,
+      storageStatus: "metadata_only",
+      storageReason: "backfill",
+      createdAt: 1,
+    };
+    const store: EmailReadCommandStore = {
+      getMessage: vi.fn(async () => message),
+      assertMessageOwnedBySession: vi.fn(async () => {}),
+      getMessageAttachment: vi.fn(async () => attachment),
+      listMessageAttachments: vi.fn(async () => [attachment]),
+      listMessageRecipients: vi.fn(async (): Promise<readonly EmailMessageRecipientRecord[]> => []),
+      listMessagesForSession: vi.fn(async () => [message]),
+      searchMessagesForSession: vi.fn(async () => [message]),
+    };
+    const command = createEmailAttachmentsFetchCommand({store}, new RuntimeCommandFileResolver());
+
+    await expect(command.execute({
+      command: EMAIL_ATTACHMENTS_FETCH_COMMAND_NAME,
+      input: {attachmentId: attachment.id},
+      scope: {
+        agentKey: "panda",
+        sessionId: "session-a",
+        threadId: "thread-a",
+      },
+    })).rejects.toThrow("metadata-only (backfill)");
   });
 });

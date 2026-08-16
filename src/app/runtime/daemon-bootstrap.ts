@@ -426,6 +426,9 @@ export async function bootstrapDaemonContext(
       sessions: runtime.sessionStore,
       coordinator: runtime.coordinator,
       credentialResolver: runtime.credentialResolver,
+      createMediaWriter: (agentKey) => new FileSystemMediaStore({
+        rootDir: resolveAgentMediaDir(agentKey),
+      }),
       onError: (error, accountKey) => {
         console.error("Email sync failed", {
           accountKey: accountKey ?? null,
