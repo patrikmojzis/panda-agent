@@ -1,9 +1,6 @@
 import { create } from "zustand"
 
-import type {
-  GatewayEventTypeRow,
-  GatewaySourceRow,
-} from "@/lib/api"
+import type { GatewayEventTypeRow, GatewaySourceRow } from "@/lib/api"
 import type {
   FormCreateSheetState,
   FormUpdateSheetState,
@@ -28,6 +25,20 @@ export type GatewayEventTypeFormValues = {
   type: string
   delivery: string
 }
+
+export type IssuedGatewayCredential =
+  | {
+      kind: "source"
+      sourceId: string
+      clientId: string
+      clientSecret: string
+    }
+  | {
+      kind: "device"
+      sourceId: string
+      deviceId: string
+      token: string
+    }
 
 function createGatewayFormSheetStore<TForm>() {
   return create<FormCreateSheetState<TForm, AgentSheetContext>>((set) => ({
@@ -56,26 +67,25 @@ function createGatewayUpdateFormSheetStore<TEntity, TForm>() {
   )
 }
 
-export const useGatewaySourceSheet =
-  createGatewayUpdateFormSheetStore<GatewaySourceRow, GatewaySourceFormValues>()
+export const useGatewaySourceSheet = createGatewayUpdateFormSheetStore<
+  GatewaySourceRow,
+  GatewaySourceFormValues
+>()
 export const useGatewayDeviceSheet =
   createGatewayFormSheetStore<GatewayDeviceFormValues>()
-export const useGatewayEventTypeSheet =
-  createGatewayUpdateFormSheetStore<
-    GatewayEventTypeRow,
-    GatewayEventTypeFormValues
-  >()
+export const useGatewayEventTypeSheet = createGatewayUpdateFormSheetStore<
+  GatewayEventTypeRow,
+  GatewayEventTypeFormValues
+>()
 
-export const useGatewayOneTimeSecretStore = create<{
-  latestDeviceToken: string | null
-  latestSourceSecret: string | null
-  setLatestDeviceToken: (token: string | null) => void
-  setLatestSourceSecret: (secret: string | null) => void
+export const useIssuedGatewayCredentialStore = create<{
+  issuedCredential: IssuedGatewayCredential | null
+  clearIssuedCredential: () => void
+  setIssuedCredential: (credential: IssuedGatewayCredential) => void
 }>((set) => ({
-  latestDeviceToken: null,
-  latestSourceSecret: null,
-  setLatestDeviceToken: (latestDeviceToken) => set({ latestDeviceToken }),
-  setLatestSourceSecret: (latestSourceSecret) => set({ latestSourceSecret }),
+  issuedCredential: null,
+  clearIssuedCredential: () => set({ issuedCredential: null }),
+  setIssuedCredential: (issuedCredential) => set({ issuedCredential }),
 }))
 
 export const gatewaySourceDefaults: GatewaySourceFormValues = {

@@ -27,12 +27,13 @@ import {
   gatewaySourceToFormValues,
   useGatewayDeviceSheet,
   useGatewayEventTypeSheet,
-  useGatewayOneTimeSecretStore,
+  useIssuedGatewayCredentialStore,
   useGatewaySourceSheet,
   type GatewayDeviceFormValues,
   type GatewayEventTypeFormValues,
   type GatewaySourceFormValues,
 } from "@/features/control/gateway/gateway-form-model"
+import { GatewayIssuedCredentialDialog } from "@/features/control/gateway/gateway-credentials"
 import { controlApi } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
 
@@ -93,6 +94,7 @@ export function GatewayFormSheets() {
       <GatewaySourceSheet />
       <GatewayDeviceSheet />
       <GatewayEventTypeSheet />
+      <GatewayIssuedCredentialDialog />
     </>
   )
 }
@@ -101,8 +103,8 @@ function GatewaySourceSheet() {
   const auth = useAuth()
   const { context, defaultData, entity, isOpen, setOpen } =
     useGatewaySourceSheet()
-  const setLatestSourceSecret = useGatewayOneTimeSecretStore(
-    (state) => state.setLatestSourceSecret
+  const setIssuedCredential = useIssuedGatewayCredentialStore(
+    (state) => state.setIssuedCredential
   )
   const invalidate = useInvalidateAgent(context?.agentKey)
   const resetValues = React.useMemo(
@@ -116,7 +118,11 @@ function GatewaySourceSheet() {
       ),
     [context?.sessionId, defaultData, entity]
   )
-  const sessionPicker = useSessionOptions(context, isOpen, resetValues.sessionId)
+  const sessionPicker = useSessionOptions(
+    context,
+    isOpen,
+    resetValues.sessionId
+  )
   const mutation = useMutation({
     mutationFn: (values: GatewaySourceFormValues) => {
       const current = requireContext(context)
@@ -129,11 +135,21 @@ function GatewaySourceSheet() {
     onError: formError,
     onSuccess: async (result) => {
       toast.success("Gateway source created")
-      setLatestSourceSecret(result.clientSecret)
+      setIssuedCredential({
+        kind: "source",
+        sourceId: result.source.sourceId,
+        clientId: result.source.clientId,
+        clientSecret: result.clientSecret,
+      })
       setOpen(false)
       await invalidate(agentCacheKey(context?.agentKey))
     },
   })
+  const createdSourceCredential = mutation.data
+  const resetSourceMutation = mutation.reset
+  React.useEffect(() => {
+    if (createdSourceCredential) resetSourceMutation()
+  }, [createdSourceCredential, resetSourceMutation])
   const form = useControlForm({
     defaultValues: resetValues,
     validators: { onSubmit: gatewaySourceSchema },
@@ -158,9 +174,7 @@ function GatewaySourceSheet() {
       title="Gateway Source"
     >
       <form.AppField name="sourceId">
-        {(field) => (
-          <field.TextField label="Source id" autoFocus required />
-        )}
+        {(field) => <field.TextField label="Source id" autoFocus required />}
       </form.AppField>
       <form.AppField name="name">
         {(field) => <field.TextField label="Name" />}
@@ -174,7 +188,9 @@ function GatewaySourceSheet() {
             emptyLabel="No dedicated session"
             options={sessionPicker.options}
             placeholder={
-              sessionPicker.isLoading ? "Loading sessions" : "No dedicated session"
+              sessionPicker.isLoading
+                ? "Loading sessions"
+                : "No dedicated session"
             }
           />
         )}
@@ -186,8 +202,8 @@ function GatewaySourceSheet() {
 function GatewayDeviceSheet() {
   const auth = useAuth()
   const { context, defaultData, isOpen, setOpen } = useGatewayDeviceSheet()
-  const setLatestDeviceToken = useGatewayOneTimeSecretStore(
-    (state) => state.setLatestDeviceToken
+  const setIssuedCredential = useIssuedGatewayCredentialStore(
+    (state) => state.setIssuedCredential
   )
   const invalidate = useInvalidateAgent(context?.agentKey)
   const resetValues = React.useMemo(
@@ -216,11 +232,21 @@ function GatewayDeviceSheet() {
     onError: formError,
     onSuccess: async (result) => {
       toast.success("Gateway device registered")
-      setLatestDeviceToken(result.token)
+      setIssuedCredential({
+        kind: "device",
+        sourceId: result.device.sourceId,
+        deviceId: result.device.deviceId,
+        token: result.token,
+      })
       setOpen(false)
       await invalidate(agentCacheKey(context?.agentKey))
     },
   })
+  const createdDeviceCredential = mutation.data
+  const resetDeviceMutation = mutation.reset
+  React.useEffect(() => {
+    if (createdDeviceCredential) resetDeviceMutation()
+  }, [createdDeviceCredential, resetDeviceMutation])
   const form = useControlForm({
     defaultValues: resetValues,
     validators: { onSubmit: gatewayDeviceSchema },

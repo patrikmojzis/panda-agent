@@ -46,10 +46,11 @@ import {
   TruncatedText,
 } from "@/features/control/control-display"
 import { formatBytes } from "@/features/control/formatting"
+import { GatewayCredentialField } from "@/features/control/gateway/gateway-credentials"
 import {
   useGatewayDeviceSheet,
   useGatewayEventTypeSheet,
-  useGatewayOneTimeSecretStore,
+  useIssuedGatewayCredentialStore,
   useGatewaySourceSheet,
   gatewayEventTypeToFormValues,
 } from "@/features/control/gateway/gateway-form-model"
@@ -82,14 +83,8 @@ export function GatewayPanel({
   const gatewaySourceSheet = useGatewaySourceSheet()
   const gatewayDeviceSheet = useGatewayDeviceSheet()
   const gatewayEventTypeSheet = useGatewayEventTypeSheet()
-  const latestSecret = useGatewayOneTimeSecretStore(
-    (state) => state.latestSourceSecret
-  )
-  const latestDeviceToken = useGatewayOneTimeSecretStore(
-    (state) => state.latestDeviceToken
-  )
-  const setLatestSecret = useGatewayOneTimeSecretStore(
-    (state) => state.setLatestSourceSecret
+  const setIssuedCredential = useIssuedGatewayCredentialStore(
+    (state) => state.setIssuedCredential
   )
   const sourceTable = useDataTableState(`agent:${agentKey}:gateway-sources`)
   const deviceTable = useDataTableState(`agent:${agentKey}:gateway-devices`, {
@@ -106,11 +101,14 @@ export function GatewayPanel({
       : `agent:${agentKey}:gateway-events`,
     { sort_by: "createdAt", sort_direction: "desc" }
   )
-  const eventTypeTable = useDataTableState(`agent:${agentKey}:gateway-event-types`, {
-    per_page: 10,
-    sort_by: "type",
-    sort_direction: "asc",
-  })
+  const eventTypeTable = useDataTableState(
+    `agent:${agentKey}:gateway-event-types`,
+    {
+      per_page: 10,
+      sort_by: "type",
+      sort_direction: "asc",
+    }
+  )
   const [deviceSourceId, setDeviceSourceId] = React.useState("")
   const [selectedEvent, setSelectedEvent] =
     React.useState<GatewayEventRow | null>(null)
@@ -196,7 +194,9 @@ export function GatewayPanel({
   React.useEffect(() => {
     if (sessionId || !eventSourceFilter) return
     if (eventSourceFilter === deviceSourceId) return
-    if (!focusSourceRows.some((source) => source.sourceId === eventSourceFilter))
+    if (
+      !focusSourceRows.some((source) => source.sourceId === eventSourceFilter)
+    )
       return
     setDeviceSourceId(eventSourceFilter)
   }, [deviceSourceId, eventSourceFilter, focusSourceRows, sessionId])
@@ -219,9 +219,18 @@ export function GatewayPanel({
     success: "Gateway secret rotated",
     invalidate: controlKeys.agents.detail(agentKey),
   })
+  const rotatedSourceCredential = rotate.data
+  const resetSourceRotation = rotate.reset
   React.useEffect(() => {
-    if (rotate.data?.clientSecret) setLatestSecret(rotate.data.clientSecret)
-  }, [rotate.data, setLatestSecret])
+    if (!rotatedSourceCredential) return
+    setIssuedCredential({
+      kind: "source",
+      sourceId: rotatedSourceCredential.source.sourceId,
+      clientId: rotatedSourceCredential.source.clientId,
+      clientSecret: rotatedSourceCredential.clientSecret,
+    })
+    resetSourceRotation()
+  }, [resetSourceRotation, rotatedSourceCredential, setIssuedCredential])
   const setSuspended = useToastMutation({
     mutationFn: ({
       sourceId,
@@ -260,9 +269,41 @@ export function GatewayPanel({
     success: "Gateway device updated",
     invalidate: controlKeys.agents.detail(agentKey),
   })
+  const rotateDeviceToken = useToastMutation({
+    mutationFn: (device: GatewayDeviceRow) =>
+      controlApi.registerGatewayDevice(
+        agentKey,
+        device.sourceId,
+        {
+          deviceId: device.deviceId,
+          label: device.label,
+          capabilities: device.capabilities,
+        },
+        auth.csrfToken
+      ),
+    success: "Gateway device token rotated",
+    invalidate: controlKeys.agents.detail(agentKey),
+  })
+  const rotatedDeviceCredential = rotateDeviceToken.data
+  const resetDeviceRotation = rotateDeviceToken.reset
+  React.useEffect(() => {
+    if (!rotatedDeviceCredential) return
+    setIssuedCredential({
+      kind: "device",
+      sourceId: rotatedDeviceCredential.device.sourceId,
+      deviceId: rotatedDeviceCredential.device.deviceId,
+      token: rotatedDeviceCredential.token,
+    })
+    resetDeviceRotation()
+  }, [resetDeviceRotation, rotatedDeviceCredential, setIssuedCredential])
   const disallowEventType = useToastMutation({
     mutationFn: ({ sourceId, type }: { sourceId: string; type: string }) =>
-      controlApi.deleteGatewayEventType(agentKey, sourceId, type, auth.csrfToken),
+      controlApi.deleteGatewayEventType(
+        agentKey,
+        sourceId,
+        type,
+        auth.csrfToken
+      ),
     success: "Gateway event type disallowed",
     invalidate: controlKeys.agents.detail(agentKey),
   })
@@ -470,7 +511,11 @@ export function GatewayPanel({
     },
     {
       accessorKey: "capabilities",
-      meta: { label: "Capabilities", wrap: true, maxWidthClassName: "max-w-72" },
+      meta: {
+        label: "Capabilities",
+        wrap: true,
+        maxWidthClassName: "max-w-72",
+      },
       header: renderColumnHeader,
       enableSorting: false,
       cell: ({ row }) => (
@@ -496,6 +541,19 @@ export function GatewayPanel({
           <RowActionsMenu
             triggerLabel={`Open actions for gateway device ${row.original.deviceId}`}
             actions={[
+              {
+                label: "Rotate token",
+                icon: <RotateCw className="size-4" />,
+                pending: rotateDeviceToken.isPending,
+                confirm: {
+                  title: "Rotate device token",
+                  description: `Rotate the token for ${row.original.deviceId}? The old token stops working immediately${enabled ? "." : " and the device will be enabled."}`,
+                  confirmLabel: "Rotate token",
+                  entityLabel: "Gateway device",
+                  itemLabel: `${row.original.sourceId}:${row.original.deviceId}`,
+                },
+                onSelect: () => rotateDeviceToken.mutateAsync(row.original),
+              },
               {
                 label: enabled ? "Disable device" : "Enable device",
                 pending: setDeviceEnabled.isPending,
@@ -604,12 +662,6 @@ export function GatewayPanel({
           </div>
         </div>
       )}
-      {!sessionId && latestSecret ? (
-        <div className="border border-primary p-3 text-xs">
-          <div className="mb-1 font-medium">New secret</div>
-          <code className="break-all">{latestSecret}</code>
-        </div>
-      ) : null}
       {!sessionId ? (
         <DataTableView
           columns={columns}
@@ -685,12 +737,6 @@ export function GatewayPanel({
               Register device
             </Button>
           </div>
-          {latestDeviceToken ? (
-            <div className="border border-primary p-3 text-xs">
-              <div className="mb-1 font-medium">New device token</div>
-              <code className="break-all">{latestDeviceToken}</code>
-            </div>
-          ) : null}
           {effectiveDeviceSourceId ? (
             <DataTableView
               columns={deviceColumns}
@@ -853,7 +899,10 @@ function GatewayEventDetailsSheet({
   setEvent: (event: GatewayEventRow | null) => void
 }) {
   return (
-    <Sheet open={Boolean(event)} onOpenChange={(open) => !open && setEvent(null)}>
+    <Sheet
+      open={Boolean(event)}
+      onOpenChange={(open) => !open && setEvent(null)}
+    >
       <SheetContent className="gap-0 data-[side=right]:w-full data-[side=right]:sm:max-w-lg">
         <SheetHeader className="border-b pr-12">
           <SheetTitle>Gateway Event</SheetTitle>
@@ -873,18 +922,45 @@ function GatewayEventDetailsSheet({
                   value={<StatusBadge status={event.status} />}
                 />
                 <GatewayEventDetailRow label="Type" value={event.type} mono />
-                <GatewayEventDetailRow label="Created" value={formatDate(event.createdAt) ?? "-"} />
-                <GatewayEventDetailRow label="Reason" value={event.reason ?? "-"} />
-                <GatewayEventDetailRow label="Delivery requested" value={humanize(event.deliveryRequested)} />
-                <GatewayEventDetailRow label="Delivery effective" value={humanize(event.deliveryEffective)} />
+                <GatewayEventDetailRow
+                  label="Created"
+                  value={formatDate(event.createdAt) ?? "-"}
+                />
+                <GatewayEventDetailRow
+                  label="Reason"
+                  value={event.reason ?? "-"}
+                />
+                <GatewayEventDetailRow
+                  label="Delivery requested"
+                  value={humanize(event.deliveryRequested)}
+                />
+                <GatewayEventDetailRow
+                  label="Delivery effective"
+                  value={humanize(event.deliveryEffective)}
+                />
               </section>
               <section className="grid gap-3 border p-3">
                 <div className="text-sm font-medium">Identifiers</div>
                 <GatewayEventDetailRow label="Event id" value={event.id} mono />
-                <GatewayEventDetailRow label="Source" value={event.sourceId} mono />
-                <GatewayEventDetailRow label="Thread" value={event.threadId ?? "-"} mono />
-                <GatewayEventDetailRow label="Text bytes" value={formatBytes(event.textBytes)} />
-                <GatewayEventDetailRow label="Text sha256" value={event.textSha256} mono />
+                <GatewayEventDetailRow
+                  label="Source"
+                  value={event.sourceId}
+                  mono
+                />
+                <GatewayEventDetailRow
+                  label="Thread"
+                  value={event.threadId ?? "-"}
+                  mono
+                />
+                <GatewayEventDetailRow
+                  label="Text bytes"
+                  value={formatBytes(event.textBytes)}
+                />
+                <GatewayEventDetailRow
+                  label="Text sha256"
+                  value={event.textSha256}
+                  mono
+                />
               </section>
             </div>
           ) : null}
@@ -906,7 +982,13 @@ function GatewayEventDetailRow({
   return (
     <div className="grid min-w-0 gap-1">
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={mono ? "break-all font-mono text-xs" : "break-words text-sm font-medium"}>
+      <div
+        className={
+          mono
+            ? "font-mono text-xs break-all"
+            : "text-sm font-medium break-words"
+        }
+      >
         {value}
       </div>
     </div>
@@ -931,7 +1013,7 @@ function GatewaySourceFocus({
   sources: GatewaySourceRow[]
 }) {
   return (
-    <div className="grid gap-3 border p-3">
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-3 border p-3">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="text-sm font-medium">Source focus</div>
@@ -946,7 +1028,7 @@ function GatewaySourceFocus({
           disabled={isLoading || sources.length === 0}
         >
           <SelectTrigger
-            className="w-full sm:w-80"
+            className="w-full max-w-full min-w-0 overflow-hidden sm:w-80"
             aria-label="Focused gateway source"
           >
             <SelectValue
@@ -980,13 +1062,23 @@ function GatewaySourceFocus({
           </div>
           <div className="min-w-0">
             <div className="font-medium text-foreground">Source id</div>
-            <code className="mt-1 block truncate">{selectedSource.sourceId}</code>
+            <code className="mt-1 block truncate">
+              {selectedSource.sourceId}
+            </code>
           </div>
           <div className="min-w-0">
             <div className="font-medium text-foreground">Events filter</div>
             <div className="mt-1 truncate">
               {eventSourceFilter ? eventSourceLabel : "All sources"}
             </div>
+          </div>
+          <div className="min-w-0 border-t pt-3 sm:col-span-4">
+            <GatewayCredentialField
+              label="OAuth client ID"
+              copyLabel="Client ID"
+              value={selectedSource.clientId}
+              description="Persistent, non-secret identifier. This is different from the source ID."
+            />
           </div>
         </div>
       ) : null}

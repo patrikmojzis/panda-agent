@@ -182,7 +182,7 @@ async function createHarness(options: {
     INSERT INTO "runtime"."credentials" (id, env_key, agent_key, value_ciphertext, value_iv, value_tag, key_version)
     VALUES ('00000000-0000-0000-0000-000000000001', 'API_TOKEN', 'panda', '\\x5345435245545f53454e54494e454c', '\\x6976', '\\x746167', 1)
   `);
-  return {pool, identities, agents, sessions, executionEnvironments, a2aBindings, auth, reads, home, operator, controlMcp, mcpConfigs, briefings, heartbeats, scheduledTaskStore, watchStore, connectorAccountStore, credentialCrypto, emailStore, wikiBindingStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts, modelCallTraces, controlModelCallTraces, sessionCompaction};
+  return {pool, identities, agents, sessions, executionEnvironments, a2aBindings, auth, reads, home, operator, controlMcp, mcpConfigs, briefings, heartbeats, scheduledTaskStore, watchStore, connectorAccountStore, credentialCrypto, emailStore, gatewayStore, wikiBindingStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts, modelCallTraces, controlModelCallTraces, sessionCompaction};
 }
 
 async function startHarnessServer(harness: Awaited<ReturnType<typeof createHarness>>, options: {env?: NodeJS.ProcessEnv} = {}) {
@@ -2064,13 +2064,45 @@ describe("Control operator HTTP", () => {
       body: JSON.stringify({sourceId: "build-alerts", name: "Build alerts", sessionId: "session-panda"}),
     });
     expect(create.status).toBe(201);
-    const createBody = await create.json() as {clientSecret: string};
+    const createBody = await create.json() as {
+      source: {sourceId: string; clientId: string};
+      clientSecret: string;
+    };
+    expect(createBody.source).toMatchObject({sourceId: "build-alerts"});
+    expect(createBody.source.clientId).toMatch(/^pgc_/);
     expect(createBody.clientSecret).toMatch(/^pgs_/);
 
     const list = await fetch(`${base}/api/control/agents/panda/gateway/sources`, {headers: {cookie: auth.cookies}});
-    const listText = JSON.stringify(await list.json());
+    expect(list.status).toBe(200);
+    const listBody = await list.json() as {data: Array<{sourceId: string; clientId: string}>};
+    expect(listBody.data).toContainEqual(expect.objectContaining({
+      sourceId: "build-alerts",
+      clientId: createBody.source.clientId,
+    }));
+    const listText = JSON.stringify(listBody);
     expect(listText).toContain("build-alerts");
     expect(listText).not.toContain(createBody.clientSecret);
+
+    const rotateSource = await fetch(`${base}/api/control/agents/panda/gateway/sources/build-alerts/rotate-secret`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+    });
+    expect(rotateSource.status).toBe(200);
+    const rotateSourceBody = await rotateSource.json() as {
+      source: {sourceId: string; clientId: string};
+      clientSecret: string;
+    };
+    expect(rotateSourceBody.source.clientId).toBe(createBody.source.clientId);
+    expect(rotateSourceBody.clientSecret).toMatch(/^pgs_/);
+    expect(rotateSourceBody.clientSecret).not.toBe(createBody.clientSecret);
+    await expect(harness.gatewayStore.verifyClientCredentials({
+      clientId: createBody.source.clientId,
+      clientSecret: createBody.clientSecret,
+    })).resolves.toBeNull();
+    await expect(harness.gatewayStore.verifyClientCredentials({
+      clientId: createBody.source.clientId,
+      clientSecret: rotateSourceBody.clientSecret,
+    })).resolves.toMatchObject({sourceId: "build-alerts"});
 
     const eventTypesPath = `${base}/api/control/agents/panda/gateway/sources/build-alerts/event-types`;
     const allowType = await fetch(eventTypesPath, {
@@ -2131,10 +2163,12 @@ describe("Control operator HTTP", () => {
     });
     const auditText = JSON.stringify(auditBody.auditEvents.filter((event) => event.metadata.action === "disallow_type"));
     expect(auditText).not.toContain(createBody.clientSecret);
+    expect(auditText).not.toContain(rotateSourceBody.clientSecret);
     expect(auditText).not.toContain("raw");
     expect(auditText).not.toContain("payload");
 
     const devicesPath = `${base}/api/control/agents/panda/gateway/sources/build-alerts/devices`;
+    const deviceTokens = new Map<string, string>();
     for (const body of [
       {deviceId: "alpha-terminal", label: "Terminal", capabilities: ["push_context", "upload_attachments"]},
       {deviceId: "beta-runner", label: "Runner", capabilities: ["claim_commands"]},
@@ -2146,16 +2180,40 @@ describe("Control operator HTTP", () => {
         body: JSON.stringify(body),
       });
       expect(deviceWrite.status).toBe(201);
-      const deviceWriteBody = await deviceWrite.json() as {token: string};
+      const deviceWriteBody = await deviceWrite.json() as {device: {deviceId: string}; token: string};
+      expect(deviceWriteBody.device.deviceId).toBe(body.deviceId);
       expect(deviceWriteBody.token).toMatch(/^pgd_/);
+      deviceTokens.set(body.deviceId, deviceWriteBody.token);
     }
+
+    const rotateDevice = await fetch(devicesPath, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        deviceId: "alpha-terminal",
+        label: "Terminal",
+        capabilities: ["push_context", "upload_attachments"],
+      }),
+    });
+    expect(rotateDevice.status).toBe(201);
+    const rotateDeviceBody = await rotateDevice.json() as {device: {deviceId: string}; token: string};
+    expect(rotateDeviceBody.device.deviceId).toBe("alpha-terminal");
+    expect(rotateDeviceBody.token).toMatch(/^pgd_/);
+    expect(rotateDeviceBody.token).not.toBe(deviceTokens.get("alpha-terminal"));
+    await expect(harness.gatewayStore.resolveDeviceToken(deviceTokens.get("alpha-terminal")!)).resolves.toBeNull();
+    await expect(harness.gatewayStore.resolveDeviceToken(rotateDeviceBody.token)).resolves.toMatchObject({
+      device: {deviceId: "alpha-terminal"},
+      source: {sourceId: "build-alerts"},
+    });
 
     const devicePage = await fetch(`${devicesPath}?page=2&per_page=1&sort_by=deviceId&sort_direction=asc`, {headers: {cookie: auth.cookies}});
     expect(devicePage.status).toBe(200);
-    await expect(devicePage.json()).resolves.toMatchObject({
+    const devicePageBody = await devicePage.json();
+    expect(devicePageBody).toMatchObject({
       data: [{deviceId: "beta-runner"}],
       meta: {current_page: 2, last_page: 3, per_page: 1, total: 3},
     });
+    expect(JSON.stringify(devicePageBody)).not.toContain("pgd_");
 
     const commandCapable = await fetch(`${devicesPath}?capabilities=claim_commands&sort_by=deviceId&sort_direction=asc`, {headers: {cookie: auth.cookies}});
     expect(commandCapable.status).toBe(200);
