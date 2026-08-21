@@ -1,10 +1,10 @@
 {
   "files": [
     {
-      "bytes": 128270,
+      "bytes": 128298,
       "lines": 4263,
       "path": "scripts/agent-command-shim/routes.generated.sh",
-      "sha256": "f49b6b19d6fdd6cebb0c5732898f2ac66c3ce47eac9581e37cb09cbfb5277633"
+      "sha256": "ab1b1d8b7163ce61c5135f1d3225ba2e55baed71815b8b29528266f63d586f62"
     },
     {
       "bytes": 1166,
@@ -37,10 +37,10 @@
       "sha256": "033685d9e20dc15874865f8bf3e8b9c0d4244ede32cd871ea21590f8b47c45c4"
     },
     {
-      "bytes": 30652,
-      "lines": 837,
+      "bytes": 32329,
+      "lines": 874,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "f261990ac6c97f1e0adb4e7474fcfe90092f6aae6098ae949a601a8e2d815057"
+      "sha256": "b48177ec7806d368ae7c960e4eda05d0e6cfbf64a089d0fa4ad17dafc98c7a64"
     },
     {
       "bytes": 10997,

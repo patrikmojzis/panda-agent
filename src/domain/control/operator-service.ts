@@ -551,6 +551,9 @@ export interface ControlOperatorServiceOptions {
   email: ControlEmailStore;
   connectorAccounts: PostgresConnectorAccountStore;
   connectorCrypto: CredentialCrypto | null;
+  whatsappAuth?: ControlWhatsAppAuthStore;
+  whatsappRuntime?: ControlWhatsAppRuntimeStore;
+  whatsappLinks?: ControlWhatsAppLinkManager;
   conversations: ConversationRepo;
   gateway: PostgresGatewayStore;
   subagents: SubagentProfileStore;
@@ -560,7 +563,65 @@ export interface ControlOperatorServiceOptions {
   env?: NodeJS.ProcessEnv;
 }
 
+export type ControlWhatsAppLinkAttempt = {
+  attemptId: string;
+  accountId: string;
+  accountKey: string;
+  state: "starting" | "awaiting_confirmation" | "linked" | "failed" | "cancelled" | "expired";
+  pairingCode?: string;
+  providerAccountId?: string;
+  error?: string;
+  createdAt: number;
+  expiresAt: number;
+  updatedAt: number;
+};
+
+type ControlWhatsAppAuthStore = {
+  ensureSchema(): Promise<void>;
+  hasAuthState(accountId: string): Promise<boolean>;
+  deleteAuthState(accountId: string): Promise<void>;
+};
+
+type ControlWhatsAppRuntimeStore = {
+  getStatus(accountId: string): Promise<{
+    socketState: string;
+    lastError?: string;
+    heartbeatAt: number;
+    updatedAt: number;
+  } | null>;
+};
+
+type ControlWhatsAppLinkManager = {
+  start(account: ConnectorAccountRecord, phoneNumber: string): ControlWhatsAppLinkAttempt;
+  get(accountId: string, attemptId: string): ControlWhatsAppLinkAttempt | null;
+  getActive(accountId: string): ControlWhatsAppLinkAttempt | null;
+  cancel(accountId: string, attemptId: string): Promise<ControlWhatsAppLinkAttempt>;
+};
+
+export type ControlWhatsAppSetupStatus = {
+  agentKey: string;
+  accountKey: string;
+  account: {
+    exists: boolean;
+    enabled: boolean;
+    linked: boolean;
+    authStored: boolean;
+    status?: string;
+    connectorKey?: string;
+    displayName?: string;
+    providerAccountId?: string;
+  };
+  runtime: {
+    state: string;
+    stale: boolean;
+    heartbeatAt?: string;
+    lastError?: string;
+  };
+  activeAttempt?: ControlWhatsAppLinkAttempt;
+};
+
 const CONTROL_TELEGRAM_SOURCE = "telegram";
+const CONTROL_WHATSAPP_SOURCE = "whatsapp";
 const CONTROL_TELEGRAM_BOT_TOKEN_SECRET_KEY = "bot_token";
 
 function controlSecretRedactionFragments(secret: string): readonly string[] {
@@ -1067,7 +1128,6 @@ function controlChannelActorPairingSource(value: unknown): ControlChannelActorPa
 }
 
 function controlChannelConnectorKey(source: ControlChannelActorPairingSource, value: unknown): string {
-  if ((value === undefined || value === null || value === "") && source === "whatsapp") return "main";
   return requireNonEmptyString(value, `${source} connector key is required.`);
 }
 
@@ -1186,6 +1246,9 @@ export class ControlOperatorService {
   private readonly email: ControlEmailStore;
   private readonly connectorAccounts: PostgresConnectorAccountStore;
   private readonly connectorCrypto: CredentialCrypto | null;
+  private readonly whatsappAuth: ControlWhatsAppAuthStore | null;
+  private readonly whatsappRuntime: ControlWhatsAppRuntimeStore | null;
+  private readonly whatsappLinks: ControlWhatsAppLinkManager | null;
   private readonly conversations: ConversationRepo;
   private readonly gateway: PostgresGatewayStore;
   private readonly subagents: SubagentProfileStore;
@@ -1215,6 +1278,9 @@ export class ControlOperatorService {
     this.email = options.email;
     this.connectorAccounts = options.connectorAccounts;
     this.connectorCrypto = options.connectorCrypto;
+    this.whatsappAuth = options.whatsappAuth ?? null;
+    this.whatsappRuntime = options.whatsappRuntime ?? null;
+    this.whatsappLinks = options.whatsappLinks ?? null;
     this.conversations = options.conversations;
     this.gateway = options.gateway;
     this.subagents = options.subagents;
@@ -2429,11 +2495,172 @@ export class ControlOperatorService {
     };
   }
 
+  async createWhatsAppConnector(session: ControlSessionRecord, agentKey: string, input: {
+    accountKey?: unknown;
+    displayName?: unknown;
+  }): Promise<{connector: ControlConnectorRow; audit: Record<string, unknown>}> {
+    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    if (!this.connectorCrypto || !this.whatsappAuth) {
+      throw new Error("CREDENTIALS_MASTER_KEY is required to create WhatsApp accounts.");
+    }
+    await this.whatsappAuth.ensureSchema();
+    const accountKey = requireNonEmptyString(input.accountKey, "WhatsApp account key is required.");
+    if (await this.connectorAccounts.getAccountByKey(CONTROL_WHATSAPP_SOURCE, accountKey)) {
+      throw new Error(`WhatsApp account ${accountKey} already exists.`);
+    }
+    const id = randomUUID();
+    const account = await this.connectorAccounts.upsertAccount({
+      id,
+      source: CONTROL_WHATSAPP_SOURCE,
+      accountKey,
+      connectorKey: id,
+      ownerKind: "agent",
+      ownerAgentKey: normalizedAgentKey,
+      displayName: typeof input.displayName === "string" ? trimToUndefined(input.displayName) : undefined,
+      status: "disabled",
+    });
+    return {
+      connector: publicConnector(account),
+      audit: {
+        action: "create_whatsapp",
+        agentKey: normalizedAgentKey,
+        accountKey: account.accountKey,
+        connectorKey: account.connectorKey,
+      },
+    };
+  }
+
+  async getWhatsAppSetupStatus(
+    session: ControlSessionRecord,
+    agentKey: string,
+    input: {accountKey?: unknown},
+  ): Promise<ControlWhatsAppSetupStatus> {
+    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const accountKey = requireNonEmptyString(input.accountKey, "WhatsApp account key is required.");
+    const found = await this.connectorAccounts.getAccountByKey(CONTROL_WHATSAPP_SOURCE, accountKey);
+    const account = found?.ownerKind === "agent" && found.ownerAgentKey === normalizedAgentKey ? found : null;
+    const authStored = account && this.whatsappAuth ? await this.whatsappAuth.hasAuthState(account.id) : false;
+    const runtime = account && this.whatsappRuntime ? await this.whatsappRuntime.getStatus(account.id) : null;
+    const heartbeatAt = runtime ? iso(runtime.heartbeatAt) : undefined;
+    const stale = runtime ? Date.now() - runtime.heartbeatAt > 90_000 : true;
+    return {
+      agentKey: normalizedAgentKey,
+      accountKey,
+      account: {
+        exists: Boolean(account),
+        enabled: account?.status === "enabled",
+        linked: Boolean(account?.externalAccountId && authStored),
+        authStored: Boolean(authStored),
+        ...(account ? {
+          status: account.status,
+          connectorKey: account.connectorKey,
+          displayName: account.displayName,
+          providerAccountId: account.externalAccountId,
+        } : {}),
+      },
+      runtime: {
+        state: runtime?.socketState ?? "offline",
+        stale,
+        ...(heartbeatAt ? {heartbeatAt} : {}),
+        ...(runtime?.lastError ? {lastError: runtime.lastError} : {}),
+      },
+      ...(account && this.whatsappLinks?.getActive(account.id)
+        ? {activeAttempt: this.whatsappLinks.getActive(account.id)!}
+        : {}),
+    };
+  }
+
+  async startWhatsAppLinkAttempt(session: ControlSessionRecord, agentKey: string, accountKey: string, input: {
+    phone?: unknown;
+  }): Promise<{attempt: ControlWhatsAppLinkAttempt; audit: Record<string, unknown>}> {
+    const {agentKey: normalizedAgentKey, account} = await this.getAgentConnectorAccount(
+      session,
+      agentKey,
+      CONTROL_WHATSAPP_SOURCE,
+      accountKey,
+    );
+    if (!this.connectorCrypto || !this.whatsappLinks) {
+      throw new Error("WhatsApp linking is unavailable because CREDENTIALS_MASTER_KEY is not configured.");
+    }
+    const digits = requireNonEmptyString(input.phone, "WhatsApp phone number is required.").replace(/[^\d]/g, "");
+    if (digits.length < 8 || digits.length > 15) {
+      throw new Error("WhatsApp phone number must contain 8-15 digits.");
+    }
+    const attempt = this.whatsappLinks.start(account, digits);
+    return {
+      attempt,
+      audit: {
+        action: "start_whatsapp_link",
+        agentKey: normalizedAgentKey,
+        accountKey: account.accountKey,
+        attemptId: attempt.attemptId,
+      },
+    };
+  }
+
+  async getWhatsAppLinkAttempt(
+    session: ControlSessionRecord,
+    agentKey: string,
+    accountKey: string,
+    attemptId: string,
+  ): Promise<ControlWhatsAppLinkAttempt> {
+    const {account} = await this.getAgentConnectorAccount(session, agentKey, CONTROL_WHATSAPP_SOURCE, accountKey);
+    const attempt = this.whatsappLinks?.get(account.id, requireNonEmptyString(attemptId, "WhatsApp link attempt id is required."));
+    if (!attempt) throw new Error("WhatsApp link attempt was not found.");
+    return attempt;
+  }
+
+  async cancelWhatsAppLinkAttempt(
+    session: ControlSessionRecord,
+    agentKey: string,
+    accountKey: string,
+    attemptId: string,
+  ): Promise<{attempt: ControlWhatsAppLinkAttempt; audit: Record<string, unknown>}> {
+    const {agentKey: normalizedAgentKey, account} = await this.getAgentConnectorAccount(session, agentKey, CONTROL_WHATSAPP_SOURCE, accountKey);
+    if (!this.whatsappLinks) throw new Error("WhatsApp linking is unavailable.");
+    const attempt = await this.whatsappLinks.cancel(account.id, attemptId);
+    return {
+      attempt,
+      audit: {
+        action: "cancel_whatsapp_link",
+        agentKey: normalizedAgentKey,
+        accountKey: account.accountKey,
+        attemptId: attempt.attemptId,
+      },
+    };
+  }
+
+  async resetWhatsAppLink(
+    session: ControlSessionRecord,
+    agentKey: string,
+    accountKey: string,
+  ): Promise<{connector: ControlConnectorRow; audit: Record<string, unknown>}> {
+    const {agentKey: normalizedAgentKey, account} = await this.getAgentConnectorAccount(session, agentKey, CONTROL_WHATSAPP_SOURCE, accountKey);
+    if (!this.whatsappAuth) throw new Error("WhatsApp auth storage is unavailable.");
+    if (account.status !== "disabled" && account.status !== "error") {
+      throw new Error(`Disable WhatsApp account ${account.accountKey} before resetting its link.`);
+    }
+    if (this.whatsappLinks?.getActive(account.id)) {
+      throw new Error(`Cancel the active WhatsApp link attempt for ${account.accountKey} before resetting it.`);
+    }
+    await this.whatsappAuth.deleteAuthState(account.id);
+    const cleared = await this.connectorAccounts.clearAccountExternalIdentity(CONTROL_WHATSAPP_SOURCE, account.accountKey);
+    return {
+      connector: publicConnector(cleared),
+      audit: {
+        action: "reset_whatsapp_link",
+        agentKey: normalizedAgentKey,
+        accountKey: account.accountKey,
+      },
+    };
+  }
+
   async upsertConnector(session: ControlSessionRecord, agentKey: string, input: Record<string, unknown>): Promise<{connector: ControlConnectorRow; audit: Record<string, unknown>}> {
     const source = typeof input.source === "string" && input.source.trim() ? input.source.trim().toLowerCase() : "discord";
     if (source === "discord") return this.upsertDiscordConnector(session, agentKey, input);
     if (source === "email") return this.upsertEmailConnector(session, agentKey, input);
     if (source === "telegram") return this.upsertTelegramConnector(session, agentKey, input);
+    if (source === CONTROL_WHATSAPP_SOURCE) return this.createWhatsAppConnector(session, agentKey, input);
     throw new Error(`Unsupported Control connector source ${source}.`);
   }
 
@@ -2449,6 +2676,12 @@ export class ControlOperatorService {
         await this.email.upsertAccount({...emailAccount, enabled: true});
       } else {
         await this.email.disableAccount(normalizedAgentKey, existing.accountKey);
+      }
+    }
+    if (enabled && existing.source === CONTROL_WHATSAPP_SOURCE) {
+      const authStored = await this.whatsappAuth?.hasAuthState(existing.id);
+      if (!existing.externalAccountId || !authStored) {
+        throw new Error(`WhatsApp account ${existing.accountKey} must be linked before it can be enabled.`);
       }
     }
     const account = enabled
@@ -2560,8 +2793,14 @@ export class ControlOperatorService {
     const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
     const source = input.source ? controlChannelActorPairingSource(input.source) : undefined;
     const connectorKey = typeof input.connectorKey === "string" ? trimToUndefined(input.connectorKey) : undefined;
-    const pairings = await this.agents.listAgentPairings(normalizedAgentKey);
-    if (pairings.length === 0) return tableResponse([], input);
+    const [pairings, connectorAccounts] = await Promise.all([
+      this.agents.listAgentPairings(normalizedAgentKey),
+      this.connectorAccounts.listAccounts({ownerKind: "agent", ...(source ? {source} : {})}),
+    ]);
+    const ownedConnectors = new Set(connectorAccounts
+      .filter((account) => account.ownerAgentKey === normalizedAgentKey)
+      .map((account) => `${account.source}\0${account.connectorKey}`));
+    if (pairings.length === 0 || ownedConnectors.size === 0) return tableResponse([], input);
 
     const identities = await Promise.all(pairings.map((pairing) => this.identities.getIdentity(pairing.identityId).catch(() => null)));
     const identityById = new Map(identities.filter((identity): identity is IdentityRecord => Boolean(identity)).map((identity) => [identity.id, identity]));
@@ -2572,6 +2811,7 @@ export class ControlOperatorService {
     const rows = bindings
       .flat()
       .filter((binding) => isControlChannelActorPairingSource(binding.source))
+      .filter((binding) => ownedConnectors.has(`${binding.source}\0${binding.connectorKey}`))
       .filter((binding) => !source || binding.source === source)
       .filter((binding) => !connectorKey || binding.connectorKey === connectorKey)
       .map((binding) => {
@@ -2594,13 +2834,13 @@ export class ControlOperatorService {
     const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
     const source = controlChannelActorPairingSource(input.source);
     const connectorKey = controlChannelConnectorKey(source, input.connectorKey);
-    if (source === "telegram") {
-      const account = await this.connectorAccounts.getAccountByConnectorKey(CONTROL_TELEGRAM_SOURCE, connectorKey);
+    if (source === "telegram" || source === CONTROL_WHATSAPP_SOURCE) {
+      const account = await this.connectorAccounts.getAccountByConnectorKey(source, connectorKey);
       if (!account || account.ownerKind !== "agent" || account.ownerAgentKey !== normalizedAgentKey) {
-        throw new Error("Control Telegram actor pairing requires an owned Telegram connector account. Store the bot in Control Telegram setup first.");
+        throw new Error(`Control ${source} actor pairing requires an owned connector account.`);
       }
       if (account.status !== "enabled") {
-        throw new Error(`Control Telegram account ${account.accountKey} is ${account.status}; enable it before pairing actors.`);
+        throw new Error(`Control ${source} account ${account.accountKey} is ${account.status}; enable it before pairing actors.`);
       }
     }
     const externalActorId = controlChannelActorId(source, input.externalActorId ?? input.actorId);
@@ -2637,6 +2877,10 @@ export class ControlOperatorService {
     const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
     const source = controlChannelActorPairingSource(sourceInput);
     const connectorKey = controlChannelConnectorKey(source, connectorKeyInput);
+    const account = await this.connectorAccounts.getAccountByConnectorKey(source, connectorKey);
+    if (!account || account.ownerKind !== "agent" || account.ownerAgentKey !== normalizedAgentKey) {
+      throw new Error(`Control ${source} actor pairing requires an owned connector account.`);
+    }
     const externalActorId = controlChannelActorId(source, externalActorIdInput);
     const existing = await this.identities.resolveIdentityBinding({source, connectorKey, externalActorId});
     if (existing) await this.assertIdentityPairedToAgent(normalizedAgentKey, existing.identityId);

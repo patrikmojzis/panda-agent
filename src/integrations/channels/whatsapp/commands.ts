@@ -12,7 +12,7 @@ import type {OutboundDeliveryRecord, OutboundDeliveryTargetHistoryFilter} from "
 import type {OutboundItem} from "../../../domain/channels/types.js";
 import type {ConversationBinding, ConversationBindingListFilter} from "../../../domain/sessions/conversations/types.js";
 import type {ThreadChannelMessageFilter, ThreadMessageRecord} from "../../../domain/threads/runtime/types.js";
-import {resolveWhatsAppConnectorKey, WHATSAPP_SOURCE} from "./config.js";
+import {WHATSAPP_SOURCE} from "./config.js";
 
 export const WHATSAPP_SEND_COMMAND_NAME = "whatsapp.send";
 export const WHATSAPP_CHAT_LIST_COMMAND_NAME = "whatsapp.chat.list";
@@ -20,6 +20,7 @@ export const WHATSAPP_HISTORY_COMMAND_NAME = "whatsapp.history";
 
 const DEFAULT_WHATSAPP_HISTORY_LIMIT = 20;
 const MAX_WHATSAPP_HISTORY_LIMIT = 100;
+const EXAMPLE_WHATSAPP_ACCOUNT_CONNECTOR_UUID = "00000000-0000-4000-8000-000000000001";
 
 type WhatsAppHistoryDirection = "inbound" | "outbound" | "all";
 
@@ -27,7 +28,6 @@ export interface WhatsAppChatListCommandServices {
   conversations: {
     listConversationBindings(filter: ConversationBindingListFilter): Promise<readonly ConversationBinding[]>;
   };
-  resolveDefaultConnectorKey?: () => string;
 }
 
 export interface WhatsAppHistoryCommandServices extends WhatsAppChatListCommandServices {
@@ -160,9 +160,12 @@ function serializeWhatsAppChatBinding(binding: ConversationBinding): JsonObject 
 
 function resolveWhatsAppChatListConnectorKey(
   input: {connectorKey?: string},
-  services: WhatsAppChatListCommandServices,
 ): string {
-  return input.connectorKey ?? services.resolveDefaultConnectorKey?.() ?? resolveWhatsAppConnectorKey();
+  const connectorKey = input.connectorKey;
+  if (!connectorKey) {
+    throw new Error("WhatsApp connectorKey is required because accounts no longer have a process-wide default.");
+  }
+  return connectorKey;
 }
 
 function clampWhatsAppHistoryLimit(limit: number | undefined): number {
@@ -312,7 +315,7 @@ async function findWhatsAppChatBinding(
   request: CommandRequest,
   services: WhatsAppChatListCommandServices,
 ): Promise<JsonObject> {
-  const connectorKey = resolveWhatsAppChatListConnectorKey(input, services);
+  const connectorKey = resolveWhatsAppChatListConnectorKey(input);
   const bindings = await services.conversations.listConversationBindings({
     source: WHATSAPP_SOURCE,
     connectorKey,
@@ -342,7 +345,7 @@ export async function executeWhatsAppChatListCommand(
   request: {scope: {sessionId: string}},
   services: WhatsAppChatListCommandServices,
 ): Promise<JsonObject> {
-  const connectorKey = resolveWhatsAppChatListConnectorKey(input, services);
+  const connectorKey = resolveWhatsAppChatListConnectorKey(input);
   const bindings = await services.conversations.listConversationBindings({
     source: WHATSAPP_SOURCE,
     connectorKey,
@@ -423,35 +426,36 @@ export async function executeWhatsAppHistoryCommand(
 export const whatsappChatListCommandDescriptor: CommandDescriptor = {
   name: WHATSAPP_CHAT_LIST_COMMAND_NAME,
   summary: "List WhatsApp chats bound to the current session.",
-  description: "Shows WhatsApp chat ids that this session can use with whatsapp.send. Results are scoped to the current session and default to the configured WhatsApp connector key.",
-  usage: "panda whatsapp chat list [--connector <key>]",
+  description: "Shows WhatsApp chat ids that this session can use with whatsapp.send. Results are scoped to the current session and one explicit connector account.",
+  usage: "panda whatsapp chat list --connector <key>",
   inputModes: ["flags", "json", "stdin", "file"],
   outputModes: ["json", "text"],
   arguments: [
     {
       name: "connector",
-      description: "Optional WhatsApp connector key. Defaults to WHATSAPP_CONNECTOR_KEY or main.",
+      description: "WhatsApp connector key.",
+      required: true,
       valueType: "string",
       valueName: "key",
     },
     {
       name: "json",
-      description: "Structured JSON object containing optional connectorKey.",
+      description: "Structured JSON object containing connectorKey.",
       valueType: "json",
     },
   ],
   examples: [
     {
       description: "List WhatsApp chats for the current session",
-      command: "panda whatsapp chat list",
+      command: `panda whatsapp chat list --connector ${EXAMPLE_WHATSAPP_ACCOUNT_CONNECTOR_UUID}`,
     },
     {
       description: "List chats for one connector",
-      command: "panda whatsapp chat list --connector main",
+      command: `panda whatsapp chat list --connector ${EXAMPLE_WHATSAPP_ACCOUNT_CONNECTOR_UUID}`,
     },
     {
       description: "Use JSON input",
-      command: "panda whatsapp chat list --json '{\"connectorKey\":\"main\"}'",
+      command: `panda whatsapp chat list --json '{"connectorKey":"${EXAMPLE_WHATSAPP_ACCOUNT_CONNECTOR_UUID}"}'`,
     },
   ],
   requiredCapabilities: [WHATSAPP_CHAT_LIST_COMMAND_NAME],
@@ -467,7 +471,7 @@ export const whatsappHistoryCommandDescriptor: CommandDescriptor = {
   name: WHATSAPP_HISTORY_COMMAND_NAME,
   summary: "Show recent durable WhatsApp chat history.",
   description: "Lists recent WhatsApp messages visible to the current session from Panda's durable records: inbound thread messages and outbound delivery receipts. This does not call WhatsApp for server-side chat history.",
-  usage: "panda whatsapp history --chat <jid-or-phone> [--connector <key>] [--direction inbound|outbound|all] [--limit <n>]",
+  usage: "panda whatsapp history --chat <jid-or-phone> --connector <key> [--direction inbound|outbound|all] [--limit <n>]",
   inputModes: ["flags", "json", "stdin", "file"],
   outputModes: ["json", "text"],
   arguments: [
@@ -480,7 +484,8 @@ export const whatsappHistoryCommandDescriptor: CommandDescriptor = {
     },
     {
       name: "connector",
-      description: "Optional WhatsApp connector key. Defaults to WHATSAPP_CONNECTOR_KEY or main.",
+      description: "WhatsApp connector key.",
+      required: true,
       valueType: "string",
       valueName: "key",
     },
@@ -501,22 +506,22 @@ export const whatsappHistoryCommandDescriptor: CommandDescriptor = {
     },
     {
       name: "json",
-      description: "Structured JSON object containing chatId plus optional connectorKey, direction, and limit.",
+      description: "Structured JSON object containing chatId and connectorKey, plus optional direction and limit.",
       valueType: "json",
     },
   ],
   examples: [
     {
       description: "Show recent chat history",
-      command: "panda whatsapp history --chat +421900000000 --connector main",
+      command: `panda whatsapp history --chat +421900000000 --connector ${EXAMPLE_WHATSAPP_ACCOUNT_CONNECTOR_UUID}`,
     },
     {
       description: "Show only inbound messages",
-      command: "panda whatsapp history --chat 421900000000 --connector main --direction inbound --limit 10",
+      command: `panda whatsapp history --chat 421900000000 --connector ${EXAMPLE_WHATSAPP_ACCOUNT_CONNECTOR_UUID} --direction inbound --limit 10`,
     },
     {
       description: "Use JSON input",
-      command: "panda whatsapp history --json '{\"chatId\":\"421900000000\",\"connectorKey\":\"main\",\"direction\":\"all\"}'",
+      command: `panda whatsapp history --json '{"chatId":"421900000000","connectorKey":"${EXAMPLE_WHATSAPP_ACCOUNT_CONNECTOR_UUID}","direction":"all"}'`,
     },
   ],
   requiredCapabilities: [WHATSAPP_HISTORY_COMMAND_NAME],
@@ -588,15 +593,15 @@ export const whatsappSendCommandDescriptor: CommandDescriptor = {
   examples: [
     {
       description: "Send a text message",
-      command: "panda whatsapp send --chat +421900000000 --connector main --text 'Done.'",
+      command: `panda whatsapp send --chat +421900000000 --connector ${EXAMPLE_WHATSAPP_ACCOUNT_CONNECTOR_UUID} --text 'Done.'`,
     },
     {
       description: "Send text from stdin with a file",
-      command: "cat message.md | panda whatsapp send --chat 421900000000 --connector main --text @- --file ./report.pdf",
+      command: `cat message.md | panda whatsapp send --chat 421900000000 --connector ${EXAMPLE_WHATSAPP_ACCOUNT_CONNECTOR_UUID} --text @- --file ./report.pdf`,
     },
     {
       description: "Use a group JID",
-      command: "panda whatsapp send --chat 120363000000000000@g.us --connector main --text 'Done.'",
+      command: `panda whatsapp send --chat 120363000000000000@g.us --connector ${EXAMPLE_WHATSAPP_ACCOUNT_CONNECTOR_UUID} --text 'Done.'`,
     },
   ],
   requiredCapabilities: [WHATSAPP_SEND_COMMAND_NAME],

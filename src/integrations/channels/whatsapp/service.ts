@@ -28,6 +28,8 @@ import {
   PostgresOutboundDeliveryStore
 } from "../../../domain/channels/deliveries/postgres.js";
 import {ChannelOutboundDeliveryWorker} from "../../../domain/channels/deliveries/worker.js";
+import {PostgresConnectorAccountStore} from "../../../domain/connectors/postgres.js";
+import type {CredentialCrypto} from "../../../domain/credentials/crypto.js";
 import {resolveWhatsAppSocketVersion, WHATSAPP_SOURCE} from "./config.js";
 import {PostgresWhatsAppAuthStore, type WhatsAppAuthStateHandle} from "./auth-store.js";
 import {
@@ -36,6 +38,7 @@ import {
   type WhatsAppWhoamiResult,
 } from "./account.js";
 import {WhatsAppHealthState} from "./health.js";
+import {PostgresWhatsAppRuntimeStatusStore} from "./runtime-status-store.js";
 import {createWhatsAppOutboundAdapter} from "./outbound.js";
 import {
   runWhatsAppPairingLoop,
@@ -56,9 +59,14 @@ import {
 } from "../worker-runtime.js";
 
 export interface WhatsAppServiceOptions {
+  accountId: string;
+  accountKey: string;
   connectorKey: string;
+  crypto: CredentialCrypto;
   dataDir: string;
   dbUrl?: string;
+  disableHealthServer?: boolean;
+  poolMaxFallback?: number;
 }
 
 const RECONNECT_DELAY_MS = 1_000;
@@ -66,7 +74,9 @@ const WHATSAPP_POOL_MAX_FALLBACK = 5;
 
 interface WhatsAppWorkerStores {
   pool: Pool;
+  accounts: PostgresConnectorAccountStore;
   authStore: PostgresWhatsAppAuthStore;
+  runtimeStatus: PostgresWhatsAppRuntimeStatusStore;
   outboundDeliveries: PostgresOutboundDeliveryStore;
   channelActions: PostgresChannelActionStore;
   connectorLeases: PostgresConnectorLeaseRepo;
@@ -88,6 +98,8 @@ export class WhatsAppService {
   private stopping = false;
   private stopPromise: Promise<void> | null = null;
   private socketWaiterResolve: (() => void) | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private runtimeFailed = false;
 
   constructor(options: WhatsAppServiceOptions) {
     this.options = options;
@@ -99,6 +111,7 @@ export class WhatsAppService {
   private log(event: string, payload: Record<string, unknown>): void {
     process.stdout.write(`${JSON.stringify({
       source: WHATSAPP_SOURCE,
+      accountKey: this.options.accountKey,
       event,
       timestamp: new Date().toISOString(),
       ...payload,
@@ -113,7 +126,7 @@ export class WhatsAppService {
     const poolConfig = buildObservedPoolConfig(
       `panda/whatsapp/${this.options.connectorKey}`,
       "PANDA_WHATSAPP_DB_POOL_MAX",
-      WHATSAPP_POOL_MAX_FALLBACK,
+      this.options.poolMaxFallback ?? WHATSAPP_POOL_MAX_FALLBACK,
     );
     const pool = createPostgresPool({
       connectionString: requireDatabaseUrl(this.options.dbUrl),
@@ -135,6 +148,7 @@ export class WhatsAppService {
     });
     const authStore = new PostgresWhatsAppAuthStore({
       pool,
+      crypto: this.options.crypto,
     });
     try {
       await ensureSchemas([authStore]);
@@ -180,7 +194,11 @@ export class WhatsAppService {
         const requests = new RuntimeRequestRepo({
           pool: this.pool,
         });
+        const accounts = new PostgresConnectorAccountStore({pool: this.pool});
+        const runtimeStatus = new PostgresWhatsAppRuntimeStatusStore({pool: this.pool});
         await ensureSchemas([
+          accounts,
+          runtimeStatus,
           outboundDeliveries,
           channelActions,
           connectorLeases,
@@ -189,7 +207,9 @@ export class WhatsAppService {
 
         return {
           pool: this.pool,
+          accounts,
           authStore,
+          runtimeStatus,
           outboundDeliveries,
           channelActions,
           connectorLeases,
@@ -213,7 +233,7 @@ export class WhatsAppService {
     socket: WASocket;
   }> {
     const authStore = await this.ensureAuthStore();
-    const authHandle = options.authHandle ?? await authStore.createAuthState(this.options.connectorKey);
+    const authHandle = options.authHandle ?? await authStore.createAuthState(this.options.accountId);
     const persistCredsOnUpdate = options.persistCredsOnUpdate ?? true;
     const socketVersion = await this.resolveSocketVersion();
     const socket = createWhatsAppSocket({
@@ -367,42 +387,75 @@ export class WhatsAppService {
     });
   }
 
+  private markRuntimeStatus(stores: WhatsAppWorkerStores, state: Parameters<PostgresWhatsAppRuntimeStatusStore["setStatus"]>[1], error?: string): void {
+    runInBackground(async () => {
+      await stores.runtimeStatus.setStatus(this.options.accountId, state, error);
+    }, {
+      label: "WhatsApp runtime status update",
+      onError: (statusError) => this.log("runtime_status_update_failed", {
+        message: statusError instanceof Error ? statusError.message : String(statusError),
+      }),
+    });
+  }
+
+  private startRuntimeHeartbeat(stores: WhatsAppWorkerStores): void {
+    this.heartbeatTimer = setInterval(() => {
+      void stores.runtimeStatus.heartbeat(this.options.accountId).catch((error) => {
+        this.log("runtime_status_heartbeat_failed", {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, 30_000);
+    this.heartbeatTimer.unref?.();
+  }
+
   async whoami(): Promise<WhatsAppWhoamiResult> {
     const authStore = await this.ensureAuthStore();
-    const creds = await authStore.loadCreds(this.options.connectorKey);
+    const creds = await authStore.loadCreds(this.options.accountId);
     return toWhatsAppWhoamiResult(this.options.connectorKey, creds);
   }
 
-  async pair(phoneNumber: string, onPairingCode?: (code: string) => void): Promise<WhatsAppPairResult> {
+  async pair(
+    phoneNumber: string,
+    onPairingCode?: (code: string) => void,
+    onPromotionStart?: () => void,
+  ): Promise<WhatsAppPairResult> {
+    const stores = await this.ensureStores();
     const authStore = await this.ensureAuthStore();
-    const existingCreds = await authStore.loadCreds(this.options.connectorKey);
-    const existingIdentity = toWhatsAppWhoamiResult(this.options.connectorKey, existingCreds);
-
-    if (existingIdentity.accountId) {
-      return {
-        ...existingIdentity,
-        alreadyPaired: true,
-      };
+    const account = await stores.accounts.getAccountByKey(WHATSAPP_SOURCE, this.options.accountKey);
+    if (!account || account.id !== this.options.accountId) {
+      throw new Error(`WhatsApp account ${this.options.accountKey} no longer matches this worker.`);
+    }
+    if (account.externalAccountId || await authStore.hasAuthState(this.options.accountId)) {
+      throw new Error(
+        `WhatsApp account ${this.options.accountKey} already has local auth. Reset its link before starting a new pairing attempt.`,
+      );
     }
 
-    return runWhatsAppPairingLoop({
-      connectorKey: this.options.connectorKey,
-      phoneNumber,
-      pairingCode: bytesToCrockford(randomBytes(5)),
-      onPairingCode,
-      isStopping: () => this.stopping,
-      sleep,
-      log: (event, payload) => this.log(event, payload),
-      runCycle: (cyclePhoneNumber, announcePairingCode, pairingCode) => {
-        return this.runPairSocketCycle(cyclePhoneNumber, announcePairingCode, pairingCode);
-      },
-    });
+    const lease = await this.acquireConnectorLease(stores);
+    try {
+      return await runWhatsAppPairingLoop({
+        connectorKey: this.options.connectorKey,
+        phoneNumber,
+        pairingCode: bytesToCrockford(randomBytes(5)),
+        onPairingCode,
+        isStopping: () => this.stopping,
+        sleep,
+        log: (event, payload) => this.log(event, payload),
+        runCycle: (cyclePhoneNumber, announcePairingCode, pairingCode) => {
+          return this.runPairSocketCycle(cyclePhoneNumber, announcePairingCode, pairingCode, onPromotionStart);
+        },
+      });
+    } finally {
+      await lease.release();
+    }
   }
 
   private async runPairSocketCycle(
     phoneNumber: string,
     onPairingCode?: (code: string) => void,
     pairingCode?: string,
+    onPromotionStart?: () => void,
   ): Promise<WhatsAppPairSocketCycleResult> {
     const authStore = await this.ensureAuthStore();
     const authHandle = authStore.createTransientAuthState();
@@ -412,12 +465,15 @@ export class WhatsAppService {
     });
     try {
       return await waitForWhatsAppPairingCycle({
+        accountId: this.options.accountId,
         connectorKey: this.options.connectorKey,
         phoneNumber,
         socket,
         authHandle,
         pairingCode,
         onPairingCode,
+        isStopping: () => this.stopping,
+        onPromotionStart,
       });
     } finally {
       await this.stopSocket();
@@ -427,18 +483,22 @@ export class WhatsAppService {
   async run(): Promise<void> {
     this.stopping = false;
     this.stopPromise = null;
+    this.runtimeFailed = false;
     this.healthState.resetForRun();
 
     try {
+      const stores = await this.ensureStores();
       const identity = await this.whoami();
       if (!identity.accountId) {
         throw new Error(
-          `WhatsApp connector ${this.options.connectorKey} is not linked yet. Run \`panda whatsapp link --phone <number>\` first.`,
+          `WhatsApp account ${this.options.accountKey} is not linked yet. Run \`panda whatsapp account link ${this.options.accountKey} --phone <number>\` first.`,
         );
       }
 
-      const stores = await this.ensureStores();
+      await stores.runtimeStatus.setStatus(this.options.accountId, "idle");
+      this.startRuntimeHeartbeat(stores);
       this.healthServer = await (async () => {
+        if (this.options.disableHealthServer) return null;
         const binding = resolveOptionalHealthServerBinding({
           hostEnvKey: "PANDA_WHATSAPP_HEALTH_HOST",
           portEnvKey: "PANDA_WHATSAPP_HEALTH_PORT",
@@ -487,12 +547,14 @@ export class WhatsAppService {
 
       while (!this.stopping) {
         this.healthState.markSocketState("connecting");
+        this.markRuntimeStatus(stores, "connecting");
         const outcome = await this.runSocketCycle(stores);
         if (!outcome.reconnect || this.stopping) {
           break;
         }
 
         this.healthState.markSocketState("reconnecting");
+        this.markRuntimeStatus(stores, "reconnecting");
         this.log("reconnect_scheduled", {
           connectorKey: this.options.connectorKey,
           reason: outcome.reason,
@@ -500,6 +562,22 @@ export class WhatsAppService {
         });
         await sleep(RECONNECT_DELAY_MS);
       }
+    } catch (error) {
+      this.runtimeFailed = true;
+      const stores = this.stores;
+      if (stores) {
+        const message = error instanceof Error ? error.message : String(error);
+        const runtimeError = message.includes("not linked yet")
+          ? "account_not_linked"
+          : message.includes("closed permanently")
+            ? "connection_closed_permanently"
+            : "worker_failed";
+        await stores.runtimeStatus.setStatus(this.options.accountId, "error", runtimeError).catch(() => undefined);
+        if (message.includes("not linked yet") || message.includes("closed permanently")) {
+          await stores.accounts.setAccountStatus(WHATSAPP_SOURCE, this.options.accountKey, "error").catch(() => undefined);
+        }
+      }
+      throw error;
     } finally {
       await this.stop();
     }
@@ -513,6 +591,10 @@ export class WhatsAppService {
     this.stopping = true;
     this.healthState.markStopped();
     this.stopPromise = (async () => {
+      if (this.heartbeatTimer) {
+        clearInterval(this.heartbeatTimer);
+        this.heartbeatTimer = null;
+      }
       this.socketWaiterResolve?.();
       this.socketWaiterResolve = null;
 
@@ -520,6 +602,7 @@ export class WhatsAppService {
       const pool = this.pool;
       const poolObserver = this.poolObserver;
       const healthServer = this.healthServer;
+      const stores = this.stores;
       this.workerRuntime = null;
       this.pool = null;
       this.poolObserver = null;
@@ -527,6 +610,10 @@ export class WhatsAppService {
       this.authStore = null;
       this.stores = null;
       this.storesPromise = null;
+
+      if (stores && !this.runtimeFailed) {
+        await stores.runtimeStatus.setStatus(this.options.accountId, "stopped").catch(() => undefined);
+      }
 
       await runCleanupSteps([
         {
@@ -593,6 +680,7 @@ export class WhatsAppService {
         },
         markSocketState: (state) => {
           this.healthState.markSocketState(state);
+          this.markRuntimeStatus(stores, state);
         },
         onConnectionOpen: () => {
           this.triggerConnectionOpenDrains();

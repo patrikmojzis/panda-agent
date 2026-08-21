@@ -3832,7 +3832,7 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     expect(discordSend.stdout).toContain("--stdin");
     expect(discordSend.stdout).toContain("--thread <thread-id>");
     expect(discordSend.stdout).toContain("--reply-to-message-id <message-id>");
-    expect(whatsappChatList.stdout).toContain("panda whatsapp chat list [--connector <key>]");
+    expect(whatsappChatList.stdout).toContain("panda whatsapp chat list --connector <key>");
     expect(whatsappChatList.stdout).toContain("List WhatsApp chats bound to the current session.");
     expect(whatsappHistory.stdout).toContain("panda whatsapp history --chat <jid-or-phone>");
     expect(whatsappHistory.stdout).toContain("--direction <inbound|outbound|all>");

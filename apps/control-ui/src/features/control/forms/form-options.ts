@@ -96,7 +96,8 @@ export function useConnectorOptions(
   context: AgentSheetContext | undefined,
   isOpen: boolean,
   selectedConnectorKey?: string,
-  source = "discord"
+  source = "discord",
+  status?: string
 ) {
   const agentKey = context?.agentKey ?? ""
   const connectors = useAgentConnectors(
@@ -112,6 +113,7 @@ export function useConnectorOptions(
   const options = React.useMemo(() => {
     const baseOptions = (connectors.data?.data ?? [])
       .filter((connector) => connector.source === source)
+      .filter((connector) => !status || connector.status === status)
       .map((connector) => ({
         label: connectorPickerLabel(connector),
         value: connector.connectorKey,
@@ -129,7 +131,7 @@ export function useConnectorOptions(
       ]
     }
     return baseOptions
-  }, [connectors.data?.data, selectedConnectorKey, source])
+  }, [connectors.data?.data, selectedConnectorKey, source, status])
 
   return {
     isLoading: connectors.isLoading,

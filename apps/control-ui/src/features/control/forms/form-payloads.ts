@@ -11,6 +11,7 @@ import type {
   EmailAllowedRecipientFormValues,
   EmailConnectorFormValues,
   TelegramConnectorFormValues,
+  WhatsAppConnectorFormValues,
   EmailRouteFormValues,
   HeartbeatConfigFormValues,
   IdentityFormValues,
@@ -123,6 +124,14 @@ export function telegramConnectorPayload(values: TelegramConnectorFormValues) {
     botToken: values.botToken,
     replace: values.replace,
     source: "telegram",
+  }
+}
+
+export function whatsappConnectorPayload(values: WhatsAppConnectorFormValues) {
+  return {
+    accountKey: values.accountKey.trim(),
+    displayName: blankToUndefined(values.displayName),
+    source: "whatsapp",
   }
 }
 

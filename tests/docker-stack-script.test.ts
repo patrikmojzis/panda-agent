@@ -1241,7 +1241,6 @@ exit 42
       "WIKI_DB_URL=postgresql://example/wiki",
       "BROWSER_RUNNER_SHARED_SECRET=secret",
       "WHATSAPP_ENABLED=true",
-      "WHATSAPP_CONNECTOR_KEY=main",
       "PANDA_AGENTS=",
     ].join("\n"));
 
@@ -1268,7 +1267,9 @@ exit 42
     const linkResult = await runScript([
       "panda",
       "whatsapp",
+      "account",
       "link",
+      "main",
       "--phone",
       "421900000000",
     ], {
@@ -1278,7 +1279,7 @@ exit 42
     });
     expect(linkResult.exitCode).toBe(0);
     expect(await readFile(logPath, "utf8")).toContain(
-      "exec -T panda-core panda whatsapp link --phone 421900000000",
+      "exec -T panda-core panda whatsapp account link main --phone 421900000000",
     );
 
     const pandaResult = await runScript([

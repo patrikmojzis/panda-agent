@@ -25,17 +25,20 @@ type FormSheetDialog = "submit" | "discard" | null
 
 export function FormSheet({
   children,
+  cancelLabel = "Cancel",
   confirmSubmit,
   description,
   form,
   isOpen,
   resetValues,
   setIsOpen,
+  hideSubmit = false,
   submitDisabled = false,
   submitLabel = "Save",
   title,
 }: {
   children: React.ReactNode
+  cancelLabel?: string
   confirmSubmit?: {
     title: string
     description: string
@@ -46,6 +49,7 @@ export function FormSheet({
   isOpen: boolean
   resetValues?: Record<string, unknown>
   setIsOpen: (isOpen: boolean) => void
+  hideSubmit?: boolean
   submitDisabled?: boolean
   submitLabel?: string
   title: string
@@ -136,9 +140,9 @@ export function FormSheet({
                 return (
                   <SheetFooter className="mt-0 flex-row shrink-0 border-t">
                     <Button type="button" variant="outline" className="flex-1" disabled={submitBusy} onClick={requestClose}>
-                      Cancel
+                      {cancelLabel}
                     </Button>
-                    {confirmSubmit ? (
+                    {hideSubmit ? null : confirmSubmit ? (
                       <AlertDialog
                         open={dialog === "submit"}
                         onOpenChange={(open) => {

@@ -1,23 +1,23 @@
 import {
-    type AuthenticationCreds,
-    type AuthenticationState,
-    BufferJSON,
-    initAuthCreds,
-    proto,
-    type SignalDataSet,
-    type SignalDataTypeMap,
+  type AuthenticationCreds,
+  type AuthenticationState,
+  BufferJSON,
+  initAuthCreds,
+  proto,
+  type SignalDataSet,
+  type SignalDataTypeMap,
 } from "baileys";
 
+import type {CredentialCrypto} from "../../../domain/credentials/crypto.js";
+import {buildConnectorAccountTableNames} from "../../../domain/connectors/postgres-shared.js";
+import type {PgPoolLike, PgQueryable} from "../../../lib/postgres-query.js";
 import {requireTimestampMillis} from "../../../lib/postgres-values.js";
-import type {PgPoolLike} from "../../../lib/postgres-query.js";
 import {requireNonEmptyString, uniqueTrimmedStrings} from "../../../lib/strings.js";
-import {
-  buildWhatsAppAuthTableNames,
-  ensurePostgresWhatsAppAuthSchema,
-} from "./auth-schema.js";
+import {buildWhatsAppAuthTableNames, ensurePostgresWhatsAppAuthSchema} from "./auth-schema.js";
 
 export interface PostgresWhatsAppAuthStoreOptions {
   pool: PgPoolLike;
+  crypto: CredentialCrypto;
 }
 
 export interface WhatsAppAuthStateHandle {
@@ -26,233 +26,162 @@ export interface WhatsAppAuthStateHandle {
 }
 
 export interface TransientWhatsAppAuthStateHandle extends WhatsAppAuthStateHandle {
-  promoteTo(connectorKey: string): Promise<void>;
+  promoteTo(accountId: string): Promise<void>;
 }
 
 export interface WhatsAppAuthCredsRecord {
-  connectorKey: string;
+  accountId: string;
   creds: AuthenticationCreds;
   createdAt: number;
   updatedAt: number;
 }
 
-function requireTrimmedKeyPart(field: string, value: unknown): string {
+function requireKeyPart(field: string, value: unknown): string {
   return requireNonEmptyString(value, `WhatsApp auth ${field} must not be empty.`);
+}
+
+function toBuffer(value: unknown): Buffer {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  if (typeof value === "string" && value.startsWith("\\x")) return Buffer.from(value.slice(2), "hex");
+  if (typeof value === "string") return Buffer.from(value, "utf8");
+  throw new Error("WhatsApp auth encrypted row is missing a binary field.");
+}
+
+function parseKeyVersion(value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error("WhatsApp auth key version must be a positive integer.");
+  }
+  return value;
 }
 
 function serializeBaileysJson(value: unknown): string {
   return JSON.stringify(value, BufferJSON.replacer);
 }
 
-function reviveBaileysJson<T>(value: unknown): T | null {
-  if (value === null || value === undefined) {
-    return null;
-  }
-
-  return JSON.parse(JSON.stringify(value), BufferJSON.reviver) as T;
+function parseEncryptedJson<T>(row: Record<string, unknown>, crypto: CredentialCrypto): T {
+  const plaintext = crypto.decrypt({
+    valueCiphertext: toBuffer(row.value_ciphertext),
+    valueIv: toBuffer(row.value_iv),
+    valueTag: toBuffer(row.value_tag),
+    keyVersion: parseKeyVersion(row.key_version),
+  });
+  return JSON.parse(plaintext, BufferJSON.reviver) as T;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function reviveAppStateSyncKey(value: unknown): SignalDataTypeMap["app-state-sync-key"] | undefined {
-  const revived = reviveBaileysJson<unknown>(value);
-  if (revived === null) {
-    return undefined;
-  }
-  if (!isRecord(revived)) {
-    throw new Error("WhatsApp auth app-state-sync-key value must be an object.");
-  }
-
-  return proto.Message.AppStateSyncKeyData.fromObject(revived);
-}
-
 function reviveSignalValue<T extends keyof SignalDataTypeMap>(
   type: T,
-  value: unknown,
+  row: Record<string, unknown> | undefined,
+  crypto: CredentialCrypto,
 ): SignalDataTypeMap[T] | undefined {
-  if (type === "app-state-sync-key") {
-    return reviveAppStateSyncKey(value) as SignalDataTypeMap[T] | undefined;
-  }
-
-  const revived = reviveBaileysJson<SignalDataTypeMap[T]>(value);
-  return revived === null ? undefined : revived;
-}
-
-function parseCredsRow(row: Record<string, unknown>): WhatsAppAuthCredsRecord {
-  const creds = reviveBaileysJson<AuthenticationCreds>(row.creds);
-  if (!creds) {
-    throw new Error("Invalid WhatsApp auth creds row.");
-  }
-
-  return {
-    connectorKey: requireTrimmedKeyPart("connector key", row.connector_key),
-    creds,
-    createdAt: requireTimestampMillis(row.created_at, "WhatsApp auth created_at must be a valid timestamp."),
-    updatedAt: requireTimestampMillis(row.updated_at, "WhatsApp auth updated_at must be a valid timestamp."),
-  };
+  if (!row) return undefined;
+  const revived = parseEncryptedJson<unknown>(row, crypto);
+  if (type !== "app-state-sync-key") return revived as SignalDataTypeMap[T];
+  if (!isRecord(revived)) throw new Error("WhatsApp auth app-state-sync-key value must be an object.");
+  return proto.Message.AppStateSyncKeyData.fromObject(revived) as unknown as SignalDataTypeMap[T];
 }
 
 export class PostgresWhatsAppAuthStore {
   private readonly pool: PgPoolLike;
-  private readonly tables: ReturnType<typeof buildWhatsAppAuthTableNames>;
+  private readonly crypto: CredentialCrypto;
+  private readonly tables = buildWhatsAppAuthTableNames();
+  private readonly connectorTables = buildConnectorAccountTableNames();
 
   constructor(options: PostgresWhatsAppAuthStoreOptions) {
     this.pool = options.pool;
-    this.tables = buildWhatsAppAuthTableNames();
+    this.crypto = options.crypto;
   }
 
   async ensureSchema(): Promise<void> {
     await ensurePostgresWhatsAppAuthSchema(this.pool);
   }
 
-  async loadCreds(connectorKey: string): Promise<AuthenticationCreds> {
-    const normalizedConnectorKey = requireTrimmedKeyPart("connector key", connectorKey);
+  async hasAuthState(accountId: string): Promise<boolean> {
     const result = await this.pool.query(
-      `
-        SELECT *
-        FROM ${this.tables.authCreds}
-        WHERE connector_key = $1
-      `,
-      [normalizedConnectorKey],
+      `SELECT 1 FROM ${this.tables.authCreds} WHERE account_id = $1 LIMIT 1`,
+      [requireKeyPart("account id", accountId)],
     );
-
-    const row = result.rows[0];
-    if (!row) {
-      return initAuthCreds();
-    }
-
-    return parseCredsRow(row as Record<string, unknown>).creds;
+    return result.rows.length > 0;
   }
 
-  async saveCreds(connectorKey: string, creds: AuthenticationCreds): Promise<WhatsAppAuthCredsRecord> {
-    const normalizedConnectorKey = requireTrimmedKeyPart("connector key", connectorKey);
+  async loadCreds(accountId: string): Promise<AuthenticationCreds> {
+    const normalizedAccountId = requireKeyPart("account id", accountId);
     const result = await this.pool.query(
-      `
-        INSERT INTO ${this.tables.authCreds} (
-          connector_key,
-          creds
-        ) VALUES (
-          $1,
-          $2::jsonb
-        )
-        ON CONFLICT (connector_key)
-        DO UPDATE SET
-          creds = EXCLUDED.creds,
-          updated_at = NOW()
-        RETURNING *
-      `,
-      [
-        normalizedConnectorKey,
-        serializeBaileysJson(creds),
-      ],
+      `SELECT * FROM ${this.tables.authCreds} WHERE account_id = $1`,
+      [normalizedAccountId],
     );
+    const row = result.rows[0];
+    if (!row) return initAuthCreds();
+    return parseEncryptedJson<AuthenticationCreds>(row as Record<string, unknown>, this.crypto);
+  }
 
-    return parseCredsRow(result.rows[0] as Record<string, unknown>);
+  async saveCreds(accountId: string, creds: AuthenticationCreds): Promise<WhatsAppAuthCredsRecord> {
+    return this.writeCreds(this.pool, accountId, creds);
+  }
+
+  private async writeCreds(
+    queryable: PgQueryable,
+    accountId: string,
+    creds: AuthenticationCreds,
+  ): Promise<WhatsAppAuthCredsRecord> {
+    const normalizedAccountId = requireKeyPart("account id", accountId);
+    const encrypted = this.crypto.encrypt(serializeBaileysJson(creds));
+    const result = await queryable.query(`
+      INSERT INTO ${this.tables.authCreds} (
+        account_id, value_ciphertext, value_iv, value_tag, key_version
+      ) VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (account_id)
+      DO UPDATE SET
+        value_ciphertext = EXCLUDED.value_ciphertext,
+        value_iv = EXCLUDED.value_iv,
+        value_tag = EXCLUDED.value_tag,
+        key_version = EXCLUDED.key_version,
+        updated_at = NOW()
+      RETURNING account_id::text AS account_id, created_at, updated_at
+    `, [normalizedAccountId, encrypted.ciphertext, encrypted.iv, encrypted.tag, encrypted.keyVersion]);
+    const row = result.rows[0] as Record<string, unknown>;
+    return {
+      accountId: requireKeyPart("account id", row.account_id),
+      creds,
+      createdAt: requireTimestampMillis(row.created_at, "WhatsApp auth created_at must be a valid timestamp."),
+      updatedAt: requireTimestampMillis(row.updated_at, "WhatsApp auth updated_at must be a valid timestamp."),
+    };
   }
 
   async loadSignalKeys<T extends keyof SignalDataTypeMap>(
-    connectorKey: string,
+    accountId: string,
     type: T,
     ids: readonly string[],
-  ): Promise<{ [id: string]: SignalDataTypeMap[T] }> {
-    const normalizedConnectorKey = requireTrimmedKeyPart("connector key", connectorKey);
-    const normalizedType = requireTrimmedKeyPart("key category", type);
-    const normalizedIds = uniqueTrimmedStrings(ids.map((id) => requireTrimmedKeyPart("key id", id)));
-
-    if (normalizedIds.length === 0) {
-      return {};
+  ): Promise<{[id: string]: SignalDataTypeMap[T]}> {
+    const normalizedAccountId = requireKeyPart("account id", accountId);
+    const normalizedType = requireKeyPart("key category", type);
+    const normalizedIds = uniqueTrimmedStrings(ids.map((id) => requireKeyPart("key id", id)));
+    if (normalizedIds.length === 0) return {};
+    const result = await this.pool.query(`
+      SELECT key_id, value_ciphertext, value_iv, value_tag, key_version
+      FROM ${this.tables.authKeys}
+      WHERE account_id = $1 AND category = $2 AND key_id = ANY($3::text[])
+    `, [normalizedAccountId, normalizedType, normalizedIds]);
+    const rowsById = new Map<string, Record<string, unknown>>();
+    for (const raw of result.rows) {
+      const row = raw as Record<string, unknown>;
+      rowsById.set(requireKeyPart("key id", row.key_id), row);
     }
-
-    const result = await this.pool.query(
-      `
-        SELECT key_id, value
-        FROM ${this.tables.authKeys}
-        WHERE connector_key = $1
-          AND category = $2
-          AND key_id = ANY($3::text[])
-      `,
-      [
-        normalizedConnectorKey,
-        normalizedType,
-        normalizedIds,
-      ],
-    );
-
-    const valuesById = new Map<string, unknown>();
-    for (const row of result.rows as Array<Record<string, unknown>>) {
-      valuesById.set(requireTrimmedKeyPart("key id", row.key_id), row.value);
-    }
-
     const data: Record<string, SignalDataTypeMap[T] | undefined> = {};
-    for (const id of normalizedIds) {
-      data[id] = reviveSignalValue(type, valuesById.get(id));
-    }
-
-    return data as { [id: string]: SignalDataTypeMap[T] };
+    for (const id of normalizedIds) data[id] = reviveSignalValue(type, rowsById.get(id), this.crypto);
+    return data as {[id: string]: SignalDataTypeMap[T]};
   }
 
-  async saveSignalKeys(connectorKey: string, data: SignalDataSet): Promise<void> {
-    const normalizedConnectorKey = requireTrimmedKeyPart("connector key", connectorKey);
+  async saveSignalKeys(accountId: string, data: SignalDataSet): Promise<void> {
+    const normalizedAccountId = requireKeyPart("account id", accountId);
     const client = await this.pool.connect();
-
     try {
       await client.query("BEGIN");
-
-      for (const [category, entries] of Object.entries(data) as Array<[keyof SignalDataTypeMap, SignalDataSet[keyof SignalDataTypeMap]]>) {
-        if (!entries) {
-          continue;
-        }
-
-        const normalizedCategory = requireTrimmedKeyPart("key category", category);
-        for (const [id, value] of Object.entries(entries)) {
-          const normalizedId = requireTrimmedKeyPart("key id", id);
-          if (value === null) {
-            await client.query(
-              `
-                DELETE FROM ${this.tables.authKeys}
-                WHERE connector_key = $1
-                  AND category = $2
-                  AND key_id = $3
-              `,
-              [
-                normalizedConnectorKey,
-                normalizedCategory,
-                normalizedId,
-              ],
-            );
-            continue;
-          }
-
-          await client.query(
-            `
-              INSERT INTO ${this.tables.authKeys} (
-                connector_key,
-                category,
-                key_id,
-                value
-              ) VALUES (
-                $1,
-                $2,
-                $3,
-                $4::jsonb
-              )
-              ON CONFLICT (connector_key, category, key_id)
-              DO UPDATE SET
-                value = EXCLUDED.value,
-                updated_at = NOW()
-            `,
-            [
-              normalizedConnectorKey,
-              normalizedCategory,
-              normalizedId,
-              serializeBaileysJson(value),
-            ],
-          );
-        }
-      }
-
+      await this.writeSignalKeys(client, normalizedAccountId, data);
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
@@ -262,20 +191,115 @@ export class PostgresWhatsAppAuthStore {
     }
   }
 
-  async createAuthState(connectorKey: string): Promise<WhatsAppAuthStateHandle> {
-    const normalizedConnectorKey = requireTrimmedKeyPart("connector key", connectorKey);
-    const creds = await this.loadCreds(normalizedConnectorKey);
+  private async writeSignalKeys(
+    queryable: PgQueryable,
+    accountId: string,
+    data: SignalDataSet,
+  ): Promise<void> {
+    const normalizedAccountId = requireKeyPart("account id", accountId);
+    for (const [category, entries] of Object.entries(data) as Array<[keyof SignalDataTypeMap, SignalDataSet[keyof SignalDataTypeMap]]>) {
+      if (!entries) continue;
+      const normalizedCategory = requireKeyPart("key category", category);
+      for (const [id, value] of Object.entries(entries)) {
+        const normalizedId = requireKeyPart("key id", id);
+        if (value === null) {
+          await queryable.query(
+            `DELETE FROM ${this.tables.authKeys} WHERE account_id = $1 AND category = $2 AND key_id = $3`,
+            [normalizedAccountId, normalizedCategory, normalizedId],
+          );
+          continue;
+        }
+        const encrypted = this.crypto.encrypt(serializeBaileysJson(value));
+        await queryable.query(`
+          INSERT INTO ${this.tables.authKeys} (
+            account_id, category, key_id, value_ciphertext, value_iv, value_tag, key_version
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+          ON CONFLICT (account_id, category, key_id)
+          DO UPDATE SET
+            value_ciphertext = EXCLUDED.value_ciphertext,
+            value_iv = EXCLUDED.value_iv,
+            value_tag = EXCLUDED.value_tag,
+            key_version = EXCLUDED.key_version,
+            updated_at = NOW()
+        `, [
+          normalizedAccountId,
+          normalizedCategory,
+          normalizedId,
+          encrypted.ciphertext,
+          encrypted.iv,
+          encrypted.tag,
+          encrypted.keyVersion,
+        ]);
+      }
+    }
+  }
 
+  async deleteAuthState(accountId: string): Promise<void> {
+    const normalizedAccountId = requireKeyPart("account id", accountId);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(`DELETE FROM ${this.tables.authKeys} WHERE account_id = $1`, [normalizedAccountId]);
+      await client.query(`DELETE FROM ${this.tables.authCreds} WHERE account_id = $1`, [normalizedAccountId]);
+      await client.query(`DELETE FROM ${this.tables.runtimeStatus} WHERE account_id = $1`, [normalizedAccountId]);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  private async writeForEnabledAccount(
+    accountId: string,
+    write: (client: PgQueryable) => Promise<void>,
+  ): Promise<void> {
+    const normalizedAccountId = requireKeyPart("account id", accountId);
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      // Disable/reset must wait for any accepted worker write, then future writes
+      // see the disabled status and become no-ops.
+      const enabled = await client.query(`
+        SELECT 1
+        FROM ${this.connectorTables.connectorAccounts}
+        WHERE id = $1
+          AND source = 'whatsapp'
+          AND status = 'enabled'
+        FOR UPDATE
+      `, [normalizedAccountId]);
+      if (enabled.rows.length === 0) {
+        await client.query("COMMIT");
+        return;
+      }
+      await write(client);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async createAuthState(accountId: string): Promise<WhatsAppAuthStateHandle> {
+    const normalizedAccountId = requireKeyPart("account id", accountId);
+    const creds = await this.loadCreds(normalizedAccountId);
     return {
       state: {
         creds,
         keys: {
-          get: async (type, ids) => this.loadSignalKeys(normalizedConnectorKey, type, ids),
-          set: async (data) => this.saveSignalKeys(normalizedConnectorKey, data),
+          get: async (type, ids) => this.loadSignalKeys(normalizedAccountId, type, ids),
+          set: async (data) => this.writeForEnabledAccount(normalizedAccountId, async (client) => {
+            await this.writeSignalKeys(client, normalizedAccountId, data);
+          }),
         },
       },
       saveCreds: async () => {
-        await this.saveCreds(normalizedConnectorKey, creds);
+        await this.writeForEnabledAccount(normalizedAccountId, async (client) => {
+          await this.writeCreds(client, normalizedAccountId, creds);
+        });
       },
     };
   }
@@ -283,7 +307,6 @@ export class PostgresWhatsAppAuthStore {
   createTransientAuthState(): TransientWhatsAppAuthStateHandle {
     const creds = initAuthCreds();
     const keyStore = new Map<keyof SignalDataTypeMap, Map<string, SignalDataTypeMap[keyof SignalDataTypeMap]>>();
-
     return {
       state: {
         creds,
@@ -291,54 +314,70 @@ export class PostgresWhatsAppAuthStore {
           get: async (type, ids) => {
             const values = keyStore.get(type);
             const result: Record<string, SignalDataTypeMap[typeof type] | undefined> = {};
-            for (const id of ids) {
-              result[id] = values?.get(id) as SignalDataTypeMap[typeof type] | undefined;
-            }
-
-            return result as { [id: string]: SignalDataTypeMap[typeof type] };
+            for (const id of ids) result[id] = values?.get(id) as SignalDataTypeMap[typeof type] | undefined;
+            return result as {[id: string]: SignalDataTypeMap[typeof type]};
           },
           set: async (data) => {
             for (const [category, entries] of Object.entries(data) as Array<[keyof SignalDataTypeMap, SignalDataSet[keyof SignalDataTypeMap]]>) {
-              if (!entries) {
-                continue;
-              }
-
+              if (!entries) continue;
               let values = keyStore.get(category);
               if (!values) {
                 values = new Map();
                 keyStore.set(category, values);
               }
-
               for (const [id, value] of Object.entries(entries)) {
-                if (value === null) {
-                  values.delete(id);
-                  continue;
-                }
-
-                values.set(id, value as SignalDataTypeMap[keyof SignalDataTypeMap]);
+                if (value === null) values.delete(id);
+                else values.set(id, value as SignalDataTypeMap[keyof SignalDataTypeMap]);
               }
             }
           },
         },
       },
       saveCreds: async () => {},
-      promoteTo: async (connectorKey) => {
-        const normalizedConnectorKey = requireTrimmedKeyPart("connector key", connectorKey);
-        await this.saveCreds(normalizedConnectorKey, creds);
-
-        for (const [category, values] of keyStore.entries()) {
-          if (values.size === 0) {
-            continue;
+      promoteTo: async (accountId) => {
+        const normalizedAccountId = requireKeyPart("account id", accountId);
+        const externalAccountId = creds.me?.id?.trim();
+        if (!creds.registered || !externalAccountId) {
+          throw new Error("WhatsApp linking completed without a registered account identity.");
+        }
+        const displayName = creds.me?.name?.trim() || creds.me?.notify?.trim() || null;
+        const client = await this.pool.connect();
+        try {
+          await client.query("BEGIN");
+          const target = await client.query(`
+            SELECT 1
+            FROM ${this.connectorTables.connectorAccounts}
+            WHERE id = $1 AND source = 'whatsapp' AND owner_kind = 'agent'
+            FOR UPDATE
+          `, [normalizedAccountId]);
+          if (target.rows.length !== 1) {
+            throw new Error("WhatsApp auth can only be promoted to an agent-owned connector account.");
           }
-
-          const entries: Record<string, SignalDataTypeMap[keyof SignalDataTypeMap]> = {};
-          for (const [id, value] of values.entries()) {
-            entries[id] = value;
+          await this.writeCreds(client, normalizedAccountId, creds);
+          for (const [category, values] of keyStore.entries()) {
+            if (values.size === 0) continue;
+            const entries: Record<string, SignalDataTypeMap[keyof SignalDataTypeMap]> = {};
+            for (const [id, value] of values.entries()) entries[id] = value;
+            await this.writeSignalKeys(client, normalizedAccountId, {[category]: entries});
           }
-
-          await this.saveSignalKeys(normalizedConnectorKey, {
-            [category]: entries,
-          } as SignalDataSet);
+          const promoted = await client.query(`
+            UPDATE ${this.connectorTables.connectorAccounts}
+            SET external_account_id = $2,
+                display_name = COALESCE(display_name, $3),
+                status = 'enabled',
+                updated_at = NOW()
+            WHERE id = $1 AND source = 'whatsapp' AND owner_kind = 'agent'
+            RETURNING id
+          `, [normalizedAccountId, externalAccountId, displayName]);
+          if (promoted.rows.length !== 1) {
+            throw new Error("WhatsApp auth can only be promoted to an agent-owned connector account.");
+          }
+          await client.query("COMMIT");
+        } catch (error) {
+          await client.query("ROLLBACK");
+          throw error;
+        } finally {
+          client.release();
         }
       },
     };

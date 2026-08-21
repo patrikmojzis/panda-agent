@@ -280,18 +280,20 @@ Telegram connector keys remain the Telegram bot id. The account key (for example
 WhatsApp example:
 
 ```bash
-panda whatsapp whoami
-panda whatsapp link --phone 421900000000
-panda whatsapp pair --identity alice --actor 421911111111
-panda whatsapp unpair --actor 421911111111
-panda whatsapp run
+export CREDENTIALS_MASTER_KEY=...
+panda whatsapp account create main --agent clawd
+panda whatsapp account link main --phone 421900000000
+panda whatsapp account whoami main
+panda whatsapp pair --account main --identity alice --actor 421911111111
+panda whatsapp unpair --account main --actor 421911111111
+panda whatsapp run --all-enabled
 ```
 
 Channel workers handle I/O.
 `panda run` still owns routing, sessions, and inference.
 
-For WhatsApp, `link --phone` links the connector account itself.
-`pair --identity --actor` authorizes a sender phone number to speak as a Panda identity.
+For WhatsApp, `account link --phone` links one agent-owned connector account.
+`pair --account --identity --actor` authorizes an exact sender phone/JID for that account.
 
 For a brand-new channel conversation:
 

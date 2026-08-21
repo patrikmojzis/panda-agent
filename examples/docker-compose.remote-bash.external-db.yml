@@ -141,7 +141,7 @@ services:
 
   panda-whatsapp:
     image: panda-app:latest
-    command: ["whatsapp", "run"]
+    command: ["whatsapp", "run", "--all-enabled"]
     restart: unless-stopped
     stop_grace_period: 30s
     profiles: ["whatsapp"]
@@ -149,7 +149,6 @@ services:
       - ${PANDA_STACK_SERVICE_ENV_FILE:-../.env}
     environment:
       DATABASE_URL: ${DATABASE_URL}
-      WHATSAPP_CONNECTOR_KEY: ${WHATSAPP_CONNECTOR_KEY:-main}
       PANDA_WHATSAPP_HEALTH_PORT: ${PANDA_WHATSAPP_HEALTH_PORT:-8093}
       TZ: ${TZ:-UTC}
     volumes:

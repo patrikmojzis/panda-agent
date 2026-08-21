@@ -153,7 +153,7 @@ describe("buildDefaultAgentLlmContexts", () => {
     expect(dump).toContain("`panda telegram unpin <message-id> --chat <conversation-id> --connector <key>`");
     expect(dump).toContain("`panda discord channel list [--connector <key>]`");
     expect(dump).toContain("`panda discord send --channel <channel-id> --connector <key> [--thread <thread-id>] [--guild <guild-id>] (--text <text|@file|@->|--stdin|--image <path>|--file <path>)... [--reply-to-message-id <message-id>]`");
-    expect(dump).toContain("`panda whatsapp chat list [--connector <key>]`");
+    expect(dump).toContain("`panda whatsapp chat list --connector <key>`");
     expect(dump).toContain("`panda whatsapp send --chat <jid-or-phone> --connector <key> (--text <text|@file|@->|--stdin|--image <path>|--file <path>)...`");
     expect(dump).toContain("Direct native tools remain: bash, background_job_status, background_job_wait, background_job_cancel, view_media, thinking_set.");
     expect(dump).not.toContain("panda session prompt.set");

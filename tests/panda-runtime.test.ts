@@ -196,7 +196,10 @@ describe("createRuntime", () => {
   });
 
   it("releases the notification client and pool when LISTEN setup fails", async () => {
-    runtimeMocks.client.query.mockRejectedValueOnce(new Error("listen blew up"));
+    runtimeMocks.client.query.mockImplementation(async (sql: string) => {
+      if (sql.trimStart().startsWith("LISTEN")) throw new Error("listen blew up");
+      return {rows: []};
+    });
 
     await expect(createRuntime({
       dbUrl: "postgres://panda:test@localhost:5432/panda",
@@ -205,7 +208,8 @@ describe("createRuntime", () => {
     })).rejects.toThrow("listen blew up");
 
     expect(runtimeMocks.client.off).toHaveBeenCalledTimes(3);
-    expect(runtimeMocks.client.release).toHaveBeenCalledTimes(1);
+    // One pinned client is used by the transactional WhatsApp hard cut and one by LISTEN.
+    expect(runtimeMocks.client.release).toHaveBeenCalledTimes(2);
     expect(runtimeMocks.poolInstances).toHaveLength(3);
     expect(runtimeMocks.poolInstances.map((pool) => pool.end.mock.calls.length)).toEqual([1, 1, 1]);
   });

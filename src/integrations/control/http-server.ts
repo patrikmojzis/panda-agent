@@ -767,6 +767,30 @@ function matchTelegramSetupStatusPath(path: string): {agentKey: string} | null {
   return {agentKey: decodeURIComponent(match[1]!)};
 }
 
+function matchWhatsAppSetupStatusPath(path: string): {agentKey: string} | null {
+  const match = /^\/agents\/([^/]+)\/whatsapp\/setup-status$/.exec(path);
+  return match ? {agentKey: decodeURIComponent(match[1]!)} : null;
+}
+
+function matchWhatsAppLinkAttemptsPath(path: string): {agentKey: string; accountKey: string} | null {
+  const match = /^\/agents\/([^/]+)\/whatsapp\/accounts\/([^/]+)\/link-attempts$/.exec(path);
+  return match ? {agentKey: decodeURIComponent(match[1]!), accountKey: decodeURIComponent(match[2]!)} : null;
+}
+
+function matchWhatsAppLinkAttemptPath(path: string): {agentKey: string; accountKey: string; attemptId: string} | null {
+  const match = /^\/agents\/([^/]+)\/whatsapp\/accounts\/([^/]+)\/link-attempts\/([^/]+)$/.exec(path);
+  return match ? {
+    agentKey: decodeURIComponent(match[1]!),
+    accountKey: decodeURIComponent(match[2]!),
+    attemptId: decodeURIComponent(match[3]!),
+  } : null;
+}
+
+function matchWhatsAppLinkPath(path: string): {agentKey: string; accountKey: string} | null {
+  const match = /^\/agents\/([^/]+)\/whatsapp\/accounts\/([^/]+)\/link$/.exec(path);
+  return match ? {agentKey: decodeURIComponent(match[1]!), accountKey: decodeURIComponent(match[2]!)} : null;
+}
+
 function matchBindingPath(path: string): {agentKey: string; source: string; connectorKey: string; externalConversationId: string} | null {
   const match = /^\/agents\/([^/]+)\/bindings\/([^/]+)\/([^/]+)\/([^/]+)$/.exec(path);
   if (!match) return null;
@@ -1677,6 +1701,81 @@ export async function startControlServer(options: StartControlServerOptions): Pr
           writeJsonResponse(response, 200, {status});
         } catch (error) {
           throw new ControlHttpError(400, error instanceof Error ? error.message : "Control Telegram setup status read failed.");
+        }
+        return;
+      }
+
+      const whatsAppSetupStatusPath = matchWhatsAppSetupStatusPath(path);
+      if (whatsAppSetupStatusPath && request.method === "GET") {
+        try {
+          const accountKey = url.searchParams.get("account_key") ?? url.searchParams.get("accountKey");
+          const status = await options.operator.getWhatsAppSetupStatus(session, whatsAppSetupStatusPath.agentKey, {accountKey});
+          writeJsonResponse(response, 200, {status});
+        } catch (error) {
+          throw new ControlHttpError(400, error instanceof Error ? error.message : "Control WhatsApp setup status read failed.");
+        }
+        return;
+      }
+
+      const whatsAppLinkAttemptsPath = matchWhatsAppLinkAttemptsPath(path);
+      if (whatsAppLinkAttemptsPath && request.method === "POST") {
+        requireCsrf(request, options.auth, session);
+        try {
+          const result = await options.operator.startWhatsAppLinkAttempt(
+            session,
+            whatsAppLinkAttemptsPath.agentKey,
+            whatsAppLinkAttemptsPath.accountKey,
+            await readBody(request),
+          );
+          await recordOperatorAudit(options.auth, session, result.audit);
+          writeJsonResponse(response, 202, {attempt: result.attempt});
+        } catch (error) {
+          throw new ControlHttpError(400, error instanceof Error ? error.message : "Control WhatsApp link failed to start.");
+        }
+        return;
+      }
+
+      const whatsAppLinkAttemptPath = matchWhatsAppLinkAttemptPath(path);
+      if (whatsAppLinkAttemptPath && request.method === "GET") {
+        try {
+          const attempt = await options.operator.getWhatsAppLinkAttempt(
+            session,
+            whatsAppLinkAttemptPath.agentKey,
+            whatsAppLinkAttemptPath.accountKey,
+            whatsAppLinkAttemptPath.attemptId,
+          );
+          writeJsonResponse(response, 200, {attempt});
+        } catch (error) {
+          throw new ControlHttpError(404, error instanceof Error ? error.message : "Control WhatsApp link attempt was not found.");
+        }
+        return;
+      }
+      if (whatsAppLinkAttemptPath && request.method === "DELETE") {
+        requireCsrf(request, options.auth, session);
+        try {
+          const result = await options.operator.cancelWhatsAppLinkAttempt(
+            session,
+            whatsAppLinkAttemptPath.agentKey,
+            whatsAppLinkAttemptPath.accountKey,
+            whatsAppLinkAttemptPath.attemptId,
+          );
+          await recordOperatorAudit(options.auth, session, result.audit);
+          writeJsonResponse(response, 200, {attempt: result.attempt});
+        } catch (error) {
+          throw new ControlHttpError(400, error instanceof Error ? error.message : "Control WhatsApp link attempt cancellation failed.");
+        }
+        return;
+      }
+
+      const whatsAppLinkPath = matchWhatsAppLinkPath(path);
+      if (whatsAppLinkPath && request.method === "DELETE") {
+        requireCsrf(request, options.auth, session);
+        try {
+          const result = await options.operator.resetWhatsAppLink(session, whatsAppLinkPath.agentKey, whatsAppLinkPath.accountKey);
+          await recordOperatorAudit(options.auth, session, result.audit);
+          writeJsonResponse(response, 200, {connector: result.connector});
+        } catch (error) {
+          throw new ControlHttpError(400, error instanceof Error ? error.message : "Control WhatsApp link reset failed.");
         }
         return;
       }

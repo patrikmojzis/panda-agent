@@ -1495,7 +1495,7 @@ describe("Panda command CLI discovery", () => {
     });
     expect(JSON.parse(String(write.mock.calls[14]?.[0]))).toMatchObject({
       name: "whatsapp.chat.list",
-      usage: "panda whatsapp chat list [--connector <key>]",
+      usage: "panda whatsapp chat list --connector <key>",
       inputModes: ["flags", "json", "stdin", "file"],
       arguments: expect.arrayContaining([
         expect.objectContaining({
@@ -1510,7 +1510,7 @@ describe("Panda command CLI discovery", () => {
     });
     expect(JSON.parse(String(write.mock.calls[15]?.[0]))).toMatchObject({
       name: "whatsapp.history",
-      usage: "panda whatsapp history --chat <jid-or-phone> [--connector <key>] [--direction inbound|outbound|all] [--limit <n>]",
+      usage: "panda whatsapp history --chat <jid-or-phone> --connector <key> [--direction inbound|outbound|all] [--limit <n>]",
       arguments: expect.arrayContaining([
         expect.objectContaining({
           name: "chat",

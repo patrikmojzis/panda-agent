@@ -63,6 +63,7 @@ describe("WhatsApp pairing cycle", () => {
     const pairingCodes: string[] = [];
 
     const cycle = waitForWhatsAppPairingCycle({
+      accountId: "account-1",
       connectorKey: "main",
       phoneNumber: "421944478544",
       socket,
@@ -92,7 +93,7 @@ describe("WhatsApp pairing cycle", () => {
         accountId: "421944478544@s.whatsapp.net",
       },
     });
-    expect(authHandle.promoteTo).toHaveBeenCalledWith("main");
+    expect(authHandle.promoteTo).toHaveBeenCalledWith("account-1");
     expect(socket.ev.off).toHaveBeenCalledWith("connection.update", connectionHandler);
   });
 
@@ -106,6 +107,7 @@ describe("WhatsApp pairing cycle", () => {
     });
 
     const cycle = waitForWhatsAppPairingCycle({
+      accountId: "account-1",
       connectorKey: "main",
       phoneNumber: "421944478544",
       socket,
@@ -127,6 +129,7 @@ describe("WhatsApp pairing cycle", () => {
     const socket = createSocket();
 
     const cycle = waitForWhatsAppPairingCycle({
+      accountId: "account-1",
       connectorKey: "main",
       phoneNumber: "421944478544",
       socket,
@@ -161,6 +164,7 @@ describe("WhatsApp pairing cycle", () => {
     });
 
     const cycle = waitForWhatsAppPairingCycle({
+      accountId: "account-1",
       connectorKey: "main",
       phoneNumber: "421944478544",
       socket,
@@ -177,7 +181,64 @@ describe("WhatsApp pairing cycle", () => {
         accountId: "421944478544:1@s.whatsapp.net",
       },
     });
-    expect(authHandle.promoteTo).toHaveBeenCalledWith("main");
+    expect(authHandle.promoteTo).toHaveBeenCalledWith("account-1");
+  });
+
+  it("latches pairing completion while auth promotion is in flight", async () => {
+    const socket = createSocket();
+    let finishPromotion!: () => void;
+    const authHandle = createAuthHandle({
+      registered: true,
+      me: {id: "421944478544@s.whatsapp.net"},
+    });
+    authHandle.promoteTo = vi.fn(() => new Promise<void>((resolve) => {
+      finishPromotion = resolve;
+    }));
+    const cycle = waitForWhatsAppPairingCycle({
+      accountId: "account-1",
+      connectorKey: "main",
+      phoneNumber: "421944478544",
+      socket,
+      authHandle,
+    });
+    await Promise.resolve();
+    const connectionHandler = readConnectionHandler(socket);
+
+    connectionHandler({connection: "open"});
+    connectionHandler({
+      connection: "close",
+      lastDisconnect: {error: {output: {statusCode: 515}}},
+    });
+    finishPromotion();
+
+    await expect(cycle).resolves.toMatchObject({
+      pairedIdentity: {accountId: "421944478544@s.whatsapp.net"},
+    });
+    expect(authHandle.promoteTo).toHaveBeenCalledOnce();
+  });
+
+  it("does not promote auth after the attempt closes its promotion gate", async () => {
+    const socket = createSocket();
+    const authHandle = createAuthHandle({
+      registered: true,
+      me: {id: "421944478544@s.whatsapp.net"},
+    });
+    const cycle = waitForWhatsAppPairingCycle({
+      accountId: "account-1",
+      connectorKey: "main",
+      phoneNumber: "421944478544",
+      socket,
+      authHandle,
+      onPromotionStart: () => {
+        throw new Error("attempt cancelled");
+      },
+    });
+    await Promise.resolve();
+
+    readConnectionHandler(socket)({connection: "open"});
+
+    await expect(cycle).rejects.toThrow("attempt cancelled");
+    expect(authHandle.promoteTo).not.toHaveBeenCalled();
   });
 });
 

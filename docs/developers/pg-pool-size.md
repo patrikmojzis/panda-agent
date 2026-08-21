@@ -31,7 +31,7 @@ Today the expensive pieces are not just burst traffic. They are the always-on cl
 - `panda-core` has a separate readonly pool, but it is lazy and only exists after the readonly tool is actually used.
 - `panda-telegram/<connectorKey>` keeps one shared worker `LISTEN` client.
 - `panda-discord/<accountKey>` runs one pool per enabled Discord account in all-enabled mode. Its action, delivery, and voice notification channels share one long-lived `LISTEN` client; voice does not pin another client.
-- `panda-whatsapp/<connectorKey>` keeps one shared worker `LISTEN` client.
+- `panda-whatsapp/<connectorKey>` runs one bounded pool per enabled WhatsApp account and keeps one shared worker `LISTEN` client.
 - Connector ownership uses lease rows with TTL, not pinned advisory-lock sessions.
 - Docker healthchecks hit local HTTP endpoints, not the database.
 
@@ -47,11 +47,11 @@ For a small 22-slot Postgres plan like `clankerino`, use this core budget:
 - `panda-core` readonly pool: `2`, lazy
 - `panda-telegram`: `2` in all-enabled Docker stack (`PANDA_TELEGRAM_DB_POOL_MAX`), `5` for a single debug worker
 - `panda-discord`: `2` per enabled Discord account in the Docker stack
-- `panda-whatsapp`: `5`
+- `panda-whatsapp`: `2` per enabled account in all-enabled mode, `5` for a single debug worker
 
-Core plus one `5`-slot connector totals `18` active slots, or `20` after the lazy readonly pool is used.
+Core plus one `5`-slot connector totals `18` active slots, or `20` after the lazy readonly pool is used. All-enabled WhatsApp accounts add `2` slots each by default.
 
-Core plus Telegram, WhatsApp, and Discord accounts can exceed a 22-slot plan quickly. Budget Discord as `enabled accounts x PANDA_DISCORD_DB_POOL_MAX`, lower connector pool caps, or upsize the database before enabling several channel daemons together.
+Core plus Telegram, WhatsApp, and Discord accounts can exceed a 22-slot plan quickly. Budget Discord and WhatsApp as `enabled accounts x per-account pool max`, lower connector pool caps, or upsize the database before enabling several channel daemons together.
 
 That is intentionally explicit. It gives Panda room to breathe without pretending the database is infinite.
 

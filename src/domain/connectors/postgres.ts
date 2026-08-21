@@ -303,6 +303,29 @@ export class PostgresConnectorAccountStore {
     return this.updateAccountStatus(source, accountKey, "disabled");
   }
 
+  async setAccountStatus(
+    source: string,
+    accountKey: string,
+    status: ConnectorAccountStatus,
+  ): Promise<ConnectorAccountRecord> {
+    return this.updateAccountStatus(source, accountKey, status);
+  }
+
+  async clearAccountExternalIdentity(source: string, accountKey: string): Promise<ConnectorAccountRecord> {
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.connectorAccounts}
+      SET external_account_id = NULL,
+          external_username = NULL,
+          status = 'disabled',
+          updated_at = NOW()
+      WHERE source = $1 AND account_key = $2
+      RETURNING *
+    `, [normalizeConnectorSource(source), normalizeConnectorAccountKey(accountKey)]);
+    const row = result.rows[0];
+    if (!row) throw new Error(`Unknown connector account ${source}/${accountKey}.`);
+    return parseAccountRow(row as Record<string, unknown>);
+  }
+
   async setSecret(
     accountId: string,
     secretKey: string,

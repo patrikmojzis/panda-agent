@@ -23,14 +23,17 @@ export interface WhatsAppPairingAuthHandle {
   state: {
     creds: WhatsAppAccountCreds;
   };
-  promoteTo(connectorKey: string): Promise<void>;
+  promoteTo(accountId: string): Promise<void>;
 }
 
 export interface WhatsAppPairingCycleOptions {
+  accountId: string;
   connectorKey: string;
   phoneNumber: string;
   socket: Pick<WASocket, "ev" | "requestPairingCode">;
   authHandle: WhatsAppPairingAuthHandle;
+  isStopping?: () => boolean;
+  onPromotionStart?: () => void;
   pairingCode?: string;
   pairingCodeRequestDelayMs?: number;
   onPairingCode?: (code: string) => void;
@@ -120,14 +123,30 @@ export async function waitForWhatsAppPairingCycle(
     };
 
     const finishPaired = () => {
-      options.authHandle.promoteTo(options.connectorKey)
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      if (options.isStopping?.()) {
+        reject(new Error(`WhatsApp connector ${options.connectorKey} pairing was cancelled.`));
+        return;
+      }
+      try {
+        options.onPromotionStart?.();
+      } catch (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+      options.authHandle.promoteTo(options.accountId)
         .then(() => {
-          finish({
+          resolve({
             pairedIdentity: toWhatsAppWhoamiResult(options.connectorKey, options.authHandle.state.creds),
           });
         })
         .catch((error) => {
-          fail(error instanceof Error ? error : new Error(String(error)));
+          reject(error instanceof Error ? error : new Error(String(error)));
         });
     };
 

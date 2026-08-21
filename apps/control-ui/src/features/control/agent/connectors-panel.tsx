@@ -1,6 +1,17 @@
 import * as React from "react"
 import type { ColumnDef } from "@tanstack/react-table"
-import { Link2, Mail, MessageCircle, Pencil, Plug, Plus, RouteIcon, ShieldCheck, Trash2, UserRound } from "lucide-react"
+import {
+  Link2,
+  Mail,
+  MessageCircle,
+  Pencil,
+  Plug,
+  Plus,
+  RouteIcon,
+  ShieldCheck,
+  Trash2,
+  UserRound,
+} from "lucide-react"
 
 import {
   Cell,
@@ -52,6 +63,7 @@ import {
   useEmailAllowedRecipientSheet,
   useEmailConnectorSheet,
   useTelegramConnectorSheet,
+  useWhatsAppConnectorSheet,
   useEmailRouteSheet,
 } from "@/features/control/forms/use-control-form-sheets"
 import {
@@ -73,6 +85,7 @@ const connectorSourceFilterOptions = [
   { label: "Discord", value: "discord" },
   { label: "Email", value: "email" },
   { label: "Telegram", value: "telegram" },
+  { label: "WhatsApp", value: "whatsapp" },
 ]
 
 const connectorStatusFilterOptions = [
@@ -86,6 +99,7 @@ const bindingSourceFilterOptions = [
   { label: "Discord", value: "discord" },
   { label: "Email", value: "email" },
   { label: "Telegram", value: "telegram" },
+  { label: "WhatsApp", value: "whatsapp" },
 ]
 
 const channelActorSourceFilterOptions = [
@@ -99,6 +113,7 @@ export function ConnectorsPanel({ agentKey }: { agentKey: string }) {
   const discordSheet = useDiscordConnectorSheet()
   const emailSheet = useEmailConnectorSheet()
   const telegramSheet = useTelegramConnectorSheet()
+  const whatsappSheet = useWhatsAppConnectorSheet()
   const table = useDataTableState(`agent:${agentKey}:connectors`)
   const connectors = useAgentConnectors(agentKey, table.params)
   const setEnabled = useToastMutation({
@@ -141,7 +156,11 @@ export function ConnectorsPanel({ agentKey }: { agentKey: string }) {
     },
     {
       accessorKey: "secretKeys",
-      meta: { label: "Credential keys", wrap: true, maxWidthClassName: "max-w-72" },
+      meta: {
+        label: "Credential keys",
+        wrap: true,
+        maxWidthClassName: "max-w-72",
+      },
       header: renderColumnHeader,
       enableSorting: false,
       cell: ({ row }) => (
@@ -149,7 +168,7 @@ export function ConnectorsPanel({ agentKey }: { agentKey: string }) {
           values={
             row.original.secretKeys.length > 0
               ? row.original.secretKeys
-              : row.original.email?.credentialKeys ?? []
+              : (row.original.email?.credentialKeys ?? [])
           }
           className="max-w-64"
         />
@@ -164,7 +183,10 @@ export function ConnectorsPanel({ agentKey }: { agentKey: string }) {
       cell: ({ row }) => {
         const enabled = row.original.status !== "disabled"
         const editable =
-          row.original.source === "discord" || row.original.source === "email" || row.original.source === "telegram"
+          row.original.source === "discord" ||
+          row.original.source === "email" ||
+          row.original.source === "telegram" ||
+          row.original.source === "whatsapp"
         return (
           <RowActionsMenu
             triggerLabel={`Open actions for connector ${row.original.accountKey}`}
@@ -182,14 +204,35 @@ export function ConnectorsPanel({ agentKey }: { agentKey: string }) {
                   }),
               },
               {
-                label: "Edit",
-                icon: <Pencil className="size-4" />,
+                label: row.original.source === "whatsapp" ? "Manage" : "Edit",
+                icon:
+                  row.original.source === "whatsapp" ? (
+                    <MessageCircle className="size-4" />
+                  ) : (
+                    <Pencil className="size-4" />
+                  ),
                 disabled: !editable,
                 onSelect: () => {
+                  if (row.original.source === "whatsapp") {
+                    whatsappSheet.setOpen(true, {
+                      context: { agentKey },
+                      defaultData: {
+                        accountKey: row.original.accountKey,
+                        displayName: row.original.displayName ?? "",
+                        phone: "",
+                      },
+                      entity: row.original,
+                    })
+                    return
+                  }
                   if (row.original.source === "telegram") {
                     telegramSheet.setOpen(true, {
                       context: { agentKey },
-                      defaultData: {accountKey: row.original.accountKey, botToken: "", replace: true},
+                      defaultData: {
+                        accountKey: row.original.accountKey,
+                        botToken: "",
+                        replace: true,
+                      },
                       entity: row.original,
                     })
                     return
@@ -252,7 +295,7 @@ export function ConnectorsPanel({ agentKey }: { agentKey: string }) {
           onRetry={() => void connectors.refetch()}
           rowKey={(row) => row.id}
           emptyLabel="No connector accounts for this agent."
-          emptyDescription="Add Discord, email, or Telegram accounts here. Telegram setup validates and stores the bot token write-only; no CLI plumbing required."
+          emptyDescription="Add Discord, email, Telegram, or WhatsApp accounts here. Channel credentials and WhatsApp auth stay write-only."
           emptyAction={
             <ConnectorPrerequisiteActions
               onAddDiscord={() =>
@@ -261,7 +304,26 @@ export function ConnectorsPanel({ agentKey }: { agentKey: string }) {
               onAddEmail={() =>
                 emailSheet.setOpen(true, { context: { agentKey } })
               }
-              onAddTelegram={() => telegramSheet.setOpen(true, { context: { agentKey }, defaultData: { accountKey: suggestedTelegramAccountKey(agentKey), botToken: "", replace: false } })}
+              onAddTelegram={() =>
+                telegramSheet.setOpen(true, {
+                  context: { agentKey },
+                  defaultData: {
+                    accountKey: suggestedTelegramAccountKey(agentKey),
+                    botToken: "",
+                    replace: false,
+                  },
+                })
+              }
+              onAddWhatsApp={() =>
+                whatsappSheet.setOpen(true, {
+                  context: { agentKey },
+                  defaultData: {
+                    accountKey: suggestedWhatsAppAccountKey(agentKey),
+                    displayName: "",
+                    phone: "",
+                  },
+                })
+              }
             />
           }
           mobileColumnVisibility={mobileHiddenColumns(
@@ -276,7 +338,26 @@ export function ConnectorsPanel({ agentKey }: { agentKey: string }) {
               onAddEmail={() =>
                 emailSheet.setOpen(true, { context: { agentKey } })
               }
-              onAddTelegram={() => telegramSheet.setOpen(true, { context: { agentKey }, defaultData: { accountKey: suggestedTelegramAccountKey(agentKey), botToken: "", replace: false } })}
+              onAddTelegram={() =>
+                telegramSheet.setOpen(true, {
+                  context: { agentKey },
+                  defaultData: {
+                    accountKey: suggestedTelegramAccountKey(agentKey),
+                    botToken: "",
+                    replace: false,
+                  },
+                })
+              }
+              onAddWhatsApp={() =>
+                whatsappSheet.setOpen(true, {
+                  context: { agentKey },
+                  defaultData: {
+                    accountKey: suggestedWhatsAppAccountKey(agentKey),
+                    displayName: "",
+                    phone: "",
+                  },
+                })
+              }
             />
           }
         />
@@ -290,6 +371,10 @@ export function ConnectorsPanel({ agentKey }: { agentKey: string }) {
 }
 
 function suggestedTelegramAccountKey(agentKey: string) {
+  return agentKey === "clawd" ? "main" : agentKey
+}
+
+function suggestedWhatsAppAccountKey(agentKey: string) {
   return agentKey === "clawd" ? "main" : agentKey
 }
 
@@ -347,7 +432,9 @@ function DiscordActorPairingsPanel({ agentKey }: { agentKey: string }) {
       enableSorting: true,
       enableHiding: false,
       cell: ({ row }) => (
-        <Cell className="font-mono text-xs">{row.original.externalActorId}</Cell>
+        <Cell className="font-mono text-xs">
+          {row.original.externalActorId}
+        </Cell>
       ),
     },
     {
@@ -357,7 +444,9 @@ function DiscordActorPairingsPanel({ agentKey }: { agentKey: string }) {
       enableSorting: true,
       cell: ({ row }) => (
         <div className="grid min-w-0 gap-0.5">
-          <span className="truncate font-medium">{row.original.identityHandle}</span>
+          <span className="truncate font-medium">
+            {row.original.identityHandle}
+          </span>
           <span className="truncate text-xs text-muted-foreground">
             {row.original.identityDisplayName}
           </span>
@@ -533,7 +622,9 @@ function ChannelActorPairingsPanel({ agentKey }: { agentKey: string }) {
       enableSorting: true,
       cell: ({ row }) => (
         <div className="grid min-w-0 gap-0.5">
-          <span className="truncate font-medium">{row.original.identityHandle}</span>
+          <span className="truncate font-medium">
+            {row.original.identityHandle}
+          </span>
           <span className="truncate text-xs text-muted-foreground">
             {row.original.identityDisplayName}
           </span>
@@ -602,7 +693,10 @@ function ChannelActorPairingsPanel({ agentKey }: { agentKey: string }) {
             Pair actor
           </Button>
         }
-        mobileColumnVisibility={mobileHiddenColumns("connectorKey", "updatedAt")}
+        mobileColumnVisibility={mobileHiddenColumns(
+          "connectorKey",
+          "updatedAt"
+        )}
         toolbarActions={
           <Button size="sm" onClick={openActorPairing}>
             <MessageCircle className="size-4" />
@@ -770,7 +864,9 @@ function EmailRoutesPanel({ agentKey }: { agentKey: string }) {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => emailSheet.setOpen(true, { context: { agentKey } })}
+              onClick={() =>
+                emailSheet.setOpen(true, { context: { agentKey } })
+              }
             >
               <Mail className="size-4" />
               Add email account
@@ -793,7 +889,9 @@ function EmailRoutesPanel({ agentKey }: { agentKey: string }) {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => emailSheet.setOpen(true, { context: { agentKey } })}
+              onClick={() =>
+                emailSheet.setOpen(true, { context: { agentKey } })
+              }
             >
               <Mail className="size-4" />
               Add email account
@@ -938,7 +1036,9 @@ function EmailAllowedRecipientsPanel({ agentKey }: { agentKey: string }) {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => emailSheet.setOpen(true, { context: { agentKey } })}
+              onClick={() =>
+                emailSheet.setOpen(true, { context: { agentKey } })
+              }
             >
               <Mail className="size-4" />
               Add email account
@@ -961,7 +1061,9 @@ function EmailAllowedRecipientsPanel({ agentKey }: { agentKey: string }) {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => emailSheet.setOpen(true, { context: { agentKey } })}
+              onClick={() =>
+                emailSheet.setOpen(true, { context: { agentKey } })
+              }
             >
               <Mail className="size-4" />
               Add email account
@@ -989,13 +1091,17 @@ export function BindingsPanel({
   const discordSheet = useDiscordConnectorSheet()
   const emailSheet = useEmailConnectorSheet()
   const telegramSheet = useTelegramConnectorSheet()
+  const whatsappSheet = useWhatsAppConnectorSheet()
   const table = useDataTableState(
     sessionId
       ? `agent:${agentKey}:session:${sessionId}:bindings`
       : `agent:${agentKey}:bindings`
   )
   const bindingParams = React.useMemo(
-    () => ({ ...table.params, ...(sessionId ? { session_id: sessionId } : {}) }),
+    () => ({
+      ...table.params,
+      ...(sessionId ? { session_id: sessionId } : {}),
+    }),
     [sessionId, table.params]
   )
   const bindings = useAgentBindings(agentKey, bindingParams)
@@ -1161,7 +1267,26 @@ export function BindingsPanel({
             onAddEmail={() =>
               emailSheet.setOpen(true, { context: { agentKey } })
             }
-            onAddTelegram={() => telegramSheet.setOpen(true, { context: { agentKey }, defaultData: { accountKey: suggestedTelegramAccountKey(agentKey), botToken: "", replace: false } })}
+            onAddTelegram={() =>
+              telegramSheet.setOpen(true, {
+                context: { agentKey },
+                defaultData: {
+                  accountKey: suggestedTelegramAccountKey(agentKey),
+                  botToken: "",
+                  replace: false,
+                },
+              })
+            }
+            onAddWhatsApp={() =>
+              whatsappSheet.setOpen(true, {
+                context: { agentKey },
+                defaultData: {
+                  accountKey: suggestedWhatsAppAccountKey(agentKey),
+                  displayName: "",
+                  phone: "",
+                },
+              })
+            }
           />
         )
       }
@@ -1176,11 +1301,7 @@ export function BindingsPanel({
             Bind conversation
           </Button>
         ) : connectorPrerequisiteLoading ? (
-          <Button
-            size="sm"
-            variant="outline"
-            disabled
-          >
+          <Button size="sm" variant="outline" disabled>
             <Plus className="size-4" />
             Checking connectors
           </Button>
@@ -1194,7 +1315,26 @@ export function BindingsPanel({
             onAddEmail={() =>
               emailSheet.setOpen(true, { context: { agentKey } })
             }
-            onAddTelegram={() => telegramSheet.setOpen(true, { context: { agentKey }, defaultData: { accountKey: suggestedTelegramAccountKey(agentKey), botToken: "", replace: false } })}
+            onAddTelegram={() =>
+              telegramSheet.setOpen(true, {
+                context: { agentKey },
+                defaultData: {
+                  accountKey: suggestedTelegramAccountKey(agentKey),
+                  botToken: "",
+                  replace: false,
+                },
+              })
+            }
+            onAddWhatsApp={() =>
+              whatsappSheet.setOpen(true, {
+                context: { agentKey },
+                defaultData: {
+                  accountKey: suggestedWhatsAppAccountKey(agentKey),
+                  displayName: "",
+                  phone: "",
+                },
+              })
+            }
           />
         )
       }
@@ -1213,10 +1353,12 @@ function ConnectorPrerequisiteActions({
   onAddDiscord,
   onAddEmail,
   onAddTelegram,
+  onAddWhatsApp,
 }: {
   onAddDiscord: () => void
   onAddEmail: () => void
   onAddTelegram: () => void
+  onAddWhatsApp: () => void
 }) {
   return (
     <div className="flex flex-wrap justify-center gap-2">
@@ -1232,6 +1374,10 @@ function ConnectorPrerequisiteActions({
         <MessageCircle className="size-4" />
         Setup Telegram
       </Button>
+      <Button size="sm" variant="outline" onClick={onAddWhatsApp}>
+        <MessageCircle className="size-4" />
+        Setup WhatsApp
+      </Button>
     </div>
   )
 }
@@ -1241,12 +1387,14 @@ function ConnectorAccountCreateMenu({
   onAddDiscord,
   onAddEmail,
   onAddTelegram,
+  onAddWhatsApp,
   variant = "default",
 }: {
   label?: string
   onAddDiscord: () => void
   onAddEmail: () => void
   onAddTelegram: () => void
+  onAddWhatsApp: () => void
   variant?: React.ComponentProps<typeof Button>["variant"]
 }) {
   return (
@@ -1271,6 +1419,10 @@ function ConnectorAccountCreateMenu({
           <DropdownMenuItem onSelect={onAddTelegram}>
             <MessageCircle className="size-4" />
             Telegram setup
+          </DropdownMenuItem>
+          <DropdownMenuItem onSelect={onAddWhatsApp}>
+            <MessageCircle className="size-4" />
+            WhatsApp setup
           </DropdownMenuItem>
         </DropdownMenuGroup>
       </DropdownMenuContent>
@@ -1390,6 +1542,7 @@ function ConnectorAccountCell({ connector }: { connector: ConnectorRow }) {
     connector.email?.fromAddress ??
     connector.displayName ??
     connector.externalUsername ??
+    connector.externalAccountId ??
     connector.connectorKey
 
   return (

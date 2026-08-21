@@ -513,8 +513,8 @@ agent_command_shim_print_root_usage_commands() {
   panda discord sticker send --channel <channel-id> --connector <key> --sticker <sticker-id>... [--thread <thread-id>] [--guild <guild-id>] [--reply-to-message-id <message-id>]
   panda discord gif send --channel <channel-id> --connector <key> (--file <path>|--url <https-url>) [--caption <text>] [--thread <thread-id>] [--guild <guild-id>] [--reply-to-message-id <message-id>]
   panda discord send --channel <channel-id> --connector <key> [--thread <thread-id>] [--guild <guild-id>] (--text <text|@file|@->|--stdin|--image <path>|--file <path>)... [--reply-to-message-id <message-id>]
-  panda whatsapp chat list [--connector <key>]
-  panda whatsapp history --chat <jid-or-phone> [--connector <key>] [--direction inbound|outbound|all] [--limit <n>]
+  panda whatsapp chat list --connector <key>
+  panda whatsapp history --chat <jid-or-phone> --connector <key> [--direction inbound|outbound|all] [--limit <n>]
   panda whatsapp send --chat <jid-or-phone> --connector <key> (--text <text|@file|@->|--stdin|--image <path>|--file <path>)...
   panda env list [--prefix <prefix>]
   panda env set <key> (--stdin|--from-file <path>)
@@ -561,7 +561,7 @@ agent_command_shim_print_root_usage_examples() {
   panda email send --account work --to alice@example.com --subject Report --text @body.txt --file ./report.pdf
   cat message.md | panda telegram send --chat 12345 --connector telegram-main --text @- --file ./report.pdf
   cat message.md | panda discord send --channel 12345 --connector discord-main --text @- --file ./report.pdf
-  cat message.md | panda whatsapp send --chat 421900000000 --connector main --text @- --file ./report.pdf
+  cat message.md | panda whatsapp send --chat 421900000000 --connector 00000000-0000-4000-8000-000000000001 --text @- --file ./report.pdf
   printf '%s' "$GITHUB_TOKEN" | panda env set GITHUB_TOKEN --stdin
   panda image generate --prompt 'Restyle this as a pencil sketch' --image ./reference.png
   panda whisper transcribe ./voice.mp3 --prompt @terms.txt

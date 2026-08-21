@@ -2,10 +2,6 @@ import type {WAVersion} from "baileys";
 
 import {trimToNull} from "../../../lib/strings.js";
 
-export function resolveWhatsAppConnectorKey(env: NodeJS.ProcessEnv = process.env): string {
-  return trimToNull(env.WHATSAPP_CONNECTOR_KEY) ?? "main";
-}
-
 /**
  * Lets operators pin Baileys' WhatsApp Web version when WhatsApp rejects the
  * bundled default during login. Format: 2.3000.1035194821.

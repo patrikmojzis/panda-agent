@@ -70,6 +70,12 @@ export type TelegramConnectorFormValues = {
   replace: boolean
 }
 
+export type WhatsAppConnectorFormValues = {
+  accountKey: string
+  displayName: string
+  phone: string
+}
+
 export type EmailConnectorFormValues = {
   accountKey: string
   displayName: string
@@ -196,6 +202,7 @@ export const useWikiBindingSheet = createUpdateFormSheetStore<WikiBinding, WikiB
 export const useDiscordConnectorSheet = createUpdateFormSheetStore<ConnectorRow, DiscordConnectorFormValues>()
 export const useEmailConnectorSheet = createUpdateFormSheetStore<ConnectorRow, EmailConnectorFormValues>()
 export const useTelegramConnectorSheet = createUpdateFormSheetStore<ConnectorRow, TelegramConnectorFormValues>()
+export const useWhatsAppConnectorSheet = createUpdateFormSheetStore<ConnectorRow, WhatsAppConnectorFormValues>()
 export const useBindingSheet = createUpdateFormSheetStore<BindingRow, BindingFormValues>()
 export const useA2ABindingSheet = createUpdateFormSheetStore<A2ABindingRow, A2ABindingFormValues>()
 export const useEmailRouteSheet = createUpdateFormSheetStore<EmailRouteRow, EmailRouteFormValues>()

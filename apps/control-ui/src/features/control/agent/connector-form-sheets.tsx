@@ -6,6 +6,18 @@ import { z } from "zod"
 import { FormSheet } from "@/components/common/form/form-sheet"
 import { useControlForm } from "@/components/common/form/use-control-form"
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
+import { Button } from "@/components/ui/button"
+import {
   agentCacheKey,
   mergedValues,
   requireContext,
@@ -21,6 +33,7 @@ import {
   emailAllowedRecipientDefaults,
   emailConnectorDefaults,
   telegramConnectorDefaults,
+  whatsappConnectorDefaults,
   emailRouteDefaults,
   emailRouteToFormValues,
 } from "@/features/control/forms/form-values"
@@ -32,6 +45,7 @@ import {
   emailAllowedRecipientPayload,
   emailConnectorPayload,
   telegramConnectorPayload,
+  whatsappConnectorPayload,
   emailRoutePayload,
 } from "@/features/control/forms/form-payloads"
 import {
@@ -42,6 +56,7 @@ import {
   useEmailAllowedRecipientSheet,
   useEmailConnectorSheet,
   useTelegramConnectorSheet,
+  useWhatsAppConnectorSheet,
   useEmailRouteSheet,
   type BindingFormValues,
   type ChannelActorPairingFormValues,
@@ -50,6 +65,7 @@ import {
   type EmailAllowedRecipientFormValues,
   type EmailConnectorFormValues,
   type TelegramConnectorFormValues,
+  type WhatsAppConnectorFormValues,
   type EmailRouteFormValues,
 } from "@/features/control/forms/use-control-form-sheets"
 import {
@@ -59,15 +75,34 @@ import {
   useSessionOptions,
 } from "@/features/control/forms/form-options"
 import { useAgentPairings } from "@/features/control/api/queries"
-import { controlApi } from "@/lib/api"
+import {
+  displayWhatsAppState,
+  isActiveWhatsAppAttempt,
+  isExactWhatsAppActorJid,
+  resolveWhatsAppManagementActions,
+  resolveWhatsAppSetupStage,
+} from "@/features/control/agent/whatsapp-setup-model"
+import {
+  controlApi,
+  type WhatsAppLinkAttempt,
+  type WhatsAppSetupStatus,
+} from "@/lib/api"
 import { useAuth } from "@/lib/auth"
 import { handleControlFormError } from "@/lib/form-errors"
 
-
-function useAgentPairedIdentityOptions(agentKey: string | undefined, isOpen: boolean, selectedIdentityId?: string) {
+function useAgentPairedIdentityOptions(
+  agentKey: string | undefined,
+  isOpen: boolean,
+  selectedIdentityId?: string
+) {
   const pairings = useAgentPairings(
     agentKey ?? "",
-    { page: 1, per_page: 100, sort_by: "identityHandle", sort_direction: "asc" },
+    {
+      page: 1,
+      per_page: 100,
+      sort_by: "identityHandle",
+      sort_direction: "asc",
+    },
     { enabled: isOpen && Boolean(agentKey), staleTime: 30_000 }
   )
 
@@ -124,6 +159,15 @@ const telegramConnectorSchema = z.object({
   accountKey: z.string().trim().min(1, "Account key is required."),
   botToken: z.string().trim().min(1, "Bot token is required."),
   replace: z.boolean(),
+})
+
+const whatsappConnectorSchema = z.object({
+  accountKey: z.string().trim().min(1, "Account key is required."),
+  displayName: z.string(),
+  phone: z.string().refine((value) => {
+    const length = value.replace(/[^\d]/g, "").length
+    return length >= 8 && length <= 15
+  }, "Phone number must contain 8-15 digits."),
 })
 
 function emailConnectorSchema(requireSecrets: boolean) {
@@ -194,7 +238,8 @@ const channelActorPairingSchema = z
   .superRefine((value, context) => {
     if (
       value.source === "telegram" &&
-      (!/^\d+$/.test(value.externalActorId) || !/[1-9]/.test(value.externalActorId))
+      (!/^\d+$/.test(value.externalActorId) ||
+        !/[1-9]/.test(value.externalActorId))
     ) {
       context.addIssue({
         code: z.ZodIssueCode.custom,
@@ -203,14 +248,11 @@ const channelActorPairingSchema = z
       })
     }
     if (value.source === "whatsapp") {
-      const jid = /^(\d{8,20})(?::\d+)?@(s\.whatsapp\.net|lid)$/i.test(
-        value.externalActorId
-      )
-      const digits = value.externalActorId.replace(/[^\d]/g, "")
-      if (!jid && (digits.length < 8 || digits.length > 15)) {
+      if (!isExactWhatsAppActorJid(value.externalActorId)) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
-          message: "Use a phone number, @s.whatsapp.net JID, or @lid JID.",
+          message:
+            "Paste the exact observed @lid or @s.whatsapp.net actor JID.",
           path: ["externalActorId"],
         })
       }
@@ -221,6 +263,7 @@ const bindingSourceOptions = [
   { label: "Discord", value: "discord" },
   { label: "Email", value: "email" },
   { label: "Telegram", value: "telegram" },
+  { label: "WhatsApp", value: "whatsapp" },
 ]
 
 const channelActorSourceOptions = [
@@ -245,6 +288,12 @@ const telegramConnectorErrorFields = {
   "telegram account key": "accountKey",
   "telegram bot token": "botToken",
   "bot token": "botToken",
+}
+
+const whatsappConnectorErrorFields = {
+  "whatsapp account key": "accountKey",
+  "whatsapp phone number": "phone",
+  "phone number": "phone",
 }
 
 const emailConnectorErrorFields = {
@@ -290,7 +339,7 @@ const discordActorPairingErrorFields = {
   "discord account": "accountKey",
   "discord actor": "externalActorId",
   "discord actor id": "externalActorId",
-  "identity": "identityId",
+  identity: "identityId",
   "connector account": "accountKey",
 }
 
@@ -300,7 +349,7 @@ const channelActorPairingErrorFields = {
   "whatsapp connector key": "connectorKey",
   "telegram actor id": "externalActorId",
   "whatsapp actor": "externalActorId",
-  "identity": "identityId",
+  identity: "identityId",
   "target agent": "identityId",
 }
 
@@ -313,7 +362,8 @@ export function DiscordConnectorSheet() {
     () =>
       mergedValues(
         discordConnectorDefaults,
-        defaultData ?? (entity ? connectorToDiscordFormValues(entity) : undefined)
+        defaultData ??
+          (entity ? connectorToDiscordFormValues(entity) : undefined)
       ),
     [defaultData, entity]
   )
@@ -407,13 +457,21 @@ export function DiscordConnectorSheet() {
 
 export function TelegramConnectorSheet() {
   const auth = useAuth()
-  const { context, defaultData, entity, isOpen, setOpen } = useTelegramConnectorSheet()
+  const { context, defaultData, entity, isOpen, setOpen } =
+    useTelegramConnectorSheet()
   const invalidate = useInvalidateAgent(context?.agentKey)
-  const resetValues = React.useMemo(() => mergedValues(telegramConnectorDefaults, defaultData), [defaultData])
+  const resetValues = React.useMemo(
+    () => mergedValues(telegramConnectorDefaults, defaultData),
+    [defaultData]
+  )
   const mutation = useMutation({
     mutationFn: (values: TelegramConnectorFormValues) => {
       const current = requireContext(context)
-      return controlApi.upsertConnector(current.agentKey, telegramConnectorPayload(values), auth.csrfToken)
+      return controlApi.upsertConnector(
+        current.agentKey,
+        telegramConnectorPayload(values),
+        auth.csrfToken
+      )
     },
     onSuccess: async () => {
       toast.success("Telegram connector saved")
@@ -428,7 +486,9 @@ export function TelegramConnectorSheet() {
       try {
         await mutation.mutateAsync(value)
       } catch (error) {
-        await handleControlFormError(error, formApi, { messageFieldMap: telegramConnectorErrorFields })
+        await handleControlFormError(error, formApi, {
+          messageFieldMap: telegramConnectorErrorFields,
+        })
       }
     },
   })
@@ -437,7 +497,8 @@ export function TelegramConnectorSheet() {
     <FormSheet
       confirmSubmit={{
         title: entity ? "Replace Telegram account" : "Save Telegram account",
-        description: "The bot token is validated with Telegram and stored write-only. Reusing an account key replaces that bot only when Replace is on.",
+        description:
+          "The bot token is validated with Telegram and stored write-only. Reusing an account key replaces that bot only when Replace is on.",
         confirmLabel: "Save Telegram account",
       }}
       description="Store a Telegram bot token for this agent. Account keys are per bot: use the prefilled agent-specific key when available (main for Clawd, luna for Luna) — not one shared main for every bot."
@@ -479,6 +540,599 @@ export function TelegramConnectorSheet() {
           />
         )}
       </form.AppField>
+    </FormSheet>
+  )
+}
+
+export function WhatsAppConnectorSheet() {
+  const auth = useAuth()
+  const { context, defaultData, entity, isOpen, setOpen } =
+    useWhatsAppConnectorSheet()
+  const invalidate = useInvalidateAgent(context?.agentKey)
+  const resetValues = React.useMemo(
+    () =>
+      mergedValues(
+        mergedValues(
+          whatsappConnectorDefaults,
+          entity
+            ? {
+                accountKey: entity.accountKey,
+                displayName: entity.displayName ?? "",
+                phone: "",
+              }
+            : undefined
+        ),
+        defaultData
+      ),
+    [defaultData, entity]
+  )
+  const [attempt, setAttempt] = React.useState<WhatsAppLinkAttempt | null>(null)
+  const [setupStatus, setSetupStatus] =
+    React.useState<WhatsAppSetupStatus | null>(null)
+  const [createdAccountKey, setCreatedAccountKey] = React.useState<
+    string | null
+  >(null)
+  const [statusError, setStatusError] = React.useState<string | null>(null)
+  const [attemptPollError, setAttemptPollError] = React.useState<string | null>(
+    null
+  )
+  const [managementError, setManagementError] = React.useState<string | null>(
+    null
+  )
+  const [pollGeneration, setPollGeneration] = React.useState(0)
+  const [resetDialogOpen, setResetDialogOpen] = React.useState(false)
+  const managedAccountKey = entity?.accountKey ?? createdAccountKey
+
+  const applySetupStatus = React.useCallback((status: WhatsAppSetupStatus) => {
+    setSetupStatus(status)
+    setStatusError(null)
+    setAttempt((current) => {
+      if (status.activeAttempt) return status.activeAttempt
+      if (!current || !isActiveWhatsAppAttempt(current.state)) return current
+      if (status.account.linked) {
+        return {
+          ...current,
+          state: "linked",
+          pairingCode: undefined,
+          providerAccountId: status.account.providerAccountId,
+          updatedAt: Date.now(),
+        }
+      }
+      if (status.account.status === "error") return null
+      if (Date.now() >= current.expiresAt) {
+        return {
+          ...current,
+          state: "expired",
+          pairingCode: undefined,
+          updatedAt: Date.now(),
+        }
+      }
+      return current
+    })
+  }, [])
+
+  const refreshSetupStatus = React.useCallback(
+    async (accountKey: string) => {
+      if (!context) return
+      const { status } = await controlApi.whatsappSetupStatus(
+        context.agentKey,
+        accountKey
+      )
+      applySetupStatus(status)
+    },
+    [applySetupStatus, context]
+  )
+
+  function setWhatsAppSheetOpen(open: boolean) {
+    if (!open) {
+      setAttempt(null)
+      setSetupStatus(null)
+      setCreatedAccountKey(null)
+      setStatusError(null)
+      setAttemptPollError(null)
+      setManagementError(null)
+      setResetDialogOpen(false)
+    }
+    setOpen(open)
+  }
+
+  React.useEffect(() => {
+    if (!isOpen || !context || !managedAccountKey) return
+    let cancelled = false
+    const refresh = () => {
+      void controlApi
+        .whatsappSetupStatus(context.agentKey, managedAccountKey)
+        .then(({ status }) => {
+          if (!cancelled) applySetupStatus(status)
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            setStatusError(
+              error instanceof Error
+                ? error.message
+                : "WhatsApp status is unavailable."
+            )
+          }
+        })
+    }
+    refresh()
+    const timer = window.setInterval(refresh, 5_000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [applySetupStatus, context, isOpen, managedAccountKey])
+
+  React.useEffect(() => {
+    const current = context
+    if (!current || !attempt || !isActiveWhatsAppAttempt(attempt.state)) return
+    let cancelled = false
+    let failures = 0
+    let timer: number | undefined
+    const schedule = (delayMs: number) => {
+      timer = window.setTimeout(poll, delayMs)
+    }
+    const poll = () => {
+      void controlApi
+        .whatsappLinkAttempt(
+          current.agentKey,
+          attempt.accountKey,
+          attempt.attemptId
+        )
+        .then(async ({ attempt: next }) => {
+          if (cancelled) return
+          failures = 0
+          setAttemptPollError(null)
+          setAttempt(next)
+          if (next.state === "linked") {
+            setSetupStatus((status) =>
+              status
+                ? {
+                    ...status,
+                    account: {
+                      ...status.account,
+                      authStored: true,
+                      enabled: true,
+                      linked: true,
+                      status: "enabled",
+                      providerAccountId: next.providerAccountId,
+                    },
+                  }
+                : status
+            )
+            toast.success("WhatsApp account linked")
+            await invalidate(agentCacheKey(current.agentKey))
+            await refreshSetupStatus(next.accountKey).catch(() => undefined)
+            return
+          }
+          if (isActiveWhatsAppAttempt(next.state)) schedule(2_000)
+        })
+        .catch((error) => {
+          if (cancelled) return
+          failures += 1
+          setAttemptPollError(
+            error instanceof Error
+              ? error.message
+              : "WhatsApp link status is unavailable."
+          )
+          if (failures < 3) schedule(2_000 * 2 ** (failures - 1))
+        })
+    }
+    schedule(2_000)
+    return () => {
+      cancelled = true
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+  }, [attempt, context, invalidate, pollGeneration, refreshSetupStatus])
+
+  const link = useMutation({
+    mutationFn: async (values: WhatsAppConnectorFormValues) => {
+      const current = requireContext(context)
+      const accountKey = values.accountKey.trim()
+      if (!managedAccountKey) {
+        const { connector } = await controlApi.upsertConnector(
+          current.agentKey,
+          whatsappConnectorPayload(values),
+          auth.csrfToken
+        )
+        setCreatedAccountKey(accountKey)
+        setSetupStatus({
+          agentKey: current.agentKey,
+          accountKey,
+          account: {
+            exists: true,
+            enabled: false,
+            linked: false,
+            authStored: false,
+            status: connector.status,
+            connectorKey: connector.connectorKey,
+            displayName: connector.displayName,
+          },
+          runtime: { state: "offline", stale: true },
+        })
+      }
+      return controlApi.startWhatsAppLink(
+        current.agentKey,
+        accountKey,
+        values.phone,
+        auth.csrfToken
+      )
+    },
+    onSuccess: async ({ attempt: next }) => {
+      setAttempt(next)
+      setAttemptPollError(null)
+      setManagementError(null)
+      toast.success("WhatsApp pairing started")
+      await invalidate(agentCacheKey(context?.agentKey))
+    },
+  })
+  const cancel = useMutation({
+    mutationFn: async () => {
+      const current = requireContext(context)
+      if (!attempt) throw new Error("No WhatsApp link attempt is active.")
+      return controlApi.cancelWhatsAppLink(
+        current.agentKey,
+        attempt.accountKey,
+        attempt.attemptId,
+        auth.csrfToken
+      )
+    },
+    onSuccess: async ({ attempt: next }) => {
+      setAttempt(next)
+      setManagementError(null)
+      toast.success("WhatsApp pairing cancelled")
+      if (managedAccountKey)
+        await refreshSetupStatus(managedAccountKey).catch(() => undefined)
+    },
+    onError: (error) => {
+      setManagementError(
+        error instanceof Error
+          ? error.message
+          : "WhatsApp pairing could not be cancelled."
+      )
+    },
+  })
+  const setEnabled = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      const current = requireContext(context)
+      if (!managedAccountKey)
+        throw new Error("WhatsApp account is not available.")
+      return controlApi.setConnectorEnabled(
+        current.agentKey,
+        { source: "whatsapp", accountKey: managedAccountKey },
+        enabled,
+        auth.csrfToken
+      )
+    },
+    onSuccess: async ({ connector }) => {
+      setManagementError(null)
+      setSetupStatus((status) =>
+        status
+          ? {
+              ...status,
+              account: {
+                ...status.account,
+                enabled: connector.status === "enabled",
+                status: connector.status,
+              },
+            }
+          : status
+      )
+      toast.success(
+        connector.status === "enabled"
+          ? "WhatsApp account enabled"
+          : "WhatsApp account disabled"
+      )
+      await invalidate(agentCacheKey(context?.agentKey))
+      await refreshSetupStatus(connector.accountKey).catch(() => undefined)
+    },
+    onError: (error) => {
+      setManagementError(
+        error instanceof Error
+          ? error.message
+          : "WhatsApp account status could not be changed."
+      )
+    },
+  })
+  const reset = useMutation({
+    mutationFn: async () => {
+      const current = requireContext(context)
+      if (!managedAccountKey)
+        throw new Error("WhatsApp account is not available.")
+      return controlApi.resetWhatsAppLink(
+        current.agentKey,
+        managedAccountKey,
+        auth.csrfToken
+      )
+    },
+    onSuccess: async ({ connector }) => {
+      setAttempt(null)
+      setManagementError(null)
+      setResetDialogOpen(false)
+      toast.success("WhatsApp local link reset")
+      await invalidate(agentCacheKey(context?.agentKey))
+      await refreshSetupStatus(connector.accountKey).catch(() => undefined)
+    },
+    onError: (error) => {
+      setManagementError(
+        error instanceof Error
+          ? error.message
+          : "WhatsApp local link could not be reset."
+      )
+    },
+  })
+  const form = useControlForm({
+    defaultValues: resetValues,
+    validators: { onSubmit: whatsappConnectorSchema },
+    onSubmit: async ({ value, formApi }) => {
+      try {
+        await link.mutateAsync(value)
+        formApi.reset(value)
+      } catch (error) {
+        await handleControlFormError(error, formApi, {
+          messageFieldMap: whatsappConnectorErrorFields,
+        })
+      }
+    },
+  })
+
+  const stage = resolveWhatsAppSetupStage({
+    hasAccount: Boolean(managedAccountKey),
+    account: setupStatus?.account,
+    attemptState: attempt?.state,
+  })
+  const active = isActiveWhatsAppAttempt(attempt?.state)
+  const canStartLink = (stage === "create" || stage === "link") && !statusError
+  const { canDisable, canEnable, canReset } = resolveWhatsAppManagementActions(
+    setupStatus?.account
+  )
+  return (
+    <FormSheet
+      cancelLabel={canStartLink ? "Cancel" : "Close"}
+      description={
+        managedAccountKey
+          ? "Manage this account’s link, worker state, and local authentication."
+          : "Create an agent-owned account, then enter the one-time code in WhatsApp → Linked devices. The phone number and code are never stored."
+      }
+      form={form}
+      hideSubmit={!canStartLink}
+      isOpen={isOpen}
+      resetValues={resetValues}
+      setIsOpen={setWhatsAppSheetOpen}
+      submitLabel={stage === "create" ? "Create and link" : "Start linking"}
+      title={
+        managedAccountKey ? `WhatsApp · ${managedAccountKey}` : "WhatsApp setup"
+      }
+    >
+      {stage === "create" ? (
+        <>
+          <form.AppField name="accountKey">
+            {(field) => (
+              <field.TextField
+                label="Account key"
+                autoComplete="off"
+                autoFocus
+                description="Stable operator-facing name. It cannot be changed later."
+                placeholder="main"
+                required
+              />
+            )}
+          </form.AppField>
+          <form.AppField name="displayName">
+            {(field) => <field.TextField label="Display name" />}
+          </form.AppField>
+        </>
+      ) : null}
+      {setupStatus ? (
+        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)] gap-2 rounded-lg border p-3 text-sm">
+          <span className="text-muted-foreground">Account</span>
+          <span>{displayWhatsAppState(setupStatus.account.status)}</span>
+          <span className="text-muted-foreground">Linked</span>
+          <span>{setupStatus.account.linked ? "Yes" : "No"}</span>
+          <span className="text-muted-foreground">Local auth</span>
+          <span>{setupStatus.account.authStored ? "Stored" : "Missing"}</span>
+          <span className="text-muted-foreground">Worker</span>
+          <span>
+            {setupStatus.runtime.stale
+              ? "Offline"
+              : displayWhatsAppState(setupStatus.runtime.state)}
+          </span>
+          {setupStatus.account.providerAccountId ? (
+            <>
+              <span className="text-muted-foreground">Provider</span>
+              <span className="truncate font-mono text-xs">
+                {setupStatus.account.providerAccountId}
+              </span>
+            </>
+          ) : null}
+          {setupStatus.runtime.lastError ? (
+            <>
+              <span className="text-muted-foreground">Last error</span>
+              <span className="text-destructive">
+                {displayWhatsAppState(setupStatus.runtime.lastError)}
+              </span>
+            </>
+          ) : null}
+        </div>
+      ) : null}
+      {stage === "loading" ? (
+        <p className="text-sm text-muted-foreground">
+          Loading WhatsApp account state…
+        </p>
+      ) : null}
+      {statusError ? (
+        <div className="grid gap-2 rounded-lg border border-destructive/40 p-3">
+          <p className="text-sm text-destructive">{statusError}</p>
+          {managedAccountKey ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() =>
+                void refreshSetupStatus(managedAccountKey).catch((error) => {
+                  setStatusError(
+                    error instanceof Error
+                      ? error.message
+                      : "WhatsApp status is unavailable."
+                  )
+                })
+              }
+            >
+              Retry status
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      {canStartLink ? (
+        <form.AppField name="phone">
+          {(field) => (
+            <field.TextField
+              label="Phone number"
+              autoComplete="tel"
+              autoFocus={stage === "link"}
+              description="Include country code. Control sends it to WhatsApp only for this pairing attempt."
+              placeholder="+421900000000"
+              required
+            />
+          )}
+        </form.AppField>
+      ) : null}
+      {attempt ? (
+        <div className="grid gap-3 rounded-lg border p-4">
+          <div className="text-sm font-medium">
+            Link status: {displayWhatsAppState(attempt.state)}
+          </div>
+          {attempt.pairingCode ? (
+            <>
+              <p className="text-sm text-muted-foreground">
+                On your phone, open WhatsApp → Linked devices → Link a device →
+                Link with phone number, then enter this code.
+              </p>
+              <div
+                aria-label="WhatsApp pairing code"
+                className="rounded-md bg-muted p-4 text-center font-mono text-2xl font-semibold tracking-[0.2em]"
+              >
+                {attempt.pairingCode}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Expires at {new Date(attempt.expiresAt).toLocaleTimeString()}.
+              </p>
+            </>
+          ) : null}
+          {attempt.error ? (
+            <p className="text-sm text-destructive">{attempt.error}</p>
+          ) : null}
+          {attemptPollError ? (
+            <div className="grid gap-2">
+              <p className="text-sm text-destructive">{attemptPollError}</p>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setPollGeneration((value) => value + 1)}
+              >
+                Retry link status
+              </Button>
+            </div>
+          ) : null}
+          {active ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => cancel.mutate()}
+              disabled={cancel.isPending}
+            >
+              Cancel pairing
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      {stage === "connected" ? (
+        <p className="text-sm text-muted-foreground">
+          This account is linked and enabled. Panda will supervise its WhatsApp
+          worker.
+        </p>
+      ) : null}
+      {stage === "disabled" ? (
+        <p className="text-sm text-muted-foreground">
+          The link is stored, but the account is disabled. Enable it to resume
+          the worker.
+        </p>
+      ) : null}
+      {stage === "error" ? (
+        <p className="text-sm text-destructive">
+          The worker cannot use this link. Reset Panda’s local auth, then link
+          the account again.
+        </p>
+      ) : null}
+      {stage === "reset_required" ? (
+        <p className="text-sm text-destructive">
+          The local link is incomplete or stale. Reset it before starting
+          another pairing attempt.
+        </p>
+      ) : null}
+      {managementError ? (
+        <p className="text-sm text-destructive">{managementError}</p>
+      ) : null}
+      {managedAccountKey && !active && !statusError ? (
+        <div className="flex flex-wrap gap-2">
+          {canDisable ? (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={setEnabled.isPending}
+              onClick={() => setEnabled.mutate(false)}
+            >
+              Disable account
+            </Button>
+          ) : null}
+          {canEnable ? (
+            <Button
+              type="button"
+              disabled={setEnabled.isPending}
+              onClick={() => setEnabled.mutate(true)}
+            >
+              Enable account
+            </Button>
+          ) : null}
+          {canReset ? (
+            <AlertDialog
+              open={resetDialogOpen}
+              onOpenChange={setResetDialogOpen}
+            >
+              <AlertDialogTrigger asChild>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  disabled={reset.isPending}
+                >
+                  Reset local link
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Reset WhatsApp link?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This deletes Panda’s local WhatsApp auth for{" "}
+                    {managedAccountKey}. It does not remove the device from
+                    WhatsApp’s Linked devices screen.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={reset.isPending}>
+                    Cancel
+                  </AlertDialogCancel>
+                  <AlertDialogAction
+                    variant="destructive"
+                    disabled={reset.isPending}
+                    onClick={() => reset.mutate()}
+                  >
+                    Reset local link
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          ) : null}
+        </div>
+      ) : null}
     </FormSheet>
   )
 }
@@ -562,11 +1216,7 @@ export function EmailConnectorSheet() {
       </form.AppField>
       <form.AppField name="fromAddress">
         {(field) => (
-          <field.TextField
-            label="From address"
-            autoComplete="email"
-            required
-          />
+          <field.TextField label="From address" autoComplete="email" required />
         )}
       </form.AppField>
       <form.AppField name="fromName">
@@ -607,7 +1257,9 @@ export function EmailConnectorSheet() {
                 label="Username"
                 autoComplete="username"
                 description={
-                  entity ? "Leave blank to keep the stored username." : undefined
+                  entity
+                    ? "Leave blank to keep the stored username."
+                    : undefined
                 }
                 required={!entity}
               />
@@ -620,7 +1272,9 @@ export function EmailConnectorSheet() {
                 autoComplete="new-password"
                 type="password"
                 description={
-                  entity ? "Leave blank to keep the stored password." : undefined
+                  entity
+                    ? "Leave blank to keep the stored password."
+                    : undefined
                 }
                 required={!entity}
               />
@@ -654,7 +1308,9 @@ export function EmailConnectorSheet() {
                 label="Username"
                 autoComplete="username"
                 description={
-                  entity ? "Leave blank to keep the stored username." : undefined
+                  entity
+                    ? "Leave blank to keep the stored username."
+                    : undefined
                 }
                 required={!entity}
               />
@@ -667,7 +1323,9 @@ export function EmailConnectorSheet() {
                 autoComplete="new-password"
                 type="password"
                 description={
-                  entity ? "Leave blank to keep the stored password." : undefined
+                  entity
+                    ? "Leave blank to keep the stored password."
+                    : undefined
                 }
                 required={!entity}
               />
@@ -691,11 +1349,18 @@ export function BindingSheet() {
       }),
     [context?.sessionId, defaultData]
   )
-  const [connectorSource, setConnectorSource] = React.useState(resetValues.source)
-  React.useEffect(() => {
-    if (isOpen) setConnectorSource(resetValues.source)
-  }, [isOpen, resetValues.source])
-  const sessionPicker = useSessionOptions(context, isOpen, resetValues.sessionId)
+  const [connectorSource, setConnectorSource] = React.useState(
+    resetValues.source
+  )
+  const setBindingSheetOpen = (open: boolean) => {
+    if (!open) setConnectorSource(resetValues.source)
+    setOpen(open)
+  }
+  const sessionPicker = useSessionOptions(
+    context,
+    isOpen,
+    resetValues.sessionId
+  )
   const connectorPicker = useConnectorOptions(
     context,
     isOpen,
@@ -713,7 +1378,7 @@ export function BindingSheet() {
     },
     onSuccess: async () => {
       toast.success("Conversation bound")
-      setOpen(false)
+      setBindingSheetOpen(false)
       await invalidate(agentCacheKey(context?.agentKey))
     },
   })
@@ -742,7 +1407,7 @@ export function BindingSheet() {
       form={form}
       isOpen={isOpen}
       resetValues={resetValues}
-      setIsOpen={(open) => setOpen(open)}
+      setIsOpen={setBindingSheetOpen}
       submitDisabled={
         connectorPicker.isLoading ||
         connectorPicker.options.length === 0 ||
@@ -842,7 +1507,11 @@ export function DiscordActorPairingSheet() {
     isOpen,
     resetValues.accountKey
   )
-  const identityPicker = useAgentPairedIdentityOptions(context?.agentKey, isOpen, resetValues.identityId)
+  const identityPicker = useAgentPairedIdentityOptions(
+    context?.agentKey,
+    isOpen,
+    resetValues.identityId
+  )
   const mutation = useMutation({
     mutationFn: (values: DiscordActorPairingFormValues) => {
       const current = requireContext(context)
@@ -959,15 +1628,21 @@ export function ChannelActorPairingSheet() {
     [defaultData]
   )
   const [source, setSource] = React.useState(resetValues.source)
-  React.useEffect(() => {
-    if (isOpen) setSource(resetValues.source)
-  }, [isOpen, resetValues.source])
-  const identityPicker = useAgentPairedIdentityOptions(context?.agentKey, isOpen, resetValues.identityId)
+  const setChannelActorSheetOpen = (open: boolean) => {
+    if (!open) setSource(resetValues.source)
+    setOpen(open)
+  }
+  const identityPicker = useAgentPairedIdentityOptions(
+    context?.agentKey,
+    isOpen,
+    resetValues.identityId
+  )
   const connectorPicker = useConnectorOptions(
     context,
-    isOpen && source === "telegram",
-    resetValues.connectorKey,
-    "telegram"
+    isOpen,
+    source === resetValues.source ? resetValues.connectorKey : undefined,
+    source,
+    "enabled"
   )
   const mutation = useMutation({
     mutationFn: (values: ChannelActorPairingFormValues) => {
@@ -980,7 +1655,7 @@ export function ChannelActorPairingSheet() {
     },
     onSuccess: async () => {
       toast.success("Channel actor paired")
-      setOpen(false)
+      setChannelActorSheetOpen(false)
       await invalidate(agentCacheKey(context?.agentKey))
     },
   })
@@ -1000,13 +1675,11 @@ export function ChannelActorPairingSheet() {
 
   const connectorDescription =
     source === "whatsapp"
-      ? "Usually main unless WHATSAPP_CONNECTOR_KEY points at another connector."
-      : connectorPicker.options.length > 0
-        ? "Choose one of this agent's Telegram connector accounts."
-        : "Use the bot id returned by panda telegram account whoami."
+      ? "Select the agent-owned WhatsApp account; the connector key is assigned by Panda."
+      : "Select one of this agent's enabled Telegram connector accounts."
   const actorDescription =
     source === "whatsapp"
-      ? "Phone number or WhatsApp JID. Phone numbers are stored as @s.whatsapp.net."
+      ? "Paste the exact actor JID observed by Panda. Keep @lid identifiers unchanged; do not substitute a phone number."
       : "Numeric Telegram user id. Usernames and @handles will not work."
 
   return (
@@ -1021,8 +1694,13 @@ export function ChannelActorPairingSheet() {
       form={form}
       isOpen={isOpen}
       resetValues={resetValues}
-      setIsOpen={(open) => setOpen(open)}
-      submitDisabled={identityPicker.isLoading || identityPicker.options.length === 0}
+      setIsOpen={setChannelActorSheetOpen}
+      submitDisabled={
+        identityPicker.isLoading ||
+        identityPicker.options.length === 0 ||
+        connectorPicker.isLoading ||
+        connectorPicker.options.length === 0
+      }
       submitLabel="Pair actor"
       title="Channel actor pairing"
     >
@@ -1032,9 +1710,10 @@ export function ChannelActorPairingSheet() {
             label="Source"
             options={channelActorSourceOptions}
             onValueChange={(nextSource) => {
-              const normalized = nextSource === "whatsapp" ? "whatsapp" : "telegram"
+              const normalized =
+                nextSource === "whatsapp" ? "whatsapp" : "telegram"
               setSource(normalized)
-              form.setFieldValue("connectorKey", normalized === "whatsapp" ? "main" : "")
+              form.setFieldValue("connectorKey", "")
               form.setFieldValue("externalActorId", "")
             }}
             required
@@ -1042,38 +1721,40 @@ export function ChannelActorPairingSheet() {
         )}
       </form.AppField>
       <form.AppField name="connectorKey">
-        {(field) =>
-          source === "telegram" && connectorPicker.options.length > 0 ? (
-            <field.ComboboxField
-              label="Telegram connector"
-              description={connectorDescription}
-              disabled={connectorPicker.isLoading}
-              options={connectorPicker.options}
-              placeholder={
-                connectorPicker.isLoading ? "Loading Telegram connectors" : "Select connector"
-              }
-              required
-            />
-          ) : (
-            <field.TextField
-              label="Connector key"
-              autoComplete="off"
-              description={connectorDescription}
-              placeholder={source === "whatsapp" ? "main" : "123456789"}
-              required
-            />
-          )
-        }
+        {(field) => (
+          <field.ComboboxField
+            label={
+              source === "whatsapp" ? "WhatsApp account" : "Telegram connector"
+            }
+            description={connectorDescription}
+            disabled={
+              connectorPicker.isLoading || connectorPicker.options.length === 0
+            }
+            options={connectorPicker.options}
+            placeholder={
+              connectorPicker.isLoading
+                ? `Loading ${source} accounts`
+                : connectorPicker.options.length === 0
+                  ? `No enabled ${source} accounts`
+                  : `Select ${source} account`
+            }
+            required
+          />
+        )}
       </form.AppField>
       <form.AppField name="externalActorId">
         {(field) => (
           <field.TextField
-            label={source === "whatsapp" ? "WhatsApp actor" : "Telegram user id"}
+            label={
+              source === "whatsapp" ? "WhatsApp actor" : "Telegram user id"
+            }
             autoComplete="off"
             autoFocus
             description={actorDescription}
             inputMode={source === "telegram" ? "numeric" : "text"}
-            placeholder={source === "whatsapp" ? "+421 900 123 456" : "123456789"}
+            placeholder={
+              source === "whatsapp" ? "246664333885442@lid" : "123456789"
+            }
             required
           />
         )}
@@ -1158,7 +1839,9 @@ export function EmailAllowedRecipientSheet() {
       isOpen={isOpen}
       resetValues={resetValues}
       setIsOpen={(open) => setOpen(open)}
-      submitDisabled={accountPicker.isLoading || accountPicker.options.length === 0}
+      submitDisabled={
+        accountPicker.isLoading || accountPicker.options.length === 0
+      }
       submitLabel="Allow recipient"
       title="Email recipient allowlist"
     >
@@ -1198,8 +1881,7 @@ export function EmailAllowedRecipientSheet() {
 
 export function EmailRouteSheet() {
   const auth = useAuth()
-  const { context, defaultData, entity, isOpen, setOpen } =
-    useEmailRouteSheet()
+  const { context, defaultData, entity, isOpen, setOpen } = useEmailRouteSheet()
   const invalidate = useInvalidateAgent(context?.agentKey)
   const resetValues = React.useMemo(
     () =>
@@ -1214,7 +1896,11 @@ export function EmailRouteSheet() {
     isOpen,
     resetValues.accountKey
   )
-  const sessionPicker = useSessionOptions(context, isOpen, resetValues.sessionId)
+  const sessionPicker = useSessionOptions(
+    context,
+    isOpen,
+    resetValues.sessionId
+  )
   const mutation = useMutation({
     mutationFn: (values: EmailRouteFormValues) => {
       const current = requireContext(context)
@@ -1328,5 +2014,6 @@ export function EmailRouteSheet() {
 function sourceAccountLabel(source: string) {
   if (source === "email") return "an email account"
   if (source === "telegram") return "a Telegram account"
+  if (source === "whatsapp") return "a WhatsApp account"
   return "a Discord account"
 }

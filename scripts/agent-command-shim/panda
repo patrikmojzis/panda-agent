@@ -6246,9 +6246,9 @@ USAGE
 	        cat <<'USAGE'
 Usage:
   panda whatsapp chat list --help [--json]
-  panda whatsapp chat list [--connector <key>]
+  panda whatsapp chat list --connector <key>
   panda whatsapp history --help [--json]
-  panda whatsapp history --chat <jid-or-phone> [--connector <key>] [--direction inbound|outbound|all] [--limit <n>]
+  panda whatsapp history --chat <jid-or-phone> --connector <key> [--direction inbound|outbound|all] [--limit <n>]
   panda whatsapp send --help [--json]
   panda whatsapp send --chat <jid-or-phone> --connector <key> (--text <text|@file|@->|--stdin|--image <path>|--file <path>)...
   panda whatsapp chat list --json @payload.json

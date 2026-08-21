@@ -18,7 +18,11 @@ import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/postgres
 import {PostgresControlAuthService} from "../src/domain/control/auth.js";
 import {ControlReadService} from "../src/domain/control/read-service.js";
 import {ControlHomeService} from "../src/domain/control/home-service.js";
-import {ControlOperatorService} from "../src/domain/control/operator-service.js";
+import {
+  ControlOperatorService,
+  type ControlOperatorServiceOptions,
+  type ControlWhatsAppLinkAttempt,
+} from "../src/domain/control/operator-service.js";
 import {ControlBriefingService} from "../src/domain/control/briefing-service.js";
 import {ControlHeartbeatService} from "../src/domain/control/heartbeat-service.js";
 import {ControlScheduledTasksService} from "../src/domain/control/scheduled-tasks-service.js";
@@ -62,6 +66,7 @@ async function createHarness(options: {
   fetchImpl?: typeof fetch;
   env?: NodeJS.ProcessEnv;
   mcpOAuth?: McpOAuthManager;
+  whatsapp?: Pick<ControlOperatorServiceOptions, "whatsappAuth" | "whatsappRuntime" | "whatsappLinks">;
 } = {}) {
   const db = newDb({noAstCoverageCheck: true});
   db.public.registerFunction({name: "pg_notify", args: [DataType.text, DataType.text], returns: DataType.text, implementation: () => ""});
@@ -152,6 +157,7 @@ async function createHarness(options: {
     telegramBotIdentityClient: options.telegramBotIdentityClient ?? {
       getBotIdentity: async () => ({id: "424242", username: "panda_bot", displayName: "Panda Bot"}),
     },
+    ...options.whatsapp,
     fetchImpl: options.fetchImpl,
     env: options.env,
   });
@@ -1621,6 +1627,145 @@ describe("Control operator HTTP", () => {
     expect(statusText).not.toContain("telegram-secret");
   });
 
+  it("creates and controls an agent-owned WhatsApp link without persisting phone or pairing code", async () => {
+    let authStored = false;
+    let attempt: ControlWhatsAppLinkAttempt | null = null;
+    const whatsappAuth = {
+      ensureSchema: vi.fn(async () => {}),
+      hasAuthState: vi.fn(async () => authStored),
+      deleteAuthState: vi.fn(async () => { authStored = false; }),
+    };
+    const whatsappLinks = {
+      start: vi.fn((account: {id: string; accountKey: string}, phoneNumber: string) => {
+        attempt = {
+          attemptId: "attempt-1",
+          accountId: account.id,
+          accountKey: account.accountKey,
+          state: "awaiting_confirmation",
+          pairingCode: "PAIR-CODE-SECRET",
+          createdAt: Date.now(),
+          expiresAt: Date.now() + 300_000,
+          updatedAt: Date.now(),
+        };
+        expect(phoneNumber).toBe("421900123456");
+        return attempt;
+      }),
+      get: vi.fn((accountId: string, attemptId: string) => (
+        attempt?.accountId === accountId && attempt.attemptId === attemptId ? attempt : null
+      )),
+      getActive: vi.fn((accountId: string) => (
+        attempt?.accountId === accountId && ["starting", "awaiting_confirmation"].includes(attempt.state)
+          ? attempt
+          : null
+      )),
+      cancel: vi.fn(async (accountId: string, attemptId: string) => {
+        if (!attempt || attempt.accountId !== accountId || attempt.attemptId !== attemptId) {
+          throw new Error("WhatsApp link attempt was not found.");
+        }
+        attempt = {...attempt, state: "cancelled", pairingCode: undefined, updatedAt: Date.now()};
+        return attempt;
+      }),
+    };
+    const harness = await createHarness({
+      whatsapp: {
+        whatsappAuth,
+        whatsappRuntime: {
+          getStatus: vi.fn(async () => ({
+            socketState: "connecting",
+            heartbeatAt: Date.now(),
+            updatedAt: Date.now(),
+          })),
+        },
+        whatsappLinks,
+      },
+    });
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+
+    const create = await fetch(`${base}/api/control/agents/panda/connectors`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({source: "whatsapp", accountKey: "personal", displayName: "Personal WhatsApp"}),
+    });
+    expect(create.status).toBe(200);
+    const created = await create.json() as {connector: {id: string; connectorKey: string; status: string; ownerAgentKey: string}};
+    expect(created.connector).toMatchObject({status: "disabled", ownerAgentKey: "panda"});
+    expect(created.connector.connectorKey).toBe(created.connector.id);
+    expect(created.connector.connectorKey).toMatch(/^[0-9a-f-]{36}$/);
+
+    const duplicate = await fetch(`${base}/api/control/agents/panda/connectors`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({source: "whatsapp", accountKey: "personal", displayName: "Must not replace"}),
+    });
+    expect(duplicate.status).toBe(400);
+    await expect(harness.connectorAccountStore.getAccountByKey("whatsapp", "personal"))
+      .resolves.toMatchObject({
+        id: created.connector.id,
+        connectorKey: created.connector.connectorKey,
+        displayName: "Personal WhatsApp",
+      });
+
+    const noCsrf = await fetch(`${base}/api/control/agents/panda/whatsapp/accounts/personal/link-attempts`, {
+      method: "POST",
+      headers: {cookie: auth.cookies},
+      body: JSON.stringify({phone: "+421 900 123 456"}),
+    });
+    expect(noCsrf.status).toBe(403);
+
+    const start = await fetch(`${base}/api/control/agents/panda/whatsapp/accounts/personal/link-attempts`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({phone: "+421 900 123 456"}),
+    });
+    expect(start.status).toBe(202);
+    await expect(start.json()).resolves.toMatchObject({
+      attempt: {attemptId: "attempt-1", state: "awaiting_confirmation", pairingCode: "PAIR-CODE-SECRET"},
+    });
+
+    const status = await fetch(`${base}/api/control/agents/panda/whatsapp/setup-status?account_key=personal`, {
+      headers: {cookie: auth.cookies},
+    });
+    expect(status.status).toBe(200);
+    await expect(status.json()).resolves.toMatchObject({
+      status: {
+        account: {exists: true, enabled: false, linked: false, connectorKey: created.connector.connectorKey},
+        runtime: {state: "connecting", stale: false},
+        activeAttempt: {attemptId: "attempt-1", pairingCode: "PAIR-CODE-SECRET"},
+      },
+    });
+
+    const poll = await fetch(`${base}/api/control/agents/panda/whatsapp/accounts/personal/link-attempts/attempt-1`, {
+      headers: {cookie: auth.cookies},
+    });
+    expect(poll.status).toBe(200);
+    await expect(poll.json()).resolves.toMatchObject({attempt: {state: "awaiting_confirmation"}});
+
+    const cancel = await fetch(`${base}/api/control/agents/panda/whatsapp/accounts/personal/link-attempts/attempt-1`, {
+      method: "DELETE",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+    });
+    expect(cancel.status).toBe(200);
+    await expect(cancel.json()).resolves.toMatchObject({attempt: {state: "cancelled"}});
+
+    const reset = await fetch(`${base}/api/control/agents/panda/whatsapp/accounts/personal/link`, {
+      method: "DELETE",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+    });
+    expect(reset.status).toBe(200);
+    expect(whatsappAuth.deleteAuthState).toHaveBeenCalledWith(created.connector.id);
+
+    const audit = await harness.pool.query(`
+      SELECT metadata::text AS metadata
+      FROM "runtime"."control_audit_events"
+      WHERE event_type = 'control_operator_write'
+    `);
+    const auditText = JSON.stringify(audit.rows);
+    expect(auditText).toContain("start_whatsapp_link");
+    expect(auditText).not.toContain("421900123456");
+    expect(auditText).not.toContain("PAIR-CODE-SECRET");
+  });
+
   it("creates Discord connectors and manual conversation bindings", async () => {
     const harness = await createHarness();
     await harness.sessions.createSessionRecord({id: "session-panda-branch", agentKey: "panda", kind: "branch", currentThreadId: "thread-panda-branch", createdByIdentityId: "identity-patrik"});
@@ -1712,12 +1857,21 @@ describe("Control operator HTTP", () => {
       externalActorId: "234567890123456789",
     })).resolves.toBeNull();
 
+    const whatsappAccount = await harness.connectorAccountStore.upsertAccount({
+      id: "33333333-3333-4333-8333-333333333333",
+      source: "whatsapp",
+      accountKey: "main",
+      connectorKey: "33333333-3333-4333-8333-333333333333",
+      ownerKind: "agent",
+      ownerAgentKey: "panda",
+      status: "enabled",
+    });
     const pairWhatsAppActor = await fetch(`${base}/api/control/agents/panda/channel-actor-pairings`, {
       method: "POST",
       headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
       body: JSON.stringify({
         source: "whatsapp",
-        connectorKey: "main",
+        connectorKey: whatsappAccount.connectorKey,
         externalActorId: "+421 900 123 456",
         identityId: "identity-patrik",
       }),
@@ -1726,16 +1880,46 @@ describe("Control operator HTTP", () => {
     await expect(pairWhatsAppActor.json()).resolves.toMatchObject({
       pairing: {
         source: "whatsapp",
-        connectorKey: "main",
+        connectorKey: whatsappAccount.connectorKey,
         externalActorId: "421900123456@s.whatsapp.net",
         identityHandle: "patrik",
       },
     });
     await expect(harness.identities.resolveIdentityBinding({
       source: "whatsapp",
-      connectorKey: "main",
+      connectorKey: whatsappAccount.connectorKey,
       externalActorId: "421900123456@s.whatsapp.net",
     })).resolves.toMatchObject({identityId: "identity-patrik"});
+
+    const pairWhatsAppLid = await fetch(`${base}/api/control/agents/panda/channel-actor-pairings`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        source: "whatsapp",
+        connectorKey: whatsappAccount.connectorKey,
+        externalActorId: "246664333885442@lid",
+        identityId: "identity-patrik",
+      }),
+    });
+    expect(pairWhatsAppLid.status).toBe(200);
+    await expect(pairWhatsAppLid.json()).resolves.toMatchObject({
+      pairing: {externalActorId: "246664333885442@lid"},
+    });
+
+    const arbitraryWhatsAppConnector = await fetch(`${base}/api/control/agents/panda/channel-actor-pairings`, {
+      method: "POST",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({
+        source: "whatsapp",
+        connectorKey: "main",
+        externalActorId: "246664333885443@lid",
+        identityId: "identity-patrik",
+      }),
+    });
+    expect(arbitraryWhatsAppConnector.status).toBe(400);
+    await expect(arbitraryWhatsAppConnector.json()).resolves.toMatchObject({
+      error: expect.stringContaining("owned connector account"),
+    });
 
     await harness.connectorAccountStore.upsertAccount({
       source: "telegram",
@@ -1761,12 +1945,32 @@ describe("Control operator HTTP", () => {
     expect(pairTelegramActorText).toContain("patrik");
     expect(pairTelegramActorText).not.toContain("control-ui");
 
+    await harness.agents.ensurePairing("luna", "identity-patrik");
+    const lunaWhatsApp = await harness.connectorAccountStore.upsertAccount({
+      id: "44444444-4444-4444-8444-444444444444",
+      source: "whatsapp",
+      accountKey: "luna",
+      connectorKey: "44444444-4444-4444-8444-444444444444",
+      ownerKind: "agent",
+      ownerAgentKey: "luna",
+      status: "enabled",
+    });
+    await harness.identities.ensureIdentityBinding({
+      source: "whatsapp",
+      connectorKey: lunaWhatsApp.connectorKey,
+      externalActorId: "421900999999@s.whatsapp.net",
+      identityId: "identity-patrik",
+    });
+    const foreignActorPairings = await fetch(`${base}/api/control/agents/panda/channel-actor-pairings?source=whatsapp&search=421900999999`, {headers: {cookie: auth.cookies}});
+    expect(foreignActorPairings.status).toBe(200);
+    await expect(foreignActorPairings.json()).resolves.toMatchObject({data: [], meta: {total: 0}});
+
     const channelActorPairings = await fetch(`${base}/api/control/agents/panda/channel-actor-pairings?source=whatsapp&search=421900`, {headers: {cookie: auth.cookies}});
     expect(channelActorPairings.status).toBe(200);
     await expect(channelActorPairings.json()).resolves.toMatchObject({
       data: [expect.objectContaining({
         source: "whatsapp",
-        connectorKey: "main",
+        connectorKey: whatsappAccount.connectorKey,
         externalActorId: "421900123456@s.whatsapp.net",
         identityHandle: "patrik",
       })],
@@ -1785,14 +1989,14 @@ describe("Control operator HTTP", () => {
     });
     expect(invalidTelegramActor.status).toBe(400);
 
-    const deleteWhatsAppActor = await fetch(`${base}/api/control/agents/panda/channel-actor-pairings/whatsapp/main/${encodeURIComponent("421900123456@s.whatsapp.net")}`, {
+    const deleteWhatsAppActor = await fetch(`${base}/api/control/agents/panda/channel-actor-pairings/whatsapp/${encodeURIComponent(whatsappAccount.connectorKey)}/${encodeURIComponent("421900123456@s.whatsapp.net")}`, {
       method: "DELETE",
       headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
     });
     expect(deleteWhatsAppActor.status).toBe(200);
     await expect(harness.identities.resolveIdentityBinding({
       source: "whatsapp",
-      connectorKey: "main",
+      connectorKey: whatsappAccount.connectorKey,
       externalActorId: "421900123456@s.whatsapp.net",
     })).resolves.toBeNull();
 

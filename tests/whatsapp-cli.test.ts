@@ -1,263 +1,191 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
+
+import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
 import {
-    whatsappLinkCommand,
-    whatsappPairCommand,
-    whatsappUnpairCommand,
-    whatsappWhoamiCommand
+  whatsappAccountCreateCommand,
+  whatsappAccountDisableCommand,
+  whatsappAccountLinkCommand,
+  whatsappAccountResetCommand,
+  whatsappAccountWhoamiCommand,
+  whatsappPairCommand,
+  whatsappRunCommand,
+  whatsappUnpairCommand,
+  type WhatsAppCliDependencies,
 } from "../src/integrations/channels/whatsapp/cli.js";
 
-const whatsappCliMocks = vi.hoisted(() => {
-  const serviceInstances: MockWhatsAppService[] = [];
-  const identityStoreInstances: MockPostgresIdentityStore[] = [];
-  let deleteIdentityBindingResult = true;
-
-  class MockWhatsAppService {
-    readonly whoami = vi.fn(async () => ({
-      connectorKey: "main",
-      registered: true,
-      accountId: "421900000000:12@s.whatsapp.net",
-      name: "Panda",
-    }));
-    readonly pair = vi.fn(async (_phone: string, onPairingCode?: (code: string) => void) => {
-      onPairingCode?.("ABC-123");
-      return {
-        connectorKey: "main",
-        registered: true,
-        accountId: "421900000000:12@s.whatsapp.net",
-        name: "Panda",
-        alreadyPaired: false,
-      };
-    });
-    readonly run = vi.fn(async () => {});
-    readonly stop = vi.fn(async () => {});
-
-    constructor(_options: unknown) {
-      serviceInstances.push(this);
-    }
-  }
-
-  class MockPostgresIdentityStore {
-    readonly getIdentityByHandle = vi.fn(async (handle: string) => ({
-      id: `identity-${handle}`,
-      handle,
-      displayName: handle,
-      status: "active",
-      createdAt: 0,
-      updatedAt: 0,
-    }));
-    readonly ensureIdentityBinding = vi.fn(async (input: {
-      source: string;
-      connectorKey: string;
-      externalActorId: string;
-      identityId: string;
-      metadata?: unknown;
-    }) => ({
-      id: "binding-1",
-      ...input,
-      createdAt: 0,
-      updatedAt: 0,
-    }));
-    readonly deleteIdentityBinding = vi.fn(async (_lookup: {
-      source: string;
-      connectorKey: string;
-      externalActorId: string;
-    }) => deleteIdentityBindingResult);
-
-    constructor(_options: unknown) {
-      identityStoreInstances.push(this);
-    }
-  }
-
-  return {
-    MockPostgresIdentityStore,
-    MockWhatsAppService,
-    identityStoreInstances,
-    serviceInstances,
-    setDeleteIdentityBindingResult: (result: boolean) => {
-      deleteIdentityBindingResult = result;
-    },
+const mocks = vi.hoisted(() => {
+  const account = {
+    id: "11111111-1111-4111-8111-111111111111",
+    source: "whatsapp",
+    accountKey: "main",
+    connectorKey: "11111111-1111-4111-8111-111111111111",
+    ownerKind: "agent",
+    ownerIdentityId: null,
+    ownerAgentKey: "panda",
+    status: "disabled",
+    config: {},
+    createdAt: 0,
+    updatedAt: 0,
+  } as const;
+  const accounts = {
+    clearAccountExternalIdentity: vi.fn(async () => account),
+    disableAccount: vi.fn(async () => account),
+    enableAccount: vi.fn(async () => ({...account, status: "enabled"})),
+    getAccountByKey: vi.fn(async () => account),
+    listAccounts: vi.fn(async () => []),
+    setAccountExternalIdentity: vi.fn(async () => account),
+    upsertAccount: vi.fn(async (input: Record<string, unknown>) => ({...account, ...input})),
   };
+  const agents = {
+    getAgent: vi.fn(async () => ({agentKey: "panda"})),
+    listIdentityPairings: vi.fn(async () => [{agentKey: "panda", identityId: "identity-alice"}]),
+  };
+  const auth = {
+    deleteAuthState: vi.fn(),
+    ensureSchema: vi.fn(),
+  };
+  const identities = {
+    deleteIdentityBinding: vi.fn(async () => true),
+    ensureIdentityBinding: vi.fn(async (input: Record<string, unknown>) => ({id: "binding-1", ...input})),
+    getIdentityByHandle: vi.fn(async () => ({id: "identity-alice", handle: "alice"})),
+  };
+  return {account, accounts, agents, auth, identities};
 });
 
 vi.mock("../src/lib/postgres-bootstrap.js", () => ({
   ensureSchemas: vi.fn(async () => {}),
-  withPostgresPool: vi.fn(async (_dbUrl: string | undefined, fn: (pool: unknown) => Promise<unknown>) => {
-    return fn({});
-  }),
+  withPostgresPool: vi.fn(async (_dbUrl: string | undefined, fn: (pool: unknown) => Promise<unknown>) => fn({})),
 }));
-
+vi.mock("../src/domain/connectors/postgres.js", () => ({
+  PostgresConnectorAccountStore: class { constructor() { return mocks.accounts; } },
+}));
+vi.mock("../src/domain/agents/postgres.js", () => ({
+  PostgresAgentStore: class { constructor() { return mocks.agents; } },
+}));
 vi.mock("../src/domain/identity/postgres.js", () => ({
-  PostgresIdentityStore: whatsappCliMocks.MockPostgresIdentityStore,
+  PostgresIdentityStore: class { constructor() { return mocks.identities; } },
+}));
+vi.mock("../src/integrations/channels/whatsapp/auth-store.js", () => ({
+  PostgresWhatsAppAuthStore: class { constructor() { return mocks.auth; } },
 }));
 
-vi.mock("../src/integrations/channels/whatsapp/service.js", () => ({
-  WhatsAppService: whatsappCliMocks.MockWhatsAppService,
-}));
-
-function latestService(): InstanceType<typeof whatsappCliMocks.MockWhatsAppService> {
-  const service = whatsappCliMocks.serviceInstances.at(-1);
-  if (!service) {
-    throw new Error("Expected a mocked WhatsApp service instance.");
-  }
-
-  return service;
+function dependencies(service: Record<string, unknown> = {}): WhatsAppCliDependencies {
+  return {
+    crypto: new CredentialCrypto("whatsapp-cli-tests"),
+    createRunService: () => ({
+      run: vi.fn(async () => {}),
+      stop: vi.fn(async () => {}),
+      ...service,
+    }) as never,
+  };
 }
 
-function latestIdentityStore(): InstanceType<typeof whatsappCliMocks.MockPostgresIdentityStore> {
-  const store = whatsappCliMocks.identityStoreInstances.at(-1);
-  if (!store) {
-    throw new Error("Expected a mocked identity store instance.");
-  }
-
-  return store;
-}
-
-describe("WhatsApp CLI", () => {
+describe("WhatsApp account CLI", () => {
   afterEach(() => {
-    whatsappCliMocks.identityStoreInstances.length = 0;
-    whatsappCliMocks.serviceInstances.length = 0;
-    whatsappCliMocks.setDeleteIdentityBindingResult(true);
+    vi.clearAllMocks();
+    mocks.accounts.getAccountByKey.mockResolvedValue(mocks.account);
+    mocks.identities.deleteIdentityBinding.mockResolvedValue(true);
     vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 
-  it("reads connector identity directly for whoami", async () => {
+  it("creates a disabled agent-owned account with an opaque connector key", async () => {
+    mocks.accounts.getAccountByKey.mockResolvedValueOnce(null);
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
-    await whatsappWhoamiCommand({
-      connector: "main",
-      dbUrl: "postgres://wa-db",
-    });
+    await whatsappAccountCreateCommand("main", {agent: "panda"}, dependencies());
 
-    expect(latestService().stop).toHaveBeenCalledTimes(1);
-    expect(write).toHaveBeenCalledWith(
-      [
-        "WhatsApp connector main",
-        "registered yes",
-        "account 421900000000:12@s.whatsapp.net",
-        "name Panda",
-      ].join("\n") + "\n",
-    );
-  });
-
-  it("prints the linking code and success details", async () => {
-    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-
-    await whatsappLinkCommand({
-      phone: "421900000000",
-      connector: "main",
-      dbUrl: "postgres://wa-db",
-    });
-
-    expect(latestService().stop).toHaveBeenCalledTimes(1);
-    expect(write).toHaveBeenCalledWith(
-      [
-        "WhatsApp connector main",
-        "phone 421900000000",
-        "pairing code ABC-123",
-        "Enter the pairing code in WhatsApp and wait for the link to finish.",
-      ].join("\n") + "\n",
-    );
-    expect(write).toHaveBeenCalledWith(
-      [
-        "Linked WhatsApp connector main.",
-        "account 421900000000:12@s.whatsapp.net",
-        "name Panda",
-      ].join("\n") + "\n",
-    );
-  });
-
-  it("pairs a WhatsApp sender phone to an identity through the pair command", async () => {
-    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-
-    await whatsappPairCommand({
-      actor: "421911111111@s.whatsapp.net",
-      identity: "alice",
-      connector: "main",
-      dbUrl: "postgres://wa-db",
-    });
-
-    expect(latestIdentityStore().getIdentityByHandle).toHaveBeenCalledWith("alice");
-    expect(latestIdentityStore().ensureIdentityBinding).toHaveBeenCalledWith({
+    expect(mocks.accounts.upsertAccount).toHaveBeenCalledWith(expect.objectContaining({
       source: "whatsapp",
-      connectorKey: "main",
-      externalActorId: "421911111111@s.whatsapp.net",
-      identityId: "identity-alice",
-      metadata: {
-        pairedVia: "whatsapp-cli",
-      },
-    });
-    expect(write).toHaveBeenCalledWith(
-      [
-        "Paired WhatsApp actor 421911111111@s.whatsapp.net.",
-        "identity identity-alice",
-        "connector main",
-      ].join("\n") + "\n",
-    );
+      accountKey: "main",
+      ownerAgentKey: "panda",
+      status: "disabled",
+    }));
+    const input = mocks.accounts.upsertAccount.mock.calls[0]![0] as {id: string; connectorKey: string};
+    expect(input.connectorKey).toBe(input.id);
+    expect(write).toHaveBeenCalledWith(expect.stringContaining("Created disabled WhatsApp account main"));
   });
 
-  it("pairs a WhatsApp LID actor to an identity through the pair command", async () => {
+  it("fails closed when CREDENTIALS_MASTER_KEY is missing", async () => {
+    vi.stubEnv("CREDENTIALS_MASTER_KEY", "");
+
+    await expect(whatsappAccountCreateCommand("main", {agent: "panda"}))
+      .rejects.toThrow("CREDENTIALS_MASTER_KEY is required for WhatsApp accounts");
+    expect(mocks.accounts.upsertAccount).not.toHaveBeenCalled();
+  });
+
+  it("links an account through the service's atomic auth promotion", async () => {
+    const pair = vi.fn(async (_phone: string, onCode?: (code: string) => void) => {
+      onCode?.("ABCD-EFGH");
+      return {connectorKey: mocks.account.connectorKey, registered: true, accountId: "421900000000@lid", alreadyPaired: false};
+    });
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
+    await whatsappAccountLinkCommand("main", {phone: "421900000000"}, dependencies({pair}));
+
+    expect(write).toHaveBeenCalledWith(expect.stringContaining("pairing code ABCD-EFGH"));
+    expect(write).toHaveBeenCalledWith(expect.stringContaining("Linked WhatsApp account main"));
+  });
+
+  it("reports, disables, and resets the selected account", async () => {
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const whoami = vi.fn(async () => ({
+      connectorKey: mocks.account.connectorKey,
+      registered: true,
+      accountId: "246664333885442@lid",
+    }));
+
+    await whatsappAccountWhoamiCommand("main", {}, dependencies({whoami}));
+    await whatsappAccountDisableCommand("main", {}, dependencies());
+    await whatsappAccountResetCommand("main", {}, dependencies());
+
+    expect(whoami).toHaveBeenCalledOnce();
+    expect(mocks.accounts.disableAccount).toHaveBeenCalledWith("whatsapp", "main");
+    expect(mocks.auth.deleteAuthState).toHaveBeenCalledWith(mocks.account.id);
+    expect(mocks.accounts.clearAccountExternalIdentity).toHaveBeenCalledWith("whatsapp", "main");
+    expect(write).toHaveBeenCalledWith(expect.stringContaining("provider 246664333885442@lid"));
+  });
+
+  it("runs a selected enabled account by immutable account identity", async () => {
+    const enabled = {...mocks.account, status: "enabled" as const};
+    mocks.accounts.getAccountByKey.mockResolvedValueOnce(enabled as never);
+    const run = vi.fn(async () => {});
+
+    await whatsappRunCommand("main", {}, dependencies({run}));
+
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it("pairs an exact WhatsApp LID through the owned account", async () => {
     await whatsappPairCommand({
+      account: "main",
       actor: "246664333885442@lid",
       identity: "alice",
-      connector: "main",
-      dbUrl: "postgres://wa-db",
-    });
+    }, dependencies());
 
-    expect(latestIdentityStore().ensureIdentityBinding).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mocks.identities.ensureIdentityBinding).toHaveBeenCalledWith(expect.objectContaining({
       source: "whatsapp",
-      connectorKey: "main",
+      connectorKey: mocks.account.connectorKey,
       externalActorId: "246664333885442@lid",
       identityId: "identity-alice",
     }));
-    expect(write).toHaveBeenCalledWith(
-      [
-        "Paired WhatsApp actor 246664333885442@lid.",
-        "identity identity-alice",
-        "connector main",
-      ].join("\n") + "\n",
-    );
   });
 
-  it("unpairs a WhatsApp actor through the identity store", async () => {
-    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-
-    await whatsappUnpairCommand({
+  it("rejects an identity that is not paired to the account owner", async () => {
+    mocks.agents.listIdentityPairings.mockResolvedValueOnce([]);
+    await expect(whatsappPairCommand({
+      account: "main",
       actor: "421911111111",
-      connector: "main",
-      dbUrl: "postgres://wa-db",
-    });
+      identity: "alice",
+    }, dependencies())).rejects.toThrow("is not paired to agent panda");
+  });
 
-    expect(latestIdentityStore().deleteIdentityBinding).toHaveBeenCalledWith({
+  it("unpairs an actor from the selected account", async () => {
+    await whatsappUnpairCommand({account: "main", actor: "421911111111"}, dependencies());
+    expect(mocks.identities.deleteIdentityBinding).toHaveBeenCalledWith({
       source: "whatsapp",
-      connectorKey: "main",
+      connectorKey: mocks.account.connectorKey,
       externalActorId: "421911111111@s.whatsapp.net",
     });
-    expect(write).toHaveBeenCalledWith(
-      [
-        "Unpaired WhatsApp actor 421911111111@s.whatsapp.net.",
-        "connector main",
-      ].join("\n") + "\n",
-    );
-  });
-
-  it("reports when a WhatsApp actor had no pairing", async () => {
-    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    whatsappCliMocks.setDeleteIdentityBindingResult(false);
-
-    await whatsappUnpairCommand({
-      actor: "246664333885442@lid",
-      connector: "main",
-      dbUrl: "postgres://wa-db",
-    });
-
-    expect(write).toHaveBeenCalledWith(
-      [
-        "No WhatsApp pairing found for actor 246664333885442@lid.",
-        "connector main",
-      ].join("\n") + "\n",
-    );
   });
 });

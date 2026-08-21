@@ -6,7 +6,8 @@ WhatsApp is a private DM window into Panda, not a separate brain.
 
 The intended shape is:
 
-- one agent
+- one owning agent per connector account
+- multiple linked accounts per supervisor
 - one main session by default
 - many windows into that same session
 
@@ -32,11 +33,11 @@ That gate matters. Nothing reaches Panda before it.
 
 The worker is a long-lived Baileys process with:
 
-- durable auth state in Postgres
+- account-owned, AES-GCM-encrypted auth state in Postgres
 - reconnect handling
 - one-process-per-account locking
 
-Keep it one worker per linked account.
+The supervisor runs one isolated worker per enabled linked account.
 Do not invent webhooks or clustering until there is a real reason.
 Pairing retry policy belongs in `src/integrations/channels/whatsapp/pairing.ts`;
 the service should wire auth/socket creation and delegate reconnect semantics to
@@ -45,18 +46,20 @@ that module.
 Docker stack support is profile-gated:
 
 - set `WHATSAPP_ENABLED=true` to run `panda-whatsapp`
-- set `WHATSAPP_CONNECTOR_KEY=main` unless you need multiple linked accounts
+- set `CREDENTIALS_MASTER_KEY`; WhatsApp auth cannot be read or written without it
 - leave `PANDA_WHATSAPP_VERSION` empty unless you need to pin a specific WhatsApp Web version
-- link the connector once with `panda whatsapp link --phone <connector-phone>`
-- authorize sender identities with `panda whatsapp pair --identity <handle> --actor <sender-phone>`
-- remove stale sender bindings with `panda whatsapp unpair --actor <sender-phone-or-jid>`
+- create/link accounts in Control, or use `panda whatsapp account create/link`
+- authorize sender identities with `panda whatsapp pair --account <account-key> --identity <handle> --actor <sender-phone-or-lid>`
+- remove stale sender bindings with `panda whatsapp unpair --account <account-key> --actor <sender-phone-or-jid>`
 
 In the Docker stack, run those CLI commands through the core container:
 
 ```bash
-./scripts/docker-stack.sh panda whatsapp link --phone <connector-phone>
-./scripts/docker-stack.sh panda whatsapp pair --identity <handle> --actor <sender-phone>
-./scripts/docker-stack.sh panda whatsapp unpair --actor <sender-phone-or-jid>
+./scripts/docker-stack.sh panda whatsapp account create main --agent clawd
+./scripts/docker-stack.sh panda whatsapp account link main --phone <connector-phone>
+./scripts/docker-stack.sh panda whatsapp pair --account main --identity <handle> --actor <sender-phone-or-lid>
+./scripts/docker-stack.sh panda whatsapp unpair --account main --actor <sender-phone-or-jid>
+./scripts/docker-stack.sh panda whatsapp run --all-enabled
 ```
 
 ## Inbound Shape

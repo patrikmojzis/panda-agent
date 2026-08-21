@@ -262,6 +262,7 @@ export type ConnectorRow = {
   accountKey: string
   connectorKey: string
   displayName?: string
+  externalAccountId?: string
   externalUsername?: string
   status: string
   ownerKind: string
@@ -421,6 +422,47 @@ export type TelegramSetupStatus = {
     detail: string
     action?: string
   }>
+}
+
+export type WhatsAppLinkAttempt = {
+  attemptId: string
+  accountId: string
+  accountKey: string
+  state:
+    | "starting"
+    | "awaiting_confirmation"
+    | "linked"
+    | "failed"
+    | "cancelled"
+    | "expired"
+  pairingCode?: string
+  providerAccountId?: string
+  error?: string
+  createdAt: number
+  expiresAt: number
+  updatedAt: number
+}
+
+export type WhatsAppSetupStatus = {
+  agentKey: string
+  accountKey: string
+  account: {
+    exists: boolean
+    enabled: boolean
+    linked: boolean
+    authStored: boolean
+    status?: string
+    connectorKey?: string
+    displayName?: string
+    providerAccountId?: string
+  }
+  runtime: {
+    state: string
+    stale: boolean
+    heartbeatAt?: string
+    lastError?: string
+  }
+  activeAttempt?: WhatsAppLinkAttempt
 }
 
 export type SkillRow = {
@@ -1027,7 +1069,15 @@ export const controlApi = {
   ) =>
     apiWrite<{ server: McpServerRow; version: number }>(
       `/agents/${encodeURIComponent(agentKey)}/mcp-servers/${encodeURIComponent(serverName)}`,
-      { method: "PUT", body, csrfToken, headers: expectedVersion === undefined ? {} : {"if-match": String(expectedVersion)} }
+      {
+        method: "PUT",
+        body,
+        csrfToken,
+        headers:
+          expectedVersion === undefined
+            ? {}
+            : { "if-match": String(expectedVersion) },
+      }
     ),
   deleteMcpServer: (
     agentKey: string,
@@ -1037,7 +1087,14 @@ export const controlApi = {
   ) =>
     apiWrite<{ deleted: boolean; version: number }>(
       `/agents/${encodeURIComponent(agentKey)}/mcp-servers/${encodeURIComponent(serverName)}`,
-      { method: "DELETE", csrfToken, headers: expectedVersion === undefined ? {} : {"if-match": String(expectedVersion)} }
+      {
+        method: "DELETE",
+        csrfToken,
+        headers:
+          expectedVersion === undefined
+            ? {}
+            : { "if-match": String(expectedVersion) },
+      }
     ),
   discoverMcpOAuth: (
     agentKey: string,
@@ -1133,6 +1190,47 @@ export const controlApi = {
   telegramSetupStatus: (agentKey: string, accountKey: string) =>
     apiGet<{ status: TelegramSetupStatus }>(
       `/agents/${encodeURIComponent(agentKey)}/telegram/setup-status?account_key=${encodeURIComponent(accountKey)}`
+    ),
+  whatsappSetupStatus: (agentKey: string, accountKey: string) =>
+    apiGet<{ status: WhatsAppSetupStatus }>(
+      `/agents/${encodeURIComponent(agentKey)}/whatsapp/setup-status?account_key=${encodeURIComponent(accountKey)}`
+    ),
+  startWhatsAppLink: (
+    agentKey: string,
+    accountKey: string,
+    phone: string,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ attempt: WhatsAppLinkAttempt }>(
+      `/agents/${encodeURIComponent(agentKey)}/whatsapp/accounts/${encodeURIComponent(accountKey)}/link-attempts`,
+      { body: { phone }, csrfToken }
+    ),
+  whatsappLinkAttempt: (
+    agentKey: string,
+    accountKey: string,
+    attemptId: string
+  ) =>
+    apiGet<{ attempt: WhatsAppLinkAttempt }>(
+      `/agents/${encodeURIComponent(agentKey)}/whatsapp/accounts/${encodeURIComponent(accountKey)}/link-attempts/${encodeURIComponent(attemptId)}`
+    ),
+  cancelWhatsAppLink: (
+    agentKey: string,
+    accountKey: string,
+    attemptId: string,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ attempt: WhatsAppLinkAttempt }>(
+      `/agents/${encodeURIComponent(agentKey)}/whatsapp/accounts/${encodeURIComponent(accountKey)}/link-attempts/${encodeURIComponent(attemptId)}`,
+      { method: "DELETE", csrfToken }
+    ),
+  resetWhatsAppLink: (
+    agentKey: string,
+    accountKey: string,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ connector: ConnectorRow }>(
+      `/agents/${encodeURIComponent(agentKey)}/whatsapp/accounts/${encodeURIComponent(accountKey)}/link`,
+      { method: "DELETE", csrfToken }
     ),
   upsertConnector: (
     agentKey: string,

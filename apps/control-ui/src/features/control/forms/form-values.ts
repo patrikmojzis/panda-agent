@@ -14,6 +14,7 @@ import type {
   EmailRouteFormValues,
   EmailConnectorFormValues,
   TelegramConnectorFormValues,
+  WhatsAppConnectorFormValues,
   HeartbeatConfigFormValues,
   IdentityFormValues,
   RuntimeConfigFormValues,
@@ -93,6 +94,12 @@ export const telegramConnectorDefaults: TelegramConnectorFormValues = {
   accountKey: "",
   botToken: "",
   replace: false,
+}
+
+export const whatsappConnectorDefaults: WhatsAppConnectorFormValues = {
+  accountKey: "",
+  displayName: "",
+  phone: "",
 }
 
 export const emailConnectorDefaults: EmailConnectorFormValues = {

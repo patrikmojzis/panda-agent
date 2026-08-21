@@ -9,6 +9,7 @@ import {
   EmailAllowedRecipientSheet,
   EmailConnectorSheet,
   TelegramConnectorSheet,
+  WhatsAppConnectorSheet,
   EmailRouteSheet,
 } from "@/features/control/agent/connector-form-sheets"
 import { CredentialSheet } from "@/features/control/agent/credential-form-sheet"
@@ -52,6 +53,7 @@ export function ControlFormSheets() {
       <ChannelActorPairingSheet />
       <EmailConnectorSheet />
       <TelegramConnectorSheet />
+      <WhatsAppConnectorSheet />
       <BindingSheet />
       <EmailRouteSheet />
       <EmailAllowedRecipientSheet />

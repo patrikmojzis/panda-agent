@@ -99,6 +99,12 @@ import {PostgresConnectorAccountStore} from "../../domain/connectors/postgres.js
 import {PostgresModelCallTraceStore, resolveModelCallTraceRetentionDays} from "../../domain/model-call-traces/postgres.js";
 import {ConversationRepo} from "../../domain/sessions/conversations/repo.js";
 import {PostgresGatewayStore} from "../../domain/gateway/postgres.js";
+import {resolveMediaDir} from "../../lib/data-dir.js";
+import {PostgresWhatsAppAuthStore} from "../../integrations/channels/whatsapp/auth-store.js";
+import {ensurePostgresWhatsAppAuthSchema} from "../../integrations/channels/whatsapp/auth-schema.js";
+import {WhatsAppLinkManager} from "../../integrations/channels/whatsapp/link-manager.js";
+import {PostgresWhatsAppRuntimeStatusStore} from "../../integrations/channels/whatsapp/runtime-status-store.js";
+import {WhatsAppService} from "../../integrations/channels/whatsapp/service.js";
 
 const CORE_POSTGRES_APPLICATION_NAME = "panda/core";
 const CORE_NOTIFICATION_POSTGRES_APPLICATION_NAME = "panda/core-notify";
@@ -259,6 +265,7 @@ function createCloseRuntime(options: {
   threadLeasePoolObserver: PostgresPoolObserver;
   readonlyPoolState: ObservedPoolState;
   notificationUnsubscribe: (() => Promise<void>) | null;
+  whatsappLinks?: Pick<WhatsAppLinkManager, "stop"> | null;
 }): () => Promise<void> {
   return async () => {
     let readonlyPool = options.readonlyPoolState.pool;
@@ -278,6 +285,12 @@ function createCloseRuntime(options: {
     };
 
     await runCleanupSteps([
+      {
+        label: "whatsapp-link-attempts",
+        run: async () => {
+          await options.whatsappLinks?.stop();
+        },
+      },
       {
         label: "browser-service",
         run: async () => {
@@ -546,6 +559,25 @@ export async function bootstrapRuntime(
     });
 
     const credentialCrypto = resolveCredentialCrypto();
+    await ensurePostgresWhatsAppAuthSchema(postgresPool);
+    const whatsappAuth = credentialCrypto
+      ? new PostgresWhatsAppAuthStore({pool: postgresPool, crypto: credentialCrypto})
+      : null;
+    const whatsappRuntime = new PostgresWhatsAppRuntimeStatusStore({pool: postgresPool});
+    const whatsappLinks = credentialCrypto && whatsappAuth
+      ? new WhatsAppLinkManager({
+        createService: (account) => new WhatsAppService({
+          accountId: account.id,
+          accountKey: account.accountKey,
+          connectorKey: account.connectorKey,
+          crypto: credentialCrypto,
+          dataDir: resolveMediaDir(),
+          dbUrl: options.dbUrl,
+          disableHealthServer: true,
+          poolMaxFallback: 2,
+        }),
+      })
+      : null;
     const controlPublicUrl = resolveControlPublicUrl();
     const oauthService = credentialCrypto ? new McpOAuthService({store: mcpOAuthStore, crypto: credentialCrypto}) : null;
     const oauthRedirectUrl = controlPublicUrl ? buildControlMcpOAuthCallbackUrl(controlPublicUrl) : null;
@@ -624,6 +656,9 @@ export async function bootstrapRuntime(
       email,
       connectorAccounts: connectorAccountStore,
       connectorCrypto: credentialCrypto,
+      ...(whatsappAuth ? {whatsappAuth} : {}),
+      whatsappRuntime,
+      ...(whatsappLinks ? {whatsappLinks} : {}),
       conversations: conversationBindings,
       gateway: gatewayStore,
       subagents: subagentProfiles,
@@ -817,6 +852,7 @@ export async function bootstrapRuntime(
         threadLeasePoolObserver,
         readonlyPoolState,
         notificationUnsubscribe,
+        whatsappLinks,
       }),
     };
   } catch (error) {
@@ -831,6 +867,7 @@ export async function bootstrapRuntime(
       threadLeasePoolObserver,
       readonlyPoolState,
       notificationUnsubscribe,
+      whatsappLinks: null,
     })().catch(() => undefined);
     throw error;
   }

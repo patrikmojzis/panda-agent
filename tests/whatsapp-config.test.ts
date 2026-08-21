@@ -1,12 +1,8 @@
 import {describe, expect, it} from "vitest";
 
-import {resolveWhatsAppConnectorKey, resolveWhatsAppSocketVersion} from "../src/integrations/channels/whatsapp/config.js";
+import {resolveWhatsAppSocketVersion} from "../src/integrations/channels/whatsapp/config.js";
 
 describe("WhatsApp config", () => {
-  it("uses main as the default connector key", () => {
-    expect(resolveWhatsAppConnectorKey({})).toBe("main");
-  });
-
   it("parses an operator-pinned WhatsApp Web version", () => {
     expect(resolveWhatsAppSocketVersion({
       PANDA_WHATSAPP_VERSION: "2.3000.1035194821",
