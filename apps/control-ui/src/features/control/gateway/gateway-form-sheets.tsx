@@ -55,6 +55,7 @@ const gatewayDeviceSchema = z.object({
 const gatewayEventTypeSchema = z.object({
   delivery: z.enum(["queue", "wake"]),
   sourceId: z.string().trim().min(1, "Source id is required."),
+  trusted: z.boolean(),
   type: z
     .string()
     .trim()
@@ -367,7 +368,7 @@ function GatewayEventTypeSheet() {
       confirmSubmit={{
         title: "Allow gateway event type",
         description:
-          "This changes which events a gateway source may accept and whether they may wake the session immediately.",
+          "This changes which events a gateway source may accept, whether they may wake the session, and whether Panda bypasses the LLM security guard.",
         confirmLabel: "Allow event type",
       }}
       description="Allow a gateway source to accept a named event type."
@@ -422,6 +423,14 @@ function GatewayEventTypeSheet() {
               { label: "Wake", value: "wake" },
             ]}
             required
+          />
+        )}
+      </form.AppField>
+      <form.AppField name="trusted">
+        {(field) => (
+          <field.SwitchField
+            label="Trusted — bypass LLM guard"
+            description="Trusted event text and attachments enter the session as authorized input. Authentication, limits, allowlisting, and attachment ownership checks still apply."
           />
         )}
       </form.AppField>

@@ -30,6 +30,7 @@ function gatewayEvent(overrides: Partial<GatewayEventRecord> = {}): GatewayEvent
     text: "External event text.",
     textBytes: Buffer.byteLength("External event text.", "utf8"),
     textSha256: "sha256",
+    trusted: false,
     status: "processing",
     claimId: "claim-1",
     createdAt: 1,
@@ -64,7 +65,7 @@ describe("gateway delivery", () => {
 
     await deliverGatewayEventToThread({
       event: gatewayEvent(),
-      riskScore: 0.1,
+      assessment: {guardStatus: "scored", riskScore: 0.1, trusted: false},
       source: gatewaySource(),
       sessionStore: {
         getSession: vi.fn(async () => session),
@@ -121,7 +122,7 @@ describe("gateway delivery", () => {
 
     await deliverGatewayEventToThread({
       event: gatewayEvent(),
-      riskScore: 0.1,
+      assessment: {guardStatus: "scored", riskScore: 0.1, trusted: false},
       source: gatewaySource({sessionId: undefined}),
       sessionStore: {
         getSession: vi.fn(async () => mainSession),
@@ -164,7 +165,7 @@ describe("gateway delivery", () => {
 
     await deliverGatewayEventToThread({
       event: gatewayEvent(),
-      riskScore: 0.1,
+      assessment: {guardStatus: "scored", riskScore: 0.1, trusted: false},
       source: gatewaySource(),
       sessionStore: {
         getSession: vi.fn(async () => ({
@@ -192,6 +193,7 @@ describe("gateway delivery", () => {
     expect(markEventQuarantined).toHaveBeenCalledWith(expect.objectContaining({
       eventId: "event-1",
       claimId: "claim-1",
+      riskScore: 1,
       reason: "Session session-1 has no current thread.",
     }));
   });
@@ -233,7 +235,7 @@ describe("gateway delivery", () => {
 
     await deliverGatewayEventToThread({
       event: gatewayEvent(),
-      riskScore: 0.1,
+      assessment: {guardStatus: "scored", riskScore: 0.1, trusted: false},
       source: gatewaySource(),
       attachments: [attachment],
       attachmentRetentionMs: 1000,
@@ -273,6 +275,103 @@ describe("gateway delivery", () => {
       attachmentRetentionMs: 1000,
       threadId: "thread-1",
     }));
+  });
+
+  it("delivers trusted text and attachments with an explicit guard bypass", async () => {
+    const attachment: GatewayEventAttachmentRecord = {
+      id: "attachment-1",
+      eventId: "event-1",
+      position: 0,
+      sourceId: "work-prod",
+      idempotencyKey: "upload-1",
+      status: "bound",
+      scanStatus: "not_scanned",
+      mimeType: "text/plain",
+      filename: "instructions.txt",
+      sizeBytes: 123,
+      sha256: "a".repeat(64),
+      localPath: "/root/.panda/agents/panda/media/gateway/work-prod/instructions.txt",
+      mediaSource: "gateway",
+      connectorKey: "work-prod",
+      mediaMetadata: {
+        schemaVersion: 1,
+        gateway: {
+          scanStatus: "not_scanned",
+          trust: "external_untrusted",
+        },
+      },
+      createdAt: 1,
+      expiresAt: Date.now() + 60_000,
+    };
+    const enqueueInput = vi.fn(async (threadId, payload, deliveryMode) => ({
+      inserted: true,
+      input: {
+        id: "input-1",
+        threadId,
+        order: 1,
+        deliveryMode: deliveryMode ?? "wake",
+        source: payload.source,
+        message: payload.message,
+        metadata: payload.metadata,
+        createdAt: 1,
+      },
+    }));
+    const reserveEventDelivery = vi.fn(async () => gatewayEvent({status: "delivering", trusted: true}));
+    const markEventDelivered = vi.fn(async () => undefined);
+
+    await deliverGatewayEventToThread({
+      event: gatewayEvent({trusted: true}),
+      assessment: {guardStatus: "bypassed", trusted: true},
+      source: gatewaySource(),
+      attachments: [attachment],
+      sessionStore: {
+        getSession: vi.fn(async () => ({
+          id: "session-1",
+          agentKey: "panda",
+          kind: "main" as const,
+          currentThreadId: "thread-1",
+          createdAt: 1,
+          updatedAt: 1,
+        })),
+        getMainSession: vi.fn(async () => null),
+      },
+      store: {
+        markEventDelivered,
+        markEventQuarantined: vi.fn(async () => undefined),
+        reserveEventDelivery,
+      },
+      threadStore: {enqueueInput},
+    });
+
+    const payload = enqueueInput.mock.calls[0]?.[1];
+    const rendered = JSON.stringify(payload?.message);
+    expect(rendered).toContain("Trusted gateway event");
+    expect(rendered).toContain("guard_status: bypassed");
+    expect(rendered).toContain("metadata_trust: trusted");
+    expect(rendered).toContain("scan_status: not_scanned");
+    expect(rendered).not.toContain("risk_score:");
+    expect(payload?.metadata).toMatchObject({
+      gateway: {
+        guardStatus: "bypassed",
+        metadataTrust: "trusted",
+        trusted: true,
+        attachments: [expect.objectContaining({
+          guardStatus: "bypassed",
+          metadataTrust: "trusted",
+          metadata: {
+            schemaVersion: 1,
+            gateway: {
+              guardStatus: "bypassed",
+              scanStatus: "not_scanned",
+              trust: "trusted",
+            },
+          },
+          scanStatus: "not_scanned",
+        })],
+      },
+    });
+    expect(reserveEventDelivery.mock.calls[0]?.[0]).not.toHaveProperty("riskScore");
+    expect(markEventDelivered.mock.calls[0]?.[0]).not.toHaveProperty("riskScore");
   });
 
 });

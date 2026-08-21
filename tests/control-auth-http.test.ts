@@ -2312,10 +2312,15 @@ describe("Control operator HTTP", () => {
     const allowType = await fetch(eventTypesPath, {
       method: "POST",
       headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
-      body: JSON.stringify({type: "build.completed", delivery: "queue"}),
+      body: JSON.stringify({type: "build.completed", delivery: "queue", trusted: true}),
     });
     expect(allowType.status).toBe(200);
-    await expect(allowType.json()).resolves.toMatchObject({eventType: {sourceId: "build-alerts", type: "build.completed"}});
+    await expect(allowType.json()).resolves.toMatchObject({
+      eventType: {sourceId: "build-alerts", type: "build.completed", trusted: true},
+    });
+    await expect((await fetch(eventTypesPath, {headers: {cookie: auth.cookies}})).json()).resolves.toMatchObject({
+      data: [expect.objectContaining({type: "build.completed", trusted: true})],
+    });
 
     const deleteTypePath = `${eventTypesPath}/${encodeURIComponent("build.completed")}`;
     const withoutCsrf = await fetch(deleteTypePath, {method: "DELETE", headers: {cookie: auth.cookies}});
@@ -2357,6 +2362,14 @@ describe("Control operator HTTP", () => {
     const auditResponse = await fetch(`${base}/api/control/audit-events?eventType=control_operator_write&limit=20`, {headers: {cookie: auth.cookies}});
     expect(auditResponse.status).toBe(200);
     const auditBody = await auditResponse.json() as {auditEvents: Array<{metadata: Record<string, unknown>}>};
+    expect(auditBody.auditEvents.map((event) => event.metadata)).toContainEqual({
+      action: "allow_type",
+      agentKey: "panda",
+      sourceId: "build-alerts",
+      type: "build.completed",
+      delivery: "queue",
+      trusted: true,
+    });
     expect(auditBody.auditEvents.map((event) => event.metadata)).toContainEqual({
       action: "disallow_type",
       agentKey: "panda",

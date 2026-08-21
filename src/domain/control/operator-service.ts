@@ -2,6 +2,7 @@ import {createHash, randomUUID} from "node:crypto";
 
 import type {ThinkingLevel} from "@earendil-works/pi-ai";
 
+import {requireBoolean} from "../../lib/booleans.js";
 import type {JsonObject} from "../../lib/json.js";
 import {generateOpaqueToken, hashOpaqueToken} from "../../lib/opaque-tokens.js";
 import {requireNonEmptyString, trimToUndefined} from "../../lib/strings.js";
@@ -460,6 +461,7 @@ export interface ControlGatewayEventTypeRow {
   sourceId: string;
   type: string;
   delivery: string;
+  trusted: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -471,6 +473,7 @@ export interface ControlGatewayEventRow {
   deliveryRequested: string;
   deliveryEffective: string;
   occurredAt?: string;
+  trusted: boolean;
   status: string;
   riskScore?: number;
   reason?: string;
@@ -992,6 +995,7 @@ function publicGatewayEventType(eventType: GatewayEventTypeRecord): ControlGatew
     sourceId: eventType.sourceId,
     type: eventType.type,
     delivery: eventType.delivery,
+    trusted: eventType.trusted,
     createdAt: iso(eventType.createdAt)!,
     updatedAt: iso(eventType.updatedAt)!,
   };
@@ -1005,6 +1009,7 @@ function publicGatewayEvent(event: GatewayEventRecord): ControlGatewayEventRow {
     deliveryRequested: event.deliveryRequested,
     deliveryEffective: event.deliveryEffective,
     ...(event.occurredAt ? {occurredAt: iso(event.occurredAt)} : {}),
+    trusted: event.trusted,
     status: event.status,
     ...(event.riskScore !== undefined ? {riskScore: event.riskScore} : {}),
     ...(event.reason ? {reason: event.reason} : {}),
@@ -3562,15 +3567,31 @@ export class ControlOperatorService {
   async upsertGatewayEventType(session: ControlSessionRecord, agentKey: string, sourceId: string, input: {
     type?: unknown;
     delivery?: unknown;
+    trusted?: unknown;
   }): Promise<{eventType: ControlGatewayEventTypeRow; audit: Record<string, unknown>}> {
     const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
     const source = await this.gateway.getSource(sourceId);
     if (source.agentKey !== normalizedAgentKey) throw new Error("Control gateway source was not found or is not visible.");
     const delivery = input.delivery === "wake" ? "wake" : "queue";
-    const eventType = await this.gateway.upsertEventType({sourceId, type: requireNonEmptyString(input.type, "Gateway event type is required."), delivery});
+    const trusted = input.trusted === undefined
+      ? false
+      : requireBoolean(input.trusted, "Gateway event type trusted flag must be a boolean.");
+    const eventType = await this.gateway.upsertEventType({
+      sourceId,
+      type: requireNonEmptyString(input.type, "Gateway event type is required."),
+      delivery,
+      trusted,
+    });
     return {
       eventType: publicGatewayEventType(eventType),
-      audit: {action: "allow_type", agentKey: normalizedAgentKey, sourceId, type: eventType.type, delivery: eventType.delivery},
+      audit: {
+        action: "allow_type",
+        agentKey: normalizedAgentKey,
+        sourceId,
+        type: eventType.type,
+        delivery: eventType.delivery,
+        trusted: eventType.trusted,
+      },
     };
   }
 

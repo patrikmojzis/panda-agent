@@ -60,7 +60,12 @@ describe("gateway device command HTTP endpoints", () => {
     });
     await agentStore.ensurePairing("panda", identity.id);
     const source = await gatewayStore.createSource({sourceId: "work-prod", agentKey: "panda", identityId: identity.id});
-    await gatewayStore.upsertEventType({sourceId: "work-prod", type: "meeting.transcript", delivery: "wake"});
+    await gatewayStore.upsertEventType({
+      sourceId: "work-prod",
+      type: "meeting.transcript",
+      delivery: "wake",
+      trusted: false,
+    });
     const server = await startGatewayServer({
       env,
       host: "127.0.0.1",

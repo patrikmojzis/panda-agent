@@ -30,6 +30,7 @@ export interface GatewayEventTypeRecord {
   sourceId: string;
   type: string;
   delivery: GatewayDeliveryMode;
+  trusted: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -89,6 +90,7 @@ export interface GatewayEventRecord {
   text: string;
   textBytes: number;
   textSha256: string;
+  trusted: boolean;
   status: GatewayEventStatus;
   riskScore?: number;
   reason?: string;
@@ -178,7 +180,6 @@ export interface GatewayEventInput {
   sourceId: string;
   type: string;
   deliveryRequested: GatewayDeliveryMode;
-  deliveryEffective: GatewayDeliveryMode;
   occurredAt?: number;
   idempotencyKey: string;
   text: string;

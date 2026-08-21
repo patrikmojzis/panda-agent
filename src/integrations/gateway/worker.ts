@@ -66,7 +66,7 @@ async function quarantineSuspendedSource(
   await options.store.markEventQuarantined({
     eventId: event.id,
     claimId: event.claimId,
-    riskScore: 1,
+    ...(event.trusted ? {} : {riskScore: 1}),
     reason: `source ${source.sourceId} is suspended`,
     metadata: {gateway: {sourceSuspended: true}},
     attachmentQuarantineTtlMs: options.attachmentQuarantineTtlMs,
@@ -85,23 +85,33 @@ async function processGatewayEvent(options: GatewayWorkerOptions, event: Gateway
   }
 
   const attachments = await options.store.listEventAttachments(event.id);
-  const guardResult = await evaluateGatewayGuardPolicy({
-    attachments,
-    attachmentQuarantineTtlMs: options.attachmentQuarantineTtlMs,
-    event,
-    guard: options.guard,
-    guardThreshold: options.guardThreshold,
-    guardTimeoutMs: options.guardTimeoutMs,
-    source,
-    store: options.store,
-  });
-  if (!guardResult.deliver) {
-    return;
+  let assessment;
+  if (event.trusted) {
+    assessment = {guardStatus: "bypassed" as const, trusted: true as const};
+  } else {
+    const guardResult = await evaluateGatewayGuardPolicy({
+      attachments,
+      attachmentQuarantineTtlMs: options.attachmentQuarantineTtlMs,
+      event,
+      guard: options.guard,
+      guardThreshold: options.guardThreshold,
+      guardTimeoutMs: options.guardTimeoutMs,
+      source,
+      store: options.store,
+    });
+    if (!guardResult.deliver) {
+      return;
+    }
+    assessment = {
+      guardStatus: "scored" as const,
+      riskScore: guardResult.riskScore,
+      trusted: false as const,
+    };
   }
 
   await deliverGatewayEventToThread({
     event,
-    riskScore: guardResult.riskScore,
+    assessment,
     attachmentQuarantineTtlMs: options.attachmentQuarantineTtlMs,
     attachmentRetentionMs: options.attachmentRetentionMs,
     attachments,
@@ -138,7 +148,7 @@ async function processClaimedGatewayEvent(
     await options.store.markEventQuarantined({
       eventId: event.id,
       claimId: event.claimId,
-      riskScore: 1,
+      ...(event.trusted ? {} : {riskScore: 1}),
       reason: error instanceof Error ? error.message : "gateway worker failed",
       metadata: {gateway: {workerFailed: true}},
       attachmentQuarantineTtlMs: options.attachmentQuarantineTtlMs,

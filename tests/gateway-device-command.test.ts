@@ -47,6 +47,8 @@ describe("gateway device command CLI", () => {
     registerGatewayManagementCommands(gateway);
     const source = gateway.commands.find((command) => command.name() === "source");
     expect(source?.commands.map((command) => command.name())).toContain("disallow-type");
+    const allowType = source?.commands.find((command) => command.name() === "allow-type");
+    expect(allowType?.options.map((option) => option.long)).toContain("--trusted");
 
     const deleteEventType = vi.fn(async () => true);
     await expect(disallowGatewayEventTypeWithStore({deleteEventType}, "work-prod", "meeting.transcript"))

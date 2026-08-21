@@ -525,6 +525,7 @@ export type GatewayEventTypeRow = {
   sourceId: string
   type: string
   delivery: "queue" | "wake" | string
+  trusted: boolean
   createdAt: string
   updatedAt: string
 }
@@ -535,7 +536,9 @@ export type GatewayEventRow = {
   type: string
   deliveryRequested: string
   deliveryEffective: string
+  trusted: boolean
   status: string
+  riskScore?: number
   reason?: string
   threadId?: string
   textBytes: number

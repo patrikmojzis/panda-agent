@@ -74,6 +74,18 @@ describe("gateway attachments store", () => {
       agentKey: "panda",
       identityId: identity.id,
     });
+    await gatewayStore.upsertEventType({
+      sourceId: "work-prod",
+      type: "meeting.transcript",
+      delivery: "wake",
+      trusted: false,
+    });
+    await gatewayStore.upsertEventType({
+      sourceId: "other-prod",
+      type: "meeting.transcript",
+      delivery: "wake",
+      trusted: false,
+    });
     return {gatewayStore, pool};
   }
 
@@ -155,7 +167,6 @@ describe("gateway attachments store", () => {
       sourceId: "work-prod",
       type: "meeting.transcript",
       deliveryRequested: "wake",
-      deliveryEffective: "wake",
       idempotencyKey: "event-1",
       text: "event text",
       textBytes: Buffer.byteLength("event text", "utf8"),
@@ -173,7 +184,6 @@ describe("gateway attachments store", () => {
       sourceId: "work-prod",
       type: "meeting.transcript",
       deliveryRequested: "wake",
-      deliveryEffective: "wake",
       idempotencyKey: "event-1",
       text: "event text",
       textBytes: Buffer.byteLength("event text", "utf8"),
@@ -186,7 +196,6 @@ describe("gateway attachments store", () => {
       sourceId: "work-prod",
       type: "meeting.transcript",
       deliveryRequested: "wake",
-      deliveryEffective: "wake",
       idempotencyKey: "event-1",
       text: "event text",
       textBytes: Buffer.byteLength("event text", "utf8"),
@@ -214,7 +223,6 @@ describe("gateway attachments store", () => {
       sourceId: "work-prod",
       type: "meeting.transcript",
       deliveryRequested: "wake" as const,
-      deliveryEffective: "wake" as const,
       text: "event text",
       textBytes: Buffer.byteLength("event text", "utf8"),
       textSha256: sha256Hex("event text"),
@@ -289,7 +297,6 @@ describe("gateway attachments store", () => {
       sourceId: "work-prod",
       type: "meeting.transcript",
       deliveryRequested: "wake",
-      deliveryEffective: "wake",
       idempotencyKey: "event-delivered",
       text: "event text",
       textBytes: Buffer.byteLength("event text", "utf8"),
@@ -317,7 +324,6 @@ describe("gateway attachments store", () => {
       sourceId: "work-prod",
       type: "meeting.transcript",
       deliveryRequested: "wake",
-      deliveryEffective: "wake",
       idempotencyKey: "event-quarantined",
       text: "event text",
       textBytes: Buffer.byteLength("event text", "utf8"),

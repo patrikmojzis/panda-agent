@@ -205,10 +205,10 @@
       "sha256": "66f1a70b2fb9d8b6d1540a75ed12e57b2ecc9094e12facf284e96471147e3621"
     },
     {
-      "bytes": 1233,
-      "lines": 40,
+      "bytes": 1734,
+      "lines": 48,
       "path": "src/prompts/channels/gateway.ts",
-      "sha256": "263065e7f430827395441586a8f0058dbe6faffeb52c87e174e773e80aff2470"
+      "sha256": "5bff11189e06545f0af3093016fece6d529547fd922abd35459d3dad91361fbd"
     },
     {
       "bytes": 450,

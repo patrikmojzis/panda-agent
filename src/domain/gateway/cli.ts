@@ -41,6 +41,7 @@ interface GatewaySourceCreateOptions extends GatewayCliOptions {
 
 interface GatewayAllowTypeOptions extends GatewayCliOptions {
   delivery?: GatewayDeliveryMode;
+  trusted?: boolean;
 }
 
 interface GatewayEventListOptions extends GatewayCliOptions {
@@ -196,9 +197,10 @@ async function allowType(sourceId: string, type: string, options: GatewayAllowTy
       sourceId,
       type,
       delivery: options.delivery ?? "queue",
+      trusted: options.trusted === true,
     });
     process.stdout.write(
-      `Allowed ${record.type} for ${record.sourceId} with max delivery ${record.delivery}.\n`,
+      `Allowed ${record.type} for ${record.sourceId} with max delivery ${record.delivery} (${record.trusted ? "trusted" : "guarded"}).\n`,
     );
   });
 }
@@ -238,7 +240,7 @@ async function listSources(options: GatewayCliOptions): Promise<void> {
         `  agent ${source.agentKey}`,
         `  identity ${source.identityId}`,
         `  client_id ${source.clientId}`,
-        `  event types ${types.map((type) => `${type.type}:${type.delivery}`).join(", ") || "-"}`,
+        `  event types ${types.map((type) => `${type.type}:${type.delivery}:${type.trusted ? "trusted" : "guarded"}`).join(", ") || "-"}`,
       ].join("\n") + "\n\n");
     }
   });
@@ -482,7 +484,8 @@ async function listEvents(options: GatewayEventListOptions): Promise<void> {
         `  type ${event.type}`,
         `  delivery ${event.deliveryRequested}->${event.deliveryEffective}`,
         `  bytes ${String(event.textBytes)}`,
-        `  risk ${event.riskScore?.toFixed(3) ?? "-"}`,
+        `  trust ${event.trusted ? "trusted" : "guarded"}`,
+        `  guard ${event.trusted ? "bypassed" : event.riskScore === undefined ? "pending" : `scored ${event.riskScore.toFixed(3)}`}`,
         `  created ${new Date(event.createdAt).toISOString()}`,
       ].join("\n") + "\n\n");
     }
@@ -517,6 +520,7 @@ export function registerGatewayManagementCommands(gateway: Command): void {
     .argument("<sourceId>", "Gateway source id", normalizeGatewaySourceId)
     .argument("<type>", "Event type")
     .option("--delivery <queue|wake>", "Maximum delivery mode for this event type", parseDelivery, "queue")
+    .option("--trusted", "Bypass the LLM guard and trust this event type's text and attachments")
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((sourceId: string, type: string, options: GatewayAllowTypeOptions) => allowType(sourceId, type, options));
 

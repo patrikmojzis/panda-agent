@@ -1,6 +1,10 @@
 import {afterEach, describe, expect, it} from "vitest";
 
-import {useIssuedGatewayCredentialStore} from "../apps/control-ui/src/features/control/gateway/gateway-form-model.js";
+import {
+  gatewayEventTypePayload,
+  gatewayEventTypeToFormValues,
+  useIssuedGatewayCredentialStore,
+} from "../apps/control-ui/src/features/control/gateway/gateway-form-model.js";
 
 afterEach(() => {
   useIssuedGatewayCredentialStore.getState().clearIssuedCredential();
@@ -36,5 +40,25 @@ describe("Control Gateway one-time credential state", () => {
 
     useIssuedGatewayCredentialStore.getState().clearIssuedCredential();
     expect(useIssuedGatewayCredentialStore.getState().issuedCredential).toBeNull();
+  });
+});
+
+describe("Control Gateway event type policy model", () => {
+  it("round-trips the trusted policy through edit values and API payloads", () => {
+    const values = gatewayEventTypeToFormValues({
+      sourceId: "build-alerts",
+      type: "build.completed",
+      delivery: "wake",
+      trusted: true,
+      createdAt: "2026-08-21T10:00:00.000Z",
+      updatedAt: "2026-08-21T10:00:00.000Z",
+    });
+
+    expect(values).toMatchObject({trusted: true});
+    expect(gatewayEventTypePayload(values)).toEqual({
+      delivery: "wake",
+      trusted: true,
+      type: "build.completed",
+    });
   });
 });

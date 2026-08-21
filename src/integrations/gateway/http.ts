@@ -126,7 +126,6 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
           resolveDeviceToken: async (_token: string) => null,
           touchDeviceSeen: async (_input: {sourceId: string; deviceId: string}) => {},
           storeEvent: (input: {
-            deliveryEffective: "queue" | "wake";
             deliveryRequested: "queue" | "wake";
             idempotencyKey: string;
             occurredAt?: number;
@@ -138,7 +137,6 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
           }) => options.store.storeEvent(input),
           storeEventWithAttachments: (input: {
             attachments: readonly {id: string; sha256?: string}[];
-            deliveryEffective: "queue" | "wake";
             deliveryRequested: "queue" | "wake";
             idempotencyKey: string;
             maxAttachmentBytes: number;

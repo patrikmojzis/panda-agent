@@ -1,3 +1,4 @@
+import {requireBoolean} from "../../lib/booleans.js";
 import {readOptionalJsonValue, type JsonValue} from "../../lib/json.js";
 import {requireNonNegativeInteger} from "../../lib/numbers.js";
 import {optionalTimestampMillis, requireTimestampMillis} from "../../lib/postgres-values.js";
@@ -195,6 +196,7 @@ export function parseGatewayEventTypeRow(row: Record<string, unknown>): GatewayE
     sourceId: normalizeGatewaySourceId(requireGatewayTrimmedString("Gateway source id", row.source_id)),
     type: normalizeGatewayEventType(requireGatewayTrimmedString("Gateway event type", row.event_type)),
     delivery: parseGatewayDeliveryMode(row.delivery),
+    trusted: requireBoolean(row.trusted, "Gateway event type trusted flag must be a boolean."),
     createdAt: requireTimestampMillis(row.created_at, "Gateway event type created_at must be a finite timestamp."),
     updatedAt: requireTimestampMillis(row.updated_at, "Gateway event type updated_at must be a finite timestamp."),
   };
@@ -212,6 +214,7 @@ export function parseGatewayEventRow(row: Record<string, unknown>): GatewayEvent
     text: parseRequiredString("Gateway event text", row.text),
     textBytes: requireNonNegativeInteger(row.text_bytes, "Gateway event text bytes"),
     textSha256: requireGatewayTrimmedString("Gateway event text hash", row.text_sha256),
+    trusted: requireBoolean(row.trusted, "Gateway event trusted flag must be a boolean."),
     status: parseEventStatus(row.status),
     riskScore: parseRiskScore(row.risk_score),
     reason: parseOptionalTrimmed("Gateway event reason", row.reason),

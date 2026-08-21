@@ -435,6 +435,15 @@ export function GatewayPanel({
       cell: ({ row }) => <StatusBadge status={row.original.delivery} />,
     },
     {
+      accessorKey: "trusted",
+      meta: { label: "Trust" },
+      header: renderColumnHeader,
+      enableSorting: true,
+      cell: ({ row }) => (
+        <StatusBadge status={row.original.trusted ? "trusted" : "guarded"} />
+      ),
+    },
+    {
       accessorKey: "updatedAt",
       meta: { label: "Updated", valueType: "datetime", align: "right" },
       header: renderColumnHeader,
@@ -452,7 +461,7 @@ export function GatewayPanel({
           triggerLabel={`Open actions for gateway event type ${row.original.type}`}
           actions={[
             {
-              label: "Edit delivery",
+              label: "Edit policy",
               icon: <Pencil className="size-4" />,
               onSelect: () =>
                 gatewayEventTypeSheet.setOpen(true, {
@@ -825,7 +834,10 @@ export function GatewayPanel({
                   Allow event type
                 </Button>
               }
-              mobileColumnVisibility={mobileHiddenColumns("updatedAt")}
+              mobileColumnVisibility={mobileHiddenColumns(
+                "trusted",
+                "updatedAt"
+              )}
             />
           ) : null}
         </div>
@@ -937,6 +949,20 @@ function GatewayEventDetailsSheet({
                 <GatewayEventDetailRow
                   label="Delivery effective"
                   value={humanize(event.deliveryEffective)}
+                />
+                <GatewayEventDetailRow
+                  label="Trust"
+                  value={event.trusted ? "Trusted" : "Guarded"}
+                />
+                <GatewayEventDetailRow
+                  label="Guard"
+                  value={
+                    event.trusted
+                      ? "Bypassed"
+                      : event.riskScore === undefined
+                        ? "Pending"
+                        : `Scored ${event.riskScore.toFixed(3)}`
+                  }
                 />
               </section>
               <section className="grid gap-3 border p-3">

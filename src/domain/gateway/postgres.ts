@@ -73,6 +73,13 @@ export class GatewayEventConflictError extends Error {
   }
 }
 
+export class GatewayEventPolicyChangedError extends Error {
+  constructor() {
+    super("Gateway event type policy changed during admission.");
+    this.name = "GatewayEventPolicyChangedError";
+  }
+}
+
 function sameIdempotentEventBody(existing: GatewayEventRecord, input: GatewayEventInput): boolean {
   return existing.type === normalizeGatewayEventType(input.type)
     && existing.deliveryRequested === parseGatewayDeliveryMode(input.deliveryRequested)
@@ -1080,20 +1087,26 @@ export class PostgresGatewayStore {
     sourceId: string;
     type: string;
     delivery: GatewayDeliveryMode;
+    trusted: boolean;
   }): Promise<GatewayEventTypeRecord> {
     const result = await this.pool.query(`
       INSERT INTO ${this.tables.eventTypes} (
         source_id,
         event_type,
-        delivery
-      ) VALUES ($1, $2, $3)
+        delivery,
+        trusted
+      ) VALUES ($1, $2, $3, $4)
       ON CONFLICT (source_id, event_type)
-      DO UPDATE SET delivery = EXCLUDED.delivery, updated_at = NOW()
+      DO UPDATE SET
+        delivery = EXCLUDED.delivery,
+        trusted = EXCLUDED.trusted,
+        updated_at = NOW()
       RETURNING *
     `, [
       normalizeGatewaySourceId(input.sourceId),
       normalizeGatewayEventType(input.type),
       parseGatewayDeliveryMode(input.delivery),
+      input.trusted === true,
     ]);
     return parseGatewayEventTypeRow(result.rows[0] as Record<string, unknown>);
   }
@@ -1133,37 +1146,66 @@ export class PostgresGatewayStore {
     return result.rows.map((row) => parseGatewayEventTypeRow(row as Record<string, unknown>));
   }
 
-  async storeEvent(input: GatewayEventInput): Promise<GatewayStoredEventResult> {
+  private async insertEventWithCurrentPolicy(
+    client: PgQueryable,
+    input: GatewayEventInput,
+  ): Promise<GatewayEventRecord> {
     const id = randomUUID();
-    try {
-      const result = await this.pool.query(`
-        INSERT INTO ${this.tables.events} (
-          id,
-          source_id,
-          event_type,
-          delivery_requested,
-          delivery_effective,
-          occurred_at,
-          idempotency_key,
-          text,
-          text_bytes,
-          text_sha256
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        RETURNING *
-      `, [
+    const sourceId = normalizeGatewaySourceId(input.sourceId);
+    const eventType = normalizeGatewayEventType(input.type);
+    const deliveryRequested = parseGatewayDeliveryMode(input.deliveryRequested);
+    const result = await client.query(`
+      INSERT INTO ${this.tables.events} (
         id,
-        normalizeGatewaySourceId(input.sourceId),
-        normalizeGatewayEventType(input.type),
-        parseGatewayDeliveryMode(input.deliveryRequested),
-        parseGatewayDeliveryMode(input.deliveryEffective),
-        input.occurredAt === undefined ? null : new Date(input.occurredAt),
-        requireGatewayTrimmedString("Idempotency key", input.idempotencyKey),
-        input.text,
-        input.textBytes,
-        input.textSha256,
-      ]);
+        source_id,
+        event_type,
+        delivery_requested,
+        delivery_effective,
+        occurred_at,
+        idempotency_key,
+        text,
+        text_bytes,
+        text_sha256,
+        trusted
+      )
+      SELECT
+        $1::text,
+        $2::text,
+        $3::text,
+        $4::text,
+        CASE WHEN policy.delivery = 'queue' THEN 'queue' ELSE $4::text END,
+        $5::timestamptz,
+        $6::text,
+        $7::text,
+        $8::integer,
+        $9::text,
+        policy.trusted
+      FROM ${this.tables.eventTypes} AS policy
+      WHERE policy.source_id = $2
+        AND policy.event_type = $3
+      RETURNING *
+    `, [
+      id,
+      sourceId,
+      eventType,
+      deliveryRequested,
+      input.occurredAt === undefined ? null : new Date(input.occurredAt),
+      requireGatewayTrimmedString("Idempotency key", input.idempotencyKey),
+      input.text,
+      input.textBytes,
+      input.textSha256,
+    ]);
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    if (!row) {
+      throw new GatewayEventPolicyChangedError();
+    }
+    return parseGatewayEventRow(row);
+  }
+
+  async storeEvent(input: GatewayEventInput): Promise<GatewayStoredEventResult> {
+    try {
       return {
-        event: parseGatewayEventRow(result.rows[0] as Record<string, unknown>),
+        event: await this.insertEventWithCurrentPolicy(this.pool, input),
         inserted: true,
       };
     } catch (error) {
@@ -1424,40 +1466,14 @@ export class PostgresGatewayStore {
         };
       }
 
-      const id = randomUUID();
-      const result = await client.query(`
-        INSERT INTO ${this.tables.events} (
-          id,
-          source_id,
-          event_type,
-          delivery_requested,
-          delivery_effective,
-          occurred_at,
-          idempotency_key,
-          text,
-          text_bytes,
-          text_sha256
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        RETURNING *
-      `, [
-        id,
-        normalizeGatewaySourceId(input.sourceId),
-        normalizeGatewayEventType(input.type),
-        parseGatewayDeliveryMode(input.deliveryRequested),
-        parseGatewayDeliveryMode(input.deliveryEffective),
-        input.occurredAt === undefined ? null : new Date(input.occurredAt),
-        requireGatewayTrimmedString("Idempotency key", input.idempotencyKey),
-        input.text,
-        input.textBytes,
-        input.textSha256,
-      ]);
-      const event = parseGatewayEventRow(result.rows[0] as Record<string, unknown>);
+      const sourceId = normalizeGatewaySourceId(input.sourceId);
+      const event = await this.insertEventWithCurrentPolicy(client, input);
       await this.validateAndBindAttachments({
         attachments,
         client,
         eventId: event.id,
         maxAttachmentBytes: input.maxAttachmentBytes,
-        sourceId: normalizeGatewaySourceId(input.sourceId),
+        sourceId,
       });
       return {
         event,
@@ -1606,7 +1622,7 @@ export class PostgresGatewayStore {
   async reserveEventDelivery(input: {
     eventId: string;
     claimId: string;
-    riskScore: number;
+    riskScore?: number;
     metadata?: GatewayEventRecord["metadata"];
   }): Promise<GatewayEventRecord | null> {
     const result = await this.pool.query(`
@@ -1622,7 +1638,7 @@ export class PostgresGatewayStore {
     `, [
       input.eventId,
       input.claimId,
-      input.riskScore,
+      input.riskScore ?? null,
       toJson(parseOptionalGatewayMetadata("Gateway event metadata", input.metadata)),
     ]);
     const row = result.rows[0] as Record<string, unknown> | undefined;
@@ -1633,7 +1649,7 @@ export class PostgresGatewayStore {
     eventId: string;
     claimId?: string;
     threadId: string;
-    riskScore: number;
+    riskScore?: number;
     metadata?: GatewayEventRecord["metadata"];
     attachmentRetentionMs?: number;
   }): Promise<GatewayEventRecord> {
@@ -1653,7 +1669,7 @@ export class PostgresGatewayStore {
       RETURNING *
     `, [
       input.eventId,
-      input.riskScore,
+      input.riskScore ?? null,
       input.threadId,
       toJson(parseOptionalGatewayMetadata("Gateway event metadata", input.metadata)),
       input.claimId ?? null,
@@ -1683,7 +1699,7 @@ export class PostgresGatewayStore {
   async markEventQuarantined(input: {
     eventId: string;
     claimId?: string;
-    riskScore: number;
+    riskScore?: number;
     reason: string;
     metadata?: GatewayEventRecord["metadata"];
     attachmentQuarantineTtlMs?: number;
@@ -1703,7 +1719,7 @@ export class PostgresGatewayStore {
       RETURNING *
     `, [
       input.eventId,
-      input.riskScore,
+      input.riskScore ?? null,
       input.reason,
       toJson(parseOptionalGatewayMetadata("Gateway event metadata", input.metadata)),
       input.claimId ?? null,

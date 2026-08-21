@@ -86,6 +86,8 @@ Content-Type: application/json
 ```
 
 `delivery` is only `queue` or `wake`. Event type policy may downgrade `wake` to `queue`.
+Trust is also event-type policy owned by Panda operators. Public event bodies
+cannot mark themselves trusted.
 Token requests must use `application/x-www-form-urlencoded` or `application/json`.
 Event requests must use `application/json`; the gateway rejects ambiguous public
 bodies before parsing. `/v1/events` is intentionally text-only and rejects an
@@ -221,8 +223,8 @@ are already present in `src/integrations/control/http-server.ts`,
 - gateway device registration/upsert, including the one-time token returned when
   an existing device is re-registered, plus list/status/capability inspection
   and enable/disable;
-- allowed event-type management and Gateway event inspection, including
-  session-scoped event views;
+- allowed event-type management, including the explicit trusted guard-bypass
+  policy, and Gateway event inspection, including session-scoped event views;
 - account/status/diagnostic metadata where a backing source already provides a
   safe read surface.
 
@@ -328,12 +330,20 @@ same device connector key, still `uploaded`, and unexpired; completion marks the
 - Token, event, and attachment bodies must declare a supported `Content-Type`.
 - Attachment uploads use bounded raw bodies only: no multipart, resumable uploads, base64 JSON, or public download URLs.
 - Uploaded bytes are stored under the target agent media root as untrusted local media descriptors.
-- Device-uploaded events and attachments remain `external_untrusted` even after device pairing.
+- Events and attachments remain `external_untrusted` unless an operator marks
+  that source's allowed event type trusted. Device pairing alone never grants trust.
 - Event attachment refs must belong to the same source, be unexpired, unbound, and digest-matched when a digest is supplied.
-- Event types must be explicitly allowed per source.
+- Event types must be explicitly allowed per source. Trust is configured on
+  that source/event-type policy and snapshotted when an event is first accepted.
 - Unknown event types are rejected and strike the source.
-- `riskScore >= 0.85` quarantines the event, skips delivery, and strikes the source.
-- Panda receives the raw text wrapped as untrusted external data plus local attachment descriptors/paths.
+- Guarded events run the LLM classifier; `riskScore >= 0.85` quarantines the
+  event, skips delivery, and strikes the source.
+- Trusted events bypass only the LLM guard. Authentication, request validation,
+  budgets, allowlisting, attachment ownership, source suspension, and durable
+  delivery reservation still apply.
+- Guarded input is wrapped as untrusted external data. Trusted input and its
+  attachment descriptors are marked trusted with `guardStatus: bypassed`; the
+  attachment scan status remains factual and may still be `not_scanned`.
 - Gateway event text is scrubbed after delivery or quarantine. The event keeps hash, byte count, and metadata.
 - Attachment bytes have separate upload, retention, quarantine, and scrub status; `panda gateway attachment-scrub-expired` deletes expired bytes while keeping metadata.
 - Gateway Postgres table creation lives in `src/domain/gateway/postgres-schema.ts`; keep public-ingress behavior in `PostgresGatewayStore` and HTTP/worker adapters.
@@ -369,10 +379,14 @@ Attachment defaults:
 ```bash
 panda gateway source create work-prod --agent panda --identity patrik
 panda gateway source allow-type work-prod meeting.transcript --delivery queue
-panda gateway source allow-type work-prod mac.context.push --delivery wake
+panda gateway source allow-type work-prod mac.context.push --delivery wake --trusted
 panda gateway source disallow-type work-prod old.event.type # idempotent; keeps historical events
 panda gateway run
 ```
+
+`--trusted` is intentionally default-off. Re-running `allow-type` without it
+stores a guarded policy. Policy edits affect only newly accepted events; queued
+events and idempotent retries keep their original trust snapshot.
 
 Useful operations:
 

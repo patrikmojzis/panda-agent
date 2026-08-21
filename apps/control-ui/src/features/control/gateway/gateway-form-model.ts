@@ -24,6 +24,7 @@ export type GatewayEventTypeFormValues = {
   sourceId: string
   type: string
   delivery: string
+  trusted: boolean
 }
 
 export type IssuedGatewayCredential =
@@ -104,6 +105,7 @@ export const gatewayDeviceDefaults: GatewayDeviceFormValues = {
 export const gatewayEventTypeDefaults: GatewayEventTypeFormValues = {
   delivery: "queue",
   sourceId: "",
+  trusted: false,
   type: "",
 }
 
@@ -123,6 +125,7 @@ export function gatewayEventTypeToFormValues(
   return {
     delivery: eventType.delivery,
     sourceId: eventType.sourceId,
+    trusted: eventType.trusted,
     type: eventType.type,
   }
 }
@@ -153,6 +156,7 @@ export function gatewayDevicePayload(values: GatewayDeviceFormValues) {
 export function gatewayEventTypePayload(values: GatewayEventTypeFormValues) {
   return {
     delivery: values.delivery === "wake" ? "wake" : "queue",
+    trusted: values.trusted,
     type: values.type.trim(),
   }
 }

@@ -1,13 +1,15 @@
 import type {IncomingMessage} from "node:http";
 
 import type {GatewayAttachmentRefInput, GatewayDeliveryMode} from "../../domain/gateway/types.js";
-import {GatewayAttachmentReferenceError} from "../../domain/gateway/postgres.js";
+import {
+  GatewayAttachmentReferenceError,
+  GatewayEventPolicyChangedError,
+} from "../../domain/gateway/postgres.js";
 import {GatewayHttpError} from "./http-body.js";
 import {
   readGatewayBearerToken,
   readGatewayEventRequest,
   readGatewayEventWithAttachmentsRequest,
-  resolveGatewayEffectiveDelivery,
 } from "./event-request.js";
 import type {GatewayWorker} from "./worker.js";
 
@@ -15,7 +17,7 @@ const STRIKE_WINDOW_MS = 10 * 60_000;
 const STRIKE_THRESHOLD = 3;
 
 interface GatewayEventAcceptanceStore {
-  getEventType(sourceId: string, type: string): Promise<{delivery: GatewayDeliveryMode} | null>;
+  getEventType(sourceId: string, type: string): Promise<{delivery: GatewayDeliveryMode; trusted: boolean} | null>;
   recordStrikeAndMaybeSuspend(input: {
     kind: "unexpected_type";
     metadata: {type: string};
@@ -35,7 +37,6 @@ interface GatewayEventAcceptanceStore {
   } | null>;
   touchDeviceSeen(input: {sourceId: string; deviceId: string}): Promise<void>;
   storeEvent(input: {
-    deliveryEffective: GatewayDeliveryMode;
     deliveryRequested: GatewayDeliveryMode;
     idempotencyKey: string;
     occurredAt?: number;
@@ -53,7 +54,6 @@ interface GatewayEventAcceptanceStore {
   }>;
   storeEventWithAttachments(input: {
     attachments: readonly GatewayAttachmentRefInput[];
-    deliveryEffective: GatewayDeliveryMode;
     deliveryRequested: GatewayDeliveryMode;
     idempotencyKey: string;
     maxAttachmentBytes: number;
@@ -105,7 +105,7 @@ async function assertEventTypeAllowed(input: {
   eventType: string;
   sourceId: string;
   store: GatewayEventAcceptanceStore;
-}): Promise<{delivery: GatewayDeliveryMode}> {
+}): Promise<{delivery: GatewayDeliveryMode; trusted: boolean}> {
   const allowedType = await input.store.getEventType(input.sourceId, input.eventType);
   if (!allowedType) {
     await input.store.recordStrikeAndMaybeSuspend({
@@ -175,7 +175,7 @@ export async function acceptGatewayEventRequest(input: {
     store: input.store,
   });
   const event = await readGatewayEventRequest(input.request, input.maxJsonBytes);
-  const allowedType = await assertEventTypeAllowed({
+  await assertEventTypeAllowed({
     eventType: event.type,
     sourceId: source.sourceId,
     store: input.store,
@@ -188,21 +188,24 @@ export async function acceptGatewayEventRequest(input: {
     textBytesPerHour: input.textBytesPerHour,
   });
 
-  const deliveryEffective = resolveGatewayEffectiveDelivery({
-    allowedDelivery: allowedType.delivery,
-    requestedDelivery: event.delivery,
-  });
-  const stored = await input.store.storeEvent({
-    sourceId: source.sourceId,
-    type: event.type,
-    deliveryRequested: event.delivery,
-    deliveryEffective,
-    occurredAt: event.occurredAt,
-    idempotencyKey: event.idempotencyKey,
-    text: event.text,
-    textBytes: event.textBytes,
-    textSha256: event.textSha256,
-  });
+  let stored;
+  try {
+    stored = await input.store.storeEvent({
+      sourceId: source.sourceId,
+      type: event.type,
+      deliveryRequested: event.delivery,
+      occurredAt: event.occurredAt,
+      idempotencyKey: event.idempotencyKey,
+      text: event.text,
+      textBytes: event.textBytes,
+      textSha256: event.textSha256,
+    });
+  } catch (error) {
+    if (error instanceof GatewayEventPolicyChangedError) {
+      throw new GatewayHttpError(403, "Event type is not allowed.");
+    }
+    throw error;
+  }
   if (stored.inserted) {
     input.worker?.poke();
   }
@@ -235,7 +238,7 @@ export async function acceptGatewayEventWithAttachmentsRequest(input: {
     input.maxJsonBytes,
     input.maxAttachmentsPerEvent,
   );
-  const allowedType = await assertEventTypeAllowed({
+  await assertEventTypeAllowed({
     eventType: event.type,
     sourceId: source.sourceId,
     store: input.store,
@@ -248,16 +251,11 @@ export async function acceptGatewayEventWithAttachmentsRequest(input: {
     textBytesPerHour: input.textBytesPerHour,
   });
 
-  const deliveryEffective = resolveGatewayEffectiveDelivery({
-    allowedDelivery: allowedType.delivery,
-    requestedDelivery: event.delivery,
-  });
   try {
     const stored = await input.store.storeEventWithAttachments({
       sourceId: source.sourceId,
       type: event.type,
       deliveryRequested: event.delivery,
-      deliveryEffective,
       occurredAt: event.occurredAt,
       idempotencyKey: event.idempotencyKey,
       text: event.text,
@@ -276,6 +274,9 @@ export async function acceptGatewayEventWithAttachmentsRequest(input: {
   } catch (error) {
     if (error instanceof GatewayAttachmentReferenceError) {
       throw new GatewayHttpError(error.statusCode, error.message);
+    }
+    if (error instanceof GatewayEventPolicyChangedError) {
+      throw new GatewayHttpError(403, "Event type is not allowed.");
     }
     throw error;
   }

@@ -66,10 +66,15 @@ export async function ensurePostgresGatewaySchema(pool: PgQueryable): Promise<vo
       source_id TEXT NOT NULL REFERENCES ${tables.sources}(source_id) ON DELETE CASCADE,
       event_type TEXT NOT NULL,
       delivery TEXT NOT NULL,
+      trusted BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       PRIMARY KEY (source_id, event_type)
     )
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.eventTypes}
+    ADD COLUMN IF NOT EXISTS trusted BOOLEAN NOT NULL DEFAULT FALSE
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${tables.accessTokens} (
@@ -96,6 +101,7 @@ export async function ensurePostgresGatewaySchema(pool: PgQueryable): Promise<vo
       text TEXT NOT NULL,
       text_bytes INTEGER NOT NULL,
       text_sha256 TEXT NOT NULL,
+      trusted BOOLEAN NOT NULL DEFAULT FALSE,
       status TEXT NOT NULL DEFAULT 'pending',
       risk_score DOUBLE PRECISION,
       reason TEXT,
@@ -109,6 +115,10 @@ export async function ensurePostgresGatewaySchema(pool: PgQueryable): Promise<vo
       text_scrubbed_at TIMESTAMPTZ,
       UNIQUE (source_id, idempotency_key)
     )
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.events}
+    ADD COLUMN IF NOT EXISTS trusted BOOLEAN NOT NULL DEFAULT FALSE
   `);
   await pool.query(`
     ALTER TABLE ${tables.events}
