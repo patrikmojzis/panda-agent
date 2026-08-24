@@ -50,7 +50,9 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 30s
+      # Migration is no longer part of boot, but a generous grace period keeps
+      # cold provider/module startup from being mistaken for schema failure.
+      start_period: 180s
 
   panda-browser-runner:
     build:

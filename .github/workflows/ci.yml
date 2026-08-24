@@ -89,3 +89,6 @@ jobs:
 
       - name: Run Postgres startup rehearsal
         run: pnpm ci:postgres-startup
+
+      - name: Verify atomic Postgres migrations
+        run: pnpm ci:postgres-migrations

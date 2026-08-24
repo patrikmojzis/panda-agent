@@ -35,6 +35,17 @@ That keeps delete semantics honest without leaving soft references behind.
 
 Constraint triggers are the last resort, not the first tool.
 
+## Operator audit
+
+`panda db check` runs the required schema-object manifest and PostgreSQL catalog
+health checks inside one repeatable-read, read-only transaction. The manifest covers
+tables, views, sequences, indexes, named constraints, and every table/view
+column. It fingerprints view and index definitions, sequence configuration,
+constraint definitions, and column type/null/default/identity/collation shape.
+It intentionally does not reject unrelated objects, but it fails when any
+required object is missing or structurally changed. CI applies the catalog to
+fresh and immutable legacy fixtures and requires both to match it exactly.
+
 ## Nullable Natural Keys
 
 If the logical key includes a nullable column, use partial unique indexes instead of sentinels.

@@ -26,6 +26,7 @@ Start here:
 - [Gateway](./gateway.md)
 - [Wiki](./wiki.md)
 - [DB Integrity](./db-integrity.md)
+- [Database Migrations](./database-migrations.md)
 - [Prompt Caching](./caching.md)
 - [Postgres Pool Sizing](./pg-pool-size.md)
 - [Heartbeat](./heartbeat.md)

@@ -7,13 +7,13 @@ import path from "node:path";
 import {Command} from "commander";
 import {DB_URL_OPTION_DESCRIPTION} from "./cli-shared.js";
 import {parsePortOption} from "../lib/cli.js";
-import {ensureSchemas, withPostgresPool} from "../lib/postgres-bootstrap.js";
+import {createPostgresPool, requireDatabaseUrl} from "../lib/postgres-database.js";
+import {withPostgresPool} from "../lib/postgres-database.js";
 import {createDaemon} from "./runtime/daemon.js";
 import {registerA2ACommands} from "../domain/a2a/cli.js";
 import {registerCommandCatalogCommands, registerCommandRouteHelpCommands} from "../domain/commands/cli.js";
 import {buildCommandRouteTree} from "../domain/commands/route-tree.js";
 import {registerAppCommandHelpCommands} from "../domain/apps/cli.js";
-import {PostgresAgentStore} from "../domain/agents/postgres.js";
 import {parseAgentKey, registerAgentCommands} from "../domain/agents/cli.js";
 import {registerSkillCommandHelpCommands} from "../domain/agents/skill-cli.js";
 import {registerCredentialCommands} from "../domain/credentials/cli.js";
@@ -26,7 +26,6 @@ import {registerEnvironmentCommandHelpCommands} from "../domain/execution-enviro
 import {registerEmailCommands} from "../domain/email/cli.js";
 import {registerGatewayCommands} from "./gateway/cli.js";
 import {parseIdentityHandle, registerIdentityCommands} from "../domain/identity/cli.js";
-import {PostgresIdentityStore} from "../domain/identity/postgres.js";
 import {registerSessionCommands} from "./sessions/cli.js";
 import {PostgresSessionStore} from "../domain/sessions/postgres.js";
 import {registerTodoCommandHelpCommands} from "../domain/sessions/todo-cli.js";
@@ -57,6 +56,8 @@ import {registerSubagentCommandHelpCommands} from "../domain/subagents/cli.js";
 import {DEFAULT_AGENT_COMMAND_DESCRIPTORS} from "../panda/commands/agent-command-descriptors.js";
 import {DEFAULT_AGENT_COMMAND_CATALOG} from "../panda/commands/agent-command-modules.js";
 import {registerImageCommandHelpCommands} from "../panda/commands/image-cli.js";
+import {registerDatabaseCommands} from "./database/cli.js";
+import {createPandaSchemaVerifier} from "../integrations/postgres/schema-version.js";
 
 try {
   (process as NodeJS.Process & { loadEnvFile?: (path?: string) => void }).loadEnvFile?.();
@@ -247,12 +248,8 @@ async function runRunnerAttachCommand(
   const sharedSecret = options.sharedSecret?.trim() || randomBytes(32).toString("base64url");
 
   await withPostgresPool(options.dbUrl, async (pool) => {
-    const identityStore = new PostgresIdentityStore({pool});
-    const agentStore = new PostgresAgentStore({pool});
     const sessionStore = new PostgresSessionStore({pool});
     const environmentStore = new PostgresExecutionEnvironmentStore({pool});
-    await ensureSchemas([identityStore, agentStore, sessionStore, environmentStore]);
-
     const session = await sessionStore.resolveSessionRef({
       sessionRef,
       agentKey: options.agent,
@@ -397,6 +394,43 @@ program
   .description("Panda AI assistant")
   .version("0.1.0");
 
+function commandUsesDatabase(command: Command): boolean {
+  let current: Command | null = command;
+  while (current) {
+    if (current.options.some((option) => option.long === "--db-url")) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
+function commandBelongsTo(command: Command, name: string): boolean {
+  let current: Command | null = command;
+  while (current) {
+    if (current.name() === name) return true;
+    current = current.parent;
+  }
+  return false;
+}
+
+// Operator actions get one central revision gate before touching stores. Long-
+// running processes verify again at their programmatic construction seam.
+program.hook("preAction", async (_command, actionCommand) => {
+  if (!commandUsesDatabase(actionCommand) || commandBelongsTo(actionCommand, "db") || commandBelongsTo(actionCommand, "smoke")) {
+    return;
+  }
+  const options = actionCommand.optsWithGlobals<{dbUrl?: string}>();
+  const pool = createPostgresPool({
+    connectionString: requireDatabaseUrl(options.dbUrl),
+    applicationName: "panda/schema-verifier",
+    max: 1,
+  });
+  try {
+    await createPandaSchemaVerifier(pool).assertCurrent();
+  } finally {
+    await pool.end();
+  }
+});
+
 configureChatCommand(program);
 registerSmokeCommand(program);
 registerSubagentCommands(program);
@@ -408,6 +442,7 @@ configureChatCommand(
     .description("Launch the Panda chat TUI"),
 );
 registerObserveCommand(program);
+registerDatabaseCommands(program);
 
 program
   .command("run")

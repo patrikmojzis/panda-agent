@@ -63,7 +63,7 @@ Panda reads the readonly SQL command database URL from:
 - `READONLY_DATABASE_URL`
 - `--read-only-db-url`
 
-If `READONLY_DATABASE_URL` is set, Panda uses that role for `panda postgres readonly query` and grants it access to the scoped `session.*` views during startup.
+If `READONLY_DATABASE_URL` is set, Panda uses that role for `panda postgres readonly query`. `panda db migrate --writers-stopped` reconciles its grants to the scoped `session.*` views during deployment. Omitting a read-only URL preserves the previously configured grants; remove them explicitly with `--clear-read-only-role`.
 
 If it is not set, Panda currently falls back to the main app pool.
 That fallback is convenient, but it weakens the privacy story.

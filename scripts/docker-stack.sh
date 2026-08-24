@@ -200,7 +200,7 @@ command_socket_container_path="$command_socket_container_dir/command.sock"
 docker_bin="${PANDA_DOCKER_BIN:-docker}"
 docker_compose_bin="${PANDA_DOCKER_COMPOSE_BIN:-}"
 wiki_local_script="${PANDA_WIKI_LOCAL_SCRIPT:-$repo_root/scripts/wiki-local.sh}"
-wait_timeout_sec="${PANDA_STACK_WAIT_TIMEOUT_SEC:-120}"
+wait_timeout_sec="${PANDA_STACK_WAIT_TIMEOUT_SEC:-300}"
 env_loader="$script_dir/lib/load-env-file.sh"
 
 [[ -f "$env_file" ]] || die "env file not found: $env_file"
@@ -1684,6 +1684,33 @@ print_up_summary() {
   done
 }
 
+stop_database_writers_for_migration() {
+  local services=(panda-core panda-telegram panda-discord panda-whatsapp panda-gateway)
+  local compose_project service containers container
+
+  printf 'Stopping Panda database writers before migration: %s\n' "${services[*]}"
+  compose_project="$(default_compose_project_name)"
+  for service in "${services[@]}"; do
+    # Discover the old deployment by stable Compose labels. The new rendered
+    # model may have disabled a profile or removed the generated gateway.
+    containers="$("$docker_bin" ps -q \
+      --filter "label=com.docker.compose.project=$compose_project" \
+      --filter "label=com.docker.compose.service=$service")"
+    while IFS= read -r container; do
+      [[ -n "$container" ]] || continue
+      printf 'Stopping Panda database writer before migration: %s (%s)\n' "$container" "$service"
+      "$docker_bin" stop "$container"
+    done <<< "$containers"
+  done
+}
+
+run_database_migrations() {
+  printf 'Applying Panda database migrations.\n'
+  # --no-deps keeps runners and infrastructure serving while Panda writers are
+  # stopped. The migration command owns the database advisory lock.
+  run_compose run --rm --no-deps panda-core db migrate --writers-stopped
+}
+
 run_up() {
   local build_flag=$1
   validate_disposable_environment_config
@@ -1692,6 +1719,10 @@ run_up() {
   render_generated_compose
   if (( build_flag )); then
     build_stack_images
+  fi
+  stop_database_writers_for_migration
+  run_database_migrations
+  if (( build_flag )); then
     run_compose up -d --no-build --remove-orphans
   else
     run_compose up -d --remove-orphans

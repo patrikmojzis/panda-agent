@@ -1,10 +1,15 @@
 import {isDuplicateObjectError} from "./postgres-errors.js";
-import type {PgQueryable} from "./postgres-query.js";
+import type {PgPoolLike, PgQueryable} from "./postgres-query.js";
 
 export interface IntegrityCheck {
   label: string;
   sql: string;
   values?: readonly unknown[];
+}
+
+export interface IntegrityCheckGroup {
+  scope: string;
+  checks: readonly IntegrityCheck[];
 }
 
 function parseCount(row: unknown): number {
@@ -30,19 +35,49 @@ export async function assertIntegrityChecks(
   }
 }
 
+/** Runs operator-requested integrity checks against one read-only snapshot. */
+export async function runIntegrityChecksReadOnly(
+  pool: PgPoolLike,
+  groups: readonly IntegrityCheckGroup[],
+): Promise<{checked: number}> {
+  const client = await pool.connect();
+  let transactionOpen = false;
+  try {
+    await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+    transactionOpen = true;
+    for (const group of groups) {
+      await assertIntegrityChecks(client, group.scope, group.checks);
+    }
+    await client.query("COMMIT");
+    transactionOpen = false;
+    return {checked: groups.reduce((count, group) => count + group.checks.length, 0)};
+  } finally {
+    try {
+      if (transactionOpen) await client.query("ROLLBACK");
+    } finally {
+      client.release();
+    }
+  }
+}
+
 export async function addConstraint(queryable: PgQueryable, sql: string): Promise<void> {
+  if (await namedConstraintExists(queryable, sql)) {
+    return;
+  }
   try {
     await queryable.query(sql);
   } catch (error) {
-    if (isDuplicateObjectError(error)) {
-      return;
-    }
-
+    // pg-mem executes constraints but omits them from information_schema. Its
+    // duplicate error does not poison a transaction like PostgreSQL's does.
+    if (isPgMemError(error) && isDuplicateObjectError(error)) return;
     throw error;
   }
 }
 
 export async function alterIfSupported(queryable: PgQueryable, sql: string): Promise<boolean> {
+  if (await namedConstraintExists(queryable, sql)) {
+    return true;
+  }
   try {
     await queryable.query(sql);
     return true;
@@ -58,10 +93,58 @@ export async function alterIfSupported(queryable: PgQueryable, sql: string): Pro
       return false;
     }
 
-    if (isDuplicateObjectError(error)) {
-      return true;
-    }
+    if (isPgMemError(error) && isDuplicateObjectError(error)) return true;
 
     throw error;
   }
+}
+
+function isPgMemError(error: unknown): boolean {
+  return error instanceof Error
+    && (error.stack?.includes("node_modules/pg-mem") === true || error.message.includes("🐜"));
+}
+
+interface NamedConstraint {
+  schema: string | null;
+  table: string;
+  name: string;
+}
+
+function unquoteIdentifier(value: string): string {
+  return value.startsWith('"') && value.endsWith('"')
+    ? value.slice(1, -1).replaceAll('""', '"')
+    : value;
+}
+
+function parseNamedConstraint(sql: string): NamedConstraint | null {
+  const match = /^\s*ALTER\s+TABLE\s+((?:"[^"]+"\.)?"[^"]+"|[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?)\s+ADD\s+CONSTRAINT\s+"([^"]+)"/i.exec(sql);
+  if (!match?.[1] || !match[2]) return null;
+  const relationParts = match[1].split(".").map(unquoteIdentifier);
+  const table = relationParts.at(-1);
+  if (!table) return null;
+  return {
+    schema: relationParts.length > 1 ? relationParts[0] ?? null : null,
+    table,
+    name: match[2],
+  };
+}
+
+async function namedConstraintExists(queryable: PgQueryable, sql: string): Promise<boolean> {
+  const constraint = parseNamedConstraint(sql);
+  if (constraint === null) {
+    return false;
+  }
+
+  const values = constraint.schema
+    ? [constraint.name, constraint.table, constraint.schema]
+    : [constraint.name, constraint.table];
+  const result = await queryable.query(`
+    SELECT 1
+    FROM information_schema.table_constraints
+    WHERE constraint_name = $1
+      AND table_name = $2
+      ${constraint.schema ? "AND table_schema = $3" : ""}
+    LIMIT 1
+  `, values);
+  return result.rows.length > 0;
 }

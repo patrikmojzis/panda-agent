@@ -102,6 +102,9 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+      esbuild:
+        specifier: 0.28.1
+        version: 0.28.1
       pg-mem:
         specifier: ^3.0.14
         version: 3.0.14

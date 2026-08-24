@@ -181,6 +181,23 @@ export function createPostgresPool(options: CreatePostgresPoolOptions): Pool {
   });
 }
 
+/** Runs a bounded CLI operation and always closes its one-connection pool. */
+export async function withPostgresPool<T>(
+  dbUrl: string | undefined,
+  operation: (pool: Pool) => Promise<T>,
+): Promise<T> {
+  const pool = createPostgresPool({
+    connectionString: requireDatabaseUrl(dbUrl),
+    applicationName: "panda/cli",
+    max: 1,
+  });
+  try {
+    return await operation(pool);
+  } finally {
+    await pool.end();
+  }
+}
+
 /**
  * Attaches lightweight pool error and waiting-queue observation.
  */

@@ -61,6 +61,56 @@ case "$cmd" in
   inspect*' container-panda-core')
     printf 'healthy\\n'
     ;;
+  ps*'label=com.docker.compose.service=panda-core')
+    printf 'writer-panda-core\\n'
+    ;;
+  ps*'label=com.docker.compose.service=panda-telegram')
+    printf 'writer-panda-telegram\\n'
+    ;;
+  ps*'label=com.docker.compose.service=panda-discord')
+    printf 'writer-panda-discord\\n'
+    ;;
+  ps*'label=com.docker.compose.service=panda-whatsapp')
+    printf 'writer-panda-whatsapp\\n'
+    ;;
+  ps*'label=com.docker.compose.service=panda-gateway')
+    printf 'writer-panda-gateway\\n'
+    ;;
+  *)
+    ;;
+esac
+`, {mode: 0o755});
+    return stubPath;
+  }
+
+  async function createFailingMigrationDockerStub(logPath: string): Promise<string> {
+    const stubPath = path.join(await makeTempDir("panda-docker-stub-"), "docker");
+    await writeFile(stubPath, `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "${logPath}"
+cmd="$*"
+case "$cmd" in
+  compose*' run --rm --no-deps panda-core db migrate --writers-stopped')
+    exit 42
+    ;;
+  ps*'label=com.docker.compose.service=panda-core')
+    printf 'writer-panda-core\n'
+    ;;
+  ps*'label=com.docker.compose.service=panda-telegram')
+    printf 'writer-panda-telegram\n'
+    ;;
+  ps*'label=com.docker.compose.service=panda-discord')
+    printf 'writer-panda-discord\n'
+    ;;
+  ps*'label=com.docker.compose.service=panda-whatsapp')
+    printf 'writer-panda-whatsapp\n'
+    ;;
+  ps*'label=com.docker.compose.service=panda-gateway')
+    printf 'writer-panda-gateway\n'
+    ;;
+  image' 'inspect*)
+    exit 1
+    ;;
   *)
     ;;
 esac
@@ -86,6 +136,21 @@ case "$cmd" in
     ;;
   inspect*' container-panda-core')
     printf 'healthy\n'
+    ;;
+  ps*'label=com.docker.compose.service=panda-core')
+    printf 'writer-panda-core\n'
+    ;;
+  ps*'label=com.docker.compose.service=panda-telegram')
+    printf 'writer-panda-telegram\n'
+    ;;
+  ps*'label=com.docker.compose.service=panda-discord')
+    printf 'writer-panda-discord\n'
+    ;;
+  ps*'label=com.docker.compose.service=panda-whatsapp')
+    printf 'writer-panda-whatsapp\n'
+    ;;
+  ps*'label=com.docker.compose.service=panda-gateway')
+    printf 'writer-panda-gateway\n'
     ;;
   *)
     ;;
@@ -265,7 +330,42 @@ exit 42
     expect(result.exitCode).toBe(0);
     expect(await readFile(generatedComposePath, "utf8")).toBe("services: {}\n");
     expect(await readFile(generatedWikiComposePath, "utf8")).not.toContain("ports:");
-    expect(await readFile(logPath, "utf8")).not.toContain("panda agent ensure");
+    const dockerLog = await readFile(logPath, "utf8");
+    expect(dockerLog).not.toContain("panda agent ensure");
+    const stopIndex = dockerLog.indexOf("stop writer-panda-core");
+    const migrateIndex = dockerLog.indexOf(" run --rm --no-deps panda-core db migrate");
+    const upIndex = dockerLog.indexOf(" up -d --remove-orphans");
+    expect(stopIndex).toBeGreaterThanOrEqual(0);
+    expect(migrateIndex).toBeGreaterThan(stopIndex);
+    expect(dockerLog).toContain("panda-core db migrate --writers-stopped");
+    expect(upIndex).toBeGreaterThan(migrateIndex);
+    for (const service of ["panda-telegram", "panda-discord", "panda-whatsapp", "panda-gateway"]) {
+      expect(dockerLog).toContain(`stop writer-${service}`);
+    }
+  });
+
+  it("leaves Panda database writers stopped when migration fails", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createFailingMigrationDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=",
+    ].join("\n"));
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).toBe(42);
+    const dockerLog = await readFile(logPath, "utf8");
+    expect(dockerLog).toContain("stop writer-panda-core");
+    expect(dockerLog).toContain(" run --rm --no-deps panda-core db migrate");
+    expect(dockerLog).not.toContain(" up -d");
+    expect(dockerLog).not.toContain(" start panda-core");
   });
 
 
