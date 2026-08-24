@@ -1,11 +1,8 @@
-import {EventEmitter} from "node:events";
-
 import {describe, expect, it, vi} from "vitest";
 
 import {
   createConnectorOutboundWorker,
   startConnectorWorkerRuntime,
-  startConnectorWorkerNotificationListener,
   stopConnectorWorkerRuntime,
 } from "../src/integrations/channels/worker-runtime.js";
 
@@ -17,11 +14,8 @@ function createWorker(label: string, order: string[]) {
     stop: vi.fn(async () => {
       order.push(`${label}:stop`);
     }),
+    triggerDrain: vi.fn(async () => {}),
   };
-}
-
-async function flushBackgroundHandlers(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 10));
 }
 
 describe("connector worker runtime", () => {
@@ -98,64 +92,17 @@ describe("connector worker runtime", () => {
     });
   });
 
-  it("logs notification listener errors and reports reconnecting state without connector recovery", async () => {
-    const log = vi.fn();
-    const onListenerError = vi.fn();
-    const onListenerStateChange = vi.fn();
-    const client = new EventEmitter() as EventEmitter & {
-      query: ReturnType<typeof vi.fn>;
-      release: ReturnType<typeof vi.fn>;
-    };
-    client.query = vi.fn(async () => ({rows: []}));
-    client.release = vi.fn();
-    const pool = {
-      connect: vi.fn(async () => client),
-      query: vi.fn(async () => ({rows: []})),
-    };
-
-    const listener = await startConnectorWorkerNotificationListener({
-      pool,
-      source: "telegram",
-      connectorKey: "telegram-bot",
-      actionWorker: {
-        triggerDrain: vi.fn(),
-      },
-      outboundWorker: {
-        triggerDrain: vi.fn(),
-      },
-      log,
-      onListenerError,
-      onListenerStateChange,
-    });
-
-    client.emit("error", new Error("listen failed"));
-    await flushBackgroundHandlers();
-    await listener.close();
-
-    expect(log).toHaveBeenCalledWith("worker_notification_listener_failed", {
-      connectorKey: "telegram-bot",
-      message: "listen failed",
-    });
-    expect(onListenerError).toHaveBeenCalledWith(expect.objectContaining({
-      message: "listen failed",
-    }));
-    expect(onListenerStateChange).toHaveBeenCalledWith(expect.objectContaining({
-      status: "reconnecting",
-      listening: false,
-      lastError: "listen failed",
-    }));
-  });
-
-  it("starts under a connector lease and stops listener, workers, then lease", async () => {
+  it("starts under a connector lease and unregisters before stopping workers and lease", async () => {
     const order: string[] = [];
     const lease = {
       release: vi.fn(async () => {
         order.push("lease:release");
       }),
     };
-    const listener = {
-      close: vi.fn(async () => {
-        order.push("listener:close");
+    const notificationRouter = {
+      register: vi.fn(() => {
+        order.push("notifications:register");
+        return {unregister: () => order.push("notifications:unregister")};
       }),
     };
     const outboundWorker = createWorker("outbound", order);
@@ -168,10 +115,8 @@ describe("connector worker runtime", () => {
       }),
       outboundWorker,
       actionWorker,
-      startNotificationListener: vi.fn(async () => {
-        order.push("listener:start");
-        return listener;
-      }),
+      connectorKey: "bot-1",
+      notificationRouter,
     });
     await stopConnectorWorkerRuntime(handle);
 
@@ -179,8 +124,8 @@ describe("connector worker runtime", () => {
       "lease:acquire",
       "outbound:start:false",
       "action:start:false",
-      "listener:start",
-      "listener:close",
+      "notifications:register",
+      "notifications:unregister",
       "action:stop",
       "outbound:stop",
       "lease:release",
@@ -209,9 +154,8 @@ describe("connector worker runtime", () => {
       }),
       outboundWorker,
       actionWorker,
-      startNotificationListener: vi.fn(async () => {
-        throw new Error("listener should not start");
-      }),
+      connectorKey: "bot-1",
+      notificationRouter: {register: vi.fn()},
       onCleanupError,
     })).rejects.toThrow("action worker failed");
 
@@ -230,10 +174,10 @@ describe("connector worker runtime", () => {
     const order: string[] = [];
     const onCleanupError = vi.fn();
     const handle = {
-      notificationListener: {
-        close: vi.fn(async () => {
-          order.push("listener:close");
-          throw new Error("listener close failed");
+      notificationRegistration: {
+        unregister: vi.fn(() => {
+          order.push("registration:unregister");
+          throw new Error("unregister failed");
         }),
       },
       actionWorker: createWorker("action", order),
@@ -248,14 +192,14 @@ describe("connector worker runtime", () => {
     await stopConnectorWorkerRuntime(handle, onCleanupError);
 
     expect(order).toEqual([
-      "listener:close",
+      "registration:unregister",
       "action:stop",
       "outbound:stop",
       "lease:release",
     ]);
     expect(onCleanupError).toHaveBeenCalledWith(
-      {label: "notification-listener"},
-      expect.objectContaining({message: "listener close failed"}),
+      {label: "notification-registration"},
+      expect.objectContaining({message: "unregister failed"}),
     );
   });
 });

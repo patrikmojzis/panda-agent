@@ -28,48 +28,6 @@ interface StartPostgresNotificationListenerOptions {
   additionalChannels?: readonly PostgresListenerChannel[];
 }
 
-interface ChannelWorkerNotificationTarget {
-  triggerDrain(): Promise<void>;
-}
-
-interface StartChannelWorkerNotificationListenerOptions {
-  actionWorker: ChannelWorkerNotificationTarget;
-  connectorKey: string;
-  outboundWorker: ChannelWorkerNotificationTarget;
-  pool: PgPoolLikeForNotifications;
-  source: string;
-  onError?: (error: unknown) => Promise<void> | void;
-  onStateChange?: (snapshot: PostgresListenSnapshot) => Promise<void> | void;
-  reconnectDelayMs?: number;
-  additionalChannels?: readonly PostgresListenerChannel[];
-}
-
-export function startChannelWorkerNotificationListener(
-  options: StartChannelWorkerNotificationListenerOptions,
-): Promise<PostgresNotificationListenerHandle> {
-  return startPostgresNotificationListener({
-    pool: options.pool,
-    onActionNotification: async (notification) => {
-      if (notification.channel !== options.source || notification.connectorKey !== options.connectorKey) {
-        return;
-      }
-
-      await options.actionWorker.triggerDrain();
-    },
-    onDeliveryNotification: async (notification) => {
-      if (notification.channel !== options.source || notification.connectorKey !== options.connectorKey) {
-        return;
-      }
-
-      await options.outboundWorker.triggerDrain();
-    },
-    onError: options.onError,
-    onStateChange: options.onStateChange,
-    reconnectDelayMs: options.reconnectDelayMs,
-    additionalChannels: options.additionalChannels,
-  });
-}
-
 export function startPostgresNotificationListener(
   options: StartPostgresNotificationListenerOptions,
 ): Promise<PostgresNotificationListenerHandle> {

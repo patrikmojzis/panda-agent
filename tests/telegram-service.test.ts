@@ -2,6 +2,12 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {TelegramService} from "../src/integrations/channels/telegram/service.js";
 
+const runtime = {
+  pool: {},
+  notifications: {register: vi.fn()},
+  getNotificationSnapshot: () => ({status: "listening", listening: true}),
+} as never;
+
 const telegramServiceMocks = vi.hoisted(() => {
   const botInstances: MockBot[] = [];
 
@@ -73,6 +79,7 @@ describe("TelegramService", () => {
     const service = new TelegramService({
       token: "telegram-token",
       dataDir: "/tmp/panda",
+      runtime,
     });
 
     await expect(service.whoami()).resolves.toEqual({
@@ -87,6 +94,7 @@ describe("TelegramService", () => {
       token: "telegram-token",
       dataDir: "/tmp/panda",
       expectedConnectorKey: "99",
+      runtime,
     });
 
     await expect(service.whoami()).rejects.toThrow("Telegram bot token identity does not match the connector account.");

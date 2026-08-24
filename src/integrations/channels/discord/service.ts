@@ -22,13 +22,6 @@ import {LiveVoiceRepo} from "../../../domain/live-voice/repo.js";
 import {PostgresThreadRuntimeStore} from "../../../domain/threads/runtime/postgres.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
 import {ensureSchemas} from "../../../lib/postgres-bootstrap.js";
-import {
-  buildObservedPoolConfig,
-  createPostgresPool,
-  observePostgresPool,
-  type PostgresPoolObserver,
-  requireDatabaseUrl,
-} from "../../../lib/postgres-database.js";
 import type {PgListenClient, PgPoolLike} from "../../../lib/postgres-query.js";
 import {createDiscordRestClient, type DiscordCurrentUser, type DiscordWorkerRestClient} from "./api.js";
 import {DISCORD_BOT_TOKEN_SECRET_KEY, DISCORD_SOURCE} from "./config.js";
@@ -49,38 +42,25 @@ import {
 } from "./media.js";
 import {createDiscordOutboundAdapter} from "./outbound.js";
 import {sendDiscordStickerAction} from "./stickers.js";
-import {DISCORD_VOICE_NOTIFICATION_CHANNEL, DiscordVoiceControlRepo, parseDiscordVoiceNotification} from "./voice-postgres.js";
+import {DiscordVoiceControlRepo} from "./voice-postgres.js";
 import {DiscordVoiceControlWorker, DiscordVoiceSessionManager} from "./voice-manager.js";
 import type {DiscordGatewayAdapterCreator} from "@discordjs/voice";
 import type {DiscordVoiceGatewayHealth} from "./voice-transport-health.js";
 import {
-  startConnectorWorkerNotificationListener,
   startConnectorWorkerRuntime,
   stopConnectorWorkerRuntime,
+  type ConnectorDaemonRuntimeHandle,
   type ConnectorWorkerRuntimeHandle,
-  type ConnectorWorkerRuntimeListener,
 } from "../worker-runtime.js";
-
-const DISCORD_POOL_MAX_FALLBACK = 6;
 
 type DiscordPostgresPool = Pool & PgPoolLike<PgListenClient>;
 
 export interface DiscordServiceOptions {
   accountKey: string;
   dataDir: string;
-  dbUrl?: string;
+  runtime: ConnectorDaemonRuntimeHandle;
   dependencies?: DiscordServiceDependencies;
   onBoundMessage?: DiscordBoundMessageHandler;
-  poolMaxFallback?: number;
-}
-
-export interface DiscordServicePoolFactoryInput {
-  accountKey: string;
-  applicationName: string;
-  dbUrl?: string;
-  max: number;
-  idleTimeoutMillis: number;
-  acquireTimeoutMillis: number;
 }
 
 export interface DiscordWorkerStores {
@@ -133,7 +113,6 @@ export interface DiscordServiceDependencies {
     connectorKey: string;
     store: PostgresOutboundDeliveryStore;
   }) => DiscordServiceOutboundWorker;
-  createPool?: (input: DiscordServicePoolFactoryInput) => DiscordPostgresPool;
   createRestClient?: () => DiscordWorkerRestClient;
   createStores?: (pool: DiscordPostgresPool) => DiscordWorkerStores;
   createVoiceWorker?: (options: {
@@ -144,19 +123,6 @@ export interface DiscordServiceDependencies {
     stores: DiscordWorkerStores;
     log(event: string, payload: Record<string, unknown>): void;
   }) => DiscordServiceVoiceWorker;
-  startNotificationListener?: (options: {
-    actionWorker: DiscordServiceActionWorker;
-    connectorKey: string;
-    outboundWorker: DiscordServiceOutboundWorker;
-    pool: DiscordPostgresPool;
-  }) => Promise<ConnectorWorkerRuntimeListener>;
-  observePool?: (input: {
-    applicationName: string;
-    connectorKey?: string;
-    max: number;
-    idleTimeoutMillis: number;
-    pool: DiscordPostgresPool;
-  }) => PostgresPoolObserver;
   resolveCrypto?: () => CredentialCrypto | null;
 }
 
@@ -198,17 +164,7 @@ async function withSecretErrorSafety<T>(secret: string, fn: () => Promise<T>): P
   }
 }
 
-function createDefaultPool(input: DiscordServicePoolFactoryInput): DiscordPostgresPool {
-  return createPostgresPool({
-    connectionString: requireDatabaseUrl(input.dbUrl),
-    applicationName: input.applicationName,
-    max: input.max,
-    idleTimeoutMillis: input.idleTimeoutMillis,
-    connectionTimeoutMillis: input.acquireTimeoutMillis,
-  }) as DiscordPostgresPool;
-}
-
-function createDefaultStores(pool: DiscordPostgresPool, dataDir: string): DiscordWorkerStores {
+export function createDiscordWorkerStores(pool: DiscordPostgresPool, dataDir: string): DiscordWorkerStores {
   return {
     connectorLeases: new PostgresConnectorLeaseRepo({pool}),
     connectorStore: new PostgresConnectorAccountStore({pool}),
@@ -225,6 +181,22 @@ function createDefaultStores(pool: DiscordPostgresPool, dataDir: string): Discor
     voiceControls: new DiscordVoiceControlRepo({pool}),
     liveVoice: new LiveVoiceRepo({pool}),
   };
+}
+
+export async function initializeDiscordWorkerSchemas(pool: DiscordPostgresPool): Promise<void> {
+  const stores = createDiscordWorkerStores(pool, ".");
+  await ensureSchemas([
+    stores.connectorStore,
+    stores.sessionStore,
+    stores.threadStore,
+    stores.conversationRepo,
+    stores.channelActions,
+    stores.outboundDeliveries,
+    stores.runtimeRequests,
+    stores.connectorLeases,
+    ...(stores.voiceControls ? [stores.voiceControls] : []),
+    ...(stores.liveVoice ? [stores.liveVoice] : []),
+  ]);
 }
 
 function createDefaultOutboundWorker(options: {
@@ -303,28 +275,27 @@ function requireEnabledDiscordAccount(account: ConnectorAccountRecord | null, ac
 
 export class DiscordService {
   private readonly accountKey: string;
-  private readonly dataDir: string;
-  private readonly dbUrl?: string;
+  private readonly runtime: ConnectorDaemonRuntimeHandle;
   private readonly dependencies: DiscordServiceDependencies;
   private readonly onBoundMessage?: DiscordBoundMessageHandler;
-  private readonly poolMaxFallback?: number;
+  private readonly stores: DiscordWorkerStores;
   private botTokenForRedaction: string | null = null;
   private gateway: DiscordServiceGateway | null = null;
   private workerRuntime: ConnectorWorkerRuntimeHandle<DiscordServiceOutboundWorker, DiscordServiceActionWorker> | null = null;
-  private poolObserver: PostgresPoolObserver | null = null;
   private runStopPromise: Promise<void> | null = null;
   private resolveRunStop: (() => void) | null = null;
-  private stores: DiscordWorkerStores | null = null;
   private voiceWorker: DiscordServiceVoiceWorker | null = null;
   private stopping = false;
 
   constructor(options: DiscordServiceOptions) {
     this.accountKey = options.accountKey;
-    this.dataDir = options.dataDir;
-    this.dbUrl = options.dbUrl;
+    this.runtime = options.runtime;
     this.dependencies = options.dependencies ?? {};
     this.onBoundMessage = options.onBoundMessage;
-    this.poolMaxFallback = options.poolMaxFallback;
+    const pool = options.runtime.pool as DiscordPostgresPool;
+    this.stores = this.dependencies.createStores
+      ? this.dependencies.createStores(pool)
+      : createDiscordWorkerStores(pool, options.dataDir);
   }
 
   private log(event: string, payload: Record<string, unknown>): void {
@@ -350,64 +321,6 @@ export class DiscordService {
     this.resolveRunStop?.();
     this.resolveRunStop = null;
     this.runStopPromise = null;
-  }
-
-  private createPoolAndStores(): {
-    stores: DiscordWorkerStores;
-    poolConfig: ReturnType<typeof buildObservedPoolConfig>;
-  } {
-    const poolConfig = buildObservedPoolConfig(
-      `panda/discord/${this.accountKey}`,
-      "PANDA_DISCORD_DB_POOL_MAX",
-      this.poolMaxFallback ?? DISCORD_POOL_MAX_FALLBACK,
-    );
-    const pool = (this.dependencies.createPool ?? createDefaultPool)({
-      accountKey: this.accountKey,
-      applicationName: poolConfig.applicationName,
-      dbUrl: this.dbUrl,
-      max: poolConfig.max,
-      idleTimeoutMillis: poolConfig.idleTimeoutMillis,
-      acquireTimeoutMillis: poolConfig.acquireTimeoutMillis,
-    });
-    const stores = this.dependencies.createStores
-      ? this.dependencies.createStores(pool)
-      : createDefaultStores(pool, this.dataDir);
-    this.stores = stores;
-    this.poolObserver = (this.dependencies.observePool ?? ((input) => observePostgresPool({
-      pool: input.pool,
-      applicationName: input.applicationName,
-      max: input.max,
-      idleTimeoutMillis: input.idleTimeoutMillis,
-      log: (event, payload) => this.log(event, {
-        ...(input.connectorKey ? {connectorKey: input.connectorKey} : {}),
-        ...payload,
-      }),
-    })))({
-      applicationName: poolConfig.applicationName,
-      max: poolConfig.max,
-      idleTimeoutMillis: poolConfig.idleTimeoutMillis,
-      pool: stores.pool,
-    });
-
-    return {
-      stores,
-      poolConfig,
-    };
-  }
-
-  private async ensureSchemas(stores: DiscordWorkerStores): Promise<void> {
-    await ensureSchemas([
-      stores.connectorStore,
-      stores.sessionStore,
-      stores.threadStore,
-      stores.conversationRepo,
-      stores.channelActions,
-      stores.outboundDeliveries,
-      stores.runtimeRequests,
-      stores.connectorLeases,
-      ...(stores.voiceControls ? [stores.voiceControls] : []),
-      ...(stores.liveVoice ? [stores.liveVoice] : []),
-    ]);
   }
 
   private async loadEnabledAccount(stores: DiscordWorkerStores): Promise<ConnectorAccountRecord> {
@@ -512,40 +425,6 @@ export class DiscordService {
     );
   }
 
-  private startNotificationListener(input: {
-    actionWorker: DiscordServiceActionWorker;
-    connectorKey: string;
-    outboundWorker: DiscordServiceOutboundWorker;
-    stores: DiscordWorkerStores;
-  }): Promise<ConnectorWorkerRuntimeListener> {
-    if (this.dependencies.startNotificationListener) {
-      return this.dependencies.startNotificationListener({
-        actionWorker: input.actionWorker,
-        connectorKey: input.connectorKey,
-        outboundWorker: input.outboundWorker,
-        pool: input.stores.pool,
-      });
-    }
-    return startConnectorWorkerNotificationListener({
-      pool: input.stores.pool,
-      source: DISCORD_SOURCE,
-      connectorKey: input.connectorKey,
-      actionWorker: input.actionWorker,
-      outboundWorker: input.outboundWorker,
-      log: (event, payload) => this.log(event, payload),
-      ...(input.stores.voiceControls ? {additionalChannels: [{
-        channel: DISCORD_VOICE_NOTIFICATION_CHANNEL,
-        label: "Discord voice control notification callback",
-        parse: parseDiscordVoiceNotification,
-        listener: async (notification: unknown) => {
-          const parsed = notification as ReturnType<typeof parseDiscordVoiceNotification>;
-          if (parsed?.connectorKey !== input.connectorKey) return;
-          await this.voiceWorker?.triggerDrain();
-        },
-      }]} : {}),
-    });
-  }
-
   private async downloadSupportedAttachments(
     attachments: unknown,
     stores: DiscordWorkerStores,
@@ -639,30 +518,12 @@ export class DiscordService {
     this.createStopWaiter();
 
     try {
-      const {stores, poolConfig} = this.createPoolAndStores();
-      await this.ensureSchemas(stores);
+      const stores = this.stores;
+      const poolConfig = this.runtime.poolConfig;
       const account = await this.loadEnabledAccount(stores);
       const botToken = await this.loadBotToken(stores, account);
       const restClient = (this.dependencies.createRestClient ?? createDiscordRestClient)();
       await this.validateBotIdentity(restClient, botToken, account);
-
-      this.poolObserver?.stop();
-      this.poolObserver = (this.dependencies.observePool ?? ((input) => observePostgresPool({
-        pool: input.pool,
-        applicationName: input.applicationName,
-        max: input.max,
-        idleTimeoutMillis: input.idleTimeoutMillis,
-        log: (event, payload) => this.log(event, {
-          ...(input.connectorKey ? {connectorKey: input.connectorKey} : {}),
-          ...payload,
-        }),
-      })))({
-        applicationName: poolConfig.applicationName,
-        connectorKey: account.connectorKey,
-        max: poolConfig.max,
-        idleTimeoutMillis: poolConfig.idleTimeoutMillis,
-        pool: stores.pool,
-      });
 
       const outboundWorker = this.createOutboundWorker({
         botToken,
@@ -680,12 +541,13 @@ export class DiscordService {
         acquireLease: () => this.acquireConnectorLease(stores, account.connectorKey),
         outboundWorker,
         actionWorker,
-        startNotificationListener: () => this.startNotificationListener({
-          actionWorker,
-          connectorKey: account.connectorKey,
-          outboundWorker,
-          stores,
-        }),
+        connectorKey: account.connectorKey,
+        notificationRouter: this.runtime.notifications,
+        additionalNotificationTargets: {
+          discord_voice: {
+            triggerDrain: async () => this.voiceWorker?.triggerDrain(),
+          },
+        },
         onCleanupError: (step, cleanupError) => {
           this.log("worker_cleanup_failed", {
             accountKey: this.accountKey,
@@ -726,9 +588,7 @@ export class DiscordService {
             requests: stores.runtimeRequests,
             getInfrastructureHealth: () => ({
               ...(gateway.getHealthSnapshot ? {gateway: gateway.getHealthSnapshot()} : {}),
-              ...(this.workerRuntime?.notificationListener?.getSnapshot
-                ? {listener: this.workerRuntime.notificationListener.getSnapshot()}
-                : {}),
+              listener: this.runtime.getNotificationSnapshot(),
               pool: {
                 max: poolConfig.max,
                 totalCount: stores.pool.totalCount,
@@ -765,13 +625,9 @@ export class DiscordService {
     this.stopping = true;
     const gateway = this.gateway;
     const workerRuntime = this.workerRuntime;
-    const stores = this.stores;
-    const poolObserver = this.poolObserver;
     const voiceWorker = this.voiceWorker;
     this.gateway = null;
     this.workerRuntime = null;
-    this.stores = null;
-    this.poolObserver = null;
     this.voiceWorker = null;
 
     await runCleanupSteps([
@@ -795,18 +651,6 @@ export class DiscordService {
               message: errorMessage(cleanupError, this.botTokenForRedaction),
             });
           });
-        },
-      },
-      {
-        label: "pool-observer",
-        run: () => {
-          poolObserver?.stop();
-        },
-      },
-      {
-        label: "postgres-pool",
-        run: async () => {
-          await stores?.pool.end();
         },
       },
     ], (step, error) => {

@@ -25,13 +25,13 @@ That means a deployment can kill itself purely by letting a few services use def
 
 Today the expensive pieces are not just burst traffic. They are the always-on clients that stay checked out from purpose-specific pools.
 
-- `panda-core` uses `PANDA_CORE_DB_POOL_MAX` for short queries. Default: `5`.
+- `panda-core` uses `PANDA_CORE_DB_POOL_MAX` for short queries. Default: `4`.
 - `panda-core` uses `PANDA_CORE_NOTIFICATION_DB_POOL_MAX` for `LISTEN/NOTIFY` clients. Default: `4`.
 - `panda-core` uses `PANDA_CORE_THREAD_LEASE_DB_POOL_MAX` for advisory-lock thread leases. Default: `4`.
-- `panda-core` has a separate readonly pool, but it is lazy and only exists after the readonly tool is actually used.
-- `panda-telegram/<connectorKey>` keeps one shared worker `LISTEN` client.
-- `panda-discord/<accountKey>` runs one pool per enabled Discord account in all-enabled mode. Its action, delivery, and voice notification channels share one long-lived `LISTEN` client; voice does not pin another client.
-- `panda-whatsapp/<connectorKey>` runs one bounded pool per enabled WhatsApp account and keeps one shared worker `LISTEN` client.
+- `panda-core` has a separate readonly pool with default `1`, but it is lazy and only exists after the readonly tool is actually used.
+- Each channel daemon owns one bounded pool and one shared `LISTEN` client, regardless of account count.
+- Telegram, Discord, and WhatsApp account workers reuse their daemon pool. Protocol connections remain per account.
+- Discord action, delivery, and voice notifications share the Discord listener; voice does not pin another client.
 - Connector ownership uses lease rows with TTL, not pinned advisory-lock sessions.
 - Docker healthchecks hit local HTTP endpoints, not the database.
 
@@ -41,17 +41,17 @@ So the pool max is not the whole story. The pinned clients still matter, and eac
 
 For a small 22-slot Postgres plan like `clankerino`, use this core budget:
 
-- `panda-core` query pool: `5`
+- `panda-core` query pool: `4`
 - `panda-core` notification pool: `4`
 - `panda-core` thread lease pool: `4`
-- `panda-core` readonly pool: `2`, lazy
-- `panda-telegram`: `2` in all-enabled Docker stack (`PANDA_TELEGRAM_DB_POOL_MAX`), `5` for a single debug worker
-- `panda-discord`: `2` per enabled Discord account in the Docker stack
-- `panda-whatsapp`: `2` per enabled account in all-enabled mode, `5` for a single debug worker
+- `panda-core` readonly pool: `1`, lazy
+- `panda-telegram`: `2` per daemon or single-account run
+- `panda-discord`: `2` per daemon or single-account run
+- `panda-whatsapp`: `2` per daemon or single-account run
 
-Core plus one `5`-slot connector totals `18` active slots, or `20` after the lazy readonly pool is used. All-enabled WhatsApp accounts add `2` slots each by default.
+The standard core-plus-three-channel ceiling is `4 + 4 + 4 + 1 + 2 + 2 + 2 = 19`. That leaves three slots on a 22-usable-connection plan.
 
-Core plus Telegram, WhatsApp, and Discord accounts can exceed a 22-slot plan quickly. Budget Discord and WhatsApp as `enabled accounts x per-account pool max`, lower connector pool caps, or upsize the database before enabling several channel daemons together.
+That `19` is only the baseline. Gateway, Wiki.js, admin sessions, migrations, and other optional consumers need their own additional budget. They are not squeezed into those three spare slots by wishful arithmetic.
 
 That is intentionally explicit. It gives Panda room to breathe without pretending the database is infinite.
 
@@ -81,7 +81,7 @@ The first real fixes are in:
 If Panda is going to use multiple pools, each client needs a name.
 
 - set `application_name` on every pool
-- include service role in the name: `panda/core`, `panda/core-notify`, `panda/core-lease`, `panda/core-ro`, `panda/telegram/<connectorKey>`, `panda/whatsapp/<connectorKey>`
+- include service role in the name: `panda/core`, `panda/core-notify`, `panda/core-lease`, `panda/core-ro`, `panda/telegram`, `panda/discord`, `panda/whatsapp`
 - log pool stats on error and periodically: `totalCount`, `idleCount`, `waitingCount`
 - fail health when the query pool has sustained waiters; that is backpressure, not vibes
 - keep a canned `pg_stat_activity` query in the runbook so we can see who is hoarding connections in seconds, not after a crime scene reconstruction
@@ -113,7 +113,7 @@ Restart policies help Panda recover from transient failure. They do not fix bad 
 
 ## Remaining Questions
 
-- If we add more always-on connectors or enable more Discord accounts, re-budget before shipping them.
+- If we add more channel daemons or other always-on consumers, re-budget before shipping them.
 - If readonly Postgres usage becomes frequent, recheck whether a separate `panda/core-ro` pool still earns its keep.
 - If Postgres pressure returns, inspect `pg_stat_activity` first instead of guessing and cargo-culting lower pool caps.
 

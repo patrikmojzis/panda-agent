@@ -110,10 +110,10 @@ const CORE_POSTGRES_APPLICATION_NAME = "panda/core";
 const CORE_NOTIFICATION_POSTGRES_APPLICATION_NAME = "panda/core-notify";
 const CORE_THREAD_LEASE_POSTGRES_APPLICATION_NAME = "panda/core-lease";
 const CORE_READONLY_POSTGRES_APPLICATION_NAME = "panda/core-ro";
-const CORE_POSTGRES_POOL_MAX_FALLBACK = 5;
+const CORE_POSTGRES_POOL_MAX_FALLBACK = 4;
 const CORE_NOTIFICATION_POSTGRES_POOL_MAX_FALLBACK = 4;
 const CORE_THREAD_LEASE_POSTGRES_POOL_MAX_FALLBACK = 4;
-const CORE_READONLY_POSTGRES_POOL_MAX_FALLBACK = 2;
+const CORE_READONLY_POSTGRES_POOL_MAX_FALLBACK = 1;
 
 function logRuntimeEvent(event: string, payload: Record<string, unknown>): void {
   process.stdout.write(`${JSON.stringify({
@@ -572,9 +572,8 @@ export async function bootstrapRuntime(
           connectorKey: account.connectorKey,
           crypto: credentialCrypto,
           dataDir: resolveMediaDir(),
-          dbUrl: options.dbUrl,
+          pool: postgresPool,
           disableHealthServer: true,
-          poolMaxFallback: 2,
         }),
       })
       : null;

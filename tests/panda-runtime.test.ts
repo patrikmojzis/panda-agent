@@ -261,7 +261,7 @@ describe("createRuntime", () => {
     });
 
     expect(runtimeMocks.poolOptions).toEqual([
-      expect.objectContaining({application_name: "panda/core", max: 5}),
+      expect.objectContaining({application_name: "panda/core", max: 4}),
       expect.objectContaining({application_name: "panda/core-notify", max: 4}),
       expect.objectContaining({application_name: "panda/core-lease", max: 4}),
     ]);

@@ -35,9 +35,9 @@ The worker is a long-lived Baileys process with:
 
 - account-owned, AES-GCM-encrypted auth state in Postgres
 - reconnect handling
-- one-process-per-account locking
+- TTL-based per-account connector leases
 
-The supervisor runs one isolated worker per enabled linked account.
+The supervisor runs one isolated protocol worker per enabled linked account. Those workers share one daemon-owned Postgres pool and notification listener; each account keeps its own Baileys socket and auth state.
 Do not invent webhooks or clustering until there is a real reason.
 Pairing retry policy belongs in `src/integrations/channels/whatsapp/pairing.ts`;
 the service should wire auth/socket creation and delegate reconnect semantics to

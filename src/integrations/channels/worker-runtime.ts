@@ -3,28 +3,29 @@ import {
   type ChannelOutboundDeliveryWorkerOptions,
 } from "../../domain/channels/deliveries/worker.js";
 import {runCleanupSteps} from "../../lib/cleanup.js";
+import {
+  buildObservedPoolConfig,
+  createPostgresPool,
+  observePostgresPool,
+  requireDatabaseUrl,
+  type PostgresPoolObserver,
+} from "../../lib/postgres-database.js";
 import type {PostgresListenSnapshot} from "../../lib/postgres-listen.js";
 import {
-  startChannelWorkerNotificationListener,
+  startPostgresNotificationListener,
   type PostgresNotificationListenerHandle,
 } from "./postgres-notification-listener.js";
 
 type ConnectorWorkerLogger = (event: string, payload: Record<string, unknown>) => void;
 
-type ChannelWorkerNotificationListenerOptions = Parameters<typeof startChannelWorkerNotificationListener>[0];
-
 export interface ConnectorWorkerRuntimeWorker {
   start(options?: {subscribeToNotifications?: boolean}): Promise<void>;
   stop(): Promise<void>;
+  triggerDrain(): Promise<void>;
 }
 
 export interface ConnectorWorkerRuntimeLease {
   release(): Promise<void>;
-}
-
-export interface ConnectorWorkerRuntimeListener {
-  close(): Promise<void>;
-  getSnapshot?(): PostgresListenSnapshot;
 }
 
 export interface ConnectorWorkerRuntimeCleanupStep {
@@ -37,8 +38,54 @@ export interface ConnectorWorkerRuntimeHandle<
 > {
   actionWorker: TActionWorker;
   lease: ConnectorWorkerRuntimeLease;
-  notificationListener: ConnectorWorkerRuntimeListener | null;
+  notificationRegistration: ConnectorWorkerRuntimeNotificationRegistration | null;
   outboundWorker: TOutboundWorker;
+}
+
+interface ConnectorWorkerNotificationTarget {
+  triggerDrain(): Promise<void>;
+}
+
+export interface ConnectorWorkerRuntimeNotificationRegistration {
+  unregister(): void;
+}
+
+export interface ConnectorWorkerRuntimeNotificationRouter {
+  register(input: {
+    actionWorker: ConnectorWorkerNotificationTarget;
+    additionalTargets?: Readonly<Record<string, ConnectorWorkerNotificationTarget>>;
+    connectorKey: string;
+    outboundWorker: ConnectorWorkerNotificationTarget;
+  }): ConnectorWorkerRuntimeNotificationRegistration;
+}
+
+export interface ConnectorDaemonAdditionalNotification<TNotification = unknown> {
+  channel: string;
+  key: string;
+  label: string;
+  connectorKey(notification: TNotification): string | null;
+  parse(payload: string | undefined): TNotification | null;
+}
+
+export interface ConnectorDaemonRuntimeHandle {
+  close(): Promise<void>;
+  getNotificationSnapshot(): PostgresListenSnapshot;
+  notifications: ConnectorWorkerRuntimeNotificationRouter;
+  pool: ReturnType<typeof createPostgresPool>;
+  poolConfig: ReturnType<typeof buildObservedPoolConfig>;
+}
+
+interface ConnectorNotificationRegistration {
+  actionWorker: ConnectorWorkerNotificationTarget;
+  additionalTargets: Readonly<Record<string, ConnectorWorkerNotificationTarget>>;
+  connectorKey: string;
+  outboundWorker: ConnectorWorkerNotificationTarget;
+}
+
+export interface ConnectorDaemonRuntimeDependencies {
+  createPool?: typeof createPostgresPool;
+  observePool?: (input: Parameters<typeof observePostgresPool>[0]) => PostgresPoolObserver;
+  startNotificationListener?: typeof startPostgresNotificationListener;
 }
 
 function errorMessage(error: unknown): string {
@@ -63,35 +110,174 @@ export function createConnectorOutboundWorker(
   });
 }
 
-export function startConnectorWorkerNotificationListener(input: {
-  actionWorker: ChannelWorkerNotificationListenerOptions["actionWorker"];
-  connectorKey: string;
-  log: ConnectorWorkerLogger;
-  onListenerError?: (error: unknown) => Promise<void> | void;
-  onListenerStateChange?: (snapshot: PostgresListenSnapshot) => Promise<void> | void;
-  outboundWorker: ChannelWorkerNotificationListenerOptions["outboundWorker"];
-  pool: ChannelWorkerNotificationListenerOptions["pool"];
-  source: string;
-  additionalChannels?: ChannelWorkerNotificationListenerOptions["additionalChannels"];
-}): Promise<PostgresNotificationListenerHandle> {
-  return startChannelWorkerNotificationListener({
-    pool: input.pool,
-    source: input.source,
+function drainTarget(
+  target: ConnectorWorkerNotificationTarget,
+  input: {connectorKey: string; kind: string; log: ConnectorWorkerLogger},
+): void {
+  void target.triggerDrain().catch((error) => input.log("worker_notification_drain_failed", {
     connectorKey: input.connectorKey,
-    actionWorker: input.actionWorker,
-    outboundWorker: input.outboundWorker,
-    additionalChannels: input.additionalChannels,
-    onError: async (error) => {
-      input.log("worker_notification_listener_failed", {
-        connectorKey: input.connectorKey,
-        message: errorMessage(error),
-      });
-      await input.onListenerError?.(error);
-    },
-    onStateChange: async (snapshot) => {
-      await input.onListenerStateChange?.(snapshot);
-    },
+    kind: input.kind,
+    message: errorMessage(error),
+  }));
+}
+
+/** Owns one channel daemon pool and one listener, regardless of account count. */
+export async function startConnectorDaemonRuntime(input: {
+  additionalNotifications?: readonly ConnectorDaemonAdditionalNotification[];
+  dbUrl?: string;
+  dependencies?: ConnectorDaemonRuntimeDependencies;
+  initialize(pool: ReturnType<typeof createPostgresPool>): Promise<void>;
+  log: ConnectorWorkerLogger;
+  poolMaxEnvKey: string;
+  reconnectDelayMs?: number;
+  source: string;
+}): Promise<ConnectorDaemonRuntimeHandle> {
+  const applicationName = `panda/${input.source}`;
+  const configuredPoolMax = process.env[input.poolMaxEnvKey]?.trim();
+  if (configuredPoolMax) {
+    const parsedPoolMax = Number.parseInt(configuredPoolMax, 10);
+    if (Number.isInteger(parsedPoolMax) && parsedPoolMax < 2) {
+      throw new Error(`${input.poolMaxEnvKey} must be at least 2 because the connector daemon reserves one connection for LISTEN.`);
+    }
+  }
+  const poolConfig = buildObservedPoolConfig(applicationName, input.poolMaxEnvKey, 2);
+  if (poolConfig.max < 2) {
+    throw new Error(`${input.poolMaxEnvKey} must be at least 2 because the connector daemon reserves one connection for LISTEN.`);
+  }
+
+  const createPool = input.dependencies?.createPool ?? createPostgresPool;
+  const pool = createPool({
+    connectionString: requireDatabaseUrl(input.dbUrl),
+    applicationName,
+    max: poolConfig.max,
+    idleTimeoutMillis: poolConfig.idleTimeoutMillis,
+    connectionTimeoutMillis: poolConfig.acquireTimeoutMillis,
   });
+  let observer: PostgresPoolObserver | null = null;
+  const registrations = new Map<string, ConnectorNotificationRegistration>();
+  let listener: PostgresNotificationListenerHandle | null = null;
+  let closed = false;
+
+  const drainRegistration = (registration: ConnectorNotificationRegistration): void => {
+    drainTarget(registration.actionWorker, {
+      connectorKey: registration.connectorKey,
+      kind: "action",
+      log: input.log,
+    });
+    drainTarget(registration.outboundWorker, {
+      connectorKey: registration.connectorKey,
+      kind: "delivery",
+      log: input.log,
+    });
+    for (const [kind, target] of Object.entries(registration.additionalTargets)) {
+      drainTarget(target, {connectorKey: registration.connectorKey, kind, log: input.log});
+    }
+  };
+  const drainAll = (): void => {
+    for (const registration of registrations.values()) drainRegistration(registration);
+  };
+
+  const additionalChannels = (input.additionalNotifications ?? []).map((notification) => ({
+    channel: notification.channel,
+    label: notification.label,
+    parse: notification.parse,
+    listener: async (payload: unknown) => {
+      const connectorKey = notification.connectorKey(payload);
+      if (!connectorKey) return;
+      const registration = registrations.get(connectorKey);
+      const target = registration?.additionalTargets[notification.key];
+      if (target) drainTarget(target, {connectorKey, kind: notification.key, log: input.log});
+    },
+  }));
+
+  try {
+    observer = (input.dependencies?.observePool ?? observePostgresPool)({
+      pool,
+      applicationName,
+      max: poolConfig.max,
+      idleTimeoutMillis: poolConfig.idleTimeoutMillis,
+      waitingLogIntervalMs: poolConfig.waitingLogIntervalMs,
+      log: input.log,
+    });
+    await input.initialize(pool);
+    listener = await (input.dependencies?.startNotificationListener ?? startPostgresNotificationListener)({
+      pool,
+      additionalChannels,
+      onActionNotification: async (notification) => {
+        if (notification.channel !== input.source) return;
+        const registration = registrations.get(notification.connectorKey);
+        if (registration) drainTarget(registration.actionWorker, {
+          connectorKey: notification.connectorKey,
+          kind: "action",
+          log: input.log,
+        });
+      },
+      onDeliveryNotification: async (notification) => {
+        if (notification.channel !== input.source) return;
+        const registration = registrations.get(notification.connectorKey);
+        if (registration) drainTarget(registration.outboundWorker, {
+          connectorKey: notification.connectorKey,
+          kind: "delivery",
+          log: input.log,
+        });
+      },
+      onError: async (error) => input.log("worker_notification_listener_failed", {
+        message: errorMessage(error),
+        source: input.source,
+      }),
+      onStateChange: async (snapshot) => {
+        if (snapshot.status === "listening") drainAll();
+      },
+      reconnectDelayMs: input.reconnectDelayMs,
+    });
+  } catch (error) {
+    observer?.stop();
+    await pool.end();
+    throw error;
+  }
+
+  const notifications: ConnectorWorkerRuntimeNotificationRouter = {
+    register(registrationInput) {
+      if (closed) throw new Error(`Cannot register ${registrationInput.connectorKey}; ${input.source} daemon runtime is closed.`);
+      if (registrations.has(registrationInput.connectorKey)) {
+        throw new Error(`Connector notification worker already registered: ${input.source}/${registrationInput.connectorKey}`);
+      }
+      const registration: ConnectorNotificationRegistration = {
+        ...registrationInput,
+        additionalTargets: registrationInput.additionalTargets ?? {},
+      };
+      registrations.set(registrationInput.connectorKey, registration);
+      if (listener?.getSnapshot().listening) drainRegistration(registration);
+      return {
+        unregister(): void {
+          if (registrations.get(registrationInput.connectorKey) === registration) {
+            registrations.delete(registrationInput.connectorKey);
+          }
+        },
+      };
+    },
+  };
+
+  return {
+    pool,
+    poolConfig,
+    notifications,
+    getNotificationSnapshot: () => listener!.getSnapshot(),
+    close: async () => {
+      if (closed) return;
+      closed = true;
+      registrations.clear();
+      await runCleanupSteps([
+        {label: "notification-listener", run: async () => listener?.close()},
+        {label: "pool-observer", run: () => observer?.stop()},
+        {label: "postgres-pool", run: async () => pool.end()},
+      ], (step, error) => input.log("connector_daemon_cleanup_failed", {
+        message: errorMessage(error),
+        source: input.source,
+        step: step.label,
+      }));
+    },
+  };
 }
 
 export async function stopConnectorWorkerRuntime(
@@ -104,9 +290,9 @@ export async function stopConnectorWorkerRuntime(
 
   await runCleanupSteps([
     {
-      label: "notification-listener",
+      label: "notification-registration",
       run: async () => {
-        await handle.notificationListener?.close();
+        handle.notificationRegistration?.unregister();
       },
     },
     {
@@ -136,8 +322,10 @@ export async function startConnectorWorkerRuntime<
 >(input: {
   acquireLease(): Promise<ConnectorWorkerRuntimeLease>;
   actionWorker: TActionWorker;
+  connectorKey: string;
+  notificationRouter: ConnectorWorkerRuntimeNotificationRouter;
   outboundWorker: TOutboundWorker;
-  startNotificationListener(): Promise<ConnectorWorkerRuntimeListener>;
+  additionalNotificationTargets?: Readonly<Record<string, ConnectorWorkerNotificationTarget>>;
   onCleanupError?: (step: ConnectorWorkerRuntimeCleanupStep, error: unknown) => void;
 }): Promise<ConnectorWorkerRuntimeHandle<TOutboundWorker, TActionWorker>> {
   const lease = await input.acquireLease();
@@ -145,7 +333,7 @@ export async function startConnectorWorkerRuntime<
     lease,
     outboundWorker: input.outboundWorker,
     actionWorker: input.actionWorker,
-    notificationListener: null,
+    notificationRegistration: null,
   };
 
   try {
@@ -155,7 +343,12 @@ export async function startConnectorWorkerRuntime<
     await input.actionWorker.start({
       subscribeToNotifications: false,
     });
-    handle.notificationListener = await input.startNotificationListener();
+    handle.notificationRegistration = input.notificationRouter.register({
+      connectorKey: input.connectorKey,
+      actionWorker: input.actionWorker,
+      outboundWorker: input.outboundWorker,
+      additionalTargets: input.additionalNotificationTargets,
+    });
     return handle;
   } catch (error) {
     await stopConnectorWorkerRuntime(handle, input.onCleanupError);

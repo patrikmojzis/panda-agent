@@ -14,13 +14,6 @@ import {
   PostgresConnectorLeaseRepo
 } from "../../../domain/connector-leases/repo.js";
 import {FileSystemMediaStore} from "../../../domain/channels/media-store.js";
-import {
-  buildObservedPoolConfig,
-  createPostgresPool,
-  observePostgresPool,
-  type PostgresPoolObserver,
-  requireDatabaseUrl,
-} from "../../../lib/postgres-database.js";
 import {ensureSchemas} from "../../../lib/postgres-bootstrap.js";
 import {RuntimeRequestRepo} from "../../../domain/threads/requests/repo.js";
 import {PostgresChannelActionStore} from "../../../domain/channels/actions/postgres.js";
@@ -53,8 +46,8 @@ import {runCleanupSteps} from "../../../lib/cleanup.js";
 import {
   createConnectorOutboundWorker,
   startConnectorWorkerRuntime,
-  startConnectorWorkerNotificationListener,
   stopConnectorWorkerRuntime,
+  type ConnectorDaemonRuntimeHandle,
   type ConnectorWorkerRuntimeHandle,
 } from "../worker-runtime.js";
 
@@ -64,13 +57,12 @@ export interface WhatsAppServiceOptions {
   connectorKey: string;
   crypto: CredentialCrypto;
   dataDir: string;
-  dbUrl?: string;
+  pool?: Pool;
+  runtime?: ConnectorDaemonRuntimeHandle;
   disableHealthServer?: boolean;
-  poolMaxFallback?: number;
 }
 
 const RECONNECT_DELAY_MS = 1_000;
-const WHATSAPP_POOL_MAX_FALLBACK = 5;
 
 interface WhatsAppWorkerStores {
   pool: Pool;
@@ -84,25 +76,49 @@ interface WhatsAppWorkerStores {
   mediaStore: FileSystemMediaStore;
 }
 
+export async function initializeWhatsAppWorkerSchemas(pool: Pool, crypto: CredentialCrypto): Promise<void> {
+  await ensureSchemas([
+    new PostgresWhatsAppAuthStore({pool, crypto}),
+    new PostgresConnectorAccountStore({pool}),
+    new PostgresWhatsAppRuntimeStatusStore({pool}),
+    new PostgresOutboundDeliveryStore({pool}),
+    new PostgresChannelActionStore({pool}),
+    new PostgresConnectorLeaseRepo({pool}),
+    new RuntimeRequestRepo({pool}),
+  ]);
+}
+
 export class WhatsAppService {
   private readonly options: WhatsAppServiceOptions;
   private readonly healthState: WhatsAppHealthState;
-  private pool: Pool | null = null;
-  private authStore: PostgresWhatsAppAuthStore | null = null;
-  private storesPromise: Promise<WhatsAppWorkerStores> | null = null;
-  private stores: WhatsAppWorkerStores | null = null;
+  private readonly authStore: PostgresWhatsAppAuthStore;
+  private readonly stores: WhatsAppWorkerStores;
   private socket: WASocket | null = null;
   private workerRuntime: ConnectorWorkerRuntimeHandle<ChannelOutboundDeliveryWorker, ChannelActionWorker> | null = null;
-  private poolObserver: PostgresPoolObserver | null = null;
   private healthServer: HealthServer | null = null;
   private stopping = false;
   private stopPromise: Promise<void> | null = null;
   private socketWaiterResolve: (() => void) | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private runtimeFailed = false;
+  private runtimeStarted = false;
 
   constructor(options: WhatsAppServiceOptions) {
     this.options = options;
+    const pool = options.runtime?.pool ?? options.pool;
+    if (!pool) throw new Error("WhatsApp service requires a daemon runtime or an existing Postgres pool.");
+    this.authStore = new PostgresWhatsAppAuthStore({pool, crypto: options.crypto});
+    this.stores = {
+      pool,
+      accounts: new PostgresConnectorAccountStore({pool}),
+      authStore: this.authStore,
+      runtimeStatus: new PostgresWhatsAppRuntimeStatusStore({pool}),
+      outboundDeliveries: new PostgresOutboundDeliveryStore({pool}),
+      channelActions: new PostgresChannelActionStore({pool}),
+      connectorLeases: new PostgresConnectorLeaseRepo({pool}),
+      requests: new RuntimeRequestRepo({pool}),
+      mediaStore: new FileSystemMediaStore({rootDir: options.dataDir}),
+    };
     this.healthState = new WhatsAppHealthState({
       connectorKey: options.connectorKey,
     });
@@ -119,109 +135,10 @@ export class WhatsAppService {
   }
 
   private async ensureAuthStore(): Promise<PostgresWhatsAppAuthStore> {
-    if (this.authStore) {
-      return this.authStore;
-    }
-
-    const poolConfig = buildObservedPoolConfig(
-      `panda/whatsapp/${this.options.connectorKey}`,
-      "PANDA_WHATSAPP_DB_POOL_MAX",
-      this.options.poolMaxFallback ?? WHATSAPP_POOL_MAX_FALLBACK,
-    );
-    const pool = createPostgresPool({
-      connectionString: requireDatabaseUrl(this.options.dbUrl),
-      applicationName: poolConfig.applicationName,
-      max: poolConfig.max,
-      idleTimeoutMillis: poolConfig.idleTimeoutMillis,
-      connectionTimeoutMillis: poolConfig.acquireTimeoutMillis,
-    });
-    const poolObserver = observePostgresPool({
-      pool,
-      applicationName: poolConfig.applicationName,
-      max: poolConfig.max,
-      idleTimeoutMillis: poolConfig.idleTimeoutMillis,
-      waitingLogIntervalMs: poolConfig.waitingLogIntervalMs,
-      log: (event, payload) => this.log(event, {
-        connectorKey: this.options.connectorKey,
-        ...payload,
-      }),
-    });
-    const authStore = new PostgresWhatsAppAuthStore({
-      pool,
-      crypto: this.options.crypto,
-    });
-    try {
-      await ensureSchemas([authStore]);
-    } catch (error) {
-      poolObserver.stop();
-      await pool.end().catch(() => undefined);
-      throw error;
-    }
-
-    this.pool = pool;
-    this.poolObserver = poolObserver;
-    this.authStore = authStore;
-    this.log("postgres_pool_ready", {
-      connectorKey: this.options.connectorKey,
-      applicationName: poolConfig.applicationName,
-      max: poolConfig.max,
-      idleTimeoutMillis: poolConfig.idleTimeoutMillis,
-    });
-    return authStore;
+    return this.authStore;
   }
 
   private async ensureStores(): Promise<WhatsAppWorkerStores> {
-    if (this.stores) {
-      return this.stores;
-    }
-
-    if (!this.storesPromise) {
-      this.storesPromise = (async () => {
-        const authStore = await this.ensureAuthStore();
-        if (!this.pool) {
-          throw new Error("WhatsApp worker stores require an initialized Postgres pool.");
-        }
-
-        const outboundDeliveries = new PostgresOutboundDeliveryStore({
-          pool: this.pool,
-        });
-        const channelActions = new PostgresChannelActionStore({
-          pool: this.pool,
-        });
-        const connectorLeases = new PostgresConnectorLeaseRepo({
-          pool: this.pool,
-        });
-        const requests = new RuntimeRequestRepo({
-          pool: this.pool,
-        });
-        const accounts = new PostgresConnectorAccountStore({pool: this.pool});
-        const runtimeStatus = new PostgresWhatsAppRuntimeStatusStore({pool: this.pool});
-        await ensureSchemas([
-          accounts,
-          runtimeStatus,
-          outboundDeliveries,
-          channelActions,
-          connectorLeases,
-          requests,
-        ]);
-
-        return {
-          pool: this.pool,
-          accounts,
-          authStore,
-          runtimeStatus,
-          outboundDeliveries,
-          channelActions,
-          connectorLeases,
-          requests,
-          mediaStore: new FileSystemMediaStore({
-            rootDir: this.options.dataDir,
-          }),
-        };
-      })();
-    }
-
-    this.stores = await this.storesPromise;
     return this.stores;
   }
 
@@ -340,26 +257,6 @@ export class WhatsAppService {
         },
       });
     }
-  }
-
-  private async startWorkerNotificationListener(
-    stores: WhatsAppWorkerStores,
-    workers: {
-      actionWorker: ChannelActionWorker;
-      outboundWorker: ChannelOutboundDeliveryWorker;
-    },
-  ) {
-    return startConnectorWorkerNotificationListener({
-      pool: stores.pool,
-      source: WHATSAPP_SOURCE,
-      connectorKey: this.options.connectorKey,
-      actionWorker: workers.actionWorker,
-      outboundWorker: workers.outboundWorker,
-      log: (event, payload) => this.log(event, payload),
-      onListenerStateChange: (snapshot) => {
-        this.healthState.markListenerSnapshot(snapshot);
-      },
-    });
   }
 
   private async acquireConnectorLease(
@@ -484,6 +381,7 @@ export class WhatsAppService {
     this.stopping = false;
     this.stopPromise = null;
     this.runtimeFailed = false;
+    this.runtimeStarted = true;
     this.healthState.resetForRun();
 
     try {
@@ -509,20 +407,22 @@ export class WhatsAppService {
 
         return startHealthServer({
           ...binding,
-          getSnapshot: () => this.healthState.snapshot(this.stopping),
+          getSnapshot: () => {
+            if (this.options.runtime) this.healthState.markListenerSnapshot(this.options.runtime.getNotificationSnapshot());
+            return this.healthState.snapshot(this.stopping);
+          },
         });
       })();
       this.healthState.markInitialized(true);
       const outboundWorker = this.createOutboundWorker(stores);
       const actionWorker = this.createActionWorker(stores);
+      if (!this.options.runtime) throw new Error("WhatsApp run requires a daemon runtime.");
       this.workerRuntime = await startConnectorWorkerRuntime({
         acquireLease: () => this.acquireConnectorLease(stores),
         outboundWorker,
         actionWorker,
-        startNotificationListener: () => this.startWorkerNotificationListener(stores, {
-          outboundWorker,
-          actionWorker,
-        }),
+        connectorKey: this.options.connectorKey,
+        notificationRouter: this.options.runtime.notifications,
         onCleanupError: (step, error) => {
           this.log("shutdown_cleanup_failed", {
             connectorKey: this.options.connectorKey,
@@ -532,12 +432,7 @@ export class WhatsAppService {
         },
       });
       this.healthState.markLockHeld(true);
-      const listenerSnapshot = this.workerRuntime.notificationListener?.getSnapshot?.();
-      if (listenerSnapshot) {
-        this.healthState.markListenerSnapshot(listenerSnapshot);
-      } else {
-        this.healthState.markListenersActive(true);
-      }
+      this.healthState.markListenerSnapshot(this.options.runtime.getNotificationSnapshot());
       this.log("run_started", {
         connectorKey: this.options.connectorKey,
         accountId: identity.accountId,
@@ -599,21 +494,15 @@ export class WhatsAppService {
       this.socketWaiterResolve = null;
 
       const workerRuntime = this.workerRuntime;
-      const pool = this.pool;
-      const poolObserver = this.poolObserver;
       const healthServer = this.healthServer;
       const stores = this.stores;
       this.workerRuntime = null;
-      this.pool = null;
-      this.poolObserver = null;
       this.healthServer = null;
-      this.authStore = null;
-      this.stores = null;
-      this.storesPromise = null;
 
-      if (stores && !this.runtimeFailed) {
+      if (this.runtimeStarted && !this.runtimeFailed) {
         await stores.runtimeStatus.setStatus(this.options.accountId, "stopped").catch(() => undefined);
       }
+      this.runtimeStarted = false;
 
       await runCleanupSteps([
         {
@@ -632,18 +521,6 @@ export class WhatsAppService {
           label: "socket",
           run: async () => {
             await this.stopSocket();
-          },
-        },
-        {
-          label: "pool-observer",
-          run: () => {
-            poolObserver?.stop();
-          },
-        },
-        {
-          label: "pool",
-          run: async () => {
-            await pool?.end();
           },
         },
         {

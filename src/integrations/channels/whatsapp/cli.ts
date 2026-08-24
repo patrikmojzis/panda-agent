@@ -1,6 +1,7 @@
 import process from "node:process";
 
 import {Command, InvalidArgumentError} from "commander";
+import type {Pool} from "pg";
 
 import {PostgresAgentStore} from "../../../domain/agents/postgres.js";
 import {normalizeAgentKey} from "../../../domain/agents/types.js";
@@ -15,6 +16,7 @@ import {DB_URL_OPTION_DESCRIPTION} from "../../../lib/cli.js";
 import {resolveMediaDir} from "../../../lib/data-dir.js";
 import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../../../lib/health-server.js";
 import {ensureSchemas, withPostgresPool} from "../../../lib/postgres-bootstrap.js";
+import {runCleanupSteps} from "../../../lib/cleanup.js";
 import {PostgresWhatsAppAuthStore} from "./auth-store.js";
 import {whatsappChatListCommandDescriptor, whatsappHistoryCommandDescriptor, whatsappSendCommandDescriptor} from "./commands.js";
 import {WHATSAPP_SOURCE} from "./config.js";
@@ -23,10 +25,9 @@ import {
   requireWhatsAppConnectorAccount,
   resetWhatsAppConnectorAccount,
 } from "./connector-account.js";
-import {WhatsAppService, type WhatsAppServiceOptions} from "./service.js";
-import {WhatsAppAccountSupervisor, type WhatsAppRunService} from "./supervisor.js";
-
-const WHATSAPP_ALL_ENABLED_POOL_MAX_FALLBACK = 2;
+import {WhatsAppService, initializeWhatsAppWorkerSchemas, type WhatsAppServiceOptions} from "./service.js";
+import {ConnectorAccountSupervisor, type ConnectorAccountSupervisorWorker} from "../account-supervisor.js";
+import {startConnectorDaemonRuntime, type ConnectorDaemonRuntimeHandle} from "../worker-runtime.js";
 
 interface WhatsAppDatabaseOptions {
   dbUrl?: string;
@@ -62,6 +63,7 @@ interface CommandShimOptions {
 }
 
 interface WhatsAppAccountStores {
+  pool: Pool;
   accounts: PostgresConnectorAccountStore;
   agents: PostgresAgentStore;
   auth: PostgresWhatsAppAuthStore;
@@ -69,9 +71,12 @@ interface WhatsAppAccountStores {
 }
 
 export interface WhatsAppCliDependencies {
+  createDaemonRuntime?: (options: {dbUrl?: string; crypto: CredentialCrypto}) => Promise<ConnectorDaemonRuntimeHandle>;
   createRunService?: (options: WhatsAppServiceOptions) => WhatsAppRunService;
   crypto?: CredentialCrypto;
 }
+
+type WhatsAppRunService = ConnectorAccountSupervisorWorker;
 
 function parseCliValue(value: string, normalize: (raw: string) => string): string {
   try {
@@ -121,6 +126,7 @@ async function withWhatsAppAccountStores<T>(
 ): Promise<T> {
   return withPostgresPool(options.dbUrl, async (pool) => {
     const stores: WhatsAppAccountStores = {
+      pool,
       accounts: new PostgresConnectorAccountStore({pool}),
       agents: new PostgresAgentStore({pool}),
       auth: new PostgresWhatsAppAuthStore({pool, crypto: requireWhatsAppCrypto(dependencies)}),
@@ -133,9 +139,9 @@ async function withWhatsAppAccountStores<T>(
 
 function serviceOptions(
   account: ConnectorAccountRecord,
-  options: WhatsAppDatabaseOptions,
   crypto: CredentialCrypto,
-  overrides: Partial<Pick<WhatsAppServiceOptions, "disableHealthServer" | "poolMaxFallback">> = {},
+  connection: Pick<WhatsAppServiceOptions, "pool" | "runtime">,
+  overrides: Partial<Pick<WhatsAppServiceOptions, "disableHealthServer">> = {},
 ): WhatsAppServiceOptions {
   return {
     accountId: account.id,
@@ -143,7 +149,7 @@ function serviceOptions(
     connectorKey: account.connectorKey,
     crypto,
     dataDir: resolveMediaDir(),
-    dbUrl: options.dbUrl,
+    ...connection,
     ...overrides,
   };
 }
@@ -177,7 +183,7 @@ export async function whatsappAccountWhoamiCommand(
 ): Promise<void> {
   await withWhatsAppAccountStores(options, dependencies, async (stores) => {
     const account = await requireWhatsAppConnectorAccount({accountKey, accounts: stores.accounts});
-    const service = createRunService(serviceOptions(account, options, requireWhatsAppCrypto(dependencies)), dependencies) as WhatsAppService;
+    const service = createRunService(serviceOptions(account, requireWhatsAppCrypto(dependencies), {pool: stores.pool}), dependencies) as WhatsAppService;
     try {
       const whoami = await service.whoami();
       process.stdout.write([
@@ -202,7 +208,7 @@ export async function whatsappAccountLinkCommand(
   await withWhatsAppAccountStores(options, dependencies, async (stores) => {
     const account = await requireWhatsAppConnectorAccount({accountKey, accounts: stores.accounts});
     if (account.status === "enabled") throw new Error(`Disable WhatsApp account ${account.accountKey} before linking it.`);
-    const service = createRunService(serviceOptions(account, options, requireWhatsAppCrypto(dependencies)), dependencies) as WhatsAppService;
+    const service = createRunService(serviceOptions(account, requireWhatsAppCrypto(dependencies), {pool: stores.pool}), dependencies) as WhatsAppService;
     try {
       const result = await service.pair(options.phone, (pairingCode) => {
         process.stdout.write([
@@ -285,25 +291,52 @@ function logRunEvent(event: string, payload: Record<string, unknown> = {}): void
   process.stdout.write(`${JSON.stringify({source: WHATSAPP_SOURCE, event, timestamp: new Date().toISOString(), ...payload})}\n`);
 }
 
+async function startWhatsAppDaemonRuntime(
+  options: WhatsAppRunCliOptions,
+  dependencies: WhatsAppCliDependencies,
+  crypto: CredentialCrypto,
+): Promise<ConnectorDaemonRuntimeHandle> {
+  if (dependencies.createDaemonRuntime) return dependencies.createDaemonRuntime({dbUrl: options.dbUrl, crypto});
+  return startConnectorDaemonRuntime({
+    source: WHATSAPP_SOURCE,
+    dbUrl: options.dbUrl,
+    poolMaxEnvKey: "PANDA_WHATSAPP_DB_POOL_MAX",
+    log: logRunEvent,
+    initialize: async (pool) => initializeWhatsAppWorkerSchemas(pool, crypto),
+  });
+}
+
 async function runSingleAccount(
   accountKey: string,
   options: WhatsAppRunCliOptions,
   dependencies: WhatsAppCliDependencies,
 ): Promise<void> {
-  const resolved = await withWhatsAppAccountStores(options, dependencies, async (stores) => {
-    const account = await requireWhatsAppConnectorAccount({accountKey, accounts: stores.accounts});
-    if (account.status !== "enabled") throw new Error(`WhatsApp account ${account.accountKey} is ${account.status}.`);
-    return account;
-  });
-  const service = createRunService(serviceOptions(resolved, options, requireWhatsAppCrypto(dependencies)), dependencies);
-  const shutdown = () => void service.stop();
-  process.once("SIGINT", shutdown);
-  process.once("SIGTERM", shutdown);
+  const crypto = requireWhatsAppCrypto(dependencies);
+  const runtime = await startWhatsAppDaemonRuntime(options, dependencies, crypto);
+  let service: WhatsAppRunService | null = null;
+  let stopPromise: Promise<void> | null = null;
+  let shutdown: (() => void) | null = null;
   try {
+    const accounts = new PostgresConnectorAccountStore({pool: runtime.pool});
+    const resolved = await requireWhatsAppConnectorAccount({accountKey, accounts});
+    if (resolved.status !== "enabled") throw new Error(`WhatsApp account ${resolved.accountKey} is ${resolved.status}.`);
+    service = createRunService(serviceOptions(resolved, crypto, {runtime}), dependencies);
+    const stopService = () => stopPromise ??= service!.stop();
+    shutdown = () => void stopService();
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
     await service.run();
   } finally {
-    process.off("SIGINT", shutdown);
-    process.off("SIGTERM", shutdown);
+    if (shutdown) {
+      process.off("SIGINT", shutdown);
+      process.off("SIGTERM", shutdown);
+    }
+    await runCleanupSteps([
+      {label: "whatsapp-service", run: async () => {
+        if (service) await (stopPromise ??= service.stop());
+      }},
+      {label: "whatsapp-daemon-runtime", run: async () => runtime.close()},
+    ]);
   }
 }
 
@@ -320,43 +353,52 @@ async function runAllEnabled(
   dependencies: WhatsAppCliDependencies,
 ): Promise<void> {
   const crypto = requireWhatsAppCrypto(dependencies);
+  const runtime = await startWhatsAppDaemonRuntime(options, dependencies, crypto);
+  const accounts = new PostgresConnectorAccountStore({pool: runtime.pool});
   let stopping = false;
+  let shutdownPromise: Promise<void> | null = null;
   let resolveStopped: (() => void) | undefined;
   const stopped = new Promise<void>((resolve) => { resolveStopped = resolve; });
-  const listEnabled = () => withWhatsAppAccountStores(options, dependencies, async (stores) => {
-    const accounts = await stores.accounts.listAccounts({source: WHATSAPP_SOURCE, status: "enabled"});
-    return accounts.filter((account) => account.ownerKind === "agent");
-  });
-  const supervisor = new WhatsAppAccountSupervisor({
-    listEnabledAccounts: listEnabled,
-    createService: (account) => createRunService(serviceOptions(account, options, crypto, {
+  const supervisor = new ConnectorAccountSupervisor<ConnectorAccountRecord, WhatsAppRunService>({
+    listEnabledAccounts: async () => {
+      const enabled = await accounts.listAccounts({source: WHATSAPP_SOURCE, status: "enabled"});
+      return enabled.filter((account) => account.ownerKind === "agent");
+    },
+    createWorker: (account) => createRunService(serviceOptions(account, crypto, {runtime}, {
       disableHealthServer: true,
-      poolMaxFallback: WHATSAPP_ALL_ENABLED_POOL_MAX_FALLBACK,
     }), dependencies),
     log: logRunEvent,
   });
-  const health = await startSupervisorHealthServer(() => ({
+  let health: HealthServer | null = null;
+  const createHealthServer = () => startSupervisorHealthServer(() => ({
     supervisor: "running",
     ...supervisor.snapshot(),
+    listener: runtime.getNotificationSnapshot(),
   }));
-  const shutdown = async () => {
-    if (stopping) return;
+  const shutdown = () => shutdownPromise ??= (async () => {
     stopping = true;
     await supervisor.stop();
-    await health?.close();
     resolveStopped?.();
-  };
+  })();
   const onSignal = () => void shutdown();
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
   try {
+    health = await createHealthServer();
     await supervisor.start();
-    logRunEvent("worker_supervisor_started", {accountCount: supervisor.snapshot().connectorCount});
+    if (!stopping) {
+      logRunEvent("worker_supervisor_started", {
+        accountCount: supervisor.snapshot().connectorCount,
+        poolMax: runtime.poolConfig.max,
+      });
+    }
     await stopped;
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
     await shutdown();
+    await runtime.close();
+    await health?.close();
   }
 }
 

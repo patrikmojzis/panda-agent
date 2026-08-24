@@ -109,7 +109,7 @@ Run every enabled Discord connector account in one process:
 panda discord run --all-enabled
 ```
 
-`--all-enabled` starts accounts one at a time, keeps failures isolated per account, and keeps running as long as at least one account starts.
+`--all-enabled` keeps running even with zero accounts, reconciles enabled accounts every 30 seconds, and isolates account failures with bounded restart backoff.
 
 ## Docker stack
 
@@ -129,7 +129,7 @@ Then run the stack normally:
 
 The stack runs `panda discord run --all-enabled`. It also adds a Wiki.js dependency so the Discord runner container is started before Wiki.js.
 
-Budget Postgres connections explicitly: Discord opens one worker pool per enabled account, so the Discord ceiling is `enabled Discord accounts x PANDA_DISCORD_DB_POOL_MAX`.
+`PANDA_DISCORD_DB_POOL_MAX` is the ceiling for the whole Discord daemon, not each account. All enabled accounts share that pool and its one notification listener; their Discord Gateway connections remain separate.
 
 ## Experimental voice
 

@@ -243,6 +243,19 @@ function latestStore(): InstanceType<typeof telegramCliMocks.MockPostgresIdentit
   return store;
 }
 
+function runDependencies(createRunService: (options: never) => {run(): Promise<void>; stop(): Promise<void>}) {
+  return {
+    createRunService: createRunService as never,
+    createDaemonRuntime: vi.fn(async () => ({
+      pool: telegramCliMocks.pool,
+      poolConfig: {applicationName: "panda/telegram", max: 2},
+      notifications: {register: vi.fn()},
+      getNotificationSnapshot: () => ({status: "listening", listening: true}),
+      close: vi.fn(async () => {}),
+    })) as never,
+  };
+}
+
 describe("Telegram CLI", () => {
   afterEach(() => {
     telegramCliMocks.botInstances.length = 0;
@@ -458,12 +471,12 @@ describe("Telegram CLI", () => {
     const stop = vi.fn(async () => {});
     const createRunService = vi.fn(() => ({run, stop}));
 
-    await telegramRunCommand("main", {dbUrl: "postgres://telegram-db"}, {createRunService});
+    await telegramRunCommand("main", {dbUrl: "postgres://telegram-db"}, runDependencies(createRunService as never));
 
     expect(createRunService).toHaveBeenCalledWith(expect.objectContaining({
       accountKey: "main",
-      dbUrl: "postgres://telegram-db",
       expectedConnectorKey: "42",
+      runtime: expect.anything(),
       token: "telegram-token",
     }));
     expect(run).toHaveBeenCalledTimes(1);
@@ -473,7 +486,7 @@ describe("Telegram CLI", () => {
 
   it("runs all enabled Telegram accounts under a supervisor", async () => {
     vi.stubEnv("CREDENTIALS_MASTER_KEY", "telegram-cli-master-key");
-    telegramCliMocks.setEnabledAccountKeys(["main", "ops"]);
+    telegramCliMocks.setEnabledAccountKeys(["main", "ops", "alerts"]);
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const services: Array<{accountKey?: string; start: ReturnType<typeof vi.fn>; run: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>}> = [];
     const createRunService = vi.fn((options: {accountKey?: string}) => {
@@ -487,23 +500,33 @@ describe("Telegram CLI", () => {
       return service;
     });
 
-    await telegramRunCommand(undefined, {allEnabled: true, dbUrl: "postgres://telegram-db"}, {createRunService});
+    const command = telegramRunCommand(undefined, {allEnabled: true, dbUrl: "postgres://telegram-db"}, runDependencies(createRunService as never));
+    while (services.length < 3) await new Promise((resolve) => setTimeout(resolve, 0));
+    process.emit("SIGTERM", "SIGTERM");
+    await command;
 
-    expect(createRunService).toHaveBeenCalledTimes(2);
+    expect(createRunService).toHaveBeenCalledTimes(3);
     expect(createRunService).toHaveBeenNthCalledWith(1, expect.objectContaining({
       accountKey: "main",
       disableHealthServer: true,
-      poolMaxFallback: 2,
       expectedConnectorKey: "42",
+      runtime: expect.anything(),
     }));
     expect(createRunService).toHaveBeenNthCalledWith(2, expect.objectContaining({
       accountKey: "ops",
       disableHealthServer: true,
-      poolMaxFallback: 2,
       expectedConnectorKey: "42",
+      runtime: expect.anything(),
     }));
-    expect(services.map((service) => service.start.mock.calls.length)).toEqual([1, 1]);
-    expect(services.map((service) => service.run.mock.calls.length)).toEqual([1, 1]);
+    expect(createRunService).toHaveBeenNthCalledWith(3, expect.objectContaining({
+      accountKey: "alerts",
+      disableHealthServer: true,
+      expectedConnectorKey: "42",
+      runtime: expect.anything(),
+    }));
+    expect(createRunService.mock.calls[0]![0].runtime).toBe(createRunService.mock.calls[1]![0].runtime);
+    expect(createRunService.mock.calls[0]![0].runtime).toBe(createRunService.mock.calls[2]![0].runtime);
+    expect(services.map((service) => service.run.mock.calls.length)).toEqual([1, 1, 1]);
     expect(write.mock.calls.map((call) => String(call[0])).join("\n")).toContain("worker_supervisor_started");
   });
 
@@ -512,11 +535,16 @@ describe("Telegram CLI", () => {
     await expect(telegramRunCommand("main", {allEnabled: true, dbUrl: "postgres://telegram-db"})).rejects.toThrow("Choose either a Telegram account key or --all-enabled, not both.");
   });
 
-  it("fails helpfully when no Telegram accounts are enabled for all-enabled run", async () => {
+  it("keeps all-enabled mode alive with zero Telegram accounts", async () => {
     vi.stubEnv("CREDENTIALS_MASTER_KEY", "telegram-cli-master-key");
     telegramCliMocks.setEnabledAccountKeys([]);
 
-    await expect(telegramRunCommand(undefined, {allEnabled: true, dbUrl: "postgres://telegram-db"})).rejects.toThrow("No enabled Telegram accounts found");
+    const createRunService = vi.fn();
+    const command = telegramRunCommand(undefined, {allEnabled: true, dbUrl: "postgres://telegram-db"}, runDependencies(createRunService as never));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    process.emit("SIGTERM", "SIGTERM");
+    await command;
+    expect(createRunService).not.toHaveBeenCalled();
   });
 
   it("isolates all-enabled startup failures and runs accounts that can start", async () => {
@@ -524,17 +552,21 @@ describe("Telegram CLI", () => {
     telegramCliMocks.setEnabledAccountKeys(["broken", "main"]);
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const createRunService = vi.fn((options: {accountKey?: string}) => ({
-      start: vi.fn(async () => {
+      start: vi.fn(async () => {}),
+      run: vi.fn(async () => {
         if (options.accountKey === "broken") throw new Error("startup failed");
       }),
-      run: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
     }));
 
-    await telegramRunCommand(undefined, {allEnabled: true, dbUrl: "postgres://telegram-db"}, {createRunService});
+    const command = telegramRunCommand(undefined, {allEnabled: true, dbUrl: "postgres://telegram-db"}, runDependencies(createRunService as never));
+    while (createRunService.mock.calls.length < 2) await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    process.emit("SIGTERM", "SIGTERM");
+    await command;
 
     const output = write.mock.calls.map((call) => String(call[0])).join("\n");
-    expect(output).toContain("worker_start_failed");
+    expect(output).toContain("worker_run_failed");
     expect(output).toContain("worker_supervisor_started");
     expect(createRunService).toHaveBeenCalledTimes(2);
   });
@@ -556,7 +588,7 @@ describe("Telegram CLI", () => {
       return service;
     });
 
-    const commandPromise = telegramRunCommand(undefined, {allEnabled: true, dbUrl: "postgres://telegram-db"}, {createRunService});
+    const commandPromise = telegramRunCommand(undefined, {allEnabled: true, dbUrl: "postgres://telegram-db"}, runDependencies(createRunService as never));
     for (let attempt = 0; attempt < 20 && services.length < 2; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
@@ -568,17 +600,46 @@ describe("Telegram CLI", () => {
     expect(services.map((service) => service.stop.mock.calls.length)).toEqual([1, 1]);
   });
 
-  it("fails all-enabled run when every enabled Telegram account fails startup", async () => {
+  it("cancels Telegram startup when SIGTERM arrives during first worker creation", async () => {
+    vi.stubEnv("CREDENTIALS_MASTER_KEY", "telegram-cli-master-key");
+    telegramCliMocks.setEnabledAccountKeys(["main", "ops"]);
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const services: Array<{run: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>}> = [];
+    const createRunService = vi.fn(() => {
+      const service = {
+        run: vi.fn(async () => {}),
+        stop: vi.fn(async () => {}),
+      };
+      services.push(service);
+      if (services.length === 1) process.emit("SIGTERM", "SIGTERM");
+      return service;
+    });
+
+    await telegramRunCommand(
+      undefined,
+      {allEnabled: true, dbUrl: "postgres://telegram-db"},
+      runDependencies(createRunService as never),
+    );
+
+    expect(createRunService).toHaveBeenCalledOnce();
+    expect(services[0]?.run).not.toHaveBeenCalled();
+    expect(services[0]?.stop).toHaveBeenCalledOnce();
+  });
+
+  it("keeps supervising when an enabled Telegram account fails", async () => {
     vi.stubEnv("CREDENTIALS_MASTER_KEY", "telegram-cli-master-key");
     telegramCliMocks.setEnabledAccountKeys(["broken"]);
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const createRunService = vi.fn(() => ({
-      start: vi.fn(async () => { throw new Error("startup failed"); }),
-      run: vi.fn(async () => {}),
+      start: vi.fn(async () => {}),
+      run: vi.fn(async () => { throw new Error("startup failed"); }),
       stop: vi.fn(async () => {}),
     }));
 
-    await expect(telegramRunCommand(undefined, {allEnabled: true, dbUrl: "postgres://telegram-db"}, {createRunService})).rejects.toThrow("No Telegram workers started");
+    const command = telegramRunCommand(undefined, {allEnabled: true, dbUrl: "postgres://telegram-db"}, runDependencies(createRunService as never));
+    while (createRunService.mock.calls.length < 1) await new Promise((resolve) => setTimeout(resolve, 0));
+    process.emit("SIGTERM", "SIGTERM");
+    await command;
   });
 
   it("validates stored Telegram account whoami without exposing the stored token", async () => {

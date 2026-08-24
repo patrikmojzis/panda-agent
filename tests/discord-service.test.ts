@@ -42,7 +42,6 @@ function createFixture(options: {
   botUserId?: string;
   crypto?: CredentialCrypto | null;
   leaseAlreadyHeld?: boolean;
-  poolMaxFallback?: number;
   secret?: string | null;
 } = {}) {
   const order: string[] = [];
@@ -196,9 +195,10 @@ function createFixture(options: {
     }),
     triggerDrain: vi.fn(async () => {}),
   };
-  const notificationListener = {
-    close: vi.fn(async () => {
-      order.push("listener:close");
+  const notifications = {
+    register: vi.fn(() => {
+      order.push("notifications:register");
+      return {unregister: () => order.push("notifications:unregister")};
     }),
   };
   const gateway = {
@@ -232,22 +232,21 @@ function createFixture(options: {
       order.push("outbound:create");
       return outboundWorker;
     }),
-    createPool: vi.fn(() => pool as never),
     createRestClient: vi.fn(() => restClient),
     createStores: vi.fn(() => stores),
-    observePool: vi.fn(() => ({stop: vi.fn()})),
     resolveCrypto: vi.fn(() => crypto),
-    startNotificationListener: vi.fn(async () => {
-      order.push("listener:start");
-      return notificationListener;
-    }),
   };
+  const runtime = {
+    pool,
+    poolConfig: {applicationName: "panda/discord", max: 2},
+    notifications,
+    getNotificationSnapshot: () => ({status: "listening", listening: true}),
+  } as never;
   const service = new DiscordService({
     accountKey: "ops",
     dataDir: "/tmp/panda-media",
-    dbUrl: "postgres://discord-db",
     dependencies,
-    poolMaxFallback: options.poolMaxFallback,
+    runtime,
   });
 
   return {
@@ -264,7 +263,7 @@ function createFixture(options: {
     },
     lease,
     mediaStore,
-    notificationListener,
+    notifications,
     order,
     outboundWorker,
     pool,
@@ -280,26 +279,12 @@ describe("DiscordService", () => {
     vi.restoreAllMocks();
   });
 
-  it("uses the optional pool max fallback when the Discord pool env override is unset", async () => {
-    const previousPoolMax = process.env.PANDA_DISCORD_DB_POOL_MAX;
-    delete process.env.PANDA_DISCORD_DB_POOL_MAX;
-    try {
-      vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-      const fixture = createFixture({poolMaxFallback: 2});
-
-      await fixture.service.start();
-
-      expect(fixture.dependencies.createPool).toHaveBeenCalledWith(expect.objectContaining({
-        max: 2,
-      }));
-      await fixture.service.stop();
-    } finally {
-      if (previousPoolMax === undefined) {
-        delete process.env.PANDA_DISCORD_DB_POOL_MAX;
-      } else {
-        process.env.PANDA_DISCORD_DB_POOL_MAX = previousPoolMax;
-      }
-    }
+  it("does not close daemon-owned database resources", async () => {
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const fixture = createFixture();
+    await fixture.service.start();
+    await fixture.service.stop();
+    expect(fixture.pool.end).not.toHaveBeenCalled();
   });
 
   it("starts one enabled stored account, validates token identity, takes lease, starts outbound and Gateway, then stops safely", async () => {
@@ -308,20 +293,7 @@ describe("DiscordService", () => {
 
     await fixture.service.start();
 
-    expect(fixture.dependencies.createPool).toHaveBeenCalledWith(expect.objectContaining({
-      accountKey: "ops",
-      dbUrl: "postgres://discord-db",
-      applicationName: "panda/discord/ops",
-    }));
     expect(fixture.order).toEqual([
-      "schema:connector",
-      "schema:session",
-      "schema:thread",
-      "schema:conversation",
-      "schema:actions",
-      "schema:outbound",
-      "schema:requests",
-      "schema:lease",
       "account:get",
       "secret:get",
       "token:validate",
@@ -330,7 +302,7 @@ describe("DiscordService", () => {
       "lease:acquire",
       "outbound:start",
       "action:start",
-      "listener:start",
+      "notifications:register",
       "gateway:create",
       "gateway:start",
     ]);
@@ -351,11 +323,10 @@ describe("DiscordService", () => {
     await fixture.service.stop();
     expect(fixture.order).toEqual([
       "gateway:stop",
-      "listener:close",
+      "notifications:unregister",
       "action:stop",
       "outbound:stop",
       "lease:release",
-      "pool:end",
     ]);
     const output = collectWrites(write);
     expect(output).toContain("worker_started");
@@ -582,7 +553,7 @@ describe("DiscordService", () => {
     expect(fixture.outboundWorker.start).not.toHaveBeenCalled();
     expect(fixture.actionWorker.start).not.toHaveBeenCalled();
     expect(fixture.gateway.start).not.toHaveBeenCalled();
-    expect(fixture.pool.end).toHaveBeenCalledOnce();
+    expect(fixture.pool.end).not.toHaveBeenCalled();
   });
 
   it("fails safely for missing crypto, missing token, and mismatched token identity before worker startup", async () => {
@@ -616,7 +587,7 @@ describe("DiscordService", () => {
     expect(fixture.outboundWorker.start).not.toHaveBeenCalled();
     expect(fixture.gateway.start).not.toHaveBeenCalled();
     expect(fixture.lease.release).not.toHaveBeenCalled();
-    expect(fixture.pool.end).toHaveBeenCalledOnce();
+    expect(fixture.pool.end).not.toHaveBeenCalled();
   });
 
   it("stops Gateway and outbound when the connector lease is lost", async () => {
@@ -629,11 +600,10 @@ describe("DiscordService", () => {
 
     expect(fixture.order).toEqual([
       "gateway:stop",
-      "listener:close",
+      "notifications:unregister",
       "action:stop",
       "outbound:stop",
       "lease:release",
-      "pool:end",
     ]);
     const output = collectWrites(write);
     expect(output).toContain("connector_lease_lost");

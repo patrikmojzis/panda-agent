@@ -47,6 +47,8 @@ export interface StoredTelegramBotAccountInput {
   store: TelegramAccountStore;
 }
 
+export type LoadStoredTelegramBotAccountInput = Omit<StoredTelegramBotAccountInput, "client">;
+
 export interface DisableTelegramBotAccountInput {
   accountKey: string;
   store: Pick<TelegramAccountStore, "disableAccount">;
@@ -139,7 +141,9 @@ export async function setTelegramBotAccount(input: SetTelegramBotAccountInput): 
   return {account, bot};
 }
 
-export async function validateStoredTelegramBotAccount(input: StoredTelegramBotAccountInput): Promise<TelegramBotAccountResult & {botToken: string}> {
+export async function loadStoredTelegramBotAccount(
+  input: LoadStoredTelegramBotAccountInput,
+): Promise<{account: ConnectorAccountRecord; botToken: string}> {
   const crypto = requireTelegramAccountCrypto(input.crypto);
   const account = await input.store.getAccountByKey(TELEGRAM_SOURCE, input.accountKey);
   if (!account) {
@@ -149,6 +153,11 @@ export async function validateStoredTelegramBotAccount(input: StoredTelegramBotA
   if (!botToken) {
     throw new Error(`Telegram account ${input.accountKey} does not have a stored bot token. Re-store it in Control → agent → Connectors → Telegram setup, or run \`panda telegram account set ${input.accountKey} --replace --agent <agentKey> --bot-token-stdin\`.`);
   }
+  return {account, botToken};
+}
+
+export async function validateStoredTelegramBotAccount(input: StoredTelegramBotAccountInput): Promise<TelegramBotAccountResult & {botToken: string}> {
+  const {account, botToken} = await loadStoredTelegramBotAccount(input);
   const bot = await withTelegramSecretErrorSafety(botToken, () => input.client.getBotIdentity(botToken));
   if (bot.id !== account.connectorKey) {
     throw new Error("Stored Telegram token identity does not match the connector account.");

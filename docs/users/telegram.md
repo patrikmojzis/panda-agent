@@ -11,7 +11,7 @@ Telegram runtime accounts are stored in the database as connector accounts. Do *
 5. Pair the Panda identity to the agent, then pair the numeric Telegram user id to that identity in **Telegram and WhatsApp actors**. Use the numeric user id, not `@handle`.
 6. Ensure the Telegram worker is enabled (`TELEGRAM_ENABLED=true`) and run/deploy `panda telegram run --all-enabled`.
 
-`telegram run --all-enabled` reconciles enabled account changes periodically after this release, so a newly stored/enabled account should be picked up without a container restart. Restart only if the running worker predates this release or logs show reconcile failures.
+`telegram run --all-enabled` stays alive with zero accounts and reconciles enabled account changes every 30 seconds. All bot workers share one daemon Postgres pool and listener, while each bot keeps its own Telegram connection.
 
 ## CLI equivalents
 

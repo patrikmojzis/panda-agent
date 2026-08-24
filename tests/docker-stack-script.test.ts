@@ -1173,6 +1173,8 @@ exit 42
     expect(baseCompose).toContain('command: ["discord", "run", "--all-enabled"]');
     expect(baseCompose).toContain("PANDA_DISCORD_DB_POOL_MAX: ${PANDA_DISCORD_DB_POOL_MAX:-2}");
     expect(baseCompose).toContain("  panda-whatsapp:\n    image: panda-app:latest");
+    expect(baseCompose).toContain("CREDENTIALS_MASTER_KEY: ${CREDENTIALS_MASTER_KEY:-}");
+    expect(baseCompose).toContain("PANDA_WHATSAPP_DB_POOL_MAX: ${PANDA_WHATSAPP_DB_POOL_MAX:-2}");
     expect(baseCompose).toContain("${PANDA_ENVIRONMENTS_HOST_ROOT:-${HOME}/.panda/environments}:${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}");
     expect(baseCompose).toContain("BASH_SERVER_SHARED_SECRET: ${BASH_SERVER_SHARED_SECRET:-}");
     expect(baseCompose).not.toContain("  panda-telegram:\n    build:");

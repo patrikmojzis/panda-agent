@@ -17,6 +17,7 @@ import {DB_URL_OPTION_DESCRIPTION, parseRequiredOptionValue, parseSessionIdOptio
 import {resolveMediaDir} from "../../../lib/data-dir.js";
 import {withPostgresPool} from "../../../lib/postgres-bootstrap.js";
 import {trimToUndefined} from "../../../lib/strings.js";
+import {runCleanupSteps} from "../../../lib/cleanup.js";
 import {
   disableDiscordBotAccount,
   type DiscordBotAccountResult,
@@ -33,10 +34,13 @@ import {
   discordStickerListCommandDescriptor,
   discordStickerSendCommandDescriptor,
 } from "./commands.js";
-import {DiscordService} from "./service.js";
-
-const DISCORD_ALL_ENABLED_POOL_MAX_FALLBACK = 2;
-const DISCORD_ALL_ENABLED_RECONCILE_INTERVAL_MS = 30_000;
+import {DiscordService, initializeDiscordWorkerSchemas} from "./service.js";
+import {ConnectorAccountSupervisor} from "../account-supervisor.js";
+import {
+  startConnectorDaemonRuntime,
+  type ConnectorDaemonRuntimeHandle,
+} from "../worker-runtime.js";
+import {DISCORD_VOICE_NOTIFICATION_CHANNEL, parseDiscordVoiceNotification} from "./voice-postgres.js";
 
 interface DiscordAccountCliOptions {
   dbUrl?: string;
@@ -101,25 +105,13 @@ interface DiscordActorPairingsCliOptions extends DiscordAccountCliOptions {
 export interface DiscordRunServiceOptions {
   accountKey: string;
   dataDir: string;
-  dbUrl?: string;
-  poolMaxFallback?: number;
+  runtime: ConnectorDaemonRuntimeHandle;
 }
 
 export interface DiscordRunService {
   run(): Promise<void>;
   start?(): Promise<void>;
   stop(): Promise<void>;
-}
-
-interface StartedDiscordRunService {
-  accountKey: string;
-  runPromise: Promise<void>;
-  service: DiscordRunService;
-}
-
-interface DiscordRunServiceRef {
-  accountKey: string;
-  service: DiscordRunService;
 }
 
 interface DiscordAccountOwnerCliOptions extends DiscordAccountCliOptions {
@@ -142,6 +134,7 @@ export interface DiscordAccountCliDependencies {
 }
 
 export interface DiscordCliDependencies extends DiscordAccountCliDependencies {
+  createDaemonRuntime?: (options: {dbUrl?: string}) => Promise<ConnectorDaemonRuntimeHandle>;
   createRunService?: (options: DiscordRunServiceOptions) => DiscordRunService;
 }
 
@@ -816,10 +809,6 @@ export async function discordAccountDisableCommand(
   });
 }
 
-function formatDiscordRunError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function logDiscordRunEvent(event: string, payload: Record<string, unknown>): void {
   process.stdout.write(`${JSON.stringify({
     source: DISCORD_SOURCE,
@@ -846,36 +835,28 @@ function registerDiscordRunShutdown(shutdown: () => Promise<void>): () => void {
   };
 }
 
-async function listEnabledDiscordAccountKeys(options: DiscordRunCliOptions): Promise<readonly string[]> {
-  return withDiscordAccountStores(options, async ({connectorStore}) => {
-    const accounts = await connectorStore.listAccounts({
-      source: DISCORD_SOURCE,
-      status: "enabled",
-    });
-
-    return accounts.map((account) => account.accountKey);
-  });
-}
-
-async function stopDiscordRunServices(services: readonly DiscordRunServiceRef[]): Promise<void> {
-  await Promise.allSettled(services.map(async ({accountKey, service}) => {
-    try {
-      await service.stop();
-    } catch (error) {
-      logDiscordRunEvent("worker_stop_failed", {
-        accountKey,
-        message: formatDiscordRunError(error),
-      });
-    }
-  }));
-}
-
-function startDiscordRunLoop(accountKey: string, service: DiscordRunService): Promise<void> {
-  return service.run().catch((error) => {
-    logDiscordRunEvent("worker_run_failed", {
-      accountKey,
-      message: formatDiscordRunError(error),
-    });
+async function startDiscordDaemonRuntime(
+  options: DiscordRunCliOptions,
+  dependencies: DiscordCliDependencies,
+): Promise<ConnectorDaemonRuntimeHandle> {
+  if (dependencies.createDaemonRuntime) return dependencies.createDaemonRuntime({dbUrl: options.dbUrl});
+  return startConnectorDaemonRuntime({
+    source: DISCORD_SOURCE,
+    dbUrl: options.dbUrl,
+    poolMaxEnvKey: "PANDA_DISCORD_DB_POOL_MAX",
+    log: logDiscordRunEvent,
+    additionalNotifications: [{
+      key: "discord_voice",
+      channel: DISCORD_VOICE_NOTIFICATION_CHANNEL,
+      label: "Discord voice control notification callback",
+      parse: parseDiscordVoiceNotification,
+      connectorKey: (notification: unknown) => {
+        if (typeof notification !== "object" || notification === null || !("connectorKey" in notification)) return null;
+        const connectorKey = (notification as {connectorKey?: unknown}).connectorKey;
+        return typeof connectorKey === "string" ? connectorKey : null;
+      },
+    }],
+    initialize: async (pool) => initializeDiscordWorkerSchemas(pool),
   });
 }
 
@@ -883,140 +864,44 @@ async function discordRunAllEnabledCommand(
   options: DiscordRunCliOptions,
   dependencies: DiscordCliDependencies,
 ): Promise<void> {
-  const started: StartedDiscordRunService[] = [];
-  let starting: DiscordRunServiceRef | null = null;
-  let shutdownRequested = false;
-  let shutdownPromise: Promise<void> | null = null;
+  const runtime = await startDiscordDaemonRuntime(options, dependencies);
+  const connectorStore = new PostgresConnectorAccountStore({pool: runtime.pool});
   let resolveStopWaiter: (() => void) | null = null;
+  let shutdownPromise: Promise<void> | null = null;
+  let shutdownRequested = false;
   const stopWaiter = new Promise<void>((resolve) => {
     resolveStopWaiter = resolve;
   });
 
-  const shutdown = async () => {
-    shutdownRequested = true;
-    if (!shutdownPromise) {
-      shutdownPromise = (async () => {
-        await stopDiscordRunServices([
-          ...started,
-          ...(starting ? [starting] : []),
-        ]);
-        resolveStopWaiter?.();
-      })();
-    }
-
-    await shutdownPromise;
-  };
-  const unregisterShutdown = registerDiscordRunShutdown(shutdown);
-
-  async function startAccountWorker(accountKey: string): Promise<boolean> {
-    if (started.some((service) => service.accountKey === accountKey) || shutdownRequested) return false;
-    const service = createDiscordRunService({
-      accountKey,
+  const supervisor = new ConnectorAccountSupervisor<ConnectorAccountRecord, DiscordRunService>({
+    listEnabledAccounts: () => connectorStore.listAccounts({source: DISCORD_SOURCE, status: "enabled"}),
+    createWorker: (account) => createDiscordRunService({
+      accountKey: account.accountKey,
       dataDir: resolveMediaDir(),
-      dbUrl: options.dbUrl,
-      poolMaxFallback: DISCORD_ALL_ENABLED_POOL_MAX_FALLBACK,
-    }, dependencies);
-    starting = {accountKey, service};
-    try {
-      if (!service.start) {
-        throw new Error("Discord run service does not support supervised startup.");
-      }
-      await service.start();
-      if (shutdownRequested) {
-        await service.stop();
-        return false;
-      }
-
-      starting = null;
-      started.push({
-        accountKey,
-        runPromise: startDiscordRunLoop(accountKey, service),
-        service,
-      });
-      return true;
-    } catch (error) {
-      if (!shutdownRequested) {
-        logDiscordRunEvent("worker_start_failed", {
-          accountKey,
-          message: formatDiscordRunError(error),
-        });
-      }
-      await service.stop().catch((stopError) => {
-        logDiscordRunEvent("worker_stop_failed", {
-          accountKey,
-          message: formatDiscordRunError(stopError),
-        });
-      });
-      return false;
-    } finally {
-      starting = null;
-    }
-  }
-
-  async function reconcileEnabledAccounts(): Promise<void> {
-    if (shutdownRequested) return;
-    const accountKeys = await listEnabledDiscordAccountKeys(options);
-    const enabled = new Set(accountKeys);
-    for (let index = started.length - 1; index >= 0; index -= 1) {
-      const service = started[index]!;
-      if (enabled.has(service.accountKey)) continue;
-      started.splice(index, 1);
-      await service.service.stop();
-      logDiscordRunEvent("worker_stopped_disabled_account", {accountKey: service.accountKey});
-    }
-    for (const accountKey of accountKeys) {
-      const didStart = await startAccountWorker(accountKey);
-      if (didStart) logDiscordRunEvent("worker_started_reconciled_account", {accountKey});
-    }
-  }
-
-  let reconcileInFlight = false;
-  const reconcileTimer = setInterval(() => {
-    if (reconcileInFlight || shutdownRequested) return;
-    reconcileInFlight = true;
-    reconcileEnabledAccounts().catch((error) => {
-      logDiscordRunEvent("worker_reconcile_failed", {message: formatDiscordRunError(error)});
-    }).finally(() => {
-      reconcileInFlight = false;
-    });
-  }, DISCORD_ALL_ENABLED_RECONCILE_INTERVAL_MS);
-  reconcileTimer.unref?.();
+      runtime,
+    }, dependencies),
+    log: logDiscordRunEvent,
+  });
+  const requestShutdown = () => shutdownPromise ??= (async () => {
+    shutdownRequested = true;
+    await supervisor.stop();
+    resolveStopWaiter?.();
+  })();
+  const unregisterShutdown = registerDiscordRunShutdown(requestShutdown);
 
   try {
-    const accountKeys = await listEnabledDiscordAccountKeys(options);
-    if (shutdownRequested) {
-      return;
+    await supervisor.start();
+    if (!shutdownRequested) {
+      logDiscordRunEvent("worker_supervisor_started", {
+        ...supervisor.snapshot(),
+        poolMax: runtime.poolConfig.max,
+      });
     }
-    if (accountKeys.length === 0) {
-      throw new Error("No enabled Discord accounts found. Configure or enable one, then run `panda discord run --all-enabled`.");
-    }
-
-    for (const accountKey of accountKeys) {
-      if (shutdownRequested) break;
-      await startAccountWorker(accountKey);
-    }
-
-    if (started.length === 0) {
-      if (shutdownRequested) {
-        return;
-      }
-      throw new Error("No Discord workers started. Every enabled Discord account failed during startup.");
-    }
-
-    logDiscordRunEvent("worker_supervisor_started", {
-      accountCount: started.length,
-      accountKeys: started.map((service) => service.accountKey),
-      poolMaxFallback: DISCORD_ALL_ENABLED_POOL_MAX_FALLBACK,
-    });
-
-    await Promise.race([
-      stopWaiter,
-      Promise.all(started.map((service) => service.runPromise)).then(() => undefined),
-    ]);
+    await stopWaiter;
   } finally {
-    clearInterval(reconcileTimer);
     unregisterShutdown();
-    await shutdown();
+    await requestShutdown();
+    await runtime.close();
   }
 }
 
@@ -1025,20 +910,24 @@ async function discordRunSingleAccountCommand(
   options: DiscordRunCliOptions,
   dependencies: DiscordCliDependencies,
 ): Promise<void> {
-  const service = createDiscordRunService({
-    accountKey,
-    dataDir: resolveMediaDir(),
-    dbUrl: options.dbUrl,
-  }, dependencies);
-
-  const unregisterShutdown = registerDiscordRunShutdown(async () => {
-    await service.stop();
-  });
+  const runtime = await startDiscordDaemonRuntime(options, dependencies);
+  let service: DiscordRunService | null = null;
+  let stopPromise: Promise<void> | null = null;
+  let unregisterShutdown: (() => void) | null = null;
 
   try {
+    service = createDiscordRunService({accountKey, dataDir: resolveMediaDir(), runtime}, dependencies);
+    const stopService = () => stopPromise ??= service!.stop();
+    unregisterShutdown = registerDiscordRunShutdown(stopService);
     await service.run();
   } finally {
-    unregisterShutdown();
+    unregisterShutdown?.();
+    await runCleanupSteps([
+      {label: "discord-service", run: async () => {
+        if (service) await (stopPromise ??= service.stop());
+      }},
+      {label: "discord-daemon-runtime", run: async () => runtime.close()},
+    ]);
   }
 }
 

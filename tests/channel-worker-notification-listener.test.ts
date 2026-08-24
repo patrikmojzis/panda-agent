@@ -3,7 +3,6 @@ import {describe, expect, it, vi} from "vitest";
 import {buildActionNotificationChannel} from "../src/domain/channels/actions/index.js";
 import {buildDeliveryNotificationChannel} from "../src/domain/channels/deliveries/index.js";
 import {
-  startChannelWorkerNotificationListener,
   startPostgresNotificationListener,
 } from "../src/integrations/channels/postgres-notification-listener.js";
 import {waitFor} from "./helpers/wait-for.js";
@@ -186,50 +185,4 @@ describe("startPostgresNotificationListener", () => {
     expect(client.release).toHaveBeenCalledTimes(1);
   });
 
-  it("triggers only the matching connector workers", async () => {
-    const handlers = new Map<string, (value: unknown) => void>();
-    const client = new FakeNotificationClient(handlers);
-    const pool: NotificationPool = {
-      connect: vi.fn(async () => client),
-    };
-    const actionWorker = {triggerDrain: vi.fn(async () => {})};
-    const outboundWorker = {triggerDrain: vi.fn(async () => {})};
-
-    const handle = await startChannelWorkerNotificationListener({
-      pool,
-      source: "telegram",
-      connectorKey: "bot-1",
-      actionWorker,
-      outboundWorker,
-    });
-
-    handlers.get("notification")?.({
-      channel: buildActionNotificationChannel(),
-      payload: JSON.stringify({
-        channel: "telegram",
-        connectorKey: "bot-1",
-      }),
-    });
-    handlers.get("notification")?.({
-      channel: buildDeliveryNotificationChannel(),
-      payload: JSON.stringify({
-        channel: "whatsapp",
-        connectorKey: "bot-1",
-      }),
-    });
-    handlers.get("notification")?.({
-      channel: buildDeliveryNotificationChannel(),
-      payload: JSON.stringify({
-        channel: "telegram",
-        connectorKey: "bot-1",
-      }),
-    });
-
-    await Promise.resolve();
-
-    expect(actionWorker.triggerDrain).toHaveBeenCalledTimes(1);
-    expect(outboundWorker.triggerDrain).toHaveBeenCalledTimes(1);
-
-    await handle.close();
-  });
 });

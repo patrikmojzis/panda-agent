@@ -72,6 +72,13 @@ vi.mock("../src/integrations/channels/whatsapp/auth-store.js", () => ({
 function dependencies(service: Record<string, unknown> = {}): WhatsAppCliDependencies {
   return {
     crypto: new CredentialCrypto("whatsapp-cli-tests"),
+    createDaemonRuntime: async () => ({
+      pool: {},
+      poolConfig: {applicationName: "panda/whatsapp", max: 2},
+      notifications: {register: vi.fn()},
+      getNotificationSnapshot: () => ({status: "listening", listening: true}),
+      close: vi.fn(async () => {}),
+    }) as never,
     createRunService: () => ({
       run: vi.fn(async () => {}),
       stop: vi.fn(async () => {}),
@@ -154,6 +161,79 @@ describe("WhatsApp account CLI", () => {
     await whatsappRunCommand("main", {}, dependencies({run}));
 
     expect(run).toHaveBeenCalledOnce();
+  });
+
+  it("shares one daemon runtime across all enabled WhatsApp accounts", async () => {
+    const second = {...mocks.account, id: "22222222-2222-4222-8222-222222222222", accountKey: "ops", connectorKey: "22222222-2222-4222-8222-222222222222", status: "enabled" as const};
+    mocks.accounts.listAccounts.mockResolvedValueOnce([
+      {...mocks.account, status: "enabled" as const},
+      second,
+    ] as never);
+    const runtime = {
+      pool: {},
+      poolConfig: {applicationName: "panda/whatsapp", max: 2},
+      notifications: {register: vi.fn()},
+      getNotificationSnapshot: () => ({status: "listening", listening: true}),
+      close: vi.fn(async () => {}),
+    } as never;
+    const services: Array<{run: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>}> = [];
+    const createRunService = vi.fn(() => {
+      let finish!: () => void;
+      const running = new Promise<void>((resolve) => { finish = resolve; });
+      const service = {
+        run: vi.fn(() => running),
+        stop: vi.fn(async () => finish()),
+      };
+      services.push(service);
+      return service;
+    });
+    const command = whatsappRunCommand(undefined, {allEnabled: true}, {
+      crypto: new CredentialCrypto("whatsapp-cli-tests"),
+      createDaemonRuntime: async () => runtime,
+      createRunService,
+    });
+    while (services.length < 2) await new Promise((resolve) => setTimeout(resolve, 0));
+    process.emit("SIGTERM", "SIGTERM");
+    await command;
+
+    expect(createRunService.mock.calls[0]![0].runtime).toBe(runtime);
+    expect(createRunService.mock.calls[1]![0].runtime).toBe(runtime);
+    expect(services.every((service) => service.stop.mock.calls.length === 1)).toBe(true);
+    expect(runtime.close).toHaveBeenCalledOnce();
+  });
+
+  it("cancels WhatsApp startup when SIGTERM arrives during first worker creation", async () => {
+    const second = {...mocks.account, id: "22222222-2222-4222-8222-222222222222", accountKey: "ops", connectorKey: "22222222-2222-4222-8222-222222222222", status: "enabled" as const};
+    mocks.accounts.listAccounts.mockResolvedValueOnce([
+      {...mocks.account, status: "enabled" as const},
+      second,
+    ] as never);
+    const services: Array<{run: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>}> = [];
+    const createRunService = vi.fn(() => {
+      const service = {
+        run: vi.fn(async () => {}),
+        stop: vi.fn(async () => {}),
+      };
+      services.push(service);
+      if (services.length === 1) process.emit("SIGTERM", "SIGTERM");
+      return service;
+    });
+
+    await whatsappRunCommand(undefined, {allEnabled: true}, {
+      crypto: new CredentialCrypto("whatsapp-cli-tests"),
+      createDaemonRuntime: async () => ({
+        pool: {},
+        poolConfig: {applicationName: "panda/whatsapp", max: 2},
+        notifications: {register: vi.fn()},
+        getNotificationSnapshot: () => ({status: "listening", listening: true}),
+        close: vi.fn(async () => {}),
+      }) as never,
+      createRunService,
+    });
+
+    expect(createRunService).toHaveBeenCalledOnce();
+    expect(services[0]?.run).not.toHaveBeenCalled();
+    expect(services[0]?.stop).toHaveBeenCalledOnce();
   });
 
   it("pairs an exact WhatsApp LID through the owned account", async () => {
