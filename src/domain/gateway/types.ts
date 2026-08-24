@@ -79,6 +79,10 @@ export interface GatewayDeviceCommandRecord {
   resultAttachmentId?: string;
 }
 
+export type GatewayDeviceCommandClaimResult =
+  | {claimed: false}
+  | {claimed: true; command: GatewayDeviceCommandRecord};
+
 export interface GatewayEventRecord {
   id: string;
   sourceId: string;

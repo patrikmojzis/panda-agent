@@ -12,6 +12,7 @@ import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js";
 import {startGatewayServer} from "../src/integrations/gateway/http.js";
+import {createGatewayDeviceCommandWaiter} from "../src/integrations/gateway/device-command-waiter.js";
 import {ensureSchemas} from "../src/app/runtime/postgres-bootstrap.js";
 import {hashOpaqueToken} from "../src/lib/opaque-tokens.js";
 
@@ -66,7 +67,9 @@ describe("gateway device command HTTP endpoints", () => {
       delivery: "wake",
       trusted: false,
     });
+    const deviceCommandWaiter = createGatewayDeviceCommandWaiter({store: gatewayStore});
     const server = await startGatewayServer({
+      deviceCommandWaiter,
       env,
       host: "127.0.0.1",
       port: 0,
@@ -77,14 +80,21 @@ describe("gateway device command HTTP endpoints", () => {
       baseUrl: `http://127.0.0.1:${String(server.port)}`,
       clientId: source.source.clientId,
       clientSecret: source.clientSecret,
+      deviceCommandWaiter,
       gatewayStore,
       pool,
       server,
+      async enqueueDeviceCommand(input: Parameters<PostgresGatewayStore["enqueueDeviceCommand"]>[0]) {
+        const command = await gatewayStore.enqueueDeviceCommand(input);
+        deviceCommandWaiter.notify({sourceId: input.sourceId, deviceId: input.deviceId});
+        return command;
+      },
     };
   }
 
   async function closeHarness(harness: Awaited<ReturnType<typeof createHarness>>): Promise<void> {
     await harness.server.close();
+    await harness.deviceCommandWaiter.close();
   }
 
   async function getSourceToken(harness: Awaited<ReturnType<typeof createHarness>>): Promise<string> {
@@ -181,7 +191,9 @@ describe("gateway device command HTTP endpoints", () => {
 
       const longPoll = postJson(`${harness.baseUrl}/v1/device/commands/claim`, deviceToken, {waitMs: 500});
       await new Promise((resolve) => setTimeout(resolve, 50));
-      const command = await harness.gatewayStore.enqueueDeviceCommand({
+      const duplicate = await postJson(`${harness.baseUrl}/v1/device/commands/claim`, deviceToken, {waitMs: 0});
+      expect(duplicate.status).toBe(409);
+      const command = await harness.enqueueDeviceCommand({
         sourceId: "work-prod",
         deviceId: "device-1",
         kind: "screenshot.capture",
@@ -213,7 +225,7 @@ describe("gateway device command HTTP endpoints", () => {
         tokenHash: hashOpaqueToken(deviceToken),
         capabilities: ["claim_commands", "screenshot.capture"],
       });
-      const command = await harness.gatewayStore.enqueueDeviceCommand({sourceId: "work-prod", deviceId: "device-1", kind: "screenshot.capture"});
+      const command = await harness.enqueueDeviceCommand({sourceId: "work-prod", deviceId: "device-1", kind: "screenshot.capture"});
       const claim = await postJson(`${harness.baseUrl}/v1/device/commands/claim`, deviceToken, {waitMs: 0});
       const claimBody = await claim.json() as {command?: {claimId?: string; id?: string}};
       const claimId = claimBody.command?.claimId;
@@ -270,7 +282,7 @@ describe("gateway device command HTTP endpoints", () => {
         tokenHash: hashOpaqueToken(deviceToken),
         capabilities: ["claim_commands", "screenshot.capture", "upload_attachments"],
       });
-      const command = await harness.gatewayStore.enqueueDeviceCommand({sourceId: "work-prod", deviceId: "device-1", kind: "screenshot.capture"});
+      const command = await harness.enqueueDeviceCommand({sourceId: "work-prod", deviceId: "device-1", kind: "screenshot.capture"});
       const claim = await postJson(`${harness.baseUrl}/v1/device/commands/claim`, deviceToken, {waitMs: 0});
       const claimBody = await claim.json() as {command?: {claimId?: string}};
       const claimId = claimBody.command?.claimId;

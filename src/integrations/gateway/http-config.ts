@@ -2,6 +2,7 @@ import type {PostgresGatewayStore} from "../../domain/gateway/postgres.js";
 import {normalizeHttpPathPrefix} from "../../lib/http-path-prefix.js";
 import {readTcpPort} from "../../lib/numbers.js";
 import {trimToNull} from "../../lib/strings.js";
+import type {GatewayDeviceCommandClaimer} from "./device-command-waiter.js";
 import type {GatewayWorker} from "./worker.js";
 
 export const DEFAULT_GATEWAY_HOST = "127.0.0.1";
@@ -42,6 +43,7 @@ export interface GatewayServerOptions {
   attachmentRetentionMs?: number;
   attachmentUploadTtlMs?: number;
   deviceCommandMaxWaitMs?: number;
+  deviceCommandWaiter: GatewayDeviceCommandClaimer;
   env?: NodeJS.ProcessEnv;
   host?: string;
   maxActiveTokensPerSource?: number;
@@ -59,7 +61,7 @@ export interface GatewayServerOptions {
   worker?: GatewayWorker;
 }
 
-export type GatewayHttpConfig = Omit<GatewayServerOptions, "store" | "worker">;
+export type GatewayHttpConfig = Omit<GatewayServerOptions, "deviceCommandWaiter" | "store" | "worker">;
 
 function readPositiveInteger(value: string | null, fallback: number): number {
   if (!value) {
@@ -188,11 +190,13 @@ export function resolveGatewayHttpConfig(env: NodeJS.ProcessEnv = process.env): 
 
 export function resolveGatewayServerOptions(
   store: PostgresGatewayStore,
+  deviceCommandWaiter: GatewayDeviceCommandClaimer,
   worker: GatewayWorker | undefined,
   env: NodeJS.ProcessEnv = process.env,
 ): GatewayServerOptions {
   return {
     ...resolveGatewayHttpConfig(env),
+    deviceCommandWaiter,
     store,
     ...(worker ? {worker} : {}),
   };

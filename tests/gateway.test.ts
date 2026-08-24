@@ -14,6 +14,7 @@ import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {createSessionWithInitialThread, PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js";
 import {startGatewayServer} from "../src/integrations/gateway/http.js";
+import {createGatewayDeviceCommandWaiter} from "../src/integrations/gateway/device-command-waiter.js";
 import {createGatewayGuardFromEnv, type GatewayGuard, LlmGatewayGuard} from "../src/integrations/gateway/guard.js";
 import {startGatewayWorker} from "../src/integrations/gateway/worker.js";
 import {ensureSchemas} from "../src/app/runtime/postgres-bootstrap.js";
@@ -124,12 +125,14 @@ describe("Panda gateway", () => {
           },
         })
       : gatewayStore;
+    const deviceCommandWaiter = createGatewayDeviceCommandWaiter({store: gatewayStore});
     const server = await startGatewayServer({
       ...(options.env ? {env: options.env} : {}),
       host: "127.0.0.1",
       port: 0,
       maxTextBytes: 64 * 1024,
       ...(options.rateLimitPerMinute !== undefined ? {rateLimitPerMinute: options.rateLimitPerMinute} : {}),
+      deviceCommandWaiter,
       store: httpStore,
       worker,
     });
@@ -139,6 +142,7 @@ describe("Panda gateway", () => {
       baseUrl,
       clientId: createdSource.source.clientId,
       clientSecret: createdSource.clientSecret,
+      deviceCommandWaiter,
       gatewayStore,
       pool,
       sessionStore,
@@ -151,6 +155,7 @@ describe("Panda gateway", () => {
   async function closeHarness(harness: Awaited<ReturnType<typeof createHarness>>): Promise<void> {
     await harness.worker.close();
     await harness.server.close();
+    await harness.deviceCommandWaiter.close();
   }
 
   async function getToken(harness: Awaited<ReturnType<typeof createHarness>>): Promise<string> {
@@ -788,12 +793,14 @@ describe("Panda gateway", () => {
     const harness = await createHarness();
     try {
       await expect(startGatewayServer({
+        deviceCommandWaiter: harness.deviceCommandWaiter,
         host: "0.0.0.0",
         port: 0,
         store: harness.gatewayStore,
         worker: harness.worker,
       })).rejects.toThrow("GATEWAY_IP_ALLOWLIST");
       const server = await startGatewayServer({
+        deviceCommandWaiter: harness.deviceCommandWaiter,
         env: {GATEWAY_ALLOW_PUBLIC_WITHOUT_IP_ALLOWLIST: "true"},
         host: "0.0.0.0",
         port: 0,
@@ -882,6 +889,7 @@ describe("Panda gateway", () => {
 
       await harness.server.close();
       const restarted = await startGatewayServer({
+        deviceCommandWaiter: harness.deviceCommandWaiter,
         host: "127.0.0.1",
         port: 0,
         rateLimitPerMinute: 1,

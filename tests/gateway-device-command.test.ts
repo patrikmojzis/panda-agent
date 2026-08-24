@@ -75,11 +75,15 @@ describe("gateway device command mailbox store", () => {
 
   async function createHarness() {
     const db = newDb();
+    const notifications: Array<{channel: string; payload: string}> = [];
     db.public.registerFunction({
       name: "pg_notify",
       args: [DataType.text, DataType.text],
       returns: DataType.text,
-      implementation: () => "",
+      implementation: (channel: string, payload: string) => {
+        notifications.push({channel, payload});
+        return "";
+      },
     });
     const adapter = db.adapters.createPg();
     const pool = new adapter.Pool();
@@ -121,7 +125,7 @@ describe("gateway device command mailbox store", () => {
       tokenHash: hashOpaqueToken("pgd_other_device"),
       capabilities: ["claim_commands", "screenshot.capture", "upload_attachments"],
     });
-    return {gatewayStore, pool};
+    return {gatewayStore, notifications, pool};
   }
 
   async function uploadCommandAttachment(input: {
@@ -188,7 +192,7 @@ describe("gateway device command mailbox store", () => {
   });
 
   it("enqueues, lists, and claims the oldest queued matching command once", async () => {
-    const {gatewayStore, pool} = await createHarness();
+    const {gatewayStore, notifications, pool} = await createHarness();
     const tables = buildGatewayTableNames();
     const first = await gatewayStore.enqueueDeviceCommand({
       sourceId: "work-prod",
@@ -202,6 +206,16 @@ describe("gateway device command mailbox store", () => {
       kind: "screenshot.capture",
       payload: {window: "all"},
     });
+    expect(notifications).toEqual([
+      {
+        channel: "runtime_gateway_device_command_events",
+        payload: JSON.stringify({sourceId: "work-prod", deviceId: "device-1"}),
+      },
+      {
+        channel: "runtime_gateway_device_command_events",
+        payload: JSON.stringify({sourceId: "work-prod", deviceId: "device-1"}),
+      },
+    ]);
     await pool.query(`UPDATE ${tables.commands} SET created_at = NOW() - INTERVAL '1 minute' WHERE id = $1`, [first.id]);
 
     await expect(gatewayStore.listDeviceCommands({sourceId: "work-prod", status: "queued"}))

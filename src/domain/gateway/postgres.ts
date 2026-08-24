@@ -11,6 +11,7 @@ import {withTransaction} from "../../lib/postgres-transaction.js";
 import {resolveAgentMediaDir} from "../../lib/data-dir.js";
 import {toJson} from "../../lib/postgres-values.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
+import {buildGatewayDeviceCommandNotificationChannel} from "./device-command-notifications.js";
 import {
   gatewayDeviceAllowedCommandKinds,
   normalizeGatewayDeviceId,
@@ -42,6 +43,7 @@ import type {
   GatewayDeliveryMode,
   GatewayDeviceCapability,
   GatewayDeviceCommandKind,
+  GatewayDeviceCommandClaimResult,
   GatewayDeviceCommandRecord,
   GatewayDeviceCommandStatus,
   GatewayDeviceRecord,
@@ -219,7 +221,7 @@ export class PostgresGatewayStore {
 
   private requireTransactionalPool(): PgPoolLike {
     if (!hasTransactionSupport(this.pool)) {
-      throw new Error("Gateway attachment operations require a transactional Postgres pool.");
+      throw new Error("Gateway operation requires a transactional Postgres pool.");
     }
     return this.pool;
   }
@@ -718,23 +720,29 @@ export class PostgresGatewayStore {
       throw new GatewayDeviceCommandError("forbidden", `Gateway device ${deviceId} is missing the ${kind} capability.`);
     }
 
-    const result = await this.pool.query(`
-      INSERT INTO ${this.tables.commands} (
-        id,
-        source_id,
-        device_id,
+    return withTransaction(this.requireTransactionalPool(), async (client) => {
+      const result = await client.query(`
+        INSERT INTO ${this.tables.commands} (
+          id,
+          source_id,
+          device_id,
+          kind,
+          payload
+        ) VALUES ($1, $2, $3, $4, $5::jsonb)
+        RETURNING *
+      `, [
+        randomUUID(),
+        sourceId,
+        deviceId,
         kind,
-        payload
-      ) VALUES ($1, $2, $3, $4, $5::jsonb)
-      RETURNING *
-    `, [
-      randomUUID(),
-      sourceId,
-      deviceId,
-      kind,
-      toJson(payload),
-    ]);
-    return parseGatewayDeviceCommandRow(result.rows[0] as Record<string, unknown>);
+        toJson(payload),
+      ]);
+      await client.query("SELECT pg_notify($1, $2)", [
+        buildGatewayDeviceCommandNotificationChannel(),
+        JSON.stringify({sourceId, deviceId}),
+      ]);
+      return parseGatewayDeviceCommandRow(result.rows[0] as Record<string, unknown>);
+    });
   }
 
   async listDeviceCommands(input: {
@@ -768,7 +776,7 @@ export class PostgresGatewayStore {
     sourceId: string;
     deviceId: string;
     allowedKinds: readonly GatewayDeviceCommandKind[];
-  }): Promise<{claimed: false} | {claimed: true; command: GatewayDeviceCommandRecord}> {
+  }): Promise<GatewayDeviceCommandClaimResult> {
     const sourceId = normalizeGatewaySourceId(input.sourceId);
     const deviceId = normalizeGatewayDeviceId(input.deviceId);
     const allowedKinds = normalizeAllowedCommandKinds(input.allowedKinds);

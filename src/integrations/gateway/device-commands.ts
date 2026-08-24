@@ -13,15 +13,22 @@ import {isRecord} from "../../lib/records.js";
 import {trimToNull, truncateText} from "../../lib/strings.js";
 import {allowedCommandKindsForDevice, requireDeviceCapability, requireGatewayDevicePrincipal} from "./device-auth.js";
 import {GatewayHttpError, readGatewayJsonBody} from "./http-body.js";
+import {
+  GatewayDeviceCommandWaitError,
+  type GatewayDeviceCommandClaimer,
+} from "./device-command-waiter.js";
 
 const COMMAND_BODY_MAX_BYTES = 64 * 1024;
-const COMMAND_POLL_INTERVAL_MS = 250;
 const COMMAND_ERROR_MAX_CHARS = 4096;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type DeviceCommandHttpResult = {status: 200; body: unknown};
 
 function mapDeviceCommandError(error: unknown): never {
+  if (error instanceof GatewayDeviceCommandWaitError) {
+    const statusCode = error.reason === "duplicate" ? 409 : 503;
+    throw new GatewayHttpError(statusCode, error.message);
+  }
   if (error instanceof GatewayDeviceCommandError) {
     const statusCode = error.reason === "bad_request"
       ? 400
@@ -166,24 +173,25 @@ function formatClaimedCommand(command: {
   };
 }
 
-function requestAborted(request: IncomingMessage): boolean {
-  return (request as {aborted?: boolean}).aborted === true;
-}
-
-async function waitForNextPoll(request: IncomingMessage, waitMs: number): Promise<void> {
-  if (waitMs <= 0 || requestAborted(request)) {
-    return;
+function createRequestAbortSignal(request: IncomingMessage): {
+  dispose(): void;
+  signal: AbortSignal;
+} {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if ((request as {aborted?: boolean}).aborted === true || request.socket.destroyed) {
+    abort();
+  } else {
+    request.once("aborted", abort);
+    request.socket.once("close", abort);
   }
-  await new Promise<void>((resolve) => {
-    const timer = setTimeout(done, waitMs);
-    const onAborted = () => done();
-    function done(): void {
-      clearTimeout(timer);
-      request.off("aborted", onAborted);
-      resolve();
-    }
-    request.once("aborted", onAborted);
-  });
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      request.off("aborted", abort);
+      request.socket.off("close", abort);
+    },
+  };
 }
 
 async function claimWithOptionalWait(input: {
@@ -192,18 +200,19 @@ async function claimWithOptionalWait(input: {
   maxWaitMs: number;
   request: IncomingMessage;
   sourceId: string;
-  store: PostgresGatewayStore;
+  waiter: GatewayDeviceCommandClaimer;
 }): Promise<DeviceCommandHttpResult> {
   const body = await readCommandBody(input.request);
   const waitMs = parseWaitMs(body.waitMs, input.maxWaitMs);
   const requestedKinds = parseRequestedKinds({allowedKinds: input.allowedKinds, value: body.kinds});
-  const deadline = Date.now() + waitMs;
-
-  while (true) {
-    const claimed = await withCommandErrorMapping(() => input.store.claimNextDeviceCommand({
+  const requestAbort = createRequestAbortSignal(input.request);
+  try {
+    const claimed = await withCommandErrorMapping(() => input.waiter.claimOrWait({
       sourceId: input.sourceId,
       deviceId: input.deviceId,
       allowedKinds: requestedKinds,
+      waitMs,
+      signal: requestAbort.signal,
     }));
     if (claimed.claimed) {
       return {
@@ -215,12 +224,9 @@ async function claimWithOptionalWait(input: {
         },
       };
     }
-
-    const remainingMs = deadline - Date.now();
-    if (remainingMs <= 0 || requestAborted(input.request)) {
-      return {status: 200, body: {ok: true, claimed: false}};
-    }
-    await waitForNextPoll(input.request, Math.min(COMMAND_POLL_INTERVAL_MS, remainingMs));
+    return {status: 200, body: {ok: true, claimed: false}};
+  } finally {
+    requestAbort.dispose();
   }
 }
 
@@ -230,6 +236,7 @@ export async function acceptGatewayDeviceCommandRequest(input: {
   request: IncomingMessage;
   requestUrl: URL;
   store: PostgresGatewayStore;
+  waiter: GatewayDeviceCommandClaimer;
 }): Promise<DeviceCommandHttpResult | null> {
   if (input.request.method !== "POST") {
     return null;
@@ -275,7 +282,7 @@ export async function acceptGatewayDeviceCommandRequest(input: {
       maxWaitMs: Math.max(0, Math.floor(input.maxWaitMs)),
       request: input.request,
       sourceId: principal.source.sourceId,
-      store: input.store,
+      waiter: input.waiter,
     });
   }
 

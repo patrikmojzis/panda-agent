@@ -105,6 +105,7 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
         request,
         requestUrl,
         store: options.store,
+        waiter: options.deviceCommandWaiter,
       });
       if (deviceCommandResult) {
         writeJsonResponse(response, deviceCommandResult.status, deviceCommandResult.body);

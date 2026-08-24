@@ -197,8 +197,14 @@ Operational notes:
 - The menu kill switch pauses health checks and local explicit sends. There is no
   hidden screenshot auto-start in this PR.
 
-The command mailbox is durable Postgres polling, not WebSocket/SSE. It is the
-Gateway device command path and stays separate from manual/interval pushes.
+The command mailbox is durable Postgres long-polling, not WebSocket/SSE. Command
+enqueue commits the row and a `pg_notify` together. One shared Gateway `LISTEN`
+connection wakes matching in-memory device waiters; the atomic Postgres claim
+remains authoritative across replicas. A request claims immediately, after a
+matching notification, and once at timeout instead of polling on a fixed interval.
+The listener holds one of the Gateway pool's five connections; devices do not
+receive dedicated database connections. The command path stays separate from
+manual/interval pushes.
 
 Admin enqueue/list/cancel/timeout sweep stays CLI-only local DB access:
 
@@ -361,6 +367,9 @@ Budgets are stored in Postgres, not local process memory:
 - `GATEWAY_ATTACHMENT_BYTES_PER_HOUR`
 - `GATEWAY_MAX_PENDING_ATTACHMENTS_PER_SOURCE`
 - `GATEWAY_DEVICE_COMMAND_MAX_WAIT_MS` (default/cap for device command long-polling)
+
+Long-poll capacity is process-local: `GATEWAY_DEVICE_COMMAND_MAX_WAITERS`
+defaults to `256`, with one active wait per device per Gateway process.
 
 Attachment defaults:
 

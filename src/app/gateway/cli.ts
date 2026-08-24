@@ -13,6 +13,10 @@ import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.
 import {createGatewayGuardFromEnv} from "../../integrations/gateway/guard.js";
 import {formatGatewayListenUrl, startGatewayServer} from "../../integrations/gateway/http.js";
 import {resolveGatewayHttpConfig} from "../../integrations/gateway/http-config.js";
+import {
+  DEFAULT_GATEWAY_DEVICE_COMMAND_MAX_WAITERS,
+  startGatewayDeviceCommandWaiter,
+} from "../../integrations/gateway/device-command-waiter.js";
 import {startGatewayWorker} from "../../integrations/gateway/worker.js";
 import {DB_URL_OPTION_DESCRIPTION, parsePortOption} from "../../lib/cli.js";
 import {createPostgresPool, requireDatabaseUrl} from "../../lib/postgres-database.js";
@@ -42,55 +46,76 @@ async function runGateway(options: GatewayRunOptions): Promise<void> {
     applicationName: "panda/gateway",
     max: 5,
   });
-  const gatewayStore = new PostgresGatewayStore({pool});
-  const identityStore = new PostgresIdentityStore({pool});
-  const agentStore = new PostgresAgentStore({pool});
-  const sessionStore = new PostgresSessionStore({pool});
-  const threadStore = new PostgresThreadRuntimeStore({pool});
-  await ensureSchemas([identityStore, agentStore, sessionStore, threadStore, gatewayStore]);
-
-  const guardTimeoutMs = readOptionalPositiveIntegerEnv("GATEWAY_GUARD_TIMEOUT_MS");
-  const gatewayConfig = resolveGatewayHttpConfig(process.env);
-  const worker = startGatewayWorker({
-    guard: createGatewayGuardFromEnv(process.env),
-    ...(guardTimeoutMs !== undefined ? {guardTimeoutMs} : {}),
-    attachmentRetentionMs: gatewayConfig.attachmentRetentionMs,
-    attachmentQuarantineTtlMs: gatewayConfig.attachmentQuarantineTtlMs,
-    store: gatewayStore,
-    sessionStore,
-    threadStore,
-  });
-  const server = await startGatewayServer({
-    ...gatewayConfig,
-    store: gatewayStore,
-    worker,
-    ...(options.host ? {host: options.host} : {}),
-    ...(options.port !== undefined ? {port: options.port} : {}),
-  });
-
-  const shutdown = async () => {
-    await server.close().catch(() => undefined);
-  };
-  const handleSigint = () => {
-    void shutdown();
-  };
-  const handleSigterm = () => {
-    void shutdown();
-  };
-  process.once("SIGINT", handleSigint);
-  process.once("SIGTERM", handleSigterm);
-
   try {
-    process.stdout.write(`Panda gateway listening on ${formatGatewayListenUrl(server)}\n`);
-    await new Promise<void>((resolve, reject) => {
-      server.server.once("close", resolve);
-      server.server.once("error", reject);
+    const gatewayStore = new PostgresGatewayStore({pool});
+    const identityStore = new PostgresIdentityStore({pool});
+    const agentStore = new PostgresAgentStore({pool});
+    const sessionStore = new PostgresSessionStore({pool});
+    const threadStore = new PostgresThreadRuntimeStore({pool});
+    await ensureSchemas([identityStore, agentStore, sessionStore, threadStore, gatewayStore]);
+
+    const guardTimeoutMs = readOptionalPositiveIntegerEnv("GATEWAY_GUARD_TIMEOUT_MS");
+    const maxDeviceCommandWaiters = readOptionalPositiveIntegerEnv("GATEWAY_DEVICE_COMMAND_MAX_WAITERS")
+      ?? DEFAULT_GATEWAY_DEVICE_COMMAND_MAX_WAITERS;
+    const gatewayConfig = resolveGatewayHttpConfig(process.env);
+    const guard = createGatewayGuardFromEnv(process.env);
+    const deviceCommandWaiter = await startGatewayDeviceCommandWaiter({
+      maxWaiters: maxDeviceCommandWaiters,
+      pool,
+      store: gatewayStore,
     });
+    try {
+      const worker = startGatewayWorker({
+        guard,
+        ...(guardTimeoutMs !== undefined ? {guardTimeoutMs} : {}),
+        attachmentRetentionMs: gatewayConfig.attachmentRetentionMs,
+        attachmentQuarantineTtlMs: gatewayConfig.attachmentQuarantineTtlMs,
+        store: gatewayStore,
+        sessionStore,
+        threadStore,
+      });
+      try {
+        const server = await startGatewayServer({
+          ...gatewayConfig,
+          deviceCommandWaiter,
+          store: gatewayStore,
+          worker,
+          ...(options.host ? {host: options.host} : {}),
+          ...(options.port !== undefined ? {port: options.port} : {}),
+        });
+        const shutdown = async () => {
+          await Promise.all([
+            server.close().catch(() => undefined),
+            deviceCommandWaiter.close().catch(() => undefined),
+          ]);
+        };
+        const handleSigint = () => {
+          void shutdown();
+        };
+        const handleSigterm = () => {
+          void shutdown();
+        };
+        process.once("SIGINT", handleSigint);
+        process.once("SIGTERM", handleSigterm);
+
+        try {
+          process.stdout.write(`Panda gateway listening on ${formatGatewayListenUrl(server)}\n`);
+          await new Promise<void>((resolve, reject) => {
+            server.server.once("close", resolve);
+            server.server.once("error", reject);
+          });
+        } finally {
+          process.off("SIGINT", handleSigint);
+          process.off("SIGTERM", handleSigterm);
+          await server.close().catch(() => undefined);
+        }
+      } finally {
+        await worker.close().catch(() => undefined);
+      }
+    } finally {
+      await deviceCommandWaiter.close().catch(() => undefined);
+    }
   } finally {
-    process.off("SIGINT", handleSigint);
-    process.off("SIGTERM", handleSigterm);
-    await worker.close().catch(() => undefined);
-    await server.close().catch(() => undefined);
     await pool.end();
   }
 }
