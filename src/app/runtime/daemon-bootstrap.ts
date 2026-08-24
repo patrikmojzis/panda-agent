@@ -173,7 +173,7 @@ export async function bootstrapDaemonContext(
           notificationPokesInFlight.delete(notification.threadId);
         });
     },
-    resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, credentialResolver, executionEnvironments, scheduledTasks, executionEnvironmentResolver, identityStore, sessionStore, subagentProfiles, store, shellStateStore, wikiBindingService, commandCatalog, mainTools, subagentTools}) => {
+    resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, credentialResolver, executionEnvironments, scheduledTasks, executionEnvironmentResolver, pairedIdentities, sessionStore, subagentProfiles, store, shellStateStore, wikiBindingService, commandCatalog, mainTools, subagentTools}) => {
       const session = await sessionStore.getSession(thread.sessionId);
       const sessionPrompts = await sessionStore.listSessionPrompts(session.id);
       const runtimeConfig = await sessionStore.getSessionRuntimeConfig(session.id);
@@ -197,9 +197,8 @@ export async function bootstrapDaemonContext(
         fallbackContext,
         executionEnvironment,
         agentStore,
-        identityStore,
+        pairedIdentities,
         sessionStore,
-        sessionRoutes,
         subagentProfiles,
         sessionPrompts,
         runtimeConfig,

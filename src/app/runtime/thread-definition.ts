@@ -1,6 +1,7 @@
 import type {LlmContext} from "../../kernel/agent/llm-context.js";
 import {Agent} from "../../kernel/agent/agent.js";
 import {mergeInferenceProjection} from "../../kernel/transcript/inference-projection.js";
+import type {PairedIdentityDirectoryReader} from "../../domain/agents/paired-identity-directory.js";
 import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
 import type {CommandDescriptor} from "../../domain/commands/types.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
@@ -14,9 +15,6 @@ import {
   buildDefaultAgentLlmContexts,
   type AgentProfileStore,
   type DefaultAgentLlmContextSection,
-  type PairedIdentitiesAgentStore,
-  type PairedIdentitiesIdentityStore,
-  type PairedIdentitiesRouteStore,
 } from "../../panda/contexts/builder.js";
 import {buildDefaultAgentToolsetsFromRegistry, createDefaultAgentToolRegistry} from "../../panda/definition.js";
 import {DEFAULT_AGENT_INSTRUCTIONS} from "../../prompts/runtime/default-agent.js";
@@ -49,10 +47,9 @@ export interface CreateThreadDefinitionOptions {
   thread: ThreadRecord;
   session: Pick<SessionRecord, "id" | "agentKey" | "metadata"> & {kind?: AgentSessionKind};
   fallbackContext: Pick<DefaultAgentSessionContext, "cwd">;
-  agentStore?: AgentProfileStore & Partial<PairedIdentitiesAgentStore>;
-  identityStore?: PairedIdentitiesIdentityStore;
+  agentStore?: AgentProfileStore;
+  pairedIdentities?: PairedIdentityDirectoryReader;
   sessionStore?: Pick<SessionStore, "readSessionTodo">;
-  sessionRoutes?: PairedIdentitiesRouteStore;
   subagentProfiles?: Pick<SubagentProfileStore, "listProfiles">;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
@@ -222,9 +219,8 @@ export function createThreadDefinition(
   const llmContexts: LlmContext[] = buildDefaultAgentLlmContexts({
     context,
     agentStore: options.agentStore,
-    identityStore: options.identityStore,
+    pairedIdentities: options.pairedIdentities,
     sessionStore: options.sessionStore,
-    sessionRoutes: options.sessionRoutes,
     subagentProfiles: options.subagentProfiles,
     threadStore: options.threadStore,
     scheduledTasks: options.scheduledTasks,

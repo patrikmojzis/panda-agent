@@ -54,6 +54,10 @@ import type {CommandCatalog} from "../../domain/commands/modules.js";
 import type {CommandCatalogModule} from "../../domain/commands/types.js";
 import {buildSubagentCommandDependencies} from "./command-dependencies.js";
 import {SessionCompactionService} from "./session-compaction-service.js";
+import {
+  PostgresPairedIdentityDirectory,
+  type PairedIdentityDirectoryReader,
+} from "../../domain/agents/paired-identity-directory.js";
 
 export {
   createPostgresPool,
@@ -89,7 +93,7 @@ export interface DefinitionResolverContext {
   executionEnvironments: ExecutionEnvironmentStore;
   executionEnvironmentResolver: ExecutionEnvironmentResolver;
   executionEnvironmentService: ExecutionEnvironmentLifecycleService;
-  identityStore: IdentityStore;
+  pairedIdentities: PairedIdentityDirectoryReader;
   sessionStore: SessionStore;
   subagentProfiles: SubagentProfileStore;
   store: ThreadRuntimeStore;
@@ -183,7 +187,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     executionEnvironments: runtime.executionEnvironments,
     executionEnvironmentResolver: runtime.executionEnvironmentResolver,
     executionEnvironmentService: runtime.executionEnvironmentService,
-    identityStore: runtime.identityStore,
+    pairedIdentities: new PostgresPairedIdentityDirectory({pool: runtime.pool}),
     sessionStore: runtime.sessionStore,
     subagentProfiles: runtime.subagentProfiles,
     store: runtime.store,

@@ -95,6 +95,7 @@
     "ci:postgres-startup": "tsx scripts/ci/postgres-startup-rehearsal.ts",
     "ci:postgres-schema-manifest:update": "tsx scripts/ci/generate-postgres-schema-object-manifest.ts",
     "ci:postgres-migrations": "vitest run --config vitest.live.config.ts tests/live/postgres-migrations.live.test.ts",
+    "ci:paired-identity-directory-postgres": "vitest run --config vitest.live.config.ts tests/live/paired-identity-directory.live.test.ts",
     "ci:audit": "npm audit --package-lock-only --audit-level high",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",

@@ -92,3 +92,6 @@ jobs:
 
       - name: Verify atomic Postgres migrations
         run: pnpm ci:postgres-migrations
+
+      - name: Verify paired identity directory query
+        run: pnpm ci:paired-identity-directory-postgres

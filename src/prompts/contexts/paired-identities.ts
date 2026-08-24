@@ -1,7 +1,7 @@
 import {truncateText} from "../../lib/strings.js";
 
 const MAX_DISPLAY_CHARS = 80;
-const MAX_CHANNEL_HINTS_PER_IDENTITY = 4;
+export const MAX_PAIRED_IDENTITY_CHANNEL_HINTS = 4;
 
 export interface PairedIdentityRouteHint {
   source: string;
@@ -21,6 +21,8 @@ export interface PairedIdentityEntry {
   displayName: string;
   recentRoute?: PairedIdentityRouteHint;
   channelHints: readonly PairedIdentityChannelHint[];
+  /** Hints omitted before rendering, excluding any overflow in channelHints. */
+  additionalChannelHintCount?: number;
 }
 
 function renderRouteHint(route: PairedIdentityRouteHint): string {
@@ -39,9 +41,10 @@ function renderIdentity(entry: PairedIdentityEntry): string {
   const identity = `${entry.handle} (${truncateText(entry.displayName, MAX_DISPLAY_CHARS)})`;
   const hints = [
     entry.recentRoute ? renderRouteHint(entry.recentRoute) : undefined,
-    ...entry.channelHints.slice(0, MAX_CHANNEL_HINTS_PER_IDENTITY).map(renderChannelHint),
+    ...entry.channelHints.slice(0, MAX_PAIRED_IDENTITY_CHANNEL_HINTS).map(renderChannelHint),
   ].filter(Boolean);
-  const omittedCount = Math.max(0, entry.channelHints.length - MAX_CHANNEL_HINTS_PER_IDENTITY);
+  const omittedCount = (entry.additionalChannelHintCount ?? 0)
+    + Math.max(0, entry.channelHints.length - MAX_PAIRED_IDENTITY_CHANNEL_HINTS);
   const suffix = [
     ...hints,
     omittedCount > 0 ? `${omittedCount} more channel hint(s)` : undefined,

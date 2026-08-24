@@ -165,6 +165,10 @@ role-specific compatibility wrappers.
 Agent profile context should depend on the `AgentProfileStore` read slice,
 because prompt/skill context rendering should not require mutation or pairing
 methods from the agent store.
+Paired-identity context depends on the session-scoped directory read module in
+`src/domain/agents/paired-identity-directory.ts`. Keep the cross-table query
+plan there; prompt contexts must not reconstruct an agent/identity/route graph
+with per-identity store calls.
 Agent prompt and skill tools should depend on their own prompt/skill store
 slices, not the full agent store. Model-facing tools should not inherit pairing,
 bootstrap, or listing powers they do not use.

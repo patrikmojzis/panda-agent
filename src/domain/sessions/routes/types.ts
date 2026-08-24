@@ -12,11 +12,6 @@ export interface SessionRouteInput {
   route: RememberedRoute;
 }
 
-export interface SessionIdentityRoutesLookup {
-  sessionId: string;
-  identityIds: readonly string[];
-}
-
 export interface SessionRouteRecord extends SessionRouteInput {
   channel: string;
   createdAt: number;

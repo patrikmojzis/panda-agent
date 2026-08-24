@@ -68,6 +68,20 @@ That means:
 - one agent can pair with many identities
 - pairing is global per agent, not per session
 
+### Prompt Directory
+
+The paired-identities prompt reads one bounded, session-scoped directory from
+`src/domain/agents/paired-identity-directory.ts`. The session selects the agent;
+callers do not pass a second agent key that can drift out of sync.
+
+The directory has a constant database budget of at most three queries: one for
+active pairings, one for recent routes, and one for the visible binding window
+plus its exact omitted count. An empty directory stops after the first query.
+The prompt currently asks for at most 25 identities and four bindings per
+identity. Route and binding data are delivery hints, not authority, so this read
+model is deliberately uncached and does not hold a transaction snapshot across
+prompt construction.
+
 ## No Built-In Identity
 
 Panda does not seed a built-in identity anymore.
@@ -145,5 +159,6 @@ Those omissions are deliberate.
 - [src/domain/identity/store.ts](../../src/domain/identity/store.ts)
 - [src/domain/identity/postgres.ts](../../src/domain/identity/postgres.ts)
 - [src/domain/agents/postgres.ts](../../src/domain/agents/postgres.ts)
+- [src/domain/agents/paired-identity-directory.ts](../../src/domain/agents/paired-identity-directory.ts)
 - [src/domain/sessions/postgres.ts](../../src/domain/sessions/postgres.ts)
 - [src/app/runtime/daemon-threads.ts](../../src/app/runtime/daemon-threads.ts)

@@ -1,4 +1,5 @@
 import type {LlmContext} from "../../kernel/agent/llm-context.js";
+import type {PairedIdentityDirectoryReader} from "../../domain/agents/paired-identity-directory.js";
 import type {CommandDescriptor} from "../../domain/commands/types.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import type {ExecutionSkillPolicy} from "../../domain/execution-environments/types.js";
@@ -15,10 +16,7 @@ import {DateTimeContext} from "./datetime-context.js";
 import {EnvironmentContext} from "./environment-context.js";
 import {
   PairedIdentitiesContext,
-  type PairedIdentitiesAgentStore,
   type PairedIdentitiesContextOptions,
-  type PairedIdentitiesIdentityStore,
-  type PairedIdentitiesRouteStore,
 } from "./paired-identities-context.js";
 import {ScheduledRemindersContext} from "./scheduled-reminders-context.js";
 import {SessionPromptsContext} from "./session-prompts-context.js";
@@ -62,10 +60,9 @@ export const DEFAULT_AGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContext
 
 export interface BuildDefaultAgentLlmContextsOptions {
   context?: DefaultAgentSessionContext;
-  agentStore?: AgentProfileStore & Partial<PairedIdentitiesAgentStore>;
-  identityStore?: PairedIdentitiesIdentityStore;
+  agentStore?: AgentProfileStore;
+  pairedIdentities?: PairedIdentityDirectoryReader;
   sessionStore?: Partial<Pick<SessionStore, "listSessionPrompts" | "readSessionTodo">>;
-  sessionRoutes?: PairedIdentitiesRouteStore;
   subagentProfiles?: Pick<SubagentProfileStore, "listProfiles">;
   threadStore?: Pick<ThreadRuntimeStore, "listToolJobs">;
   scheduledTasks?: Pick<ScheduledTaskStore, "listActiveTasks">;
@@ -95,10 +92,7 @@ export {EnvironmentContext, type EnvironmentContextOptions} from "./environment-
 export {SubagentsContext, type SubagentsContextOptions} from "./subagents-context.js";
 export {
   PairedIdentitiesContext,
-  type PairedIdentitiesAgentStore,
   type PairedIdentitiesContextOptions,
-  type PairedIdentitiesIdentityStore,
-  type PairedIdentitiesRouteStore,
 };
 
 export function buildDefaultAgentLlmContexts(
@@ -129,17 +123,12 @@ export function buildDefaultAgentLlmContexts(
 
   if (
     uniqueSections.has("paired_identities")
-    && options.agentKey
     && options.context?.sessionId
-    && typeof options.agentStore?.listAgentPairings === "function"
-    && options.identityStore
+    && options.pairedIdentities
   ) {
     llmContexts.push(new PairedIdentitiesContext({
-      agentKey: options.agentKey,
       sessionId: options.context.sessionId,
-      agentStore: {listAgentPairings: options.agentStore.listAgentPairings.bind(options.agentStore)},
-      identityStore: options.identityStore,
-      routes: options.sessionRoutes,
+      directory: options.pairedIdentities,
     }));
   }
 

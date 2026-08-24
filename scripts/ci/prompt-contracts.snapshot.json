@@ -13,16 +13,16 @@
       "sha256": "5bdd27237cdbea0029962f848523647def7fb81053ec670d6d708d4eb51a8c10"
     },
     {
-      "bytes": 12632,
-      "lines": 286,
+      "bytes": 12831,
+      "lines": 290,
       "path": "src/app/runtime/create-runtime.ts",
-      "sha256": "122894ded7441c87257e7d1aa957a5916cf8c0f3780ffeea7f38946b27d0ae76"
+      "sha256": "878c47c31ce72094a7973105c0bd4151e416037e2af944118791aa61dbcd0486"
     },
     {
-      "bytes": 18688,
-      "lines": 478,
+      "bytes": 18671,
+      "lines": 477,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "6c569cb1483cad03a4bbdfd3f8aed927469e860de06fa4bb3ccbbad2591a01b4"
+      "sha256": "0b6f6794d4d9360ec3c163d098e1aeb60c2bacdc600aeedc48c054a23e098f13"
     },
     {
       "bytes": 12121,
@@ -37,16 +37,16 @@
       "sha256": "033685d9e20dc15874865f8bf3e8b9c0d4244ede32cd871ea21590f8b47c45c4"
     },
     {
-      "bytes": 32329,
-      "lines": 874,
+      "bytes": 32297,
+      "lines": 873,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "b48177ec7806d368ae7c960e4eda05d0e6cfbf64a089d0fa4ad17dafc98c7a64"
+      "sha256": "3d5b07818c7028745b6e4f8c0a4f336247a5d19cd062fab16d5666074be32e59"
     },
     {
-      "bytes": 10997,
-      "lines": 266,
+      "bytes": 10873,
+      "lines": 262,
       "path": "src/app/runtime/thread-definition.ts",
-      "sha256": "70b15819432e0b53c920e745bcc1059b80d6a10ff8c89cbcb99352121acb101b"
+      "sha256": "25a60854cd51fdc67172824985cd9fc9dcc63e66378ef08071f919c713fc9663"
     },
     {
       "bytes": 1490,
@@ -97,10 +97,10 @@
       "sha256": "3072f55b56c701de2cc2653f7f2b5437fed8ad19f49a13648cb4d0592bf7f2b8"
     },
     {
-      "bytes": 8505,
-      "lines": 226,
+      "bytes": 8047,
+      "lines": 215,
       "path": "src/panda/contexts/builder.ts",
-      "sha256": "01aa30c8936dae4f329eec2ce282aea2a7f178816b6fe2e7c5b34c8d5207ec8f"
+      "sha256": "260e417eb335820c0c37ddb59d6040395f9874c281306b6bb9dd2645023173ac"
     },
     {
       "bytes": 958,
@@ -121,10 +121,10 @@
       "sha256": "c94434f30b6e087cbb99e1f011209b6f17875b97fb62d7eb27a50954a85ab9e0"
     },
     {
-      "bytes": 4080,
-      "lines": 111,
+      "bytes": 1781,
+      "lines": 55,
       "path": "src/panda/contexts/paired-identities-context.ts",
-      "sha256": "56b1dc2c05d2964f74984e2d6ad0d43f190df471f1799aa6b99abf0276f7673d"
+      "sha256": "2d2539e59445a895174f4b647bae2237a934960fa6ea25822849aaf3c1d3c983"
     },
     {
       "bytes": 2687,
@@ -277,10 +277,10 @@
       "sha256": "0e7bf6b0d7bd311b1b5bc1452c6ae00a9a8f900792d0639ec2fe19299f83198c"
     },
     {
-      "bytes": 2051,
-      "lines": 63,
+      "bytes": 2233,
+      "lines": 66,
       "path": "src/prompts/contexts/paired-identities.ts",
-      "sha256": "039e5b3cf1902c2ccac0efce41bd40460d2e6494eab13ae1de8ce55847f9ba9b"
+      "sha256": "f2753cbabc7c104b2b3bbcf60cf461f4cca2384c3f517a40c798d37417039716"
     },
     {
       "bytes": 1212,

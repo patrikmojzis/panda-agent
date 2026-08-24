@@ -214,97 +214,45 @@ describe("buildDefaultAgentLlmContexts", () => {
       },
       agentKey: "panda",
       sections: ["paired_identities"],
-      agentStore: {
-        listAgentSkills: async () => [],
-        listAgentPairings: async () => [
-          {
-            agentKey: "panda",
-            identityId: "alice-id",
-            createdAt: 1,
-            updatedAt: 1,
-          },
-          {
-            agentKey: "panda",
-            identityId: "bob-id",
-            createdAt: 2,
-            updatedAt: 2,
-          },
-        ],
-      },
-      identityStore: {
-        getIdentity: async (identityId) => {
-          if (identityId === "alice-id") {
-            return {
-              id: "alice-id",
-              handle: "alice",
-              displayName: "Alice A.",
-              status: "active" as const,
-              createdAt: 1,
-              updatedAt: 1,
-            };
-          }
-          return {
-            id: "bob-id",
-            handle: "bob",
-            displayName: "Bob B.",
-            status: "active" as const,
-            createdAt: 2,
-            updatedAt: 2,
-          };
-        },
-        listIdentityBindings: async (identityId) => identityId === "alice-id"
-          ? [
-            {
-              id: "00000000-0000-0000-0000-000000000001",
-              identityId,
-              source: "telegram",
-              connectorKey: "bot-main",
-              externalActorId: "user-1",
-              createdAt: 1,
-              updatedAt: 1,
-            },
-            {
-              id: "00000000-0000-0000-0000-000000000002",
-              identityId,
-              source: "whatsapp",
-              connectorKey: "wa-main",
-              externalActorId: "+421900000000",
-              createdAt: 2,
-              updatedAt: 2,
-            },
-          ]
-          : [
-            {
-              id: "00000000-0000-0000-0000-000000000003",
-              identityId,
-              source: "discord",
-              connectorKey: "discord-main",
-              externalActorId: "bob-user",
-              createdAt: 3,
-              updatedAt: 3,
-            },
-          ],
-      },
-      sessionRoutes: {
-        listLatestIdentityRoutes: async (lookup) => {
+      pairedIdentities: {
+        listForSession: async (lookup) => {
           expect(lookup).toEqual({
             sessionId: "session-panda",
-            identityIds: ["alice-id", "bob-id"],
+            identityLimit: 25,
+            bindingLimit: 4,
           });
           return [
             {
-              sessionId: "session-panda",
               identityId: "alice-id",
-              channel: "telegram",
-              route: {
+              handle: "alice",
+              displayName: "Alice A.",
+              recentRoute: {
                 source: "telegram",
                 connectorKey: "bot-main",
                 externalConversationId: "chat-1",
                 externalActorId: "user-1",
-                capturedAt: 100,
               },
-              createdAt: 1,
-              updatedAt: 1,
+              bindings: [
+                {
+                  source: "whatsapp",
+                  connectorKey: "wa-main",
+                  externalActorId: "+421900000000",
+                },
+              ],
+              additionalBindingCount: 2,
+            },
+            {
+              identityId: "bob-id",
+              handle: "bob",
+              displayName: "Bob B.",
+              bindings: [
+                {
+                  source: "discord",
+                  connectorKey: "discord-main",
+                  externalActorId: "bob-user",
+                },
+              ],
+              additionalBindingCount: 0,
             },
           ];
         },
@@ -313,8 +261,23 @@ describe("buildDefaultAgentLlmContexts", () => {
 
     expect(dump).toContain("**Paired Identities:**");
     expect(dump).toContain("These identities are paired with this agent.");
-    expect(dump).toContain("- alice (Alice A.): recent telegram/bot-main, conversation chat-1, actor user-1; whatsapp/wa-main actor +421900000000");
+    expect(dump).toContain("- alice (Alice A.): recent telegram/bot-main, conversation chat-1, actor user-1; whatsapp/wa-main actor +421900000000; 2 more channel hint(s)");
     expect(dump).toContain("- bob (Bob B.): discord/discord-main actor bob-user");
+  });
+
+  it("surfaces paired identity directory failures instead of silently degrading the prompt", async () => {
+    await expect(gatherContexts(buildDefaultAgentLlmContexts({
+      context: {
+        cwd: "/workspace/panda",
+        sessionId: "session-panda",
+      },
+      sections: ["paired_identities"],
+      pairedIdentities: {
+        listForSession: async () => {
+          throw new Error("paired identity read failed");
+        },
+      },
+    }))).rejects.toThrow("paired identity read failed");
   });
 
   it("instantiates the wiki overview context when bindings are configured", async () => {

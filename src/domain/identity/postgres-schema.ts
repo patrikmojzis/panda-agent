@@ -33,4 +33,8 @@ export async function ensurePostgresIdentitySchema(pool: PgQueryable): Promise<v
     CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_identity_bindings_lookup_idx`)}
     ON ${tables.identityBindings} (source, connector_key, external_actor_id)
   `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_identity_bindings_identity_created_idx`)}
+    ON ${tables.identityBindings} (identity_id, created_at, id)
+  `);
 }

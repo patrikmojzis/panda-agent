@@ -1,52 +1,17 @@
 import {LlmContext} from "../../kernel/agent/llm-context.js";
-import type {AgentStore} from "../../domain/agents/store.js";
-import type {IdentityStore} from "../../domain/identity/store.js";
-import type {SessionRouteRepo} from "../../domain/sessions/routes/repo.js";
-import type {SessionRouteRecord} from "../../domain/sessions/routes/types.js";
+import type {PairedIdentityDirectoryReader} from "../../domain/agents/paired-identity-directory.js";
 import {
+  MAX_PAIRED_IDENTITY_CHANNEL_HINTS,
   renderPairedIdentitiesContext,
   type PairedIdentityChannelHint,
   type PairedIdentityEntry,
-  type PairedIdentityRouteHint,
 } from "../../prompts/contexts/paired-identities.js";
 
-const DEFAULT_MAX_IDENTITIES = 25;
-
-export type PairedIdentitiesAgentStore = Pick<AgentStore, "listAgentPairings">;
-export type PairedIdentitiesIdentityStore = Pick<IdentityStore, "getIdentity" | "listIdentityBindings">;
-export type PairedIdentitiesRouteStore = Pick<SessionRouteRepo, "listLatestIdentityRoutes">;
+const MAX_PAIRED_IDENTITIES_IN_PROMPT = 25;
 
 export interface PairedIdentitiesContextOptions {
-  agentKey: string;
   sessionId: string;
-  agentStore: PairedIdentitiesAgentStore;
-  identityStore: PairedIdentitiesIdentityStore;
-  routes?: PairedIdentitiesRouteStore;
-  maxIdentities?: number;
-}
-
-function routeHintFromRecord(record: SessionRouteRecord): PairedIdentityRouteHint {
-  return {
-    source: record.route.source,
-    connectorKey: record.route.connectorKey,
-    externalConversationId: record.route.externalConversationId,
-    ...(record.route.externalActorId ? {externalActorId: record.route.externalActorId} : {}),
-  };
-}
-
-function bindingMatchesRoute(binding: PairedIdentityChannelHint, route: PairedIdentityRouteHint | undefined): boolean {
-  return Boolean(
-    route
-    && binding.source === route.source
-    && binding.connectorKey === route.connectorKey
-    && route.externalActorId === binding.externalActorId,
-  );
-}
-
-function resolveMaxIdentities(value: number | undefined): number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0
-    ? value
-    : DEFAULT_MAX_IDENTITIES;
+  directory: PairedIdentityDirectoryReader;
 }
 
 export class PairedIdentitiesContext extends LlmContext {
@@ -60,51 +25,30 @@ export class PairedIdentitiesContext extends LlmContext {
   }
 
   async getContent(): Promise<string> {
-    const maxIdentities = resolveMaxIdentities(this.options.maxIdentities);
-    const pairings = (await this.options.agentStore.listAgentPairings(this.options.agentKey))
-      .slice(0, maxIdentities);
-    if (pairings.length === 0) {
-      return "";
-    }
-
-    const identityIds = pairings.map((pairing) => pairing.identityId);
-    const routeRecords = this.options.routes
-      ? await this.options.routes.listLatestIdentityRoutes({
-        sessionId: this.options.sessionId,
-        identityIds,
-      })
-      : [];
-    const routeByIdentityId = new Map(routeRecords.flatMap((record) => (
-      record.identityId ? [[record.identityId, routeHintFromRecord(record)] as const] : []
-    )));
-
-    const entries = await Promise.all(pairings.map(async (pairing): Promise<PairedIdentityEntry | null> => {
-      const identity = await this.options.identityStore.getIdentity(pairing.identityId)
-        .catch(() => null);
-      if (!identity || identity.status !== "active") {
-        return null;
-      }
-
-      const recentRoute = routeByIdentityId.get(identity.id);
-      const channelHints = (await this.options.identityStore.listIdentityBindings(identity.id).catch(() => []))
+    const directoryEntries = await this.options.directory.listForSession({
+      sessionId: this.options.sessionId,
+      identityLimit: MAX_PAIRED_IDENTITIES_IN_PROMPT,
+      bindingLimit: MAX_PAIRED_IDENTITY_CHANNEL_HINTS,
+    });
+    const entries = directoryEntries.map((entry): PairedIdentityEntry => {
+      const channelHints = entry.bindings
         .map((binding): PairedIdentityChannelHint => ({
           source: binding.source,
           connectorKey: binding.connectorKey,
           externalActorId: binding.externalActorId,
-        }))
-        .filter((hint) => !bindingMatchesRoute(hint, recentRoute));
+        }));
 
       return {
-        handle: identity.handle,
-        displayName: identity.displayName,
-        ...(recentRoute ? {recentRoute} : {}),
+        handle: entry.handle,
+        displayName: entry.displayName,
+        ...(entry.recentRoute ? {recentRoute: entry.recentRoute} : {}),
         channelHints,
+        additionalChannelHintCount: entry.additionalBindingCount,
       };
-    }));
+    });
 
     return renderPairedIdentitiesContext(
       entries
-        .filter((entry): entry is PairedIdentityEntry => Boolean(entry))
         .sort((left, right) => left.handle.localeCompare(right.handle)),
     );
   }

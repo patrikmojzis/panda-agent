@@ -1,4 +1,4 @@
-import {quoteIdentifier, CREATE_RUNTIME_SCHEMA_SQL} from "../../../lib/postgres-relations.js";
+import {quoteIdentifier, quoteQualifiedIdentifier, CREATE_RUNTIME_SCHEMA_SQL} from "../../../lib/postgres-relations.js";
 
 import {addConstraint, assertIntegrityChecks} from "../../../lib/postgres-integrity.js";
 import type {PgQueryable} from "../../../lib/postgres-query.js";
@@ -150,9 +150,17 @@ export async function ensurePostgresSessionRouteSchema(pool: PgQueryable): Promi
     ALTER TABLE ${tables.sessionRoutes}
     ALTER COLUMN identity_id DROP DEFAULT
   `);
+  const legacyLookupIndex = `${tables.prefix}_session_routes_lookup_idx`;
+  await pool.query(`DROP INDEX IF EXISTS ${quoteQualifiedIdentifier(tables.prefix, legacyLookupIndex)}`);
   await pool.query(`
-    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_session_routes_lookup_idx`)}
-    ON ${tables.sessionRoutes} (session_id, identity_id, captured_at_ms DESC)
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_session_routes_latest_identity_idx`)}
+    ON ${tables.sessionRoutes} (
+      session_id,
+      identity_id,
+      captured_at_ms DESC,
+      updated_at DESC,
+      id DESC
+    )
   `);
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_session_routes_global_unique_idx`)}

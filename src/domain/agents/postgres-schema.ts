@@ -39,6 +39,10 @@ export async function ensurePostgresAgentSchema(pool: PgQueryable): Promise<void
     ON ${tables.agentPairings} (identity_id, agent_key)
   `);
   await pool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_agent_pairings_agent_created_idx`)}
+    ON ${tables.agentPairings} (agent_key, created_at, identity_id)
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS ${tables.agentSkills} (
       agent_key TEXT NOT NULL REFERENCES ${tables.agents}(agent_key) ON DELETE CASCADE,
       skill_key TEXT NOT NULL,
