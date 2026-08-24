@@ -248,7 +248,9 @@ async function assertSchemaObjectManifestExact(pool: ReturnType<typeof createPos
     LEFT JOIN pg_sequence AS sequence ON sequence.seqrelid = relation.oid
     WHERE namespace.nspname IN ('runtime', 'session')
       AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'i')
-    ORDER BY schema_name, object_kind, object_name
+    ORDER BY namespace.nspname COLLATE "C",
+             relation.relkind::TEXT COLLATE "C",
+             relation.relname COLLATE "C"
   `);
   const constraints = await pool.query(`
     SELECT namespace.nspname AS schema_name,
@@ -260,7 +262,9 @@ async function assertSchemaObjectManifestExact(pool: ReturnType<typeof createPos
     INNER JOIN pg_class AS relation ON relation.oid = constraint_record.conrelid
     INNER JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
     WHERE namespace.nspname IN ('runtime', 'session')
-    ORDER BY schema_name, table_name, constraint_name
+    ORDER BY namespace.nspname COLLATE "C",
+             relation.relname COLLATE "C",
+             constraint_record.conname COLLATE "C"
   `);
   const columns = await pool.query(`
     SELECT namespace.nspname AS schema_name,
@@ -283,7 +287,9 @@ async function assertSchemaObjectManifestExact(pool: ReturnType<typeof createPos
       AND relation.relkind IN ('r', 'p', 'v', 'm')
       AND column_record.attnum > 0
       AND column_record.attisdropped = FALSE
-    ORDER BY schema_name, relation_name, column_name
+    ORDER BY namespace.nspname COLLATE "C",
+             relation.relname COLLATE "C",
+             column_record.attname COLLATE "C"
   `);
   const relationTuples = relations.rows.map((row) => [
     row.schema_name,
