@@ -1,8 +1,55 @@
 import {describe, expect, it, vi} from "vitest";
+import {newDb} from "pg-mem";
 
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 
 describe("PostgresSessionStore", () => {
+  it("pages direct subagent threads by parent and stable session cursor", async () => {
+    const db = newDb();
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    try {
+      await pool.query(`
+        CREATE SCHEMA runtime;
+        CREATE TABLE runtime.agent_sessions (
+          id TEXT PRIMARY KEY,
+          agent_key TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          current_thread_id TEXT NOT NULL,
+          metadata JSONB
+        );
+        INSERT INTO runtime.agent_sessions VALUES
+          ('child-001', 'panda', 'subagent', 'thread-001', '{"subagent":{"parentSessionId":"parent"}}'),
+          ('child-002', 'panda', 'subagent', 'thread-002', '{"subagent":{"parentSessionId":"parent"}}'),
+          ('child-003', 'panda', 'subagent', 'thread-003', '{"subagent":{"parentSessionId":"parent"}}'),
+          ('other-agent', 'bear', 'subagent', 'other-agent-thread', '{"subagent":{"parentSessionId":"parent"}}'),
+          ('other-parent', 'panda', 'subagent', 'other-parent-thread', '{"subagent":{"parentSessionId":"elsewhere"}}');
+      `);
+      const store = new PostgresSessionStore({pool});
+      const firstPage = await store.listDirectSubagentThreads({
+        agentKey: "panda",
+        parentSessionId: "parent",
+        limit: 2,
+      });
+      const secondPage = await store.listDirectSubagentThreads({
+        agentKey: "panda",
+        parentSessionId: "parent",
+        afterSessionId: firstPage.at(-1)?.sessionId,
+        limit: 2,
+      });
+
+      expect(firstPage).toEqual([
+        {sessionId: "child-001", currentThreadId: "thread-001"},
+        {sessionId: "child-002", currentThreadId: "thread-002"},
+      ]);
+      expect(secondPage).toEqual([
+        {sessionId: "child-003", currentThreadId: "thread-003"},
+      ]);
+    } finally {
+      await pool.end();
+    }
+  });
+
   it("uses explicit lifecycle predicates when listing sessions", async () => {
     const now = new Date("2026-08-25T12:00:00.000Z");
     const query = vi.fn(async () => ({

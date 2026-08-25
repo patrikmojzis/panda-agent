@@ -1,38 +1,31 @@
 import {randomUUID} from "node:crypto";
 
-import {PostgresSubagentInventory} from "../../domain/subagents/inventory.js";
 import {PostgresSessionArchive, type SessionArchiveResult} from "../../domain/sessions/archive.js";
-import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
+import type {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {SessionRecord} from "../../domain/sessions/types.js";
 import type {ThreadRuntimeCoordinator} from "../../domain/threads/runtime/coordinator.js";
-import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
-import type {PgPoolLike} from "../../lib/postgres-query.js";
 
 const ARCHIVE_ABORT_REASON = "Session archive requested.";
+const SUBAGENT_ARCHIVE_BATCH_SIZE = 100;
 
 /** Serializes archive and restore through the same scheduler lane as reset. */
 export class SessionArchiveService {
-  private readonly sessions: PostgresSessionStore;
-  private readonly archiveStore: PostgresSessionArchive;
+  private readonly sessions: Pick<PostgresSessionStore, "getSession" | "listDirectSubagentThreads">;
+  private readonly archiveStore: Pick<PostgresSessionArchive, "archive" | "restore">;
   private readonly coordinator: Pick<ThreadRuntimeCoordinator, "abort" | "runExclusively">;
   private readonly backgroundJobs: Pick<BackgroundToolJobService, "cancelThreadJobs">;
-  private readonly subagents: PostgresSubagentInventory;
 
   constructor(options: {
-    pool: PgPoolLike;
+    sessions: Pick<PostgresSessionStore, "getSession" | "listDirectSubagentThreads">;
+    archiveStore: Pick<PostgresSessionArchive, "archive" | "restore">;
     coordinator: Pick<ThreadRuntimeCoordinator, "abort" | "runExclusively">;
     backgroundJobs: Pick<BackgroundToolJobService, "cancelThreadJobs">;
   }) {
-    this.sessions = new PostgresSessionStore({pool: options.pool});
-    this.archiveStore = new PostgresSessionArchive({
-      pool: options.pool,
-      sessions: this.sessions,
-      threads: new PostgresThreadRuntimeStore({pool: options.pool}),
-    });
+    this.sessions = options.sessions;
+    this.archiveStore = options.archiveStore;
     this.coordinator = options.coordinator;
     this.backgroundJobs = options.backgroundJobs;
-    this.subagents = new PostgresSubagentInventory(options.pool);
   }
 
   async archive(sessionId: string, operationId: string): Promise<SessionArchiveResult & {stoppedSubagents: number}> {
@@ -55,25 +48,33 @@ export class SessionArchiveService {
         owner,
       });
     });
-    const children = await this.subagents.list({
-      agentKey: session.agentKey,
-      parentSessionId: session.id,
-      runStatus: "all",
-      limit: 1_000,
-    });
-    for (const child of children.records) {
-      await this.coordinator.abort(
-        child.currentThreadId,
-        "Parent session archived.",
-        randomUUID(),
-        {blocksNewRuns: true},
-      );
-      await this.coordinator.runExclusively(child.currentThreadId, async ({signal}) => {
-        signal.throwIfAborted();
-        await this.backgroundJobs.cancelThreadJobs(child.currentThreadId);
+    let afterSessionId: string | undefined;
+    let stoppedSubagents = 0;
+    while (true) {
+      const children = await this.sessions.listDirectSubagentThreads({
+        agentKey: session.agentKey,
+        parentSessionId: session.id,
+        ...(afterSessionId ? {afterSessionId} : {}),
+        limit: SUBAGENT_ARCHIVE_BATCH_SIZE,
       });
+      for (const child of children) {
+        await this.coordinator.abort(
+          child.currentThreadId,
+          "Parent session archived.",
+          randomUUID(),
+          {blocksNewRuns: true},
+        );
+        await this.coordinator.runExclusively(child.currentThreadId, async ({signal}) => {
+          signal.throwIfAborted();
+          await this.backgroundJobs.cancelThreadJobs(child.currentThreadId);
+        });
+        stoppedSubagents += 1;
+      }
+      if (children.length < SUBAGENT_ARCHIVE_BATCH_SIZE) break;
+      afterSessionId = children.at(-1)?.sessionId;
+      if (!afterSessionId) break;
     }
-    return {...archived, stoppedSubagents: children.records.length};
+    return {...archived, stoppedSubagents};
   }
 
   async restore(sessionId: string): Promise<SessionRecord> {

@@ -441,6 +441,10 @@ export class SubagentSessionService {
           ...(attached ? {environment: attached.environment, binding: attached.binding} : {}),
         };
       }
+      await this.assertValidParentSession({
+        agentKey: created.session.agentKey,
+        parentSessionId: metadata.parentSessionId,
+      });
       const attached = metadata.execution === "isolated_environment"
         ? await this.attachEnvironment({
             session: created.session,
@@ -469,7 +473,10 @@ export class SubagentSessionService {
         ...(attached ? {environment: attached.environment, binding: attached.binding} : {}),
       };
     } catch (error) {
-      if (error instanceof RetryableRuntimeRequestError) throw error;
+      if (
+        error instanceof RetryableRuntimeRequestError
+        || error instanceof SessionArchivedError
+      ) throw error;
       if (input.operationId && error instanceof InvalidDisposableEnvironmentAttachmentError) {
         try {
           const deleted = await this.deleteCreatedSubagentSession(created.session.id, created.thread.id);

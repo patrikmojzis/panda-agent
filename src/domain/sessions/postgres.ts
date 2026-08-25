@@ -515,6 +515,42 @@ export class PostgresSessionStore implements SessionStore {
       });
   }
 
+  /** Reads stable child-session pages for lifecycle orchestration without inventory joins. */
+  async listDirectSubagentThreads(input: {
+    agentKey: string;
+    parentSessionId: string;
+    afterSessionId?: string;
+    limit: number;
+  }): Promise<readonly {sessionId: string; currentThreadId: string}[]> {
+    if (!Number.isInteger(input.limit) || input.limit < 1 || input.limit > 1_000) {
+      throw new Error("Direct subagent thread batch limit must be an integer from 1 to 1000.");
+    }
+    const result = await this.pool.query(`
+      SELECT session.id, session.current_thread_id
+      FROM ${this.tables.sessions} AS session
+      WHERE session.agent_key = $1
+        AND session.kind = 'subagent'
+        AND session.metadata->'subagent'->>'parentSessionId' = $2
+        AND ($3::TEXT IS NULL OR session.id > $3)
+      ORDER BY session.id ASC
+      LIMIT $4
+    `, [
+      requireSessionString("agent key", input.agentKey),
+      requireSessionString("parent session id", input.parentSessionId),
+      input.afterSessionId === undefined
+        ? null
+        : requireSessionString("subagent page cursor", input.afterSessionId),
+      input.limit,
+    ]);
+    return result.rows.map((row) => {
+      const record = row as Record<string, unknown>;
+      return {
+        sessionId: requireSessionString("id", record.id),
+        currentThreadId: requireSessionString("current thread id", record.current_thread_id),
+      };
+    });
+  }
+
 
   async updateSessionLabel(input: UpdateSessionLabelInput): Promise<SessionRecord> {
     const updatesAlias = input.alias !== undefined;

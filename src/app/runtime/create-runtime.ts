@@ -58,6 +58,9 @@ import type {CommandCatalogModule} from "../../domain/commands/types.js";
 import {buildSubagentCommandDependencies} from "./command-dependencies.js";
 import {SessionCompactionService} from "./session-compaction-service.js";
 import {SessionArchiveService} from "./session-archive-service.js";
+import {PostgresSessionArchive} from "../../domain/sessions/archive.js";
+import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
+import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import {listenThreadRuntimeNotifications} from "./store-notifications.js";
 import {runCleanupSteps} from "../../lib/cleanup.js";
 import {
@@ -255,8 +258,14 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     threads: runtime.store,
     coordinator,
   });
+  const archiveSessions = new PostgresSessionStore({pool: runtime.pool});
   const sessionArchive = new SessionArchiveService({
-    pool: runtime.pool,
+    sessions: archiveSessions,
+    archiveStore: new PostgresSessionArchive({
+      pool: runtime.pool,
+      sessions: archiveSessions,
+      threads: new PostgresThreadRuntimeStore({pool: runtime.pool}),
+    }),
     coordinator,
     backgroundJobs: runtime.backgroundJobService,
   });

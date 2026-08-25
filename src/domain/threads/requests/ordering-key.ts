@@ -38,8 +38,9 @@ function keyParts<K extends RuntimeRequestKind>(
         : ["identity-main", input.identityId ?? "anonymous"];
     }
     case "create_branch_session":
-    case "create_subagent_session":
       return ["session", (payload as RuntimeRequestPayloadByKind["create_branch_session"]).sessionId];
+    case "create_subagent_session":
+      return ["session", (payload as RuntimeRequestPayloadByKind["create_subagent_session"]).parentSessionId];
     case "resolve_main_session_thread": {
       const resolve = payload as RuntimeRequestPayloadByKind["resolve_main_session_thread"];
       return ["identity-main", resolve.identityId ?? "anonymous", resolve.agentKey ?? "default"];

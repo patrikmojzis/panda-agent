@@ -290,6 +290,37 @@ describe("SubagentSessionService", () => {
     })).rejects.toBeInstanceOf(SessionArchivedError);
   });
 
+  it("rejects incomplete creation replay after the parent is archived", async () => {
+    const {pool, service, submitInput} = await createHarness();
+    const operationId = "99999999-9999-4999-8999-999999999999";
+    await pool.query(`
+      INSERT INTO "runtime"."runtime_requests" (
+        id, kind, status, payload, ordering_key
+      ) VALUES ($1, 'create_subagent_session', 'pending', '{}'::jsonb, $2)
+    `, [operationId, `v1:${"9".repeat(64)}`]);
+    const input = {
+      operationId,
+      replayAttempt: false,
+      agentKey: "panda",
+      parentSessionId: "parent-session",
+      profile: "workspace",
+      task: "Must not resume after archive.",
+      sessionId: "archived-replay-subagent",
+      threadId: "archived-replay-thread",
+      createdByIdentityId: "identity-1",
+    } as const;
+    submitInput.mockRejectedValueOnce(new Error("handoff response lost"));
+    await expect(service.createSubagentSession(input)).rejects.toBeInstanceOf(RetryableRuntimeRequestError);
+    await pool.query(`
+      UPDATE "runtime"."agent_sessions"
+      SET kind = 'branch', archived_at = NOW()
+      WHERE id = 'parent-session'
+    `);
+
+    await expect(service.createSubagentSession({...input, replayAttempt: true}))
+      .rejects.toBeInstanceOf(SessionArchivedError);
+  });
+
   it("replays the persisted creation snapshot after its mutable profile changes", async () => {
     const {pool, profileStore, service, sessionStore} = await createHarness();
     const operationId = "11111111-1111-4111-8111-111111111111";

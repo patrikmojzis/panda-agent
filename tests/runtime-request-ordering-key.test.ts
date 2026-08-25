@@ -59,6 +59,29 @@ describe("runtime request ordering keys", () => {
     expect(session("session-1")).not.toBe(session("session-2"));
   });
 
+  it("serializes subagent creation with its parent session lifecycle", () => {
+    const createSubagent = deriveRuntimeRequestOrderingKey({
+      kind: "create_subagent_session",
+      payload: {
+        sessionId: "child-session",
+        threadId: "child-thread",
+        parentSessionId: "parent-session",
+        prompt: "Inspect the archive seam.",
+      },
+    });
+    const archiveParent = deriveRuntimeRequestOrderingKey({
+      kind: "archive_session",
+      payload: {sessionId: "parent-session"},
+    });
+    const archiveChild = deriveRuntimeRequestOrderingKey({
+      kind: "archive_session",
+      payload: {sessionId: "child-session"},
+    });
+
+    expect(createSubagent).toBe(archiveParent);
+    expect(createSubagent).not.toBe(archiveChild);
+  });
+
   it("deduplicates one transport event without merging other connectors or event kinds", () => {
     const key = (
       kind: "telegram_message" | "telegram_reaction",
