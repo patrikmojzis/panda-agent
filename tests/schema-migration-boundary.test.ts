@@ -45,6 +45,8 @@ describe("database migration boundary", () => {
       "app/database/migrations/0005-runtime-operation-receipts.ts",
       "app/database/migrations/0006-thread-input-cutoffs.ts",
       "app/database/migrations/0007-reset-run-fences.ts",
+      "app/database/migrations/0008-legacy-schema-reconciliation.ts",
+      "app/database/migrations/0008-refresh-archived-session-view.ts",
       "app/database/migrations/0008-session-archive.ts",
       "app/database/migrations/0009-bound-secret-envelopes.ts",
       "app/database/readonly-role.ts",

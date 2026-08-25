@@ -9,6 +9,8 @@ import {PANDA_THREAD_ABORT_OPERATIONS} from "./schema-versions/0004-thread-abort
 import {PANDA_RUNTIME_OPERATION_RECEIPTS} from "./schema-versions/0005-runtime-operation-receipts.js";
 import {PANDA_THREAD_INPUT_CUTOFFS} from "./schema-versions/0006-thread-input-cutoffs.js";
 import {PANDA_RESET_RUN_FENCES} from "./schema-versions/0007-reset-run-fences.js";
+import {PANDA_LEGACY_SCHEMA_RECONCILIATION} from "./schema-versions/0008-legacy-schema-reconciliation.js";
+import {PANDA_REFRESH_ARCHIVED_SESSION_VIEW} from "./schema-versions/0008-refresh-archived-session-view.js";
 import {PANDA_SESSION_ARCHIVE} from "./schema-versions/0008-session-archive.js";
 import {PANDA_BOUND_SECRET_ENVELOPES} from "./schema-versions/0009-bound-secret-envelopes.js";
 
@@ -24,7 +26,9 @@ export {PANDA_THREAD_ABORT_OPERATIONS};
 export {PANDA_RUNTIME_OPERATION_RECEIPTS};
 export {PANDA_THREAD_INPUT_CUTOFFS};
 export {PANDA_RESET_RUN_FENCES};
+export {PANDA_LEGACY_SCHEMA_RECONCILIATION};
 export {PANDA_SESSION_ARCHIVE};
+export {PANDA_REFRESH_ARCHIVED_SESSION_VIEW};
 export {PANDA_BOUND_SECRET_ENVELOPES};
 
 export const PANDA_SCHEMA_VERSION = Object.freeze([
@@ -36,6 +40,8 @@ export const PANDA_SCHEMA_VERSION = Object.freeze([
   PANDA_THREAD_INPUT_CUTOFFS,
   PANDA_RESET_RUN_FENCES,
   PANDA_SESSION_ARCHIVE,
+  PANDA_LEGACY_SCHEMA_RECONCILIATION,
+  PANDA_REFRESH_ARCHIVED_SESSION_VIEW,
   PANDA_BOUND_SECRET_ENVELOPES,
 ]);
 

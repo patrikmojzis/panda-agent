@@ -52,6 +52,16 @@ describe("Panda schema hard-cut upgrade", () => {
       currentThreadId: "upgrade-thread",
     });
     await threads.createThread({id: "upgrade-thread", sessionId: "upgrade-session"});
+    await sessions.createSession({
+      id: "stale-inter-agent-session",
+      agentKey: "panda",
+      kind: "subagent",
+      currentThreadId: "stale-inter-agent-thread",
+    });
+    await threads.createThread({
+      id: "stale-inter-agent-thread",
+      sessionId: "stale-inter-agent-session",
+    });
 
     const runId = randomUUID();
     const table = buildThreadRuntimeTableNames();
@@ -64,19 +74,24 @@ describe("Panda schema hard-cut upgrade", () => {
     // the pre-0007 rows directly, as the old daemon would have written them.
     const admittedId = randomUUID();
     const wakeId = randomUUID();
+    const staleInterAgentId = randomUUID();
     const legacyInputs = await pool.query(`
       INSERT INTO ${table.inputs} (
         id, thread_id, delivery_mode, source, connector_key,
         external_message_id, created_at, message
       ) VALUES
-        ($1, 'upgrade-thread', 'queue', 'telegram', 'bot-1', 'admitted-before-cutover', NOW(), $3::jsonb),
-        ($2, 'upgrade-thread', 'wake', 'telegram', 'bot-1', 'wake-before-cutover', NOW(), $4::jsonb)
+        ($1, 'upgrade-thread', 'queue', 'telegram', 'bot-1', 'admitted-before-cutover', NOW(), $4::jsonb),
+        ($2, 'upgrade-thread', 'wake', 'telegram', 'bot-1', 'wake-before-cutover', NOW(), $5::jsonb),
+        ($3, 'stale-inter-agent-thread', 'wake', 'subagent', NULL, 'stale-before-cutover',
+          NOW() - INTERVAL '30 days', $6::jsonb)
       RETURNING id, input_order
     `, [
       admittedId,
       wakeId,
+      staleInterAgentId,
       JSON.stringify({role: "user", content: "admitted", timestamp: 1}),
       JSON.stringify({role: "user", content: "wake", timestamp: 2}),
+      JSON.stringify({role: "user", content: "stale", timestamp: 3}),
     ]);
     const admitted = legacyInputs.rows.find((row) => row.id === admittedId)!;
     await pool.query(`
@@ -85,7 +100,7 @@ describe("Panda schema hard-cut upgrade", () => {
     await pool.query(`
       UPDATE "runtime"."session_runtime_config"
       SET pending_wake_at = NULL
-      WHERE session_id = 'upgrade-session'
+      WHERE session_id IN ('upgrade-session', 'stale-inter-agent-session')
     `);
 
     // These rows deliberately use the pre-0005 shape. Instantiating the
@@ -169,6 +184,22 @@ describe("Panda schema hard-cut upgrade", () => {
       FROM "runtime"."session_runtime_config"
       WHERE session_id = 'upgrade-session'
     `)).resolves.toMatchObject({rows: [{pending: true}]});
+    await expect(pool.query(`
+      SELECT pending_wake_at IS NOT NULL AS pending
+      FROM "runtime"."session_runtime_config"
+      WHERE session_id = 'stale-inter-agent-session'
+    `)).resolves.toMatchObject({rows: [{pending: false}]});
+    await expect(pool.query(`
+      SELECT applied_at,
+             discarded_at IS NOT NULL AS discarded,
+             message
+      FROM ${table.inputs}
+      WHERE id = $1
+    `, [staleInterAgentId])).resolves.toMatchObject({rows: [{
+      applied_at: null,
+      discarded: true,
+      message: null,
+    }]});
     await expect(pool.query(`
       SELECT operation_id FROM ${table.abortOperations} ORDER BY operation_id
     `)).resolves.toMatchObject({rows: [{operation_id: abortRequest.id}]});

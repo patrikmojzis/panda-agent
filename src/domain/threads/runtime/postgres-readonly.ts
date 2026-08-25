@@ -119,7 +119,17 @@ export async function ensureReadonlySessionQuerySchema(
   `;
   const sessionScopeSql = `t.session_id = current_setting('runtime.session_id', true)`;
   const activeSessionSql = `
-    SELECT *
+    SELECT
+      id,
+      agent_key,
+      kind,
+      current_thread_id,
+      created_by_identity_id,
+      metadata,
+      created_at,
+      updated_at,
+      alias,
+      display_name
     FROM ${sessionTables.sessions}
     WHERE id = current_setting('runtime.session_id', true)
     LIMIT 1
@@ -171,7 +181,6 @@ export async function ensureReadonlySessionQuerySchema(
       s.alias,
       s.display_name,
       s.metadata,
-      s.archived_at,
       s.created_at,
       s.updated_at
     FROM (${activeSessionSql}) AS s
