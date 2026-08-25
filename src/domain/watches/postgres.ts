@@ -7,8 +7,11 @@ import {isJsonObject, type JsonObject} from "../../lib/json.js";
 import {toDateOrNull} from "../../lib/dates.js";
 import {optionalNonEmptyString, requireNonEmptyString} from "../../lib/strings.js";
 import type {PgClientLike, PgPoolLike} from "../../lib/postgres-query.js";
+import {withTransaction} from "../../lib/postgres-transaction.js";
+import {SessionArchivedError} from "../threads/runtime/store.js";
 import {parseWatchDetectorConfig, parseWatchSourceConfig} from "./config.js";
 import {buildWatchTableNames, type WatchTableNames} from "./postgres-shared.js";
+import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import type {RecordWatchEventResult, WatchStore} from "./store.js";
 import type {
     ClaimWatchInput,
@@ -232,6 +235,7 @@ async function readLockedWatch(
 export class PostgresWatchStore implements WatchStore {
   private readonly pool: PgPoolLike;
   private readonly tables: WatchTableNames;
+  private readonly sessionTables = buildSessionTableNames();
 
   constructor(options: PostgresWatchStoreOptions) {
     this.pool = options.pool;
@@ -449,14 +453,17 @@ export class PostgresWatchStore implements WatchStore {
     const limit = Math.max(1, input.limit ?? 25);
     const result = await this.pool.query(
       `
-        SELECT *
-        FROM ${this.tables.watches}
-        WHERE enabled = TRUE
-          AND disabled_at IS NULL
-          AND next_poll_at IS NOT NULL
-          AND next_poll_at <= $1
-          AND (claim_expires_at IS NULL OR claim_expires_at <= $1)
-        ORDER BY next_poll_at ASC, created_at ASC
+        SELECT watch.*
+        FROM ${this.tables.watches} AS watch
+        INNER JOIN ${this.sessionTables.sessions} AS session
+          ON session.id = watch.session_id
+         AND session.archived_at IS NULL
+        WHERE watch.enabled = TRUE
+          AND watch.disabled_at IS NULL
+          AND watch.next_poll_at IS NOT NULL
+          AND watch.next_poll_at <= $1
+          AND (watch.claim_expires_at IS NULL OR watch.claim_expires_at <= $1)
+        ORDER BY watch.next_poll_at ASC, watch.created_at ASC
         LIMIT $2
       `,
       [asOf, limit],
@@ -472,6 +479,21 @@ export class PostgresWatchStore implements WatchStore {
     try {
       await client.query("BEGIN");
       inTransaction = true;
+
+      const activeSession = await client.query(`
+        SELECT session.id
+        FROM ${this.sessionTables.sessions} AS session
+        WHERE session.id = (
+          SELECT watch.session_id FROM ${this.tables.watches} AS watch WHERE watch.id = $1
+        )
+          AND session.archived_at IS NULL
+        FOR UPDATE
+      `, [requireWatchString("id", input.watchId)]);
+      if (!activeSession.rows[0]) {
+        await client.query("ROLLBACK");
+        inTransaction = false;
+        return null;
+      }
 
       const result = await client.query(
         `
@@ -571,6 +593,7 @@ export class PostgresWatchStore implements WatchStore {
             END,
             started_at = COALESCE(started_at, NOW())
         WHERE id = $1
+          AND status = 'claimed'
         RETURNING *
       `,
       [
@@ -611,6 +634,7 @@ export class PostgresWatchStore implements WatchStore {
               error = NULL,
               finished_at = NOW()
           WHERE id = $1
+            AND status IN ('claimed', 'running')
           RETURNING *
         `,
         [
@@ -677,6 +701,7 @@ export class PostgresWatchStore implements WatchStore {
               error = $3,
               finished_at = NOW()
           WHERE id = $1
+            AND status IN ('claimed', 'running')
           RETURNING *
         `,
         [
@@ -745,8 +770,32 @@ export class PostgresWatchStore implements WatchStore {
 
   async recordEvent(input: RecordWatchEventInput): Promise<RecordWatchEventResult> {
     const id = randomUUID();
-    const inserted = await this.pool.query(
-      `
+    const watchId = requireWatchString("watch id", input.watchId);
+    const sessionId = requireWatchString("session id", input.sessionId);
+    const dedupeKey = requireWatchString("dedupe key", input.dedupeKey);
+    return withTransaction(this.pool, async (client) => {
+      const existing = await client.query(`
+        SELECT *
+        FROM ${this.tables.watchEvents}
+        WHERE watch_id = $1 AND dedupe_key = $2
+      `, [watchId, dedupeKey]);
+      if (existing.rows[0]) {
+        return {
+          event: parseWatchEventRow(existing.rows[0] as Record<string, unknown>),
+          created: false,
+        };
+      }
+      const session = await client.query(`
+        SELECT archived_at
+        FROM ${this.sessionTables.sessions}
+        WHERE id = $1
+        FOR UPDATE
+      `, [sessionId]);
+      const sessionRow = session.rows[0] as {archived_at?: unknown} | undefined;
+      if (!sessionRow) throw new Error(`Unknown session ${sessionId}`);
+      if (sessionRow.archived_at !== null) throw new SessionArchivedError(sessionId);
+
+      const inserted = await client.query(`
         INSERT INTO ${this.tables.watchEvents} (
           id,
           watch_id,
@@ -772,46 +821,36 @@ export class PostgresWatchStore implements WatchStore {
         )
         ON CONFLICT (watch_id, dedupe_key) DO NOTHING
         RETURNING *
-      `,
-      [
+      `, [
         id,
-        requireWatchString("watch id", input.watchId),
-        requireWatchString("session id", input.sessionId),
+        watchId,
+        sessionId,
         input.createdByIdentityId?.trim() || null,
         requireWatchString("resolved thread id", input.resolvedThreadId),
-        requireWatchString("session id", input.sessionId),
+        sessionId,
         input.eventKind,
         requireWatchString("summary", input.summary),
-        requireWatchString("dedupe key", input.dedupeKey),
+        dedupeKey,
         toJson(input.payload),
-      ],
-    );
-    const insertedRow = inserted.rows[0];
-    if (insertedRow) {
-      const created = String((insertedRow as {id?: unknown}).id ?? "") === id;
-      return {
-        event: parseWatchEventRow(insertedRow as Record<string, unknown>),
-        created,
-      };
-    }
-
-    const existing = await this.pool.query(
-      `
+      ]);
+      const insertedRow = inserted.rows[0];
+      if (insertedRow) {
+        return {
+          event: parseWatchEventRow(insertedRow as Record<string, unknown>),
+          created: true,
+        };
+      }
+      const raced = await client.query(`
         SELECT *
         FROM ${this.tables.watchEvents}
         WHERE watch_id = $1 AND dedupe_key = $2
-      `,
-      [input.watchId, input.dedupeKey],
-    );
-    const row = existing.rows[0];
-    if (!row) {
-      throw new Error(`Unable to read existing watch event for ${input.watchId}.`);
-    }
-
-    return {
-      event: parseWatchEventRow(row as Record<string, unknown>),
-      created: false,
-    };
+      `, [watchId, dedupeKey]);
+      if (!raced.rows[0]) throw new Error(`Unable to read existing watch event for ${watchId}.`);
+      return {
+        event: parseWatchEventRow(raced.rows[0] as Record<string, unknown>),
+        created: false,
+      };
+    });
   }
 
   async getLatestWatchRun(watchId: string): Promise<WatchRunRecord | null> {

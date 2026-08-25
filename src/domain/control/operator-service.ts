@@ -59,7 +59,6 @@ import {normalizeSessionAlias} from "../sessions/types.js";
 import type {SubagentProfileStore} from "../subagents/store.js";
 import type {SubagentProfileRecord} from "../subagents/types.js";
 import {buildThreadRuntimeTableNames} from "../threads/runtime/postgres-shared.js";
-import type {ThreadRuntimeStore} from "../threads/runtime/store.js";
 import type {WikiBindingService} from "../wiki/service.js";
 import type {WikiBindingRecord} from "../wiki/types.js";
 import {normalizeWikiGroupId, normalizeWikiNamespacePath} from "../wiki/types.js";
@@ -90,6 +89,7 @@ export interface ControlTableInput {
 export interface ControlSessionTableInput extends ControlTableInput {
   kind?: Extract<AgentSessionKind, "main" | "branch">;
   visibility?: "primary" | "subagent" | "all";
+  lifecycle?: "active" | "archived" | "all";
 }
 
 export interface ControlConnectorTableInput extends ControlTableInput {
@@ -190,6 +190,7 @@ export interface ControlSessionRow {
   label: string;
   createdByIdentityId?: string;
   heartbeatEnabled: boolean;
+  archivedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -537,7 +538,6 @@ export interface ControlOperatorServiceOptions {
   agents: AgentStore;
   sessions: SessionStore;
   executionEnvironments: Pick<ExecutionEnvironmentStore, "bindSession" | "createEnvironment" | "deleteBindingByAlias" | "getBindingByAlias" | "getDefaultBinding" | "getEnvironment" | "listBindingsForSession">;
-  threads: Pick<ThreadRuntimeStore, "createThread">;
   identities: Pick<
     IdentityStore,
     | "getIdentity"
@@ -758,6 +758,7 @@ function publicSessionRow(session: SessionRecord, heartbeatEnabled = session.kin
     label: sessionLabel(session),
     ...(session.createdByIdentityId ? {createdByIdentityId: session.createdByIdentityId} : {}),
     heartbeatEnabled,
+    ...(session.archivedAt !== undefined ? {archivedAt: iso(session.archivedAt)} : {}),
     createdAt: iso(session.createdAt)!,
     updatedAt: iso(session.updatedAt)!,
   };
@@ -1244,7 +1245,6 @@ export class ControlOperatorService {
   private readonly agents: AgentStore;
   private readonly sessions: SessionStore;
   private readonly executionEnvironments: Pick<ExecutionEnvironmentStore, "bindSession" | "createEnvironment" | "deleteBindingByAlias" | "getBindingByAlias" | "getDefaultBinding" | "getEnvironment" | "listBindingsForSession">;
-  private readonly threads: Pick<ThreadRuntimeStore, "createThread">;
   private readonly identities: ControlOperatorServiceOptions["identities"];
   private readonly credentials: CredentialService | null;
   private readonly email: ControlEmailStore;
@@ -1276,7 +1276,6 @@ export class ControlOperatorService {
     this.agents = options.agents;
     this.sessions = options.sessions;
     this.executionEnvironments = options.executionEnvironments;
-    this.threads = options.threads;
     this.identities = options.identities;
     this.credentials = options.credentials;
     this.email = options.email;
@@ -1860,7 +1859,9 @@ export class ControlOperatorService {
   async listSessions(session: ControlSessionRecord, agentKey: string, input: ControlSessionTableInput = {}): Promise<ControlPaginatedResponse<ControlSessionRow>> {
     const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
     const search = normalizeSearch(input.search);
-    const sessionRows = await this.sessions.listAgentSessions(normalizedAgentKey);
+    const sessionRows = await this.sessions.listAgentSessions(normalizedAgentKey, {
+      lifecycle: input.lifecycle ?? "active",
+    });
     const heartbeats = await this.pool.query(`
       SELECT session_id, enabled
       FROM ${this.sessionTables.sessionHeartbeats}
@@ -2134,24 +2135,6 @@ export class ControlOperatorService {
         targetSessionId: target.id,
         model: updated.runtime.model ?? null,
         thinking: thinkingMode,
-      },
-    };
-  }
-
-  async resetSession(session: ControlSessionRecord, agentKey: string, sessionId: string): Promise<{session: ControlSessionRow; previousThreadId: string; audit: Record<string, unknown>}> {
-    const target = await this.assertSessionVisible(session, agentKey, sessionId);
-    const nextThreadId = randomUUID();
-    await this.threads.createThread({id: nextThreadId, sessionId: target.id});
-    const updated = await this.sessions.updateCurrentThread({sessionId: target.id, currentThreadId: nextThreadId});
-    return {
-      session: publicSessionRow(updated),
-      previousThreadId: target.currentThreadId,
-      audit: {
-        action: "reset",
-        agentKey,
-        targetSessionId: updated.id,
-        previousThreadId: target.currentThreadId,
-        nextThreadId,
       },
     };
   }

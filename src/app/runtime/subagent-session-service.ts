@@ -42,6 +42,7 @@ import type {CommandPolicyModule} from "../../domain/commands/types.js";
 import type {CommandCatalog} from "../../domain/commands/modules.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import type {ThreadRuntimeCoordinator} from "../../domain/threads/runtime/coordinator.js";
+import {SessionArchivedError} from "../../domain/threads/runtime/store.js";
 import {RetryableRuntimeRequestError} from "../../domain/threads/requests/errors.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {CreateThreadInput, InferenceProjection, ThreadRecord} from "../../domain/threads/runtime/types.js";
@@ -325,7 +326,7 @@ export class SubagentSessionService {
           identityId: input.createdByIdentityId,
           kind: "subagent",
         }
-      : undefined);
+      : undefined, parentSessionId);
 
     return this.completeCreationEffects(input, created, metadataSnapshot, created.createdNew);
   }
@@ -526,6 +527,10 @@ export class SubagentSessionService {
       throw new Error(`Subagent session agent ${input.agentKey} must match parent session agent ${parent.agentKey}.`);
     }
 
+    if (parent.archivedAt !== undefined) {
+      throw new SessionArchivedError(input.parentSessionId);
+    }
+
     if (parent.kind === "subagent") {
       throw new Error("Nested subagents are disabled; parent session is a subagent.");
     }
@@ -568,6 +573,7 @@ export class SubagentSessionService {
       identityId: string;
       kind: "subagent";
     },
+    activeParentSessionId?: string,
   ): Promise<{session: SessionRecord; thread: ThreadRecord; createdNew: boolean}> {
     const readReplay = async (): Promise<{session: SessionRecord; thread: ThreadRecord; createdNew: false} | null> => {
       let existingSession: SessionRecord;
@@ -628,6 +634,7 @@ export class SubagentSessionService {
           thread,
           runtimeConfig,
           operation,
+          activeParentSessionId,
         });
         return {...created, createdNew: true};
       }

@@ -221,4 +221,38 @@ describe("Session reset CLI", () => {
       })}\n`,
     );
   });
+
+  it("archives and restores the canonical branch session through the daemon", async () => {
+    const {pool, sessionStore, threadStore} = await createHarness();
+    pools.push(pool);
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    await sessionStore.createSession({
+      id: "canonical-session",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-current",
+      alias: "ops-inbox",
+    });
+    await threadStore.createThread({
+      id: "thread-current",
+      sessionId: "canonical-session",
+    });
+
+    for (const lifecycle of ["archive", "restore"] as const) {
+      await createProgram().parseAsync([
+        "session",
+        lifecycle,
+        "ops-inbox",
+        "--agent",
+        "panda",
+        "--db-url",
+        "postgres://session-lifecycle-test",
+      ], {from: "user"});
+    }
+
+    expect(sessionResetCliMocks.state.enqueued).toEqual([
+      {kind: "archive_session", payload: {sessionId: "canonical-session"}},
+      {kind: "restore_session", payload: {sessionId: "canonical-session"}},
+    ]);
+  });
 });

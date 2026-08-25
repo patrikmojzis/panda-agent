@@ -5,7 +5,7 @@ import type {RememberedRoute} from "../../channels/types.js";
 import type {PgQueryable} from "../../../lib/postgres-query.js";
 import {requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
 import type {ThreadEnqueueResult} from "./store.js";
-import {ThreadInputAdmissionBlockedError, ThreadRunClaimLostError} from "./store.js";
+import {SessionArchivedError, ThreadInputAdmissionBlockedError, ThreadRunClaimLostError} from "./store.js";
 import {buildActiveThreadRunGuardCte} from "./postgres-run-claims.js";
 import {parseInputRow, parseInputThreadIdRow, parseMessageRow} from "./postgres-rows.js";
 import type {ThreadRuntimeTableNames} from "./postgres-shared.js";
@@ -404,7 +404,7 @@ export async function enqueueThreadInput(
     enqueueOptions?: ThreadEnqueueOptions;
   },
 ): Promise<ThreadEnqueueResult> {
-  return enqueueInputAtTarget({
+  const mutation = {
     ...options,
     targetId: options.threadId,
     targetLabel: "thread",
@@ -418,6 +418,7 @@ export async function enqueueThreadInput(
         FROM ${options.sessionTable} AS session
         INNER JOIN target_session ON target_session.session_id = session.id
         WHERE session.current_thread_id = $2
+          AND session.archived_at IS NULL
         FOR UPDATE OF session
       )
       SELECT thread.id, thread.session_id
@@ -429,7 +430,21 @@ export async function enqueueThreadInput(
         AND thread.run_claims_blocked_at IS NULL
       FOR UPDATE OF thread
     `,
-  });
+  } satisfies ThreadInputEnqueueMutationOptions;
+  try {
+    return await enqueueInputAtTarget(mutation);
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== `Unknown thread ${options.threadId}.`) throw error;
+    const state = await options.pool.query(`
+      SELECT session.id, session.archived_at
+      FROM ${options.tables.threads} AS thread
+      INNER JOIN ${options.sessionTable} AS session ON session.id = thread.session_id
+      WHERE thread.id = $1
+    `, [options.threadId]);
+    const row = state.rows[0] as {id?: unknown; archived_at?: unknown} | undefined;
+    if (typeof row?.id === "string" && row.archived_at !== null) throw new SessionArchivedError(row.id);
+    throw error;
+  }
 }
 
 export async function enqueueSessionThreadInput(options: {
@@ -453,6 +468,7 @@ export async function enqueueSessionThreadInput(options: {
         SELECT session.id, session.current_thread_id
         FROM ${options.sessionTable} AS session
         WHERE session.id = $2
+          AND session.archived_at IS NULL
         FOR UPDATE OF session
       )
       SELECT thread.id, thread.session_id
@@ -477,6 +493,7 @@ export async function enqueueSessionThreadInput(options: {
       // observing a new unblocked generation earns one bounded retry.
       const state = await options.pool.query(`
         SELECT session.current_thread_id,
+               session.archived_at,
                thread.run_claims_blocked_at IS NOT NULL AS blocked
         FROM ${options.sessionTable} AS session
         LEFT JOIN ${options.tables.threads} AS thread
@@ -484,7 +501,14 @@ export async function enqueueSessionThreadInput(options: {
          AND thread.session_id = session.id
         WHERE session.id = $1
       `, [options.sessionId]);
-      const row = state.rows[0] as {current_thread_id?: unknown; blocked?: unknown} | undefined;
+      const row = state.rows[0] as {
+        current_thread_id?: unknown;
+        archived_at?: unknown;
+        blocked?: unknown;
+      } | undefined;
+      if (row && row.archived_at !== null) {
+        throw new SessionArchivedError(options.sessionId);
+      }
       if (row?.blocked === true && typeof row.current_thread_id === "string") {
         throw new ThreadInputAdmissionBlockedError(options.sessionId, row.current_thread_id);
       }

@@ -73,7 +73,34 @@ List sessions for an agent:
 
 ```bash
 panda session list luna
+panda session list luna --archived
+panda session list luna --all
 ```
+
+Archive a branch session without deleting its history or configuration:
+
+```bash
+panda session archive ops-inbox --agent luna
+panda session restore ops-inbox --agent luna
+```
+
+Only branch sessions can be archived. Main sessions stay active. Archive is a
+hard runtime stop, not pause-and-replay:
+
+| Session-owned state | While archived | After restore |
+| --- | --- | --- |
+| Thread and transcript | Preserved, no new runs | Same current thread reopens |
+| Prompts, todos, labels, routes, bindings, targets | Preserved and editable | Preserved |
+| New channel/app/A2A input | Rejected, never rerouted | Accepted again |
+| Unapplied input and pending outbound work | Discarded or failed | Not replayed |
+| Heartbeat and watches | No claims | Restart from restore time |
+| Recurring tasks | No occurrences | Next future occurrence |
+| Missed one-shot tasks | No execution | Cancelled history |
+| Voice and direct child subagents | Stopped | Not resurrected |
+
+Use archive when a side lane should disappear from normal session lists but may
+need to return. Do not delete the session to imitate archive; deletion is not a
+reversible lifecycle operation.
 
 Set, change, or clear labels:
 

@@ -28,6 +28,10 @@ import type {
     TelegramStickerSendActionPayload,
     TelegramUnpinActionPayload,
 } from "./types.js";
+import {buildSessionTableNames, type SessionTableNames} from "../../sessions/postgres-shared.js";
+import {buildThreadRuntimeTableNames, type ThreadRuntimeTableNames} from "../../threads/runtime/postgres-shared.js";
+import {SessionArchivedError} from "../../threads/runtime/store.js";
+import {withTransaction} from "../../../lib/postgres-transaction.js";
 
 export interface PostgresChannelActionStoreOptions {
   pool: PgPoolLike<PgListenClient>;
@@ -124,6 +128,7 @@ function parseTypingPayload(value: unknown): ChannelTypingRequest {
 
   const externalActorId = readOptionalPayloadString(kind, target.externalActorId, "target external actor id");
   return {
+    ...(typeof payload.threadId === "string" ? {threadId: payload.threadId} : {}),
     channel: readRequiredPayloadString(kind, payload.channel, "channel"),
     phase,
     target: {
@@ -255,6 +260,8 @@ function parseRecord(row: Record<string, unknown>): ChannelActionRecord {
   const kind = parseKind(row.kind);
   const common = {
     id: requireNonEmptyString(row.id, "Channel action id must not be empty."),
+    sessionId: readOptionalRowString(row.session_id, "session id"),
+    threadId: readOptionalRowString(row.thread_id, "thread id"),
     channel: requireNonEmptyString(row.channel, "Channel action channel must not be empty."),
     connectorKey: requireNonEmptyString(row.connector_key, "Channel action connector key must not be empty."),
     status: parseStatus(row.status),
@@ -328,15 +335,12 @@ function parseRecord(row: Record<string, unknown>): ChannelActionRecord {
   };
 }
 
-function buildClaimNextPendingActionQuery(tableName: string, useSkipLocked: boolean): string {
+function buildLockPendingActionQuery(tableName: string, useSkipLocked: boolean): string {
   return `
     SELECT *
     FROM ${tableName}
-    WHERE channel = $1
-      AND connector_key = $2
+    WHERE id = $1
       AND status = 'pending'
-    ORDER BY created_at ASC, id ASC
-    LIMIT 1
     FOR UPDATE${useSkipLocked ? " SKIP LOCKED" : ""}
   `;
 }
@@ -356,12 +360,16 @@ export class PostgresChannelActionStore {
   private readonly pool: PgPoolLike<PgListenClient>;
   private readonly notificationPool: PgPoolLike<PgListenClient>;
   private readonly tables: ChannelActionTableNames;
+  private readonly sessionTables: SessionTableNames;
+  private readonly threadTables: ThreadRuntimeTableNames;
   private readonly notificationChannel: string;
 
   constructor(options: PostgresChannelActionStoreOptions) {
     this.pool = options.pool;
     this.notificationPool = options.notificationPool ?? options.pool;
     this.tables = buildChannelActionTableNames();
+    this.sessionTables = buildSessionTableNames();
+    this.threadTables = buildThreadRuntimeTableNames();
     this.notificationChannel = buildActionNotificationChannel();
   }
 
@@ -375,31 +383,51 @@ export class PostgresChannelActionStore {
   async enqueueAction<K extends ChannelActionKind>(input: ChannelActionInput<K>): Promise<ChannelActionRecord<K>> {
     const channel = requireNonEmptyString(input.channel, "Channel action channel must not be empty.");
     const connectorKey = requireNonEmptyString(input.connectorKey, "Channel action connector key must not be empty.");
-    const result = await this.pool.query(`
-      INSERT INTO ${this.tables.channelActions} (
-        id,
+    if (!input.sessionId && !input.threadId) {
+      const global = await this.pool.query(`
+        INSERT INTO ${this.tables.channelActions} (
+          id, channel, connector_key, kind, payload, status
+        ) VALUES ($1, $2, $3, $4, $5::jsonb, 'pending')
+        RETURNING *
+      `, [randomUUID(), channel, connectorKey, input.kind, JSON.stringify(input.payload)]);
+      const record = requireRecordKind(parseRecord(global.rows[0] as Record<string, unknown>), input.kind);
+      await this.notify({channel: record.channel, connectorKey: record.connectorKey});
+      return record;
+    }
+    const record = await withTransaction(this.pool, async (client) => {
+      const owner = await client.query(`
+        SELECT COALESCE($1::text, thread.session_id) AS session_id,
+               thread.session_id AS thread_session_id
+        FROM (SELECT 1) AS singleton
+        LEFT JOIN ${this.threadTables.threads} AS thread ON thread.id = $2
+      `, [input.sessionId ?? null, input.threadId ?? null]);
+      const ownerRow = owner.rows[0] as {session_id?: unknown; thread_session_id?: unknown} | undefined;
+      if (typeof ownerRow?.session_id !== "string") throw new Error("Channel action session/thread ownership is invalid.");
+      if (input.threadId && ownerRow.thread_session_id !== ownerRow.session_id) {
+        throw new Error("Channel action thread belongs to another session.");
+      }
+      const lifecycle = await client.query(`
+        SELECT archived_at FROM ${this.sessionTables.sessions} WHERE id = $1 FOR UPDATE
+      `, [ownerRow.session_id]);
+      const lifecycleRow = lifecycle.rows[0] as {archived_at?: unknown} | undefined;
+      if (!lifecycleRow) throw new Error(`Unknown session ${ownerRow.session_id}`);
+      if (lifecycleRow.archived_at !== null) throw new SessionArchivedError(ownerRow.session_id);
+      const result = await client.query(`
+        INSERT INTO ${this.tables.channelActions} (
+          id, session_id, thread_id, channel, connector_key, kind, payload, status
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,'pending')
+        RETURNING *
+      `, [
+        randomUUID(),
+        ownerRow.session_id,
+        input.threadId ?? null,
         channel,
-        connector_key,
-        kind,
-        payload,
-        status
-      ) VALUES (
-        $1,
-        $2,
-        $3,
-        $4,
-        $5::jsonb,
-        'pending'
-      )
-      RETURNING *
-    `, [
-      randomUUID(),
-      channel,
-      connectorKey,
-      input.kind,
-      JSON.stringify(input.payload),
-    ]);
-    const record = requireRecordKind(parseRecord(result.rows[0] as Record<string, unknown>), input.kind);
+        connectorKey,
+        input.kind,
+        JSON.stringify(input.payload),
+      ]);
+      return requireRecordKind(parseRecord(result.rows[0] as Record<string, unknown>), input.kind);
+    });
     await this.notify({
       channel: record.channel,
       connectorKey: record.connectorKey,
@@ -421,12 +449,37 @@ export class PostgresChannelActionStore {
           await client.query("BEGIN");
           inTransaction = true;
 
+          const candidateResult = await client.query(`
+            SELECT id, session_id
+            FROM ${this.tables.channelActions}
+            WHERE channel = $1 AND connector_key = $2 AND status = 'pending'
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1
+          `, [normalized.channel, normalized.connectorKey]);
+          const candidate = candidateResult.rows[0] as {id?: unknown; session_id?: unknown} | undefined;
+          if (!candidate || typeof candidate.id !== "string") {
+            await client.query("COMMIT");
+            return null;
+          }
+          if (typeof candidate.session_id === "string") {
+            const active = await client.query(`
+              SELECT id FROM ${this.sessionTables.sessions}
+              WHERE id = $1 AND archived_at IS NULL
+              FOR UPDATE
+            `, [candidate.session_id]);
+            if (!active.rows[0]) {
+              await client.query(`
+                UPDATE ${this.tables.channelActions}
+                SET status = 'failed', last_error = 'Session archived.', completed_at = NOW(), updated_at = NOW()
+                WHERE id = $1 AND status = 'pending'
+              `, [candidate.id]);
+              await client.query("COMMIT");
+              return null;
+            }
+          }
           const selectResult = await client.query(
-            buildClaimNextPendingActionQuery(this.tables.channelActions, useSkipLocked),
-            [
-              normalized.channel,
-              normalized.connectorKey,
-            ],
+            buildLockPendingActionQuery(this.tables.channelActions, useSkipLocked),
+            [candidate.id],
           );
           const row = selectResult.rows[0];
           if (!row) {

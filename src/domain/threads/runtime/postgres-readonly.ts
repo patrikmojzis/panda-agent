@@ -171,6 +171,7 @@ export async function ensureReadonlySessionQuerySchema(
       s.alias,
       s.display_name,
       s.metadata,
+      s.archived_at,
       s.created_at,
       s.updated_at
     FROM (${activeSessionSql}) AS s

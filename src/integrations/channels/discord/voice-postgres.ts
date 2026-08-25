@@ -3,8 +3,10 @@ import {randomUUID} from "node:crypto";
 import {isJsonObject, type JsonObject} from "../../../lib/json.js";
 import {buildRuntimeRelationNames} from "../../../lib/postgres-relations.js";
 import type {PgListenClient, PgPoolLike} from "../../../lib/postgres-query.js";
+import {withTransaction} from "../../../lib/postgres-transaction.js";
 import {optionalTimestampMillis, requireTimestampMillis} from "../../../lib/postgres-values.js";
 import {requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
+import {SessionArchivedError} from "../../../domain/threads/runtime/store.js";
 import type {
   DiscordVoiceControlInput,
   DiscordVoiceControlNotification,
@@ -13,9 +15,11 @@ import type {
   DiscordVoiceNotification,
   DiscordVoiceSendMode,
 } from "./voice-types.js";
+import {buildSessionTableNames} from "../../../domain/sessions/postgres-shared.js";
 
 export const DISCORD_VOICE_NOTIFICATION_CHANNEL = "runtime_discord_voice_events";
 const tables = buildRuntimeRelationNames({controls: "discord_voice_controls"});
+const agentSessionTable = buildSessionTableNames().sessions;
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" ? trimToUndefined(value) : undefined;
@@ -69,12 +73,25 @@ export class DiscordVoiceControlRepo {
   }
 
   async enqueueControl(input: DiscordVoiceControlInput): Promise<DiscordVoiceControlRecord> {
-    const result = await this.pool.query(`
-      INSERT INTO ${tables.controls} (id,connector_key,operation,session_id,agent_key,channel_id,text,mode,voice_turn_id,idempotency_key,status)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending')
-      ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key=EXCLUDED.idempotency_key RETURNING *
-    `, [randomUUID(),input.connectorKey,input.operation,input.sessionId,input.agentKey,input.channelId ?? null,input.text ?? null,input.mode ?? null,input.voiceTurnId ?? null,input.idempotencyKey ?? null]);
-    const record = parseControl(result.rows[0] as Record<string, unknown>);
+    const record = await withTransaction(this.pool, async (client) => {
+      if (input.operation !== "leave") {
+        const lifecycle = await client.query(`
+          SELECT id, archived_at
+          FROM ${agentSessionTable}
+          WHERE id = $1
+          FOR UPDATE
+        `, [input.sessionId]);
+        const lifecycleRow = lifecycle.rows[0] as {archived_at?: unknown} | undefined;
+        if (!lifecycleRow) throw new Error(`Unknown session ${input.sessionId}.`);
+        if (lifecycleRow.archived_at !== null) throw new SessionArchivedError(input.sessionId);
+      }
+      const result = await client.query(`
+        INSERT INTO ${tables.controls} (id,connector_key,operation,session_id,agent_key,channel_id,text,mode,voice_turn_id,idempotency_key,status)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending')
+        ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key=EXCLUDED.idempotency_key RETURNING *
+      `, [randomUUID(),input.connectorKey,input.operation,input.sessionId,input.agentKey,input.channelId ?? null,input.text ?? null,input.mode ?? null,input.voiceTurnId ?? null,input.idempotencyKey ?? null]);
+      return parseControl(result.rows[0] as Record<string, unknown>);
+    });
     await this.notify({kind: "control", connectorKey: record.connectorKey, controlId: record.id});
     return record;
   }
@@ -89,7 +106,18 @@ export class DiscordVoiceControlRepo {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const selected = await client.query(`SELECT * FROM ${tables.controls} WHERE connector_key=$1 AND status='pending' ORDER BY created_at,id LIMIT 1 FOR UPDATE`, [connectorKey]);
+      const candidate = await client.query(`SELECT id,session_id,operation FROM ${tables.controls} WHERE connector_key=$1 AND status='pending' ORDER BY created_at,id LIMIT 1`, [connectorKey]);
+      if (!candidate.rows[0]) { await client.query("COMMIT"); return null; }
+      const hint = candidate.rows[0] as {id: string; session_id: string; operation: string};
+      if (hint.operation !== "leave") {
+        const active = await client.query(`SELECT id FROM ${agentSessionTable} WHERE id=$1 AND archived_at IS NULL FOR UPDATE`, [hint.session_id]);
+        if (!active.rows[0]) {
+          await client.query(`UPDATE ${tables.controls} SET status='failed',error='session_archived',completed_at=NOW(),updated_at=NOW() WHERE id=$1 AND status='pending'`, [hint.id]);
+          await client.query("COMMIT");
+          return null;
+        }
+      }
+      const selected = await client.query(`SELECT * FROM ${tables.controls} WHERE id=$1 AND status='pending' FOR UPDATE`, [hint.id]);
       if (!selected.rows[0]) { await client.query("COMMIT"); return null; }
       const record = parseControl(selected.rows[0] as Record<string, unknown>);
       const updated = await client.query(`UPDATE ${tables.controls} SET status='running',updated_at=NOW() WHERE id=$1 RETURNING *`, [record.id]);

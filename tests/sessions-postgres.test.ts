@@ -3,6 +3,39 @@ import {describe, expect, it, vi} from "vitest";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 
 describe("PostgresSessionStore", () => {
+  it("uses explicit lifecycle predicates when listing sessions", async () => {
+    const now = new Date("2026-08-25T12:00:00.000Z");
+    const query = vi.fn(async () => ({
+      rows: [{
+        id: "session-branch",
+        agent_key: "panda",
+        kind: "branch",
+        current_thread_id: "thread-branch",
+        created_by_identity_id: null,
+        alias: null,
+        display_name: null,
+        metadata: null,
+        archived_at: now,
+        created_at: now,
+        updated_at: now,
+      }],
+    }));
+    const store = new PostgresSessionStore({
+      pool: {
+        query,
+        connect: async () => {
+          throw new Error("connect should not be used by row reads");
+        },
+      },
+    });
+
+    await expect(store.listAgentSessions("panda", {lifecycle: "archived"}))
+      .resolves.toMatchObject([{id: "session-branch", archivedAt: now.getTime()}]);
+    expect(query.mock.calls[0]?.[0]).toContain("session.archived_at IS NOT NULL");
+    await store.listAgentSessions("panda", {lifecycle: "all"});
+    expect(query.mock.calls[1]?.[0]).not.toContain("archived_at IS");
+  });
+
   it("rejects corrupted persisted session and heartbeat rows before returning records", async () => {
     const now = new Date("2026-05-01T12:00:00.000Z");
     const query = vi.fn()

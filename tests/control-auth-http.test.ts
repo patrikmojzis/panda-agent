@@ -1,4 +1,5 @@
 import {mkdir, mkdtemp, rm, writeFile} from "node:fs/promises";
+import {randomUUID} from "node:crypto";
 import {join} from "node:path";
 import {tmpdir} from "node:os";
 import {afterEach, describe, expect, it, vi} from "vitest";
@@ -333,7 +334,6 @@ async function createHarness(options: {
     agents,
     sessions,
     executionEnvironments,
-    threads,
     identities,
     credentials: credentialService,
     email: emailStore,
@@ -386,15 +386,50 @@ async function createHarness(options: {
   await agents.bootstrapAgent({agentKey: "luna", displayName: "Luna"});
   await sessions.createSessionRecord({id: "session-panda", agentKey: "panda", kind: "main", currentThreadId: "thread-panda", createdByIdentityId: "identity-patrik"});
   await sessions.createSessionRecord({id: "session-luna", agentKey: "luna", kind: "main", currentThreadId: "thread-luna", createdByIdentityId: "identity-patrik"});
+  const completedSessionRequests = new Map<string, Record<string, unknown>>();
+  const sessionRequests = {
+    enqueueRequest: vi.fn(async (input: {kind: string; payload: Record<string, unknown>}) => {
+      const id = randomUUID();
+      const sessionId = String(input.payload.sessionId);
+      const target = await sessions.getSession(sessionId);
+      let result: Record<string, unknown>;
+      if (input.kind === "archive_session") {
+        if (target.kind !== "branch") throw new Error("Only branch sessions can be archived.");
+        await pool.query(`UPDATE "runtime"."agent_sessions" SET archived_at = NOW() WHERE id = $1`, [sessionId]);
+        const archived = await sessions.getSession(sessionId);
+        result = {threadId: archived.currentThreadId, archivedAt: archived.archivedAt};
+      } else if (input.kind === "restore_session") {
+        if (target.kind !== "branch") throw new Error("Only branch sessions can be restored.");
+        await pool.query(`UPDATE "runtime"."agent_sessions" SET archived_at = NULL WHERE id = $1`, [sessionId]);
+        result = {threadId: target.currentThreadId};
+      } else if (input.kind === "reset_session") {
+        if (target.archivedAt !== undefined) throw new Error(`Session ${sessionId} is archived.`);
+        const threadId = randomUUID();
+        await threads.createThread({id: threadId, sessionId});
+        await sessions.updateCurrentThread({sessionId, currentThreadId: threadId});
+        result = {threadId, previousThreadId: target.currentThreadId};
+      } else {
+        throw new Error(`Unsupported test session request ${input.kind}.`);
+      }
+      const request = {id, kind: input.kind, payload: input.payload, status: "completed", result};
+      completedSessionRequests.set(id, request);
+      return request;
+    }),
+    getRequest: vi.fn(async (id: string) => {
+      const request = completedSessionRequests.get(id);
+      if (!request) throw new Error(`Unknown test runtime request ${id}.`);
+      return request;
+    }),
+  };
   await pool.query(`
     INSERT INTO "runtime"."credentials" (id, env_key, agent_key, value_ciphertext, value_iv, value_tag, key_version)
     VALUES ('00000000-0000-0000-0000-000000000001', 'API_TOKEN', 'panda', '\\x5345435245545f53454e54494e454c', '\\x6976', '\\x746167', 1)
   `);
-  return {pool, identities, agents, sessions, executionEnvironments, a2aBindings, auth, reads, home, operator, controlMcp, mcpConfigs, briefings, heartbeats, scheduledTaskStore, watchStore, connectorAccountStore, credentialCrypto, emailStore, gatewayStore, wikiBindingStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts, modelCallTraces, controlModelCallTraces, sessionCompaction};
+  return {pool, identities, agents, sessions, executionEnvironments, a2aBindings, auth, reads, home, operator, controlMcp, mcpConfigs, briefings, heartbeats, scheduledTaskStore, watchStore, connectorAccountStore, credentialCrypto, emailStore, gatewayStore, wikiBindingStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts, modelCallTraces, controlModelCallTraces, sessionCompaction, sessionRequests};
 }
 
 async function startHarnessServer(harness: Awaited<ReturnType<typeof createHarness>>, options: {env?: NodeJS.ProcessEnv} = {}) {
-  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, mcp: harness.controlMcp, briefings: harness.briefings, heartbeats: harness.heartbeats, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, modelCallTraces: harness.controlModelCallTraces, sessionCompaction: harness.sessionCompaction, identityStore: harness.identities, env: options.env});
+  const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, mcp: harness.controlMcp, briefings: harness.briefings, heartbeats: harness.heartbeats, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, modelCallTraces: harness.controlModelCallTraces, sessionCompaction: harness.sessionCompaction, sessionRequests: harness.sessionRequests, identityStore: harness.identities, env: options.env});
   servers.push(server);
   return `http://${server.host}:${server.port}`;
 }
@@ -810,6 +845,7 @@ describe("Control auth HTTP", () => {
       connectorAccounts: harness.controlConnectorAccounts,
       modelCallTraces: harness.controlModelCallTraces,
       sessionCompaction: harness.sessionCompaction,
+      sessionRequests: harness.sessionRequests,
       identityStore: harness.identities,
     });
     servers.push(server);
@@ -834,7 +870,7 @@ describe("Control auth HTTP", () => {
     await writeFile(join(staticDir, "index.html"), `<div id="root">Control UI shell</div>`);
     await writeFile(join(staticDir, "assets", "app.js"), "console.log('control-ui');");
     await writeFile(join(staticDir, "assets", "geist.woff2"), "font");
-    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, briefings: harness.briefings, heartbeats: harness.heartbeats, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, modelCallTraces: harness.controlModelCallTraces, sessionCompaction: harness.sessionCompaction, identityStore: harness.identities, uiStaticDir: staticDir});
+    const server = await startControlServer({host: "127.0.0.1", port: 0, auth: harness.auth, reads: harness.reads, home: harness.home, operator: harness.operator, briefings: harness.briefings, heartbeats: harness.heartbeats, scheduledTasks: harness.controlScheduledTasks, watches: harness.controlWatches, runtimeActivity: harness.controlRuntimeActivity, connectorAccounts: harness.controlConnectorAccounts, modelCallTraces: harness.controlModelCallTraces, sessionCompaction: harness.sessionCompaction, sessionRequests: harness.sessionRequests, identityStore: harness.identities, uiStaticDir: staticDir});
     servers.push(server);
     const base = `http://${server.host}:${server.port}`;
 
@@ -923,6 +959,56 @@ describe("Control operator HTTP", () => {
     const body = await response.json() as {csrfToken: string};
     return {cookies: cookieHeader(response), csrfToken: body.csrfToken};
   }
+
+  it("archives and restores branch sessions through daemon-owned requests", async () => {
+    const harness = await createHarness();
+    await harness.sessions.createSessionRecord({
+      id: "session-panda-branch",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-panda-branch",
+      createdByIdentityId: "identity-patrik",
+    });
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+    const headers = {cookie: auth.cookies, "x-control-csrf": auth.csrfToken};
+    const endpoint = `${base}/api/control/agents/panda/sessions/session-panda-branch`;
+
+    const archived = await fetch(`${endpoint}/archive`, {method: "POST", headers});
+    expect(archived.status).toBe(200);
+    await expect(archived.json()).resolves.toMatchObject({
+      session: {id: "session-panda-branch", kind: "branch", archivedAt: expect.any(String)},
+    });
+    expect(harness.sessionRequests.enqueueRequest).toHaveBeenLastCalledWith({
+      kind: "archive_session",
+      payload: {sessionId: "session-panda-branch"},
+    });
+
+    const reset = await fetch(`${endpoint}/reset`, {method: "POST", headers});
+    expect(reset.status).toBe(400);
+    await expect(reset.json()).resolves.toMatchObject({error: expect.stringContaining("archived")});
+
+    const restored = await fetch(`${endpoint}/restore`, {method: "POST", headers});
+    expect(restored.status).toBe(200);
+    await expect(restored.json()).resolves.toMatchObject({
+      session: {id: "session-panda-branch", kind: "branch"},
+    });
+    expect(harness.sessionRequests.enqueueRequest).toHaveBeenLastCalledWith({
+      kind: "restore_session",
+      payload: {sessionId: "session-panda-branch"},
+    });
+    await expect(harness.sessions.getSession("session-panda-branch")).resolves.toMatchObject({
+      archivedAt: undefined,
+    });
+
+    const audit = await harness.pool.query(`
+      SELECT metadata->>'action' AS action
+      FROM "runtime"."control_audit_events"
+      WHERE metadata->>'targetSessionId' = 'session-panda-branch'
+      ORDER BY created_at
+    `);
+    expect(audit.rows).toEqual([{action: "archive"}, {action: "restore"}]);
+  });
 
   it("returns agents and sessions with the table contract", async () => {
     const harness = await createHarness();

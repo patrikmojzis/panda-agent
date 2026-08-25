@@ -142,6 +142,7 @@ export async function tryStartThreadRun(input: {
       INNER JOIN ${input.sessionTables.sessions} AS session
         ON session.id = thread.session_id
        AND session.current_thread_id = thread.id
+       AND session.archived_at IS NULL
       CROSS JOIN current_owner
       WHERE run.id = $1
         AND run.thread_id = $2
@@ -160,6 +161,7 @@ export async function tryStartThreadRun(input: {
       INNER JOIN target_session
         ON target_session.session_id = session.id
       WHERE session.current_thread_id = $2
+        AND session.archived_at IS NULL
       -- Reset locks the session before the old thread. Locking and
       -- rechecking this predicate prevents a claim that read the old current
       -- id from waking after reset and starting work on the retired thread.
@@ -277,6 +279,7 @@ async function findThreadRunAdmission(input: {
     INNER JOIN ${input.sessionTables.sessions} AS session
       ON session.id = thread.session_id
      AND session.current_thread_id = thread.id
+     AND session.archived_at IS NULL
     INNER JOIN ${POSTGRES_CONNECTOR_LEASE_TABLE} AS owner_lease
       ON owner_lease.source = run.owner_source
      AND owner_lease.connector_key = run.owner_key
@@ -402,6 +405,7 @@ async function failOwnedThreadRunWithWakePolicy(
       INNER JOIN ${input.sessionTables.sessions} AS session
         ON session.id = thread.session_id
        AND session.current_thread_id = thread.id
+       AND session.archived_at IS NULL
       WHERE active_run.abort_requested_at IS NULL
         AND (
           $4::boolean
@@ -504,6 +508,7 @@ export async function failOrphanedThreadRuns(input: {
       INNER JOIN ${input.sessionTables.sessions} AS session
         ON session.id = thread.session_id
        AND session.current_thread_id = thread.id
+       AND session.archived_at IS NULL
       WHERE failed_runs.abort_requested_at IS NULL
         AND EXISTS (
           SELECT 1
@@ -560,6 +565,7 @@ export async function listRunnableThreadIds(input: {
     INNER JOIN ${input.sessionTables.sessions} AS session
       ON session.id = thread.session_id
      AND session.current_thread_id = thread.id
+     AND session.archived_at IS NULL
     INNER JOIN ${input.sessionTables.sessionRuntimeConfig} AS config
       ON config.session_id = session.id
     WHERE config.pending_wake_at IS NOT NULL
@@ -592,6 +598,7 @@ export async function isRunnableThread(input: {
       INNER JOIN ${input.sessionTables.sessions} AS session
         ON session.id = thread.session_id
        AND session.current_thread_id = thread.id
+       AND session.archived_at IS NULL
       INNER JOIN ${input.sessionTables.sessionRuntimeConfig} AS config
         ON config.session_id = session.id
       WHERE thread.id = $1
@@ -633,6 +640,7 @@ export async function takeOwnedThreadRunBoundary(input: {
       INNER JOIN ${input.sessionTables.sessions} AS session
         ON session.id = thread.session_id
        AND session.current_thread_id = thread.id
+       AND session.archived_at IS NULL
       WHERE config.pending_wake_at IS NOT NULL
     ), admission_cutoff AS MATERIALIZED (
       SELECT MAX(pending_input.input_order) AS input_order

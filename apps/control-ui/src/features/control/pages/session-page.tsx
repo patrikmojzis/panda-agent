@@ -1,6 +1,6 @@
 import * as React from "react"
 import { useParams, useSearchParams } from "react-router-dom"
-import { Minimize2, Pencil, RotateCw, SlidersHorizontal } from "lucide-react"
+import { Archive, ArchiveRestore, Minimize2, Pencil, RotateCw, SlidersHorizontal } from "lucide-react"
 
 import {
   DetailPageContent,
@@ -163,10 +163,18 @@ function SessionHeaderActions({
     success: "Session reset",
     invalidate: controlKeys.agents.detail(agentKey),
   })
+  const lifecycle = useToastMutation({
+    mutationFn: () => session?.archivedAt
+      ? controlApi.restoreSession(agentKey, sessionId, auth.csrfToken)
+      : controlApi.archiveSession(agentKey, sessionId, auth.csrfToken),
+    success: session?.archivedAt ? "Session restored" : "Session archived",
+    invalidate: controlKeys.agents.detail(agentKey),
+  })
 
   return (
     <>
       {session ? <Badge variant="outline">{session.kind}</Badge> : null}
+      {session?.archivedAt ? <Badge variant="secondary">Archived</Badge> : null}
       <Button
         type="button"
         variant="outline"
@@ -215,12 +223,13 @@ function SessionHeaderActions({
             },
           },
           {
-            disabled: !session,
+            disabled: !session || Boolean(session.archivedAt),
             icon: <Minimize2 className="size-4" />,
             label: "Compact context",
             onSelect: () => setCompactOpen(true),
           },
           {
+            disabled: !session || Boolean(session.archivedAt),
             destructive: true,
             icon: <RotateCw className="size-4" />,
             label: "Reset session",
@@ -235,6 +244,23 @@ function SessionHeaderActions({
             },
             onSelect: () => reset.mutateAsync(undefined),
           },
+          ...(session?.kind === "branch" ? [{
+            icon: session.archivedAt
+              ? <ArchiveRestore className="size-4" />
+              : <Archive className="size-4" />,
+            label: session.archivedAt ? "Restore session" : "Archive session",
+            pending: lifecycle.isPending,
+            confirm: {
+              title: session.archivedAt ? "Restore session" : "Archive session",
+              description: session.archivedAt
+                ? "Restore runtime admission without replaying missed work."
+                : "Stop runtime work while preserving history and configuration.",
+              confirmLabel: session.archivedAt ? "Restore session" : "Archive session",
+              entityLabel: "Session",
+              itemLabel: sessionId,
+            },
+            onSelect: () => lifecycle.mutateAsync(undefined),
+          }] : []),
         ]}
       />
       <CompactSessionDialog

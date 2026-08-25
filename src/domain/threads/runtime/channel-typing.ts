@@ -67,6 +67,7 @@ class ChannelTypingEventHandler {
     await this.stopSession(threadId, undefined, false);
 
     const started = await this.dispatchSafely({
+      threadId,
       channel: resolved.channel,
       target: resolved.target,
       phase: "start",
@@ -112,6 +113,7 @@ class ChannelTypingEventHandler {
 
   private async dispatchSafely(
     request: {
+      threadId?: string;
       channel: string;
       target: ChannelTypingTarget;
       phase: "start" | "keepalive" | "stop";

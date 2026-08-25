@@ -53,6 +53,7 @@ import type {ControlModelCallTraceService} from "../../domain/control/model-call
 import type {ModelCallTraceMode, ModelCallTraceStatus} from "../../domain/model-call-traces/types.js";
 import type {ControlGrantRecord, ControlGrantRole, ControlSessionRecord} from "../../domain/control/types.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
+import type {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
 import {McpRegistryVersionConflictError} from "../../domain/mcp/store.js";
 
 export const CONTROL_SESSION_COOKIE = "panda_control_session";
@@ -180,9 +181,30 @@ export interface StartControlServerOptions {
       tokensAfter?: number;
     }>;
   };
+  sessionRequests: Pick<RuntimeRequestRepo, "enqueueRequest" | "getRequest">;
   identityStore: Pick<IdentityStore, "getIdentity" | "getIdentityByHandle" | "listIdentities">;
   env?: NodeJS.ProcessEnv;
   uiStaticDir?: string;
+}
+
+async function runSessionMutation(
+  requests: StartControlServerOptions["sessionRequests"],
+  kind: "reset_session" | "archive_session" | "restore_session",
+  sessionId: string,
+): Promise<Record<string, unknown>> {
+  const request = kind === "reset_session"
+    ? await requests.enqueueRequest({kind, payload: {source: "operator", sessionId}})
+    : kind === "archive_session"
+      ? await requests.enqueueRequest({kind, payload: {sessionId}})
+      : await requests.enqueueRequest({kind, payload: {sessionId}});
+  const deadline = Date.now() + 30_000;
+  while (Date.now() <= deadline) {
+    const current = await requests.getRequest(request.id);
+    if (current.status === "completed") return (current.result ?? {}) as Record<string, unknown>;
+    if (current.status === "failed") throw new Error(current.error ?? `Runtime request ${current.id} failed.`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`Timed out waiting for runtime request ${request.id}.`);
 }
 
 function parseCookies(header: string | undefined): Record<string, string> {
@@ -383,11 +405,18 @@ function parseSessionVisibility(value: string | null): ControlSessionTableInput[
   throw new ControlHttpError(400, "Control session visibility filter must be primary, subagent, or all.");
 }
 
+function parseSessionLifecycle(value: string | null): ControlSessionTableInput["lifecycle"] | undefined {
+  if (value === null || value.trim() === "") return undefined;
+  if (value === "active" || value === "archived" || value === "all") return value;
+  throw new ControlHttpError(400, "Control session lifecycle filter must be active, archived, or all.");
+}
+
 function parseSessionTableInput(params: URLSearchParams): ControlSessionTableInput {
   return {
     ...parseTableInput(params),
     kind: parseSessionKind(params.get("kind")),
     visibility: parseSessionVisibility(params.get("visibility")),
+    lifecycle: parseSessionLifecycle(params.get("lifecycle")),
   };
 }
 
@@ -1504,11 +1533,49 @@ export async function startControlServer(options: StartControlServerOptions): Pr
       if (sessionResetPath && request.method === "POST") {
         requireCsrf(request, options.auth, session);
         try {
-          const result = await options.operator.resetSession(session, sessionResetPath.agentKey, sessionResetPath.sessionId);
-          await recordOperatorAudit(options.auth, session, result.audit);
-          writeJsonResponse(response, 200, {session: result.session, previousThreadId: result.previousThreadId});
+          const target = await options.operator.getSession(session, sessionResetPath.agentKey, sessionResetPath.sessionId);
+          const result = await runSessionMutation(options.sessionRequests, "reset_session", target.id);
+          const updated = await options.operator.getSession(session, target.agentKey, target.id);
+          await recordOperatorAudit(options.auth, session, {
+            action: "reset",
+            agentKey: target.agentKey,
+            targetSessionId: target.id,
+            previousThreadId: result.previousThreadId ?? target.currentThreadId,
+            nextThreadId: result.threadId ?? updated.currentThreadId,
+          });
+          writeJsonResponse(response, 200, {session: updated, previousThreadId: result.previousThreadId});
         } catch (error) {
           throw new ControlHttpError(400, error instanceof Error ? error.message : "Control session reset failed.");
+        }
+        return;
+      }
+      for (const lifecycleAction of ["archive", "restore"] as const) {
+        const lifecyclePath = matchSessionActionPath(path, lifecycleAction);
+        if (!lifecyclePath || request.method !== "POST") continue;
+        requireCsrf(request, options.auth, session);
+        try {
+          const target = await options.operator.getSession(session, lifecyclePath.agentKey, lifecyclePath.sessionId);
+          const result = await runSessionMutation(
+            options.sessionRequests,
+            lifecycleAction === "archive" ? "archive_session" : "restore_session",
+            target.id,
+          );
+          const updated = await options.operator.getSession(session, target.agentKey, target.id);
+          await recordOperatorAudit(options.auth, session, {
+            action: lifecycleAction,
+            agentKey: target.agentKey,
+            targetSessionId: target.id,
+            targetThreadId: updated.currentThreadId,
+            archivedAt: updated.archivedAt ?? null,
+            ...(lifecycleAction === "archive" ? {
+              discardedInputs: result.discardedInputs ?? 0,
+              failedWatchRuns: result.failedWatchRuns ?? 0,
+              stoppedSubagents: result.stoppedSubagents ?? 0,
+            } : {}),
+          });
+          writeJsonResponse(response, 200, {session: updated});
+        } catch (error) {
+          throw new ControlHttpError(400, error instanceof Error ? error.message : `Control session ${lifecycleAction} failed.`);
         }
         return;
       }

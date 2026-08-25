@@ -10,6 +10,7 @@ Start here:
 - [Agent Command Enhancement Plan](./agent-command-enhancement-plan.md)
 - [Design Principles](./design_principles/README.md)
 - [Runtime Architecture Guardrails ADR](./adr/0001-runtime-architecture-guardrails.md)
+- [Session Archive Lifecycle ADR](./adr/0002-session-archive-lifecycle.md)
 - [CI](./ci.md)
 - [A2A Messaging](./a2a.md)
 - [Daemon](./daemon.md)

@@ -293,6 +293,14 @@ export interface CompactSessionRequestPayload extends BaseRuntimeRequestPayload 
   customInstructions: string;
 }
 
+export interface ArchiveSessionRequestPayload extends BaseRuntimeRequestPayload {
+  sessionId: string;
+}
+
+export interface RestoreSessionRequestPayload extends BaseRuntimeRequestPayload {
+  sessionId: string;
+}
+
 export type RuntimeThreadUpdate = Omit<UpdateSessionRuntimeConfigInput, "sessionId">;
 
 export interface UpdateThreadRequestPayload extends BaseRuntimeRequestPayload {
@@ -317,6 +325,8 @@ export interface RuntimeRequestPayloadByKind {
   abort_thread: AbortThreadRequestPayload;
   compact_thread: CompactThreadRequestPayload;
   compact_session: CompactSessionRequestPayload;
+  archive_session: ArchiveSessionRequestPayload;
+  restore_session: RestoreSessionRequestPayload;
   update_thread: UpdateThreadRequestPayload;
 }
 
@@ -338,6 +348,8 @@ export const RUNTIME_REQUEST_KINDS = [
   "abort_thread",
   "compact_thread",
   "compact_session",
+  "archive_session",
+  "restore_session",
   "update_thread",
 ] as const satisfies readonly RuntimeRequestKind[];
 export type RuntimeRequestPayload = RuntimeRequestPayloadByKind[RuntimeRequestKind];

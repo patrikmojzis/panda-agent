@@ -39,6 +39,11 @@ interface CreateSessionCliOptions extends SessionCliOptions {
   displayName?: string;
 }
 
+interface SessionListCliOptions extends SessionCliOptions {
+  archived?: boolean;
+  all?: boolean;
+}
+
 interface ScopedSessionRefCliOptions extends SessionCliOptions {
   agent?: string;
 }
@@ -446,9 +451,12 @@ async function createSessionCommand(
   });
 }
 
-async function listSessionsCommand(agentKey: string, options: SessionCliOptions): Promise<void> {
+async function listSessionsCommand(agentKey: string, options: SessionListCliOptions): Promise<void> {
   await withSessionStores(options, async ({sessionStore}) => {
-    const sessions = await sessionStore.listAgentSessions(agentKey);
+    if (options.archived && options.all) throw new Error("Pick either --archived or --all, not both.");
+    const sessions = await sessionStore.listAgentSessions(agentKey, {
+      lifecycle: options.all ? "all" : options.archived ? "archived" : "active",
+    });
     if (sessions.length === 0) {
       process.stdout.write(`No sessions for ${agentKey}.\n`);
       return;
@@ -463,7 +471,7 @@ async function listSessionsCommand(agentKey: string, options: SessionCliOptions)
       process.stdout.write(
         [
           session.displayName ? `${session.displayName} (${session.id})` : session.id,
-          ` alias ${session.alias ?? "-"} · kind ${session.kind} · current thread ${session.currentThreadId} · has brief ${promptsBySessionId.get(session.id) ? "yes" : "no"}`,
+          ` alias ${session.alias ?? "-"} · kind ${session.kind} · lifecycle ${session.archivedAt === undefined ? "active" : "archived"} · current thread ${session.currentThreadId} · has brief ${promptsBySessionId.get(session.id) ? "yes" : "no"}`,
           ` created by ${session.createdByIdentityId ?? "-"}`,
         ].join("\n") + "\n\n",
       );
@@ -889,8 +897,10 @@ export function registerSessionManagementCommands(sessionProgram: Command): void
     .command("list")
     .description("List sessions for an agent")
     .argument("<agentKey>", "Agent key")
+    .option("--archived", "List archived sessions only")
+    .option("--all", "List active and archived sessions")
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
-    .action((agentKey: string, options: SessionCliOptions) => {
+    .action((agentKey: string, options: SessionListCliOptions) => {
       return listSessionsCommand(agentKey, options);
     });
 

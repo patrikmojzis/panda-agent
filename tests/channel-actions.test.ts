@@ -475,13 +475,18 @@ describe("PostgresChannelActionStore", () => {
         return {rows: []};
       }
 
-      if (text.includes("FOR UPDATE SKIP LOCKED")) {
+      if (text.includes("SELECT id, session_id")) {
         expect(values).toEqual(["telegram", "bot-1"]);
+        return {rows: [pendingRow]};
+      }
+
+      if (text.includes("FOR UPDATE SKIP LOCKED")) {
+        expect(values).toEqual(["action-1"]);
         throw parserError;
       }
 
       if (text.includes("FOR UPDATE")) {
-        expect(values).toEqual(["telegram", "bot-1"]);
+        expect(values).toEqual(["action-1"]);
         return {rows: [pendingRow]};
       }
 

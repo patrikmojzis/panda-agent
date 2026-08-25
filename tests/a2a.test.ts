@@ -483,6 +483,7 @@ describe("A2AMessagingService", () => {
     });
 
     expect(enqueueDelivery).toHaveBeenCalledWith({
+      sessionId: "session-a",
       threadId: "thread-a",
       channel: "a2a",
       target: {

@@ -15,26 +15,27 @@ import type {SessionStore} from "./store.js";
 import type {ReplaceSessionTodoInput, SessionTodoRecord} from "./todos.js";
 import {calculateSessionTodoItemsHash, normalizeSessionTodoItems} from "./todos.js";
 import type {
-    ClaimSessionHeartbeatInput,
-    CreateSessionInput,
-    DeleteSessionPromptInput,
-    ListDueSessionHeartbeatsInput,
-    RecordSessionHeartbeatResultInput,
-    ResolveSessionRefInput,
-    SessionHeartbeatRecord,
-    SessionPromptRecord,
-    SessionPromptSlug,
-    SessionRecord,
-    SessionRuntimeConfigRecord,
-    SessionRuntimeConfigOperationRecord,
-    SessionCreationOperationRecord,
-    SetSessionPromptInput,
-    TransformSessionPromptInput,
-    TransformSessionPromptResult,
-    UpdateSessionCurrentThreadInput,
-    UpdateSessionHeartbeatConfigInput,
-    UpdateSessionLabelInput,
-    UpdateSessionRuntimeConfigInput,
+  ClaimSessionHeartbeatInput,
+  CreateSessionInput,
+  DeleteSessionPromptInput,
+  ListDueSessionHeartbeatsInput,
+  ListAgentSessionsInput,
+  RecordSessionHeartbeatResultInput,
+  ResolveSessionRefInput,
+  SessionHeartbeatRecord,
+  SessionPromptRecord,
+  SessionPromptSlug,
+  SessionRecord,
+  SessionRuntimeConfigRecord,
+  SessionRuntimeConfigOperationRecord,
+  SessionCreationOperationRecord,
+  SetSessionPromptInput,
+  TransformSessionPromptInput,
+  TransformSessionPromptResult,
+  UpdateSessionCurrentThreadInput,
+  UpdateSessionHeartbeatConfigInput,
+  UpdateSessionLabelInput,
+  UpdateSessionRuntimeConfigInput,
 } from "./types.js";
 import {DEFAULT_SESSION_PROMPT_TEMPLATES} from "../../prompts/templates/session-prompts.js";
 import {
@@ -111,6 +112,7 @@ function parseSessionRow(row: Record<string, unknown>): SessionRecord {
     alias: optionalSessionString("alias", row.alias),
     displayName: optionalSessionString("display name", row.display_name),
     metadata: readOptionalJsonValue(row.metadata, "Session metadata"),
+    archivedAt: optionalTimestampMillis(row.archived_at, "Session archived_at must be a valid timestamp."),
     createdAt: requireTimestampMillis(row.created_at, "Session created_at must be a valid timestamp."),
     updatedAt: requireTimestampMillis(row.updated_at, "Session updated_at must be a valid timestamp."),
   };
@@ -479,6 +481,7 @@ export class PostgresSessionStore implements SessionStore {
       FROM ${this.tables.sessions}
       WHERE agent_key = $1
         AND kind = 'main'
+        AND archived_at IS NULL
       LIMIT 1
     `, [requireSessionString("agent key", agentKey)]);
 
@@ -486,12 +489,21 @@ export class PostgresSessionStore implements SessionStore {
     return row ? parseSessionRow(row as Record<string, unknown>) : null;
   }
 
-  async listAgentSessions(agentKey: string): Promise<readonly SessionRecord[]> {
+  async listAgentSessions(
+    agentKey: string,
+    input: ListAgentSessionsInput = {},
+  ): Promise<readonly SessionRecord[]> {
+    const lifecyclePredicate = input.lifecycle === "all"
+      ? ""
+      : input.lifecycle === "archived"
+        ? "AND session.archived_at IS NOT NULL"
+        : "AND session.archived_at IS NULL";
     const result = await this.pool.query(`
-      SELECT *
-      FROM ${this.tables.sessions}
-      WHERE agent_key = $1
-      ORDER BY created_at ASC, id ASC
+      SELECT session.*
+      FROM ${this.tables.sessions} AS session
+      WHERE session.agent_key = $1
+        ${lifecyclePredicate}
+      ORDER BY session.created_at ASC, session.id ASC
     `, [requireSessionString("agent key", agentKey)]);
 
     return result.rows
@@ -1236,13 +1248,16 @@ export class PostgresSessionStore implements SessionStore {
     const asOf = new Date(input.asOf ?? Date.now());
     const limit = input.limit ?? 100;
     const result = await this.pool.query(`
-      SELECT *
-      FROM ${this.tables.sessionHeartbeats}
-      WHERE enabled = TRUE
-        AND next_fire_at IS NOT NULL
-        AND next_fire_at <= $1
-        AND (claim_expires_at IS NULL OR claim_expires_at <= $1)
-      ORDER BY next_fire_at ASC, session_id ASC
+      SELECT heartbeat.*
+      FROM ${this.tables.sessionHeartbeats} AS heartbeat
+      INNER JOIN ${this.tables.sessions} AS session
+        ON session.id = heartbeat.session_id
+       AND session.archived_at IS NULL
+      WHERE heartbeat.enabled = TRUE
+        AND heartbeat.next_fire_at IS NOT NULL
+        AND heartbeat.next_fire_at <= $1
+        AND (heartbeat.claim_expires_at IS NULL OR heartbeat.claim_expires_at <= $1)
+      ORDER BY heartbeat.next_fire_at ASC, heartbeat.session_id ASC
       LIMIT $2
     `, [asOf, limit]);
 
@@ -1251,27 +1266,38 @@ export class PostgresSessionStore implements SessionStore {
 
   async claimHeartbeat(input: ClaimSessionHeartbeatInput): Promise<SessionHeartbeatRecord | null> {
     const asOf = new Date(input.asOf ?? Date.now());
-    const result = await this.pool.query(`
-      UPDATE ${this.tables.sessionHeartbeats}
-      SET claimed_at = NOW(),
-          claimed_by = $2,
-          claim_expires_at = $3,
-          updated_at = NOW()
-      WHERE session_id = $1
-        AND enabled = TRUE
-        AND next_fire_at IS NOT NULL
-        AND next_fire_at <= $4
-        AND (claim_expires_at IS NULL OR claim_expires_at <= $4)
-      RETURNING *
-    `, [
-      requireSessionString("id", input.sessionId),
-      requireSessionString("claim owner", input.claimedBy),
-      new Date(input.claimExpiresAt),
-      asOf,
-    ]);
+    return withTransaction(this.pool, async (client) => {
+      const sessionId = requireSessionString("id", input.sessionId);
+      const lifecycle = await client.query(`
+        SELECT id, archived_at
+        FROM ${this.tables.sessions}
+        WHERE id = $1
+        FOR UPDATE
+      `, [sessionId]);
+      const lifecycleRow = lifecycle.rows[0] as {archived_at?: unknown} | undefined;
+      if (!lifecycleRow || lifecycleRow.archived_at !== null) return null;
 
-    const row = result.rows[0];
-    return row ? parseHeartbeatRow(row as Record<string, unknown>) : null;
+      const result = await client.query(`
+        UPDATE ${this.tables.sessionHeartbeats}
+        SET claimed_at = NOW(),
+            claimed_by = $2,
+            claim_expires_at = $3,
+            updated_at = NOW()
+        WHERE session_id = $1
+          AND enabled = TRUE
+          AND next_fire_at IS NOT NULL
+          AND next_fire_at <= $4
+          AND (claim_expires_at IS NULL OR claim_expires_at <= $4)
+        RETURNING *
+      `, [
+        sessionId,
+        requireSessionString("claim owner", input.claimedBy),
+        new Date(input.claimExpiresAt),
+        asOf,
+      ]);
+      const row = result.rows[0];
+      return row ? parseHeartbeatRow(row as Record<string, unknown>) : null;
+    });
   }
 
   async recordHeartbeatResult(input: RecordSessionHeartbeatResultInput): Promise<SessionHeartbeatRecord> {

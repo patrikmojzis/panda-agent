@@ -1,10 +1,12 @@
 import type {
   AbortThreadRequestPayload,
+  ArchiveSessionRequestPayload,
   CompactSessionRequestPayload,
   CompactThreadRequestPayload,
   CreateBranchSessionRequestPayload,
   CreateSubagentSessionRequestPayload,
   ResolveThreadRunConfigRequestPayload,
+  RestoreSessionRequestPayload,
   RuntimeRequestRecord,
   TuiInputRequestPayload,
   UpdateThreadRequestPayload,
@@ -33,6 +35,7 @@ import type {DaemonThreadHelpers} from "./daemon-threads.js";
 import {readSubagentSessionMetadata} from "../../domain/subagents/session-metadata.js";
 import {requireIdentityId} from "./daemon-shared.js";
 import type {SessionCompactionService} from "./session-compaction-service.js";
+import type {SessionArchiveService} from "./session-archive-service.js";
 import {
   isRetryableRuntimeInfrastructureError,
   RetryableRuntimeRequestError,
@@ -55,6 +58,7 @@ export interface DaemonRequestProcessorContext {
       "getSession" | "getSessionRuntimeConfigOperation" | "updateSessionRuntimeConfigOnce"
     >;
     sessionCompaction: Pick<SessionCompactionService, "compactSession" | "compactThread">;
+    sessionArchive: Pick<SessionArchiveService, "archive" | "restore">;
     store: DaemonRequestStore;
   };
   a2aBindings: Parameters<typeof handleA2AMessageRequest>[1]["bindings"];
@@ -363,6 +367,32 @@ export function createDaemonRequestProcessor(
     };
   };
 
+  const handleArchiveSession = async (
+    payload: ArchiveSessionRequestPayload,
+    requestId: string,
+  ): Promise<Record<string, unknown>> => {
+    const result = await context.runtime.sessionArchive.archive(payload.sessionId, requestId);
+    return {
+      sessionId: result.session.id,
+      threadId: result.session.currentThreadId,
+      archivedAt: result.session.archivedAt ?? null,
+      discardedInputs: result.discardedInputs,
+      cancelledTaskRuns: result.cancelledTaskRuns,
+      failedWatchRuns: result.failedWatchRuns,
+      failedDeliveries: result.failedDeliveries,
+      failedActions: result.failedActions,
+      failedVoiceTurns: result.failedVoiceTurns,
+      stoppedSubagents: result.stoppedSubagents,
+    };
+  };
+
+  const handleRestoreSession = async (
+    payload: RestoreSessionRequestPayload,
+  ): Promise<Record<string, unknown>> => {
+    const session = await context.runtime.sessionArchive.restore(payload.sessionId);
+    return {sessionId: session.id, threadId: session.currentThreadId, restored: true};
+  };
+
   const handleUpdateThread = async (
     payload: UpdateThreadRequestPayload,
     requestId: string,
@@ -503,6 +533,10 @@ export function createDaemonRequestProcessor(
         return handleCompactThread(request.payload, request.id, signal);
       case "compact_session":
         return handleCompactSession(request.payload, request.id, signal);
+      case "archive_session":
+        return handleArchiveSession(request.payload, request.id);
+      case "restore_session":
+        return handleRestoreSession(request.payload);
       case "update_thread":
         return handleUpdateThread(request.payload, request.id, request.executionAttempts > 1);
       default:
@@ -538,6 +572,8 @@ export function createDaemonRequestProcessor(
           request.kind === "abort_thread"
           || request.kind === "compact_thread"
           || request.kind === "compact_session"
+          || request.kind === "archive_session"
+          || request.kind === "restore_session"
           || request.kind === "create_branch_session"
           || request.kind === "create_subagent_session"
           || request.kind === "reset_session"

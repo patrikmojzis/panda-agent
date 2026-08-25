@@ -36,6 +36,7 @@ import type {RuntimeServices} from "./create-runtime.js";
 import {formatOrphanedRunRecoveryReason} from "../../domain/threads/runtime/coordinator.js";
 import {FileSystemCommandUploadStore} from "../../integrations/commands/file-uploads.js";
 import type {ThreadRunOwner} from "../../domain/threads/runtime/types.js";
+import type {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
 
 const DAEMON_HEALTH_STALE_AFTER_MS = DAEMON_HEARTBEAT_INTERVAL_MS * 3;
 const DAEMON_HEALTH_POOL_WAITING_STALE_AFTER_MS = 60_000;
@@ -47,7 +48,7 @@ interface StartStopService {
   stop(): Promise<void>;
 }
 
-interface DaemonLifecycleRequests extends RuntimeRequestDrainStore {
+interface DaemonLifecycleRequests extends RuntimeRequestDrainStore, Pick<RuntimeRequestRepo, "enqueueRequest" | "getRequest"> {
   listenPendingRequests(
     onRequest: () => void,
     options?: {
@@ -623,6 +624,7 @@ export function createDaemonLifecycle(input: {
               connectorAccounts: input.context.runtime.controlConnectorAccounts,
               modelCallTraces: input.context.runtime.controlModelCallTraces,
               sessionCompaction: input.context.runtime.sessionCompaction,
+              sessionRequests: input.context.requests,
               identityStore: input.context.runtime.identityStore,
               env: process.env,
               uiStaticDir: binding.uiStaticDir,

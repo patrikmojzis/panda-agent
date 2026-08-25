@@ -11,6 +11,7 @@ import type {BindConversationInput} from "./conversations/types.js";
 import type {SessionRouteInput} from "./routes/types.js";
 import {toJson} from "../../lib/postgres-values.js";
 import type {CreateSessionInput, SessionRecord, UpdateSessionCurrentThreadInput, UpdateSessionRuntimeConfigInput} from "./types.js";
+import {SessionArchivedError} from "../threads/runtime/store.js";
 
 export class SessionCurrentThreadConflictError extends Error {
   override readonly name = "SessionCurrentThreadConflictError";
@@ -28,6 +29,7 @@ export interface CreateSessionWithThreadInput {
     identityId: string;
     kind: "main" | "branch" | "subagent";
   };
+  activeParentSessionId?: string;
 }
 
 export interface ResetSessionThreadInput {
@@ -81,6 +83,22 @@ export async function createSessionWithInitialThread(
   input: CreateSessionWithThreadInput,
 ): Promise<{session: SessionRecord; thread: ThreadRecord}> {
   return withTransaction(input.pool, async (client) => {
+    if (input.activeParentSessionId) {
+      const parent = await client.query(`
+        SELECT id, archived_at
+        FROM ${buildSessionTableNames().sessions}
+        WHERE id = $1
+          AND archived_at IS NULL
+        FOR UPDATE
+      `, [input.activeParentSessionId]);
+      if (!parent.rows[0]) {
+        const lifecycle = await client.query(`
+          SELECT archived_at FROM ${buildSessionTableNames().sessions} WHERE id = $1
+        `, [input.activeParentSessionId]);
+        if (lifecycle.rows[0]) throw new SessionArchivedError(input.activeParentSessionId);
+        throw new Error(`Unknown session ${input.activeParentSessionId}`);
+      }
+    }
     const session = await input.sessionStore.createSessionRecord(input.session, client);
     const thread = await input.threadStore.createThreadRecord(input.thread, client);
     if (input.runtimeConfig) {

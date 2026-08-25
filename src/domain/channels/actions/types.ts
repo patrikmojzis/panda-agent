@@ -68,6 +68,8 @@ export type ChannelActionPayload = ChannelActionPayloadByKind[ChannelActionKind]
 
 export type ChannelActionInput<K extends ChannelActionKind = ChannelActionKind> = {
   [Kind in K]: {
+    sessionId?: string;
+    threadId?: string;
     channel: string;
     connectorKey: string;
     kind: Kind;
@@ -76,6 +78,8 @@ export type ChannelActionInput<K extends ChannelActionKind = ChannelActionKind> 
 }[K];
 
 type ChannelActionRecordForKind<K extends ChannelActionKind> = {
+  sessionId?: string;
+  threadId?: string;
   channel: string;
   connectorKey: string;
   kind: K;

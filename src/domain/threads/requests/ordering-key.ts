@@ -60,6 +60,9 @@ function keyParts<K extends RuntimeRequestKind>(
     }
     case "compact_session":
       return ["session", (payload as RuntimeRequestPayloadByKind["compact_session"]).sessionId];
+    case "archive_session":
+    case "restore_session":
+      return ["session", (payload as RuntimeRequestPayloadByKind["archive_session"]).sessionId];
   }
 }
 

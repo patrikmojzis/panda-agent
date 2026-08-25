@@ -82,6 +82,8 @@ describe("telegram.react command", () => {
     });
     expect(actions).toEqual([
       {
+        sessionId: "session-1",
+        threadId: "thread-1",
         channel: TELEGRAM_SOURCE,
         connectorKey: "telegram-main",
         kind: "telegram_reaction",

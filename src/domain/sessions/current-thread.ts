@@ -1,7 +1,11 @@
 import type {SessionStore} from "./store.js";
 import type {SessionRecord} from "./types.js";
 import type {ThreadRuntimeCoordinator, ThreadWakeMode} from "../threads/runtime/coordinator.js";
-import type {ThreadEnqueueResult, ThreadRuntimeStore} from "../threads/runtime/store.js";
+import {
+  SessionArchivedError,
+  type ThreadEnqueueResult,
+  type ThreadRuntimeStore,
+} from "../threads/runtime/store.js";
 import type {ThreadEnqueueOptions, ThreadInputPayload} from "../threads/runtime/types.js";
 
 export interface CurrentSessionThread {
@@ -15,6 +19,9 @@ export type SessionInputDeliveryResult = ThreadEnqueueResult & {threadId: string
  * Resolves the thread that should receive session-owned runtime work right now.
  */
 export function requireCurrentSessionThread(session: SessionRecord): CurrentSessionThread {
+  if (session.archivedAt !== undefined) {
+    throw new SessionArchivedError(session.id);
+  }
   const threadId = session.currentThreadId.trim();
   if (!threadId) {
     throw new Error(`Session ${session.id} has no current thread.`);

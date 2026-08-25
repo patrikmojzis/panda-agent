@@ -5,7 +5,12 @@ import {
   installPreLedgerLiveVoiceSchema,
   migratePreLedgerDiscordVoiceSchema,
 } from "../src/app/database/migrations/pre-ledger/live-voice.js";
+import {PostgresAgentStore} from "../src/domain/agents/index.js";
+import {ensurePostgresAgentTableSchema} from "../src/domain/agents/postgres-schema.js";
+import {ensurePostgresIdentitySchema} from "../src/domain/identity/postgres-schema.js";
 import {LiveVoiceRepo} from "../src/domain/live-voice/repo.js";
+import {PostgresSessionStore} from "../src/domain/sessions/index.js";
+import {ensurePostgresSessionSchema} from "../src/domain/sessions/postgres-schema.js";
 
 const liveVoiceSessionId = "22222222-2222-4222-8222-222222222222";
 
@@ -21,12 +26,26 @@ describe("LiveVoiceRepo", () => {
     return {pool, repo: new LiveVoiceRepo({pool})};
   }
 
+  async function installSessionOwner(pool: ReturnType<typeof createRepo>["pool"]) {
+    await ensurePostgresIdentitySchema(pool);
+    await ensurePostgresAgentTableSchema(pool);
+    await ensurePostgresSessionSchema(pool);
+    await new PostgresAgentStore({pool}).bootstrapAgent({agentKey: "panda", displayName: "Panda"});
+    await new PostgresSessionStore({pool}).createSessionRecord({
+      id: "session-1",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-1",
+    });
+  }
+
   async function createSession(repo: LiveVoiceRepo) {
     return repo.upsertSession({id: liveVoiceSessionId, source: "discord", connectorKey: "bot-1", scopeKey: "guild-1", roomKey: "12345", sessionId: "session-1", agentKey: "panda", provider: "openai-live", model: "gpt-live-1-codex", state: "connected", transportContext: {guildId: "guild-1", channelId: "12345"}});
   }
 
   it("owns channel-neutral session health and exact-once delegated turns", async () => {
     const {pool, repo} = createRepo();
+    await installSessionOwner(pool);
     await installPreLedgerLiveVoiceSchema(pool);
     await createSession(repo);
     await repo.updateSessionHealth({id: liveVoiceSessionId, health: "ready", reasons: [], observedAt: 1, diagnostics: {version: 1, transport: {voice: {state: "ready"}}}});
@@ -48,6 +67,7 @@ describe("LiveVoiceRepo", () => {
 
   it("fails only active turns owned by one source and connector", async () => {
     const {pool, repo} = createRepo();
+    await installSessionOwner(pool);
     await installPreLedgerLiveVoiceSchema(pool);
     await createSession(repo);
     const first = (await repo.createOrGetTurn({id: "11111111-1111-4111-8111-111111111111", liveVoiceSessionId, providerDelegationId: "one", sourceUtteranceId: "31111111-1111-4111-8111-111111111111", sessionId: "session-1", agentKey: "panda", prompt: "one"})).turn;
@@ -56,6 +76,25 @@ describe("LiveVoiceRepo", () => {
     expect(await repo.failConnectorActiveTurns("discord", "bot-1", "worker restarted")).toBe(1);
     await expect(repo.getTurn(first.id)).resolves.toMatchObject({status: "failed", error: "worker restarted"});
     await expect(repo.getTurn(second.id)).resolves.toMatchObject({status: "completed", resultText: "done"});
+  });
+
+  it("rejects new live voice work after the durable session is archived", async () => {
+    const {pool, repo} = createRepo();
+    await installSessionOwner(pool);
+    await installPreLedgerLiveVoiceSchema(pool);
+    await createSession(repo);
+    await pool.query(`UPDATE "runtime"."agent_sessions" SET archived_at = NOW() WHERE id = 'session-1'`);
+
+    await expect(createSession(repo)).rejects.toThrow("Session session-1 is archived.");
+    await expect(repo.createOrGetTurn({
+      id: "11111111-1111-4111-8111-111111111111",
+      liveVoiceSessionId,
+      providerDelegationId: "archived",
+      sourceUtteranceId: "31111111-1111-4111-8111-111111111111",
+      sessionId: "session-1",
+      agentKey: "panda",
+      prompt: "must not run",
+    })).rejects.toThrow("Session session-1 is archived.");
   });
 
   it("hard-cuts legacy Discord rows into generic sessions and turns", async () => {

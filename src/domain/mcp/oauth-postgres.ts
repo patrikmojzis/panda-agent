@@ -1,4 +1,5 @@
 import type {PgPoolLike} from "../../lib/postgres-query.js";
+import {withTransaction} from "../../lib/postgres-transaction.js";
 import {optionalTimestampMillis, requireTimestampMillis} from "../../lib/postgres-values.js";
 import {requireNonEmptyString} from "../../lib/strings.js";
 import {normalizeAgentKey} from "../agents/types.js";
@@ -6,6 +7,10 @@ import type {EncryptedCredentialValue} from "../credentials/types.js";
 import {isSafeMcpServerName} from "./config.js";
 import type {McpOAuthAttemptRecord, McpOAuthConnectionRecord, McpOAuthInitiator} from "./oauth-types.js";
 import {buildMcpTableNames} from "./postgres-shared.js";
+import {buildSessionTableNames} from "../sessions/postgres-shared.js";
+import {SessionArchivedError} from "../threads/runtime/store.js";
+
+const sessionTables = buildSessionTableNames();
 
 function binary(value: unknown, label: string): Buffer {
   if (Buffer.isBuffer(value)) return value;
@@ -139,33 +144,46 @@ export class PostgresMcpOAuthStore {
     initiator: McpOAuthInitiator;
     expiresAt: number;
   }): Promise<McpOAuthAttemptRecord> {
-    const result = await this.pool.query(`
-      INSERT INTO ${this.tables.oauthAttempts} (
-        state_hash, agent_key, server_name, verifier_ciphertext, verifier_iv, verifier_tag,
-        key_version, initiator_kind, initiated_identity_id, initiated_session_id, initiated_thread_id, expires_at
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-      ON CONFLICT (agent_key, server_name) DO UPDATE SET
-        state_hash=EXCLUDED.state_hash,
-        verifier_ciphertext=EXCLUDED.verifier_ciphertext,
-        verifier_iv=EXCLUDED.verifier_iv,
-        verifier_tag=EXCLUDED.verifier_tag,
-        key_version=EXCLUDED.key_version,
-        initiator_kind=EXCLUDED.initiator_kind,
-        initiated_identity_id=EXCLUDED.initiated_identity_id,
-        initiated_session_id=EXCLUDED.initiated_session_id,
-        initiated_thread_id=EXCLUDED.initiated_thread_id,
-        expires_at=EXCLUDED.expires_at,
-        consumed_at=NULL,
-        created_at=NOW()
-      RETURNING *
-    `, [input.stateHash, normalizeAgentKey(input.agentKey), serverName(input.serverName), input.encryptedVerifier.ciphertext,
-      input.encryptedVerifier.iv, input.encryptedVerifier.tag, input.encryptedVerifier.keyVersion,
-      input.initiator.kind,
-      input.initiator.identityId ?? null,
-      requireNonEmptyString(input.initiator.sessionId, "MCP OAuth initiating session is required."),
-      input.initiator.kind === "agent" ? input.initiator.threadId ?? null : null,
-      new Date(input.expiresAt)]);
-    return parseAttempt(result.rows[0] as Record<string, unknown>);
+    const sessionId = requireNonEmptyString(input.initiator.sessionId, "MCP OAuth initiating session is required.");
+    return withTransaction(this.pool, async (client) => {
+      const lifecycle = await client.query(`
+        SELECT id, archived_at
+        FROM ${sessionTables.sessions}
+        WHERE id = $1
+        FOR UPDATE
+      `, [sessionId]);
+      const lifecycleRow = lifecycle.rows[0] as {archived_at?: unknown} | undefined;
+      if (!lifecycleRow) throw new Error(`Unknown session ${sessionId}.`);
+      if (lifecycleRow.archived_at !== null) throw new SessionArchivedError(sessionId);
+
+      const result = await client.query(`
+        INSERT INTO ${this.tables.oauthAttempts} (
+          state_hash, agent_key, server_name, verifier_ciphertext, verifier_iv, verifier_tag,
+          key_version, initiator_kind, initiated_identity_id, initiated_session_id, initiated_thread_id, expires_at
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+        ON CONFLICT (agent_key, server_name) DO UPDATE SET
+          state_hash=EXCLUDED.state_hash,
+          verifier_ciphertext=EXCLUDED.verifier_ciphertext,
+          verifier_iv=EXCLUDED.verifier_iv,
+          verifier_tag=EXCLUDED.verifier_tag,
+          key_version=EXCLUDED.key_version,
+          initiator_kind=EXCLUDED.initiator_kind,
+          initiated_identity_id=EXCLUDED.initiated_identity_id,
+          initiated_session_id=EXCLUDED.initiated_session_id,
+          initiated_thread_id=EXCLUDED.initiated_thread_id,
+          expires_at=EXCLUDED.expires_at,
+          consumed_at=NULL,
+          created_at=NOW()
+        RETURNING *
+      `, [input.stateHash, normalizeAgentKey(input.agentKey), serverName(input.serverName), input.encryptedVerifier.ciphertext,
+        input.encryptedVerifier.iv, input.encryptedVerifier.tag, input.encryptedVerifier.keyVersion,
+        input.initiator.kind,
+        input.initiator.identityId ?? null,
+        sessionId,
+        input.initiator.kind === "agent" ? input.initiator.threadId ?? null : null,
+        new Date(input.expiresAt)]);
+      return parseAttempt(result.rows[0] as Record<string, unknown>);
+    });
   }
 
   async consumeAttempt(stateHash: string, now: number): Promise<McpOAuthAttemptRecord | null> {

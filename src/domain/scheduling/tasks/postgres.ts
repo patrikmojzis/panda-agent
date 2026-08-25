@@ -4,6 +4,7 @@ import {randomUUID} from "node:crypto";
 import {requireBoolean} from "../../../lib/booleans.js";
 import type {PgClientLike, PgPoolLike} from "../../../lib/postgres-query.js";
 import {buildThreadRuntimeTableNames} from "../../threads/runtime/postgres-shared.js";
+import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
 import {computeInitialNextFireAt, normalizeScheduledTaskSchedule} from "./schedule.js";
 import {buildScheduledTaskTableNames, type ScheduledTaskTableNames} from "./postgres-shared.js";
 import {optionalScheduledTaskString, requireScheduledTaskString} from "./shared.js";
@@ -225,6 +226,7 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
   private readonly pool: PgPoolLike;
   private readonly tables: ScheduledTaskTableNames;
   private readonly threadTables = buildThreadRuntimeTableNames();
+  private readonly sessionTables = buildSessionTableNames();
 
   constructor(options: PostgresScheduledTaskStoreOptions) {
     this.pool = options.pool;
@@ -537,20 +539,23 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
     const limitParameter = input.asOf === undefined ? "$1" : "$2";
     const result = await this.pool.query(
       `
-        SELECT *
-        FROM ${this.tables.scheduledTasks}
-        WHERE enabled = TRUE
-          AND cancelled_at IS NULL
-          AND completed_at IS NULL
-          AND next_fire_at IS NOT NULL
-          AND next_fire_at <= ${dueAt}
+        SELECT task.*
+        FROM ${this.tables.scheduledTasks} AS task
+        INNER JOIN ${this.sessionTables.sessions} AS session
+          ON session.id = task.session_id
+         AND session.archived_at IS NULL
+        WHERE task.enabled = TRUE
+          AND task.cancelled_at IS NULL
+          AND task.completed_at IS NULL
+          AND task.next_fire_at IS NOT NULL
+          AND task.next_fire_at <= ${dueAt}
           AND NOT EXISTS (
             SELECT 1
             FROM ${this.tables.scheduledTaskRuns} AS active_run
-            WHERE active_run.task_id = ${this.tables.scheduledTasks}.id
+            WHERE active_run.task_id = task.id
               AND active_run.status IN ('pending', 'claimed', 'running')
           )
-        ORDER BY next_fire_at ASC, id ASC
+        ORDER BY task.next_fire_at ASC, task.id ASC
         LIMIT ${limitParameter}
       `,
       input.asOf === undefined ? [limit] : [new Date(input.asOf), limit],
@@ -596,6 +601,18 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
       WITH requested (run_id, task_id, scheduled_for, next_fire_at) AS (
         VALUES ${requestedRows.join(",\n               ")}
       ),
+      locked_sessions AS MATERIALIZED (
+        SELECT session.id
+        FROM ${this.sessionTables.sessions} AS session
+        WHERE session.id IN (
+          SELECT task.session_id
+          FROM requested
+          INNER JOIN ${this.tables.scheduledTasks} AS task ON task.id = requested.task_id
+        )
+          AND session.archived_at IS NULL
+        ORDER BY session.id
+        FOR UPDATE
+      ),
       eligible AS MATERIALIZED (
         SELECT
           requested.run_id,
@@ -606,6 +623,7 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
           task.created_by_identity_id
         FROM requested
         INNER JOIN ${this.tables.scheduledTasks} AS task ON task.id = requested.task_id
+        INNER JOIN locked_sessions AS session ON session.id = task.session_id
         WHERE task.enabled = TRUE
           AND task.cancelled_at IS NULL
           AND task.completed_at IS NULL
@@ -667,10 +685,33 @@ export class PostgresScheduledTaskStore implements ScheduledTaskStore {
     }
 
     const result = await this.pool.query(`
-      WITH candidate AS (
+      WITH candidate_session AS MATERIALIZED (
+        SELECT session.id
+        FROM ${this.sessionTables.sessions} AS session
+        WHERE session.archived_at IS NULL
+          AND EXISTS (
+            SELECT 1
+            FROM ${this.tables.scheduledTaskRuns} AS run
+            INNER JOIN ${this.tables.scheduledTasks} AS task ON task.id = run.task_id
+            WHERE task.session_id = session.id
+              AND run.status IN ('pending', 'claimed', 'running')
+              AND (run.status IN ('claimed', 'running') OR task.cancelled_at IS NULL)
+              AND (run.claim_token IS NULL OR run.claim_expires_at IS NULL OR run.claim_expires_at <= NOW())
+          )
+        ORDER BY (
+          SELECT MIN(run.scheduled_for)
+          FROM ${this.tables.scheduledTaskRuns} AS run
+          INNER JOIN ${this.tables.scheduledTasks} AS task ON task.id = run.task_id
+          WHERE task.session_id = session.id
+            AND run.status IN ('pending', 'claimed', 'running')
+        ), session.id
+        LIMIT 1
+        FOR UPDATE SKIP LOCKED
+      ), candidate AS (
         SELECT run.id
-        FROM ${this.tables.scheduledTaskRuns} AS run
-        INNER JOIN ${this.tables.scheduledTasks} AS task ON task.id = run.task_id
+        FROM candidate_session AS session
+        INNER JOIN ${this.tables.scheduledTasks} AS task ON task.session_id = session.id
+        INNER JOIN ${this.tables.scheduledTaskRuns} AS run ON run.task_id = task.id
         WHERE run.status IN ('pending', 'claimed', 'running')
           AND (run.status IN ('claimed', 'running') OR task.cancelled_at IS NULL)
           AND (

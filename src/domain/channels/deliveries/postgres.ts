@@ -16,6 +16,9 @@ import {
     type OutboundDeliveryTableNames,
 } from "./postgres-shared.js";
 import {buildThreadRuntimeTableNames, type ThreadRuntimeTableNames} from "../../threads/runtime/postgres-shared.js";
+import {buildSessionTableNames, type SessionTableNames} from "../../sessions/postgres-shared.js";
+import {SessionArchivedError} from "../../threads/runtime/store.js";
+import {withTransaction} from "../../../lib/postgres-transaction.js";
 import type {
     CompleteDeliveryInput,
     DeliveryNotification,
@@ -111,6 +114,7 @@ function normalizeDeliveryInput(input: OutboundDeliveryInput): OutboundDeliveryI
   return {
     ...input,
     idempotencyKey: trimToUndefined(input.idempotencyKey),
+    sessionId: trimToUndefined(input.sessionId),
     threadId: trimToUndefined(input.threadId),
     channel,
     target: normalizedTarget,
@@ -247,6 +251,7 @@ function parseOutboundDeliveryRow(row: Record<string, unknown>): OutboundDeliver
   return {
     id: requireNonEmptyString(row.id, "Outbound delivery id must not be empty."),
     idempotencyKey: readOptionalString(row.idempotency_key, "idempotency key"),
+    sessionId: readOptionalString(row.session_id, "session id"),
     threadId: readOptionalString(row.thread_id, "thread id"),
     channel: requireNonEmptyString(row.channel, "Outbound delivery channel must not be empty."),
     target: parseTarget(row, metadata),
@@ -270,6 +275,7 @@ export class PostgresOutboundDeliveryStore {
   private readonly notificationPool: PgPoolLike<PgListenClient>;
   private readonly tables: OutboundDeliveryTableNames;
   private readonly threadTables: ThreadRuntimeTableNames;
+  private readonly sessionTables: SessionTableNames;
   private readonly notificationChannel: string;
 
   constructor(options: PostgresOutboundDeliveryStoreOptions) {
@@ -277,6 +283,7 @@ export class PostgresOutboundDeliveryStore {
     this.notificationPool = options.notificationPool ?? options.pool;
     this.tables = buildOutboundDeliveryTableNames();
     this.threadTables = buildThreadRuntimeTableNames();
+    this.sessionTables = buildSessionTableNames();
     this.notificationChannel = buildDeliveryNotificationChannel();
   }
 
@@ -292,47 +299,49 @@ export class PostgresOutboundDeliveryStore {
       channel: normalizedInput.channel,
       connectorKey: normalizedInput.target.connectorKey,
     } satisfies DeliveryNotification);
-    const result = await this.pool.query(
-      `
-        WITH inserted AS (
-          INSERT INTO ${this.tables.outboundDeliveries} (
-            id,
-            idempotency_key,
-            thread_id,
-            channel,
-            connector_key,
-            external_conversation_id,
-            external_actor_id,
-            reply_to_message_id,
-            items,
-            metadata,
-            status
-          ) VALUES (
-            $1,
-            $2,
-            $3,
-            $4,
-            $5,
-            $6,
-            $7,
-            $8,
-            $9::jsonb,
-            $10::jsonb,
-            'pending'
-          )
-          ON CONFLICT (idempotency_key) DO NOTHING
-          RETURNING *
-        ), notified AS (
-          SELECT pg_notify($11, $12) AS notification
-          FROM inserted
-        )
-        SELECT inserted.*, notified.notification
-        FROM inserted
-        INNER JOIN notified ON TRUE
-      `,
-      [
+    const existingDelivery = await withTransaction(this.pool, async (client) => {
+      if (idempotencyKey) {
+        const existing = await client.query(`
+          SELECT * FROM ${this.tables.outboundDeliveries} WHERE idempotency_key = $1
+        `, [idempotencyKey]);
+        if (existing.rows[0]) return parseOutboundDeliveryRow(existing.rows[0] as Record<string, unknown>);
+      }
+
+      let sessionId: string | undefined;
+      if (normalizedInput.sessionId || normalizedInput.threadId) {
+        const owner = await client.query(`
+          SELECT COALESCE($1::text, thread.session_id) AS session_id,
+                 thread.session_id AS thread_session_id
+          FROM (SELECT 1) AS singleton
+          LEFT JOIN ${this.threadTables.threads} AS thread ON thread.id = $2
+        `, [normalizedInput.sessionId ?? null, normalizedInput.threadId ?? null]);
+        const ownerRow = owner.rows[0] as {session_id?: unknown; thread_session_id?: unknown} | undefined;
+        if (typeof ownerRow?.session_id !== "string") throw new Error("Outbound delivery session/thread ownership is invalid.");
+        if (
+          normalizedInput.threadId
+          && ownerRow.thread_session_id !== ownerRow.session_id
+        ) throw new Error("Outbound delivery thread belongs to another session.");
+        sessionId = ownerRow.session_id;
+        const lifecycle = await client.query(`
+          SELECT archived_at FROM ${this.sessionTables.sessions} WHERE id = $1 FOR UPDATE
+        `, [sessionId]);
+        const lifecycleRow = lifecycle.rows[0] as {archived_at?: unknown} | undefined;
+        if (!lifecycleRow) throw new Error(`Unknown session ${sessionId}`);
+        if (lifecycleRow.archived_at !== null) throw new SessionArchivedError(sessionId);
+      }
+
+      const inserted = await client.query(`
+        INSERT INTO ${this.tables.outboundDeliveries} (
+          id, idempotency_key, session_id, thread_id, channel, connector_key,
+          external_conversation_id, external_actor_id, reply_to_message_id,
+          items, metadata, status
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,'pending')
+        ON CONFLICT (idempotency_key) DO NOTHING
+        RETURNING *
+      `, [
         deliveryId,
         idempotencyKey,
+        sessionId ?? null,
         normalizedInput.threadId ?? null,
         normalizedInput.channel,
         normalizedInput.target.connectorKey,
@@ -341,35 +350,17 @@ export class PostgresOutboundDeliveryStore {
         normalizedInput.target.replyToMessageId ?? null,
         JSON.stringify(normalizedInput.items),
         toJson(normalizedInput.metadata),
-        this.notificationChannel,
-        notification,
-      ],
-    );
-
-    const inserted = result.rows[0] as Record<string, unknown> | undefined;
-    if (inserted?.id === deliveryId) {
-      return parseOutboundDeliveryRow(inserted);
-    }
-    if (!idempotencyKey) {
-      throw new Error("Outbound delivery insert returned no row without an idempotency conflict.");
-    }
-
-    // pg-mem returns the conflicting row from DO NOTHING; PostgreSQL correctly
-    // returns no row. Accept either shape so the behavioral test stays useful.
-    let existingRow = inserted;
-    if (!existingRow) {
-      const existing = await this.pool.query(`
-        SELECT *
-        FROM ${this.tables.outboundDeliveries}
-        WHERE idempotency_key = $1
+      ]);
+      if (inserted.rows[0]) return parseOutboundDeliveryRow(inserted.rows[0] as Record<string, unknown>);
+      if (!idempotencyKey) throw new Error("Outbound delivery insert returned no row.");
+      const raced = await client.query(`
+        SELECT * FROM ${this.tables.outboundDeliveries} WHERE idempotency_key = $1
       `, [idempotencyKey]);
-      existingRow = existing.rows[0] as Record<string, unknown> | undefined;
-    }
-    if (!existingRow) {
-      throw new Error(`Outbound delivery idempotency conflict ${idempotencyKey} could not be resolved.`);
-    }
-    const existingDelivery = parseOutboundDeliveryRow(existingRow);
-    const sameDelivery = existingDelivery.threadId === normalizedInput.threadId
+      if (!raced.rows[0]) throw new Error(`Outbound delivery idempotency conflict ${idempotencyKey} could not be resolved.`);
+      return parseOutboundDeliveryRow(raced.rows[0] as Record<string, unknown>);
+    });
+    const sameDelivery = (normalizedInput.sessionId === undefined || existingDelivery.sessionId === normalizedInput.sessionId)
+      && existingDelivery.threadId === normalizedInput.threadId
       && existingDelivery.channel === normalizedInput.channel
       && isDeepStrictEqual(existingDelivery.target, normalizedInput.target)
       && isDeepStrictEqual(existingDelivery.items, normalizedInput.items)
@@ -454,25 +445,54 @@ export class PostgresOutboundDeliveryStore {
       await client.query("BEGIN");
       inTransaction = true;
 
-      const selectResult = await client.query(
+      const candidateResult = await client.query(
         `
-          SELECT *
+          SELECT id, session_id
           FROM ${this.tables.outboundDeliveries}
           WHERE channel = $1
             AND connector_key = $2
             AND status = 'pending'
           ORDER BY created_at ASC, id ASC
           LIMIT 1
-          FOR UPDATE
         `,
         [
           normalizedLookup.channel,
           normalizedLookup.connectorKey,
         ],
       );
+      const candidate = candidateResult.rows[0] as {id?: unknown; session_id?: unknown} | undefined;
+      if (!candidate || typeof candidate.id !== "string") {
+        await client.query("COMMIT");
+        return null;
+      }
+      if (typeof candidate.session_id === "string") {
+        const active = await client.query(`
+          SELECT id
+          FROM ${this.sessionTables.sessions}
+          WHERE id = $1 AND archived_at IS NULL
+          FOR UPDATE
+        `, [candidate.session_id]);
+        if (!active.rows[0]) {
+          await client.query(`
+            UPDATE ${this.tables.outboundDeliveries}
+            SET status = 'failed', last_error = 'Session archived.', completed_at = NOW(), updated_at = NOW()
+            WHERE id = $1 AND status = 'pending'
+          `, [candidate.id]);
+          await client.query("COMMIT");
+          inTransaction = false;
+          return null;
+        }
+      }
+      const selectResult = await client.query(`
+        SELECT *
+        FROM ${this.tables.outboundDeliveries}
+        WHERE id = $1 AND status = 'pending'
+        FOR UPDATE
+      `, [candidate.id]);
       const row = selectResult.rows[0];
       if (!row) {
         await client.query("COMMIT");
+        inTransaction = false;
         return null;
       }
       const selected = parseOutboundDeliveryRow(row as Record<string, unknown>);

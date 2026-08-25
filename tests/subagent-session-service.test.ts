@@ -18,6 +18,7 @@ import {PostgresSubagentProfileStore} from "../src/domain/subagents/index.js";
 import {buildSubagentTableNames} from "../src/domain/subagents/postgres-shared.js";
 import {ensurePostgresSubagentSchema} from "../src/domain/subagents/postgres-schema.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/postgres.js";
+import {SessionArchivedError} from "../src/domain/threads/runtime/store.js";
 import {ensurePostgresThreadRuntimeSchema} from "../src/domain/threads/runtime/postgres-schema.js";
 import {buildThreadRuntimeTableNames} from "../src/domain/threads/runtime/postgres-shared.js";
 import {ensurePostgresRuntimeRequestSchema} from "../src/domain/threads/requests/postgres-schema.js";
@@ -269,6 +270,24 @@ describe("SubagentSessionService", () => {
     expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM ${envTables} WHERE session_id = 'subagent-session'`)).toBe(0);
     const threadTables = buildThreadRuntimeTableNames();
     expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM ${threadTables.inputs} WHERE thread_id = 'subagent-thread' AND source = 'subagent'`)).toBe(1);
+  });
+
+  it("rejects subagent creation after the parent branch is archived", async () => {
+    const {pool, service} = await createHarness();
+    await pool.query(`
+      UPDATE "runtime"."agent_sessions"
+      SET kind = 'branch', archived_at = NOW()
+      WHERE id = 'parent-session'
+    `);
+
+    await expect(service.createSubagentSession({
+      agentKey: "panda",
+      parentSessionId: "parent-session",
+      profile: "workspace",
+      task: "Must not start.",
+      sessionId: "archived-parent-subagent",
+      threadId: "archived-parent-thread",
+    })).rejects.toBeInstanceOf(SessionArchivedError);
   });
 
   it("replays the persisted creation snapshot after its mutable profile changes", async () => {

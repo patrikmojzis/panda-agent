@@ -1032,6 +1032,7 @@ export async function executeEmailSendCommand(
     ...attachments.items,
   ];
   const delivery = await services.queue.enqueueDelivery({
+    sessionId: request.scope.sessionId,
     threadId: request.scope.threadId,
     channel: EMAIL_SOURCE,
     target: {

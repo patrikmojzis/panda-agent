@@ -268,6 +268,7 @@ describe("email.send command", () => {
     });
     expect(store.assertRecipientsAllowed).toHaveBeenCalledWith("panda", "work", ["alice@example.com"]);
     expect(enqueueDelivery).toHaveBeenCalledWith({
+      sessionId: "session-a",
       threadId: "thread-a",
       channel: "email",
       target: {

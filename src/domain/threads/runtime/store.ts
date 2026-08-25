@@ -54,6 +54,15 @@ export class ThreadInputAdmissionBlockedError extends Error {
   }
 }
 
+/** Archived sessions reject new durable work until an explicit restore. */
+export class SessionArchivedError extends Error {
+  override readonly name = "SessionArchivedError";
+
+  constructor(readonly sessionId: string) {
+    super(`Session ${sessionId} is archived.`);
+  }
+}
+
 export class ThreadToolJobOwnershipLostError extends Error {
   constructor(jobId: string) {
     super(`Background tool job ${jobId} is no longer owned by this daemon.`);

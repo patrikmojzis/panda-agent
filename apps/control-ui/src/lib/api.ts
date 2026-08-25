@@ -173,6 +173,7 @@ export type SessionRow = {
   label: string
   createdByIdentityId?: string
   heartbeatEnabled: boolean
+  archivedAt?: string
   createdAt: string
   updatedAt: string
 }
@@ -1065,6 +1066,24 @@ export const controlApi = {
   ) =>
     apiWrite<{ session: SessionRow; previousThreadId: string }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/reset`,
+      { csrfToken }
+    ),
+  archiveSession: (
+    agentKey: string,
+    sessionId: string,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ session: SessionDetail }>(
+      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/archive`,
+      { csrfToken }
+    ),
+  restoreSession: (
+    agentKey: string,
+    sessionId: string,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ session: SessionDetail }>(
+      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/restore`,
       { csrfToken }
     ),
   compactSession: (

@@ -4,6 +4,7 @@ import type {
   CreateSessionInput,
   DeleteSessionPromptInput,
   ListDueSessionHeartbeatsInput,
+  ListAgentSessionsInput,
   RecordSessionHeartbeatResultInput,
   ResolveSessionRefInput,
   SessionHeartbeatRecord,
@@ -28,7 +29,7 @@ export interface SessionStore {
   getSessionByAlias(agentKey: string, alias: string): Promise<SessionRecord | null>;
   resolveSessionRef(input: ResolveSessionRefInput): Promise<SessionRecord>;
   getMainSession(agentKey: string): Promise<SessionRecord | null>;
-  listAgentSessions(agentKey: string): Promise<readonly SessionRecord[]>;
+  listAgentSessions(agentKey: string, input?: ListAgentSessionsInput): Promise<readonly SessionRecord[]>;
   updateSessionLabel(input: UpdateSessionLabelInput): Promise<SessionRecord>;
   updateCurrentThread(input: UpdateSessionCurrentThreadInput): Promise<SessionRecord>;
   getSessionRuntimeConfig(sessionId: string): Promise<SessionRuntimeConfigRecord>;

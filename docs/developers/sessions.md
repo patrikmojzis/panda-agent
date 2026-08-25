@@ -118,6 +118,40 @@ request retry completes the same replacement instead of replaying old input.
 Upgrade refuses the one unsafe legacy state: an interrupted reset receipt whose
 old thread is still current.
 
+### Archive and restore
+
+`panda session archive <session-ref>` and `panda session restore <session-ref>`
+are daemon-owned lifecycle operations. Only `branch` sessions support them.
+The main session must remain active, and subagent retirement continues to use
+the bounded purge lifecycle.
+
+`agent_sessions.archived_at` is the durable authority. Archive first installs
+the same persistent run-claim fence used by reset and takes the current
+thread's exclusive coordinator lane. The database transition then:
+
+- discards unapplied input and clears the session wake latch
+- cancels pending, claimed, or running scheduled occurrences
+- fails claimed/running watch runs and clears watch/heartbeat claims
+- fails pending session-owned deliveries, channel actions, and voice turns
+- queues Discord voice leave controls and expires incomplete MCP OAuth attempts
+- stops direct child subagent lanes without deleting their history
+
+Every persisted admission seam also locks or rechecks the session row. This is
+what closes races with archive; filtering archived rows in the CLI would not.
+Ingress receives `SessionArchivedError` and is never rerouted to the main
+session.
+
+Restore keeps the same session and current thread. It does not replay discarded
+input or failed outbound work. Heartbeat and watch clocks restart from restore
+time, recurring tasks choose their next future occurrence, and one-shot tasks
+missed during archive become cancelled history. Voice and child subagents stay
+stopped. Session labels, prompts, todos, runtime configuration, routes,
+conversation/A2A bindings, automation definitions, execution targets,
+transcript, and audit history remain editable and preserved throughout.
+
+The exact boundary is recorded in
+[ADR 0002](./adr/0002-session-archive-lifecycle.md).
+
 ## Routing
 
 External conversation binding is session-first:
@@ -220,6 +254,8 @@ So:
 - [src/domain/sessions](../../src/domain/sessions)
 - [src/domain/sessions/cli.ts](../../src/domain/sessions/cli.ts) owns `panda session create`, `panda session prompt`, and shared session management commands
 - [src/domain/sessions/current-thread.ts](../../src/domain/sessions/current-thread.ts) resolves and submits session-owned runtime work onto the session's current thread
+- [src/domain/sessions/archive.ts](../../src/domain/sessions/archive.ts) owns the atomic durable archive/restore transition
+- [src/app/runtime/session-archive-service.ts](../../src/app/runtime/session-archive-service.ts) coordinates run fences, background jobs, and direct child subagents
 - [src/app/runtime/daemon-threads.ts](../../src/app/runtime/daemon-threads.ts)
 - [src/app/runtime/thread-definition.ts](../../src/app/runtime/thread-definition.ts)
 - [src/domain/sessions/conversations/repo.ts](../../src/domain/sessions/conversations/repo.ts)

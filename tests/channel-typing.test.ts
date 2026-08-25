@@ -145,6 +145,7 @@ describe("createChannelTypingEventHandler", () => {
     });
 
     expect(send).toHaveBeenNthCalledWith(1, {
+      threadId: "thread-1",
       channel: "telegram",
       target: {
         source: "telegram",
@@ -192,6 +193,7 @@ describe("createChannelTypingEventHandler", () => {
 
     expect(send.mock.calls).toEqual([
       [{
+        threadId: "thread-1",
         channel: "telegram",
         target: {
           source: "telegram",
@@ -202,6 +204,7 @@ describe("createChannelTypingEventHandler", () => {
         phase: "start",
       }],
       [{
+        threadId: "thread-1",
         channel: "telegram",
         target: {
           source: "telegram",

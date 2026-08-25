@@ -1021,6 +1021,8 @@ export function createDiscordStickerSendCommand(services: DiscordStickerSendComm
         commandName: DISCORD_STICKER_SEND_COMMAND_NAME,
       });
       const action = await services.enqueueAction({
+        sessionId: request.scope.sessionId,
+        threadId: request.scope.threadId,
         channel: DISCORD_SOURCE,
         connectorKey: input.connectorKey,
         kind: "discord_sticker_send",

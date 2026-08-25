@@ -94,6 +94,7 @@ export interface OutboundRequest {
 export type ChannelTypingPhase = "start" | "keepalive" | "stop";
 
 export interface ChannelTypingRequest {
+  threadId?: string;
   channel: string;
   target: ChannelTypingTarget;
   phase: ChannelTypingPhase;

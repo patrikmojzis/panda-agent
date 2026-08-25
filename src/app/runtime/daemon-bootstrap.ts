@@ -114,6 +114,7 @@ export async function bootstrapDaemonContext(
       channel: TELEGRAM_SOURCE,
       send: async (request) => {
         await channelActions.enqueueAction({
+          threadId: request.threadId,
           channel: TELEGRAM_SOURCE,
           connectorKey: request.target.connectorKey,
           kind: "typing",
@@ -125,6 +126,7 @@ export async function bootstrapDaemonContext(
       channel: WHATSAPP_SOURCE,
       send: async (request) => {
         await channelActions.enqueueAction({
+          threadId: request.threadId,
           channel: WHATSAPP_SOURCE,
           connectorKey: request.target.connectorKey,
           kind: "typing",
@@ -231,10 +233,18 @@ export async function bootstrapDaemonContext(
             },
           },
           outboundQueue: {
-            enqueueDelivery: (input) => outboundDeliveries.enqueueDelivery(input),
+            enqueueDelivery: (input) => outboundDeliveries.enqueueDelivery({
+              ...input,
+              sessionId: thread.sessionId,
+              threadId: input.threadId ?? thread.id,
+            }),
           },
           channelActionQueue: {
-            enqueueAction: (input) => channelActions.enqueueAction(input),
+            enqueueAction: (input) => channelActions.enqueueAction({
+              ...input,
+              sessionId: thread.sessionId,
+              threadId: input.threadId ?? thread.id,
+            }),
           },
           messageAgent: {
             queueMessage: (input) => a2aMessagingService.queueMessage(input),

@@ -2,10 +2,13 @@ import {randomUUID} from "node:crypto";
 
 import {isJsonObject, type JsonObject} from "../../lib/json.js";
 import {buildRuntimeRelationNames} from "../../lib/postgres-relations.js";
-import type {PgListenClient, PgPoolLike} from "../../lib/postgres-query.js";
+import type {PgClientLike, PgListenClient, PgPoolLike} from "../../lib/postgres-query.js";
+import {withTransaction} from "../../lib/postgres-transaction.js";
 import {optionalTimestampMillis, requireTimestampMillis} from "../../lib/postgres-values.js";
 import {requireNonEmptyString, trimToUndefined} from "../../lib/strings.js";
+import {SessionArchivedError} from "../threads/runtime/store.js";
 import {deriveRuntimeRequestOrderingKey} from "../threads/requests/ordering-key.js";
+import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import {
   buildRuntimeRequestNotificationChannel,
   buildRuntimeRequestTableNames,
@@ -23,6 +26,7 @@ import type {
 
 const tables = buildRuntimeRelationNames({sessions: "live_voice_sessions", turns: "live_voice_turns"});
 const requestTables = buildRuntimeRequestTableNames();
+const agentSessionTable = buildSessionTableNames().sessions;
 
 const HEALTH_REASONS = new Set<LiveVoiceHealthReason>([
   "transport_not_ready",
@@ -117,6 +121,18 @@ function parseTurn(row: Record<string, unknown>): LiveVoiceTurnRecord {
   };
 }
 
+async function lockActiveAgentSession(client: PgClientLike, sessionId: string): Promise<void> {
+  const result = await client.query(`
+    SELECT id, archived_at
+    FROM ${agentSessionTable}
+    WHERE id = $1
+    FOR UPDATE
+  `, [sessionId]);
+  const row = result.rows[0] as {archived_at?: unknown} | undefined;
+  if (!row) throw new Error(`Unknown session ${sessionId}.`);
+  if (row.archived_at !== null) throw new SessionArchivedError(sessionId);
+}
+
 export interface LiveVoiceRepoOptions {pool: PgPoolLike<PgListenClient>}
 
 /** Owns channel-neutral live-call ownership, health, and delegated turn state. */
@@ -126,13 +142,16 @@ export class LiveVoiceRepo {
   constructor(options: LiveVoiceRepoOptions) { this.pool = options.pool; }
 
   async upsertSession(input: LiveVoiceSessionInput): Promise<LiveVoiceSessionRecord> {
-    const result = await this.pool.query(`
-      INSERT INTO ${tables.sessions} (id,source,connector_key,scope_key,room_key,session_id,agent_key,provider,model,state,transport_context,last_error,health_state,health_reasons,health_observed_at)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14::jsonb,$15)
-      ON CONFLICT (id) DO UPDATE SET room_key=EXCLUDED.room_key,session_id=EXCLUDED.session_id,agent_key=EXCLUDED.agent_key,provider=EXCLUDED.provider,model=EXCLUDED.model,state=EXCLUDED.state,transport_context=EXCLUDED.transport_context,last_error=EXCLUDED.last_error,health_state=EXCLUDED.health_state,health_reasons=EXCLUDED.health_reasons,health_observed_at=EXCLUDED.health_observed_at,updated_at=NOW()
-      RETURNING *
-    `, [input.id,input.source,input.connectorKey,input.scopeKey,input.roomKey,input.sessionId,input.agentKey,input.provider,input.model,input.state,input.transportContext ? JSON.stringify(input.transportContext) : null,input.lastError ?? null,input.health ?? null,JSON.stringify(input.healthReasons ?? []),input.healthObservedAt ? new Date(input.healthObservedAt) : null]);
-    return parseSession(result.rows[0] as Record<string, unknown>);
+    return withTransaction(this.pool, async (client) => {
+      await lockActiveAgentSession(client, input.sessionId);
+      const result = await client.query(`
+        INSERT INTO ${tables.sessions} (id,source,connector_key,scope_key,room_key,session_id,agent_key,provider,model,state,transport_context,last_error,health_state,health_reasons,health_observed_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14::jsonb,$15)
+        ON CONFLICT (id) DO UPDATE SET room_key=EXCLUDED.room_key,session_id=EXCLUDED.session_id,agent_key=EXCLUDED.agent_key,provider=EXCLUDED.provider,model=EXCLUDED.model,state=EXCLUDED.state,transport_context=EXCLUDED.transport_context,last_error=EXCLUDED.last_error,health_state=EXCLUDED.health_state,health_reasons=EXCLUDED.health_reasons,health_observed_at=EXCLUDED.health_observed_at,updated_at=NOW()
+        RETURNING *
+      `, [input.id,input.source,input.connectorKey,input.scopeKey,input.roomKey,input.sessionId,input.agentKey,input.provider,input.model,input.state,input.transportContext ? JSON.stringify(input.transportContext) : null,input.lastError ?? null,input.health ?? null,JSON.stringify(input.healthReasons ?? []),input.healthObservedAt ? new Date(input.healthObservedAt) : null]);
+      return parseSession(result.rows[0] as Record<string, unknown>);
+    });
   }
 
   async updateSessionHealth(input: {id: string; health: LiveVoiceOperationalState; reasons: readonly LiveVoiceHealthReason[]; observedAt: number; diagnostics?: unknown}): Promise<void> {
@@ -166,14 +185,18 @@ export class LiveVoiceRepo {
   }
 
   async createOrGetTurn(input: LiveVoiceTurnInput): Promise<{turn: LiveVoiceTurnRecord; created: boolean}> {
-    const result = await this.pool.query(`
-      INSERT INTO ${tables.turns} (id,live_voice_session_id,provider_delegation_id,source_utterance_id,session_id,agent_key,external_actor_id,identity_id,prompt,status)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending') ON CONFLICT DO NOTHING RETURNING *
-    `, [input.id,input.liveVoiceSessionId,input.providerDelegationId,input.sourceUtteranceId,input.sessionId,input.agentKey,input.externalActorId ?? null,input.identityId ?? null,input.prompt]);
-    if (result.rows[0]) return {turn: parseTurn(result.rows[0] as Record<string, unknown>), created: true};
-    const existing = await this.pool.query(`SELECT * FROM ${tables.turns} WHERE live_voice_session_id=$1 AND (source_utterance_id=$2 OR provider_delegation_id=$3) ORDER BY created_at LIMIT 1`, [input.liveVoiceSessionId,input.sourceUtteranceId,input.providerDelegationId]);
-    if (!existing.rows[0]) throw new Error("Live voice turn conflict could not be resolved.");
-    return {turn: parseTurn(existing.rows[0] as Record<string, unknown>), created: false};
+    return withTransaction(this.pool, async (client) => {
+      await lockActiveAgentSession(client, input.sessionId);
+      const result = await client.query(`
+        INSERT INTO ${tables.turns} (id,live_voice_session_id,provider_delegation_id,source_utterance_id,session_id,agent_key,external_actor_id,identity_id,prompt,status)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending')
+        ON CONFLICT DO NOTHING RETURNING *
+      `, [input.id,input.liveVoiceSessionId,input.providerDelegationId,input.sourceUtteranceId,input.sessionId,input.agentKey,input.externalActorId ?? null,input.identityId ?? null,input.prompt]);
+      if (result.rows[0]) return {turn: parseTurn(result.rows[0] as Record<string, unknown>), created: true};
+      const existing = await client.query(`SELECT * FROM ${tables.turns} WHERE live_voice_session_id=$1 AND (source_utterance_id=$2 OR provider_delegation_id=$3) ORDER BY created_at LIMIT 1`, [input.liveVoiceSessionId,input.sourceUtteranceId,input.providerDelegationId]);
+      if (!existing.rows[0]) throw new Error("Live voice turn conflict could not be resolved.");
+      return {turn: parseTurn(existing.rows[0] as Record<string, unknown>), created: false};
+    });
   }
 
   /** Atomically makes a delegated turn durable and queues its runtime request. */
@@ -182,69 +205,45 @@ export class LiveVoiceRepo {
       kind: "live_voice_delegation",
       payload: {liveVoiceTurnId: input.id, sessionId: input.sessionId},
     });
-    const result = await this.pool.query(`
-      WITH active_session AS (
+    return withTransaction(this.pool, async (client) => {
+      await lockActiveAgentSession(client, input.sessionId);
+      const liveSession = await client.query(`
         SELECT id
         FROM ${tables.sessions}
-        WHERE id = $2 AND state = 'connected'
+        WHERE id = $1 AND session_id = $2 AND state = 'connected'
         FOR UPDATE
-      ), resolved_turn AS (
+      `, [input.liveVoiceSessionId, input.sessionId]);
+      if (!liveSession.rows[0]) {
+        throw new Error(`Live voice session ${input.liveVoiceSessionId} is not connected.`);
+      }
+
+      const turnResult = await client.query(`
         INSERT INTO ${tables.turns} (
           id, live_voice_session_id, provider_delegation_id, source_utterance_id,
           session_id, agent_key, external_actor_id, identity_id, prompt, status
-        )
-        SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,'pending'
-        FROM active_session
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending')
         ON CONFLICT (live_voice_session_id, source_utterance_id) DO UPDATE
         SET updated_at = ${tables.turns}.updated_at
         RETURNING *
-      ), written_request AS (
+      `, [input.id,input.liveVoiceSessionId,input.providerDelegationId,input.sourceUtteranceId,input.sessionId,input.agentKey,input.externalActorId ?? null,input.identityId ?? null,input.prompt]);
+      const turn = parseTurn(turnResult.rows[0] as Record<string, unknown>);
+      const requestPayload = {liveVoiceTurnId: turn.id, sessionId: turn.sessionId};
+      const requestResult = await client.query(`
         INSERT INTO ${requestTables.runtimeRequests} (
           id, kind, status, payload, ordering_key, idempotency_key
-        )
-        SELECT
-          $10,
-          'live_voice_delegation',
-          'pending',
-          jsonb_build_object('liveVoiceTurnId', resolved_turn.id::text, 'sessionId', resolved_turn.session_id),
-          $11,
-          'live_voice_delegation:' || resolved_turn.id::text
-        FROM resolved_turn
+        ) VALUES ($1,'live_voice_delegation','pending',$2::jsonb,$3,$4)
         ON CONFLICT (idempotency_key) DO UPDATE
         SET idempotency_key = EXCLUDED.idempotency_key
         WHERE ${requestTables.runtimeRequests}.kind = EXCLUDED.kind
           AND ${requestTables.runtimeRequests}.payload = EXCLUDED.payload
         RETURNING id
-      ), notified AS (
-        SELECT pg_notify($12, 'pending')
-        FROM written_request
-      )
-      SELECT resolved_turn.*,
-             (SELECT COUNT(*) FROM written_request) AS request_count,
-             (SELECT COUNT(*) FROM notified) AS notification_count
-      FROM resolved_turn
-    `, [
-      input.id,
-      input.liveVoiceSessionId,
-      input.providerDelegationId,
-      input.sourceUtteranceId,
-      input.sessionId,
-      input.agentKey,
-      input.externalActorId ?? null,
-      input.identityId ?? null,
-      input.prompt,
-      randomUUID(),
-      orderingKey,
-      buildRuntimeRequestNotificationChannel(),
-    ]);
-    const row = result.rows[0] as Record<string, unknown> | undefined;
-    if (!row) {
-      throw new Error(`Live voice session ${input.liveVoiceSessionId} is not connected.`);
-    }
-    if (Number(row.request_count) !== 1) {
-      throw new Error(`Live voice delegation ${input.id} conflicts with another request.`);
-    }
-    return parseTurn(row);
+      `, [randomUUID(), JSON.stringify(requestPayload), orderingKey, `live_voice_delegation:${turn.id}`]);
+      if (!requestResult.rows[0]) {
+        throw new Error(`Live voice delegation ${input.id} conflicts with another request.`);
+      }
+      await client.query("SELECT pg_notify($1, 'pending')", [buildRuntimeRequestNotificationChannel()]);
+      return turn;
+    });
   }
 
   async getTurn(id: string): Promise<LiveVoiceTurnRecord> {

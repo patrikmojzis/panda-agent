@@ -682,6 +682,13 @@ function parsePayload<K extends RuntimeRequestKind>(
         customInstructions: parseOptionalString(payload.customInstructions) ?? "",
       } as RuntimeRequestPayloadByKind[K];
 
+    case "archive_session":
+    case "restore_session":
+      return {
+        identityId,
+        sessionId: parseRequiredString(payload.sessionId, "session id"),
+      } as RuntimeRequestPayloadByKind[K];
+
     case "update_thread":
       return {
         identityId,

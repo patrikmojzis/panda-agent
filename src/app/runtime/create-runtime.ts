@@ -57,6 +57,7 @@ import type {CommandCatalog} from "../../domain/commands/modules.js";
 import type {CommandCatalogModule} from "../../domain/commands/types.js";
 import {buildSubagentCommandDependencies} from "./command-dependencies.js";
 import {SessionCompactionService} from "./session-compaction-service.js";
+import {SessionArchiveService} from "./session-archive-service.js";
 import {listenThreadRuntimeNotifications} from "./store-notifications.js";
 import {runCleanupSteps} from "../../lib/cleanup.js";
 import {
@@ -185,6 +186,7 @@ export interface RuntimeServices {
   commandModules: readonly CommandCatalogModule<any>[];
   subagentSessions: SubagentSessionService;
   sessionCompaction: SessionCompactionService;
+  sessionArchive: SessionArchiveService;
   a2aBindings: A2ASessionBindingRepo;
   coordinator: ThreadRuntimeCoordinator;
   mainTools: readonly Tool[];
@@ -252,6 +254,11 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     sessions: runtime.sessionStore,
     threads: runtime.store,
     coordinator,
+  });
+  const sessionArchive = new SessionArchiveService({
+    pool: runtime.pool,
+    coordinator,
+    backgroundJobs: runtime.backgroundJobService,
   });
   runtime.commandExecutor.registerCommands([
     ...runtime.commandCatalog.createCommands(
@@ -362,6 +369,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     commandModules: runtime.commandModules,
     subagentSessions,
     sessionCompaction,
+    sessionArchive,
     a2aBindings: runtime.a2aBindings,
     coordinator,
     mainTools,

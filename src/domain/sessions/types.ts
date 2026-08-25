@@ -4,6 +4,7 @@ import type {JsonValue} from "../../lib/json.js";
 import type {InferenceProjection} from "../../kernel/transcript/types.js";
 
 export type AgentSessionKind = "main" | "branch" | "worker" | "subagent";
+export type SessionListLifecycle = "active" | "archived" | "all";
 
 export interface CreateSessionInput {
   id: string;
@@ -17,8 +18,13 @@ export interface CreateSessionInput {
 }
 
 export interface SessionRecord extends CreateSessionInput {
+  archivedAt?: number;
   createdAt: number;
   updatedAt: number;
+}
+
+export interface ListAgentSessionsInput {
+  lifecycle?: SessionListLifecycle;
 }
 
 export interface ResolveSessionRefInput {

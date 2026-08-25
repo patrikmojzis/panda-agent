@@ -2,6 +2,11 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {installPreLedgerDiscordVoiceControlSchema} from "../src/app/database/migrations/pre-ledger/discord-voice.js";
+import {PostgresAgentStore} from "../src/domain/agents/index.js";
+import {ensurePostgresAgentTableSchema} from "../src/domain/agents/postgres-schema.js";
+import {ensurePostgresIdentitySchema} from "../src/domain/identity/postgres-schema.js";
+import {PostgresSessionStore} from "../src/domain/sessions/index.js";
+import {ensurePostgresSessionSchema} from "../src/domain/sessions/postgres-schema.js";
 import {DiscordVoiceControlRepo} from "../src/integrations/channels/discord/voice-postgres.js";
 
 describe("DiscordVoiceControlRepo", () => {
@@ -17,8 +22,22 @@ describe("DiscordVoiceControlRepo", () => {
     return {pool, repo: new DiscordVoiceControlRepo({pool})};
   }
 
+  async function installSessionOwner(pool: ReturnType<typeof createRepo>["pool"]) {
+    await ensurePostgresIdentitySchema(pool);
+    await ensurePostgresAgentTableSchema(pool);
+    await ensurePostgresSessionSchema(pool);
+    await new PostgresAgentStore({pool}).bootstrapAgent({agentKey: "panda", displayName: "Panda"});
+    await new PostgresSessionStore({pool}).createSessionRecord({
+      id: "session-1",
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: "thread-1",
+    });
+  }
+
   it("coordinates, deduplicates, and preserves terminal controls", async () => {
     const {pool, repo} = createRepo();
+    await installSessionOwner(pool);
     await installPreLedgerDiscordVoiceControlSchema(pool);
     const input = {connectorKey: "bot-1", operation: "send" as const, sessionId: "session-1", agentKey: "panda", channelId: "12345", text: "Working.", mode: "progress" as const, idempotencyKey: "tool-call-1"};
     const control = await repo.enqueueControl(input);
@@ -30,11 +49,33 @@ describe("DiscordVoiceControlRepo", () => {
 
   it("observes a terminal control without pinning a LISTEN client", async () => {
     const {pool, repo} = createRepo();
+    await installSessionOwner(pool);
     await installPreLedgerDiscordVoiceControlSchema(pool);
     const control = await repo.enqueueControl({connectorKey: "bot-1", operation: "join", sessionId: "session-1", agentKey: "panda", channelId: "12345"});
     const waiter = repo.waitForControl(control.id, {timeoutMs: 2_000});
     await repo.claimNextControl("bot-1");
     await repo.completeControl(control.id, {ok: true});
     await expect(waiter).resolves.toMatchObject({status: "completed"});
+  });
+
+  it("rejects archived voice work but still admits the disconnect control", async () => {
+    const {pool, repo} = createRepo();
+    await installSessionOwner(pool);
+    await installPreLedgerDiscordVoiceControlSchema(pool);
+    await pool.query(`UPDATE "runtime"."agent_sessions" SET archived_at = NOW() WHERE id = 'session-1'`);
+
+    await expect(repo.enqueueControl({
+      connectorKey: "bot-1",
+      operation: "join",
+      sessionId: "session-1",
+      agentKey: "panda",
+      channelId: "12345",
+    })).rejects.toThrow("Session session-1 is archived.");
+    await expect(repo.enqueueControl({
+      connectorKey: "bot-1",
+      operation: "leave",
+      sessionId: "session-1",
+      agentKey: "panda",
+    })).resolves.toMatchObject({operation: "leave", status: "pending"});
   });
 });

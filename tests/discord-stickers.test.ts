@@ -99,6 +99,8 @@ describe("Discord sticker commands", () => {
     }));
 
     expect(enqueueAction).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      threadId: "thread-1",
       channel: "discord",
       connectorKey: "discord-main",
       kind: "discord_sticker_send",

@@ -1,6 +1,6 @@
 import * as React from "react"
 import type { ColumnDef } from "@tanstack/react-table"
-import { Minimize2, Pencil, Plus, RotateCw } from "lucide-react"
+import { Archive, ArchiveRestore, Minimize2, Pencil, Plus, RotateCw } from "lucide-react"
 
 import {
   Cell,
@@ -47,6 +47,12 @@ const sessionVisibilityFilterOptions = [
   { label: "Everything", value: "everything" },
 ]
 
+const sessionLifecycleFilterOptions = [
+  { label: "Active", value: "active" },
+  { label: "Archived", value: "archived" },
+  { label: "Everything", value: "all" },
+]
+
 const sessionsDefaultColumnVisibility = {
   heartbeatEnabled: false,
 }
@@ -61,7 +67,10 @@ export function SessionsPanel({ agentKey }: { agentKey: string }) {
   const table = useDataTableState(`agent:${agentKey}:sessions`, {
     sort_by: "updatedAt",
     sort_direction: "desc",
-    columnFilters: [{ id: "visibility", value: "primary" }],
+    columnFilters: [
+      { id: "visibility", value: "primary" },
+      { id: "lifecycle", value: "active" },
+    ],
     columnVisibility: sessionsDefaultColumnVisibility,
     filterValueSetters: {
       visibility: sessionVisibilityFilterValueSetter,
@@ -72,6 +81,14 @@ export function SessionsPanel({ agentKey }: { agentKey: string }) {
     mutationFn: (session: SessionRow) =>
       controlApi.resetSession(agentKey, session.id, auth.csrfToken),
     success: "Session reset",
+    invalidate: controlKeys.agents.detail(agentKey),
+  })
+  const changeLifecycle = useToastMutation({
+    mutationFn: (session: SessionRow) =>
+      session.archivedAt
+        ? controlApi.restoreSession(agentKey, session.id, auth.csrfToken)
+        : controlApi.archiveSession(agentKey, session.id, auth.csrfToken),
+    success: "Session lifecycle updated",
     invalidate: controlKeys.agents.detail(agentKey),
   })
   const columns: ColumnDef<SessionRow>[] = [
@@ -142,11 +159,13 @@ export function SessionsPanel({ agentKey }: { agentKey: string }) {
                 }),
             },
             {
+              disabled: Boolean(row.original.archivedAt),
               label: "Compact context",
               icon: <Minimize2 className="size-4" />,
               onSelect: () => setCompactTarget(row.original),
             },
             {
+              disabled: Boolean(row.original.archivedAt),
               destructive: true,
               label: "Reset session",
               icon: <RotateCw className="size-4" />,
@@ -163,6 +182,25 @@ export function SessionsPanel({ agentKey }: { agentKey: string }) {
               },
               onSelect: () => resetSession.mutateAsync(row.original),
             },
+            ...(row.original.kind === "branch" ? [{
+              label: row.original.archivedAt ? "Restore session" : "Archive session",
+              icon: row.original.archivedAt
+                ? <ArchiveRestore className="size-4" />
+                : <Archive className="size-4" />,
+              pending:
+                changeLifecycle.isPending &&
+                changeLifecycle.variables?.id === row.original.id,
+              confirm: {
+                title: row.original.archivedAt ? "Restore session" : "Archive session",
+                description: row.original.archivedAt
+                  ? "Restore runtime admission without replaying work missed while archived."
+                  : "Stop runtime work while preserving this session, its thread history, and configuration.",
+                confirmLabel: row.original.archivedAt ? "Restore session" : "Archive session",
+                entityLabel: "Session",
+                itemLabel: friendlySessionLabel(row.original),
+              },
+              onSelect: () => changeLifecycle.mutateAsync(row.original),
+            }] : []),
           ]}
         />
       ),
@@ -180,6 +218,7 @@ export function SessionsPanel({ agentKey }: { agentKey: string }) {
         filters={
           <>
             <SessionVisibilityFilter state={table} />
+            <SessionLifecycleFilter state={table} />
             <SessionKindFilter state={table} />
           </>
         }
@@ -249,6 +288,18 @@ function SessionVisibilityFilter({ state }: { state: DataTableState }) {
   )
 }
 
+function SessionLifecycleFilter({ state }: { state: DataTableState }) {
+  return (
+    <TableSelectFilter
+      state={state}
+      id="lifecycle"
+      label="Lifecycle"
+      allLabel="Active"
+      options={sessionLifecycleFilterOptions}
+    />
+  )
+}
+
 function sessionVisibilityFilterValueSetter(value: unknown) {
   if (value === "everything") return "all"
   if (value === "primary" || value === "subagent") return value
@@ -261,6 +312,7 @@ function SessionNameCell({ session }: { session: SessionRow }) {
       <span className="truncate font-semibold">
         {friendlySessionLabel(session)}
       </span>
+      {session.archivedAt ? <Badge variant="secondary">Archived</Badge> : null}
       <span className="truncate text-xs text-muted-foreground">
         {shortSessionId(session.id)}
       </span>

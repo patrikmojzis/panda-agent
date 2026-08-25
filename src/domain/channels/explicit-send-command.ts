@@ -239,6 +239,7 @@ export function createExplicitChannelSendCommand(
       });
 
       const delivery = await services.enqueueDelivery({
+        sessionId: request.scope.sessionId,
         threadId: request.scope.threadId,
         channel: options.channel,
         target: {

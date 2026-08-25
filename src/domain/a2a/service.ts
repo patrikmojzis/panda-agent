@@ -15,6 +15,7 @@ import {
 
 interface OutboundDeliveryQueue {
   enqueueDelivery(input: {
+    sessionId?: string;
     threadId?: string;
     channel: string;
     target: {
@@ -148,6 +149,7 @@ export class A2AMessagingService {
     const messageId = buildMessageId();
     const sentAt = Date.now();
     const delivery = await this.outboundDeliveries.enqueueDelivery({
+      sessionId: input.senderSessionId,
       threadId: input.senderThreadId,
       channel: A2A_SOURCE,
       target: {

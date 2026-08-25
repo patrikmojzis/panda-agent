@@ -494,6 +494,7 @@ describe("SubagentPurgeService", () => {
     await pool.query(`
       INSERT INTO "runtime"."outbound_deliveries" (
         id,
+        session_id,
         thread_id,
         channel,
         connector_key,
@@ -503,6 +504,7 @@ describe("SubagentPurgeService", () => {
         status
       ) VALUES (
         $1,
+        'subagent-session',
         'subagent-thread',
         'a2a',
         'local',
@@ -520,6 +522,7 @@ describe("SubagentPurgeService", () => {
     await pool.query(`
       INSERT INTO "runtime"."outbound_deliveries" (
         id,
+        session_id,
         thread_id,
         channel,
         connector_key,
@@ -529,6 +532,7 @@ describe("SubagentPurgeService", () => {
         status
       ) VALUES (
         $1,
+        'main-session',
         'main-thread',
         'a2a',
         'local',

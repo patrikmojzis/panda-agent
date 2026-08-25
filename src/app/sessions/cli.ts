@@ -28,6 +28,10 @@ interface SessionCompactCliOptions extends SessionResetCliOptions {
   json?: boolean;
 }
 
+interface SessionLifecycleCliOptions extends SessionResetCliOptions {
+  json?: boolean;
+}
+
 const SESSION_COMPACT_REQUEST_TIMEOUT_MS = 15 * 60_000;
 
 interface WithSessionResetStores {
@@ -163,6 +167,28 @@ async function compactSessionCommand(sessionRef: string, options: SessionCompact
   });
 }
 
+async function changeSessionLifecycle(
+  kind: "archive_session" | "restore_session",
+  sessionRef: string,
+  options: SessionLifecycleCliOptions,
+): Promise<void> {
+  await withSessionResetStores(options, async ({sessionStore, requests, daemonState}) => {
+    await requireDaemonOnline(daemonState);
+    const session = await sessionStore.resolveSessionRef({sessionRef, agentKey: options.agent});
+    const request = await requests.enqueueRequest({kind, payload: {sessionId: session.id}});
+    const result = await waitForRequestResult(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
+    const output = {
+      sessionId: session.id,
+      threadId: typeof result.threadId === "string" ? result.threadId : session.currentThreadId,
+      lifecycle: kind === "archive_session" ? "archived" : "active",
+      ...(typeof result.archivedAt === "number" ? {archivedAt: result.archivedAt} : {}),
+    };
+    process.stdout.write(options.json
+      ? `${JSON.stringify(output)}\n`
+      : `${kind === "archive_session" ? "Archived" : "Restored"} session ${output.sessionId}.\nthread ${output.threadId}\n`);
+  });
+}
+
 export function registerSessionCommands(program: Command): void {
   const sessionProgram = program
     .command("session")
@@ -191,4 +217,17 @@ export function registerSessionCommands(program: Command): void {
     .action((sessionRef: string, options: SessionCompactCliOptions) => {
       return compactSessionCommand(sessionRef, options);
     });
+
+  for (const lifecycle of ["archive", "restore"] as const) {
+    sessionProgram
+      .command(lifecycle)
+      .description(`${lifecycle === "archive" ? "Archive" : "Restore"} one branch session through the daemon`)
+      .argument("<sessionRef>", "Session id, or alias when --agent is provided")
+      .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
+      .option("--json", "Render the lifecycle result as JSON")
+      .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+      .action((sessionRef: string, options: SessionLifecycleCliOptions) => {
+        return changeSessionLifecycle(`${lifecycle}_session`, sessionRef, options);
+      });
+  }
 }

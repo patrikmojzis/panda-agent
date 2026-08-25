@@ -662,7 +662,6 @@ export async function bootstrapRuntime(
       agents: agentStore,
       sessions: sessionStore,
       executionEnvironments,
-      threads: store,
       identities: identityStore,
       credentials: credentialService,
       email,

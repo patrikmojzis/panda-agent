@@ -722,6 +722,8 @@ export async function executeTelegramReactCommand(
   const remove = input.remove === true;
   const resolvedEmoji = remove ? "" : requireAllowedTelegramReactionEmoji(input.emoji!.trim());
   await queue.enqueueAction({
+    sessionId: request.scope.sessionId,
+    threadId: request.scope.threadId,
     channel: TELEGRAM_SOURCE,
     connectorKey: target.connectorKey,
     kind: "telegram_reaction",
@@ -830,6 +832,8 @@ export async function executeTelegramEditCommand(
   });
   const messageId = parseTelegramMessageId(input.messageId);
   await queue.enqueueAction({
+    sessionId: request.scope.sessionId,
+    threadId: request.scope.threadId,
     channel: TELEGRAM_SOURCE,
     connectorKey: input.connectorKey,
     kind: "telegram_edit",
@@ -928,6 +932,8 @@ export async function executeTelegramDeleteCommand(
   });
   const messageId = parseTelegramMessageId(input.messageId);
   await queue.enqueueAction({
+    sessionId: request.scope.sessionId,
+    threadId: request.scope.threadId,
     channel: TELEGRAM_SOURCE,
     connectorKey: input.connectorKey,
     kind: "telegram_delete",
@@ -1009,6 +1015,8 @@ export async function executeTelegramPinCommand(
   });
   const messageId = parseTelegramMessageId(input.messageId);
   await queue.enqueueAction({
+    sessionId: request.scope.sessionId,
+    threadId: request.scope.threadId,
     channel: TELEGRAM_SOURCE,
     connectorKey: input.connectorKey,
     kind: "telegram_pin",
@@ -1100,6 +1108,8 @@ export async function executeTelegramUnpinCommand(
   });
   const messageId = parseTelegramMessageId(input.messageId);
   await queue.enqueueAction({
+    sessionId: request.scope.sessionId,
+    threadId: request.scope.threadId,
     channel: TELEGRAM_SOURCE,
     connectorKey: input.connectorKey,
     kind: "telegram_unpin",
@@ -1228,6 +1238,8 @@ export async function executeTelegramStickerSendCommand(
     resultType = "file_id";
   }
   await queue.enqueueAction({
+    sessionId: request.scope.sessionId,
+    threadId: request.scope.threadId,
     channel: TELEGRAM_SOURCE,
     connectorKey: input.connectorKey,
     kind: "telegram_sticker_send",

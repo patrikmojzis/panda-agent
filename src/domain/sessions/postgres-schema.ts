@@ -138,6 +138,7 @@ export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<vo
       alias TEXT,
       display_name TEXT,
       metadata JSONB,
+      archived_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
@@ -149,6 +150,10 @@ export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<vo
   await pool.query(`
     ALTER TABLE ${tables.sessions}
     ADD COLUMN IF NOT EXISTS display_name TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.sessions}
+    ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ
   `);
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_agent_sessions_main_idx`)}
@@ -163,6 +168,16 @@ export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<vo
   await pool.query(`
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_agent_sessions_agent_idx`)}
     ON ${tables.sessions} (agent_key, created_at DESC)
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_agent_sessions_active_agent_idx`)}
+    ON ${tables.sessions} (agent_key, created_at DESC, id)
+    WHERE archived_at IS NULL
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_agent_sessions_archived_agent_idx`)}
+    ON ${tables.sessions} (agent_key, archived_at DESC, id)
+    WHERE archived_at IS NOT NULL
   `);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${tables.sessionRuntimeConfig} (
@@ -281,6 +296,11 @@ export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<vo
 
   const integrity = buildSessionIntegrityChecks();
   await assertIntegrityChecks(pool, integrity.scope, integrity.checks);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.sessions}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_agent_sessions_archive_kind_check`)}
+    CHECK (archived_at IS NULL OR kind = 'branch')
+  `);
   await addConstraint(pool, `
     ALTER TABLE ${tables.sessions}
     ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_agent_sessions_agent_fk`)}
