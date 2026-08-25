@@ -283,6 +283,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     expect(queryable.queries[0]).toContain("jsonb_array_length(todo.items)");
     expect(queryable.queries[0]).toContain("s.alias");
     expect(queryable.queries[0]).toContain("s.display_name");
+    expect(queryable.queries[0]).not.toContain("SELECT *");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"runtime_config\"");
     expect(queryable.queries[0]).toContain("config.inference_projection");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"messages_raw\"");
