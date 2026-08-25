@@ -618,18 +618,19 @@ export async function applyPendingThreadInputs(
       WHERE config.session_id = observed_wake.session_id
         AND config.pending_wake_generation = observed_wake.pending_wake_generation
       RETURNING config.session_id
-    ), updated_thread AS (
-      UPDATE ${tables.threads} AS thread
-      SET updated_at = NOW()
-      FROM (SELECT DISTINCT thread_id FROM applied_inputs) AS applied
-      WHERE thread.id = applied.thread_id
-      RETURNING thread.id
+    ), applied_thread AS MATERIALIZED (
+      -- Arrival owns the thread activity projection. Materializing that same
+      -- input into the transcript must not rewrite the indexed activity row.
+      SELECT locked_thread.id AS thread_id
+      FROM locked_thread
+      CROSS JOIN input_mutations
+      WHERE input_mutations.applied_count > 0
     ), notified AS (
       SELECT pg_notify(
         $3,
-        json_build_object('kind', 'thread_changed', 'threadId', updated_thread.id)::text
+        json_build_object('kind', 'thread_changed', 'threadId', applied_thread.thread_id)::text
       ) AS notification
-      FROM updated_thread
+      FROM applied_thread
     )
     SELECT
       message.id,

@@ -17,9 +17,57 @@ import {PostgresThreadRuntimeStore} from "../../src/domain/threads/runtime/postg
 import {ThreadInputAdmissionBlockedError} from "../../src/domain/threads/runtime/store.js";
 import {buildThreadRuntimeTableNames} from "../../src/domain/threads/runtime/postgres-shared.js";
 import type {ThreadInputPayload, ThreadRunOwner} from "../../src/domain/threads/runtime/types.js";
+import type {PgListenClient, PgPoolLike, PgQueryResult} from "../../src/lib/postgres-query.js";
 
 const databaseUrl = process.env.TEST_DATABASE_URL?.trim();
 const liveIt = databaseUrl ? it : it.skip;
+
+class StatementCountingPool implements PgPoolLike<PgListenClient> {
+  queryCount = 0;
+  checkoutCount = 0;
+
+  constructor(private readonly pool: PgPoolLike<PgListenClient>) {}
+
+  async query(sql: string, params: readonly unknown[] = []): Promise<PgQueryResult> {
+    this.queryCount += 1;
+    return this.pool.query(sql, params);
+  }
+
+  async connect(): Promise<PgListenClient> {
+    this.checkoutCount += 1;
+    return this.pool.connect();
+  }
+
+  reset(): void {
+    this.queryCount = 0;
+    this.checkoutCount = 0;
+  }
+}
+
+async function withinStatementBudget<T>(
+  pool: StatementCountingPool,
+  expectedQueries: number,
+  operation: () => Promise<T>,
+): Promise<T> {
+  pool.reset();
+  const result = await operation();
+  expect(pool.queryCount).toBe(expectedQueries);
+  expect(pool.checkoutCount).toBe(0);
+  return result;
+}
+
+async function waitForNotification(
+  notifications: readonly {channel: string; payload?: string}[],
+  predicate: (notification: {channel: string; payload?: string}) => boolean,
+  label: string,
+): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if (notifications.some(predicate)) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for ${label}.`);
+}
 
 async function waitForBackendLock(pool: ReturnType<typeof createPostgresPool>, pid: number): Promise<void> {
   const deadline = Date.now() + 2_000;
@@ -136,6 +184,157 @@ describe("atomic runtime persistence on PostgreSQL", () => {
 
   afterAll(async () => {
     await pool?.end();
+  });
+
+  liveIt("keeps the durable request lifecycle inside its statement budget", async () => {
+    const countedPool = new StatementCountingPool(pool);
+    const countedRequests = new RuntimeRequestRepo({pool: countedPool, claimLeaseMs: 30_000});
+    const suffix = randomUUID();
+    const idempotencyKey = `statement-budget:${suffix}`;
+    const input = {
+      kind: "tui_input" as const,
+      payload: {
+        threadId: "atomic-thread",
+        actorId: "operator",
+        externalMessageId: suffix,
+        text: "statement budget",
+      },
+    };
+
+    const enqueued = await withinStatementBudget(countedPool, 1, () => {
+      return countedRequests.enqueueRequest(input, {idempotencyKey});
+    });
+    const duplicate = await withinStatementBudget(countedPool, 2, () => {
+      return countedRequests.enqueueRequest(input, {idempotencyKey});
+    });
+    expect(duplicate.id).toBe(enqueued.id);
+
+    const claimed = await withinStatementBudget(countedPool, 1, () => {
+      return countedRequests.claimNextPendingRequest();
+    });
+    expect(claimed?.id).toBe(enqueued.id);
+    await withinStatementBudget(countedPool, 1, () => {
+      return countedRequests.completeRequest(enqueued.id, claimed!.claimToken!, {accepted: true});
+    });
+  });
+
+  liveIt("materializes an input batch without retouching activity and stays inside its statement budget", async () => {
+    const suffix = randomUUID();
+    const sessionId = `statement-budget-session-${suffix}`;
+    const threadId = `statement-budget-thread-${suffix}`;
+    const countedPool = new StatementCountingPool(pool);
+    const countedThreads = new PostgresThreadRuntimeStore({pool: countedPool});
+    const listener = await pool.connect();
+    const notifications: Array<{channel: string; payload?: string}> = [];
+    listener.on("notification", (notification) => {
+      notifications.push({
+        channel: notification.channel,
+        ...(notification.payload === undefined ? {} : {payload: notification.payload}),
+      });
+    });
+
+    try {
+      await listener.query("LISTEN runtime_events; LISTEN runtime_persistence_budget_sync");
+      await sessionStore.createSession({
+        id: sessionId,
+        agentKey: "panda",
+        kind: "branch",
+        currentThreadId: threadId,
+      });
+      await threadStore.createThread({id: threadId, sessionId});
+
+      const firstExternalMessageId = `statement-budget-input-1-${suffix}`;
+      const first = await withinStatementBudget(countedPool, 1, () => {
+        return countedThreads.enqueueInput(threadId, inputPayload(firstExternalMessageId));
+      });
+      const duplicate = await withinStatementBudget(countedPool, 2, () => {
+        return countedThreads.enqueueInput(threadId, inputPayload(firstExternalMessageId));
+      });
+      expect(duplicate.input.id).toBe(first.input.id);
+      await withinStatementBudget(countedPool, 1, () => {
+        return countedThreads.enqueueInput(threadId, inputPayload(`statement-budget-input-2-${suffix}`));
+      });
+      await withinStatementBudget(countedPool, 1, () => {
+        return countedThreads.enqueueInput(threadId, inputPayload(`statement-budget-input-3-${suffix}`));
+      });
+      const remainingInputIds = Array.from({length: 497}, () => randomUUID());
+      await pool.query(`
+        INSERT INTO "runtime"."inputs" (
+          id, thread_id, delivery_mode, source, connector_key, channel_id,
+          external_message_id, actor_id, created_at, metadata, message
+        )
+        SELECT input_id, $1, 'wake', 'telegram', 'bot-1', 'chat-1',
+               external_message_id, 'user-1', NOW(), $4::jsonb, $5::jsonb
+        FROM UNNEST($2::uuid[], $3::text[]) AS input(input_id, external_message_id)
+      `, [
+        threadId,
+        remainingInputIds,
+        remainingInputIds.map((id) => `statement-budget-bulk-${id}`),
+        JSON.stringify(inputPayload(`statement-budget-bulk-${suffix}`).metadata),
+        JSON.stringify(inputPayload(`statement-budget-bulk-${suffix}`).message),
+      ]);
+
+      const run = await threadStore.tryStartRun(threadId, owner);
+      expect(run).not.toBeNull();
+      const before = await pool.query(`
+        SELECT updated_at::text AS updated_at, xmin::text AS xmin
+        FROM "runtime"."threads"
+        WHERE id = $1
+      `, [threadId]);
+
+      const beforeBarrier = `before-${suffix}`;
+      await pool.query("SELECT pg_notify('runtime_persistence_budget_sync', $1)", [beforeBarrier]);
+      await waitForNotification(
+        notifications,
+        (notification) => notification.channel === "runtime_persistence_budget_sync"
+          && notification.payload === beforeBarrier,
+        "the pre-apply notification barrier",
+      );
+      notifications.length = 0;
+
+      const applied = await withinStatementBudget(countedPool, 1, () => {
+        return countedThreads.applyPendingInputs(threadId, run!.id);
+      });
+      expect(applied).toHaveLength(500);
+      const after = await pool.query(`
+        SELECT updated_at::text AS updated_at, xmin::text AS xmin
+        FROM "runtime"."threads"
+        WHERE id = $1
+      `, [threadId]);
+      expect(after.rows).toEqual(before.rows);
+
+      const afterBarrier = `after-${suffix}`;
+      await pool.query("SELECT pg_notify('runtime_persistence_budget_sync', $1)", [afterBarrier]);
+      await waitForNotification(
+        notifications,
+        (notification) => notification.channel === "runtime_persistence_budget_sync"
+          && notification.payload === afterBarrier,
+        "the post-apply notification barrier",
+      );
+      const threadNotifications = notifications
+        .filter((notification) => notification.channel === "runtime_events" && notification.payload)
+        .map((notification) => JSON.parse(notification.payload!) as {kind?: unknown; threadId?: unknown})
+        .filter((notification) => notification.threadId === threadId);
+      expect(threadNotifications).toEqual([{kind: "thread_changed", threadId}]);
+
+      await expect(withinStatementBudget(countedPool, 1, () => {
+        return countedThreads.applyPendingInputs(threadId, run!.id);
+      })).resolves.toEqual([]);
+      await withinStatementBudget(countedPool, 1, () => {
+        return countedThreads.appendRuntimeMessage(threadId, {
+          source: "runtime",
+          runId: run!.id,
+          message: {
+            role: "user",
+            content: "continue",
+            timestamp: Date.now(),
+          },
+        });
+      });
+      await threadStore.completeRun(run!.id);
+    } finally {
+      listener.release();
+    }
   });
 
   liveIt("deduplicates concurrent enqueue, preserves connector scope, and atomically applies lineage", async () => {

@@ -270,6 +270,15 @@ cannot create gaps. Explicit diagnostics
 that need whole-thread totals scan bounded pages instead of materializing one
 unbounded database result.
 
+`runtime.threads.updated_at` is the externally meaningful activity projection
+used for summary ordering, not a storage-version clock. Input arrival owns that
+activity update; applying the same input into `runtime.messages` keeps the
+thread lock and emits one change notification but must not rewrite the indexed
+thread row. New inputs and appended runtime messages each commit in one server
+statement. A conflicting input/request may use one insert attempt plus one exact
+fallback resolution statement, and an input application remains one statement
+per bounded batch.
+
 Session is the durable wake anchor. Scheduled tasks, watches, channel routing,
 A2A bindings, subagent handoff, and gateway delivery must resolve the session's
 current thread at the point where they enqueue or record work. Public ingress
