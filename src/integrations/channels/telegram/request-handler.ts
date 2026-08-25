@@ -1,6 +1,5 @@
 import type {MediaDescriptor} from "../../../domain/channels/types.js";
 import type {IdentityStore} from "../../../domain/identity/store.js";
-import type {SessionRouteRepo} from "../../../domain/sessions/routes/repo.js";
 import type {
   ResetSessionRequestPayload,
   ResetSessionResult,
@@ -9,7 +8,9 @@ import type {
 } from "../../../domain/threads/requests/types.js";
 import type {ThreadRuntimeCoordinator} from "../../../domain/threads/runtime/coordinator.js";
 import type {ThreadEnqueueOptions, ThreadRecord} from "../../../domain/threads/runtime/types.js";
+import type {OutboundDeliveryRecord} from "../../../domain/channels/deliveries/types.js";
 import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
+import {RetryableRuntimeRequestError} from "../../../domain/threads/requests/errors.js";
 import {submitRememberedChannelInput} from "../inbound-delivery.js";
 import {TELEGRAM_SOURCE} from "./config.js";
 import {
@@ -44,18 +45,38 @@ interface TelegramRuntimeMessageThreadResolver extends TelegramInboundThreadReso
     replyToMessageId?: string;
     threadId?: string;
   }): Promise<void>;
-  handleResetSession(payload: ResetSessionRequestPayload, requestId: string): Promise<ResetSessionResult>;
+  findSystemReply(input: {
+    idempotencyKey: string;
+    channel: string;
+    connectorKey: string;
+    externalConversationId: string;
+    externalActorId?: string;
+    text: string;
+    replyToMessageId?: string;
+  }): Promise<OutboundDeliveryRecord | null>;
+  handleResetSession(
+    payload: ResetSessionRequestPayload,
+    requestId: string,
+    capturedAt: number,
+    replayAttempt: boolean,
+  ): Promise<ResetSessionResult>;
+  reconcileResetSession(
+    payload: ResetSessionRequestPayload,
+    requestId: string,
+    capturedAt: number,
+  ): Promise<ResetSessionResult | null>;
 }
 
 interface TelegramInboundRequestHandlerOptions {
+  capturedAt: number;
   coordinator: Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
   enqueueOptions?: ThreadEnqueueOptions;
   identityStore: Pick<IdentityStore, "getIdentity" | "resolveIdentityBinding">;
-  routes: Pick<SessionRouteRepo, "saveLastRoute">;
   threads: TelegramInboundThreadResolver;
 }
 
 interface TelegramRuntimeMessageRequestHandlerOptions extends Omit<TelegramInboundRequestHandlerOptions, "threads"> {
+  replayAttempt?: boolean;
   threads: TelegramRuntimeMessageThreadResolver;
 }
 
@@ -123,6 +144,7 @@ export async function handleTelegramMessageRequest(
     media,
   });
   const persistence = buildTelegramInboundPersistence({
+    capturedAt: payload.sentAt ?? options.capturedAt,
     connectorKey: payload.connectorKey,
     sentAt,
     externalConversationId: payload.externalConversationId,
@@ -140,7 +162,6 @@ export async function handleTelegramMessageRequest(
   const target = await submitRememberedChannelInput({
     coordinator: options.coordinator,
     ...(options.enqueueOptions === undefined ? {} : {enqueueOptions: options.enqueueOptions}),
-    routes: options.routes,
     sessionId: thread.sessionId,
     identityId,
     route: persistence.rememberedRoute,
@@ -169,6 +190,69 @@ export async function handleTelegramRuntimeMessageRequest(
     }
     return `runtime-request:${requestId}:system-reply`;
   };
+  const resetPayload = (identityId?: string): ResetSessionRequestPayload => ({
+    ...(identityId ? {identityId} : {}),
+    source: TELEGRAM_SOURCE,
+    connectorKey: payload.connectorKey,
+    externalConversationId: payload.externalConversationId,
+    externalActorId: payload.externalActorId,
+    externalMessageId: payload.externalMessageId,
+  });
+  const systemReply = (text: string) => ({
+    idempotencyKey: systemReplyIdempotencyKey(),
+    channel: TELEGRAM_SOURCE,
+    connectorKey: payload.connectorKey,
+    externalConversationId: payload.externalConversationId,
+    externalActorId: payload.externalActorId,
+    text,
+    replyToMessageId: payload.externalMessageId,
+  });
+  const persistSystemReply = async (input: Parameters<typeof options.threads.queueSystemReply>[0]): Promise<void> => {
+    try {
+      await options.threads.queueSystemReply(input);
+    } catch (error) {
+      if (error instanceof RetryableRuntimeRequestError) throw error;
+      throw new RetryableRuntimeRequestError(
+        `Telegram control reply ${input.idempotencyKey} could not be reconciled after persistence failed.`,
+        {cause: error},
+      );
+    }
+  };
+  const queueResetConfirmation = async (result: ResetSessionResult): Promise<ResetSessionResult> => {
+    await persistSystemReply({
+      ...systemReply("Reset Panda. Fresh session started."),
+      threadId: result.threadId,
+    });
+    return result;
+  };
+
+  if (options.replayAttempt && command === "start") {
+    const reply = await options.threads.findSystemReply(systemReply(buildTelegramStartText(payload.externalActorId)));
+    if (reply) return {status: "replied", reason: "start_unpaired"};
+  }
+  if (options.replayAttempt && command === "new") {
+    const reply = await options.threads.findSystemReply(systemReply("/new is TUI-only. Use /reset here to start fresh."));
+    if (reply) return {status: "replied", reason: "new_is_tui_only"};
+  }
+  if (command === "reset" && options.replayAttempt) {
+    const requestId = options.enqueueOptions?.inputId;
+    if (!requestId) throw new Error("Telegram reset requires the durable runtime request id.");
+    const confirmation = await options.threads.findSystemReply(systemReply("Reset Panda. Fresh session started."));
+    const replay = await options.threads.reconcileResetSession(
+      resetPayload(),
+      requestId,
+      payload.sentAt ?? options.capturedAt,
+    );
+    if (confirmation && !replay) {
+      throw new Error(`Telegram reset ${requestId} has a confirmation without durable reset lineage.`);
+    }
+    if (replay) {
+      if (confirmation?.threadId && confirmation.threadId !== replay.threadId) {
+        throw new Error(`Telegram reset ${requestId} confirmation targets another thread.`);
+      }
+      return confirmation ? replay : queueResetConfirmation(replay);
+    }
+  }
   const binding = await options.identityStore.resolveIdentityBinding({
     source: TELEGRAM_SOURCE,
     connectorKey: payload.connectorKey,
@@ -176,15 +260,7 @@ export async function handleTelegramRuntimeMessageRequest(
   });
 
   if (command === "start" && !binding) {
-    await options.threads.queueSystemReply({
-      idempotencyKey: systemReplyIdempotencyKey(),
-      channel: TELEGRAM_SOURCE,
-      connectorKey: payload.connectorKey,
-      externalConversationId: payload.externalConversationId,
-      externalActorId: payload.externalActorId,
-      text: buildTelegramStartText(payload.externalActorId),
-      replyToMessageId: payload.externalMessageId,
-    });
+    await persistSystemReply(systemReply(buildTelegramStartText(payload.externalActorId)));
     return {status: "replied", reason: "start_unpaired"};
   }
 
@@ -193,15 +269,7 @@ export async function handleTelegramRuntimeMessageRequest(
   }
 
   if (command === "new") {
-    await options.threads.queueSystemReply({
-      idempotencyKey: systemReplyIdempotencyKey(),
-      channel: TELEGRAM_SOURCE,
-      connectorKey: payload.connectorKey,
-      externalConversationId: payload.externalConversationId,
-      externalActorId: payload.externalActorId,
-      text: "/new is TUI-only. Use /reset here to start fresh.",
-      replyToMessageId: payload.externalMessageId,
-    });
+    await persistSystemReply(systemReply("/new is TUI-only. Use /reset here to start fresh."));
     return {status: "replied", reason: "new_is_tui_only"};
   }
 
@@ -210,25 +278,13 @@ export async function handleTelegramRuntimeMessageRequest(
     if (!requestId) {
       throw new Error("Telegram reset requires the durable runtime request id.");
     }
-    const result = await options.threads.handleResetSession({
-      identityId: binding.identityId,
-      source: TELEGRAM_SOURCE,
-      connectorKey: payload.connectorKey,
-      externalConversationId: payload.externalConversationId,
-      externalActorId: payload.externalActorId,
-      externalMessageId: payload.externalMessageId,
-    }, requestId);
-    await options.threads.queueSystemReply({
-      idempotencyKey: systemReplyIdempotencyKey(),
-      channel: TELEGRAM_SOURCE,
-      connectorKey: payload.connectorKey,
-      externalConversationId: payload.externalConversationId,
-      externalActorId: payload.externalActorId,
-      text: "Reset Panda. Fresh session started.",
-      replyToMessageId: payload.externalMessageId,
-      threadId: result.threadId,
-    });
-    return result;
+    const result = await options.threads.handleResetSession(
+      resetPayload(binding.identityId),
+      requestId,
+      payload.sentAt ?? options.capturedAt,
+      options.replayAttempt ?? false,
+    );
+    return queueResetConfirmation(result);
   }
 
   return handleTelegramMessageRequest(payload, binding.identityId, options);
@@ -264,6 +320,7 @@ export async function handleTelegramReactionRequest(
     addedEmojis: payload.addedEmojis,
   });
   const persistence = buildTelegramInboundPersistence({
+    capturedAt: options.capturedAt,
     connectorKey: payload.connectorKey,
     externalConversationId: payload.externalConversationId,
     externalActorId: payload.externalActorId,
@@ -292,7 +349,6 @@ export async function handleTelegramReactionRequest(
   const target = await submitRememberedChannelInput({
     coordinator: options.coordinator,
     ...(options.enqueueOptions === undefined ? {} : {enqueueOptions: options.enqueueOptions}),
-    routes: options.routes,
     sessionId: thread.sessionId,
     identityId: binding.identityId,
     route: persistence.rememberedRoute,

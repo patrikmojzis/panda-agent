@@ -24,6 +24,7 @@ import {
   normalizeSubagentToolGroups,
   type SubagentToolGroup,
 } from "./tool-groups.js";
+import type {InferenceProjection} from "../../kernel/transcript/types.js";
 
 export const SUBAGENT_SESSION_METADATA_VERSION = 1;
 
@@ -46,6 +47,7 @@ export interface SubagentResolvedSnapshot {
   model?: string;
   modelSource?: SubagentResolvedModelSource;
   thinking?: ThinkingLevel;
+  inferenceProjection?: InferenceProjection;
   credentialPolicy: ExecutionCredentialPolicy;
   skillPolicy: ExecutionSkillPolicy;
   toolPolicy: ExecutionToolPolicy;
@@ -111,6 +113,14 @@ function parseModelSource(value: unknown): SubagentResolvedModelSource | undefin
     return value;
   }
   throw new Error(`Unsupported subagent metadata model source ${String(value)}.`);
+}
+
+function parseInferenceProjection(value: unknown): InferenceProjection | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!isJsonObject(value)) {
+    throw new Error("Subagent metadata inference projection must be an object.");
+  }
+  return value as InferenceProjection;
 }
 
 function parseCredentialPolicy(value: unknown): ExecutionCredentialPolicy {
@@ -254,6 +264,7 @@ function parseResolvedSnapshot(value: unknown): SubagentResolvedSnapshot {
     model: trimToUndefined(value.model),
     modelSource: parseModelSource(value.modelSource),
     thinking: parseSubagentProfileThinking(value.thinking),
+    inferenceProjection: parseInferenceProjection(value.inferenceProjection),
     credentialPolicy: parseCredentialPolicy(value.credentialPolicy),
     skillPolicy: parseSkillPolicy(value.skillPolicy),
     toolPolicy: parseToolPolicy(value.toolPolicy),

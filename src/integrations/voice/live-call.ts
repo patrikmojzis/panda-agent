@@ -2,7 +2,7 @@ import {randomUUID} from "node:crypto";
 
 import type {LiveVoiceRepo} from "../../domain/live-voice/repo.js";
 import {isActiveLiveVoiceTurn, type LiveVoiceTurnRecord} from "../../domain/live-voice/types.js";
-import type {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
+import {isRetryableRuntimeInfrastructureError} from "../../domain/threads/requests/errors.js";
 import {hasAudiblePcm16} from "./pcm.js";
 import {LiveVoiceSession, type LiveVoiceSessionSnapshot} from "./live-voice-session.js";
 import type {
@@ -19,6 +19,7 @@ const PROVIDER_FAILURE_WINDOW_MS = 5 * 60_000;
 const MAX_PROVIDER_FAILURES_PER_WINDOW = 4;
 const PLAYBACK_FAILURE_WINDOW_MS = 60_000;
 const MAX_PLAYBACK_FAILURES_PER_WINDOW = 4;
+const DELEGATION_CLOSE_WAIT_MS = 5_000;
 
 export interface LiveVoiceOutputSnapshot {
   state: string;
@@ -88,9 +89,8 @@ export interface LiveVoiceCallOptions {
   sessionId: string;
   agentKey: string;
   voice: Pick<LiveVoiceRepo,
-    "createOrGetTurn" | "getTurn" | "reserveFinalDelivery" | "releaseFinalDelivery" | "completeReservedFinal" | "failTurn"
+    "createOrGetTurnAndEnqueueDelegation" | "getTurn" | "reserveFinalDelivery" | "releaseFinalDelivery" | "completeReservedFinal" | "failTurn"
   >;
-  requests: Pick<RuntimeRequestRepo, "enqueueRequest">;
   createProvider: LiveVoiceProviderFactory;
   output: LiveVoiceOutput;
   log(event: string, payload: Record<string, unknown>): void;
@@ -142,6 +142,7 @@ export class LiveVoiceCall {
   private readonly acceptedAt: number[] = [];
   private readonly turnBindingsByUtterance = new Map<string, LiveVoiceTurnBinding>();
   private readonly turnBindingsById = new Map<string, LiveVoiceTurnBinding>();
+  private readonly delegationPersistence = new Set<Promise<void>>();
   private readonly providerFailureTimes: number[] = [];
   private readonly playbackFailureTimes: number[] = [];
   private providerReconnectCount = 0;
@@ -320,6 +321,18 @@ export class LiveVoiceCall {
     this.turnBindingsById.clear();
     this.turnBindingsByUtterance.clear();
     await Promise.all(turnIds.map((turnId) => this.options.voice.failTurn(turnId, `Live voice session ended: ${reason}.`).catch(() => undefined)));
+    const persistence = [...this.delegationPersistence];
+    if (persistence.length > 0) {
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        Promise.allSettled(persistence),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, DELEGATION_CLOSE_WAIT_MS);
+          timer.unref?.();
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+    }
     this.changed();
   }
 
@@ -426,7 +439,13 @@ export class LiveVoiceCall {
     }
     attribution.delegated = true;
     if (attribution.turnDone) this.removeUtterance(attribution);
-    return this.delegate(providerGeneration, providerDelegationId, prompt, attribution);
+    const persistence = this.delegate(providerGeneration, providerDelegationId, prompt, attribution);
+    this.delegationPersistence.add(persistence);
+    void persistence.then(
+      () => { this.delegationPersistence.delete(persistence); },
+      () => { this.delegationPersistence.delete(persistence); },
+    );
+    return persistence;
   }
 
   private async delegate(providerGeneration: number, providerDelegationId: string, prompt: string, attribution: LiveVoiceUtterance): Promise<void> {
@@ -450,7 +469,7 @@ export class LiveVoiceCall {
     this.delegationUpdatedAt = Date.now();
     this.changed();
     try {
-      const {turn} = await this.options.voice.createOrGetTurn({
+      const turnInput = {
         id,
         liveVoiceSessionId: this.options.liveVoiceSessionId,
         providerDelegationId,
@@ -459,7 +478,32 @@ export class LiveVoiceCall {
         agentKey: this.options.agentKey,
         externalActorId: attribution.actorId,
         prompt,
-      });
+      };
+      let turn: LiveVoiceTurnRecord;
+      let retryAttempt = 0;
+      while (true) {
+        try {
+          turn = await this.options.voice.createOrGetTurnAndEnqueueDelegation(turnInput);
+          break;
+        } catch (error) {
+          if (!isRetryableRuntimeInfrastructureError(error)) throw error;
+          retryAttempt += 1;
+          this.delegationStatus = "retrying";
+          this.delegationUpdatedAt = Date.now();
+          this.changed();
+          this.options.log("live_voice_delegation_retrying", {
+            liveVoiceTurnId: binding.liveVoiceTurnId,
+            retryAttempt,
+            message: safeFailureMessage(error),
+          });
+          await abortableDelay(Math.min(2_000, retryAttempt * 250), this.abort.signal);
+        }
+      }
+      if (!this.currentGeneration(providerGeneration) || this.abort.signal.aborted) {
+        await this.options.voice.failTurn(turn.id, "Live voice session ended before delegation enqueue completed.");
+        this.releaseTurnBinding(binding.liveVoiceTurnId);
+        return;
+      }
       if (!isActiveLiveVoiceTurn(turn)) { this.releaseTurnBinding(id); return; }
       if (turn.id !== id) {
         this.turnBindingsById.delete(id);
@@ -467,10 +511,6 @@ export class LiveVoiceCall {
         this.turnBindingsById.set(turn.id, binding);
       }
       binding.creating = false;
-      await this.options.requests.enqueueRequest(
-        {kind: "live_voice_delegation", payload: {liveVoiceTurnId: turn.id, sessionId: turn.sessionId}},
-        {idempotencyKey: `live_voice_delegation:${turn.id}`},
-      );
       this.liveVoiceTurnId = turn.id;
       this.delegationStatus = "queued";
       this.delegationUpdatedAt = Date.now();

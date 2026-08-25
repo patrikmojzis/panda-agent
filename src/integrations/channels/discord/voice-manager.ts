@@ -13,7 +13,6 @@ import {createDecoder, createEncoder, Application, type OpusDecoderHandle, type 
 
 import type {LiveVoiceRepo} from "../../../domain/live-voice/repo.js";
 import {isActiveLiveVoiceTurn} from "../../../domain/live-voice/types.js";
-import type {RuntimeRequestRepo} from "../../../domain/threads/requests/repo.js";
 import {DrainLoop} from "../../../lib/drain-loop.js";
 import {deriveLiveVoiceHealth, type LiveVoiceDiagnosticSnapshot} from "../../voice/health.js";
 import {LiveVoiceCall} from "../../voice/live-call.js";
@@ -80,7 +79,6 @@ export interface DiscordVoiceManagerOptions {
   restClient: Pick<DiscordWorkerRestClient, "getChannelMetadata">;
   controls: DiscordVoiceControlRepo;
   voice: LiveVoiceRepo;
-  requests: Pick<RuntimeRequestRepo, "enqueueRequest">;
   log(event: string, payload: Record<string, unknown>): void;
   getInfrastructureHealth?: () => DiscordVoiceInfrastructureHealth;
   provider?: LiveVoiceProviderDefinition;
@@ -286,7 +284,6 @@ export class DiscordVoiceSessionManager {
         sessionId: control.sessionId,
         agentKey: control.agentKey,
         voice: this.options.voice,
-        requests: this.options.requests,
         createProvider: provider.createSession,
         output: playback,
         log: (event, payload) => this.options.log(event, {connectorKey: control.connectorKey, guildId: channel.guildId, channelId: channel.channelId, ...payload}),
@@ -312,6 +309,9 @@ export class DiscordVoiceSessionManager {
       connection.subscribe(player);
       await call.start(abort.signal);
       if (abort.signal.aborted || slot.epoch !== epoch || this.stopped) throw abortError(abort.signal);
+      // The connected row is the enqueue fence. Do not expose participant
+      // audio until atomic turn/request creation can lock that durable state.
+      await this.options.voice.upsertSession({...sessionRecord, state: "connected"});
       this.sessions.set(channel.guildId, session);
       this.startHealthReporter(session);
       this.attachPlayerLifecycle(session);
@@ -320,7 +320,6 @@ export class DiscordVoiceSessionManager {
       const activeSession = session;
       session.expiry = setTimeout(() => this.stopGuildSafely(activeSession.guildId, "session_expired"), this.options.sessionTtlMs ?? VOICE_SESSION_TTL_MS);
       session.expiry.unref?.();
-      await this.options.voice.upsertSession({...sessionRecord, state: "connected"});
       await this.reportHealth(session, true);
       this.options.log("voice_connected", {connectorKey: control.connectorKey, guildId: channel.guildId, channelId: channel.channelId, sessionId: control.sessionId, model: session.model});
       return this.result(session, "connected");
@@ -620,9 +619,21 @@ export class DiscordVoiceSessionManager {
     this.sessions.delete(guildId);
     if (session.expiry) clearTimeout(session.expiry);
     if (session.healthTimer) clearInterval(session.healthTimer);
-    await this.disposeSessionResources(session, reason);
     const normalReasons = new Set(["requested", "moved_channel", "control_timed_out", "worker_stopped", "session_expired"]);
-    await this.options.voice.markSessionDisconnected(session.liveVoiceSessionId, normalReasons.has(reason) ? "disconnected" : "error", reason);
+    let persistenceError: unknown;
+    try {
+      // This update is the database fence used by atomic delegation enqueue.
+      // Once it commits, no new turn/request pair can enter this closed call.
+      await this.options.voice.markSessionDisconnected(
+        session.liveVoiceSessionId,
+        normalReasons.has(reason) ? "disconnected" : "error",
+        reason,
+      );
+    } catch (error) {
+      persistenceError = error;
+    }
+    await this.disposeSessionResources(session, reason);
+    if (persistenceError) throw persistenceError;
     this.options.log("voice_disconnected", {connectorKey: session.connectorKey, guildId: session.guildId, channelId: session.channelId, sessionId: session.sessionId, reason});
   }
 

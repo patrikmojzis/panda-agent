@@ -11,6 +11,7 @@ export const TUI_CONVERSATION_ID = "terminal";
  * handling can treat terminal chat like any other human-facing lane.
  */
 export function buildTuiInboundPersistence(options: {
+  capturedAt: number;
   sentAt?: string;
   externalMessageId: string;
   actorId: string;
@@ -40,7 +41,7 @@ export function buildTuiInboundPersistence(options: {
       externalConversationId: TUI_CONVERSATION_ID,
       externalActorId: options.actorId,
       externalMessageId: options.externalMessageId,
-      capturedAt: Date.now(),
+      capturedAt: options.capturedAt,
     },
   };
 }

@@ -2598,6 +2598,10 @@ export async function startControlServer(options: StartControlServerOptions): Pr
     server,
     host: options.host,
     port: actualPort,
-    close: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+    close: () => new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+      server.closeIdleConnections();
+      server.closeAllConnections();
+    }),
   };
 }

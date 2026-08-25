@@ -12,25 +12,28 @@ function createHarness(options: {providers?: LiveVoiceProviderSession[]} = {}) {
   const output = {pushPcm: vi.fn(), interrupt: vi.fn(), reset: vi.fn(), getSnapshot: vi.fn(() => ({state: "idle", responseEpoch: 1, queuedMs: 0, overruns: 0}))};
   const turns = new Map<string, Record<string, unknown>>();
   const voice = {
-    createOrGetTurn: vi.fn(async (input: Record<string, unknown>) => { const turn = {...input, status: "pending", createdAt: 1, updatedAt: 1}; turns.set(String(input.id), turn); return {turn, created: true}; }),
+    createOrGetTurnAndEnqueueDelegation: vi.fn(async (input: Record<string, unknown>) => { const turn = {...input, status: "pending", createdAt: 1, updatedAt: 1}; turns.set(String(input.id), turn); return turn; }),
     getTurn: vi.fn(async (id: string) => turns.get(id)),
     reserveFinalDelivery: vi.fn(async (id: string, controlId: string, text: string) => ({turn: {...turns.get(id), status: "final_sending", finalControlId: controlId, finalText: text}, reserved: true})),
     releaseFinalDelivery: vi.fn(async (id: string) => turns.get(id)),
     completeReservedFinal: vi.fn(async (id: string) => ({...turns.get(id), status: "completed"})),
-    failTurn: vi.fn(async (id: string, error: string) => ({...turns.get(id), status: "failed", error})),
+    failTurn: vi.fn(async (id: string, error: string) => {
+      const failed = {...turns.get(id), id, status: "failed", error};
+      turns.set(id, failed);
+      return failed;
+    }),
   };
-  const requests = {enqueueRequest: vi.fn(async () => ({id: "request-1"}))};
   const onTerminalFailure = vi.fn();
   const call = new LiveVoiceCall({
     liveVoiceSessionId: "22222222-2222-4222-8222-222222222222", sessionId: "session-1", agentKey: "panda",
-    voice: voice as never, requests: requests as never,
+    voice: voice as never,
     createProvider: (created) => {
       providerCallbacks.push(created);
       return options.providers?.[providerCallbacks.length - 1] ?? provider;
     },
     output, log: vi.fn(), onTerminalFailure,
   });
-  return {call, provider, providerCallbacks, output, voice, turns, requests, onTerminalFailure, get callbacks() { return providerCallbacks.at(-1)!; }};
+  return {call, provider, providerCallbacks, output, voice, turns, onTerminalFailure, get callbacks() { return providerCallbacks.at(-1)!; }};
 }
 
 describe("LiveVoiceCall", () => {
@@ -61,11 +64,11 @@ describe("LiveVoiceCall", () => {
     harness.call.endUtterance(utterance.utteranceId);
     harness.callbacks.onTurnDone({role: "user", transcript: "check status"});
     await harness.callbacks.onDelegation({id: "delegation-1", prompt: "check status"});
-    expect(harness.requests.enqueueRequest).toHaveBeenCalledWith({kind: "live_voice_delegation", payload: {
-      liveVoiceTurnId: expect.any(String),
+    expect(harness.voice.createOrGetTurnAndEnqueueDelegation).toHaveBeenCalledWith(expect.objectContaining({
+      id: expect.any(String),
       sessionId: "session-1",
-    }}, {idempotencyKey: expect.stringContaining("live_voice_delegation:")});
-    const turnId = String(harness.voice.createOrGetTurn.mock.calls[0]![0].id);
+    }));
+    const turnId = String(harness.voice.createOrGetTurnAndEnqueueDelegation.mock.calls[0]![0].id);
     harness.turns.set(turnId, {...harness.turns.get(turnId), status: "running"});
     await expect(harness.call.deliver({controlId: "progress", text: "Working.", mode: "progress", liveVoiceTurnId: turnId})).resolves.toMatchObject({delivery: "delegation"});
     expect(harness.provider.appendDelegationContext).toHaveBeenCalledWith("delegation-1", "Working.", "commentary");
@@ -73,6 +76,58 @@ describe("LiveVoiceCall", () => {
     expect(harness.voice.completeReservedFinal).toHaveBeenCalledWith(turnId, "final");
     await expect(harness.call.deliver({controlId: "proactive", text: "One more thing.", mode: "final"})).resolves.toEqual({delivery: "session"});
     expect(harness.provider.appendSessionContext).toHaveBeenCalledWith("One more thing.", "speakable");
+  });
+
+  it("retains the delegation binding while atomic persistence retries", async () => {
+    const harness = createHarness();
+    await harness.call.start();
+    const utterance = harness.call.beginUtterance("user-1");
+    if (utterance.status !== "accepted") throw new Error("expected accepted utterance");
+    harness.call.pushAudio(utterance.utteranceId, Buffer.alloc(960, 1));
+    harness.call.endUtterance(utterance.utteranceId);
+    harness.callbacks.onTurnDone({role: "user", transcript: "check status"});
+    harness.voice.createOrGetTurnAndEnqueueDelegation.mockRejectedValueOnce(Object.assign(
+      new Error("connection lost after commit"),
+      {code: "08006"},
+    ));
+
+    await expect(harness.callbacks.onDelegation({id: "delegation-1", prompt: "check status"}))
+      .resolves.toBeUndefined();
+    expect(harness.voice.failTurn).not.toHaveBeenCalled();
+    expect(harness.voice.createOrGetTurnAndEnqueueDelegation).toHaveBeenCalledTimes(2);
+    expect(harness.call.getSnapshot().delegationStatus).toBe("queued");
+  });
+
+  it("joins delegation persistence and fails a turn committed during close", async () => {
+    const harness = createHarness();
+    await harness.call.start();
+    const utterance = harness.call.beginUtterance("user-1");
+    if (utterance.status !== "accepted") throw new Error("expected accepted utterance");
+    harness.call.pushAudio(utterance.utteranceId, Buffer.alloc(960, 1));
+    harness.call.endUtterance(utterance.utteranceId);
+    harness.callbacks.onTurnDone({role: "user", transcript: "close race"});
+    let releasePersistence!: () => void;
+    const persistenceBlocked = new Promise<void>((resolve) => { releasePersistence = resolve; });
+    harness.voice.createOrGetTurnAndEnqueueDelegation.mockImplementationOnce(async (input: Record<string, unknown>) => {
+      await persistenceBlocked;
+      const turn = {...input, status: "pending", createdAt: 1, updatedAt: 1};
+      harness.turns.set(String(input.id), turn);
+      return turn;
+    });
+
+    const delegation = harness.callbacks.onDelegation({id: "delegation-close", prompt: "close race"});
+    await vi.waitFor(() => expect(harness.voice.createOrGetTurnAndEnqueueDelegation).toHaveBeenCalledOnce());
+    let closeFinished = false;
+    const closing = harness.call.close("test_close_race").then(() => { closeFinished = true; });
+    await Promise.resolve();
+    expect(closeFinished).toBe(false);
+    releasePersistence();
+
+    await expect(delegation).resolves.toBeUndefined();
+    await closing;
+    const turnId = String(harness.voice.createOrGetTurnAndEnqueueDelegation.mock.calls[0]![0].id);
+    expect(harness.turns.get(turnId)).toMatchObject({status: "failed"});
+    expect(harness.call.getSnapshot().delegationStatus).not.toBe("queued");
   });
 
   it("routes provider audio through the transport-neutral output contract", async () => {

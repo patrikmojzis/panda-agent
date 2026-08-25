@@ -46,6 +46,7 @@ export interface TelegramReactionMetadataOptions {
 }
 
 export interface TelegramInboundPersistenceOptions {
+  capturedAt: number;
   connectorKey: string;
   sentAt?: string;
   externalConversationId: string;
@@ -140,7 +141,7 @@ export function buildTelegramInboundPersistence(
       externalConversationId: options.externalConversationId,
       externalActorId: options.externalActorId,
       externalMessageId: options.externalMessageId,
-      capturedAt: Date.now(),
+      capturedAt: options.capturedAt,
     },
   };
 }

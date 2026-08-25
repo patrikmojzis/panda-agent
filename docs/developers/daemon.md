@@ -82,16 +82,16 @@ therefore cannot create an empty model run. `pending_wake_at` is an admission
 edge, fenced by a monotonic `pending_wake_generation`. A claim or run boundary
 clears only the generation visible to its PostgreSQL snapshot, so a newer wake
 that commits while the statement waits on a row lock remains armed for the next
-boundary. Admission atomically demotes the visible pending `wake` inputs to
-`queue`, records their exact `admitted_run_id`, and applies the visible FIFO
-set. Admission identity lets a run page through more than one input batch
-without sweeping in
-later queue-only work. An abort leaves only its admitted set durably dormant
-across restart/reconnect scans. A new enqueue, queue promotion, or explicit wake
-re-admits that set. Non-abort failure and orphan recovery re-arm only inputs
-admitted by the failed run, atomically with terminalizing it, so retryable work
-cannot be stranded or violate queue intent. Thread concurrency must never be
-implemented by checking out a Postgres client for the lifetime of a model run.
+boundary. The run snapshots the greatest visible pending `input_order` into
+`runs.admitted_through_input_order`, then applies only that immutable FIFO
+prefix in bounded pages. This is one scalar write no matter how large the
+backlog is, and later queue-only inputs remain outside the run. Abort leaves the
+prefix dormant across restart/reconnect scans until a genuinely new wake
+advances the cutoff. Non-abort failure and orphan recovery re-arm the session's
+wake latch when unapplied work remains inside the failed run's cutoff. Input
+rows are never rewritten merely to express scheduling state. Thread concurrency
+must never be implemented by checking out a Postgres client for the lifetime of
+a model run.
 
 Owner-fenced control and claim paths lock the daemon lease before session state;
 a queued renewal must never sit between those locks. Live input mutations then
@@ -120,6 +120,14 @@ Manual compaction and `/reset` reserve the scheduler's exclusive lane for the
 thread. The database mutation also checks the current daemon lease while
 holding the thread row lock and refuses to race a running claim. Do not add a
 second TTL lease table or a fake maintenance run for this.
+Reset reservation and active-run cancellation are one ordered scheduler
+operation: reserve the lane, commit a request-keyed blocking abort receipt,
+then cancel the active controller. The receipt makes the old thread ineligible
+for every later claim, including reconnect scans, until reset atomically swaps
+the session pointer. If cancellation or replacement fails, the request remains
+retryable and resumes from that receipt; it never re-arms old-thread work.
+Splitting abort from reservation, or treating local cancellation as the durable
+boundary, reopens the race.
 
 Shutdown closes ingress and producers first, aborts and drains scheduled work,
 then cancels and durably settles cooperative background jobs while the daemon
@@ -145,9 +153,11 @@ stream: a channel conversation, target session, or target thread.
 
 Shutdown cancels active request handlers and waits up to
 `PANDA_RUNTIME_REQUEST_DRAIN_TIMEOUT_MS` (default `30000`). Claim renewal stops
-as soon as cancellation begins. Cooperative handlers release their claim
-immediately; a stuck handler cannot hold shutdown forever, and its token-fenced
-claim becomes replayable after lease expiry.
+as soon as cancellation begins. Each handler also tracks the last
+database-confirmed lease deadline with a monotonic timer; a failed renewal can
+therefore never let side effects continue past known ownership. Cooperative
+handlers release their claim immediately; a stuck handler cannot hold shutdown
+forever, and its token-fenced claim becomes replayable after lease expiry.
 
 `runtime.runtime_requests.ordering_key` is a stable hash of that stream. Claim
 SQL will not bypass an earlier pending/running request with the same key, and a
@@ -165,17 +175,56 @@ both crash windows around effect and request settlement without duplicating the
 human-visible reply. Token fencing protects request settlement, while these
 stable ids protect effects if an expired owner finishes late.
 
+Every claim increments `runtime_requests.execution_attempts`. A first-attempt
+database error after a replay-safe mutation is treated as an ambiguous outcome,
+not a terminal failure. The next claim probes the operation receipt before any
+mutable identity, pairing, profile, current-thread, or environment lookup. This
+is deliberate: authorization is checked when the request is accepted, while a
+retry must reconcile what that accepted request already committed.
+
 Channel ingress supplies a separate hash of event kind, connector, provider
 scope, and external event id as the request idempotency key, so transport
 redelivery cannot create two durable requests or collide across conversations.
+Abort, no-op compaction, session creation/main resolution, and runtime-config
+effects have explicit receipts foreign-keyed to their runtime request. Config
+receipts prevent replay from reapplying an old patch; creation receipts preserve
+the accepted identity/agent target even if pairings later change. Receipt rows
+disappear when their request leaves the idempotency window. Direct internal
+operations do not manufacture permanent receipt ids. Runtime config is ordered
+by request acceptance independently for model, thinking, and inference
+projection, so an older partial patch can fill its own field without erasing a
+newer value in another field.
+
+Transport media remains in `.idempotent` only while its accepted request can
+retry. Relocation first transfers ownership to the agent media tree and leaves
+a small descriptor-only replay receipt. Unconsumed bytes are removed only after
+the request is durably completed or failed. One daemon-owned periodic janitor
+handles the cross-connector crash window by resolving a bounded batch of receipt
+owners in one query; terminal owners release staging promptly, while missing or
+pre-owner receipts require the conservative 31-day cutoff plus a final manifest
+recheck. It never performs DB probes on the ingress write path. Relocated agent
+bytes are immutable here because a prior transcript may reference the same
+redelivered media. Per-account connector janitors are forbidden because all
+connectors share the same media tree.
+
+Subagent creation is a small durable saga: session/thread creation is its
+anchor, environment attachment and A2A pairing are idempotent steps, and the
+stable handoff input is the completion marker. Once that handoff exists, replay
+does not repeat earlier effects. Environment attachment is deliberately first;
+if its accepted snapshot becomes deterministically invalid before an attachment
+exists, the saga deletes the unobservable anchor instead of retrying forever.
+`/reset` and channel control replies use the same rule: probe the committed
+reset, abort, and delivery receipts before mutable authorization, then converge
+on the same thread and outbound idempotency key.
+
 On shutdown the drain stops claiming, signals active handlers, and waits up to
-`PANDA_RUNTIME_REQUEST_DRAIN_TIMEOUT_MS` (default `30000`). A handler that
-unwinds releases—not completes—its token-fenced claim. A non-cooperative handler
-stops renewing immediately; shutdown continues and the claim becomes replayable
-only after its lease expires. Coordinator shutdown begins concurrently so a
-request waiting on a thread lane cannot deadlock daemon shutdown. Stable
-operation identities make a rare late handler/successor overlap converge on the
-same durable effect.
+its configured deadline. Coordinator shutdown begins concurrently so a request
+waiting on a thread lane cannot deadlock daemon shutdown. Every remaining
+service join is capped by `PANDA_DAEMON_SERVICE_STOP_TIMEOUT_MS` (default
+`5000`), so a broken listener or HTTP server cannot wedge process teardown.
+After model work settles, runtime closure also flushes provider session-resource
+caches; cached Codex WebSockets must not keep a stopped process alive until
+their idle timeout.
 
 ## Exact Live Config
 

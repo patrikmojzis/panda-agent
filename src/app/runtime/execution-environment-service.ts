@@ -73,6 +73,10 @@ export interface AttachReadySessionToDisposableEnvironmentInput {
   toolPolicy?: ExecutionToolPolicy;
 }
 
+export class InvalidDisposableEnvironmentAttachmentError extends Error {
+  override readonly name = "InvalidDisposableEnvironmentAttachmentError";
+}
+
 export interface EnsureBoundSessionEnvironmentReadyInput {
   session: Pick<SessionRecord, "id" | "agentKey">;
   binding: SessionEnvironmentBindingRecord;
@@ -129,6 +133,7 @@ export type ExecutionEnvironmentStopStore = Pick<
 type ExecutionEnvironmentLifecycleStore = ExecutionEnvironmentStopStore & Pick<
   ExecutionEnvironmentStore,
   | "bindSession"
+  | "getBinding"
   | "getDefaultBinding"
   | "listExpiredDisposableEnvironments"
 >;
@@ -571,28 +576,11 @@ export class ExecutionEnvironmentLifecycleService {
     const credentialPolicy = input.credentialPolicy ?? {mode: "allowlist" as const, envKeys: []};
     const skillPolicy = input.skillPolicy ?? {mode: "allowlist" as const, skillKeys: []};
     const toolPolicy = input.toolPolicy ?? {};
-    const ownerSessionId = trimToUndefined(input.ownerSessionId);
-    if (!ownerSessionId) {
-      throw new Error("Disposable environment owner session id must not be empty.");
-    }
-
-    const environment = await this.store.getEnvironment(input.environmentId);
-    if (environment.kind !== "disposable_container") {
-      throw new Error(`Execution environment ${environment.id} is not disposable.`);
-    }
-    if (environment.agentKey !== input.session.agentKey) {
-      throw new Error(`Execution environment ${environment.id} does not belong to agent ${input.session.agentKey}.`);
-    }
-    if (environment.createdBySessionId !== ownerSessionId) {
-      throw new Error(`Execution environment ${environment.id} is not owned by session ${ownerSessionId}.`);
-    }
-    if (environment.state !== "ready") {
-      throw new Error(`Execution environment ${environment.id} is ${environment.state}.`);
-    }
-    if (isExpired(environment)) {
-      throw new Error(`Execution environment ${environment.id} is expired.`);
-    }
-
+    const environment = await this.validateReadyDisposableEnvironment({
+      environmentId: input.environmentId,
+      agentKey: input.session.agentKey,
+      ownerSessionId: input.ownerSessionId,
+    });
     const binding = await this.store.bindSession({
       sessionId: input.session.id,
       environmentId: environment.id,
@@ -603,6 +591,56 @@ export class ExecutionEnvironmentLifecycleService {
       toolPolicy,
     });
     return {environment, binding};
+  }
+
+  async getSessionEnvironmentAttachment(input: {
+    session: Pick<SessionRecord, "id" | "agentKey">;
+    environmentId: string;
+  }): Promise<CreateDisposableSessionEnvironmentResult | null> {
+    const binding = await this.store.getBinding(input.session.id, input.environmentId);
+    if (!binding) return null;
+    const environment = await this.store.getEnvironment(input.environmentId);
+    if (environment.agentKey !== input.session.agentKey) {
+      throw new Error(`Execution environment ${environment.id} does not belong to agent ${input.session.agentKey}.`);
+    }
+    return {binding, environment};
+  }
+
+  async validateReadyDisposableEnvironment(input: {
+    environmentId: string;
+    agentKey: string;
+    ownerSessionId: string;
+  }): Promise<ExecutionEnvironmentRecord> {
+    const ownerSessionId = trimToUndefined(input.ownerSessionId);
+    if (!ownerSessionId) {
+      throw new InvalidDisposableEnvironmentAttachmentError(
+        "Disposable environment owner session id must not be empty.",
+      );
+    }
+
+    const environment = await this.store.getEnvironment(input.environmentId);
+    if (environment.kind !== "disposable_container") {
+      throw new InvalidDisposableEnvironmentAttachmentError(`Execution environment ${environment.id} is not disposable.`);
+    }
+    if (environment.agentKey !== input.agentKey) {
+      throw new InvalidDisposableEnvironmentAttachmentError(
+        `Execution environment ${environment.id} does not belong to agent ${input.agentKey}.`,
+      );
+    }
+    if (environment.createdBySessionId !== ownerSessionId) {
+      throw new InvalidDisposableEnvironmentAttachmentError(
+        `Execution environment ${environment.id} is not owned by session ${ownerSessionId}.`,
+      );
+    }
+    if (environment.state !== "ready") {
+      throw new InvalidDisposableEnvironmentAttachmentError(
+        `Execution environment ${environment.id} is ${environment.state}.`,
+      );
+    }
+    if (isExpired(environment)) {
+      throw new InvalidDisposableEnvironmentAttachmentError(`Execution environment ${environment.id} is expired.`);
+    }
+    return environment;
   }
 
   async ensureBoundEnvironmentReady(

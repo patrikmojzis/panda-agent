@@ -342,6 +342,8 @@ export async function startCommandHttpServer(options: CommandHttpServerOptions):
     url: socketPath ? "http://panda-command" : `http://${host}:${port}`,
     close: () => new Promise<void>((resolve, reject) => {
       server.close((error) => error ? reject(error) : resolve());
+      server.closeIdleConnections();
+      server.closeAllConnections();
     }).then(async () => {
       if (socketPath) {
         await removeSocketPath(socketPath);

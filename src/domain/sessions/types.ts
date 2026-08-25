@@ -37,6 +37,23 @@ export interface SessionRuntimeConfigRecord {
   updatedAt?: number;
 }
 
+export interface SessionCreationOperationRecord {
+  operationId: string;
+  identityId: string;
+  agentKey: string;
+  sessionId: string;
+  threadId: string;
+  kind: Extract<AgentSessionKind, "main" | "branch" | "subagent">;
+  createdAt: number;
+}
+
+export interface SessionRuntimeConfigOperationRecord {
+  operationId: string;
+  sessionId: string;
+  threadId: string;
+  createdAt: number;
+}
+
 export interface UpdateSessionRuntimeConfigInput {
   sessionId: string;
   model?: string | null;

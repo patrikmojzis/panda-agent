@@ -5,6 +5,7 @@ import type {MediaDescriptor} from "../../../domain/channels/types.js";
 import type {JsonObject} from "../../../lib/json.js";
 import {trimToUndefined} from "../../../lib/strings.js";
 import {TELEGRAM_SOURCE} from "./config.js";
+import {readTelegramSentAtMs} from "./message-content.js";
 
 type TelegramContext = Context;
 
@@ -302,6 +303,7 @@ function markUnavailable(
 async function downloadTelegramMediaPart(
   part: TelegramMediaPart,
   options: DownloadTelegramSupportedMediaOptions,
+  identity: {eventKey: string; createdAt: number},
 ): Promise<MediaDescriptor> {
   const file = await options.api.getFile(part.fileId);
   if (!file.file_path) {
@@ -347,12 +349,15 @@ async function downloadTelegramMediaPart(
       telegramFilePath: file.file_path,
       ...(part.metadata ?? {}),
     },
+    idempotencyKey: `${identity.eventKey}:${part.kind}:${part.fileUniqueId}`,
+    createdAt: identity.createdAt,
   });
 }
 
 async function downloadTelegramFileOrUnavailable(
   part: TelegramMediaPart,
   options: DownloadTelegramSupportedMediaOptions,
+  identity: {eventKey: string; createdAt: number},
 ): Promise<{media: MediaDescriptor} | {unavailable: TelegramUnavailableMedia}> {
   if (shouldSkipTelegramDownload(part.sizeBytes)) {
     return markUnavailable(part, "Telegram Bot API only exposes bot-downloadable files up to 20 MB.", options);
@@ -360,7 +365,7 @@ async function downloadTelegramFileOrUnavailable(
 
   try {
     return {
-      media: await downloadTelegramMediaPart(part, options),
+      media: await downloadTelegramMediaPart(part, options, identity),
     };
   } catch (error) {
     if (isTelegramFileTooBigError(error)) {
@@ -377,9 +382,13 @@ export async function downloadTelegramSupportedMedia(
 ): Promise<TelegramMediaDownloadResult> {
   const media: MediaDescriptor[] = [];
   const unavailable: TelegramUnavailableMedia[] = [];
+  const identity = {
+    eventKey: `${String(message?.chat.id ?? "unknown")}:${String(message?.message_id ?? "unknown")}`,
+    createdAt: readTelegramSentAtMs(message) ?? 0,
+  };
 
   for (const part of collectTelegramMediaParts(message)) {
-    const result = await downloadTelegramFileOrUnavailable(part, options);
+    const result = await downloadTelegramFileOrUnavailable(part, options, identity);
     if ("media" in result) {
       media.push(result.media);
       continue;

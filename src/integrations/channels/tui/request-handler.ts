@@ -1,4 +1,3 @@
-import type {SessionRouteRepo} from "../../../domain/sessions/routes/repo.js";
 import type {TuiInputRequestPayload} from "../../../domain/threads/requests/types.js";
 import type {ThreadRuntimeCoordinator} from "../../../domain/threads/runtime/coordinator.js";
 import type {ThreadEnqueueOptions, ThreadRecord} from "../../../domain/threads/runtime/types.js";
@@ -12,9 +11,9 @@ import {
 } from "./helpers.js";
 
 export interface TuiInboundRequestHandlerOptions {
+  capturedAt: number;
   coordinator: Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
   enqueueOptions?: ThreadEnqueueOptions;
-  routes: Pick<SessionRouteRepo, "saveLastRoute">;
 }
 
 export async function handleTuiInputRequest(
@@ -25,6 +24,7 @@ export async function handleTuiInputRequest(
 ): Promise<Record<string, unknown>> {
   const sentAt = payload.sentAt ? new Date(payload.sentAt).toISOString() : undefined;
   const persistence = buildTuiInboundPersistence({
+    capturedAt: payload.sentAt ?? options.capturedAt,
     sentAt,
     actorId: payload.actorId,
     externalMessageId: payload.externalMessageId,
@@ -33,7 +33,6 @@ export async function handleTuiInputRequest(
   const target = await submitRememberedChannelInput({
     coordinator: options.coordinator,
     ...(options.enqueueOptions === undefined ? {} : {enqueueOptions: options.enqueueOptions}),
-    routes: options.routes,
     sessionId: thread.sessionId,
     identityId,
     route: persistence.rememberedRoute,

@@ -354,6 +354,8 @@ type RuntimeRequestRecordForKind<K extends RuntimeRequestKind> = {
   orderingKey: string;
   kind: K;
   status: RuntimeRequestStatus;
+  /** Durable claim count; values above one require effect-first reconciliation. */
+  executionAttempts: number;
   payload: RuntimeRequestPayloadByKind[K];
   result?: JsonValue;
   error?: string;

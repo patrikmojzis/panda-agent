@@ -47,10 +47,11 @@ import {createDiscordGifService} from "../../integrations/channels/discord/gifs.
 import {DiscordVoiceControlRepo} from "../../integrations/channels/discord/voice-postgres.js";
 import {LiveVoiceRepo} from "../../domain/live-voice/repo.js";
 import {createLiveVoiceRuntimeEventHandler} from "../../integrations/voice/request-handler.js";
-import {resolveAgentMediaDir} from "./data-dir.js";
+import {resolveAgentMediaDir, resolveDataDir} from "./data-dir.js";
 import {readPositiveIntegerEnv} from "./database.js";
 import {trimToNull} from "../../lib/strings.js";
 import {FileSystemCommandUploadStore} from "../../integrations/commands/file-uploads.js";
+import {resolveRuntimeRequestMediaReceiptOwners} from "./runtime-request-media.js";
 
 interface DaemonContext {
   fallbackContext: {cwd: string};
@@ -66,6 +67,7 @@ interface DaemonContext {
   channelActions: PostgresChannelActionStore;
   connectorLeases: PostgresConnectorLeaseRepo;
   requests: RuntimeRequestRepo;
+  mediaReceiptJanitor: FileSystemMediaStore;
   daemonState: DaemonStateRepo;
   scheduledTaskRunner: ScheduledTaskRunner;
   watchRunner: WatchRunner;
@@ -105,6 +107,7 @@ export async function bootstrapDaemonContext(
   let a2aBindings!: A2ASessionBindingRepo;
   let a2aMessagingService!: A2AMessagingService;
   let liveVoiceForEvents: LiveVoiceRepo | undefined;
+  let mediaReceiptJanitor: FileSystemMediaStore | null = null;
 
   const typingDispatcher = new ChannelTypingDispatcher([
     {
@@ -323,6 +326,15 @@ export async function bootstrapDaemonContext(
     const daemonState = new DaemonStateRepo({
       pool: runtime.pool,
     });
+    mediaReceiptJanitor = new FileSystemMediaStore({
+      rootDir: resolveDataDir(),
+      resolveReceiptOwners: (owners) => resolveRuntimeRequestMediaReceiptOwners(owners, requests),
+      onReceiptSweepError: (error) => {
+        console.error("Daemon media receipt sweep failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
     const commandUploads = new FileSystemCommandUploadStore();
     a2aMessagingService = new A2AMessagingService({
       bindings: a2aBindings,
@@ -439,6 +451,7 @@ export async function bootstrapDaemonContext(
       channelActions,
       connectorLeases,
       requests,
+      mediaReceiptJanitor,
       daemonState,
       scheduledTaskRunner,
       watchRunner,
@@ -447,6 +460,7 @@ export async function bootstrapDaemonContext(
       discordVoice,
     };
   } catch (error) {
+    await mediaReceiptJanitor?.stopReceiptJanitor().catch(() => {});
     await runtime.close();
     throw error;
   }

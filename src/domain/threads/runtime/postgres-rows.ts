@@ -259,12 +259,8 @@ export function parseInputRow(row: Record<string, unknown>): ThreadInputRecord {
       ? "discarded"
       : "pending";
   const appliedRunId = parseOptionalString(row.applied_run_id);
-  const admittedRunId = parseOptionalString(row.admitted_run_id);
   if (status !== "applied" && appliedRunId !== undefined) {
     throw new Error("Thread runtime unapplied input cannot reference an applied run.");
-  }
-  if (status !== "pending" && admittedRunId !== undefined) {
-    throw new Error("Thread runtime terminal input cannot reference an admitting run.");
   }
 
   return {
@@ -280,7 +276,6 @@ export function parseInputRow(row: Record<string, unknown>): ThreadInputRecord {
     actorId: parseOptionalString(row.actor_id),
     identityId: parseOptionalString(row.identity_id),
     createdAt: requireTimestampMillis(row.created_at, "Thread runtime input created_at must be a valid timestamp."),
-    admittedRunId,
     appliedAt,
     appliedRunId,
     discardedAt,
@@ -320,6 +315,10 @@ export function parseRunRow(row: Record<string, unknown>): ThreadRunRecord {
     ...(owner ? {owner} : {}),
     status: parseRunStatus(row.status),
     startedAt: requireTimestampMillis(row.started_at, "Thread runtime run started_at must be a valid timestamp."),
+    admittedThroughInputOrder: parseOptionalBigintNumber(
+      row.admitted_through_input_order,
+      "run admitted input order",
+    ),
     finishedAt: optionalTimestampMillis(row.finished_at, "Thread runtime run finished_at must be a valid timestamp."),
     error: parseOptionalString(row.error),
     abortRequestedAt: optionalTimestampMillis(row.abort_requested_at, "Thread runtime run abort_requested_at must be a valid timestamp."),

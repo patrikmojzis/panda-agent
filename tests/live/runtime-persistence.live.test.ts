@@ -7,11 +7,14 @@ import {createPostgresPool} from "../../src/app/runtime/database.js";
 import {recreateSmokeDatabase} from "../../src/app/smoke/database.js";
 import {PostgresAgentStore} from "../../src/domain/agents/postgres.js";
 import {PostgresConnectorLeaseRepo} from "../../src/domain/connector-leases/repo.js";
+import {PostgresIdentityStore} from "../../src/domain/identity/postgres.js";
 import {PostgresSessionStore} from "../../src/domain/sessions/postgres.js";
+import {LiveVoiceRepo} from "../../src/domain/live-voice/repo.js";
 import {resetSessionCurrentThread} from "../../src/domain/sessions/lifecycle.js";
 import {RuntimeRequestRepo} from "../../src/domain/threads/requests/repo.js";
 import {buildRuntimeRequestTableNames} from "../../src/domain/threads/requests/postgres-shared.js";
 import {PostgresThreadRuntimeStore} from "../../src/domain/threads/runtime/postgres.js";
+import {ThreadInputAdmissionBlockedError} from "../../src/domain/threads/runtime/store.js";
 import {buildThreadRuntimeTableNames} from "../../src/domain/threads/runtime/postgres-shared.js";
 import type {ThreadInputPayload, ThreadRunOwner} from "../../src/domain/threads/runtime/types.js";
 
@@ -153,14 +156,14 @@ describe("atomic runtime persistence on PostgreSQL", () => {
       inputPayload("promoted-message"),
       "queue",
     );
-    const promoted = await threadStore.enqueueInput(
+    const wokenDuplicate = await threadStore.enqueueInput(
       "atomic-thread",
       inputPayload("promoted-message"),
       "wake",
     );
-    expect(promoted).toMatchObject({
+    expect(wokenDuplicate).toMatchObject({
       disposition: "duplicate_pending",
-      input: {id: queued.input.id, deliveryMode: "wake"},
+      input: {id: queued.input.id, deliveryMode: "queue"},
     });
 
     const run = await threadStore.tryStartRun("atomic-thread", owner);
@@ -211,11 +214,63 @@ describe("atomic runtime persistence on PostgreSQL", () => {
     await expect(threadStore.getInput(rejected.input.id)).resolves.toMatchObject({status: "pending"});
   });
 
-  liveIt("binds an abort replay to its original run instead of a later run", async () => {
+  liveIt("atomically creates one live voice turn with one replay-safe request", async () => {
+    const voice = new LiveVoiceRepo({pool});
+    const liveVoiceSessionId = randomUUID();
+    const sourceUtteranceId = randomUUID();
+    await voice.upsertSession({
+      id: liveVoiceSessionId,
+      source: "discord",
+      connectorKey: "bot-1",
+      scopeKey: "guild-1",
+      roomKey: "voice-1",
+      sessionId: "atomic-session",
+      agentKey: "panda",
+      provider: "openai-live",
+      model: "gpt-live-1-codex",
+      state: "connected",
+    });
+    const input = {
+      id: randomUUID(),
+      liveVoiceSessionId,
+      providerDelegationId: "delegation-atomic-1",
+      sourceUtteranceId,
+      sessionId: "atomic-session",
+      agentKey: "panda",
+      externalActorId: "user-1",
+      prompt: "check atomic status",
+    };
+
+    const first = await voice.createOrGetTurnAndEnqueueDelegation(input);
+    const replay = await voice.createOrGetTurnAndEnqueueDelegation({
+      ...input,
+      id: randomUUID(),
+      providerDelegationId: "delegation-atomic-2",
+    });
+    expect(replay.id).toBe(first.id);
+    await expect(pool.query(`
+      SELECT payload, idempotency_key
+      FROM runtime.runtime_requests
+      WHERE idempotency_key = $1
+    `, [`live_voice_delegation:${first.id}`])).resolves.toMatchObject({
+      rows: [{
+        payload: {liveVoiceTurnId: first.id, sessionId: "atomic-session"},
+        idempotency_key: `live_voice_delegation:${first.id}`,
+      }],
+    });
+  });
+
+  liveIt("persists input and monotonic outbound route in one session-targeted mutation", async () => {
     const suffix = randomUUID();
-    const sessionId = `abort-replay-session-${suffix}`;
-    const threadId = `abort-replay-thread-${suffix}`;
-    const operationId = randomUUID();
+    const sessionId = `route-session-${suffix}`;
+    const threadId = `route-thread-${suffix}`;
+    const identityId = `route-identity-${suffix}`;
+    const inputId = randomUUID();
+    await new PostgresIdentityStore({pool}).createIdentity({
+      id: identityId,
+      handle: `route-${suffix}`,
+      displayName: "Route Test",
+    });
     await sessionStore.createSession({
       id: sessionId,
       agentKey: "panda",
@@ -223,6 +278,146 @@ describe("atomic runtime persistence on PostgreSQL", () => {
       currentThreadId: threadId,
     });
     await threadStore.createThread({id: threadId, sessionId});
+    const route = {
+      source: "telegram",
+      connectorKey: "bot-1",
+      externalConversationId: "route-chat",
+      externalActorId: "route-user",
+      externalMessageId: "route-message",
+      capturedAt: 200,
+    } as const;
+
+    await expect(threadStore.enqueueSessionInput(
+      sessionId,
+      inputPayload(`route-input-${suffix}`),
+      "wake",
+      {inputId, rememberedRoute: {identityId, route}},
+    )).resolves.toMatchObject({disposition: "inserted", input: {id: inputId, threadId}});
+    const persisted = await pool.query(`
+      SELECT input.id AS input_id,
+             route.captured_at_ms::integer AS captured_at,
+             route.external_conversation_id
+      FROM "runtime"."inputs" AS input
+      INNER JOIN "runtime"."session_routes" AS route
+        ON route.session_id = $1
+       AND route.identity_id = $3
+       AND route.channel = 'telegram'
+      WHERE input.id = $2
+    `, [sessionId, inputId, identityId]);
+    expect(persisted.rows).toEqual([{
+      input_id: inputId,
+      captured_at: 200,
+      external_conversation_id: "route-chat",
+    }]);
+
+    await expect(threadStore.enqueueSessionInput(
+      sessionId,
+      inputPayload(`route-input-${suffix}`),
+      "wake",
+      {inputId, rememberedRoute: {identityId, route: {...route, capturedAt: 100}}},
+    )).resolves.toMatchObject({disposition: "duplicate_pending"});
+    await expect(pool.query(`
+      SELECT captured_at_ms::integer AS captured_at
+      FROM "runtime"."session_routes"
+      WHERE session_id = $1 AND identity_id = $2 AND channel = 'telegram'
+    `, [sessionId, identityId])).resolves.toMatchObject({rows: [{captured_at: 200}]});
+
+    const collisionSessionId = `route-collision-session-${suffix}`;
+    const collisionThreadId = `route-collision-thread-${suffix}`;
+    await sessionStore.createSession({
+      id: collisionSessionId,
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: collisionThreadId,
+    });
+    await threadStore.createThread({id: collisionThreadId, sessionId: collisionSessionId});
+    await expect(threadStore.enqueueSessionInput(
+      collisionSessionId,
+      inputPayload(`route-collision-${suffix}`),
+      "wake",
+      {
+        inputId,
+        rememberedRoute: {
+          route: {
+            ...route,
+            externalConversationId: "rejected-route",
+            capturedAt: 300,
+          },
+        },
+      },
+    )).rejects.toThrow(`Thread input conflict for ${inputId}`);
+    await expect(pool.query(`
+      SELECT COUNT(*)::integer AS count
+      FROM "runtime"."session_routes"
+      WHERE session_id = $1
+    `, [collisionSessionId])).resolves.toMatchObject({rows: [{count: 0}]});
+
+    await expect(threadStore.enqueueSessionInput(
+      `missing-${sessionId}`,
+      inputPayload(`missing-route-input-${suffix}`),
+      "wake",
+      {rememberedRoute: {route}},
+    )).rejects.toThrow(`Unknown session missing-${sessionId}`);
+    await expect(pool.query(`
+      SELECT COUNT(*)::integer AS count
+      FROM "runtime"."session_routes"
+      WHERE session_id = $1
+    `, [`missing-${sessionId}`])).resolves.toMatchObject({rows: [{count: 0}]});
+  });
+
+  liveIt("keeps queue-only input outside an active run until a durable wake", async () => {
+    const suffix = randomUUID();
+    const sessionId = `queue-boundary-session-${suffix}`;
+    const threadId = `queue-boundary-thread-${suffix}`;
+    await sessionStore.createSession({
+      id: sessionId,
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: threadId,
+    });
+    await threadStore.createThread({id: threadId, sessionId});
+    await threadStore.enqueueInput(threadId, inputPayload(`queue-boundary-start-${suffix}`));
+    const run = await threadStore.tryStartRun(threadId, owner);
+    expect(run).not.toBeNull();
+    await threadStore.applyPendingInputs(threadId, run!.id);
+
+    const queued = await threadStore.enqueueInput(
+      threadId,
+      inputPayload(`queue-boundary-late-${suffix}`),
+      "queue",
+    );
+    await expect(threadStore.takeRunBoundary(threadId, run!.id)).resolves.toEqual({
+      hasAdmittedInputs: false,
+      hadPendingWake: false,
+    });
+    await expect(threadStore.completeRun(run!.id)).resolves.toMatchObject({status: "completed"});
+    await expect(threadStore.hasPendingWake(threadId)).resolves.toBe(false);
+    await expect(threadStore.getInput(queued.input.id)).resolves.toMatchObject({status: "pending"});
+
+    await threadStore.requestWake(threadId);
+    await expect(threadStore.hasPendingWake(threadId)).resolves.toBe(true);
+    const nextRun = await threadStore.tryStartRun(threadId, owner);
+    expect(nextRun).not.toBeNull();
+    await expect(threadStore.applyPendingInputs(threadId, nextRun!.id)).resolves.toHaveLength(1);
+    await expect(threadStore.getInput(queued.input.id)).resolves.toMatchObject({status: "applied"});
+    await threadStore.completeRun(nextRun!.id);
+  });
+
+  liveIt("binds an abort replay to its original run instead of a later run", async () => {
+    const suffix = randomUUID();
+    const sessionId = `abort-replay-session-${suffix}`;
+    const threadId = `abort-replay-thread-${suffix}`;
+    await sessionStore.createSession({
+      id: sessionId,
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: threadId,
+    });
+    await threadStore.createThread({id: threadId, sessionId});
+    const operationId = (await requests.enqueueRequest({
+      kind: "abort_thread",
+      payload: {threadId, reason: "stop once"},
+    }, {idempotencyKey: `test:abort-replay:${suffix}`})).id;
     await threadStore.enqueueInput(threadId, inputPayload(`abort-first-${suffix}`));
     const firstRun = await threadStore.tryStartRun(threadId, owner);
     expect(firstRun).not.toBeNull();
@@ -265,6 +460,36 @@ describe("atomic runtime persistence on PostgreSQL", () => {
     await threadStore.completeRun(secondRun!.id);
   });
 
+  liveIt("keeps a reset-aborted current thread durably ineligible for another run", async () => {
+    const suffix = randomUUID();
+    const sessionId = `reset-fence-session-${suffix}`;
+    const threadId = `reset-fence-thread-${suffix}`;
+    await sessionStore.createSession({
+      id: sessionId,
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: threadId,
+    });
+    await threadStore.createThread({id: threadId, sessionId});
+    await threadStore.enqueueInput(threadId, inputPayload(`reset-fence-${suffix}`));
+    const operationId = (await requests.enqueueRequest({
+      kind: "reset_session",
+      payload: {source: "operator", sessionId},
+    }, {idempotencyKey: `test:reset-fence:${suffix}`})).id;
+
+    await expect(threadStore.requestRunAbort(
+      threadId,
+      "Reset requested from operator.",
+      operationId,
+      {blocksNewRuns: true},
+    )).resolves.toBeNull();
+
+    await expect(threadStore.hasPendingWake(threadId)).resolves.toBe(true);
+    await expect(threadStore.isThreadRunnable(threadId)).resolves.toBe(false);
+    await expect(threadStore.listRunnableThreadIds(100)).resolves.not.toContain(threadId);
+    await expect(threadStore.tryStartRun(threadId, owner)).resolves.toBeNull();
+  });
+
   liveIt("waits on the run before touching the thread during abort", async () => {
     const suffix = randomUUID();
     const sessionId = `abort-lock-session-${suffix}`;
@@ -292,7 +517,10 @@ describe("atomic runtime persistence on PostgreSQL", () => {
       },
     });
     const consumerPid = Number((await consumer.query("SELECT pg_backend_pid() AS pid")).rows[0]?.pid);
-    const operationId = randomUUID();
+    const operationId = (await requests.enqueueRequest({
+      kind: "abort_thread",
+      payload: {threadId, reason: "lock-order abort"},
+    }, {idempotencyKey: `test:abort-lock:${suffix}`})).id;
     try {
       await blocker.query("BEGIN");
       await blocker.query(
@@ -340,6 +568,137 @@ describe("atomic runtime persistence on PostgreSQL", () => {
       consumer.release();
       probe.release();
       await threadStore.completeRun(run!.id).catch(() => {});
+    }
+  });
+
+  liveIt("rejects a stale claim whose snapshot predates the committed reset fence", async () => {
+    const suffix = randomUUID();
+    const sessionId = `reset-fence-snapshot-session-${suffix}`;
+    const threadId = `reset-fence-snapshot-thread-${suffix}`;
+    await sessionStore.createSession({
+      id: sessionId,
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: threadId,
+    });
+    await threadStore.createThread({id: threadId, sessionId});
+    await threadStore.enqueueInput(threadId, inputPayload(`reset-fence-snapshot-${suffix}`));
+    const operationId = (await requests.enqueueRequest({
+      kind: "reset_session",
+      payload: {source: "operator", sessionId},
+    }, {idempotencyKey: `test:reset-fence-snapshot:${suffix}`})).id;
+
+    const blocker = await pool.connect();
+    const claimant = await pool.connect();
+    const pinnedStore = new PostgresThreadRuntimeStore({
+      pool: {
+        query: async (sql, params) => claimant.query(sql, params ? [...params] : []),
+        connect: async () => {
+          throw new Error("Pinned reset-fence snapshot store does not acquire another connection.");
+        },
+      },
+    });
+    const claimantPid = Number((await claimant.query("SELECT pg_backend_pid() AS pid")).rows[0]?.pid);
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(`
+        SELECT id FROM "runtime"."agent_sessions" WHERE id = $1 FOR UPDATE
+      `, [sessionId]);
+      const staleClaim = pinnedStore.tryStartRun(threadId, owner);
+      await waitForBackendLock(pool, claimantPid);
+
+      await expect(threadStore.requestRunAbort(
+        threadId,
+        "Reset requested from operator.",
+        operationId,
+        {blocksNewRuns: true},
+      )).resolves.toBeNull();
+      await blocker.query("COMMIT");
+      await expect(staleClaim).resolves.toBeNull();
+      await expect(threadStore.tryStartRun(threadId, owner)).resolves.toBeNull();
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => {});
+      blocker.release();
+      claimant.release();
+    }
+  });
+
+  liveIt("aborts a run that commits while its reset fence waits on the thread", async () => {
+    const suffix = randomUUID();
+    const sessionId = `reset-fence-raced-run-session-${suffix}`;
+    const threadId = `reset-fence-raced-run-thread-${suffix}`;
+    await sessionStore.createSession({
+      id: sessionId,
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: threadId,
+    });
+    await threadStore.createThread({id: threadId, sessionId});
+    await threadStore.enqueueInput(threadId, inputPayload(`reset-fence-raced-run-${suffix}`));
+    const operationId = (await requests.enqueueRequest({
+      kind: "reset_session",
+      payload: {source: "operator", sessionId},
+    }, {idempotencyKey: `test:reset-fence-raced-run:${suffix}`})).id;
+
+    const claimant = await pool.connect();
+    const aborter = await pool.connect();
+    const claimStore = new PostgresThreadRuntimeStore({
+      pool: {
+        query: async (sql, params) => claimant.query(sql, params ? [...params] : []),
+        connect: async () => {
+          throw new Error("Pinned raced-claim store does not acquire another connection.");
+        },
+      },
+    });
+    const abortStore = new PostgresThreadRuntimeStore({
+      pool: {
+        query: async (sql, params) => aborter.query(sql, params ? [...params] : []),
+        connect: async () => {
+          throw new Error("Pinned raced-abort store does not acquire another connection.");
+        },
+      },
+    });
+    const aborterPid = Number((await aborter.query("SELECT pg_backend_pid() AS pid")).rows[0]?.pid);
+    try {
+      await claimant.query("BEGIN");
+      const claimed = await claimStore.tryStartRun(threadId, owner);
+      expect(claimed).not.toBeNull();
+
+      const abort = abortStore.requestRunAbort(
+        threadId,
+        "Reset requested from operator.",
+        operationId,
+        {blocksNewRuns: true},
+      );
+      await waitForBackendLock(pool, aborterPid);
+      await claimant.query("COMMIT");
+
+      await expect(abort).resolves.toMatchObject({
+        id: claimed!.id,
+        abortReason: "Reset requested from operator.",
+      });
+      await expect(threadStore.getRun(claimed!.id)).resolves.toMatchObject({
+        abortReason: "Reset requested from operator.",
+        abortRequestedAt: expect.any(Number),
+      });
+      await expect(threadStore.requestRunAbort(
+        threadId,
+        "Reset requested from operator.",
+        operationId,
+        {blocksNewRuns: true},
+      )).resolves.toMatchObject({id: claimed!.id});
+    } finally {
+      await claimant.query("ROLLBACK").catch(() => {});
+      claimant.release();
+      aborter.release();
+      const running = await threadStore.getRun(
+        (await pool.query(`
+          SELECT id FROM ${buildThreadRuntimeTableNames().runs}
+          WHERE thread_id = $1 AND status = 'running'
+          LIMIT 1
+        `, [threadId])).rows[0]?.id ?? randomUUID(),
+      ).catch(() => null);
+      if (running) await threadStore.completeRun(running.id).catch(() => {});
     }
   });
 
@@ -407,7 +766,6 @@ describe("atomic runtime persistence on PostgreSQL", () => {
         hadPendingWake: true,
       });
       await expect(pinnedStore.takeRunBoundary(threadId, run!.id)).resolves.toEqual({
-        hasRunnableInputs: false,
         hasAdmittedInputs: false,
         hadPendingWake: false,
       });
@@ -532,7 +890,7 @@ describe("atomic runtime persistence on PostgreSQL", () => {
         "queue",
         {inputId},
       );
-      await expect(threadStore.promoteQueuedInputs(threadId)).resolves.toEqual([threadId]);
+      await expect(threadStore.wakePendingInputs(threadId)).resolves.toEqual([threadId]);
       run = await threadStore.tryStartRun(threadId, owner);
       expect(run).not.toBeNull();
 
@@ -572,7 +930,7 @@ describe("atomic runtime persistence on PostgreSQL", () => {
         inputPayload(`global-promotion-${suffix}`),
         "queue",
       );
-      await expect(threadStore.promoteQueuedInputs()).resolves.toContain(threadId);
+      await expect(threadStore.wakePendingInputs(threadId)).resolves.toContain(threadId);
     } finally {
       await blocker.query("ROLLBACK").catch(() => {});
       blocker.release();
@@ -581,6 +939,58 @@ describe("atomic runtime persistence on PostgreSQL", () => {
         await threadStore.completeRun(run.id).catch(() => {});
       }
     }
+  });
+
+  liveIt("defers session ingress across a reset fence and routes retry to the replacement", async () => {
+    const suffix = randomUUID();
+    const sessionId = `fenced-ingress-session-${suffix}`;
+    const previousThreadId = `fenced-ingress-before-${suffix}`;
+    const nextThreadId = `fenced-ingress-after-${suffix}`;
+    const inputId = randomUUID();
+    await sessionStore.createSession({
+      id: sessionId,
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: previousThreadId,
+    });
+    await threadStore.createThread({id: previousThreadId, sessionId});
+    const operationId = (await requests.enqueueRequest({
+      kind: "reset_session",
+      payload: {source: "operator", sessionId},
+    }, {idempotencyKey: `test:fenced-ingress:${suffix}`})).id;
+    await threadStore.requestRunAbort(
+      previousThreadId,
+      "Reset requested from operator.",
+      operationId,
+      {blocksNewRuns: true},
+    );
+
+    await expect(threadStore.enqueueSessionInput(
+      sessionId,
+      inputPayload(`fenced-ingress-${suffix}`),
+      "wake",
+      {inputId},
+    )).rejects.toBeInstanceOf(ThreadInputAdmissionBlockedError);
+    await resetSessionCurrentThread({
+      pool,
+      sessionStore,
+      threadStore,
+      previousThreadId,
+      owner,
+      thread: {id: nextThreadId, sessionId, replacesThreadId: previousThreadId},
+      session: {sessionId, currentThreadId: nextThreadId},
+    });
+
+    await expect(threadStore.enqueueSessionInput(
+      sessionId,
+      inputPayload(`fenced-ingress-${suffix}`),
+      "wake",
+      {inputId},
+    )).resolves.toMatchObject({input: {id: inputId, threadId: nextThreadId}});
+    await expect(threadStore.getInput(inputId)).resolves.toMatchObject({
+      status: "pending",
+      threadId: nextThreadId,
+    });
   });
 
   liveIt("serializes reset and session-targeted enqueue without a lock-order deadlock", async () => {
@@ -746,6 +1156,8 @@ describe("atomic runtime persistence on PostgreSQL", () => {
     const claimed = claims.filter((request) => request?.id === enqueued[0]!.id);
     expect(claimed).toHaveLength(1);
     const request = claimed[0]!;
+    expect(enqueued[0]!.executionAttempts).toBe(0);
+    expect(request.executionAttempts).toBe(1);
     await expect(requests.completeRequest(request.id, randomUUID(), {wrong: true})).rejects.toThrow("claim was lost");
     await expect(requests.renewRequestClaim(request.id, request.claimToken!)).resolves.toBe(true);
     await expect(requests.completeRequest(request.id, request.claimToken!, {ok: true})).resolves.toMatchObject({
@@ -767,6 +1179,7 @@ describe("atomic runtime persistence on PostgreSQL", () => {
     `, [expired.id]);
     const reclaimed = await requests.claimNextPendingRequest();
     expect(reclaimed).toMatchObject({id: expired.id, status: "running"});
+    expect(reclaimed!.executionAttempts).toBe(2);
     expect(reclaimed!.claimToken).not.toBe(originalClaim!.claimToken);
     await expect(requests.completeRequest(expired.id, originalClaim!.claimToken!, {stale: true})).rejects.toThrow(
       "claim was lost",
@@ -785,6 +1198,102 @@ describe("atomic runtime persistence on PostgreSQL", () => {
     await expect(requests.renewRequestClaim(renewable.id, renewableClaim!.claimToken!)).resolves.toBe(true);
     await expect(requests.claimNextPendingRequest()).resolves.toBeNull();
     await requests.completeRequest(renewable.id, renewableClaim!.claimToken!, {renewed: true});
+  });
+
+  liveIt("does not let a stale update request overwrite a later session config", async () => {
+    const first = await requests.enqueueRequest({
+      kind: "update_thread",
+      payload: {
+        threadId: "atomic-thread",
+        update: {model: "openai/gpt-5.1"},
+      },
+    });
+    const second = await requests.enqueueRequest({
+      kind: "update_thread",
+      payload: {
+        threadId: "atomic-thread",
+        update: {model: "openai/gpt-5.2"},
+      },
+    });
+
+    await expect(sessionStore.updateSessionRuntimeConfigOnce(first.id, "atomic-thread", {
+      sessionId: "atomic-session",
+      model: "openai/gpt-5.1",
+    })).resolves.toMatchObject({replayed: false});
+    await expect(sessionStore.updateSessionRuntimeConfigOnce(second.id, "atomic-thread", {
+      sessionId: "atomic-session",
+      model: "openai/gpt-5.2",
+    })).resolves.toMatchObject({replayed: false});
+    await expect(sessionStore.updateSessionRuntimeConfigOnce(first.id, "atomic-thread", {
+      sessionId: "atomic-session",
+      model: "openai/gpt-5.1",
+    })).resolves.toMatchObject({
+      replayed: true,
+      config: {model: "openai/gpt-5.2"},
+    });
+    await expect(sessionStore.getSessionRuntimeConfig("atomic-session"))
+      .resolves.toMatchObject({model: "openai/gpt-5.2"});
+    await pool.query(`
+      UPDATE ${buildRuntimeRequestTableNames().runtimeRequests}
+      SET status = 'completed', finished_at = NOW()
+      WHERE id = ANY($1::uuid[])
+    `, [[first.id, second.id]]);
+  });
+
+  liveIt("orders reset and update settings by request acceptance across ordering keys", async () => {
+    const suffix = randomUUID();
+    const sessionId = `config-order-session-${suffix}`;
+    const previousThreadId = `config-order-before-${suffix}`;
+    const nextThreadId = `config-order-after-${suffix}`;
+    await sessionStore.createSession({
+      id: sessionId,
+      agentKey: "panda",
+      kind: "branch",
+      currentThreadId: previousThreadId,
+    });
+    await threadStore.createThread({id: previousThreadId, sessionId});
+    const resetRequest = await requests.enqueueRequest({
+      kind: "reset_session",
+      payload: {source: "operator", sessionId, model: "openai/gpt-5.1"},
+    });
+    const updateRequest = await requests.enqueueRequest({
+      kind: "update_thread",
+      payload: {threadId: previousThreadId, update: {thinking: "high"}},
+    });
+    const requestTable = buildRuntimeRequestTableNames().runtimeRequests;
+    await pool.query(`
+      UPDATE ${requestTable}
+      SET created_at = CASE id
+        WHEN $1 THEN NOW() + INTERVAL '1 second'
+        WHEN $2 THEN NOW() + INTERVAL '2 seconds'
+      END
+      WHERE id = ANY($3::uuid[])
+    `, [resetRequest.id, updateRequest.id, [resetRequest.id, updateRequest.id]]);
+    await threadStore.requestWake(previousThreadId);
+
+    await sessionStore.updateSessionRuntimeConfigOnce(updateRequest.id, previousThreadId, {
+      sessionId,
+      thinking: "high",
+    });
+    await resetSessionCurrentThread({
+      pool,
+      sessionStore,
+      threadStore,
+      previousThreadId,
+      owner,
+      thread: {id: nextThreadId, sessionId, replacesThreadId: previousThreadId},
+      session: {sessionId, currentThreadId: nextThreadId},
+      runtimeConfig: {model: "openai/gpt-5.1"},
+      runtimeConfigOperationId: resetRequest.id,
+    });
+
+    await expect(sessionStore.getSessionRuntimeConfig(sessionId))
+      .resolves.toMatchObject({model: "openai/gpt-5.1", thinking: "high"});
+    await pool.query(`
+      UPDATE ${requestTable}
+      SET status = 'completed', finished_at = NOW()
+      WHERE id = ANY($1::uuid[])
+    `, [[resetRequest.id, updateRequest.id]]);
   });
 
   liveIt("runs independent request streams concurrently while preserving FIFO within a stream", async () => {
@@ -853,6 +1362,18 @@ describe("atomic runtime persistence on PostgreSQL", () => {
       SET status = 'completed', finished_at = NOW()
       WHERE id = $1
     `, [settled[2]!.id]);
+    await sessionStore.updateSessionRuntimeConfigOnce(settled[0]!.id, "atomic-thread", {
+      sessionId: "atomic-session",
+      thinking: "medium",
+    });
+    await sessionStore.recordSessionCreationOperation({
+      operationId: settled[1]!.id,
+      identityId: "retained-request-identity",
+      agentKey: "panda",
+      sessionId: "atomic-session",
+      threadId: "atomic-thread",
+      kind: "main",
+    });
 
     await expect(requests.pruneSettledRequests({
       completedBefore: new Date(Date.now() - 7 * 24 * 60 * 60 * 1_000),
@@ -875,5 +1396,13 @@ describe("atomic runtime persistence on PostgreSQL", () => {
       expect.objectContaining({id: settled[3]!.id, status: "pending"}),
     ]));
     expect(remaining.rows).toHaveLength(2);
+    const receipts = await pool.query(`
+      SELECT operation_id FROM "runtime"."session_runtime_config_operations"
+      WHERE operation_id = ANY($1::uuid[])
+      UNION ALL
+      SELECT operation_id FROM "runtime"."session_creation_operations"
+      WHERE operation_id = ANY($1::uuid[])
+    `, [[settled[0]!.id, settled[1]!.id]]);
+    expect(receipts.rows).toHaveLength(0);
   });
 });

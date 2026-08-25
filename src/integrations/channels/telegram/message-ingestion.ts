@@ -1,6 +1,14 @@
 import type {Context} from "grammy";
 
-import type {CreateRuntimeRequestInput, RuntimeRequestKind} from "../../../domain/threads/requests/types.js";
+import {
+  discardStagedMediaDescriptors,
+  type MediaReceiptOwner,
+} from "../../../domain/channels/media-store.js";
+import type {
+  CreateRuntimeRequestInput,
+  RuntimeRequestKind,
+  RuntimeRequestStatus,
+} from "../../../domain/threads/requests/types.js";
 import {deriveRuntimeRequestIngressIdempotencyKey} from "../../../domain/threads/requests/ordering-key.js";
 import {buildTelegramConversationId} from "./helpers.js";
 import {
@@ -21,14 +29,14 @@ interface TelegramMessageRequestQueue {
   enqueueRequest(
     input: CreateRuntimeRequestInput<TelegramIngestedRequestKind>,
     options?: {idempotencyKey?: string},
-  ): Promise<{id: string}>;
+  ): Promise<{id: string; status?: RuntimeRequestStatus}>;
 }
 
 interface TelegramMessageIngestionOptions {
   connectorKey: string;
   botUsername: string | null;
   requests: TelegramMessageRequestQueue;
-  downloadMedia(message: TelegramContext["msg"]): Promise<TelegramMediaDownloadResult>;
+  downloadMedia(message: TelegramContext["msg"], receiptOwner: MediaReceiptOwner): Promise<TelegramMediaDownloadResult>;
   log(event: string, payload: Record<string, unknown>): void;
 }
 
@@ -206,7 +214,16 @@ export async function ingestTelegramMessage(
     return;
   }
 
-  const mediaDownload = await options.downloadMedia(message);
+  const idempotencyKey = deriveRuntimeRequestIngressIdempotencyKey({
+    kind: "telegram_message",
+    connectorKey: options.connectorKey,
+    externalEventScope: externalConversationId,
+    externalEventId: String(message.message_id),
+  });
+  const mediaDownload = await options.downloadMedia(message, {
+    requestKind: "telegram_message",
+    requestIdempotencyKey: idempotencyKey,
+  });
   const rawText = extractTelegramMessageText(message);
   const text = mergeTextWithUnavailableMediaNotice(rawText, mediaDownload.unavailable);
   if (!text && mediaDownload.media.length === 0) {
@@ -241,12 +258,10 @@ export async function ingestTelegramMessage(
         : undefined,
       media: mediaDownload.media,
     },
-  }, {idempotencyKey: deriveRuntimeRequestIngressIdempotencyKey({
-    kind: "telegram_message",
-    connectorKey: options.connectorKey,
-    externalEventScope: externalConversationId,
-    externalEventId: String(message.message_id),
-  })});
+  }, {idempotencyKey});
+  if (request.status === "completed" || request.status === "failed") {
+    await discardStagedMediaDescriptors(mediaDownload.media);
+  }
 
   options.log("message_ingested", {
     connectorKey: options.connectorKey,

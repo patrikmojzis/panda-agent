@@ -5,6 +5,7 @@ import type {WriteMediaInput} from "../../../domain/channels/media-store.js";
 import type {MediaDescriptor} from "../../../domain/channels/types.js";
 import type {JsonObject} from "../../../lib/json.js";
 import {WHATSAPP_SOURCE} from "./config.js";
+import {readWhatsAppMessageSentAtMs} from "./helpers.js";
 import {WHATSAPP_LOGGER} from "./transport.js";
 
 export interface WhatsAppMediaPart {
@@ -109,6 +110,7 @@ function buildWhatsAppMediaMetadata(message: WAMessage, part: WhatsAppMediaPart)
 async function downloadWhatsAppMediaPart(
   message: WAMessage,
   part: WhatsAppMediaPart,
+  partIndex: number,
   options: DownloadWhatsAppSupportedMediaOptions,
 ): Promise<MediaDescriptor> {
   const bytes = new Uint8Array(await downloadMediaMessage(message, "buffer", {}, {
@@ -124,6 +126,8 @@ async function downloadWhatsAppMediaPart(
     sizeBytes: part.sizeBytes,
     hintFilename: part.hintFilename,
     metadata: buildWhatsAppMediaMetadata(message, part),
+    idempotencyKey: `${message.key.remoteJid ?? "unknown"}:${message.key.id ?? "unknown"}:${partIndex}`,
+    createdAt: readWhatsAppMessageSentAtMs(message.messageTimestamp) ?? 0,
   });
 }
 
@@ -132,8 +136,8 @@ export async function downloadWhatsAppSupportedMedia(
   options: DownloadWhatsAppSupportedMediaOptions,
 ): Promise<readonly MediaDescriptor[]> {
   const descriptors: MediaDescriptor[] = [];
-  for (const part of options.parts ?? collectWhatsAppMediaParts(message)) {
-    descriptors.push(await downloadWhatsAppMediaPart(message, part, options));
+  for (const [partIndex, part] of (options.parts ?? collectWhatsAppMediaParts(message)).entries()) {
+    descriptors.push(await downloadWhatsAppMediaPart(message, part, partIndex, options));
   }
 
   return descriptors;

@@ -1,3 +1,7 @@
+import * as fs from "node:fs/promises";
+import {tmpdir} from "node:os";
+import path from "node:path";
+
 import {describe, expect, it, vi} from "vitest";
 
 import {
@@ -5,18 +9,27 @@ import {
   type DaemonRequestProcessorContext,
   type DaemonRequestThreadHelpers,
 } from "../src/app/runtime/daemon-requests.js";
+import {
+  discardSettledRuntimeRequestMedia,
+  resolveRuntimeRequestMediaReceiptOwners,
+} from "../src/app/runtime/runtime-request-media.js";
 import type {IdentityBindingRecord, IdentityRecord} from "../src/domain/identity/index.js";
-import type {SessionRecord, SessionRouteInput, SessionRouteRecord} from "../src/domain/sessions/index.js";
+import type {SessionRecord} from "../src/domain/sessions/index.js";
 import type {ThreadRecord} from "../src/domain/threads/runtime/index.js";
+import {ThreadInputAdmissionBlockedError} from "../src/domain/threads/runtime/store.js";
 import type {
   A2AMessageRequestPayload,
   DiscordMessageRequestPayload,
+  RuntimeRequestRepo,
   RuntimeRequestRecord,
   TelegramMessageRequestPayload,
   TuiInputRequestPayload,
   WhatsAppReactionRequestPayload,
 } from "../src/domain/threads/requests/index.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
+import {stringToUserMessage} from "../src/kernel/agent/helpers/input.js";
+import {RetryableRuntimeRequestError} from "../src/domain/threads/requests/errors.js";
+import {FileSystemMediaStore, relocateMediaDescriptor} from "../src/domain/channels/media-store.js";
 
 function whatsappReactionRequest(
   overrides: Partial<WhatsAppReactionRequestPayload> = {},
@@ -25,6 +38,7 @@ function whatsappReactionRequest(
     id: "request-1",
     kind: "whatsapp_reaction",
     status: "pending",
+    executionAttempts: 1,
     createdAt: 1,
     updatedAt: 1,
     payload: {
@@ -49,6 +63,7 @@ function telegramMessageRequest(
     id: "request-telegram",
     kind: "telegram_message",
     status: "pending",
+    executionAttempts: 1,
     createdAt: 1,
     updatedAt: 1,
     payload: {
@@ -75,6 +90,7 @@ function discordMessageRequest(
     id: "request-discord",
     kind: "discord_message",
     status: "pending",
+    executionAttempts: 1,
     createdAt: 1,
     updatedAt: 1,
     payload: {
@@ -102,6 +118,7 @@ function tuiInputRequest(
     id: "request-tui",
     kind: "tui_input",
     status: "pending",
+    executionAttempts: 1,
     createdAt: 1,
     updatedAt: 1,
     payload: {
@@ -150,15 +167,6 @@ function createSession(sessionId: string, currentThreadId: string, agentKey = "p
   };
 }
 
-function createSaveLastRouteMock() {
-  return vi.fn(async (input: SessionRouteInput): Promise<SessionRouteRecord> => ({
-    ...input,
-    channel: input.route.source,
-    createdAt: 1,
-    updatedAt: 1,
-  }));
-}
-
 function createCoordinator(
   submitInput = vi.fn(async () => {}),
   getSession = vi.fn(async (sessionId: string) => createSession(sessionId, "thread-1")),
@@ -198,7 +206,6 @@ function createRequestContext(input: {
   binding?: IdentityBindingRecord | null;
   currentThreadId?: string;
   getSession?: (sessionId: string) => Promise<SessionRecord>;
-  saveLastRoute?: ReturnType<typeof createSaveLastRouteMock>;
   store?: TestThreadRuntimeStore;
   submitInput?: ReturnType<typeof vi.fn>;
 } = {}): DaemonRequestProcessorContext {
@@ -213,6 +220,14 @@ function createRequestContext(input: {
       },
       sessionStore: {
         getSession,
+        getSessionRuntimeConfigOperation: vi.fn(async () => null),
+        updateSessionRuntimeConfigOnce: vi.fn(async (_operationId, _threadId, update) => ({
+          config: {
+            sessionId: update.sessionId,
+            thinkingConfigured: update.thinking !== undefined,
+          },
+          replayed: false,
+        })),
       },
       sessionCompaction: {
         compactSession: vi.fn(async (sessionId: string) => ({
@@ -236,9 +251,7 @@ function createRequestContext(input: {
       hasBinding: vi.fn(async () => true),
       hasReceivedMessage: vi.fn(async () => false),
     },
-    sessionRoutes: {
-      saveLastRoute: input.saveLastRoute ?? createSaveLastRouteMock(),
-    },
+    liveVoice: {} as DaemonRequestProcessorContext["liveVoice"],
   };
 }
 
@@ -251,8 +264,11 @@ function createThreadHelpers(overrides: Partial<DaemonRequestThreadHelpers> = {}
     createSubagentSession: unexpected,
     ensureIdentity: unexpected,
     handleResetSession: unexpected,
+    findSystemReply: vi.fn(async () => null),
     openMainSession: unexpected,
     queueSystemReply: unexpected,
+    reconcileResetSession: vi.fn(async () => null),
+    relocateAgentMedia: vi.fn(async (_agentKey, media) => media),
     relocateThreadMedia: vi.fn(async (_thread, media) => media),
     resolveBoundConversationThread: unexpected,
     resolveOrCreateConversationThread: unexpected,
@@ -274,7 +290,6 @@ function createHarness(options: {
   const thread = options.thread === undefined ? {id: "thread-1", sessionId: "session-1"} : options.thread;
   const currentThreadId = options.currentThreadId ?? thread?.id ?? "thread-1";
   const submitInput = vi.fn(async () => {});
-  const saveLastRoute = createSaveLastRouteMock();
   const getSession = vi.fn(async (sessionId: string) => createSession(sessionId, currentThreadId));
   const resolveThread = async (): Promise<ThreadRecord | null> => {
     return thread
@@ -299,7 +314,6 @@ function createHarness(options: {
     binding,
     currentThreadId,
     getSession,
-    saveLastRoute,
     submitInput,
   });
   const threads = createThreadHelpers({
@@ -316,22 +330,9 @@ function createHarness(options: {
     queueSystemReply,
     resolveBoundConversationThread,
     resolveOrCreateConversationThread,
-    saveLastRoute,
     submitInput,
     threads,
   };
-}
-
-function expectFirstCallBefore(
-  first: {mock: {invocationCallOrder: number[]}},
-  second: {mock: {invocationCallOrder: number[]}},
-): void {
-  const firstCall = first.mock.invocationCallOrder[0];
-  const secondCall = second.mock.invocationCallOrder[0];
-  if (firstCall === undefined || secondCall === undefined) {
-    throw new Error("Expected both mocks to have been called.");
-  }
-  expect(firstCall).toBeLessThan(secondCall);
 }
 
 describe("daemon request processor", () => {
@@ -361,6 +362,7 @@ describe("daemon request processor", () => {
       "session-1",
       "Keep the incident timeline.",
       "request-compact-session",
+      undefined,
     );
   });
 
@@ -371,11 +373,9 @@ describe("daemon request processor", () => {
       sessionId: "session-1",
     });
     const submitInput = vi.fn(async () => {});
-    const saveLastRoute = createSaveLastRouteMock();
     const getThread = vi.spyOn(store, "getThread");
     const context = createRequestContext({
       getSession: vi.fn(async (sessionId: string) => createSession(sessionId, "thread-1")),
-      saveLastRoute,
       store,
       submitInput,
     });
@@ -403,11 +403,176 @@ describe("daemon request processor", () => {
         }),
       }),
     }));
-    expect(saveLastRoute).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: "session-1",
+    expect(context.runtime.coordinator.submitSessionInput).toHaveBeenCalledWith(
+      "session-1",
+      expect.anything(),
+      "wake",
+      expect.objectContaining({
+        rememberedRoute: expect.objectContaining({
+          identityId: "identity-1",
+          route: expect.objectContaining({source: "tui", capturedAt: 1}),
+        }),
+      }),
+    );
+  });
+
+  it("defers a runtime input when its persistence outcome is ambiguous", async () => {
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({id: "thread-1", sessionId: "session-1"});
+    const context = createRequestContext({
+      store,
+      submitInput: vi.fn(async () => {
+        throw Object.assign(new Error("database response lost"), {code: "08006"});
+      }),
+    });
+    const processor = createDaemonRequestProcessor(context, createThreadHelpers());
+
+    await expect(processor(tuiInputRequest())).rejects.toBeInstanceOf(RetryableRuntimeRequestError);
+  });
+
+  it("does not retry a deterministic input admission rejection forever", async () => {
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({id: "thread-1", sessionId: "session-1"});
+    const rejection = new Error("Unknown session session-1.");
+    const context = createRequestContext({
+      store,
+      submitInput: vi.fn(async () => {
+        throw rejection;
+      }),
+    });
+    const processor = createDaemonRequestProcessor(context, createThreadHelpers());
+
+    await expect(processor(tuiInputRequest())).rejects.toBe(rejection);
+  });
+
+  it("reconciles an ambiguous runtime config commit before reading mutable thread state", async () => {
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({id: "thread-1", sessionId: "session-1"});
+    const getThread = vi.spyOn(store, "getThread");
+    const context = createRequestContext({store});
+    vi.mocked(context.runtime.sessionStore.updateSessionRuntimeConfigOnce)
+      .mockRejectedValueOnce(new Error("database response lost after commit"));
+    vi.mocked(context.runtime.sessionStore.getSessionRuntimeConfigOperation)
+      .mockResolvedValue({
+        operationId: "request-update",
+        sessionId: "session-1",
+        threadId: "thread-1",
+        createdAt: 1,
+      });
+    const processor = createDaemonRequestProcessor(context, createThreadHelpers());
+    const request: RuntimeRequestRecord<"update_thread"> = {
+      id: "request-update",
+      kind: "update_thread",
+      status: "running",
+      executionAttempts: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      payload: {
+        threadId: "thread-1",
+        update: {model: "openai/gpt-5.1"},
+      },
+    };
+
+    await expect(processor(request)).rejects.toBeInstanceOf(RetryableRuntimeRequestError);
+    await expect(processor({...request, executionAttempts: 2})).resolves.toEqual({threadId: "thread-1"});
+
+    expect(context.runtime.sessionStore.updateSessionRuntimeConfigOnce).toHaveBeenCalledTimes(1);
+    expect(context.runtime.sessionStore.getSessionRuntimeConfigOperation).toHaveBeenCalledTimes(1);
+    expect(getThread).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a later-attempt runtime config commit replayable when its response is lost", async () => {
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({id: "thread-late-config", sessionId: "session-1"});
+    const context = createRequestContext({store});
+    let committed = false;
+    vi.mocked(context.runtime.sessionStore.getSessionRuntimeConfigOperation)
+      .mockImplementation(async () => committed ? {
+        operationId: "request-late-config",
+        sessionId: "session-1",
+        threadId: "thread-late-config",
+        createdAt: 1,
+      } : null);
+    vi.mocked(context.runtime.sessionStore.updateSessionRuntimeConfigOnce)
+      .mockImplementationOnce(async () => {
+        committed = true;
+        throw new Error("database response lost after second-attempt commit");
+      });
+    const processor = createDaemonRequestProcessor(context, createThreadHelpers());
+    const request: RuntimeRequestRecord<"update_thread"> = {
+      id: "request-late-config",
+      kind: "update_thread",
+      status: "running",
+      executionAttempts: 2,
+      createdAt: 1,
+      updatedAt: 1,
+      payload: {
+        threadId: "thread-late-config",
+        update: {model: "openai/gpt-5.1"},
+      },
+    };
+
+    await expect(processor(request)).rejects.toBeInstanceOf(RetryableRuntimeRequestError);
+    await expect(processor({...request, executionAttempts: 3}))
+      .resolves.toEqual({threadId: "thread-late-config"});
+
+    expect(context.runtime.sessionStore.updateSessionRuntimeConfigOnce).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays a committed abort receipt without issuing another abort", async () => {
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({id: "thread-abort", sessionId: "session-1"});
+    await store.requestRunAbort(
+      "thread-abort",
+      "Stop now.",
+      "request-abort",
+    );
+    const context = createRequestContext({store});
+    const processor = createDaemonRequestProcessor(context, createThreadHelpers());
+
+    await expect(processor({
+      id: "request-abort",
+      kind: "abort_thread",
+      status: "running",
+      executionAttempts: 2,
+      createdAt: 1,
+      updatedAt: 1,
+      payload: {threadId: "thread-abort", reason: "Stop now."},
+    })).resolves.toEqual({aborted: false});
+
+    expect(context.runtime.coordinator.abort).not.toHaveBeenCalled();
+  });
+
+  it("recovers a committed channel input before consulting mutable identity bindings", async () => {
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({id: "thread-1", sessionId: "session-1"});
+    await store.enqueueInput("thread-1", {
+      source: "telegram",
+      connectorKey: "main",
+      channelId: "777",
+      externalMessageId: "555",
+      actorId: "123",
       identityId: "identity-1",
-    }));
-    expectFirstCallBefore(saveLastRoute, submitInput);
+      message: stringToUserMessage("already committed"),
+      metadata: {
+        route: {
+          source: "telegram",
+          connectorKey: "main",
+          externalConversationId: "777",
+        },
+      },
+    }, "wake", {inputId: "request-telegram"});
+    const context = createRequestContext({store});
+    vi.mocked(context.runtime.identityStore.resolveIdentityBinding)
+      .mockRejectedValue(new Error("pairing was revoked"));
+    const processor = createDaemonRequestProcessor(context, createThreadHelpers());
+
+    await expect(processor({
+      ...telegramMessageRequest(),
+      executionAttempts: 2,
+    })).resolves.toEqual({status: "queued", threadId: "thread-1"});
+
+    expect(context.runtime.identityStore.resolveIdentityBinding).not.toHaveBeenCalled();
   });
 
   it("routes create_subagent_session requests through the durable subagent helper", async () => {
@@ -460,6 +625,7 @@ describe("daemon request processor", () => {
     });
 
     expect(createSubagentSession).toHaveBeenCalledWith(expect.objectContaining({
+      identityId: "identity-1",
       agentKey: "panda",
       parentSessionId: "parent-session",
       prompt: "Inspect the repo.",
@@ -511,6 +677,63 @@ describe("daemon request processor", () => {
     }));
   });
 
+  it("retries accepted ingress after transient infrastructure reads on any attempt", async () => {
+    const context = createRequestContext();
+    vi.mocked(context.a2aBindings.hasBinding).mockRejectedValue(Object.assign(
+      new Error("database connection terminated"),
+      {code: "57P01"},
+    ));
+    const processor = createDaemonRequestProcessor(context, createThreadHelpers());
+
+    await expect(processor({
+      id: "request-a2a-transient",
+      kind: "a2a_message",
+      status: "running",
+      executionAttempts: 3,
+      createdAt: 1,
+      updatedAt: 1,
+      payload: {
+        connectorKey: "local",
+        externalMessageId: "a2a:transient",
+        fromAgentKey: "panda",
+        fromSessionId: "session-a",
+        fromThreadId: "thread-a",
+        toAgentKey: "koala",
+        toSessionId: "session-b",
+        sentAt: 123,
+        items: [{type: "text", text: "retry me"}],
+      },
+    })).rejects.toBeInstanceOf(RetryableRuntimeRequestError);
+  });
+
+  it("defers accepted ingress while reset retires the session current thread", async () => {
+    const submitInput = vi.fn(async () => {
+      throw new ThreadInputAdmissionBlockedError("session-b", "thread-before-reset");
+    });
+    const context = createRequestContext({submitInput});
+    const processor = createDaemonRequestProcessor(context, createThreadHelpers());
+
+    await expect(processor({
+      id: "request-a2a-reset-fence",
+      kind: "a2a_message",
+      status: "running",
+      executionAttempts: 4,
+      createdAt: 1,
+      updatedAt: 1,
+      payload: {
+        connectorKey: "local",
+        externalMessageId: "a2a:reset-fence",
+        fromAgentKey: "panda",
+        fromSessionId: "session-a",
+        fromThreadId: "thread-a",
+        toAgentKey: "panda",
+        toSessionId: "session-b",
+        sentAt: 123,
+        items: [{type: "text", text: "wait for reset"}],
+      },
+    })).rejects.toBeInstanceOf(RetryableRuntimeRequestError);
+  });
+
 
   it("drops unbound Discord daemon requests without saving route or submitting input", async () => {
     const harness = createHarness({
@@ -530,12 +753,143 @@ describe("daemon request processor", () => {
       externalConversationId: "channel-1",
     });
     expect(harness.resolveOrCreateConversationThread).not.toHaveBeenCalled();
-    expect(harness.saveLastRoute).not.toHaveBeenCalled();
     expect(harness.submitInput).not.toHaveBeenCalled();
     expect(harness.threads.relocateThreadMedia).not.toHaveBeenCalled();
   });
 
-  it("routes bound Discord messages to the bound session current thread and saves route before submit", async () => {
+  it("releases unconsumed staged media when an accepted request finishes", async () => {
+    const rootDir = await fs.mkdtemp(path.join(tmpdir(), "panda-request-media-terminal-"));
+    try {
+      const media = await new FileSystemMediaStore({rootDir}).writeMedia({
+        bytes: Buffer.from("unpaired media"),
+        source: "discord",
+        connectorKey: "bot-1",
+        mimeType: "text/plain",
+        idempotencyKey: "channel-1:message-1:attachment-1",
+        createdAt: 1,
+      });
+      const harness = createHarness({binding: null, thread: null});
+      const processor = createDaemonRequestProcessor(harness.context, harness.threads);
+
+      const request = discordMessageRequest({media: [media]});
+      await expect(processor(request)).resolves.toEqual({
+        status: "dropped",
+        reason: "unbound_conversation",
+      });
+      await expect(fs.readFile(media.localPath, "utf8")).resolves.toBe("unpaired media");
+      await discardSettledRuntimeRequestMedia(request);
+      await expect(fs.access(media.localPath)).rejects.toMatchObject({code: "ENOENT"});
+    } finally {
+      await fs.rm(rootDir, {recursive: true, force: true});
+    }
+  });
+
+  it("never deletes agent media on failure because an earlier transcript may reference it", async () => {
+    const sourceRoot = await fs.mkdtemp(path.join(tmpdir(), "panda-request-media-failed-source-"));
+    const targetRoot = await fs.mkdtemp(path.join(tmpdir(), "panda-request-media-failed-target-"));
+    try {
+      const media = await new FileSystemMediaStore({rootDir: sourceRoot}).writeMedia({
+        bytes: Buffer.from("partially relocated media"),
+        source: "discord",
+        connectorKey: "bot-1",
+        mimeType: "text/plain",
+        idempotencyKey: "channel-1:message-failed:attachment-1",
+        createdAt: 1,
+        receiptOwner: {requestKind: "discord_message", requestIdempotencyKey: "request-failed"},
+      });
+      const relocated = await relocateMediaDescriptor(media, {rootDir: targetRoot});
+      const request = discordMessageRequest({media: [media]});
+
+      await discardSettledRuntimeRequestMedia(request, "failed");
+
+      await expect(fs.readFile(relocated.localPath, "utf8")).resolves.toBe("partially relocated media");
+      await expect(fs.readdir(path.dirname(media.localPath))).resolves.toEqual(["descriptor.json"]);
+    } finally {
+      await fs.rm(sourceRoot, {recursive: true, force: true});
+      await fs.rm(targetRoot, {recursive: true, force: true});
+    }
+  });
+
+  it("resolves known media owners in one batch and retains newer request kinds", async () => {
+    const getRequestStatusesByIdempotencyEntries = vi.fn(async () => (
+      ["pending", "failed", undefined] as const
+    ));
+
+    await expect(resolveRuntimeRequestMediaReceiptOwners([
+      {requestKind: "telegram_message", requestIdempotencyKey: "active"},
+      {requestKind: "future_connector_message", requestIdempotencyKey: "future"},
+      {requestKind: "discord_message", requestIdempotencyKey: "terminal"},
+      {requestKind: "whatsapp_message", requestIdempotencyKey: "missing"},
+    ], {getRequestStatusesByIdempotencyEntries} satisfies Pick<
+      RuntimeRequestRepo,
+      "getRequestStatusesByIdempotencyEntries"
+    >)).resolves.toEqual([
+      "active",
+      "active",
+      "failed",
+      "missing",
+    ]);
+    expect(getRequestStatusesByIdempotencyEntries).toHaveBeenCalledOnce();
+    expect(getRequestStatusesByIdempotencyEntries.mock.calls[0]?.[0]).toEqual([
+      {index: 0, idempotencyKey: "active", kind: "telegram_message"},
+      {index: 2, idempotencyKey: "terminal", kind: "discord_message"},
+      {index: 3, idempotencyKey: "missing", kind: "whatsapp_message"},
+    ]);
+  });
+
+  it("retains staged media while an accepted request remains retryable", async () => {
+    const rootDir = await fs.mkdtemp(path.join(tmpdir(), "panda-request-media-retry-"));
+    try {
+      const media = await new FileSystemMediaStore({rootDir}).writeMedia({
+        bytes: Buffer.from("retryable media"),
+        source: "discord",
+        connectorKey: "bot-1",
+        mimeType: "text/plain",
+        idempotencyKey: "channel-1:message-2:attachment-1",
+        createdAt: 1,
+      });
+      const harness = createHarness({binding: null, thread: null});
+      harness.resolveBoundConversationThread.mockRejectedValue(Object.assign(
+        new Error("database unavailable"),
+        {code: "57P01"},
+      ));
+      const processor = createDaemonRequestProcessor(harness.context, harness.threads);
+
+      await expect(processor(discordMessageRequest({media: [media]})))
+        .rejects.toBeInstanceOf(RetryableRuntimeRequestError);
+      await expect(fs.readFile(media.localPath, "utf8")).resolves.toBe("retryable media");
+    } finally {
+      await fs.rm(rootDir, {recursive: true, force: true});
+    }
+  });
+
+  it("defers transient media relocation exhaustion without releasing staging", async () => {
+    const rootDir = await fs.mkdtemp(path.join(tmpdir(), "panda-request-media-enospc-"));
+    try {
+      const media = await new FileSystemMediaStore({rootDir}).writeMedia({
+        bytes: Buffer.from("retry after disk pressure"),
+        source: "discord",
+        connectorKey: "bot-1",
+        mimeType: "text/plain",
+        idempotencyKey: "channel-1:message-enospc:attachment-1",
+        createdAt: 1,
+      });
+      const harness = createHarness();
+      harness.threads.relocateThreadMedia.mockRejectedValue(Object.assign(
+        new Error("no space left on device"),
+        {code: "ENOSPC"},
+      ));
+      const processor = createDaemonRequestProcessor(harness.context, harness.threads);
+
+      await expect(processor(discordMessageRequest({media: [media]})))
+        .rejects.toBeInstanceOf(RetryableRuntimeRequestError);
+      await expect(fs.readFile(media.localPath, "utf8")).resolves.toBe("retry after disk pressure");
+    } finally {
+      await fs.rm(rootDir, {recursive: true, force: true});
+    }
+  });
+
+  it("routes bound Discord messages with route and input in one session submission", async () => {
     const harness = createHarness({
       thread: {id: "thread-before-reset", sessionId: "session-1"},
       currentThreadId: "thread-after-reset",
@@ -594,19 +948,23 @@ describe("daemon request processor", () => {
         }),
       }),
     }));
-    expect(harness.saveLastRoute).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: "session-1",
-      identityId: "identity-1",
-      route: expect.objectContaining({
-        source: "discord",
-        connectorKey: "bot-1",
-        externalConversationId: "channel-1",
-        externalActorId: "user-1",
-        externalMessageId: "message-1",
+    expect(harness.context.runtime.coordinator.submitSessionInput).toHaveBeenCalledWith(
+      "session-1",
+      expect.anything(),
+      "wake",
+      expect.objectContaining({
+        rememberedRoute: {
+          identityId: "identity-1",
+          route: expect.objectContaining({
+            source: "discord",
+            connectorKey: "bot-1",
+            externalConversationId: "channel-1",
+            externalActorId: "user-1",
+            externalMessageId: "message-1",
+          }),
+        },
       }),
-    }));
-    expect(harness.saveLastRoute.mock.calls[0]?.[0].route).not.toHaveProperty("deliveryContext");
-    expectFirstCallBefore(harness.saveLastRoute, harness.submitInput);
+    );
   });
 
   it("routes Discord messages from unbound actors with safe author metadata and no identity id", async () => {
@@ -625,15 +983,19 @@ describe("daemon request processor", () => {
       threadId: "thread-1",
     });
 
-    expect(harness.saveLastRoute).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: "session-1",
-      identityId: undefined,
-      route: expect.objectContaining({
-        source: "discord",
-        externalConversationId: "channel-1",
+    expect(harness.context.runtime.coordinator.submitSessionInput).toHaveBeenCalledWith(
+      "session-1",
+      expect.anything(),
+      "wake",
+      expect.objectContaining({
+        rememberedRoute: {
+          route: expect.objectContaining({
+            source: "discord",
+            externalConversationId: "channel-1",
+          }),
+        },
       }),
-    }));
-    expect(harness.saveLastRoute.mock.calls[0]?.[0].route).not.toHaveProperty("deliveryContext");
+    );
     const submitted = harness.submitInput.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(submitted).not.toHaveProperty("identityId");
     expect(submitted).toMatchObject({
@@ -769,7 +1131,6 @@ describe("daemon request processor", () => {
       reason: "unsupported_message_shape",
     });
 
-    expect(harness.saveLastRoute).not.toHaveBeenCalled();
     expect(harness.submitInput).not.toHaveBeenCalled();
   });
 
@@ -807,13 +1168,14 @@ describe("daemon request processor", () => {
       "session-1",
       expect.objectContaining({source: "telegram", externalMessageId: "555"}),
       "wake",
-      {inputId: "request-telegram"},
+      expect.objectContaining({
+        inputId: "request-telegram",
+        rememberedRoute: expect.objectContaining({
+          identityId: "identity-1",
+          route: expect.objectContaining({source: "telegram", capturedAt: 1}),
+        }),
+      }),
     );
-    expect(harness.saveLastRoute).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: "session-1",
-      identityId: "identity-1",
-    }));
-    expectFirstCallBefore(harness.saveLastRoute, harness.submitInput);
   });
 
   it("routes paired Telegram messages to the session current thread after conversation resolution", async () => {
@@ -833,7 +1195,12 @@ describe("daemon request processor", () => {
       externalMessageId: "555",
       identityId: "identity-1",
     }));
-    expectFirstCallBefore(harness.saveLastRoute, harness.submitInput);
+    expect(harness.context.runtime.coordinator.submitSessionInput).toHaveBeenCalledWith(
+      "session-1",
+      expect.anything(),
+      "wake",
+      expect.objectContaining({rememberedRoute: expect.anything()}),
+    );
   });
 
   it("replies to unpaired Telegram /start with pairing instructions", async () => {
@@ -857,6 +1224,26 @@ describe("daemon request processor", () => {
       text: expect.stringContaining("panda telegram pair --account <account-key> --identity <identity-handle> --actor 123"),
     }));
     expect(harness.submitInput).not.toHaveBeenCalled();
+  });
+
+  it("replays a committed Telegram control reply before mutable pairing lookup", async () => {
+    const harness = createHarness();
+    vi.mocked(harness.context.runtime.identityStore.resolveIdentityBinding)
+      .mockRejectedValue(new Error("pairing lookup is no longer available"));
+    const findSystemReply = vi.fn(async () => ({id: "delivery-1"}) as never);
+    const processor = createDaemonRequestProcessor(harness.context, {
+      ...harness.threads,
+      findSystemReply,
+    });
+
+    await expect(processor({
+      ...telegramMessageRequest({text: "/start"}),
+      executionAttempts: 2,
+    })).resolves.toEqual({status: "replied", reason: "start_unpaired"});
+
+    expect(findSystemReply).toHaveBeenCalledTimes(1);
+    expect(harness.context.runtime.identityStore.resolveIdentityBinding).not.toHaveBeenCalled();
+    expect(harness.queueSystemReply).not.toHaveBeenCalled();
   });
 
   it("replies to paired Telegram /new through the replay-safe delivery seam", async () => {
@@ -891,7 +1278,7 @@ describe("daemon request processor", () => {
       externalConversationId: "777",
       externalActorId: "123",
       externalMessageId: "555",
-    }), "request-telegram");
+    }), "request-telegram", 1, false);
     expect(harness.queueSystemReply).toHaveBeenCalledWith(expect.objectContaining({
       idempotencyKey: "runtime-request:request-telegram:system-reply",
       channel: "telegram",
@@ -900,6 +1287,54 @@ describe("daemon request processor", () => {
       replyToMessageId: "555",
       threadId: "thread-reset",
       text: "Reset Panda. Fresh session started.",
+    }));
+  });
+
+  it("retries Telegram reset confirmation persistence after the reset commits", async () => {
+    const harness = createHarness();
+    harness.queueSystemReply.mockRejectedValueOnce(new Error("delivery response lost"));
+    const resetResult = {
+      threadId: "thread-reset",
+      previousThreadId: "thread-before-reset",
+      sessionId: "session-1",
+      replayed: true,
+    };
+    harness.threads.reconcileResetSession = vi.fn(async () => resetResult);
+    const processor = createDaemonRequestProcessor(harness.context, harness.threads);
+
+    await expect(processor(telegramMessageRequest({text: "/reset"})))
+      .rejects.toBeInstanceOf(RetryableRuntimeRequestError);
+    await expect(processor({
+      ...telegramMessageRequest({text: "/reset"}),
+      executionAttempts: 2,
+    })).resolves.toEqual(resetResult);
+
+    expect(harness.handleResetSession).toHaveBeenCalledTimes(1);
+    expect(harness.queueSystemReply).toHaveBeenCalledTimes(2);
+  });
+
+  it("resumes an abort-anchored Telegram reset before mutable pairing lookup", async () => {
+    const harness = createHarness();
+    const resetResult = {
+      threadId: "thread-reset",
+      previousThreadId: "thread-before-reset",
+      sessionId: "session-1",
+    };
+    harness.threads.reconcileResetSession = vi.fn(async () => resetResult);
+    vi.mocked(harness.context.runtime.identityStore.resolveIdentityBinding)
+      .mockRejectedValue(new Error("pairing was revoked after abort commit"));
+    const processor = createDaemonRequestProcessor(harness.context, harness.threads);
+
+    await expect(processor({
+      ...telegramMessageRequest({text: "/reset"}),
+      executionAttempts: 2,
+    })).resolves.toEqual(resetResult);
+
+    expect(harness.threads.reconcileResetSession).toHaveBeenCalledTimes(1);
+    expect(harness.context.runtime.identityStore.resolveIdentityBinding).not.toHaveBeenCalled();
+    expect(harness.queueSystemReply).toHaveBeenCalledWith(expect.objectContaining({
+      threadId: "thread-reset",
+      idempotencyKey: "runtime-request:request-telegram:system-reply",
     }));
   });
 
@@ -912,7 +1347,7 @@ describe("daemon request processor", () => {
       replayed: true,
     });
 
-    expect(harness.handleResetSession).toHaveBeenCalledWith(expect.any(Object), "request-telegram");
+    expect(harness.handleResetSession).toHaveBeenCalledWith(expect.any(Object), "request-telegram", 1, false);
     expect(harness.queueSystemReply).toHaveBeenCalledWith(expect.objectContaining({
       idempotencyKey: "runtime-request:request-telegram:system-reply",
       threadId: "thread-reset",
@@ -952,11 +1387,14 @@ describe("daemon request processor", () => {
         }),
       }),
     }));
-    expect(harness.saveLastRoute).toHaveBeenCalledWith(expect.objectContaining({
-      sessionId: "session-1",
-      identityId: "identity-1",
-    }));
-    expectFirstCallBefore(harness.saveLastRoute, harness.submitInput);
+    expect(harness.context.runtime.coordinator.submitSessionInput).toHaveBeenCalledWith(
+      "session-1",
+      expect.anything(),
+      "wake",
+      expect.objectContaining({
+        rememberedRoute: expect.objectContaining({identityId: "identity-1"}),
+      }),
+    );
   });
 
   it("drops WhatsApp reactions from unpaired actors", async () => {

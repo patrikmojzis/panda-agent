@@ -362,12 +362,14 @@ Public surfaces are security-sensitive:
   pass-through aliases.
 
 Session-owned inbound work must target sessions, then resolve the current
-thread at delivery time. The durable route/session state must be written before
-`submitSessionInput`, and wake callbacks should carry `sessionId`, not captured
-`SessionRecord` objects. `ThreadRuntimeStore.enqueueSessionInput` locks the
-session and persists against its current thread in one statement; a separate
-`getSession` followed by thread enqueue is a reset race, not a valid delivery
-seam. `src/domain/sessions/current-thread.ts` owns the remaining helpers.
+thread at delivery time. `ThreadRuntimeStore.enqueueSessionInput` locks the
+session and persists the input, its monotonic remembered return route, the wake
+latch, and the commit notification in one statement against the current
+thread. Splitting route persistence from input persistence creates both extra
+round trips and a crash window; a separate `getSession` followed by thread
+enqueue is also a reset race. Wake callbacks should carry `sessionId`, not
+captured `SessionRecord` objects. `src/domain/sessions/current-thread.ts` owns
+the remaining helpers.
 
 Runtime input persistence has three deliberate boundaries:
 
@@ -376,7 +378,10 @@ Runtime input persistence has three deliberate boundaries:
   token. Transport ingress carries a stable external-event idempotency key;
   request effects use the request UUID as their operation identity.
 - `inputs` is the idempotency and delivery state machine. Pending rows own the
-  payload; applied or discarded rows retain only small lineage tombstones.
+  payload; applied or discarded rows retain only small lineage tombstones. The
+  session wake latch is the only scheduler signal. Each run snapshots a scalar
+  `admitted_through_input_order` and drains only that immutable prefix; input
+  rows are not rewritten for admission.
 - `messages` is canonical transcript history. Applying a bounded input batch
   inserts messages, records `applied_run_id`, scrubs duplicate payloads, touches
   the thread, and publishes the committed notification in one SQL statement.
@@ -390,7 +395,28 @@ Runtime request records are discriminated by `kind`; each kind owns exactly one
 payload shape in `src/domain/threads/requests/types.ts`. Daemon dispatch should
 narrow by kind instead of casting payloads by hand. Completed requests are kept
 for 7 days and failed requests for 30 days; this is also the request idempotency
-window. The drain prunes both in bounded batches.
+window. Replay receipts reference their owning request with `ON DELETE CASCADE`,
+so the drain's bounded pruning also bounds receipt growth.
+
+Filesystem media ingestion follows the same accepted-event rule. A stable
+event/part key publishes one canonical byte plus descriptor atomically;
+concurrent redelivery must either return that descriptor or reject different
+bytes. Relocation gives the durable byte one agent-owned path and leaves only a
+descriptor receipt in a hash shard. Request payloads retain the immutable
+staging descriptor even after that private manifest moves, so redelivery JSON
+cannot drift. Staging cleanup runs only after token-fenced request settlement;
+a crash may leave an orphan, but can never leave a replayable request without
+its byte. One daemon-owned janitor scans a bounded cross-connector receipt
+window and resolves all candidate request owners in one database query. Active
+and unknown-version requests retain bytes; terminal owners release transport
+staging after settlement. A missing owner can still be the stage-before-enqueue
+window, so it is eligible only after the 31-day receipt cutoff and a final
+manifest age/owner recheck. Descriptor-only replay receipts and abandoned
+publishes use the same conservative boundary. Request settlement and the
+janitor never delete agent-owned relocated targets: redelivery means an older
+transcript may already reference them. Connector processes must not start
+per-account janitors over the shared media tree. Pre-cutover staging receipts
+without an owner use the same 31-day hard-cut rule.
 
 ### `ui`
 

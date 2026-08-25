@@ -11,6 +11,7 @@ import {
   type CreateRuntimeRequestInput,
   type RuntimeRequestKind,
 } from "./types.js";
+import {ensurePostgresRuntimeOperationReceiptSchema} from "./postgres-operation-schema.js";
 
 export async function ensurePostgresRuntimeRequestSchema(pool: PgQueryable): Promise<void> {
   const tables = buildRuntimeRequestTableNames();
@@ -28,6 +29,7 @@ export async function ensurePostgresRuntimeRequestSchema(pool: PgQueryable): Pro
       claimed_at TIMESTAMPTZ,
       claim_token UUID,
       claim_expires_at TIMESTAMPTZ,
+      execution_attempts INTEGER NOT NULL DEFAULT 0,
       finished_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -37,6 +39,7 @@ export async function ensurePostgresRuntimeRequestSchema(pool: PgQueryable): Pro
   await pool.query(`ALTER TABLE ${tables.runtimeRequests} ADD COLUMN IF NOT EXISTS ordering_key TEXT`);
   await pool.query(`ALTER TABLE ${tables.runtimeRequests} ADD COLUMN IF NOT EXISTS claim_token UUID`);
   await pool.query(`ALTER TABLE ${tables.runtimeRequests} ADD COLUMN IF NOT EXISTS claim_expires_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE ${tables.runtimeRequests} ADD COLUMN IF NOT EXISTS execution_attempts INTEGER NOT NULL DEFAULT 0`);
   await pool.query(`DELETE FROM ${tables.runtimeRequests} WHERE kind = 'create_worker_session'`);
   // Resource ids became mandatory so replay can converge on one effect. Finish
   // old queued create requests deterministically instead of retaining random-id
@@ -204,4 +207,10 @@ export async function ensurePostgresRuntimeRequestSchema(pool: PgQueryable): Pro
     ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_runtime_requests_status_check`)}
     CHECK (status IN (${RUNTIME_REQUEST_STATUSES.map((status) => `'${status}'`).join(", ")}))
   `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.runtimeRequests}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_runtime_requests_execution_attempts_check`)}
+    CHECK (execution_attempts >= 0)
+  `);
+  await ensurePostgresRuntimeOperationReceiptSchema(pool);
 }

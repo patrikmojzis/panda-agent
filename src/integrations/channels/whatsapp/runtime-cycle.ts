@@ -68,7 +68,7 @@ export async function waitForWhatsAppSocketCycle(
       void ingestWhatsAppMessagesUpsert(update, {
         connectorKey: options.connectorKey,
         requests: options.requests,
-        downloadMedia: async (message) => {
+        downloadMedia: async (message, receiptOwner) => {
           const parts = collectWhatsAppMediaParts(message);
           if (parts.length === 0) {
             return [];
@@ -76,7 +76,9 @@ export async function waitForWhatsAppSocketCycle(
 
           return downloadWhatsAppSupportedMedia(message, {
             connectorKey: options.connectorKey,
-            mediaStore: options.mediaStore,
+            mediaStore: {
+              writeMedia: (input) => options.mediaStore.writeMedia({...input, receiptOwner}),
+            },
             reuploadRequest: options.socket.updateMediaMessage,
             parts,
           });

@@ -17,6 +17,7 @@ describe("Postgres thread runtime abort delivery", () => {
       operation_found: true,
       operation_thread_id: "postgres-abort-thread",
       operation_reason: "stop from postgres",
+      operation_blocks_new_runs: false,
       operation_run_id: runRow.id,
       ...runRow,
       notification_count: 1,
@@ -45,6 +46,7 @@ describe("Postgres thread runtime abort delivery", () => {
       "stop from postgres",
       "00000000-0000-0000-0000-000000000901",
       "runtime_events",
+      false,
     ]);
     pool.query.mockClear();
     await expect(store.listAbortRequestedRuns([])).resolves.toEqual([]);
@@ -84,6 +86,7 @@ describe("Postgres thread runtime abort delivery", () => {
       operation_found: true,
       operation_thread_id: "other-thread",
       operation_reason: "same reason",
+      operation_blocks_new_runs: false,
       operation_run_id: null,
       notification_count: 0,
     }]}));
@@ -104,6 +107,7 @@ describe("Postgres thread runtime abort delivery", () => {
         operation_found: false,
         operation_thread_id: null,
         operation_reason: null,
+        operation_blocks_new_runs: null,
         operation_run_id: null,
         notification_count: 0,
       }]})
@@ -112,6 +116,7 @@ describe("Postgres thread runtime abort delivery", () => {
         operation_found: true,
         operation_thread_id: "retry-thread",
         operation_reason: "stop",
+        operation_blocks_new_runs: false,
         operation_run_id: null,
         notification_count: 0,
       }]});

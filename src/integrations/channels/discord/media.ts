@@ -1,4 +1,4 @@
-import type {WriteMediaInput} from "../../../domain/channels/media-store.js";
+import type {MediaReceiptOwner, WriteMediaInput} from "../../../domain/channels/media-store.js";
 import type {MediaDescriptor} from "../../../domain/channels/types.js";
 import type {
   DiscordAttachmentSummary,
@@ -76,9 +76,32 @@ export interface DiscordMediaStore {
 export interface DownloadDiscordSupportedAttachmentsOptions {
   connectorKey: string;
   mediaStore: DiscordMediaStore;
+  /** Stable message identity. Required together with createdAt for replay-safe ingress media. */
+  idempotencyKeyPrefix?: string;
+  createdAt?: number;
+  receiptOwner?: MediaReceiptOwner;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   onUnavailable?: (item: DiscordUnavailableAttachment) => void;
+}
+
+function buildDiscordMediaIdentity(
+  options: DownloadDiscordSupportedAttachmentsOptions,
+  partKey: string,
+): Pick<WriteMediaInput, "idempotencyKey" | "createdAt" | "receiptOwner"> | Record<string, never> {
+  if (options.idempotencyKeyPrefix === undefined && options.createdAt === undefined) {
+    return {};
+  }
+  if (!options.idempotencyKeyPrefix?.trim()
+    || !Number.isSafeInteger(options.createdAt)
+    || (options.createdAt ?? -1) < 0) {
+    throw new Error("Discord media idempotencyKeyPrefix and createdAt must be provided together.");
+  }
+  return {
+    idempotencyKey: `${options.idempotencyKeyPrefix}:${partKey}`,
+    createdAt: options.createdAt as number,
+    ...(options.receiptOwner ? {receiptOwner: options.receiptOwner} : {}),
+  };
 }
 
 function readAttachmentSizeBytes(...values: readonly unknown[]): number | undefined {
@@ -418,6 +441,7 @@ interface DiscordVisualDownloadInput {
   acceptedContentTypes?: readonly string[];
   hintFilename: string;
   metadata: Record<string, string | number>;
+  storagePartKey: string;
   url: string;
 }
 
@@ -480,6 +504,7 @@ async function downloadDiscordVisualMedia(
       sizeBytes: bytes.byteLength,
       hintFilename: input.hintFilename,
       metadata: input.metadata,
+      ...buildDiscordMediaIdentity(options, input.storagePartKey),
     });
     return {descriptor, contentType};
   } finally {
@@ -533,6 +558,7 @@ export async function downloadDiscordSupportedEmbeds(
           discordEmbedIndex: entry.index,
           discordEmbedType: entry.summary.type,
         },
+        storagePartKey: `embed:${entry.index}`,
       }, options);
       media.push(result.descriptor);
       summaries.push(replaceEmbedMediaStatus(entry.summary, "downloaded", result.contentType));
@@ -555,6 +581,7 @@ function stickerDownloadInput(summary: DiscordStickerSummary): DiscordVisualDown
         discordStickerId: summary.id,
         discordStickerFormat: summary.format,
       },
+      storagePartKey: `sticker:${summary.id}`,
     };
   }
   if (summary.format === "gif") {
@@ -567,6 +594,7 @@ function stickerDownloadInput(summary: DiscordStickerSummary): DiscordVisualDown
         discordStickerId: summary.id,
         discordStickerFormat: summary.format,
       },
+      storagePartKey: `sticker:${summary.id}`,
     };
   }
   return undefined;
@@ -817,6 +845,7 @@ async function downloadDiscordAttachmentOrUnavailable(
             metadata: {
               discordAttachmentId: part.id,
             },
+            ...buildDiscordMediaIdentity(options, `attachment:${part.id}`),
           });
         } catch {
           const attempt = {candidate: candidate.kind, reason: "storage_failed" as const};

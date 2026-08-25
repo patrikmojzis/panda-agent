@@ -11,6 +11,7 @@ import {
   SESSION_SCHEMA,
 } from "../../../lib/postgres-relations.js";
 import {buildThreadRuntimeTableNames, type ThreadRuntimeTableNames} from "./postgres-shared.js";
+import {ensurePostgresRuntimeOperationReceiptSchema} from "../requests/postgres-operation-schema.js";
 
 const REDACTED_SET_ENV_VALUE = "[redacted]";
 const THREAD_RUNTIME_MIGRATIONS_TABLE =
@@ -451,6 +452,9 @@ export function buildThreadRuntimeSchemaSql(
     ADD COLUMN IF NOT EXISTS replaces_thread_id TEXT;
 
     ALTER TABLE ${tables.threads}
+    ADD COLUMN IF NOT EXISTS run_claims_blocked_at TIMESTAMPTZ;
+
+    ALTER TABLE ${tables.threads}
     DROP COLUMN IF EXISTS max_input_tokens;
 
     ALTER TABLE ${tables.threads}
@@ -527,7 +531,6 @@ export function buildThreadRuntimeSchemaSql(
       actor_id TEXT,
       identity_id TEXT REFERENCES ${identityTableName}(id) ON DELETE SET NULL,
       created_at TIMESTAMPTZ NOT NULL,
-      admitted_run_id UUID,
       applied_at TIMESTAMPTZ,
       applied_run_id UUID,
       discarded_at TIMESTAMPTZ,
@@ -552,9 +555,6 @@ export function buildThreadRuntimeSchemaSql(
     ALTER COLUMN connector_key SET NOT NULL;
 
     ALTER TABLE ${tables.inputs}
-    ADD COLUMN IF NOT EXISTS admitted_run_id UUID;
-
-    ALTER TABLE ${tables.inputs}
     ADD COLUMN IF NOT EXISTS applied_run_id UUID;
 
     ALTER TABLE ${tables.inputs}
@@ -576,14 +576,6 @@ export function buildThreadRuntimeSchemaSql(
     CREATE INDEX ${quoteIdentifier(`${tables.prefix}_inputs_pending_idx`)}
     ON ${tables.inputs} (thread_id, input_order)
     WHERE applied_at IS NULL AND discarded_at IS NULL;
-
-    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_inputs_runnable_idx`)}
-    ON ${tables.inputs} (thread_id, input_order)
-    WHERE applied_at IS NULL AND discarded_at IS NULL AND delivery_mode = 'wake';
-
-    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_inputs_admitted_idx`)}
-    ON ${tables.inputs} (thread_id, admitted_run_id, input_order)
-    WHERE applied_at IS NULL AND discarded_at IS NULL AND admitted_run_id IS NOT NULL;
 
     CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_inputs_thread_id_id_idx`)}
     ON ${tables.inputs} (thread_id, id);
@@ -619,8 +611,12 @@ export function buildThreadRuntimeSchemaSql(
       finished_at TIMESTAMPTZ,
       abort_requested_at TIMESTAMPTZ,
       abort_reason TEXT,
+      admitted_through_input_order BIGINT,
       error TEXT
     );
+
+    ALTER TABLE ${tables.runs}
+    ADD COLUMN IF NOT EXISTS admitted_through_input_order BIGINT;
 
     ALTER TABLE ${tables.runs}
     ADD COLUMN IF NOT EXISTS owner_source TEXT;
@@ -642,8 +638,20 @@ export function buildThreadRuntimeSchemaSql(
       thread_id TEXT NOT NULL REFERENCES ${tables.threads}(id) ON DELETE CASCADE,
       run_id UUID,
       reason TEXT NOT NULL,
+      blocks_new_runs BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       FOREIGN KEY (thread_id, run_id) REFERENCES ${tables.runs}(thread_id, id)
+    );
+
+    ALTER TABLE ${tables.abortOperations}
+    ADD COLUMN IF NOT EXISTS blocks_new_runs BOOLEAN NOT NULL DEFAULT FALSE;
+
+    CREATE TABLE IF NOT EXISTS ${tables.compactionNoopOperations} (
+      operation_id UUID PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      thread_id TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      FOREIGN KEY (session_id, thread_id) REFERENCES ${tables.threads}(session_id, id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS ${tables.toolJobs} (
@@ -846,36 +854,6 @@ export function buildThreadRuntimeIntegrityChecks(): IntegrityCheckGroup {
           compacted_through_sequence IS NOT NULL
           AND NOT (${buildValidCompactionCheckpointSql()})
         )
-      `,
-    },
-    {
-      label: "inputs.admitted_run_id orphaned from runs.id",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.inputs} AS input
-        LEFT JOIN ${tables.runs} AS run
-          ON run.id = input.admitted_run_id
-        WHERE input.admitted_run_id IS NOT NULL
-          AND run.id IS NULL
-      `,
-    },
-    {
-      label: "inputs.admitted_run_id bound to a run from another thread",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.inputs} AS input
-        INNER JOIN ${tables.runs} AS run
-          ON run.id = input.admitted_run_id
-        WHERE run.thread_id <> input.thread_id
-      `,
-    },
-    {
-      label: "terminal inputs retain an admitting run",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.inputs} AS input
-        WHERE input.admitted_run_id IS NOT NULL
-          AND (input.applied_at IS NOT NULL OR input.discarded_at IS NOT NULL)
       `,
     },
     {
@@ -1274,6 +1252,11 @@ export async function ensurePostgresThreadRuntimeSchema(pool: PgQueryable): Prom
     )
   `);
   await addConstraint(pool, `
+    ALTER TABLE ${tables.runs}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_runs_admission_cutoff_check`)}
+    CHECK (admitted_through_input_order IS NULL OR admitted_through_input_order > 0)
+  `);
+  await addConstraint(pool, `
     ALTER TABLE ${tables.messages}
     ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_messages_compact_checkpoint_check`)}
     CHECK (
@@ -1332,20 +1315,6 @@ export async function ensurePostgresThreadRuntimeSchema(pool: PgQueryable): Prom
         AND message IS NULL
       )
     )
-  `);
-  await addConstraint(pool, `
-    ALTER TABLE ${tables.inputs}
-    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_inputs_admission_lifecycle_check`)}
-    CHECK (
-      admitted_run_id IS NULL
-      OR (applied_at IS NULL AND discarded_at IS NULL AND message IS NOT NULL)
-    )
-  `);
-  await addConstraint(pool, `
-    ALTER TABLE ${tables.inputs}
-    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_inputs_admitted_run_scope_fk`)}
-    FOREIGN KEY (thread_id, admitted_run_id)
-    REFERENCES ${tables.runs}(thread_id, id)
   `);
   await addConstraint(pool, `
     ALTER TABLE ${tables.inputs}
@@ -1440,4 +1409,5 @@ export async function ensurePostgresThreadRuntimeSchema(pool: PgQueryable): Prom
     REFERENCES ${tables.threads}(session_id, id)
     DEFERRABLE INITIALLY DEFERRED
   `);
+  await ensurePostgresRuntimeOperationReceiptSchema(pool);
 }

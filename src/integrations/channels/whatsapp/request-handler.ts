@@ -1,6 +1,5 @@
 import type {MediaDescriptor, RememberedRoute} from "../../../domain/channels/types.js";
 import type {IdentityStore} from "../../../domain/identity/store.js";
-import type {SessionRouteRepo} from "../../../domain/sessions/routes/repo.js";
 import type {
   WhatsAppMessageRequestPayload,
   WhatsAppReactionRequestPayload,
@@ -31,10 +30,10 @@ interface WhatsAppInboundThreadResolver {
 }
 
 interface WhatsAppInboundRequestHandlerOptions {
+  capturedAt: number;
   coordinator: Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
   enqueueOptions?: ThreadEnqueueOptions;
   identityStore: Pick<IdentityStore, "getIdentity" | "resolveIdentityBinding">;
-  routes: Pick<SessionRouteRepo, "saveLastRoute">;
   threads: WhatsAppInboundThreadResolver;
 }
 
@@ -43,14 +42,14 @@ function buildRoute(input: {
   externalConversationId: string;
   externalActorId: string;
   externalMessageId: string;
-}): RememberedRoute {
+}, capturedAt: number): RememberedRoute {
   return {
     source: WHATSAPP_SOURCE,
     connectorKey: input.connectorKey,
     externalConversationId: input.externalConversationId,
     externalActorId: input.externalActorId,
     externalMessageId: input.externalMessageId,
-    capturedAt: Date.now(),
+    capturedAt,
   };
 }
 
@@ -110,10 +109,9 @@ export async function handleWhatsAppMessageRequest(
   const target = await submitRememberedChannelInput({
     coordinator: options.coordinator,
     ...(options.enqueueOptions === undefined ? {} : {enqueueOptions: options.enqueueOptions}),
-    routes: options.routes,
     sessionId: thread.sessionId,
     identityId: binding.identityId,
-    route: buildRoute(payload),
+    route: buildRoute(payload, payload.sentAt ?? options.capturedAt),
     payload: {
       source: WHATSAPP_SOURCE,
       channelId: payload.externalConversationId,
@@ -175,10 +173,9 @@ export async function handleWhatsAppReactionRequest(
   const target = await submitRememberedChannelInput({
     coordinator: options.coordinator,
     ...(options.enqueueOptions === undefined ? {} : {enqueueOptions: options.enqueueOptions}),
-    routes: options.routes,
     sessionId: thread.sessionId,
     identityId: binding.identityId,
-    route: buildRoute(payload),
+    route: buildRoute(payload, payload.sentAt ?? options.capturedAt),
     payload: {
       source: WHATSAPP_SOURCE,
       channelId: payload.externalConversationId,

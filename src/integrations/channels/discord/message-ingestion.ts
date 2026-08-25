@@ -1,4 +1,5 @@
 import type {MediaDescriptor} from "../../../domain/channels/types.js";
+import type {MediaReceiptOwner} from "../../../domain/channels/media-store.js";
 import type {
   DiscordMessageRequestPayload,
   DiscordAttachmentSummary,
@@ -9,6 +10,7 @@ import type {ConversationBinding, ConversationLookup} from "../../../domain/sess
 import type {JsonObject} from "../../../lib/json.js";
 import {firstNonEmptyString, requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
 import {DISCORD_SOURCE} from "./config.js";
+import {deriveRuntimeRequestIngressIdempotencyKey} from "../../../domain/threads/requests/ordering-key.js";
 import {
   readDiscordEmbedSummaries,
   readDiscordStickerSummaries,
@@ -86,12 +88,18 @@ export interface IngestDiscordMessageCreateOptions {
   accountKey: string;
   connectorKey: string;
   conversationRepo: DiscordConversationBindingReader;
-  downloadAttachments?: (attachments: unknown) => Promise<DiscordAttachmentDownloadResult>;
-  downloadEmbeds?: (embeds: unknown) => Promise<DiscordEmbedDownloadResult>;
-  downloadStickers?: (stickerItems: unknown) => Promise<DiscordStickerDownloadResult>;
+  downloadAttachments?: (attachments: unknown, identity: DiscordMediaEventIdentity) => Promise<DiscordAttachmentDownloadResult>;
+  downloadEmbeds?: (embeds: unknown, identity: DiscordMediaEventIdentity) => Promise<DiscordEmbedDownloadResult>;
+  downloadStickers?: (stickerItems: unknown, identity: DiscordMediaEventIdentity) => Promise<DiscordStickerDownloadResult>;
   log: (event: string, payload: Record<string, unknown>) => void;
   onBoundMessage: DiscordBoundMessageHandler;
   resolveParentChannelId(actualChannelId: string): Promise<DiscordParentChannelResolution | null>;
+}
+
+export interface DiscordMediaEventIdentity {
+  idempotencyKeyPrefix: string;
+  createdAt: number;
+  receiptOwner?: MediaReceiptOwner;
 }
 
 export type DiscordMessageIngestionResult =
@@ -126,6 +134,15 @@ function readMessageReferenceId(value: unknown): string | undefined {
   }
 
   return trimToUndefined((value as {message_id?: unknown}).message_id);
+}
+
+function readDiscordSnowflakeTimestamp(id: string): number | undefined {
+  try {
+    const timestamp = Number((BigInt(id) >> 22n) + 1_420_070_400_000n);
+    return Number.isSafeInteger(timestamp) && timestamp >= 0 ? timestamp : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function readSentAt(value: unknown): number | undefined {
@@ -291,6 +308,7 @@ async function downloadBoundAttachments(
   attachments: unknown,
   attachmentSummaries: readonly DiscordAttachmentSummary[],
   route: DiscordMessageRouteEnvelope,
+  identity: DiscordMediaEventIdentity,
   options: IngestDiscordMessageCreateOptions,
 ): Promise<DiscordAttachmentDownloadResult> {
   if (!options.downloadAttachments || attachmentSummaries.length === 0) {
@@ -298,7 +316,7 @@ async function downloadBoundAttachments(
   }
 
   try {
-    return await options.downloadAttachments(attachments);
+    return await options.downloadAttachments(attachments, identity);
   } catch {
     logRouteDrop(options.log, "media_download_failed", route, "attachment_download_failed");
     return {
@@ -317,13 +335,14 @@ async function downloadBoundEmbeds(
   embeds: unknown,
   summaries: readonly DiscordEmbedSummary[],
   route: DiscordMessageRouteEnvelope,
+  identity: DiscordMediaEventIdentity,
   options: IngestDiscordMessageCreateOptions,
 ): Promise<DiscordEmbedDownloadResult> {
   if (!options.downloadEmbeds || summaries.length === 0) {
     return {media: [], summaries};
   }
   try {
-    return await options.downloadEmbeds(embeds);
+    return await options.downloadEmbeds(embeds, identity);
   } catch {
     logRouteDrop(options.log, "media_download_failed", route, "embed_download_failed");
     return {media: [], summaries};
@@ -334,13 +353,14 @@ async function downloadBoundStickers(
   stickerItems: unknown,
   summaries: readonly DiscordStickerSummary[],
   route: DiscordMessageRouteEnvelope,
+  identity: DiscordMediaEventIdentity,
   options: IngestDiscordMessageCreateOptions,
 ): Promise<DiscordStickerDownloadResult> {
   if (!options.downloadStickers || summaries.length === 0) {
     return {media: [], summaries};
   }
   try {
-    return await options.downloadStickers(stickerItems);
+    return await options.downloadStickers(stickerItems, identity);
   } catch {
     logRouteDrop(options.log, "media_download_failed", route, "sticker_download_failed");
     return {media: [], summaries};
@@ -429,6 +449,21 @@ export async function ingestDiscordMessageCreate(
     return {status: "dropped", reason: "unbound_conversation"};
   }
 
+  const requestIdempotencyKey = deriveRuntimeRequestIngressIdempotencyKey({
+    kind: "discord_message",
+    connectorKey: options.connectorKey,
+    externalEventScope: route.externalConversationId,
+    externalEventId: externalMessageId,
+  });
+  const mediaIdentity = {
+    idempotencyKeyPrefix: `${actualChannelId}:${externalMessageId}`,
+    createdAt: readSentAt(payload.timestamp) ?? readDiscordSnowflakeTimestamp(externalMessageId) ?? 0,
+    receiptOwner: {
+      requestKind: "discord_message",
+      requestIdempotencyKey,
+    },
+  };
+
   const attachmentSummaries = readAttachmentSummaries(payload.attachments);
   const embedSummaries = readDiscordEmbedSummaries(payload.embeds);
   const stickerSummaries = readDiscordStickerSummaries(payload.sticker_items);
@@ -438,9 +473,9 @@ export async function ingestDiscordMessageCreate(
     return {status: "dropped", reason: "unsupported_message_shape"};
   }
 
-  const mediaDownload = await downloadBoundAttachments(payload.attachments, attachmentSummaries, route, options);
-  const embedDownload = await downloadBoundEmbeds(payload.embeds, embedSummaries, route, options);
-  const stickerDownload = await downloadBoundStickers(payload.sticker_items, stickerSummaries, route, options);
+  const mediaDownload = await downloadBoundAttachments(payload.attachments, attachmentSummaries, route, mediaIdentity, options);
+  const embedDownload = await downloadBoundEmbeds(payload.embeds, embedSummaries, route, mediaIdentity, options);
+  const stickerDownload = await downloadBoundStickers(payload.sticker_items, stickerSummaries, route, mediaIdentity, options);
   const requestPayload = buildRequestPayload({
     attachmentSummaries: mediaDownload.summaries,
     embedSummaries: embedDownload.summaries,

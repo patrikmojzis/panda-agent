@@ -1,6 +1,9 @@
 import {bootstrapDaemonContext} from "./daemon-bootstrap.js";
 import {createDaemonLifecycle} from "./daemon-lifecycle.js";
-import {createDaemonRequestProcessor} from "./daemon-requests.js";
+import {
+  createDaemonRequestProcessor,
+} from "./daemon-requests.js";
+import {discardSettledRuntimeRequestMedia} from "./runtime-request-media.js";
 import {createDaemonThreadHelpers} from "./daemon-threads.js";
 import {
     DAEMON_HEARTBEAT_INTERVAL_MS,
@@ -30,5 +33,6 @@ export async function createDaemon(options: DaemonOptions): Promise<DaemonServic
   return createDaemonLifecycle({
     context,
     processRequest,
+    afterRequestSettle: discardSettledRuntimeRequestMedia,
   });
 }

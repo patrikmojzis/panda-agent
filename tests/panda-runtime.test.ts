@@ -74,6 +74,10 @@ const browserMocks = vi.hoisted(() => {
   };
 });
 
+const providerRuntimeMocks = vi.hoisted(() => ({
+  close: vi.fn(),
+}));
+
 vi.mock("pg", () => ({
   Pool: runtimeMocks.MockPool,
 }));
@@ -154,6 +158,14 @@ vi.mock("../src/integrations/browser/client.js", () => ({
   BrowserRunnerClient: browserMocks.MockBrowserRunnerClient,
 }));
 
+vi.mock("../src/integrations/providers/shared/runtime.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/integrations/providers/shared/runtime.js")>();
+  return {
+    ...actual,
+    closePiAiRuntimeResources: providerRuntimeMocks.close,
+  };
+});
+
 describe("createRuntime", () => {
   afterEach(() => {
     runtimeMocks.schemaAssertCurrent.mockReset();
@@ -172,6 +184,7 @@ describe("createRuntime", () => {
     browserMocks.start.mockClear();
     browserMocks.close.mockClear();
     browserMocks.instances.length = 0;
+    providerRuntimeMocks.close.mockReset();
   });
 
   it("ends every pool when the schema revision check fails", async () => {
@@ -215,6 +228,25 @@ describe("createRuntime", () => {
     await runtime.close();
 
     expect(browserMocks.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes provider transport caches after thread work drains", async () => {
+    const closeOrder: string[] = [];
+    runtimeMocks.coordinatorStop.mockImplementationOnce(async () => {
+      closeOrder.push("coordinator");
+    });
+    providerRuntimeMocks.close.mockImplementationOnce(() => {
+      closeOrder.push("provider-transports");
+    });
+    const runtime = await createRuntime({
+      dbUrl: "postgres://panda:test@localhost:5432/panda",
+      resolveDefinition: vi.fn(),
+    });
+
+    await runtime.close();
+
+    expect(providerRuntimeMocks.close).toHaveBeenCalledTimes(1);
+    expect(closeOrder).toEqual(["coordinator", "provider-transports"]);
   });
 
   it("drains the coordinator and closes every pool when listener shutdown fails", async () => {

@@ -1,8 +1,15 @@
+import {randomUUID} from "node:crypto";
+
 import {isJsonObject, type JsonObject} from "../../lib/json.js";
 import {buildRuntimeRelationNames} from "../../lib/postgres-relations.js";
 import type {PgListenClient, PgPoolLike} from "../../lib/postgres-query.js";
 import {optionalTimestampMillis, requireTimestampMillis} from "../../lib/postgres-values.js";
 import {requireNonEmptyString, trimToUndefined} from "../../lib/strings.js";
+import {deriveRuntimeRequestOrderingKey} from "../threads/requests/ordering-key.js";
+import {
+  buildRuntimeRequestNotificationChannel,
+  buildRuntimeRequestTableNames,
+} from "../threads/requests/postgres-shared.js";
 import type {
   LiveVoiceHealthReason,
   LiveVoiceOperationalState,
@@ -15,6 +22,7 @@ import type {
 } from "./types.js";
 
 const tables = buildRuntimeRelationNames({sessions: "live_voice_sessions", turns: "live_voice_turns"});
+const requestTables = buildRuntimeRequestTableNames();
 
 const HEALTH_REASONS = new Set<LiveVoiceHealthReason>([
   "transport_not_ready",
@@ -166,6 +174,77 @@ export class LiveVoiceRepo {
     const existing = await this.pool.query(`SELECT * FROM ${tables.turns} WHERE live_voice_session_id=$1 AND (source_utterance_id=$2 OR provider_delegation_id=$3) ORDER BY created_at LIMIT 1`, [input.liveVoiceSessionId,input.sourceUtteranceId,input.providerDelegationId]);
     if (!existing.rows[0]) throw new Error("Live voice turn conflict could not be resolved.");
     return {turn: parseTurn(existing.rows[0] as Record<string, unknown>), created: false};
+  }
+
+  /** Atomically makes a delegated turn durable and queues its runtime request. */
+  async createOrGetTurnAndEnqueueDelegation(input: LiveVoiceTurnInput): Promise<LiveVoiceTurnRecord> {
+    const orderingKey = deriveRuntimeRequestOrderingKey({
+      kind: "live_voice_delegation",
+      payload: {liveVoiceTurnId: input.id, sessionId: input.sessionId},
+    });
+    const result = await this.pool.query(`
+      WITH active_session AS (
+        SELECT id
+        FROM ${tables.sessions}
+        WHERE id = $2 AND state = 'connected'
+        FOR UPDATE
+      ), resolved_turn AS (
+        INSERT INTO ${tables.turns} (
+          id, live_voice_session_id, provider_delegation_id, source_utterance_id,
+          session_id, agent_key, external_actor_id, identity_id, prompt, status
+        )
+        SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,'pending'
+        FROM active_session
+        ON CONFLICT (live_voice_session_id, source_utterance_id) DO UPDATE
+        SET updated_at = ${tables.turns}.updated_at
+        RETURNING *
+      ), written_request AS (
+        INSERT INTO ${requestTables.runtimeRequests} (
+          id, kind, status, payload, ordering_key, idempotency_key
+        )
+        SELECT
+          $10,
+          'live_voice_delegation',
+          'pending',
+          jsonb_build_object('liveVoiceTurnId', resolved_turn.id::text, 'sessionId', resolved_turn.session_id),
+          $11,
+          'live_voice_delegation:' || resolved_turn.id::text
+        FROM resolved_turn
+        ON CONFLICT (idempotency_key) DO UPDATE
+        SET idempotency_key = EXCLUDED.idempotency_key
+        WHERE ${requestTables.runtimeRequests}.kind = EXCLUDED.kind
+          AND ${requestTables.runtimeRequests}.payload = EXCLUDED.payload
+        RETURNING id
+      ), notified AS (
+        SELECT pg_notify($12, 'pending')
+        FROM written_request
+      )
+      SELECT resolved_turn.*,
+             (SELECT COUNT(*) FROM written_request) AS request_count,
+             (SELECT COUNT(*) FROM notified) AS notification_count
+      FROM resolved_turn
+    `, [
+      input.id,
+      input.liveVoiceSessionId,
+      input.providerDelegationId,
+      input.sourceUtteranceId,
+      input.sessionId,
+      input.agentKey,
+      input.externalActorId ?? null,
+      input.identityId ?? null,
+      input.prompt,
+      randomUUID(),
+      orderingKey,
+      buildRuntimeRequestNotificationChannel(),
+    ]);
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    if (!row) {
+      throw new Error(`Live voice session ${input.liveVoiceSessionId} is not connected.`);
+    }
+    if (Number(row.request_count) !== 1) {
+      throw new Error(`Live voice delegation ${input.id} conflicts with another request.`);
+    }
+    return parseTurn(row);
   }
 
   async getTurn(id: string): Promise<LiveVoiceTurnRecord> {

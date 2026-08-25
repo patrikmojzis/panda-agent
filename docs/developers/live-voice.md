@@ -13,6 +13,13 @@ The daemon's generic handoff resolves the owning Panda session's current thread 
 
 The important lifecycle rule is that transcript completion, provider response completion, and transport media drain are different facts. Frameless `turn.done` updates transient history and attribution only. Discord playback seals from media quiet and player drain; it never sends EOF because a transcript completed.
 
+Delegation persistence is one PostgreSQL statement: it locks the connected live
+session, creates or resolves the turn, and enqueues its idempotent runtime
+request. Disconnect marks the session closed before transport teardown, so that
+lock is the shutdown fence. `LiveVoiceCall.close()` also joins in-flight
+persistence and terminalizes any turn returned after its provider generation
+closed; request handling rejects delegations for a disconnected live session.
+
 On barge-in, Panda begins suppression only after the first audible decoded participant frame; leading digital silence cannot cancel an answer. Output remains suppressed until GPT-Live completes that user turn, or until a bounded fallback after Discord capture ends. Durable Panda work already in progress is not cancelled.
 
 Provider replacement keeps the call transport alive. Completed casual transcripts are retained only in process, bounded, and supplied to a fresh provider session as role-bearing `initial_items`; PCM and partial turns are discarded. Durable Panda work is not cancelled.

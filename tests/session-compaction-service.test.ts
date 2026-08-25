@@ -57,10 +57,17 @@ function createHarness(options: {sessionThreads?: string[]} = {}) {
     sessions: {getSession},
     threads: {
       commitCompactionExclusively: vi.fn(),
+      getCompactionNoopOperation: vi.fn(async () => null),
       getMessage: vi.fn(async () => null),
       getThread,
-      hasRunnableInputs: vi.fn(async () => false),
+      hasPendingWake: vi.fn(async () => false),
       loadActiveTranscript: vi.fn(),
+      recordCompactionNoopOperation: vi.fn(async (operationId: string, sessionId: string, threadId: string) => ({
+        operationId,
+        sessionId,
+        threadId,
+        createdAt: 1,
+      })),
     },
     coordinator: {
       resolveThreadRunConfig: vi.fn(async () => ({model: "openai/gpt-5.6-sol", thinking: "high" as const})),
@@ -160,10 +167,57 @@ describe("SessionCompactionService", () => {
 
   it("refuses compaction while runnable input is queued", async () => {
     const harness = createHarness();
-    harness.dependencies.threads.hasRunnableInputs.mockResolvedValue(true);
+    harness.dependencies.threads.hasPendingWake.mockResolvedValue(true);
 
     await expect(harness.service.compactSession("session-1"))
       .rejects.toThrow("Wait for queued input to run before compacting.");
     expect(harness.compact).not.toHaveBeenCalled();
+  });
+
+  it("records and replays a no-op compaction without another provider call", async () => {
+    const harness = createHarness();
+    harness.compact.mockResolvedValue(null);
+
+    await expect(harness.service.compactSession("session-1", "", "request-noop"))
+      .resolves.toEqual({
+        compacted: false,
+        sessionId: "session-1",
+        threadId: "thread-current",
+      });
+    expect(harness.dependencies.threads.recordCompactionNoopOperation).toHaveBeenCalledWith(
+      "request-noop",
+      "session-1",
+      "thread-current",
+      harness.owner,
+    );
+
+    harness.dependencies.threads.getCompactionNoopOperation.mockResolvedValue({
+      operationId: "request-noop",
+      sessionId: "session-1",
+      threadId: "thread-current",
+      createdAt: 1,
+    });
+    await expect(harness.service.compactSession("session-1", "", "request-noop"))
+      .resolves.toMatchObject({compacted: false, threadId: "thread-current"});
+    expect(harness.compact).toHaveBeenCalledTimes(1);
+  });
+
+  it("forwards request cancellation into an in-flight compaction", async () => {
+    const harness = createHarness();
+    const started = Promise.withResolvers<void>();
+    harness.compact.mockImplementation(async (options) => {
+      started.resolve();
+      await new Promise<void>((resolve) => options.signal?.addEventListener("abort", () => resolve(), {once: true}));
+      options.signal?.throwIfAborted();
+      return null;
+    });
+    const controller = new AbortController();
+    const operation = harness.service.compactSession("session-1", "", "request-cancelled", controller.signal);
+    await started.promise;
+    controller.abort(new Error("request claim lost"));
+
+    await expect(operation).rejects.toThrow("request claim lost");
+    expect(harness.dependencies.threads.commitCompactionExclusively).not.toHaveBeenCalled();
+    expect(harness.dependencies.threads.recordCompactionNoopOperation).not.toHaveBeenCalled();
   });
 });

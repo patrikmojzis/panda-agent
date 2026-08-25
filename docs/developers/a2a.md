@@ -116,8 +116,14 @@ Attachment transfer is receiver-side durable media ingestion:
 1. the native CLI streams client-local bytes into sender-owned durable staging
 2. the queued delivery retains an opaque sender/session-scoped upload reference
 3. the A2A outbound adapter copies staged bytes into the recipient media store
-4. the runtime request carries receiver-local `MediaDescriptor` values
-5. staging is removed after success or terminal failure; abandoned uploads expire
+   under a deterministic message/item key; concurrent retries converge on the
+   same file and reject different bytes for that key
+4. the runtime request retains immutable receiver-local staging descriptors for
+   request idempotency
+5. receive handling relocates those bytes to normal recipient agent media paths
+   before it renders or persists the runtime input
+6. request settlement removes only transport staging; transcript-referenced
+   agent media remains durable, while abandoned uploads expire
 
 Client-local and server-local paths are never part of the public or queued A2A contract.
 Neither sender nor recipient needs an execution workspace.
@@ -198,7 +204,8 @@ Sender provenance lives in `delivery.metadata.a2a`:
 1. the A2A outbound worker claims the pending delivery
 2. the adapter validates `connectorKey = "local"` and A2A metadata
 3. recipient session ownership is verified again
-4. attachments are copied into the recipient media store when present
+4. an existing runtime request short-circuits replay before staged uploads are
+   resolved; otherwise attachments are copied idempotently into recipient media
 5. an `a2a_message` runtime request is enqueued
 6. the outbound delivery is marked sent
 
@@ -207,8 +214,9 @@ Sender provenance lives in `delivery.metadata.a2a`:
 1. the daemon validates the binding again
 2. it verifies that `toSessionId` still belongs to `toAgentKey`
 3. it dedupes by `messageId` at session scope
-4. it resolves the recipient session's current thread
-5. it submits one runtime input with `source = "a2a"`
+4. it relocates attachment bytes into the recipient agent media tree
+5. it atomically resolves the recipient session's current thread and submits one
+   runtime input with `source = "a2a"`
 6. it wakes that session immediately
 
 Two important implementation details:

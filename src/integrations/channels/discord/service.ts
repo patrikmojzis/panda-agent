@@ -1,6 +1,9 @@
 import type {Pool} from "pg";
 
-import {FileSystemMediaStore} from "../../../domain/channels/media-store.js";
+import {
+  discardStagedMediaDescriptors,
+  FileSystemMediaStore,
+} from "../../../domain/channels/media-store.js";
 import {ChannelActionWorker} from "../../../domain/channels/actions/worker.js";
 import {PostgresChannelActionStore} from "../../../domain/channels/actions/postgres.js";
 import {ChannelOutboundDeliveryWorker} from "../../../domain/channels/deliveries/worker.js";
@@ -32,6 +35,7 @@ import {
 } from "./gateway.js";
 import {
   type DiscordBoundMessageHandler,
+  type DiscordMediaEventIdentity,
   ingestDiscordMessageCreate,
 } from "./message-ingestion.js";
 import {
@@ -165,22 +169,22 @@ async function withSecretErrorSafety<T>(secret: string, fn: () => Promise<T>): P
 }
 
 export function createDiscordWorkerStores(pool: DiscordPostgresPool, dataDir: string): DiscordWorkerStores {
-  return {
+  const runtimeRequests = new RuntimeRequestRepo({pool});
+  const stores: DiscordWorkerStores = {
     connectorLeases: new PostgresConnectorLeaseRepo({pool}),
     connectorStore: new PostgresConnectorAccountStore({pool}),
     conversationRepo: new ConversationRepo({pool}),
     channelActions: new PostgresChannelActionStore({pool}),
     outboundDeliveries: new PostgresOutboundDeliveryStore({pool}),
-    mediaStore: new FileSystemMediaStore({
-      rootDir: dataDir,
-    }),
+    mediaStore: new FileSystemMediaStore({rootDir: dataDir}),
     pool,
-    runtimeRequests: new RuntimeRequestRepo({pool}),
+    runtimeRequests,
     sessionStore: new PostgresSessionStore({pool}),
     threadStore: new PostgresThreadRuntimeStore({pool}),
     voiceControls: new DiscordVoiceControlRepo({pool}),
     liveVoice: new LiveVoiceRepo({pool}),
   };
+  return stores;
 }
 
 function createDefaultOutboundWorker(options: {
@@ -235,6 +239,9 @@ function createRuntimeRequestDiscordBoundMessageHandler(input: {
       externalEventScope: message.requestPayload.externalConversationId,
       externalEventId: message.requestPayload.externalMessageId,
     })});
+    if (request.status === "completed" || request.status === "failed") {
+      await discardStagedMediaDescriptors(message.requestPayload.media);
+    }
     input.log("message_queued", {
       kind: request.kind,
       requestId: request.id,
@@ -418,10 +425,12 @@ export class DiscordService {
     attachments: unknown,
     stores: DiscordWorkerStores,
     connectorKey: string,
+    identity: DiscordMediaEventIdentity,
   ): Promise<DiscordAttachmentDownloadResult> {
     return downloadDiscordSupportedAttachments(attachments, {
       connectorKey,
       mediaStore: stores.mediaStore,
+      ...identity,
       onUnavailable: (item) => {
         this.log("media_download_skipped", {
           connectorKey,
@@ -477,18 +486,21 @@ export class DiscordService {
           accountKey: this.accountKey,
           connectorKey: input.connectorKey,
           conversationRepo: input.stores.conversationRepo,
-          downloadAttachments: (attachments) => this.downloadSupportedAttachments(
+          downloadAttachments: (attachments, identity) => this.downloadSupportedAttachments(
             attachments,
             input.stores,
             input.connectorKey,
+            identity,
           ),
-          downloadEmbeds: (embeds) => downloadDiscordSupportedEmbeds(embeds, {
+          downloadEmbeds: (embeds, identity) => downloadDiscordSupportedEmbeds(embeds, {
             connectorKey: input.connectorKey,
             mediaStore: input.stores.mediaStore,
+            ...identity,
           }),
-          downloadStickers: (stickerItems) => downloadDiscordSupportedStickers(stickerItems, {
+          downloadStickers: (stickerItems, identity) => downloadDiscordSupportedStickers(stickerItems, {
             connectorKey: input.connectorKey,
             mediaStore: input.stores.mediaStore,
+            ...identity,
           }),
           log: (event, eventPayload) => this.log(event, eventPayload),
           onBoundMessage,
@@ -574,7 +586,6 @@ export class DiscordService {
             restClient,
             controls: stores.voiceControls,
             voice: stores.liveVoice,
-            requests: stores.runtimeRequests,
             getInfrastructureHealth: () => ({
               ...(gateway.getHealthSnapshot ? {gateway: gateway.getHealthSnapshot()} : {}),
               listener: this.runtime.getNotificationSnapshot(),

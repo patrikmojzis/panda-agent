@@ -1,9 +1,11 @@
 import {randomUUID} from "node:crypto";
 
 import {resolveChannelRouteTarget} from "../../channels/route-target.js";
+import type {RememberedRoute} from "../../channels/types.js";
 import type {PgQueryable} from "../../../lib/postgres-query.js";
+import {requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
 import type {ThreadEnqueueResult} from "./store.js";
-import {ThreadRunClaimLostError} from "./store.js";
+import {ThreadInputAdmissionBlockedError, ThreadRunClaimLostError} from "./store.js";
 import {buildActiveThreadRunGuardCte} from "./postgres-run-claims.js";
 import {parseInputRow, parseInputThreadIdRow, parseMessageRow} from "./postgres-rows.js";
 import type {ThreadRuntimeTableNames} from "./postgres-shared.js";
@@ -32,6 +34,7 @@ interface ThreadInputEnqueueMutationOptions {
   tables: ThreadRuntimeTableNames;
   sessionTable: string;
   sessionRuntimeConfigTable: string;
+  sessionRouteTable: string;
   notificationChannel: string;
   targetId: string;
   targetLabel: "thread" | "session";
@@ -39,6 +42,108 @@ interface ThreadInputEnqueueMutationOptions {
   payload: ThreadInputPayload;
   deliveryMode: ThreadInputDeliveryMode;
   enqueueOptions?: ThreadEnqueueOptions;
+}
+
+interface PreparedRememberedRoute {
+  identityId?: string;
+  route: RememberedRoute;
+  metadataJson: ReturnType<typeof serializeThreadRuntimeJsonb>;
+}
+
+function prepareRememberedRoute(options: ThreadEnqueueOptions | undefined): PreparedRememberedRoute | undefined {
+  const capture = options?.rememberedRoute;
+  if (!capture) return undefined;
+  const route = capture.route;
+  if (!Number.isSafeInteger(route.capturedAt) || route.capturedAt < 0) {
+    throw new Error("Remembered route capturedAt must be a non-negative safe integer.");
+  }
+  const normalized: RememberedRoute = {
+    source: requireNonEmptyString(route.source, "Remembered route source must not be empty."),
+    connectorKey: requireNonEmptyString(route.connectorKey, "Remembered route connector key must not be empty."),
+    externalConversationId: requireNonEmptyString(
+      route.externalConversationId,
+      "Remembered route conversation id must not be empty.",
+    ),
+    externalActorId: trimToUndefined(route.externalActorId),
+    externalMessageId: trimToUndefined(route.externalMessageId),
+    capturedAt: route.capturedAt,
+    ...(route.deliveryContext === undefined ? {} : {deliveryContext: route.deliveryContext}),
+  };
+  return {
+    identityId: trimToUndefined(capture.identityId),
+    route: normalized,
+    metadataJson: serializeThreadRuntimeJsonb(normalized),
+  };
+}
+
+// PostgreSQL executes data-modifying CTEs even when the final SELECT is empty.
+// Joining the accepted input relation is what makes a rejected collision leave
+// both the input ledger and its remembered reply route untouched.
+function buildRememberedRouteCte(
+  table: string,
+  route: PreparedRememberedRoute | undefined,
+  firstParameter: number,
+  acceptedRelation: "inserted" | "resolved",
+): {sql: string; values: readonly unknown[]} {
+  if (!route) {
+    return {sql: "remembered_route AS (SELECT 1 AS skipped WHERE FALSE)", values: []};
+  }
+  const conflictTarget = route.identityId
+    ? "(session_id, identity_id, channel) WHERE identity_id IS NOT NULL"
+    : "(session_id, channel) WHERE identity_id IS NULL";
+  const p = (offset: number) => `$${firstParameter + offset}`;
+  return {
+    sql: `remembered_route AS (
+      INSERT INTO ${table} AS route (
+        session_id,
+        identity_id,
+        channel,
+        connector_key,
+        external_conversation_id,
+        external_actor_id,
+        external_message_id,
+        captured_at_ms,
+        metadata
+      )
+      SELECT
+        target_thread.session_id,
+        ${p(0)},
+        ${p(1)},
+        ${p(2)},
+        ${p(3)},
+        ${p(4)},
+        ${p(5)},
+        ${p(6)},
+        ${p(7)}::jsonb
+      FROM target_thread
+      CROSS JOIN ${acceptedRelation}
+      ON CONFLICT ${conflictTarget} DO UPDATE
+      SET connector_key = CASE WHEN route.captured_at_ms <= EXCLUDED.captured_at_ms
+            THEN EXCLUDED.connector_key ELSE route.connector_key END,
+          external_conversation_id = CASE WHEN route.captured_at_ms <= EXCLUDED.captured_at_ms
+            THEN EXCLUDED.external_conversation_id ELSE route.external_conversation_id END,
+          external_actor_id = CASE WHEN route.captured_at_ms <= EXCLUDED.captured_at_ms
+            THEN EXCLUDED.external_actor_id ELSE route.external_actor_id END,
+          external_message_id = CASE WHEN route.captured_at_ms <= EXCLUDED.captured_at_ms
+            THEN EXCLUDED.external_message_id ELSE route.external_message_id END,
+          captured_at_ms = GREATEST(route.captured_at_ms, EXCLUDED.captured_at_ms),
+          metadata = CASE WHEN route.captured_at_ms <= EXCLUDED.captured_at_ms
+            THEN EXCLUDED.metadata ELSE route.metadata END,
+          updated_at = CASE WHEN route.captured_at_ms <= EXCLUDED.captured_at_ms
+            THEN NOW() ELSE route.updated_at END
+      RETURNING route.id
+    )`,
+    values: [
+      route.identityId ?? null,
+      route.route.source,
+      route.route.connectorKey,
+      route.route.externalConversationId,
+      route.route.externalActorId ?? null,
+      route.route.externalMessageId ?? null,
+      route.route.capturedAt,
+      route.metadataJson.json,
+    ],
+  };
 }
 
 function inputStateColumns(alias: string): string {
@@ -54,7 +159,6 @@ function inputStateColumns(alias: string): string {
     "actor_id",
     "identity_id",
     "created_at",
-    "admitted_run_id",
     "applied_at",
     "applied_run_id",
     "discarded_at",
@@ -76,10 +180,17 @@ async function resolveDuplicateInput(options: ThreadInputEnqueueMutationOptions 
   connectorKey: string;
 }): Promise<ThreadEnqueueResult> {
   const {pool, tables, inputId, payload, connectorKey, deliveryMode} = options;
+  const rememberedRoute = prepareRememberedRoute(options.enqueueOptions);
+  const routeCte = buildRememberedRouteCte(
+    options.sessionRouteTable,
+    rememberedRoute,
+    9,
+    "resolved",
+  );
   // Stable input UUIDs survive `/reset`, so retries may resolve a tombstone on
   // an older thread. Session scope prevents cross-session disclosure; the
   // immutable routing fingerprint prevents an unrelated same-session input
-  // from being accepted or promoted merely because its UUID collides.
+  // from being accepted merely because its UUID collides.
   const result = await pool.query(`
     WITH target_thread AS MATERIALIZED (${options.targetSql}), matched AS MATERIALIZED (
       SELECT ${inputStateColumns("input")}
@@ -105,28 +216,9 @@ async function resolveDuplicateInput(options: ThreadInputEnqueueMutationOptions 
       ORDER BY (input.id = $1) DESC, input.input_order DESC
       LIMIT 1
       FOR UPDATE OF input
-    ), promoted AS (
-      UPDATE ${tables.inputs} AS input
-      SET delivery_mode = 'wake'
-      FROM matched
-      WHERE input.id = matched.id
-        AND input.applied_at IS NULL
-        AND input.discarded_at IS NULL
-        AND input.delivery_mode = 'queue'
-        AND $3 = 'wake'
-      RETURNING ${inputStateColumns("input")}
     ), resolved AS (
-      SELECT * FROM promoted
-      UNION ALL
       SELECT * FROM matched
-      WHERE NOT EXISTS (SELECT 1 FROM promoted)
-    ), updated_thread AS (
-      UPDATE ${tables.threads} AS thread
-      SET updated_at = NOW()
-      FROM promoted
-      WHERE thread.id = promoted.thread_id
-      RETURNING thread.id
-    ), wake AS (
+    ), ${routeCte.sql}, wake AS (
       INSERT INTO ${options.sessionRuntimeConfigTable} (
         session_id,
         pending_wake_at,
@@ -149,7 +241,6 @@ async function resolveDuplicateInput(options: ThreadInputEnqueueMutationOptions 
         json_build_object('kind', 'thread_runnable', 'threadId', resolved.thread_id)::text
       ) AS notification
       FROM resolved
-      LEFT JOIN updated_thread ON updated_thread.id = resolved.thread_id
       WHERE $3 = 'wake'
         AND resolved.applied_at IS NULL
         AND resolved.discarded_at IS NULL
@@ -167,6 +258,7 @@ async function resolveDuplicateInput(options: ThreadInputEnqueueMutationOptions 
     payload.channelId ?? null,
     payload.externalMessageId ?? null,
     options.notificationChannel,
+    ...routeCte.values,
   ]);
   const row = result.rows[0] as Record<string, unknown> | undefined;
   if (!row) {
@@ -182,6 +274,13 @@ async function enqueueInputAtTarget(options: ThreadInputEnqueueMutationOptions):
   const connectorKey = resolveChannelRouteTarget(payload)?.target.connectorKey ?? "";
   const metadataJson = serializeThreadRuntimeJsonb(payload.metadata);
   const messageJson = serializeThreadRuntimeJsonb(payload.message);
+  const rememberedRoute = prepareRememberedRoute(options.enqueueOptions);
+  const routeCte = buildRememberedRouteCte(
+    options.sessionRouteTable,
+    rememberedRoute,
+    13,
+    "inserted",
+  );
 
   try {
     const result = await pool.query(`
@@ -215,7 +314,7 @@ async function enqueueInputAtTarget(options: ThreadInputEnqueueMutationOptions):
           $11::jsonb
         FROM target_thread
         RETURNING ${inputStateColumns(tables.inputs)}
-      ), updated_thread AS (
+      ), ${routeCte.sql}, updated_thread AS (
         UPDATE ${tables.threads} AS thread
         SET updated_at = NOW()
         FROM inserted
@@ -266,6 +365,7 @@ async function enqueueInputAtTarget(options: ThreadInputEnqueueMutationOptions):
       metadataJson.json,
       messageJson.json,
       options.notificationChannel,
+      ...routeCte.values,
     ]);
     const row = result.rows[0] as Record<string, unknown> | undefined;
     if (!row) {
@@ -279,6 +379,9 @@ async function enqueueInputAtTarget(options: ThreadInputEnqueueMutationOptions):
       fields: [
         {name: "metadata", nulCount: metadataJson.nulCount},
         {name: "message", nulCount: messageJson.nulCount},
+        ...(rememberedRoute
+          ? [{name: "rememberedRoute", nulCount: rememberedRoute.metadataJson.nulCount}]
+          : []),
       ],
     });
     if (jsonbError) {
@@ -295,6 +398,7 @@ export async function enqueueThreadInput(
   options: ThreadInputMutationOptions & {
     sessionTable: string;
     sessionRuntimeConfigTable: string;
+    sessionRouteTable: string;
     payload: ThreadInputPayload;
     deliveryMode: ThreadInputDeliveryMode;
     enqueueOptions?: ThreadEnqueueOptions;
@@ -322,6 +426,7 @@ export async function enqueueThreadInput(
         ON locked_session.id = thread.session_id
        AND locked_session.current_thread_id = thread.id
       WHERE thread.id = $2
+        AND thread.run_claims_blocked_at IS NULL
       FOR UPDATE OF thread
     `,
   });
@@ -332,6 +437,7 @@ export async function enqueueSessionThreadInput(options: {
   tables: ThreadRuntimeTableNames;
   sessionTable: string;
   sessionRuntimeConfigTable: string;
+  sessionRouteTable: string;
   notificationChannel: string;
   sessionId: string;
   payload: ThreadInputPayload;
@@ -354,21 +460,46 @@ export async function enqueueSessionThreadInput(options: {
       INNER JOIN ${options.tables.threads} AS thread
         ON thread.id = session.current_thread_id
        AND thread.session_id = session.id
+       AND thread.run_claims_blocked_at IS NULL
       FOR UPDATE OF thread
     `,
   } satisfies ThreadInputEnqueueMutationOptions;
-  try {
-    return await enqueueInputAtTarget(mutation);
-  } catch (error) {
-    if (!(error instanceof Error) || error.message !== `Unknown session ${options.sessionId}.`) {
+  let observedThreadId: string | undefined;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await enqueueInputAtTarget(mutation);
+    } catch (error) {
+      if (!(error instanceof Error) || error.message !== `Unknown session ${options.sessionId}.`) {
+        throw error;
+      }
+      // A reset can make an old statement snapshot miss its newly-current
+      // replacement. Diagnose from a fresh snapshot: blocked means defer;
+      // observing a new unblocked generation earns one bounded retry.
+      const state = await options.pool.query(`
+        SELECT session.current_thread_id,
+               thread.run_claims_blocked_at IS NOT NULL AS blocked
+        FROM ${options.sessionTable} AS session
+        LEFT JOIN ${options.tables.threads} AS thread
+          ON thread.id = session.current_thread_id
+         AND thread.session_id = session.id
+        WHERE session.id = $1
+      `, [options.sessionId]);
+      const row = state.rows[0] as {current_thread_id?: unknown; blocked?: unknown} | undefined;
+      if (row?.blocked === true && typeof row.current_thread_id === "string") {
+        throw new ThreadInputAdmissionBlockedError(options.sessionId, row.current_thread_id);
+      }
+      if (
+        typeof row?.current_thread_id === "string"
+        && row.current_thread_id !== observedThreadId
+        && attempt < 2
+      ) {
+        observedThreadId = row.current_thread_id;
+        continue;
+      }
       throw error;
     }
-    // If reset held the session lock when this statement took its snapshot,
-    // PostgreSQL can expose the updated session row after waiting while the
-    // newly inserted thread remains invisible to that old statement snapshot.
-    // One fresh statement is enough; the uncontended ingress path stays one RTT.
-    return enqueueInputAtTarget(mutation);
   }
+  throw new Error(`Unknown session ${options.sessionId}.`);
 }
 
 export async function applyPendingThreadInputs(
@@ -393,31 +524,39 @@ export async function applyPendingThreadInputs(
       INNER JOIN locked_thread AS thread
         ON thread.session_id = config.session_id
       WHERE config.pending_wake_at IS NOT NULL
-    ), visible_wake_input AS MATERIALIZED (
-      SELECT 1 AS present
+    ), admission_cutoff AS MATERIALIZED (
+      SELECT MAX(input.input_order) AS input_order
       FROM ${tables.inputs} AS input
       INNER JOIN locked_thread ON locked_thread.id = input.thread_id
+      CROSS JOIN observed_wake
       WHERE input.applied_at IS NULL
         AND input.discarded_at IS NULL
-        AND input.delivery_mode = 'wake'
-      LIMIT 1
-    ), admission_edge AS MATERIALIZED (
-      SELECT 1 AS present FROM observed_wake
+      HAVING MAX(input.input_order) IS NOT NULL
+    ), extended_run AS (
+      UPDATE ${tables.runs} AS run
+      SET admitted_through_input_order = GREATEST(
+        COALESCE(run.admitted_through_input_order, 0),
+        admission_cutoff.input_order
+      )
+      FROM active_run
+      CROSS JOIN admission_cutoff
+      WHERE run.id = active_run.id
+      RETURNING run.*
+    ), effective_run AS MATERIALIZED (
+      SELECT id, thread_id, admitted_through_input_order FROM extended_run
       UNION ALL
-      SELECT 1 AS present FROM visible_wake_input
-      WHERE NOT EXISTS (SELECT 1 FROM observed_wake)
+      SELECT id, thread_id, admitted_through_input_order FROM active_run
+      WHERE NOT EXISTS (SELECT 1 FROM extended_run)
     ), pending AS MATERIALIZED (
       SELECT input.*
       FROM ${tables.inputs} AS input
       INNER JOIN locked_thread ON locked_thread.id = input.thread_id
+      INNER JOIN effective_run AS run ON run.thread_id = input.thread_id
       WHERE input.thread_id = $1
         AND input.applied_at IS NULL
         AND input.discarded_at IS NULL
         AND input.message IS NOT NULL
-        AND (
-          input.admitted_run_id = $2
-          OR EXISTS (SELECT 1 FROM admission_edge)
-        )
+        AND input.input_order <= run.admitted_through_input_order
       ORDER BY input.input_order ASC
       LIMIT ${MAX_INPUTS_PER_APPLY}
       FOR UPDATE OF input
@@ -459,35 +598,14 @@ export async function applyPendingThreadInputs(
       UPDATE ${tables.inputs} AS input
       SET applied_at = NOW(),
           applied_run_id = $2,
-          admitted_run_id = NULL,
           metadata = NULL,
           message = NULL
       FROM inserted_messages AS message
       WHERE input.id = message.input_id
         AND input.thread_id = message.thread_id
       RETURNING input.id, input.thread_id
-    ), admitted_remaining AS (
-      -- Bind the complete visible FIFO snapshot to this run. A newer wake
-      -- generation that committed while the statement waited remains armed;
-      -- the durable wake-row fallback also repairs edges from older runtimes.
-      UPDATE ${tables.inputs} AS input
-      SET delivery_mode = 'queue',
-          admitted_run_id = active_run.id
-      FROM active_run
-      CROSS JOIN admission_edge
-      WHERE input.thread_id = active_run.thread_id
-        AND input.applied_at IS NULL
-        AND input.discarded_at IS NULL
-        AND NOT EXISTS (
-          SELECT 1
-          FROM applied_inputs AS applied
-          WHERE applied.id = input.id
-      )
-      RETURNING input.id
     ), input_mutations AS MATERIALIZED (
-      SELECT
-        (SELECT COUNT(*) FROM applied_inputs) AS applied_count,
-        (SELECT COUNT(*) FROM admitted_remaining) AS admitted_count
+      SELECT (SELECT COUNT(*) FROM applied_inputs) AS applied_count
     ), consumed_wake AS (
       -- Input rows always precede the config row in the lock protocol. The
       -- explicit dependency matters: sibling data-modifying CTEs otherwise
@@ -512,7 +630,6 @@ export async function applyPendingThreadInputs(
         json_build_object('kind', 'thread_changed', 'threadId', updated_thread.id)::text
       ) AS notification
       FROM updated_thread
-      CROSS JOIN (SELECT COUNT(*) FROM admitted_remaining) AS admission_boundary
     )
     SELECT
       message.id,
@@ -576,7 +693,6 @@ export async function discardPendingThreadInputs(options: ThreadInputMutationOpt
     ), discarded AS (
       UPDATE ${options.tables.inputs} AS input
       SET discarded_at = NOW(),
-          admitted_run_id = NULL,
           metadata = NULL,
           message = NULL
       FROM target_thread
@@ -610,20 +726,14 @@ export async function discardPendingThreadInputs(options: ThreadInputMutationOpt
   return Number(row.discarded_count ?? 0);
 }
 
-export async function promoteQueuedThreadInputs(options: {
+export async function wakePendingThreadInputs(options: {
   pool: PgQueryable;
   tables: ThreadRuntimeTableNames;
   sessionTable: string;
   sessionRuntimeConfigTable: string;
   notificationChannel: string;
-  threadId?: string;
+  threadId: string;
 }): Promise<readonly string[]> {
-  const values: unknown[] = [options.notificationChannel];
-  const threadPredicate = options.threadId === undefined ? "" : "AND thread.id = $2";
-  if (options.threadId !== undefined) {
-    values.push(options.threadId);
-  }
-
   const result = await options.pool.query(`
     WITH target_sessions AS MATERIALIZED (
       SELECT session.id, session.current_thread_id
@@ -631,16 +741,19 @@ export async function promoteQueuedThreadInputs(options: {
       INNER JOIN ${options.tables.threads} AS thread
         ON thread.id = session.current_thread_id
        AND thread.session_id = session.id
+      LEFT JOIN ${options.sessionRuntimeConfigTable} AS config
+        ON config.session_id = session.id
       WHERE EXISTS (
         SELECT 1
         FROM ${options.tables.inputs} AS input
         WHERE input.thread_id = thread.id
           AND input.applied_at IS NULL
           AND input.discarded_at IS NULL
-          AND input.delivery_mode = 'queue'
       )
-      ${threadPredicate}
+        AND config.pending_wake_at IS NULL
+        AND thread.id = $2
       ORDER BY session.id
+      LIMIT 1
       FOR UPDATE OF session
     ), target_threads AS MATERIALIZED (
       SELECT thread.id, thread.session_id
@@ -650,23 +763,6 @@ export async function promoteQueuedThreadInputs(options: {
        AND session.current_thread_id = thread.id
       ORDER BY thread.id
       FOR UPDATE OF thread
-    ), promoted AS (
-      UPDATE ${options.tables.inputs} AS input
-      SET delivery_mode = 'wake'
-      FROM target_threads AS thread
-      WHERE input.thread_id = thread.id
-        AND input.applied_at IS NULL
-        AND input.discarded_at IS NULL
-        AND input.delivery_mode = 'queue'
-      RETURNING input.thread_id
-    ), changed_threads AS (
-      SELECT DISTINCT thread_id FROM promoted
-    ), updated_threads AS (
-      UPDATE ${options.tables.threads} AS thread
-      SET updated_at = NOW()
-      FROM changed_threads
-      WHERE thread.id = changed_threads.thread_id
-      RETURNING thread.id
     ), wake AS (
       INSERT INTO ${options.sessionRuntimeConfigTable} (
         session_id,
@@ -674,26 +770,25 @@ export async function promoteQueuedThreadInputs(options: {
         pending_wake_generation
       )
       SELECT thread.session_id, NOW(), 1
-      FROM changed_threads
-      INNER JOIN target_threads AS thread
-        ON thread.id = changed_threads.thread_id
+      FROM target_threads AS thread
       ON CONFLICT (session_id) DO UPDATE
       SET pending_wake_at = NOW(),
           pending_wake_generation = ${options.sessionRuntimeConfigTable}.pending_wake_generation + 1,
           updated_at = NOW()
       RETURNING session_id
     ), notified AS (
-      SELECT updated_threads.id,
+      SELECT thread.id,
              pg_notify(
                $1,
-               json_build_object('kind', 'thread_runnable', 'threadId', updated_threads.id)::text
+               json_build_object('kind', 'thread_runnable', 'threadId', thread.id)::text
              ) AS notification
-      FROM updated_threads
+      FROM target_threads AS thread
+      INNER JOIN wake ON wake.session_id = thread.session_id
     )
     SELECT id AS thread_id, notification,
            (SELECT COUNT(*) FROM wake) AS wake_count
     FROM notified
     ORDER BY id ASC
-  `, values);
+  `, [options.notificationChannel, options.threadId]);
   return result.rows.map((row) => parseInputThreadIdRow(row as Record<string, unknown>));
 }

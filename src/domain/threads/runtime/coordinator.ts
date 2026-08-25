@@ -1,5 +1,4 @@
 import type {Message, ThinkingLevel} from "@earendil-works/pi-ai";
-import {randomUUID} from "node:crypto";
 
 import {runInBackground, sleep, withFallbackTimeout} from "../../../lib/async.js";
 import {runThreadStep, Thread, type ThreadResumeState, type ThreadStepResult} from "../../../kernel/agent/thread.js";
@@ -23,6 +22,7 @@ import type {
   ThreadRunOwner,
   ThreadTranscriptSnapshot,
 } from "./types.js";
+import {DEFAULT_THREAD_RUN_ABORT_REASON} from "./types.js";
 import {
   ThreadRunClaimLostError,
   type ThreadEnqueueResult,
@@ -115,7 +115,6 @@ export type ThreadRuntimeEvent =
   };
 
 interface ThreadBoundaryState {
-  hasRunnableInputs: boolean;
   hasAdmittedInputs: boolean;
   hadPendingWake: boolean;
 }
@@ -442,19 +441,20 @@ export class ThreadRuntimeCoordinator {
     this.scheduler.schedule(threadId);
   }
 
-  async flushQueued(threadId?: string): Promise<void> {
-    const promotedThreadIds = await this.store.promoteQueuedInputs(threadId);
-    for (const queuedThreadId of promotedThreadIds) {
+  async flushQueued(threadId: string): Promise<void> {
+    const wokenThreadIds = await this.store.wakePendingInputs(threadId);
+    for (const queuedThreadId of wokenThreadIds) {
       this.scheduler.schedule(queuedThreadId);
     }
   }
 
   async abort(
     threadId: string,
-    reason = "Aborted by runtime request.",
-    operationId: string = randomUUID(),
+    reason = DEFAULT_THREAD_RUN_ABORT_REASON,
+    operationId?: string,
+    options: {blocksNewRuns?: boolean} = {},
   ): Promise<boolean> {
-    const requestedRun = await this.store.requestRunAbort(threadId, reason, operationId);
+    const requestedRun = await this.store.requestRunAbort(threadId, reason, operationId, options);
     if (!requestedRun) {
       return false;
     }
@@ -648,6 +648,10 @@ export class ThreadRuntimeCoordinator {
   async runExclusively<T>(
     threadId: string,
     fn: (access: ThreadExclusiveAccess) => Promise<T>,
+    options: {
+      abortActiveReason?: unknown;
+      beforeActiveAbort?: () => Promise<void>;
+    } = {},
   ): Promise<T> {
     const owner = this.owner;
     if (this.stopped || !owner) {
@@ -656,6 +660,7 @@ export class ThreadRuntimeCoordinator {
     const result = await this.scheduler.runExclusively(
       threadId,
       (signal) => fn({signal, owner}),
+      options,
     );
     return result;
   }
@@ -705,7 +710,7 @@ export class ThreadRuntimeCoordinator {
   }
 
   private shouldContinueFromBoundary(boundary: ThreadBoundaryState): boolean {
-    return boundary.hasRunnableInputs || boundary.hasAdmittedInputs || boundary.hadPendingWake;
+    return boundary.hasAdmittedInputs || boundary.hadPendingWake;
   }
 
   private async reconcileRunnableThreads(): Promise<void> {
@@ -939,7 +944,7 @@ export class ThreadRuntimeCoordinator {
 
       this.scheduler.abort(
         active.threadId,
-        new Error(run.abortReason ?? "Aborted by runtime request."),
+        new Error(run.abortReason ?? DEFAULT_THREAD_RUN_ABORT_REASON),
       );
     }
   }
@@ -982,7 +987,7 @@ export class ThreadRuntimeCoordinator {
             ? signal.reason.message
             : typeof signal.reason === "string" && signal.reason.trim()
               ? signal.reason
-              : "Aborted by runtime request.";
+              : DEFAULT_THREAD_RUN_ABORT_REASON;
           return {
             action: "interrupt",
             reason,
@@ -1077,6 +1082,7 @@ export class ThreadRuntimeCoordinator {
     definition: ResolvedThreadDefinition;
     transcript: ThreadTranscriptSnapshot;
     allowAttempt: boolean;
+    signal: AbortSignal;
   }): Promise<AutoCompactionPreflightResult> {
     let thread = options.thread;
     const now = Date.now();
@@ -1119,6 +1125,7 @@ export class ThreadRuntimeCoordinator {
         thinking: modelConfig.thinking,
         trigger: "auto",
         owningRunId: options.run.id,
+        signal: options.signal,
       });
 
       await this.clearAutoCompactionState(thread, options.run.id);
@@ -1147,6 +1154,7 @@ export class ThreadRuntimeCoordinator {
     thread: ThreadRecord;
     definition: ResolvedThreadDefinition;
     transcript: ThreadTranscriptSnapshot;
+    signal: AbortSignal;
   }): Promise<boolean> {
     const modelConfig = this.resolveModelConfig(options.definition);
 
@@ -1159,6 +1167,7 @@ export class ThreadRuntimeCoordinator {
         thinking: modelConfig.thinking,
         trigger: "auto",
         owningRunId: options.run.id,
+        signal: options.signal,
       });
       await this.clearAutoCompactionState(options.thread, options.run.id);
       return true;
@@ -1301,6 +1310,7 @@ export class ThreadRuntimeCoordinator {
           definition,
           transcript,
           allowAttempt: !autoCompactionAttemptedThisRun,
+          signal,
         });
         autoCompactionAttemptedThisRun = autoCompactionAttemptedThisRun || preflight.attemptedAutoCompact === true;
         if (preflight.action === "restart") {
@@ -1379,6 +1389,7 @@ export class ThreadRuntimeCoordinator {
             thread,
             definition,
             transcript,
+            signal,
           });
           if (recovered) {
             continue runLoop;

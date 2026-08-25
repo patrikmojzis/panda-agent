@@ -1159,7 +1159,7 @@ describe("PostgresThreadRuntimeStore", () => {
       pool: createQueryOnlyThreadRuntimePool(query, "connect should not be used by queued input promotion"),
     });
 
-    await expect(store.promoteQueuedInputs()).rejects.toThrow(
+    await expect(store.wakePendingInputs("thread-1")).rejects.toThrow(
       "Thread runtime input thread id must not be empty.",
     );
     expect(query).toHaveBeenCalledTimes(1);

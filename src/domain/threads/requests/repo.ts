@@ -742,9 +742,11 @@ function buildClaimNextPendingRequestQuery(tableName: string): string {
     )
     UPDATE ${tableName} AS request
     SET status = 'running',
+        execution_attempts = request.execution_attempts + 1,
         claimed_at = NOW(),
         claim_token = $1,
         claim_expires_at = NOW() + ($2::bigint * INTERVAL '1 millisecond'),
+        error = NULL,
         updated_at = NOW()
     FROM candidate
     WHERE request.id = candidate.id
@@ -760,6 +762,13 @@ function parseRecord<K extends RuntimeRequestKind = RuntimeRequestKind>(
     id: parseRequiredString(row.id, "id"),
     kind,
     status: parseStatus(row.status),
+    executionAttempts: (() => {
+      const value = Number(row.execution_attempts);
+      if (!Number.isSafeInteger(value) || value < 0) {
+        throw new Error("Runtime request execution_attempts must be a non-negative safe integer.");
+      }
+      return value;
+    })(),
     payload: parsePayload(kind, row.payload),
     orderingKey: parseOrderingKey(row.ordering_key),
     result: row.result === null ? undefined : parseJsonValue(row.result, "result"),
@@ -801,6 +810,57 @@ export class RuntimeRequestRepo {
     }
     this.tables = buildRuntimeRequestTableNames();
     this.notificationChannel = buildRuntimeRequestNotificationChannel();
+  }
+
+  async getRequestByIdempotencyKey<K extends RuntimeRequestKind>(
+    idempotencyKey: string,
+    kind: K,
+  ): Promise<RuntimeRequestRecord<K> | null> {
+    const key = requireNonEmptyString(idempotencyKey, "Runtime request idempotency key must not be empty.");
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.runtimeRequests}
+      WHERE idempotency_key = $1
+        AND kind = $2
+    `, [key, kind]);
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    return row ? parseRecord<K>(row) : null;
+  }
+
+  async getRequestStatusesByIdempotencyEntries(entries: readonly {
+    idempotencyKey: string;
+    kind: RuntimeRequestKind;
+  }[]): Promise<readonly (RuntimeRequestStatus | undefined)[]> {
+    if (entries.length === 0) return [];
+    const normalized = entries.map((entry) => ({
+      idempotencyKey: requireNonEmptyString(
+        entry.idempotencyKey,
+        "Runtime request idempotency key must not be empty.",
+      ),
+      kind: parseKind(entry.kind),
+    }));
+    const result = await this.pool.query(`
+      SELECT request.idempotency_key, request.kind, request.status
+      FROM ${this.tables.runtimeRequests} AS request
+      INNER JOIN UNNEST($1::text[], $2::text[]) AS owner(idempotency_key, kind)
+        ON owner.idempotency_key = request.idempotency_key
+       AND owner.kind = request.kind
+    `, [
+      normalized.map((entry) => entry.idempotencyKey),
+      normalized.map((entry) => entry.kind),
+    ]);
+    const statuses = new Map<string, RuntimeRequestStatus>();
+    for (const row of result.rows) {
+      const record = row as {idempotency_key?: unknown; kind?: unknown; status?: unknown};
+      if (
+        typeof record.idempotency_key === "string"
+        && typeof record.kind === "string"
+        && RUNTIME_REQUEST_STATUSES.includes(record.status as RuntimeRequestStatus)
+      ) {
+        statuses.set(`${record.kind}\u0000${record.idempotency_key}`, record.status as RuntimeRequestStatus);
+      }
+    }
+    return normalized.map((entry) => statuses.get(`${entry.kind}\u0000${entry.idempotencyKey}`));
   }
 
   async enqueueRequest<K extends RuntimeRequestKind>(
@@ -908,11 +968,41 @@ export class RuntimeRequestRepo {
       WHERE id = $1
         AND claim_token = $2
         AND status = 'running'
+        AND claim_expires_at > NOW()
       RETURNING id
     `, [
       requireTrimmedRequestId(id),
       requireNonEmptyString(claimToken, "Runtime request claim token must not be empty."),
       this.claimLeaseMs,
+    ]);
+    return result.rows.length > 0;
+  }
+
+  /** Keeps ambiguous idempotent work replayable behind a short durable lease. */
+  async deferRequestClaim(
+    id: string,
+    claimToken: string,
+    error: string,
+    retryAfterMs: number,
+  ): Promise<boolean> {
+    if (!Number.isSafeInteger(retryAfterMs) || retryAfterMs <= 0) {
+      throw new Error("Runtime request retry delay must be a positive integer.");
+    }
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.runtimeRequests}
+      SET error = $3,
+          claim_expires_at = NOW() + ($4::bigint * INTERVAL '1 millisecond'),
+          updated_at = NOW()
+      WHERE id = $1
+        AND claim_token = $2
+        AND status = 'running'
+        AND claim_expires_at > NOW()
+      RETURNING id
+    `, [
+      requireTrimmedRequestId(id),
+      requireNonEmptyString(claimToken, "Runtime request claim token must not be empty."),
+      error,
+      retryAfterMs,
     ]);
     return result.rows.length > 0;
   }

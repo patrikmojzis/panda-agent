@@ -1,6 +1,7 @@
 import {describe, expect, it, vi} from "vitest";
 
 import {createLiveVoiceRuntimeEventHandler, handleLiveVoiceDelegationRequest} from "../src/integrations/voice/request-handler.js";
+import {RetryableRuntimeRequestError} from "../src/domain/threads/requests/errors.js";
 
 function turn() {
   return {
@@ -46,6 +47,8 @@ describe("live voice durable handoff", () => {
     };
     const result = await handleLiveVoiceDelegationRequest({liveVoiceTurnId: turn().id}, {
       voice: voice as never,
+      enqueueOptions: {inputId: "input-1"},
+      store: {findInput: vi.fn(), getThread: vi.fn()} as never,
       sessions: {getSession: vi.fn(async () => ({id: "session-1", agentKey: "panda", currentThreadId: "thread-after-reset"}))},
       coordinator: {submitSessionInput},
       identityStore: {resolveIdentityBinding: vi.fn(async () => ({identityId: "identity-1"}))},
@@ -59,7 +62,7 @@ describe("live voice durable handoff", () => {
       channelId: "voice-1",
       externalMessageId: turn().id,
       metadata: {liveVoice: expect.objectContaining({liveVoiceTurnId: turn().id, liveVoiceSessionId: liveSession().id, identityId: "identity-1"})},
-    }), "wake", undefined);
+    }), "wake", {inputId: "input-1"});
     expect((submitSessionInput.mock.calls[0]![1] as {metadata?: unknown}).metadata).not.toHaveProperty("route");
   });
 
@@ -76,6 +79,96 @@ describe("live voice durable handoff", () => {
     expect(voice.assignTurnsToRun).toHaveBeenCalledWith([turn().id], "run-1");
     expect(voice.markTurnsAwaitingFinal).toHaveBeenCalledWith("run-1");
     expect(voice.failTurn).not.toHaveBeenCalled();
+  });
+
+  it("reconciles a committed input when enqueue loses its response", async () => {
+    const voice = {
+      getTurn: vi.fn(async () => turn()),
+      getSession: vi.fn(async () => liveSession()),
+      markTurnQueued: vi.fn(async () => ({...turn(), status: "queued" as const})),
+      failTurn: vi.fn(),
+    };
+    await expect(handleLiveVoiceDelegationRequest({liveVoiceTurnId: turn().id}, {
+      voice: voice as never,
+      enqueueOptions: {inputId: "input-1"},
+      store: {
+        findInput: vi.fn(async () => ({
+          id: "input-1",
+          threadId: "thread-after-reset",
+          source: "discord",
+          channelId: "voice-1",
+          externalMessageId: turn().id,
+        })),
+        getThread: vi.fn(async () => ({id: "thread-after-reset", sessionId: "session-1"})),
+      } as never,
+      sessions: {getSession: vi.fn(async () => ({id: "session-1", agentKey: "panda", currentThreadId: "thread-after-reset"}))},
+      coordinator: {submitSessionInput: vi.fn(async () => { throw new Error("response lost"); })},
+      identityStore: {resolveIdentityBinding: vi.fn(async () => ({identityId: "identity-1"}))},
+      renderDelegation: vi.fn(() => "delegate"),
+    })).resolves.toMatchObject({status: "queued", threadId: "thread-after-reset"});
+
+    expect(voice.markTurnQueued).toHaveBeenCalledWith(turn().id, "thread-after-reset");
+    expect(voice.failTurn).not.toHaveBeenCalled();
+  });
+
+  it("defers an ambiguous enqueue only when its durable input cannot be probed", async () => {
+    const voice = {
+      getTurn: vi.fn(async () => turn()),
+      getSession: vi.fn(async () => liveSession()),
+      markTurnQueued: vi.fn(),
+      failTurn: vi.fn(),
+    };
+    await expect(handleLiveVoiceDelegationRequest({liveVoiceTurnId: turn().id}, {
+      voice: voice as never,
+      enqueueOptions: {inputId: "input-1"},
+      store: {
+        findInput: vi.fn(async () => { throw new Error("database unavailable"); }),
+        getThread: vi.fn(),
+      } as never,
+      sessions: {getSession: vi.fn(async () => ({id: "session-1", agentKey: "panda", currentThreadId: "thread-after-reset"}))},
+      coordinator: {submitSessionInput: vi.fn(async () => { throw new Error("response lost"); })},
+      identityStore: {resolveIdentityBinding: vi.fn(async () => ({identityId: "identity-1"}))},
+      renderDelegation: vi.fn(() => "delegate"),
+    })).rejects.toBeInstanceOf(RetryableRuntimeRequestError);
+    expect(voice.failTurn).not.toHaveBeenCalled();
+  });
+
+  it("keeps a pending turn replayable when setup reads fail transiently", async () => {
+    const voice = {
+      getTurn: vi.fn(async () => turn()),
+      getSession: vi.fn(async () => { throw Object.assign(new Error("connection reset"), {code: "ECONNRESET"}); }),
+      markTurnQueued: vi.fn(),
+      failTurn: vi.fn(),
+    };
+    await expect(handleLiveVoiceDelegationRequest({liveVoiceTurnId: turn().id}, {
+      voice: voice as never,
+      enqueueOptions: {inputId: "input-1"},
+      store: {findInput: vi.fn(), getThread: vi.fn()} as never,
+      sessions: {getSession: vi.fn()},
+      coordinator: {submitSessionInput: vi.fn()},
+      identityStore: {resolveIdentityBinding: vi.fn()},
+      renderDelegation: vi.fn(),
+    })).rejects.toBeInstanceOf(RetryableRuntimeRequestError);
+    expect(voice.failTurn).not.toHaveBeenCalled();
+  });
+
+  it("fails the turn when a rejected enqueue definitely did not commit", async () => {
+    const voice = {
+      getTurn: vi.fn(async () => turn()),
+      getSession: vi.fn(async () => liveSession()),
+      markTurnQueued: vi.fn(),
+      failTurn: vi.fn(async () => undefined),
+    };
+    await expect(handleLiveVoiceDelegationRequest({liveVoiceTurnId: turn().id}, {
+      voice: voice as never,
+      enqueueOptions: {inputId: "input-1"},
+      store: {findInput: vi.fn(async () => null), getThread: vi.fn()} as never,
+      sessions: {getSession: vi.fn(async () => ({id: "session-1", agentKey: "panda", currentThreadId: "thread-after-reset"}))},
+      coordinator: {submitSessionInput: vi.fn(async () => { throw new Error("invalid target"); })},
+      identityStore: {resolveIdentityBinding: vi.fn(async () => ({identityId: "identity-1"}))},
+      renderDelegation: vi.fn(() => "delegate"),
+    })).rejects.toThrow("invalid target");
+    expect(voice.failTurn).toHaveBeenCalledWith(turn().id, "invalid target");
   });
 
   it("fails turns when their Panda run fails", async () => {

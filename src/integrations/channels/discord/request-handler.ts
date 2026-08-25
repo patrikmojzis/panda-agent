@@ -1,6 +1,5 @@
 import type {MediaDescriptor, RememberedRoute} from "../../../domain/channels/types.js";
 import type {IdentityStore} from "../../../domain/identity/store.js";
-import type {SessionRouteRepo} from "../../../domain/sessions/routes/repo.js";
 import type {
   DiscordAttachmentSummary,
   DiscordEmbedSummary,
@@ -31,10 +30,10 @@ interface DiscordBoundThreadResolver {
 }
 
 interface DiscordMessageRequestHandlerOptions {
+  capturedAt: number;
   coordinator: Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
   enqueueOptions?: ThreadEnqueueOptions;
   identityStore: Pick<IdentityStore, "getIdentity" | "resolveIdentityBinding">;
-  routes: Pick<SessionRouteRepo, "saveLastRoute">;
   threads: DiscordBoundThreadResolver;
 }
 
@@ -76,14 +75,14 @@ function buildDiscordDeliveryContext(payload: DiscordMessageRequestPayload): Jso
   };
 }
 
-function buildRoute(payload: DiscordMessageRequestPayload): RememberedRoute {
+function buildRoute(payload: DiscordMessageRequestPayload, capturedAt: number): RememberedRoute {
   return {
     source: DISCORD_SOURCE,
     connectorKey: payload.connectorKey,
     externalConversationId: payload.externalConversationId,
     externalActorId: payload.externalActorId,
     externalMessageId: payload.externalMessageId,
-    capturedAt: Date.now(),
+    capturedAt,
   };
 }
 
@@ -232,10 +231,9 @@ export async function handleDiscordMessageRequest(
   const target = await submitRememberedChannelInput({
     coordinator: options.coordinator,
     ...(options.enqueueOptions === undefined ? {} : {enqueueOptions: options.enqueueOptions}),
-    routes: options.routes,
     sessionId: thread.sessionId,
     ...(identityId !== undefined ? {identityId} : {}),
-    route: buildRoute(payload),
+    route: buildRoute(payload, payload.sentAt ?? options.capturedAt),
     payload: {
       source: DISCORD_SOURCE,
       channelId: payload.externalConversationId,

@@ -3,6 +3,7 @@ import {createHash} from "node:crypto";
 import {describe, expect, it, vi} from "vitest";
 
 import type {RuntimeRequestRecord} from "../src/domain/threads/requests/index.js";
+import {RetryableRuntimeRequestError} from "../src/domain/threads/requests/errors.js";
 import {RuntimeRequestDrain} from "../src/app/runtime/request-drain.js";
 import {sleep, waitFor} from "./helpers/wait-for.js";
 
@@ -21,7 +22,10 @@ function requestRecord(id: string): RuntimeRequestRecord {
     orderingKey: `v1:${createHash("sha256").update(id).digest("hex")}`,
     kind: "tui_input",
     status: "pending",
+    executionAttempts: 1,
     claimToken: `claim-${id}`,
+    claimedAt: now,
+    claimExpiresAt: now + 300_000,
     payload: {
       actorId: "operator",
       externalMessageId: `message-${id}`,
@@ -39,6 +43,7 @@ describe("RuntimeRequestDrain", () => {
     const requests = {
       claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
       renewRequestClaim: vi.fn(async () => true),
+      deferRequestClaim: vi.fn(async () => true),
       releaseRequestClaim: vi.fn(async () => true),
       completeRequest: vi.fn(async () => undefined),
       failRequest: vi.fn(async () => undefined),
@@ -71,6 +76,7 @@ describe("RuntimeRequestDrain", () => {
     const requests = {
       claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
       renewRequestClaim: vi.fn(async () => true),
+      deferRequestClaim: vi.fn(async () => true),
       releaseRequestClaim: vi.fn(async () => true),
       completeRequest: vi.fn(async () => undefined),
       failRequest: vi.fn(async () => undefined),
@@ -99,6 +105,7 @@ describe("RuntimeRequestDrain", () => {
     const requests = {
       claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
       renewRequestClaim: vi.fn(async () => true),
+      deferRequestClaim: vi.fn(async () => true),
       releaseRequestClaim: vi.fn(async () => true),
       completeRequest: vi.fn(async () => undefined),
       failRequest: vi.fn(async () => undefined),
@@ -125,12 +132,12 @@ describe("RuntimeRequestDrain", () => {
   });
 
   it("does not settle work after renewal proves the claim was lost", async () => {
-    const active = deferred();
     const pending = [requestRecord("stolen")];
     const onError = vi.fn();
     const requests = {
       claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
       renewRequestClaim: vi.fn(async () => false),
+      deferRequestClaim: vi.fn(async () => true),
       releaseRequestClaim: vi.fn(async () => true),
       completeRequest: vi.fn(async () => undefined),
       failRequest: vi.fn(async () => undefined),
@@ -140,9 +147,9 @@ describe("RuntimeRequestDrain", () => {
       requests,
       claimRenewIntervalMs: 5,
       onError,
-      processRequest: async () => {
-        await active.promise;
-        return "obsolete result";
+      processRequest: async (_request, signal) => {
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), {once: true}));
+        signal.throwIfAborted();
       },
     });
 
@@ -150,7 +157,6 @@ describe("RuntimeRequestDrain", () => {
     await waitFor(() => {
       expect(requests.renewRequestClaim).toHaveBeenCalled();
     });
-    active.resolve();
     await waitFor(() => {
       expect(onError).toHaveBeenCalledWith(expect.objectContaining({
         message: "Runtime request stolen claim was lost while processing.",
@@ -162,11 +168,52 @@ describe("RuntimeRequestDrain", () => {
     expect(requests.failRequest).not.toHaveBeenCalled();
   });
 
+  it("cancels side effects at the last confirmed lease deadline when renewal keeps failing", async () => {
+    const claimedAt = Date.now();
+    const request = {
+      ...requestRecord("renewal-outage"),
+      claimedAt,
+      claimExpiresAt: claimedAt + 30,
+    };
+    const pending = [request];
+    const onError = vi.fn();
+    const requests = {
+      claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
+      renewRequestClaim: vi.fn(async () => { throw new Error("database unavailable"); }),
+      deferRequestClaim: vi.fn(async () => true),
+      releaseRequestClaim: vi.fn(async () => true),
+      completeRequest: vi.fn(async () => undefined),
+      failRequest: vi.fn(async () => undefined),
+      pruneSettledRequests: vi.fn(async () => 0),
+    };
+    const drain = new RuntimeRequestDrain({
+      requests,
+      claimRenewIntervalMs: 5,
+      onError,
+      processRequest: async (_claimed, signal) => {
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), {once: true}));
+        signal.throwIfAborted();
+      },
+    });
+
+    drain.start();
+    await waitFor(() => {
+      expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+        message: "Runtime request renewal-outage claim expired while processing.",
+      }));
+    });
+    await drain.stop();
+    expect(requests.completeRequest).not.toHaveBeenCalled();
+    expect(requests.failRequest).not.toHaveBeenCalled();
+    expect(requests.releaseRequestClaim).not.toHaveBeenCalled();
+  });
+
   it("polls as a fallback when a request appears after startup without a kick", async () => {
     const pending: RuntimeRequestRecord[] = [];
     const requests = {
       claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
       renewRequestClaim: vi.fn(async () => true),
+      deferRequestClaim: vi.fn(async () => true),
       releaseRequestClaim: vi.fn(async () => true),
       completeRequest: vi.fn(async () => undefined),
       failRequest: vi.fn(async () => undefined),
@@ -195,6 +242,7 @@ describe("RuntimeRequestDrain", () => {
     const requests = {
       claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
       renewRequestClaim: vi.fn(async () => true),
+      deferRequestClaim: vi.fn(async () => true),
       releaseRequestClaim: vi.fn(async () => true),
       completeRequest: vi.fn(async () => undefined),
       failRequest: vi.fn(async () => undefined),
@@ -220,12 +268,81 @@ describe("RuntimeRequestDrain", () => {
     await drain.stop();
   });
 
+  it("runs irreversible cleanup only after durable request settlement", async () => {
+    const request = requestRecord("settlement-boundary");
+    const pending = [request];
+    const requests = {
+      claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
+      renewRequestClaim: vi.fn(async () => true),
+      deferRequestClaim: vi.fn(async () => true),
+      releaseRequestClaim: vi.fn(async () => true),
+      completeRequest: vi.fn(async () => { throw new Error("commit response lost"); }),
+      failRequest: vi.fn(async () => undefined),
+      pruneSettledRequests: vi.fn(async () => 0),
+    };
+    const afterSettle = vi.fn(async () => undefined);
+    const onError = vi.fn();
+    const drain = new RuntimeRequestDrain({
+      requests,
+      afterSettle,
+      onError,
+      processRequest: vi.fn(async () => ({ok: true})),
+      pollIntervalMs: 60_000,
+    });
+
+    drain.start();
+    await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+      message: "commit response lost",
+    })));
+    await drain.stop();
+
+    expect(afterSettle).not.toHaveBeenCalled();
+    expect(requests.failRequest).not.toHaveBeenCalled();
+  });
+
+  it("defers ambiguous idempotent work instead of terminally failing it", async () => {
+    const pending = [requestRecord("ambiguous")];
+    const requests = {
+      claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
+      renewRequestClaim: vi.fn(async () => true),
+      deferRequestClaim: vi.fn(async () => true),
+      releaseRequestClaim: vi.fn(async () => true),
+      completeRequest: vi.fn(async () => undefined),
+      failRequest: vi.fn(async () => undefined),
+      pruneSettledRequests: vi.fn(async () => 0),
+    };
+    const onError = vi.fn();
+    const drain = new RuntimeRequestDrain({
+      requests,
+      onError,
+      processRequest: vi.fn(async () => {
+        throw new RetryableRuntimeRequestError("commit outcome unknown", {retryAfterMs: 10});
+      }),
+    });
+
+    drain.start();
+    await waitFor(() => {
+      expect(requests.deferRequestClaim).toHaveBeenCalledWith(
+        "ambiguous",
+        "claim-ambiguous",
+        "commit outcome unknown",
+        10,
+      );
+    });
+    await drain.stop();
+
+    expect(requests.failRequest).not.toHaveBeenCalled();
+    expect(requests.completeRequest).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(expect.any(RetryableRuntimeRequestError));
+  });
+
   it("cancels active work, releases its claim, and does not claim more after stop", async () => {
     const order: string[] = [];
     const pending = [requestRecord("first"), requestRecord("second")];
     const requests = {
       claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
       renewRequestClaim: vi.fn(async () => true),
+      deferRequestClaim: vi.fn(async () => true),
       releaseRequestClaim: vi.fn(async (id: string) => {
         order.push(`release-${id}`);
         return true;
@@ -276,6 +393,7 @@ describe("RuntimeRequestDrain", () => {
     const requests = {
       claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
       renewRequestClaim: vi.fn(async () => true),
+      deferRequestClaim: vi.fn(async () => true),
       releaseRequestClaim: vi.fn(async () => true),
       completeRequest: vi.fn(async () => undefined),
       failRequest: vi.fn(async () => undefined),
@@ -320,14 +438,19 @@ describe("RuntimeRequestDrain", () => {
     }
   });
 
-  it("prunes completed and failed requests with separate retention windows", async () => {
+  it("drains multiple retention batches before request work without waiting for idle", async () => {
+    const pending = [requestRecord("busy")];
     const requests = {
-      claimNextPendingRequest: vi.fn(async () => null),
+      claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
       renewRequestClaim: vi.fn(async () => true),
+      deferRequestClaim: vi.fn(async () => true),
       releaseRequestClaim: vi.fn(async () => true),
       completeRequest: vi.fn(async () => undefined),
       failRequest: vi.fn(async () => undefined),
-      pruneSettledRequests: vi.fn(async () => 0),
+      pruneSettledRequests: vi.fn()
+        .mockResolvedValueOnce(25)
+        .mockResolvedValueOnce(25)
+        .mockResolvedValue(3),
     };
     const drain = new RuntimeRequestDrain({
       requests,
@@ -340,12 +463,48 @@ describe("RuntimeRequestDrain", () => {
 
     drain.start();
     await waitFor(() => {
-      expect(requests.pruneSettledRequests).toHaveBeenCalledWith({
+      expect(requests.pruneSettledRequests).toHaveBeenCalledTimes(3);
+      expect(requests.pruneSettledRequests).toHaveBeenLastCalledWith({
         completedBefore: new Date(90_000),
         failedBefore: new Date(80_000),
         limit: 25,
       });
+      expect(requests.completeRequest).toHaveBeenCalledWith("busy", "claim-busy", undefined);
     });
+    await drain.stop();
+  });
+
+  it("throttles capped retention catch-up independently of request completions", async () => {
+    let now = 100_000;
+    const requests = {
+      claimNextPendingRequest: vi.fn(async () => null),
+      renewRequestClaim: vi.fn(async () => true),
+      deferRequestClaim: vi.fn(async () => true),
+      releaseRequestClaim: vi.fn(async () => true),
+      completeRequest: vi.fn(async () => undefined),
+      failRequest: vi.fn(async () => undefined),
+      pruneSettledRequests: vi.fn(async () => 25),
+    };
+    const drain = new RuntimeRequestDrain({
+      requests,
+      now: () => now,
+      pruneBatchSize: 25,
+      pruneCatchUpIntervalMs: 5_000,
+      processRequest: vi.fn(),
+    });
+
+    drain.start();
+    await waitFor(() => {
+      expect(requests.pruneSettledRequests).toHaveBeenCalledTimes(10);
+    });
+
+    await drain.trigger();
+    await drain.trigger();
+    expect(requests.pruneSettledRequests).toHaveBeenCalledTimes(10);
+
+    now += 5_000;
+    await drain.trigger();
+    expect(requests.pruneSettledRequests).toHaveBeenCalledTimes(20);
     await drain.stop();
   });
 });

@@ -94,6 +94,7 @@ export class WhatsAppService {
     this.options = options;
     const pool = options.runtime?.pool ?? options.pool;
     if (!pool) throw new Error("WhatsApp service requires a daemon runtime or an existing Postgres pool.");
+    const requests = new RuntimeRequestRepo({pool});
     this.authStore = new PostgresWhatsAppAuthStore({pool, crypto: options.crypto});
     this.stores = {
       pool,
@@ -103,7 +104,7 @@ export class WhatsAppService {
       outboundDeliveries: new PostgresOutboundDeliveryStore({pool}),
       channelActions: new PostgresChannelActionStore({pool}),
       connectorLeases: new PostgresConnectorLeaseRepo({pool}),
-      requests: new RuntimeRequestRepo({pool}),
+      requests,
       mediaStore: new FileSystemMediaStore({rootDir: options.dataDir}),
     };
     this.healthState = new WhatsAppHealthState({

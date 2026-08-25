@@ -108,6 +108,8 @@ export async function startHealthServer(options: HealthServerOptions): Promise<H
 
           resolve();
         });
+        server.closeIdleConnections();
+        server.closeAllConnections();
       });
     },
   };

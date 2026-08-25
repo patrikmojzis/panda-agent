@@ -1,4 +1,4 @@
-import {toJson} from "../../../lib/postgres-values.js";
+import {requireTimestampMillis, toJson} from "../../../lib/postgres-values.js";
 import {randomUUID} from "node:crypto";
 
 import {
@@ -17,7 +17,7 @@ import {
     discardPendingThreadInputs,
     enqueueSessionThreadInput,
     enqueueThreadInput,
-    promoteQueuedThreadInputs,
+    wakePendingThreadInputs,
 } from "./postgres-inputs.js";
 import type {PgPoolLike, PgQueryResult, PgQueryable} from "../../../lib/postgres-query.js";
 import {withTransaction} from "../../../lib/postgres-transaction.js";
@@ -33,6 +33,8 @@ import {
     type CreateThreadInput,
     type CreateThreadToolJobInput,
     type ThreadCompactionCommit,
+    type ThreadCompactionNoopOperationRecord,
+    type ThreadAbortOperationRecord,
     type ThreadChannelMediaFilter,
     type ThreadChannelMediaRecord,
     type ThreadChannelMessageFilter,
@@ -54,9 +56,11 @@ import {
     type ThreadToolJobRecord,
     type ThreadToolJobUpdate,
     type ThreadRuntimeStateUpdate,
+    DEFAULT_THREAD_RUN_ABORT_REASON,
 } from "./types.js";
 import type {MediaDescriptor} from "../../channels/types.js";
 import {buildSessionTableNames, type SessionTableNames} from "../../sessions/postgres-shared.js";
+import {buildSessionRouteTableNames, type SessionRouteTableNames} from "../../sessions/routes/postgres-shared.js";
 import {POSTGRES_CONNECTOR_LEASE_TABLE} from "../../connector-leases/postgres-schema.js";
 import {
   createThreadRuntimeJsonbPersistenceError,
@@ -182,12 +186,14 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
   private readonly pool: PgPoolLike;
   private readonly tables: ThreadRuntimeTableNames;
   private readonly sessionTables: SessionTableNames;
+  private readonly sessionRouteTables: SessionRouteTableNames;
   private readonly notificationChannel: string;
 
   constructor(options: PostgresThreadRuntimeStoreOptions) {
     this.pool = options.pool;
     this.tables = buildThreadRuntimeTableNames();
     this.sessionTables = buildSessionTableNames();
+    this.sessionRouteTables = buildSessionRouteTableNames();
     this.notificationChannel = buildThreadRuntimeNotificationChannel();
   }
 
@@ -543,6 +549,68 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
     return row ? parseMessageRow(row) : null;
   }
 
+  async getCompactionNoopOperation(operationId: string): Promise<ThreadCompactionNoopOperationRecord | null> {
+    const result = await this.pool.query(`
+      SELECT operation_id, session_id, thread_id, created_at
+      FROM ${this.tables.compactionNoopOperations}
+      WHERE operation_id = $1
+    `, [operationId]);
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    return row ? {
+      operationId: String(row.operation_id),
+      sessionId: String(row.session_id),
+      threadId: String(row.thread_id),
+      createdAt: requireTimestampMillis(row.created_at, "Compaction no-op created_at must be a valid timestamp."),
+    } : null;
+  }
+
+  async recordCompactionNoopOperation(
+    operationId: string,
+    sessionId: string,
+    threadId: string,
+    owner: ThreadRunOwner,
+  ): Promise<ThreadCompactionNoopOperationRecord> {
+    return withTransaction(this.pool, async (client) => {
+      await assertExclusiveThreadAccess({
+        queryable: client,
+        tables: this.tables,
+        threadId,
+        owner,
+      });
+      const inserted = await client.query(`
+        INSERT INTO ${this.tables.compactionNoopOperations} (
+          operation_id,
+          session_id,
+          thread_id
+        )
+        SELECT $1, thread.session_id, thread.id
+        FROM ${this.tables.threads} AS thread
+        WHERE thread.id = $3
+          AND thread.session_id = $2
+        ON CONFLICT (operation_id) DO NOTHING
+        RETURNING operation_id, session_id, thread_id, created_at
+      `, [operationId, sessionId, threadId]);
+      const result = inserted.rows[0]
+        ? inserted
+        : await client.query(`
+            SELECT operation_id, session_id, thread_id, created_at
+            FROM ${this.tables.compactionNoopOperations}
+            WHERE operation_id = $1
+          `, [operationId]);
+      const row = result.rows[0] as Record<string, unknown> | undefined;
+      if (!row) throw missingThreadError(threadId);
+      if (row.session_id !== sessionId || row.thread_id !== threadId) {
+        throw new Error(`Compaction operation ${operationId} conflicts with another target.`);
+      }
+      return {
+        operationId: String(row.operation_id),
+        sessionId: String(row.session_id),
+        threadId: String(row.thread_id),
+        createdAt: requireTimestampMillis(row.created_at, "Compaction no-op created_at must be a valid timestamp."),
+      };
+    });
+  }
+
   async listTranscriptPage(
     threadId: string,
     options: ThreadTranscriptPageOptions = {},
@@ -845,6 +913,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
       tables: this.tables,
       sessionTable: this.sessionTables.sessions,
       sessionRuntimeConfigTable: this.sessionTables.sessionRuntimeConfig,
+      sessionRouteTable: this.sessionRouteTables.sessionRoutes,
       notificationChannel: this.notificationChannel,
       threadId,
       payload,
@@ -864,6 +933,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
       tables: this.tables,
       sessionTable: this.sessionTables.sessions,
       sessionRuntimeConfigTable: this.sessionTables.sessionRuntimeConfig,
+      sessionRouteTable: this.sessionRouteTables.sessionRoutes,
       notificationChannel: this.notificationChannel,
       sessionId,
       payload,
@@ -941,34 +1011,28 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
     });
   }
 
-  async getInput(inputId: string): Promise<ThreadInputRecord> {
+  async findInput(inputId: string): Promise<ThreadInputRecord | null> {
     const result = await this.pool.query(`
       SELECT *
       FROM ${this.tables.inputs}
       WHERE id = $1
     `, [inputId]);
     const row = result.rows[0] as Record<string, unknown> | undefined;
-    if (!row) {
+    return row ? parseInputRow(row) : null;
+  }
+
+  async getInput(inputId: string): Promise<ThreadInputRecord> {
+    const input = await this.findInput(inputId);
+    if (!input) {
       throw new Error(`Unknown thread input ${inputId}`);
     }
-    return parseInputRow(row);
+    return input;
   }
 
   async hasPendingInputs(threadId: string): Promise<boolean> {
     const result = await this.pool.query(
       `SELECT 1 FROM ${this.tables.inputs}
        WHERE thread_id = $1 AND applied_at IS NULL AND discarded_at IS NULL LIMIT 1`,
-      [threadId],
-    );
-
-    return result.rows.length > 0;
-  }
-
-  async hasRunnableInputs(threadId: string): Promise<boolean> {
-    const result = await this.pool.query(
-      `SELECT 1 FROM ${this.tables.inputs}
-       WHERE thread_id = $1 AND applied_at IS NULL AND discarded_at IS NULL AND delivery_mode = 'wake'
-       LIMIT 1`,
       [threadId],
     );
 
@@ -1002,8 +1066,8 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
     });
   }
 
-  async promoteQueuedInputs(threadId?: string): Promise<readonly string[]> {
-    return promoteQueuedThreadInputs({
+  async wakePendingInputs(threadId: string): Promise<readonly string[]> {
+    return wakePendingThreadInputs({
       pool: this.pool,
       tables: this.tables,
       sessionTable: this.sessionTables.sessions,
@@ -1273,7 +1337,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
   async takeRunBoundary(
     threadId: string,
     runId: string,
-  ): Promise<{hasRunnableInputs: boolean; hasAdmittedInputs: boolean; hadPendingWake: boolean}> {
+  ): Promise<{hasAdmittedInputs: boolean; hadPendingWake: boolean}> {
     return takeOwnedThreadRunBoundary({
       queryable: this.pool,
       tables: this.tables,
@@ -1605,9 +1669,61 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
 
   async requestRunAbort(
     threadId: string,
-    reason = "Aborted by runtime request.",
-    operationId = randomUUID(),
+    reason = DEFAULT_THREAD_RUN_ABORT_REASON,
+    operationId?: string,
+    options: {blocksNewRuns?: boolean} = {},
   ): Promise<ThreadRunRecord | null> {
+    const blocksNewRuns = options.blocksNewRuns ?? false;
+    if (blocksNewRuns && !operationId) {
+      throw new Error("A run-blocking abort requires a durable operation id.");
+    }
+    if (!operationId) {
+      const direct = await this.pool.query(`
+        WITH target_run AS MATERIALIZED (
+          SELECT run.id, run.thread_id
+          FROM ${this.tables.runs} AS run
+          WHERE run.thread_id = $1
+            AND run.status = 'running'
+          ORDER BY run.started_at DESC
+          LIMIT 1
+          FOR UPDATE OF run
+        ), target_thread AS MATERIALIZED (
+          SELECT thread.id
+          FROM ${this.tables.threads} AS thread
+          WHERE thread.id = $1
+        ), aborted AS (
+          UPDATE ${this.tables.runs} AS run
+          SET abort_requested_at = COALESCE(run.abort_requested_at, NOW()),
+              abort_reason = COALESCE(run.abort_reason, $2)
+          FROM target_run
+          WHERE run.id = target_run.id
+            AND run.thread_id = target_run.thread_id
+          RETURNING run.*
+        ), notified AS (
+          SELECT pg_notify(
+            $3,
+            json_build_object(
+              'kind', 'run_abort_requested',
+              'threadId', aborted.thread_id,
+              'runId', aborted.id
+            )::text
+          ) AS notification
+          FROM aborted
+        )
+        SELECT
+          EXISTS (SELECT 1 FROM target_thread) AS thread_found,
+          aborted.*,
+          (SELECT COUNT(*) FROM notified) AS notification_count
+        FROM (VALUES (1)) AS singleton(value)
+        LEFT JOIN aborted ON TRUE
+      `, [threadId, reason, this.notificationChannel]);
+      const row = direct.rows[0] as Record<string, unknown> | undefined;
+      if (!row || row.thread_found !== true) {
+        throw missingThreadError(threadId);
+      }
+      return row.id === null ? null : parseRunRow(row);
+    }
+
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const result = await this.pool.query(`
       WITH existing_operation AS MATERIALIZED (
@@ -1626,24 +1742,33 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
         LIMIT 1
         FOR UPDATE OF run
       ), target_thread AS MATERIALIZED (
-        -- This is deliberately not a row lock. A statement-snapshot no-run
-        -- receipt linearizes before any concurrent, still-invisible run claim;
-        -- the receipt foreign key protects the thread without inverting the
-        -- run -> thread lock order used by active-run mutations.
+        -- Active-run mutations lock run -> thread, so a blocking reset fence
+        -- must preserve that order. A normal abort never writes the thread.
         SELECT thread.id, target_run.id AS run_id
         FROM ${this.tables.threads} AS thread
         LEFT JOIN target_run ON TRUE
         WHERE thread.id = $1
+      ), fenced_thread AS (
+        UPDATE ${this.tables.threads} AS thread
+        SET run_claims_blocked_at = COALESCE(thread.run_claims_blocked_at, NOW()),
+            updated_at = NOW()
+        FROM target_thread
+        WHERE $5
+          AND NOT EXISTS (SELECT 1 FROM existing_operation)
+          AND thread.id = target_thread.id
+        RETURNING thread.id
       ), inserted_operation AS (
         INSERT INTO ${this.tables.abortOperations} (
           operation_id,
           thread_id,
           run_id,
-          reason
+          reason,
+          blocks_new_runs
         )
-        SELECT $3, target_thread.id, target_thread.run_id, $2
+        SELECT $3, target_thread.id, target_thread.run_id, $2, $5
         FROM target_thread
         WHERE NOT EXISTS (SELECT 1 FROM existing_operation)
+          AND (NOT $5 OR EXISTS (SELECT 1 FROM fenced_thread))
         ON CONFLICT (operation_id) DO NOTHING
         RETURNING *
       ), operation AS MATERIALIZED (
@@ -1685,12 +1810,13 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
         EXISTS (SELECT 1 FROM operation) AS operation_found,
         (SELECT thread_id FROM operation) AS operation_thread_id,
         (SELECT reason FROM operation) AS operation_reason,
+        (SELECT blocks_new_runs FROM operation) AS operation_blocks_new_runs,
         (SELECT run_id FROM operation) AS operation_run_id,
         resolved_run.*,
         (SELECT COUNT(*) FROM notified) AS notification_count
       FROM (VALUES (1)) AS singleton(value)
       LEFT JOIN resolved_run ON TRUE
-      `, [threadId, reason, operationId, this.notificationChannel]);
+      `, [threadId, reason, operationId, this.notificationChannel, blocksNewRuns]);
       const row = result.rows[0] as Record<string, unknown> | undefined;
       if (!row || row.thread_found !== true) {
         throw missingThreadError(threadId);
@@ -1701,14 +1827,42 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
         if (attempt === 0) continue;
         throw new Error(`Abort operation ${operationId} could not be resolved after a concurrent insert.`);
       }
-      if (row.operation_thread_id !== threadId || row.operation_reason !== reason) {
+      if (
+        row.operation_thread_id !== threadId
+        || row.operation_reason !== reason
+        || row.operation_blocks_new_runs !== blocksNewRuns
+      ) {
         throw new Error(`Abort operation ${operationId} conflicts with another request.`);
       }
-      if (row.operation_run_id === null) {
-        return null;
+      const recordedRun = row.operation_run_id === null ? null : parseRunRow(row);
+      if (blocksNewRuns) {
+        // A claim can have inserted its run in a transaction that still owns
+        // the thread lock when the fence statement takes its snapshot. The
+        // fence waits for that transaction and commits first; this fresh
+        // statement then sees and aborts the sole run that linearized before
+        // the fence. Replays repeat this reconciliation until no run remains.
+        return await this.requestRunAbort(threadId, reason) ?? recordedRun;
       }
-      return parseRunRow(row);
+      return recordedRun;
     }
     throw new Error(`Abort operation ${operationId} could not be resolved.`);
+  }
+
+  async getThreadAbortOperation(operationId: string): Promise<ThreadAbortOperationRecord | null> {
+    const result = await this.pool.query(`
+      SELECT operation_id, thread_id, run_id, reason, blocks_new_runs, created_at
+      FROM ${this.tables.abortOperations}
+      WHERE operation_id = $1
+    `, [operationId]);
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      operationId: String(row.operation_id),
+      threadId: String(row.thread_id),
+      ...(row.run_id === null ? {} : {runId: String(row.run_id)}),
+      reason: String(row.reason),
+      blocksNewRuns: row.blocks_new_runs === true,
+      createdAt: requireTimestampMillis(row.created_at, "Thread abort operation created_at must be valid."),
+    };
   }
 }

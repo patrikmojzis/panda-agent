@@ -337,12 +337,7 @@ export class BackgroundToolJobService {
   }
 
   async cancelThreadJobs(threadId: string): Promise<void> {
-    let jobs: readonly ThreadToolJobRecord[];
-    try {
-      jobs = await this.store.listToolJobs(threadId);
-    } catch {
-      return;
-    }
+    const jobs = await this.store.listToolJobs(threadId);
 
     const runningJobIds = jobs
       .filter((job) => job.status === "running")
@@ -351,13 +346,10 @@ export class BackgroundToolJobService {
       this.quietJobIds.add(jobId);
     }
 
-    await Promise.all(runningJobIds.map(async (jobId) => {
-      try {
-        await this.cancel(threadId, jobId);
-      } catch {
-        // Reset-driven cleanup is best effort. Keep the thread replacement moving.
-      }
-    }));
+    // Reset must not claim the old thread is retired while an external job is
+    // still running. Any authoritative listing/cancellation failure leaves the
+    // durable reset request retryable behind its run-admission fence.
+    await Promise.all(runningJobIds.map((jobId) => this.cancel(threadId, jobId)));
   }
 
   async close(): Promise<void> {

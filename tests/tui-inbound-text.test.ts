@@ -36,6 +36,7 @@ describe("tui inbound text", () => {
 
   it("builds route metadata so TUI input behaves like a real channel lane", () => {
     const persistence = buildTuiInboundPersistence({
+      capturedAt: 1_777_000_000_000,
       sentAt: "2026-04-21T18:22:00.000Z",
       actorId: "local-user",
       externalMessageId: "msg-1",
@@ -62,7 +63,7 @@ describe("tui inbound text", () => {
       externalConversationId: "terminal",
       externalActorId: "local-user",
       externalMessageId: "msg-1",
-      capturedAt: expect.any(Number),
+      capturedAt: 1_777_000_000_000,
     });
   });
 });

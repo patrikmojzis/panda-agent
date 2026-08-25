@@ -5,7 +5,16 @@ import type {CreateThreadInput, ThreadRecord, ThreadRunOwner} from "../threads/r
 import {PostgresThreadRuntimeStore} from "../threads/runtime/postgres.js";
 import {PostgresSessionStore} from "./postgres.js";
 import {buildSessionTableNames} from "./postgres-shared.js";
+import {buildConversationSessionTableNames} from "./conversations/postgres-shared.js";
+import {buildSessionRouteTableNames} from "./routes/postgres-shared.js";
+import type {BindConversationInput} from "./conversations/types.js";
+import type {SessionRouteInput} from "./routes/types.js";
+import {toJson} from "../../lib/postgres-values.js";
 import type {CreateSessionInput, SessionRecord, UpdateSessionCurrentThreadInput, UpdateSessionRuntimeConfigInput} from "./types.js";
+
+export class SessionCurrentThreadConflictError extends Error {
+  override readonly name = "SessionCurrentThreadConflictError";
+}
 
 export interface CreateSessionWithThreadInput {
   pool: PgPoolLike;
@@ -14,6 +23,11 @@ export interface CreateSessionWithThreadInput {
   session: CreateSessionInput;
   thread: CreateThreadInput;
   runtimeConfig?: Omit<UpdateSessionRuntimeConfigInput, "sessionId">;
+  operation?: {
+    operationId: string;
+    identityId: string;
+    kind: "main" | "branch" | "subagent";
+  };
 }
 
 export interface ResetSessionThreadInput {
@@ -25,6 +39,11 @@ export interface ResetSessionThreadInput {
   previousThreadId: string;
   owner: ThreadRunOwner;
   runtimeConfig?: Omit<UpdateSessionRuntimeConfigInput, "sessionId">;
+  runtimeConfigOperationId?: string;
+  channelRouting?: {
+    conversation: BindConversationInput;
+    route: SessionRouteInput;
+  };
 }
 
 export interface RepairMissingSessionThreadInput {
@@ -54,7 +73,7 @@ async function lockExpectedCurrentThread(
     throw new Error(`Unknown session ${sessionId}`);
   }
   if (currentThreadId !== expectedThreadId) {
-    throw new Error(`Session ${sessionId} changed current thread before reset.`);
+    throw new SessionCurrentThreadConflictError(`Session ${sessionId} changed current thread before reset.`);
   }
 }
 
@@ -68,6 +87,14 @@ export async function createSessionWithInitialThread(
       await input.sessionStore.updateSessionRuntimeConfigRecord({
         sessionId: session.id,
         ...input.runtimeConfig,
+      }, client);
+    }
+    if (input.operation) {
+      await input.sessionStore.recordSessionCreationOperationRecord({
+        ...input.operation,
+        agentKey: session.agentKey,
+        sessionId: session.id,
+        threadId: thread.id,
       }, client);
     }
     return {session, thread};
@@ -111,12 +138,93 @@ export async function resetSessionCurrentThread(
     `, [input.session.sessionId]);
     const thread = await input.threadStore.createThreadRecord(input.thread, client);
     if (input.runtimeConfig) {
-      await input.sessionStore.updateSessionRuntimeConfigRecord({
+      const update = {
         sessionId: input.session.sessionId,
         ...input.runtimeConfig,
-      }, client);
+      };
+      if (input.runtimeConfigOperationId) {
+        await input.sessionStore.updateSessionRuntimeConfigForOperationRecord(
+          input.runtimeConfigOperationId,
+          update,
+          client,
+        );
+      } else {
+        await input.sessionStore.updateSessionRuntimeConfigRecord(update, client);
+      }
     }
     await input.sessionStore.updateCurrentThreadRecord(input.session, client);
+    if (input.channelRouting) {
+      const conversation = input.channelRouting.conversation;
+      const conversationTable = buildConversationSessionTableNames().conversationSessions;
+      await client.query(`
+        INSERT INTO ${conversationTable} (
+          source,
+          connector_key,
+          external_conversation_id,
+          session_id,
+          metadata
+        ) VALUES ($1, $2, $3, $4, $5::jsonb)
+        ON CONFLICT (source, connector_key, external_conversation_id) DO UPDATE
+        SET session_id = EXCLUDED.session_id,
+            metadata = COALESCE(EXCLUDED.metadata, ${conversationTable}.metadata),
+            updated_at = NOW()
+      `, [
+        conversation.source,
+        conversation.connectorKey,
+        conversation.externalConversationId,
+        conversation.sessionId,
+        toJson(conversation.metadata),
+      ]);
+
+      const route = input.channelRouting.route;
+      const routeTable = buildSessionRouteTableNames().sessionRoutes;
+      const identityPredicate = route.identityId ? "identity_id = $2" : "identity_id IS NULL";
+      await client.query(`
+        WITH updated AS (
+          UPDATE ${routeTable}
+          SET connector_key = $4,
+              external_conversation_id = $5,
+              external_actor_id = $6,
+              external_message_id = $7,
+              captured_at_ms = $8::bigint,
+              metadata = $9::jsonb,
+              updated_at = NOW()
+          WHERE session_id = $1
+            AND ${identityPredicate}
+            AND channel = $3
+            AND captured_at_ms <= $8::bigint
+          RETURNING 1
+        )
+        INSERT INTO ${routeTable} (
+          session_id,
+          identity_id,
+          channel,
+          connector_key,
+          external_conversation_id,
+          external_actor_id,
+          external_message_id,
+          captured_at_ms,
+          metadata
+        )
+        SELECT $1, $2, $3, $4, $5, $6, $7, $8::bigint, $9::jsonb
+        WHERE NOT EXISTS (SELECT 1 FROM updated)
+          AND NOT EXISTS (
+            SELECT 1 FROM ${routeTable}
+            WHERE session_id = $1 AND ${identityPredicate} AND channel = $3
+          )
+        ON CONFLICT DO NOTHING
+      `, [
+        route.sessionId,
+        route.identityId ?? null,
+        route.route.source,
+        route.route.connectorKey,
+        route.route.externalConversationId,
+        route.route.externalActorId ?? null,
+        route.route.externalMessageId ?? null,
+        route.route.capturedAt,
+        toJson(route.route),
+      ]);
+    }
     return thread;
   });
 }

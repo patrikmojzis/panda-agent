@@ -10,6 +10,7 @@ export interface ExecutionEnvironmentStore {
   createEnvironment(input: CreateExecutionEnvironmentInput): Promise<ExecutionEnvironmentRecord>;
   bindSession(input: BindSessionEnvironmentInput): Promise<SessionEnvironmentBindingRecord>;
   getEnvironment(environmentId: string): Promise<ExecutionEnvironmentRecord>;
+  getBinding(sessionId: string, environmentId: string): Promise<SessionEnvironmentBindingRecord | null>;
   getDefaultBinding(sessionId: string): Promise<SessionEnvironmentBindingRecord | null>;
   getBindingByAlias(sessionId: string, alias: string): Promise<SessionEnvironmentBindingRecord | null>;
   deleteBindingByAlias(sessionId: string, alias: string): Promise<boolean>;

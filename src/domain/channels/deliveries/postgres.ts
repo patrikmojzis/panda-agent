@@ -402,6 +402,16 @@ export class PostgresOutboundDeliveryStore {
     return parseOutboundDeliveryRow(row as Record<string, unknown>);
   }
 
+  async findDeliveryByIdempotencyKey(idempotencyKey: string): Promise<OutboundDeliveryRecord | null> {
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.outboundDeliveries}
+      WHERE idempotency_key = $1
+    `, [requireNonEmptyString(idempotencyKey, "Outbound delivery idempotency key must not be empty.")]);
+    const row = result.rows[0];
+    return row ? parseOutboundDeliveryRow(row as Record<string, unknown>) : null;
+  }
+
   async listDeliveriesForTarget(
     filter: OutboundDeliveryTargetHistoryFilter,
   ): Promise<readonly OutboundDeliveryRecord[]> {

@@ -1074,6 +1074,37 @@ describe("Thread", () => {
     }
   });
 
+  it("propagates reset-driven background job discovery and cancellation failures", async () => {
+    const listFailure = new BackgroundToolJobService({
+      store: {
+        createToolJob: vi.fn(),
+        getToolJob: vi.fn(),
+        listToolJobs: vi.fn(async () => { throw new Error("job ledger unavailable"); }),
+        updateToolJob: vi.fn(),
+      } as never,
+    });
+    await expect(listFailure.cancelThreadJobs("thread-reset"))
+      .rejects.toThrow("job ledger unavailable");
+
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({id: "thread-reset-cancel", sessionId: "session-reset-cancel"});
+    const cancelFailure = new BackgroundToolJobService({
+      store,
+      owner: {source: "test", connectorKey: "reset", holderId: "owner"},
+    });
+    await cancelFailure.start({
+      threadId: "thread-reset-cancel",
+      kind: "bash",
+      summary: "external job",
+      start: async () => ({
+        done: new Promise(() => {}),
+        cancel: async () => { throw new Error("runner cancel unavailable"); },
+      }),
+    });
+    await expect(cancelFailure.cancelThreadJobs("thread-reset-cancel"))
+      .rejects.toThrow("runner cancel unavailable");
+  });
+
   it("parses structured output with zod", async () => {
     const runtime = createMockRuntime(message(JSON.stringify({ answer: "42" })));
 

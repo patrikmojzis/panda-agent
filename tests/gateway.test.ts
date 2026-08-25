@@ -112,6 +112,21 @@ describe("Panda gateway", () => {
           message: payload.message,
           metadata: payload.metadata,
         });
+        if (mode === "wake") {
+          // The production enqueue CTE persists this scheduler latch beside
+          // the input. This pg-mem adapter bypasses that CTE, so mirror the
+          // same invariant explicitly instead of treating wake input rows as
+          // a second scheduler source of truth.
+          await pool.query(`
+            INSERT INTO "runtime"."session_runtime_config" (
+              session_id, pending_wake_at, pending_wake_generation
+            ) VALUES ($1, NOW(), 1)
+            ON CONFLICT (session_id) DO UPDATE
+            SET pending_wake_at = NOW(),
+                pending_wake_generation = "runtime"."session_runtime_config".pending_wake_generation + 1,
+                updated_at = NOW()
+          `, [sessionId]);
+        }
         return {
           disposition: "inserted" as const,
           input: await threadStore.getInput(id),
@@ -353,7 +368,7 @@ describe("Panda gateway", () => {
       expect(event.threadId).toBe("thread-1");
       expect(event.text).toBe("");
       expect(event.textScrubbedAt).toBeTypeOf("number");
-      expect(await harness.threadStore.hasRunnableInputs("thread-1")).toBe(true);
+      expect(await harness.threadStore.hasPendingWake("thread-1")).toBe(true);
       const transcript = await materializeGatewayInputs(harness, "thread-1");
       expect(JSON.stringify(transcript[0]?.message)).toContain("Meeting transcript text.");
       expect(JSON.stringify(transcript[0]?.message)).toContain("External untrusted event");
@@ -1311,7 +1326,7 @@ describe("Panda gateway", () => {
 
       const event = await harness.gatewayStore.getEvent(stored.event.id);
       expect(event.threadId).toBe(resetThreadId);
-      expect(await harness.threadStore.hasRunnableInputs(resetThreadId)).toBe(true);
+      expect(await harness.threadStore.hasPendingWake(resetThreadId)).toBe(true);
       expect(await harness.threadStore.hasPendingInputs("thread-1")).toBe(false);
     } finally {
       await closeHarness(harness);
@@ -1514,10 +1529,10 @@ describe("Panda gateway", () => {
       expect(event.status).toBe("delivering");
       expect(event.text).toBe("Already enqueued before commit failed.");
       const inputDeadline = Date.now() + 500;
-      while (!(await harness.threadStore.hasRunnableInputs("thread-1")) && Date.now() < inputDeadline) {
+      while (!(await harness.threadStore.hasPendingWake("thread-1")) && Date.now() < inputDeadline) {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
-      expect(await harness.threadStore.hasRunnableInputs("thread-1")).toBe(true);
+      expect(await harness.threadStore.hasPendingWake("thread-1")).toBe(true);
     } finally {
       await closeHarness(harness);
     }

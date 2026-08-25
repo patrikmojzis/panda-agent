@@ -42,7 +42,11 @@ describe("database migration boundary", () => {
       "app/database/migrations/0002-thread-input-admission.ts",
       "app/database/migrations/0003-thread-wake-generation.ts",
       "app/database/migrations/0004-thread-abort-operations.ts",
+      "app/database/migrations/0005-runtime-operation-receipts.ts",
+      "app/database/migrations/0006-thread-input-cutoffs.ts",
+      "app/database/migrations/0007-reset-run-fences.ts",
       "app/database/readonly-role.ts",
+      "domain/threads/requests/postgres-operation-schema.ts",
       "lib/postgres-migrations.ts",
       "lib/postgres-relations.ts",
     ].map((file) => file.split("/").join(path.sep)));

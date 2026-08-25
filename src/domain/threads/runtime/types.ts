@@ -13,7 +13,7 @@ import type {
   ThreadMessageRecord,
   ThreadRuntimeState,
 } from "../../../kernel/transcript/types.js";
-import type {MediaDescriptor} from "../../channels/types.js";
+import type {MediaDescriptor, RememberedRoute} from "../../channels/types.js";
 
 export type {
     AutoCompactionRuntimeState,
@@ -103,8 +103,6 @@ export interface ThreadInputRecord extends ThreadMessageMetadata {
   status: ThreadInputStatus;
   connectorKey: string;
   createdAt: number;
-  /** Run that durably admitted this still-pending input. */
-  admittedRunId?: string;
   appliedAt?: number;
   appliedRunId?: string;
   discardedAt?: number;
@@ -124,6 +122,29 @@ export interface ThreadInputPayload extends ThreadMessageMetadata {
 export interface ThreadEnqueueOptions {
   /** Stable UUID supplied by durable producers that must survive retry and /reset. */
   inputId?: string;
+  /** Route captured atomically with session-targeted channel ingress. */
+  rememberedRoute?: {
+    identityId?: string;
+    route: RememberedRoute;
+  };
+}
+
+export interface ThreadCompactionNoopOperationRecord {
+  operationId: string;
+  sessionId: string;
+  threadId: string;
+  createdAt: number;
+}
+
+export const DEFAULT_THREAD_RUN_ABORT_REASON = "Aborted by runtime request.";
+
+export interface ThreadAbortOperationRecord {
+  operationId: string;
+  threadId: string;
+  runId?: string;
+  reason: string;
+  blocksNewRuns: boolean;
+  createdAt: number;
 }
 
 export interface ThreadChannelMessageFilter {
@@ -162,6 +183,8 @@ export interface ThreadRunRecord {
   owner?: ThreadRunOwner;
   status: ThreadRunStatus;
   startedAt: number;
+  /** Highest input_order admitted at the run's latest durable wake edge. */
+  admittedThroughInputOrder?: number;
   finishedAt?: number;
   error?: string;
   abortRequestedAt?: number;

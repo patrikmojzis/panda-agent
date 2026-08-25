@@ -15,7 +15,6 @@ import type {
   SessionEnvironmentBindingRecord,
 } from "../../domain/execution-environments/types.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
-import {buildSessionTableNames} from "../../domain/sessions/postgres-shared.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
 import type {
   CreateSessionInput,
@@ -28,6 +27,8 @@ import {
   buildAdHocSubagentProfileSnapshot,
   buildSubagentProfileSnapshot,
   buildSubagentSessionMetadata,
+  readSubagentSessionMetadata,
+  type SubagentSessionMetadata,
   type SubagentExecutionMode,
   type SubagentProfileSnapshot,
   type SubagentResolvedModelSource,
@@ -41,12 +42,16 @@ import type {CommandPolicyModule} from "../../domain/commands/types.js";
 import type {CommandCatalog} from "../../domain/commands/modules.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import type {ThreadRuntimeCoordinator} from "../../domain/threads/runtime/coordinator.js";
+import {RetryableRuntimeRequestError} from "../../domain/threads/requests/errors.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {CreateThreadInput, InferenceProjection, ThreadRecord} from "../../domain/threads/runtime/types.js";
 import type {PgPoolLike} from "../../lib/postgres-query.js";
 import {trimToUndefined, uniqueTrimmedStrings} from "../../lib/strings.js";
 import {renderSubagentHandoff} from "../../prompts/runtime/subagents.js";
-import type {CreateDisposableSessionEnvironmentResult} from "./execution-environment-service.js";
+import {
+  InvalidDisposableEnvironmentAttachmentError,
+  type CreateDisposableSessionEnvironmentResult,
+} from "./execution-environment-service.js";
 
 const SUBAGENT_INPUT_SOURCE = "subagent";
 const DEFAULT_SUBAGENT_PROFILE = "workspace";
@@ -55,12 +60,25 @@ type SubagentRuntimeConfig = Omit<UpdateSessionRuntimeConfigInput, "sessionId">;
 
 type SubagentSessionStore = Pick<
   SessionStore,
-  "createSession" | "getSession" | "updateSessionRuntimeConfig"
+  | "createSession"
+  | "deleteSubagentCreation"
+  | "getSession"
+  | "getSessionCreationOperation"
+  | "recordSessionCreationOperation"
+  | "updateSessionRuntimeConfig"
 >;
 
-type SubagentThreadStore = Pick<ThreadRuntimeStore, "createThread" | "enqueueInput" | "getThread">;
+type SubagentThreadStore = Pick<
+  ThreadRuntimeStore,
+  "createThread" | "enqueueSessionInput" | "findInput" | "getThread"
+>;
 
 type SubagentEnvironmentAttacher = {
+  validateReadyDisposableEnvironment(input: {
+    environmentId: string;
+    agentKey: string;
+    ownerSessionId: string;
+  }): Promise<ExecutionEnvironmentRecord>;
   attachReadySessionToDisposableEnvironment(input: {
     session: Pick<SessionRecord, "id" | "agentKey">;
     environmentId: string;
@@ -71,9 +89,15 @@ type SubagentEnvironmentAttacher = {
     skillPolicy?: ExecutionSkillPolicy;
     toolPolicy?: ExecutionToolPolicy;
   }): Promise<CreateDisposableSessionEnvironmentResult>;
+  getSessionEnvironmentAttachment(input: {
+    session: Pick<SessionRecord, "id" | "agentKey">;
+    environmentId: string;
+  }): Promise<CreateDisposableSessionEnvironmentResult | null>;
 };
 
 export interface CreateSubagentSessionInput {
+  operationId?: string;
+  replayAttempt?: boolean;
   agentKey: string;
   parentSessionId: string;
   task: string;
@@ -111,7 +135,7 @@ export interface SubagentSessionServiceOptions {
   };
   commandCatalog?: Pick<CommandCatalog, "namesForToolGroups">;
   commandModules?: readonly CommandPolicyModule[];
-  coordinator?: Pick<ThreadRuntimeCoordinator, "submitInput">;
+  coordinator?: Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
 }
 
 function requireTrimmed(field: string, value: string | undefined): string {
@@ -179,7 +203,7 @@ export class SubagentSessionService {
   private readonly a2aBindings: SubagentSessionServiceOptions["a2aBindings"];
   private readonly commandCatalog?: Pick<CommandCatalog, "namesForToolGroups">;
   private readonly commandModules: readonly CommandPolicyModule[];
-  private readonly coordinator?: Pick<ThreadRuntimeCoordinator, "submitInput">;
+  private readonly coordinator?: Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
 
   constructor(options: SubagentSessionServiceOptions) {
     this.pool = options.pool;
@@ -203,7 +227,6 @@ export class SubagentSessionService {
 
     const agentKey = requireTrimmed("agentKey", input.agentKey);
     const parentSessionId = requireTrimmed("parentSessionId", input.parentSessionId);
-    await this.assertValidParentSession({agentKey, parentSessionId});
     const task = requireTrimmed("task", input.task);
     const execution = input.execution ?? "agent_workspace";
     const environmentId = trimToUndefined(input.environmentId);
@@ -213,6 +236,26 @@ export class SubagentSessionService {
     if (execution === "agent_workspace" && environmentId) {
       throw new Error("agent_workspace subagent execution must not set environmentId.");
     }
+
+    const sessionId = trimToUndefined(input.sessionId) ?? randomUUID();
+    const threadId = trimToUndefined(input.threadId) ?? randomUUID();
+    const expected = {
+      agentKey,
+      parentSessionId,
+      task,
+      execution,
+      environmentId,
+      sessionId,
+      threadId,
+    };
+    if (input.replayAttempt) {
+      const replay = await this.readCreationReplay(input, expected);
+      if (replay) {
+        return this.completeCreationEffects(input, replay, replay.metadata, false);
+      }
+    }
+
+    await this.assertValidParentSession({agentKey, parentSessionId});
 
     const resolvedProfile = await this.resolveProfile(input, agentKey);
     const spawnModel = resolveModel(input.model);
@@ -239,14 +282,28 @@ export class SubagentSessionService {
         ...(resolvedModel.model ? {model: resolvedModel.model} : {}),
         ...(resolvedModel.source ? {modelSource: resolvedModel.source} : {}),
         ...(thinking ? {thinking} : {}),
+        ...(input.inferenceProjection ? {inferenceProjection: input.inferenceProjection} : {}),
         credentialPolicy,
         skillPolicy,
         toolPolicy,
       },
     });
+    const metadataSnapshot = readSubagentSessionMetadata(metadata);
+    if (!metadataSnapshot) {
+      throw new Error("Subagent creation metadata could not be read after serialization.");
+    }
 
-    const sessionId = trimToUndefined(input.sessionId) ?? randomUUID();
-    const threadId = trimToUndefined(input.threadId) ?? randomUUID();
+    if (execution === "isolated_environment") {
+      if (!this.environments) {
+        throw new Error("Subagent isolated execution requires an execution environment service.");
+      }
+      await this.environments.validateReadyDisposableEnvironment({
+        environmentId: environmentId ?? "",
+        agentKey,
+        ownerSessionId: parentSessionId,
+      });
+    }
+
     const runtimeConfig = buildRuntimeConfig({
       model: resolvedModel.model,
       thinking,
@@ -262,41 +319,192 @@ export class SubagentSessionService {
     }, {
       id: threadId,
       sessionId,
-    }, runtimeConfig);
+    }, runtimeConfig, input.operationId && input.createdByIdentityId
+      ? {
+          operationId: input.operationId,
+          identityId: input.createdByIdentityId,
+          kind: "subagent",
+        }
+      : undefined);
 
+    return this.completeCreationEffects(input, created, metadataSnapshot, created.createdNew);
+  }
+
+  private async readCreationReplay(
+    input: CreateSubagentSessionInput,
+    expected: {
+      agentKey: string;
+      parentSessionId: string;
+      task: string;
+      execution: SubagentExecutionMode;
+      environmentId?: string;
+      sessionId: string;
+      threadId: string;
+    },
+  ): Promise<{session: SessionRecord; thread: ThreadRecord; metadata: SubagentSessionMetadata} | null> {
+    if (!input.operationId) return null;
+    let receipt;
     try {
-      const attached = execution === "isolated_environment"
-        ? await this.attachEnvironment({
+      receipt = await this.sessions.getSessionCreationOperation(input.operationId);
+    } catch (error) {
+      throw new RetryableRuntimeRequestError(
+        `Subagent creation operation ${input.operationId} could not read its receipt.`,
+        {cause: error},
+      );
+    }
+    if (!receipt) return null;
+    if (
+      receipt.identityId !== input.createdByIdentityId
+      || receipt.agentKey !== expected.agentKey
+      || receipt.kind !== "subagent"
+      || receipt.sessionId !== expected.sessionId
+      || receipt.threadId !== expected.threadId
+    ) {
+      throw new Error(`Subagent session operation ${input.operationId} conflicts with another target.`);
+    }
+    let session: SessionRecord;
+    try {
+      session = await this.sessions.getSession(expected.sessionId);
+    } catch (error) {
+      throw new RetryableRuntimeRequestError(
+        `Subagent creation operation ${input.operationId} could not read its session.`,
+        {cause: error},
+      );
+    }
+    const metadata = readSubagentSessionMetadata(session.metadata);
+    if (!metadata) {
+      throw new Error(`Subagent session ${expected.sessionId} has no creation snapshot.`);
+    }
+    const requestedProfile = input.profile === undefined
+      ? DEFAULT_SUBAGENT_PROFILE
+      : normalizeSubagentProfileSlug(requireTrimmed("profile", input.profile));
+    const requestedToolGroups = input.toolGroups === undefined
+      ? undefined
+      : normalizeSubagentToolGroups(input.toolGroups);
+    const requestedModel = input.model === undefined ? undefined : resolveModel(input.model).model;
+    const requestedThinking = input.thinking === undefined ? undefined : input.thinking ?? undefined;
+    const creationMatches = session.agentKey === expected.agentKey
+      && session.kind === "subagent"
+      && metadata.parentSessionId === expected.parentSessionId
+      && metadata.task === expected.task
+      && (metadata.context ?? undefined) === trimToUndefined(input.context)
+      && metadata.execution === expected.execution
+      && (metadata.environmentId ?? undefined) === expected.environmentId
+      && (requestedToolGroups
+        ? metadata.profile.source === "ad_hoc" && isDeepStrictEqual(metadata.profile.toolGroups, requestedToolGroups)
+        : metadata.profile.slug === requestedProfile)
+      && (requestedModel === undefined
+        || (metadata.resolved.model === requestedModel && metadata.resolved.modelSource === "spawn"))
+      && (input.thinking === undefined || isDeepStrictEqual(metadata.resolved.thinking, requestedThinking))
+      && isDeepStrictEqual(metadata.resolved.inferenceProjection, input.inferenceProjection)
+      && isDeepStrictEqual(metadata.resolved.credentialPolicy, buildCredentialPolicy(input));
+    if (!creationMatches) {
+      throw new Error(`Subagent session ${expected.sessionId} already exists with different creation parameters.`);
+    }
+    let thread;
+    try {
+      thread = await this.threads.getThread(expected.threadId);
+    } catch (error) {
+      throw new RetryableRuntimeRequestError(
+        `Subagent creation operation ${input.operationId} could not read its initial thread.`,
+        {cause: error},
+      );
+    }
+    if (thread.sessionId !== session.id) {
+      throw new Error(`Subagent thread ${expected.threadId} belongs to another session.`);
+    }
+    return {session, thread, metadata};
+  }
+
+  private async completeCreationEffects(
+    input: CreateSubagentSessionInput,
+    created: {session: SessionRecord; thread: ThreadRecord},
+    metadata: SubagentSessionMetadata,
+    createdNew = false,
+  ): Promise<CreateSubagentSessionResult> {
+    try {
+      if (!createdNew && input.operationId && await this.hasCommittedHandoff({
+        inputId: input.operationId,
+        initialThreadId: created.thread.id,
+        sessionId: created.session.id,
+      })) {
+        const attached = metadata.execution === "isolated_environment"
+          ? await this.environments?.getSessionEnvironmentAttachment({
+              session: created.session,
+              environmentId: metadata.environmentId ?? "",
+            })
+          : undefined;
+        return {
           session: created.session,
-          environmentId: environmentId ?? "",
-          ownerSessionId: parentSessionId,
-          credentialPolicy,
-          skillPolicy,
-          toolPolicy,
-        })
+          thread: created.thread,
+          ...(attached ? {environment: attached.environment, binding: attached.binding} : {}),
+        };
+      }
+      const attached = metadata.execution === "isolated_environment"
+        ? await this.attachEnvironment({
+            session: created.session,
+            environmentId: metadata.environmentId ?? "",
+            ownerSessionId: metadata.parentSessionId,
+            credentialPolicy: metadata.resolved.credentialPolicy,
+            skillPolicy: metadata.resolved.skillPolicy,
+            toolPolicy: metadata.resolved.toolPolicy,
+          }, !createdNew)
         : undefined;
-
-      await this.bindParentSubagent(parentSessionId, created.session.id);
+      await this.bindParentSubagent(metadata.parentSessionId, created.session.id);
       await this.enqueueHandoff({
-        threadId: created.thread.id,
-        task,
-        context: input.context,
-        identityId: input.createdByIdentityId,
-        parentSessionId,
-        role: resolvedProfile.profile.slug,
+        initialThreadId: created.thread.id,
+        sessionId: created.session.id,
+        task: metadata.task,
+        context: metadata.context,
+        identityId: created.session.createdByIdentityId,
+        parentSessionId: metadata.parentSessionId,
+        role: metadata.profile.slug,
         deliveryMode: input.deliveryMode ?? "wake",
+        inputId: input.operationId,
       });
-
       return {
         session: created.session,
         thread: created.thread,
         ...(attached ? {environment: attached.environment, binding: attached.binding} : {}),
       };
     } catch (error) {
-      if (created.createdNew) {
-        await this.deleteCreatedSubagentSession(created.session.id, created.thread.id).catch(() => {});
+      if (error instanceof RetryableRuntimeRequestError) throw error;
+      if (input.operationId && error instanceof InvalidDisposableEnvironmentAttachmentError) {
+        try {
+          const deleted = await this.deleteCreatedSubagentSession(created.session.id, created.thread.id);
+          if (!deleted) {
+            throw new Error("The incomplete subagent anchor changed before compensation.");
+          }
+        } catch (cleanupError) {
+          throw new RetryableRuntimeRequestError(
+            `Subagent session ${created.session.id} has a terminal environment error but could not be compensated.`,
+            {cause: cleanupError},
+          );
+        }
+        // Attachment is the first dependent effect. A deterministic rejection
+        // here means no A2A binding or handoff exists, so deleting the anchor
+        // is the only convergent saga outcome; retrying can never create the
+        // requested isolated session from this environment snapshot.
+        throw error;
       }
-      throw error;
+      if (!input.operationId && createdNew) {
+        try {
+          await this.deleteCreatedSubagentSession(created.session.id, created.thread.id);
+        } catch (cleanupError) {
+          throw new RetryableRuntimeRequestError(
+            `Subagent session ${created.session.id} failed and could not be cleaned up.`,
+            {cause: cleanupError},
+          );
+        }
+      }
+      if (!input.operationId) throw error;
+      // Session/thread creation is the durable anchor. Every remaining effect
+      // uses an idempotent key, so retries converge without deleting a session
+      // another process may already have observed.
+      throw new RetryableRuntimeRequestError(
+        `Subagent session ${created.session.id} was created but its dependent effects are incomplete.`,
+        {cause: error},
+      );
     }
   }
 
@@ -304,8 +512,14 @@ export class SubagentSessionService {
     let parent: SessionRecord;
     try {
       parent = await this.sessions.getSession(input.parentSessionId);
-    } catch {
-      throw new Error(`Subagent parent session ${input.parentSessionId} was not found.`);
+    } catch (error) {
+      if (error instanceof Error && error.message === `Unknown session ${input.parentSessionId}`) {
+        throw new Error(`Subagent parent session ${input.parentSessionId} was not found.`);
+      }
+      throw new RetryableRuntimeRequestError(
+        `Subagent parent session ${input.parentSessionId} could not be read.`,
+        {cause: error},
+      );
     }
 
     if (parent.agentKey !== input.agentKey) {
@@ -349,6 +563,11 @@ export class SubagentSessionService {
     session: CreateSessionInput,
     thread: CreateThreadInput,
     runtimeConfig: SubagentRuntimeConfig | undefined,
+    operation?: {
+      operationId: string;
+      identityId: string;
+      kind: "subagent";
+    },
   ): Promise<{session: SessionRecord; thread: ThreadRecord; createdNew: boolean}> {
     const readReplay = async (): Promise<{session: SessionRecord; thread: ThreadRecord; createdNew: false} | null> => {
       let existingSession: SessionRecord;
@@ -358,18 +577,35 @@ export class SubagentSessionService {
         if (error instanceof Error && error.message === `Unknown session ${session.id}`) {
           return null;
         }
+        if (operation) {
+          throw new RetryableRuntimeRequestError(
+            `Subagent creation operation ${operation.operationId} could not read its session.`,
+            {cause: error},
+          );
+        }
         throw error;
       }
       if (
         existingSession.agentKey !== session.agentKey
         || existingSession.kind !== "subagent"
-        || existingSession.currentThreadId !== thread.id
-        || existingSession.createdByIdentityId !== session.createdByIdentityId
+        || (!operation && existingSession.currentThreadId !== thread.id)
+        || (!operation && existingSession.createdByIdentityId !== session.createdByIdentityId)
         || !isDeepStrictEqual(existingSession.metadata, session.metadata)
       ) {
         throw new Error(`Subagent session ${session.id} already exists with different creation parameters.`);
       }
-      const existingThread = await this.threads.getThread(thread.id);
+      let existingThread;
+      try {
+        existingThread = await this.threads.getThread(thread.id);
+      } catch (error) {
+        if (operation) {
+          throw new RetryableRuntimeRequestError(
+            `Subagent creation operation ${operation.operationId} could not read its thread.`,
+            {cause: error},
+          );
+        }
+        throw error;
+      }
       if (existingThread.sessionId !== session.id) {
         throw new Error(`Subagent thread ${thread.id} belongs to another session.`);
       }
@@ -377,11 +613,6 @@ export class SubagentSessionService {
       // update_thread request owns the mutable runtime configuration.
       return {session: existingSession, thread: existingThread, createdNew: false};
     };
-
-    const replay = await readReplay();
-    if (replay) {
-      return replay;
-    }
 
     try {
       if (
@@ -396,6 +627,7 @@ export class SubagentSessionService {
           session,
           thread,
           runtimeConfig,
+          operation,
         });
         return {...created, createdNew: true};
       }
@@ -408,15 +640,38 @@ export class SubagentSessionService {
           ...runtimeConfig,
         });
       }
+      if (operation) {
+        await this.sessions.recordSessionCreationOperation({
+          ...operation,
+          agentKey: createdSession.agentKey,
+          sessionId: createdSession.id,
+          threadId: createdThread.id,
+        });
+      }
       return {
         session: createdSession,
         thread: createdThread,
         createdNew: true,
       };
     } catch (error) {
+      if (!operation) throw error;
       const racedReplay = await readReplay();
       if (racedReplay) {
+        if (operation) {
+          await this.sessions.recordSessionCreationOperation({
+            ...operation,
+            agentKey: racedReplay.session.agentKey,
+            sessionId: racedReplay.session.id,
+            threadId: racedReplay.thread.id,
+          });
+        }
         return racedReplay;
+      }
+      if (operation) {
+        throw new RetryableRuntimeRequestError(
+          `Subagent creation operation ${operation.operationId} did not reach a durable receipt.`,
+          {cause: error},
+        );
       }
       throw error;
     }
@@ -429,9 +684,20 @@ export class SubagentSessionService {
     credentialPolicy: ExecutionCredentialPolicy;
     skillPolicy: ExecutionSkillPolicy;
     toolPolicy: ExecutionToolPolicy;
-  }): Promise<CreateDisposableSessionEnvironmentResult> {
+  }, preserveExisting: boolean): Promise<CreateDisposableSessionEnvironmentResult> {
     if (!this.environments) {
       throw new Error("Subagent isolated execution requires an execution environment service.");
+    }
+    if (preserveExisting) {
+      const existing = await this.environments.getSessionEnvironmentAttachment({
+        session: input.session,
+        environmentId: input.environmentId,
+      });
+      if (existing) {
+        // The attachment is a completed creation effect. Replaying the spawn
+        // snapshot must not roll back later operator-owned binding changes.
+        return existing;
+      }
     }
     return this.environments.attachReadySessionToDisposableEnvironment({
       session: input.session,
@@ -443,6 +709,10 @@ export class SubagentSessionService {
       skillPolicy: input.skillPolicy,
       toolPolicy: input.toolPolicy,
     });
+  }
+
+  private async deleteCreatedSubagentSession(sessionId: string, threadId: string): Promise<boolean> {
+    return this.sessions.deleteSubagentCreation(sessionId, threadId);
   }
 
   private async bindParentSubagent(parentSessionId: string, subagentSessionId: string): Promise<void> {
@@ -457,18 +727,21 @@ export class SubagentSessionService {
   }
 
   private async enqueueHandoff(input: {
-    threadId: string;
+    initialThreadId: string;
+    sessionId: string;
     task: string;
     context?: string;
     identityId?: string;
     parentSessionId: string;
     role: string;
     deliveryMode: "queue" | "wake";
+    inputId?: string;
   }): Promise<void> {
+    const externalMessageId = `subagent-handoff:${input.initialThreadId}`;
     const payload = {
       message: stringToUserMessage(renderSubagentHandoff(input.task, input.context)),
       source: SUBAGENT_INPUT_SOURCE,
-      externalMessageId: `subagent-handoff:${input.threadId}`,
+      externalMessageId,
       identityId: input.identityId,
       metadata: {
         subagent: {
@@ -478,23 +751,31 @@ export class SubagentSessionService {
         },
       },
     };
+    const enqueueOptions = input.inputId ? {inputId: input.inputId} : undefined;
     if (this.coordinator) {
-      await this.coordinator.submitInput(input.threadId, payload, input.deliveryMode);
+      await this.coordinator.submitSessionInput(input.sessionId, payload, input.deliveryMode, enqueueOptions);
       return;
     }
 
-    await this.threads.enqueueInput(input.threadId, payload, input.deliveryMode);
+    await this.threads.enqueueSessionInput(input.sessionId, payload, input.deliveryMode, enqueueOptions);
   }
 
-  private async deleteCreatedSubagentSession(sessionId: string, threadId: string): Promise<void> {
-    if (!this.pool) {
-      return;
+  private async hasCommittedHandoff(input: {
+    inputId: string;
+    initialThreadId: string;
+    sessionId: string;
+  }): Promise<boolean> {
+    const existing = await this.threads.findInput(input.inputId);
+    if (!existing) return false;
+    const existingThread = await this.threads.getThread(existing.threadId);
+    if (
+      existingThread.sessionId !== input.sessionId
+      || existing.source !== SUBAGENT_INPUT_SOURCE
+      || existing.externalMessageId !== `subagent-handoff:${input.initialThreadId}`
+    ) {
+      throw new Error(`Subagent handoff input ${input.inputId} conflicts with another operation.`);
     }
-
-    const tables = buildSessionTableNames();
-    await this.pool.query(
-      `DELETE FROM ${tables.sessions} WHERE id = $1 AND kind = 'subagent' AND current_thread_id = $2`,
-      [sessionId, threadId],
-    );
+    return true;
   }
+
 }

@@ -86,6 +86,9 @@ The first real fixes are in:
 - Runtime request shutdown waits at most
   `PANDA_RUNTIME_REQUEST_DRAIN_TIMEOUT_MS` (default `30000`) and stops claim
   renewal immediately, so a stuck handler cannot pin daemon teardown.
+- Other daemon listener, runner, and HTTP shutdown joins wait at most
+  `PANDA_DAEMON_SERVICE_STOP_TIMEOUT_MS` (default `5000`) each. Postgres pools
+  still close last, after the owner-fenced work has had its bounded drain.
 
 ## Visibility
 

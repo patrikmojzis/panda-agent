@@ -79,7 +79,9 @@ describe("durable thread abort operations with PostgreSQL", () => {
       await pool.query(`
         CREATE SCHEMA ${quotedSchema};
         CREATE TABLE ${quotedSchema}.threads (
-          id TEXT PRIMARY KEY
+          id TEXT PRIMARY KEY,
+          run_claims_blocked_at TIMESTAMPTZ,
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
         CREATE TABLE ${quotedSchema}.runs (
           id UUID PRIMARY KEY,
@@ -103,6 +105,7 @@ describe("durable thread abort operations with PostgreSQL", () => {
           thread_id TEXT NOT NULL REFERENCES ${quotedSchema}.threads(id) ON DELETE CASCADE,
           run_id UUID,
           reason TEXT NOT NULL,
+          blocks_new_runs BOOLEAN NOT NULL DEFAULT FALSE,
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           FOREIGN KEY (thread_id, run_id) REFERENCES ${quotedSchema}.runs(thread_id, id)
         );
@@ -139,6 +142,13 @@ describe("durable thread abort operations with PostgreSQL", () => {
       await expect(abort).resolves.toMatchObject({
         id: "10000000-0000-4000-8000-000000000001",
         abortReason: "operator stop",
+      });
+      await expect(store.getThreadAbortOperation(abortOperationId)).resolves.toMatchObject({
+        operationId: abortOperationId,
+        threadId: "thread-a",
+        runId: "10000000-0000-4000-8000-000000000001",
+        reason: "operator stop",
+        createdAt: expect.any(Number),
       });
       await pool.query("SELECT pg_notify('abort_operation_test_sync', 'first')");
       await waitForCondition(

@@ -18,6 +18,8 @@ import {
     type CreateThreadInput,
     type CreateThreadToolJobInput,
     type ThreadCompactionCommit,
+    type ThreadCompactionNoopOperationRecord,
+    type ThreadAbortOperationRecord,
     type ThreadChannelMediaFilter,
     type ThreadChannelMediaRecord,
     type ThreadChannelMessageFilter,
@@ -39,6 +41,7 @@ import {
     type ThreadToolJobRecord,
     type ThreadToolJobUpdate,
     type ThreadRuntimeStateUpdate,
+    DEFAULT_THREAD_RUN_ABORT_REASON,
 } from "../../src/domain/threads/runtime/types.js";
 import type {MediaDescriptor} from "../../src/domain/channels/types.js";
 import {resolveChannelRouteTarget} from "../../src/domain/channels/route-target.js";
@@ -250,7 +253,9 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
   private readonly currentThreadBySession = new Map<string, string>();
   private readonly inputs = new Map<string, TestStoredInput>();
   private readonly runs = new Map<string, ThreadRunRecord>();
-  private readonly abortOperations = new Map<string, {threadId: string; runId?: string; reason: string}>();
+  private readonly abortOperations = new Map<string, ThreadAbortOperationRecord>();
+  private readonly runClaimBlockedThreads = new Set<string>();
+  private readonly compactionNoopOperations = new Map<string, ThreadCompactionNoopOperationRecord>();
   private readonly toolJobs = new Map<string, ThreadToolJobRecord>();
   private currentOwner: ThreadRunOwner | null = null;
 
@@ -451,6 +456,31 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     return this.commitCompactionRecord(threadId, commit);
   }
 
+  async getCompactionNoopOperation(operationId: string): Promise<ThreadCompactionNoopOperationRecord | null> {
+    const operation = this.compactionNoopOperations.get(operationId);
+    return operation ? cloneRecord(operation) : null;
+  }
+
+  async recordCompactionNoopOperation(
+    operationId: string,
+    sessionId: string,
+    threadId: string,
+    _owner: ThreadRunOwner,
+  ): Promise<ThreadCompactionNoopOperationRecord> {
+    const thread = this.threads.get(threadId);
+    if (!thread || thread.thread.sessionId !== sessionId) throw missingThreadError(threadId);
+    const existing = this.compactionNoopOperations.get(operationId);
+    if (existing) {
+      if (existing.sessionId !== sessionId || existing.threadId !== threadId) {
+        throw new Error(`Compaction operation ${operationId} conflicts with another target.`);
+      }
+      return cloneRecord(existing);
+    }
+    const operation = {operationId, sessionId, threadId, createdAt: Date.now()};
+    this.compactionNoopOperations.set(operationId, operation);
+    return cloneRecord(operation);
+  }
+
   /** Test-only full history read; production callers must use bounded pages. */
   async loadTranscriptHistory(threadId: string): Promise<readonly ThreadMessageRecord[]> {
     const thread = this.threads.get(threadId);
@@ -538,9 +568,6 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
         })
         : undefined);
     if (existing) {
-      if (existing.status === "pending" && existing.deliveryMode === "queue" && deliveryMode === "wake") {
-        existing.deliveryMode = "wake";
-      }
       if (existing.status === "pending" && deliveryMode === "wake") {
         armPendingWake(thread);
       }
@@ -627,7 +654,6 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
         input.status = "applied";
         input.appliedAt = appliedAt;
         input.appliedRunId = runId;
-        input.admittedRunId = undefined;
         input.message = undefined;
         input.metadata = undefined;
 
@@ -677,20 +703,16 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     if (this.runs.get(runId)?.threadId !== threadId) {
       throw new ThreadRunClaimLostError(runId);
     }
-    if (
-      thread.pendingWakeAt !== undefined
-      || thread.pendingInputs.some((input) => input.deliveryMode === "wake")
-    ) {
+    if (thread.pendingWakeAt !== undefined) {
       thread.pendingWakeAt = undefined;
-      for (const input of thread.pendingInputs) {
-        input.deliveryMode = "queue";
-        input.admittedRunId = runId;
-      }
+      const latestOrder = Math.max(0, ...thread.pendingInputs.map((input) => input.order));
+      const run = this.runs.get(runId)!;
+      run.admittedThroughInputOrder = Math.max(run.admittedThroughInputOrder ?? 0, latestOrder) || undefined;
     }
     return this.applyMatchingPendingInputs(
       threadId,
       runId,
-      (input) => input.admittedRunId === runId,
+      (input) => input.order <= (this.runs.get(runId)?.admittedThroughInputOrder ?? 0),
     );
   }
 
@@ -709,7 +731,6 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     for (const input of thread.pendingInputs) {
       input.status = "discarded";
       input.discardedAt = discardedAt;
-      input.admittedRunId = undefined;
       input.message = undefined;
       input.metadata = undefined;
     }
@@ -718,12 +739,15 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     return discarded;
   }
 
-  async getInput(inputId: string): Promise<ThreadInputRecord> {
+  async findInput(inputId: string): Promise<ThreadInputRecord | null> {
     const input = this.inputs.get(inputId);
-    if (!input) {
-      throw new Error(`Unknown thread input ${inputId}`);
-    }
-    return inputState(input);
+    return input ? inputState(input) : null;
+  }
+
+  async getInput(inputId: string): Promise<ThreadInputRecord> {
+    const input = await this.findInput(inputId);
+    if (!input) throw new Error(`Unknown thread input ${inputId}`);
+    return input;
   }
 
   async hasPendingInputs(threadId: string): Promise<boolean> {
@@ -733,15 +757,6 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     }
 
     return thread.pendingInputs.length > 0;
-  }
-
-  async hasRunnableInputs(threadId: string): Promise<boolean> {
-    const thread = this.threads.get(threadId);
-    if (!thread) {
-      throw missingThreadError(threadId);
-    }
-
-    return thread.pendingInputs.some((input) => input.deliveryMode === "wake");
   }
 
   async hasPendingWake(threadId: string): Promise<boolean> {
@@ -758,47 +773,34 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     if (current !== threadId) {
       return false;
     }
+    if (this.runClaimBlockedThreads.has(threadId)) {
+      return false;
+    }
     const running = [...this.runs.values()].some((run) => {
       return run.threadId === threadId && run.status === "running";
     });
-    return !running && (await this.hasRunnableInputs(threadId) || await this.hasPendingWake(threadId));
+    return !running && await this.hasPendingWake(threadId);
   }
 
-  async promoteQueuedInputs(threadId?: string): Promise<readonly string[]> {
-    const promoted = new Set<string>();
-    const states = threadId
-      ? [this.threads.get(threadId)]
-      : [...this.threads.values()];
+  async wakePendingInputs(threadId: string): Promise<readonly string[]> {
+    const woken = new Set<string>();
+    const states = [this.threads.get(threadId)];
 
     for (const state of states) {
       if (!state) {
-        if (threadId) {
-          throw missingThreadError(threadId);
-        }
-        continue;
+        throw missingThreadError(threadId);
       }
       if (this.currentThreadBySession.get(state.thread.sessionId) !== state.thread.id) {
         continue;
       }
 
-      let changed = false;
-      for (const input of state.pendingInputs) {
-        if (input.deliveryMode !== "queue") {
-          continue;
-        }
-
-        input.deliveryMode = "wake";
-        changed = true;
-      }
-
-      if (changed) {
-        state.thread.updatedAt = Date.now();
+      if (state.pendingInputs.length > 0 && state.pendingWakeAt === undefined) {
         armPendingWake(state);
-        promoted.add(state.thread.id);
+        woken.add(state.thread.id);
       }
     }
 
-    return [...promoted];
+    return [...woken];
   }
 
   async requestWake(threadId: string): Promise<void> {
@@ -882,21 +884,20 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     if ([...this.runs.values()].some((run) => run.threadId === threadId && run.status === "running")) {
       return null;
     }
-    if (!await this.hasRunnableInputs(threadId) && !await this.hasPendingWake(threadId)) {
+    if (this.runClaimBlockedThreads.has(threadId)) {
       return null;
     }
-    // Mirrors the PostgreSQL claim boundary. Admission identity survives an
-    // abort, so a later wake can re-admit only that dormant set without
-    // sweeping unrelated queue-only input into the run.
+    if (!await this.hasPendingWake(threadId)) {
+      return null;
+    }
+    // A scalar high-water mark admits the visible FIFO snapshot without
+    // rewriting every pending input row.
     const state = this.threads.get(threadId)!;
     state.pendingWakeAt = undefined;
     const run = await this.createRun(threadId);
     const stored = this.runs.get(run.id)!;
     stored.owner = {...owner};
-    for (const input of state.pendingInputs) {
-      input.deliveryMode = "queue";
-      input.admittedRunId = run.id;
-    }
+    stored.admittedThroughInputOrder = Math.max(0, ...state.pendingInputs.map((input) => input.order)) || undefined;
     return cloneRecord(stored);
   }
 
@@ -982,12 +983,10 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     }
     if (run.abortRequestedAt === undefined) {
       const thread = this.threads.get(run.threadId);
-      const admitted = thread?.pendingInputs.filter((input) => input.admittedRunId === run.id) ?? [];
+      const admitted = thread?.pendingInputs.filter(
+        (input) => input.order <= (run.admittedThroughInputOrder ?? 0),
+      ) ?? [];
       if (thread && admitted.length > 0) {
-        for (const input of admitted) {
-          input.deliveryMode = "wake";
-          input.admittedRunId = undefined;
-        }
         armPendingWake(thread);
       }
     }
@@ -1025,12 +1024,10 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
       .slice(0, limit);
     for (const run of orphaned) {
       const thread = this.threads.get(run.threadId);
-      const admitted = thread?.pendingInputs.filter((input) => input.admittedRunId === run.id) ?? [];
+      const admitted = thread?.pendingInputs.filter(
+        (input) => input.order <= (run.admittedThroughInputOrder ?? 0),
+      ) ?? [];
       if (thread && admitted.length > 0) {
-        for (const input of admitted) {
-          input.deliveryMode = "wake";
-          input.admittedRunId = undefined;
-        }
         armPendingWake(thread);
       }
       run.status = "failed";
@@ -1056,7 +1053,7 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
   async takeRunBoundary(
     threadId: string,
     runId: string,
-  ): Promise<{hasRunnableInputs: boolean; hasAdmittedInputs: boolean; hadPendingWake: boolean}> {
+  ): Promise<{hasAdmittedInputs: boolean; hadPendingWake: boolean}> {
     await this.assertRunActive(runId);
     if (this.runs.get(runId)?.threadId !== threadId) {
       throw new ThreadRunClaimLostError(runId);
@@ -1066,17 +1063,15 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
       throw missingThreadError(threadId);
     }
     const hadPendingWake = thread.pendingWakeAt !== undefined;
-    const hasVisibleWakeInput = thread.pendingInputs.some((input) => input.deliveryMode === "wake");
     thread.pendingWakeAt = undefined;
-    if (hadPendingWake || hasVisibleWakeInput) {
-      for (const input of thread.pendingInputs) {
-        input.deliveryMode = "queue";
-        input.admittedRunId = runId;
-      }
+    if (hadPendingWake) {
+      const run = this.runs.get(runId)!;
+      const latestOrder = Math.max(0, ...thread.pendingInputs.map((input) => input.order));
+      run.admittedThroughInputOrder = Math.max(run.admittedThroughInputOrder ?? 0, latestOrder) || undefined;
     }
+    const cutoff = this.runs.get(runId)?.admittedThroughInputOrder ?? 0;
     return {
-      hasRunnableInputs: await this.hasRunnableInputs(threadId),
-      hasAdmittedInputs: thread.pendingInputs.some((input) => input.admittedRunId === runId),
+      hasAdmittedInputs: thread.pendingInputs.some((input) => input.order <= cutoff),
       hadPendingWake,
     };
   }
@@ -1279,15 +1274,26 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
 
   async requestRunAbort(
     threadId: string,
-    reason = "Aborted by runtime request.",
-    operationId = randomUUID(),
+    reason = DEFAULT_THREAD_RUN_ABORT_REASON,
+    operationId?: string,
+    options: {blocksNewRuns?: boolean} = {},
   ): Promise<ThreadRunRecord | null> {
-    const replay = this.abortOperations.get(operationId);
-    if (replay) {
-      if (replay.threadId !== threadId || replay.reason !== reason) {
-        throw new Error(`Abort operation ${operationId} conflicts with another request.`);
+    const blocksNewRuns = options.blocksNewRuns ?? false;
+    if (blocksNewRuns && !operationId) {
+      throw new Error("A run-blocking abort requires a durable operation id.");
+    }
+    if (operationId) {
+      const replay = this.abortOperations.get(operationId);
+      if (replay) {
+        if (
+          replay.threadId !== threadId
+          || replay.reason !== reason
+          || replay.blocksNewRuns !== blocksNewRuns
+        ) {
+          throw new Error(`Abort operation ${operationId} conflicts with another request.`);
+        }
+        return replay.runId ? cloneRecord(this.runs.get(replay.runId)!) : null;
       }
-      return replay.runId ? cloneRecord(this.runs.get(replay.runId)!) : null;
     }
     if (!this.threads.has(threadId)) {
       throw missingThreadError(threadId);
@@ -1297,11 +1303,19 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
       .sort((left, right) => right.startedAt - left.startedAt)
       .at(0);
 
-    this.abortOperations.set(operationId, {
-      threadId,
-      reason,
-      ...(run ? {runId: run.id} : {}),
-    });
+    if (operationId) {
+      this.abortOperations.set(operationId, {
+        operationId,
+        threadId,
+        reason,
+        blocksNewRuns,
+        ...(run ? {runId: run.id} : {}),
+        createdAt: Date.now(),
+      });
+      if (blocksNewRuns) {
+        this.runClaimBlockedThreads.add(threadId);
+      }
+    }
 
     if (!run) {
       return null;
@@ -1310,5 +1324,10 @@ export class TestThreadRuntimeStore implements ThreadRuntimeStore {
     run.abortRequestedAt ??= Date.now();
     run.abortReason ??= reason;
     return cloneRecord(run);
+  }
+
+  async getThreadAbortOperation(operationId: string): Promise<ThreadAbortOperationRecord | null> {
+    const operation = this.abortOperations.get(operationId);
+    return operation ? cloneRecord(operation) : null;
   }
 }

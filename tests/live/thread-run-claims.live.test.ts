@@ -76,6 +76,7 @@ describe("durable thread run claims with PostgreSQL", () => {
         CREATE TABLE ${quotedSchema}.threads (
           id TEXT PRIMARY KEY,
           session_id TEXT NOT NULL,
+          run_claims_blocked_at TIMESTAMPTZ,
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
         CREATE TABLE ${quotedSchema}.session_runtime_config (
@@ -91,8 +92,8 @@ describe("durable thread run claims with PostgreSQL", () => {
         CREATE TABLE ${quotedSchema}.inputs (
           id UUID PRIMARY KEY,
           thread_id TEXT NOT NULL,
+          input_order BIGSERIAL NOT NULL,
           delivery_mode TEXT NOT NULL,
-          admitted_run_id UUID,
           applied_at TIMESTAMPTZ,
           applied_run_id UUID,
           discarded_at TIMESTAMPTZ
@@ -108,7 +109,8 @@ describe("durable thread run claims with PostgreSQL", () => {
           finished_at TIMESTAMPTZ,
           abort_requested_at TIMESTAMPTZ,
           abort_reason TEXT,
-          error TEXT
+          error TEXT,
+          admitted_through_input_order BIGINT
         );
         CREATE UNIQUE INDEX runs_one_running_per_thread_idx
           ON ${quotedSchema}.runs (thread_id)
@@ -163,7 +165,7 @@ describe("durable thread run claims with PostgreSQL", () => {
       await expect(queryable.query(`
         SELECT delivery_mode FROM "runtime".inputs
         WHERE id = '00000000-0000-4000-8000-000000000001'
-      `)).resolves.toMatchObject({rows: [{delivery_mode: "queue"}]});
+      `)).resolves.toMatchObject({rows: [{delivery_mode: "wake"}]});
 
       const ownerB = {source: "daemon", connectorKey: "primary", holderId: "owner-b"};
       await queryable.query(`
@@ -243,7 +245,6 @@ describe("durable thread run claims with PostgreSQL", () => {
       });
       await expect(queryable.query(`
         SELECT ARRAY_AGG(DISTINCT delivery_mode ORDER BY delivery_mode) AS modes,
-               ARRAY_AGG(DISTINCT admitted_run_id) AS admitted_runs,
                (SELECT pending_wake_at IS NOT NULL
                 FROM "runtime".session_runtime_config
                 WHERE session_id = 'session-a') AS pending_wake
@@ -252,7 +253,7 @@ describe("durable thread run claims with PostgreSQL", () => {
           AND applied_at IS NULL
           AND discarded_at IS NULL
       `)).resolves.toMatchObject({
-        rows: [{modes: ["queue"], admitted_runs: [aborted!.id], pending_wake: false}],
+        rows: [{modes: ["wake"], pending_wake: false}],
       });
       await expect(tryStartThreadRun({
         queryable,
@@ -290,17 +291,20 @@ describe("durable thread run claims with PostgreSQL", () => {
         notificationChannel: "thread_claim_test",
       });
       await expect(queryable.query(`
-        SELECT COUNT(*)::integer AS count
-        FROM "runtime".inputs
-        WHERE thread_id = 'thread-paged' AND admitted_run_id = $1
-      `, [pagedRun!.id])).resolves.toMatchObject({rows: [{count: 501}]});
+        SELECT run.admitted_through_input_order = MAX(input.input_order) AS owns_fifo_prefix,
+               COUNT(*)::integer AS count
+        FROM "runtime".runs AS run
+        INNER JOIN "runtime".inputs AS input ON input.thread_id = run.thread_id
+        WHERE run.id = $1
+        GROUP BY run.admitted_through_input_order
+      `, [pagedRun!.id])).resolves.toMatchObject({rows: [{owns_fifo_prefix: true, count: 501}]});
       await queryable.query(`
         UPDATE "runtime".inputs
-        SET applied_at = NOW(), applied_run_id = $1, admitted_run_id = NULL
+        SET applied_at = NOW(), applied_run_id = $1
         WHERE id IN (
           SELECT id FROM "runtime".inputs
           WHERE thread_id = 'thread-paged'
-          ORDER BY id
+          ORDER BY input_order
           LIMIT 500
         )
       `, [pagedRun!.id]);
@@ -311,7 +315,6 @@ describe("durable thread run claims with PostgreSQL", () => {
         threadId: "thread-paged",
         runId: pagedRun!.id,
       })).resolves.toEqual({
-        hasRunnableInputs: false,
         hasAdmittedInputs: true,
         hadPendingWake: false,
       });
@@ -331,7 +334,6 @@ describe("durable thread run claims with PostgreSQL", () => {
         threadId: "thread-paged",
         runId: pagedRun!.id,
       })).resolves.toEqual({
-        hasRunnableInputs: false,
         hasAdmittedInputs: true,
         hadPendingWake: true,
       });
@@ -350,16 +352,23 @@ describe("durable thread run claims with PostgreSQL", () => {
       await expect(queryable.query(`
         SELECT
           COUNT(*) FILTER (
-            WHERE applied_at IS NULL AND delivery_mode = 'wake' AND admitted_run_id IS NULL
-          )::integer AS rearmed,
+            WHERE input.applied_at IS NULL
+              AND input.input_order <= run.admitted_through_input_order
+          )::integer AS admitted_pending,
           COUNT(*) FILTER (
-            WHERE id = '00000000-0000-4000-8000-000000000003'
-              AND delivery_mode = 'queue'
-              AND admitted_run_id IS NULL
-          )::integer AS late_queue
-        FROM "runtime".inputs
-        WHERE thread_id = 'thread-paged'
-      `)).resolves.toMatchObject({rows: [{rearmed: 2, late_queue: 1}]});
+            WHERE input.id = '00000000-0000-4000-8000-000000000003'
+              AND input.input_order > run.admitted_through_input_order
+          )::integer AS late_queue,
+          (SELECT pending_wake_at IS NOT NULL
+           FROM "runtime".session_runtime_config
+           WHERE session_id = 'session-paged') AS pending_wake
+        FROM "runtime".inputs AS input
+        INNER JOIN "runtime".runs AS run ON run.thread_id = input.thread_id
+        WHERE input.thread_id = 'thread-paged' AND run.id = $1
+        GROUP BY run.admitted_through_input_order
+      `, [pagedRun!.id])).resolves.toMatchObject({
+        rows: [{admitted_pending: 2, late_queue: 1, pending_wake: true}],
+      });
 
       await queryable.query(`
         INSERT INTO "runtime".agent_sessions (id, current_thread_id)
@@ -389,14 +398,14 @@ describe("durable thread run claims with PostgreSQL", () => {
         notificationChannel: "thread_claim_test",
       });
       await expect(queryable.query(`
-        SELECT delivery_mode, admitted_run_id,
+        SELECT delivery_mode,
                (SELECT pending_wake_at IS NOT NULL
                 FROM "runtime".session_runtime_config
                 WHERE session_id = 'session-fail-before-apply') AS pending_wake
         FROM "runtime".inputs
         WHERE id = '00000000-0000-4000-8000-000000000005'
       `)).resolves.toMatchObject({
-        rows: [{delivery_mode: "wake", admitted_run_id: null, pending_wake: true}],
+        rows: [{delivery_mode: "queue", pending_wake: true}],
       });
 
       await queryable.query(`
@@ -465,7 +474,6 @@ describe("durable thread run claims with PostgreSQL", () => {
           threadId: "thread-generation",
           runId: generationRun!.id,
         })).resolves.toEqual({
-          hasRunnableInputs: false,
           hasAdmittedInputs: false,
           hadPendingWake: false,
         });

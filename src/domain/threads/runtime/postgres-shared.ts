@@ -7,6 +7,7 @@ export interface ThreadRuntimeTableNames {
   inputs: string;
   runs: string;
   abortOperations: string;
+  compactionNoopOperations: string;
   toolJobs: string;
   bashJobs: string;
   shellStates: string;
@@ -19,6 +20,7 @@ export function buildThreadRuntimeTableNames(): ThreadRuntimeTableNames {
     inputs: "inputs",
     runs: "runs",
     abortOperations: "thread_abort_operations",
+    compactionNoopOperations: "thread_compaction_noop_operations",
     toolJobs: "tool_jobs",
     bashJobs: "bash_jobs",
     shellStates: "shell_states",

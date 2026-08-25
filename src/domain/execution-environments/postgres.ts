@@ -300,6 +300,21 @@ export class PostgresExecutionEnvironmentStore implements ExecutionEnvironmentSt
     return parseEnvironmentRow(row as Record<string, unknown>);
   }
 
+  async getBinding(sessionId: string, environmentId: string): Promise<SessionEnvironmentBindingRecord | null> {
+    const result = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.sessionEnvironmentBindings}
+      WHERE (session_id = $1) IS TRUE
+        AND environment_id = $2
+      LIMIT 1
+    `, [
+      requireTrimmed("session id", sessionId),
+      requireTrimmed("environment id", environmentId),
+    ]);
+    const row = result.rows[0];
+    return row ? parseBindingRow(row as Record<string, unknown>) : null;
+  }
+
   async getDefaultBinding(sessionId: string): Promise<SessionEnvironmentBindingRecord | null> {
     const result = await this.pool.query(`
       SELECT *

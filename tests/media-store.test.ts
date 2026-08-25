@@ -4,7 +4,12 @@ import path from "node:path";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
 
-import {FileSystemMediaStore, moveMediaFile, relocateMediaDescriptor,} from "../src/domain/channels/media-store.js";
+import {
+  discardStagedMediaDescriptor,
+  FileSystemMediaStore,
+  moveMediaFile,
+  relocateMediaDescriptor,
+} from "../src/domain/channels/media-store.js";
 
 describe("FileSystemMediaStore", () => {
   const directories = new Set<string>();
@@ -152,6 +157,319 @@ describe("FileSystemMediaStore", () => {
       connectorKey: "bot-main",
       mimeType: "application/octet-stream",
     })).rejects.toThrow("Media sizeBytes 999 does not match payload byte length 3.");
+  });
+
+  it("maps an external media part to one stable descriptor across redelivery", async () => {
+    const rootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-idempotent`);
+    directories.add(rootDir);
+    const store = new FileSystemMediaStore({rootDir});
+    const input = {
+      bytes: Buffer.from("stable payload"),
+      source: "telegram",
+      connectorKey: "main",
+      mimeType: "text/plain",
+      hintFilename: "note.txt",
+      idempotencyKey: "chat-1:message-9:document:file-1",
+      createdAt: Date.parse("2026-08-25T01:02:03.000Z"),
+    };
+
+    const [first, concurrent, replay] = await Promise.all([
+      store.writeMedia(input),
+      store.writeMedia(input),
+      store.writeMedia(input),
+    ]);
+
+    expect(concurrent).toEqual(first);
+    expect(replay).toEqual(first);
+    expect(first.createdAt).toBe(input.createdAt);
+    expect(first.localPath).toContain(`${path.sep}.idempotent${path.sep}`);
+    await expect(fs.readFile(first.localPath, "utf8")).resolves.toBe("stable payload");
+  });
+
+  it("replays the first canonical descriptor when transport metadata changes", async () => {
+    const rootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-descriptor-replay`);
+    directories.add(rootDir);
+    const store = new FileSystemMediaStore({rootDir});
+    const common = {
+      bytes: Buffer.from("same bytes"),
+      source: "telegram",
+      connectorKey: "main",
+      idempotencyKey: "chat-1:message-9:document:file-1",
+    };
+    const first = await store.writeMedia({
+      ...common,
+      mimeType: "text/plain",
+      hintFilename: "first.txt",
+      metadata: {filePath: "documents/first.txt"},
+      createdAt: 1_777_000_000_000,
+    });
+    const replay = await store.writeMedia({
+      ...common,
+      mimeType: "application/octet-stream",
+      hintFilename: "changed.bin",
+      metadata: {filePath: "documents/refreshed.bin"},
+      createdAt: 1_777_000_001_000,
+    });
+
+    expect(replay).toEqual(first);
+    expect(first).toMatchObject({
+      mimeType: "text/plain",
+      originalFilename: "first.txt",
+      metadata: {filePath: "documents/first.txt"},
+      createdAt: 1_777_000_000_000,
+    });
+    await expect(fs.readdir(path.dirname(first.localPath))).resolves.toHaveLength(2);
+  });
+
+  it("keeps request payload paths immutable while replaying relocated bytes", async () => {
+    const sourceRootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-canonical-source`);
+    const targetRootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-canonical-target`);
+    directories.add(sourceRootDir);
+    directories.add(targetRootDir);
+    const store = new FileSystemMediaStore({rootDir: sourceRootDir});
+    const input = {
+      bytes: Buffer.from("replay after relocation"),
+      source: "telegram",
+      connectorKey: "main",
+      mimeType: "text/plain",
+      hintFilename: "message.txt",
+      idempotencyKey: "chat-1:message-10:document:file-1",
+      createdAt: 1_777_000_000_000,
+    };
+
+    const canonical = await store.writeMedia(input);
+    const relocated = await relocateMediaDescriptor(canonical, {rootDir: targetRootDir});
+    const replayedCanonical = await store.writeMedia(input);
+    const replayedRelocation = await relocateMediaDescriptor(replayedCanonical, {rootDir: targetRootDir});
+
+    expect(replayedCanonical).toEqual(canonical);
+    expect(replayedRelocation).toEqual(relocated);
+    await expect(fs.access(canonical.localPath)).rejects.toMatchObject({code: "ENOENT"});
+    await expect(fs.readFile(relocated.localPath, "utf8")).resolves.toBe("replay after relocation");
+    await expect(fs.readdir(path.dirname(canonical.localPath))).resolves.toEqual(["descriptor.json"]);
+  });
+
+  it("reconciles stale request-owned staging receipts in one bounded owner batch", async () => {
+    const rootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-owner-janitor`);
+    directories.add(rootDir);
+    let nowMs = 1_000;
+    const resolveReceiptOwners = vi.fn(async (owners: readonly {requestIdempotencyKey: string}[]) => (
+      owners.map((owner) => owner.requestIdempotencyKey === "request-active" ? "active" as const : "missing" as const)
+    ));
+    const store = new FileSystemMediaStore({
+      rootDir,
+      now: () => new Date(nowMs),
+      orphanRetentionMs: 1_000,
+      receiptRetentionMs: 1_000,
+      resolveReceiptOwners,
+    });
+    const writeOwned = (key: string, requestIdempotencyKey: string) => store.writeMedia({
+      bytes: Buffer.from(requestIdempotencyKey),
+      source: "discord",
+      connectorKey: "main",
+      mimeType: "text/plain",
+      idempotencyKey: key,
+      createdAt: 1_000,
+      receiptOwner: {requestKind: "discord_message", requestIdempotencyKey},
+    });
+    const orphan = await writeOwned("orphan-part", "request-missing");
+    const active = await writeOwned("active-part", "request-active");
+    nowMs = 2_001;
+    for (const descriptor of [orphan, active]) {
+      await fs.utimes(
+        path.join(path.dirname(descriptor.localPath), "descriptor.json"),
+        new Date(1_000),
+        new Date(1_000),
+      );
+    }
+
+    await expect(store.reconcileOrphanedReceipts()).resolves.toBe(1);
+    expect(resolveReceiptOwners).toHaveBeenCalledOnce();
+    expect(resolveReceiptOwners.mock.calls[0]?.[0]).toHaveLength(2);
+    await expect(fs.access(orphan.localPath)).rejects.toMatchObject({code: "ENOENT"});
+    await expect(fs.readFile(active.localPath, "utf8")).resolves.toBe("request-active");
+  });
+
+  it("keeps missing-owner staging that redelivery refreshed during resolution", async () => {
+    const rootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-owner-race`);
+    directories.add(rootDir);
+    let nowMs = 1_000;
+    let releaseResolver!: () => void;
+    let markResolverStarted!: () => void;
+    const resolverStarted = new Promise<void>((resolve) => { markResolverStarted = resolve; });
+    const resolverBlocked = new Promise<void>((resolve) => { releaseResolver = resolve; });
+    const resolveReceiptOwners = vi.fn(async () => {
+      markResolverStarted();
+      await resolverBlocked;
+      return ["missing" as const];
+    });
+    const store = new FileSystemMediaStore({
+      rootDir,
+      now: () => new Date(nowMs),
+      orphanRetentionMs: 1,
+      receiptRetentionMs: 1_000,
+      resolveReceiptOwners,
+    });
+    const input = {
+      bytes: Buffer.from("redelivered staging"),
+      source: "discord",
+      connectorKey: "main",
+      mimeType: "text/plain",
+      idempotencyKey: "redelivery-race-part",
+      createdAt: 1_000,
+      receiptOwner: {requestKind: "discord_message", requestIdempotencyKey: "request-race"},
+    };
+    const staged = await store.writeMedia(input);
+    await fs.utimes(
+      path.join(path.dirname(staged.localPath), "descriptor.json"),
+      new Date(1_000),
+      new Date(1_000),
+    );
+
+    nowMs = 2_001;
+    const sweep = store.reconcileOrphanedReceipts();
+    await resolverStarted;
+    await store.writeMedia(input);
+    releaseResolver();
+
+    await expect(sweep).resolves.toBe(0);
+    await expect(fs.readFile(staged.localPath, "utf8")).resolves.toBe("redelivered staging");
+  });
+
+  it("releases pre-owner staging receipts only after the hard-cut retention window", async () => {
+    const rootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-ownerless-janitor`);
+    directories.add(rootDir);
+    let nowMs = 1_000;
+    const resolveReceiptOwners = vi.fn(async () => []);
+    const store = new FileSystemMediaStore({
+      rootDir,
+      now: () => new Date(nowMs),
+      orphanRetentionMs: 1,
+      ownerlessRetentionMs: 1_000,
+      receiptRetentionMs: 1_000,
+      resolveReceiptOwners,
+    });
+    const legacy = await store.writeMedia({
+      bytes: Buffer.from("pre-owner staging"),
+      source: "telegram",
+      connectorKey: "main",
+      mimeType: "text/plain",
+      idempotencyKey: "legacy-part",
+      createdAt: 1_000,
+    });
+    await fs.utimes(
+      path.join(path.dirname(legacy.localPath), "descriptor.json"),
+      new Date(1_000),
+      new Date(1_000),
+    );
+
+    nowMs = 1_999;
+    await expect(store.reconcileOrphanedReceipts()).resolves.toBe(0);
+    await expect(fs.readFile(legacy.localPath, "utf8")).resolves.toBe("pre-owner staging");
+
+    nowMs = 2_001;
+    await expect(store.reconcileOrphanedReceipts()).resolves.toBe(1);
+    expect(resolveReceiptOwners).toHaveBeenCalledOnce();
+    await expect(fs.access(legacy.localPath)).rejects.toMatchObject({code: "ENOENT"});
+  });
+
+  it("discards only terminal transport staging and lets redelivery publish it again", async () => {
+    const rootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-discard-staging`);
+    directories.add(rootDir);
+    const store = new FileSystemMediaStore({rootDir});
+    const input = {
+      bytes: Buffer.from("unconsumed attachment"),
+      source: "discord",
+      connectorKey: "main",
+      mimeType: "text/plain",
+      idempotencyKey: "channel-1:message-1:attachment-1",
+      createdAt: 1_777_000_000_000,
+    };
+
+    const staged = await store.writeMedia(input);
+    await expect(discardStagedMediaDescriptor(staged)).resolves.toBe(true);
+    await expect(fs.access(staged.localPath)).rejects.toMatchObject({code: "ENOENT"});
+    await expect(discardStagedMediaDescriptor(staged)).resolves.toBe(false);
+
+    const redelivered = await store.writeMedia(input);
+    expect(redelivered).toEqual(staged);
+    await expect(fs.readFile(redelivered.localPath, "utf8")).resolves.toBe("unconsumed attachment");
+  });
+
+  it("never discards media after its manifest transfers ownership to an agent", async () => {
+    const sourceRootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-discard-source`);
+    const targetRootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-discard-target`);
+    directories.add(sourceRootDir);
+    directories.add(targetRootDir);
+    const store = new FileSystemMediaStore({rootDir: sourceRootDir});
+    const staged = await store.writeMedia({
+      bytes: Buffer.from("agent-owned attachment"),
+      source: "telegram",
+      connectorKey: "main",
+      mimeType: "text/plain",
+      idempotencyKey: "chat-1:message-1:attachment-1",
+      createdAt: 1_777_000_000_000,
+    });
+    const relocated = await relocateMediaDescriptor(staged, {rootDir: targetRootDir});
+
+    await expect(discardStagedMediaDescriptor(staged)).resolves.toBe(false);
+    await expect(fs.readFile(relocated.localPath, "utf8")).resolves.toBe("agent-owned attachment");
+    await expect(fs.readdir(path.dirname(staged.localPath))).resolves.toEqual(["descriptor.json"]);
+  });
+
+  it("prunes expired descriptor-only replay receipts without touching durable bytes", async () => {
+    const sourceRootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-receipt-source`);
+    const targetRootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-receipt-target`);
+    directories.add(sourceRootDir);
+    directories.add(targetRootDir);
+    let nowMs = 1_000;
+    const source = "telegram";
+    const connectorKey = "main";
+    const store = new FileSystemMediaStore({
+      rootDir: sourceRootDir,
+      now: () => new Date(nowMs),
+      receiptRetentionMs: 1_000,
+      resolveReceiptOwners: async () => [],
+    });
+    const firstKey = "receipt-old";
+
+    const canonical = await store.writeMedia({
+      bytes: Buffer.from("old durable byte"),
+      source,
+      connectorKey,
+      mimeType: "text/plain",
+      idempotencyKey: firstKey,
+      createdAt: 1_000,
+    });
+    const relocated = await relocateMediaDescriptor(canonical, {rootDir: targetRootDir});
+    const receiptDirectory = path.dirname(canonical.localPath);
+    await fs.utimes(
+      path.join(receiptDirectory, "descriptor.json"),
+      new Date(nowMs),
+      new Date(nowMs),
+    );
+    nowMs = 2_001;
+    await expect(store.reconcileOrphanedReceipts()).resolves.toBe(1);
+
+    await expect(fs.access(receiptDirectory)).rejects.toMatchObject({code: "ENOENT"});
+    await expect(fs.readFile(relocated.localPath, "utf8")).resolves.toBe("old durable byte");
+  });
+
+  it("rejects reuse of an external media identity for different bytes", async () => {
+    const rootDir = path.join(tmpdir(), `runtime-media-store-${Date.now()}-conflict`);
+    directories.add(rootDir);
+    const store = new FileSystemMediaStore({rootDir});
+    const common = {
+      source: "whatsapp",
+      connectorKey: "main",
+      mimeType: "application/octet-stream",
+      idempotencyKey: "chat-1:message-9:part-0",
+      createdAt: 1_777_000_000_000,
+    };
+
+    await store.writeMedia({...common, bytes: Buffer.from("first")});
+    await expect(store.writeMedia({...common, bytes: Buffer.from("second")}))
+      .rejects.toThrow("already bound to different bytes");
   });
 
   it("relocates media into another root and stays idempotent", async () => {

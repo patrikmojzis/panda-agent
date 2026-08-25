@@ -42,10 +42,16 @@ function createSubagentSessionResult(): CreateSubagentSessionResult {
 }
 
 function createContext() {
+  const identity = createIdentity();
   const createSubagentSession = vi.fn(async (_input: CreateSubagentSessionInput) => createSubagentSessionResult());
   const resolveAccessibleAgentKey = vi.fn(async () => "clawd");
   const context: DaemonSubagentSessionContext = {
+    ensureIdentity: vi.fn(async () => identity),
     resolveAccessibleAgentKey,
+    sessions: {
+      getSession: vi.fn(async () => ({agentKey: "clawd"})),
+      getSessionCreationOperation: vi.fn(async () => null),
+    },
     subagentSessions: {
       createSubagentSession,
     },
@@ -64,7 +70,9 @@ describe("createDaemonSubagentSessionCreator", () => {
     const {createSubagentSession, createSubagentSessionForDaemon, resolveAccessibleAgentKey} = createContext();
 
     await expect(createSubagentSessionForDaemon({
-      identity: createIdentity(),
+      operationId: "11111111-1111-4111-8111-111111111111",
+      replayAttempt: false,
+      identityId: "identity-1",
       agentKey: "clawd",
       sessionId: "subagent-session",
       threadId: "subagent-thread",
@@ -96,15 +104,24 @@ describe("createDaemonSubagentSessionCreator", () => {
   it("does not translate access failures into legacy worker creation", async () => {
     const createSubagentSession = vi.fn();
     const context: DaemonSubagentSessionContext = {
+      ensureIdentity: vi.fn(async () => createIdentity()),
       resolveAccessibleAgentKey: vi.fn(async () => {
         throw new Error("Identity patrik is not paired to agent luna.");
       }),
+      sessions: {
+        getSession: vi.fn(async () => ({agentKey: "clawd"})),
+        getSessionCreationOperation: vi.fn(async () => null),
+      },
       subagentSessions: {createSubagentSession},
     };
 
     await expect(createDaemonSubagentSessionCreator(context)({
-      identity: createIdentity(),
+      operationId: "22222222-2222-4222-8222-222222222222",
+      replayAttempt: false,
+      identityId: "identity-1",
       agentKey: "luna",
+      sessionId: "subagent-session",
+      threadId: "subagent-thread",
       parentSessionId: "parent-session",
       prompt: "Do the work.",
     })).rejects.toThrow("not paired to agent luna");

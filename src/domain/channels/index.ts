@@ -1,5 +1,7 @@
 export {
   FileSystemMediaStore,
+  discardStagedMediaDescriptor,
+  discardStagedMediaDescriptors,
   relocateMediaDescriptor,
   type FileSystemMediaStoreOptions,
   type RelocateMediaDescriptorOptions,

@@ -8,7 +8,10 @@ import type {
     OutboundSentItem
 } from "../../../domain/channels/types.js";
 import type {ChannelOutboundAdapter} from "../../../domain/channels/outbound.js";
-import type {FileSystemMediaStore} from "../../../domain/channels/media-store.js";
+import {
+  discardStagedMediaDescriptors,
+  type FileSystemMediaStore,
+} from "../../../domain/channels/media-store.js";
 import type {
     A2AMessageItem,
     A2AMessageRequestPayload,
@@ -50,6 +53,10 @@ interface A2ADeliveryMetadata {
 
 export interface CreateA2AOutboundAdapterOptions {
   requests: {
+    getRequestByIdempotencyKey(
+      idempotencyKey: string,
+      kind: "a2a_message",
+    ): Promise<RuntimeRequestRecord<"a2a_message"> | null>;
     enqueueRequest(
       input: CreateRuntimeRequestInput<"a2a_message">,
       options?: {idempotencyKey?: string},
@@ -140,7 +147,10 @@ function requireMetadata(value: JsonValue | undefined): A2ADeliveryMetadata["a2a
   const fromThreadId = requireA2AString("from thread id", typeof a2a.fromThreadId === "string" ? a2a.fromThreadId : undefined);
   const toAgentKey = requireA2AString("to agent key", typeof a2a.toAgentKey === "string" ? a2a.toAgentKey : undefined);
   const toSessionId = requireA2AString("to session id", typeof a2a.toSessionId === "string" ? a2a.toSessionId : undefined);
-  const sentAt = typeof a2a.sentAt === "number" && Number.isFinite(a2a.sentAt) ? a2a.sentAt : Date.now();
+  if (typeof a2a.sentAt !== "number" || !Number.isSafeInteger(a2a.sentAt) || a2a.sentAt < 0) {
+    throw new Error("A2A sentAt must be a non-negative safe integer.");
+  }
+  const sentAt = a2a.sentAt;
   const senderEnvironment = readSenderEnvironment(a2a.senderEnvironment);
 
   return {
@@ -165,11 +175,12 @@ async function buildInboundItems(
   mediaStore: FileSystemMediaStore,
   uploads: CommandUploadStore,
   sender: {agentKey: string; sessionId: string},
+  event: {messageId: string; sentAt: number; requestIdempotencyKey: string},
 ): Promise<{items: readonly A2AMessageItem[]; uploadRefs: readonly string[]}> {
   const items: A2AMessageItem[] = [];
   const uploadRefs: string[] = [];
 
-  for (const item of request.items) {
+  for (const [itemIndex, item] of request.items.entries()) {
     switch (item.type) {
       case "text":
         items.push({
@@ -185,8 +196,12 @@ async function buildInboundItems(
           throw new Error("A2A queued file items require uploadRef.");
         }
         const upload = await uploads.resolve(sender, item.uploadRef);
-        if (upload.sizeBytes !== item.sizeBytes) {
-          throw new Error("A2A staged upload size changed after enqueue.");
+        if (
+          upload.sizeBytes !== item.sizeBytes
+          || upload.filename !== item.filename
+          || upload.mimeType !== item.mimeType
+        ) {
+          throw new Error("A2A staged upload descriptor changed after enqueue.");
         }
         const media = await mediaStore.writeMediaFile({
           path: upload.path,
@@ -195,6 +210,12 @@ async function buildInboundItems(
           mimeType: upload.mimeType || inferFileMimeType(upload.filename),
           hintFilename: upload.filename,
           sizeBytes: upload.sizeBytes,
+          idempotencyKey: `${event.messageId}:item:${itemIndex}`,
+          createdAt: event.sentAt,
+          receiptOwner: {
+            requestKind: "a2a_message",
+            requestIdempotencyKey: event.requestIdempotencyKey,
+          },
         });
         items.push({
           type: "file",
@@ -233,6 +254,57 @@ function sentItem(type: OutboundSentItem["type"], externalMessageId: string): Ou
   };
 }
 
+function assertCommittedReplayMatches(
+  request: OutboundRequest,
+  a2a: A2ADeliveryMetadata["a2a"],
+  existing: RuntimeRequestRecord<"a2a_message">,
+): void {
+  const payload = existing.payload;
+  const envelopeMatches = payload.connectorKey === A2A_CONNECTOR_KEY
+    && payload.externalMessageId === a2a.messageId
+    && payload.fromAgentKey === a2a.fromAgentKey
+    && payload.fromSessionId === a2a.fromSessionId
+    && payload.fromThreadId === a2a.fromThreadId
+    && payload.fromRunId === a2a.fromRunId
+    && payload.toAgentKey === a2a.toAgentKey
+    && payload.toSessionId === a2a.toSessionId
+    && payload.sentAt === a2a.sentAt
+    && JSON.stringify(payload.senderEnvironment) === JSON.stringify(a2a.senderEnvironment);
+  if (!envelopeMatches || payload.items.length !== request.items.length) {
+    throw new Error(`A2A message id ${a2a.messageId} is already bound to a different delivery.`);
+  }
+
+  for (const [index, item] of request.items.entries()) {
+    const committed = payload.items[index];
+    if (!committed || item.type !== committed.type) {
+      throw new Error(`A2A message id ${a2a.messageId} is already bound to different items.`);
+    }
+    if (item.type === "text" && committed.type === "text") {
+      if (item.text !== committed.text) {
+        throw new Error(`A2A message id ${a2a.messageId} is already bound to different items.`);
+      }
+      continue;
+    }
+    if (item.type !== "file" || committed.type !== "file" || !("uploadRef" in item)) {
+      throw new Error(`A2A message id ${a2a.messageId} is already bound to different items.`);
+    }
+    const expectedMediaMimeType = item.mimeType || inferFileMimeType(item.filename);
+    if (
+      committed.filename !== item.filename
+      || committed.caption !== item.caption
+      || committed.mimeType !== item.mimeType
+      || committed.media.sizeBytes !== item.sizeBytes
+      || committed.media.source !== A2A_SOURCE
+      || committed.media.connectorKey !== A2A_CONNECTOR_KEY
+      || committed.media.originalFilename !== item.filename
+      || committed.media.mimeType !== expectedMediaMimeType
+      || committed.media.createdAt !== a2a.sentAt
+    ) {
+      throw new Error(`A2A message id ${a2a.messageId} is already bound to different items.`);
+    }
+  }
+}
+
 export function createA2AOutboundAdapter(
   options: CreateA2AOutboundAdapterOptions,
 ): ChannelOutboundAdapter {
@@ -245,6 +317,22 @@ export function createA2AOutboundAdapter(
       }
 
       const a2a = requireMetadata(request.metadata);
+      const idempotencyKey = deriveRuntimeRequestIngressIdempotencyKey({
+        kind: "a2a_message",
+        connectorKey: A2A_CONNECTOR_KEY,
+        externalEventScope: `${a2a.fromAgentKey}:${a2a.fromSessionId}`,
+        externalEventId: a2a.messageId,
+      });
+      const existing = await options.requests.getRequestByIdempotencyKey(idempotencyKey, "a2a_message");
+      if (existing) {
+        assertCommittedReplayMatches(request, a2a, existing);
+        return {
+          ok: true,
+          channel: request.channel,
+          target: request.target,
+          sent: request.items.map((item) => sentItem(item.type, a2a.messageId)),
+        };
+      }
       const session = await options.sessionStore.getSession(a2a.toSessionId);
       if (session.agentKey !== a2a.toAgentKey) {
         throw new Error(`A2A recipient session ${a2a.toSessionId} belongs to ${session.agentKey}, not ${a2a.toAgentKey}.`);
@@ -254,6 +342,10 @@ export function createA2AOutboundAdapter(
       const inbound = await buildInboundItems(request, mediaStore, options.commandUploads, {
         agentKey: a2a.fromAgentKey,
         sessionId: a2a.fromSessionId,
+      }, {
+        messageId: a2a.messageId,
+        sentAt: a2a.sentAt,
+        requestIdempotencyKey: idempotencyKey,
       });
       const payload: A2AMessageRequestPayload = {
         connectorKey: A2A_CONNECTOR_KEY,
@@ -269,15 +361,15 @@ export function createA2AOutboundAdapter(
         items: inbound.items,
       };
 
-      await options.requests.enqueueRequest({
+      const runtimeRequest = await options.requests.enqueueRequest({
         kind: "a2a_message",
         payload,
-      }, {idempotencyKey: deriveRuntimeRequestIngressIdempotencyKey({
-        kind: "a2a_message",
-        connectorKey: A2A_CONNECTOR_KEY,
-        externalEventScope: `${a2a.fromAgentKey}:${a2a.fromSessionId}`,
-        externalEventId: a2a.messageId,
-      })});
+      }, {idempotencyKey});
+      if (runtimeRequest.status === "completed" || runtimeRequest.status === "failed") {
+        await discardStagedMediaDescriptors(inbound.items.flatMap(
+          (item) => item.type === "text" ? [] : [item.media],
+        ));
+      }
       await Promise.allSettled(inbound.uploadRefs.map((uploadRef) => options.commandUploads.remove({
         agentKey: a2a.fromAgentKey,
         sessionId: a2a.fromSessionId,

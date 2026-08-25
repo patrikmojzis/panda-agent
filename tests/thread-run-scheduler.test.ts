@@ -184,6 +184,39 @@ describe("ThreadRunScheduler", () => {
     expect(order).toEqual(["run:thread", "exclusive:thread"]);
   });
 
+  it("atomically reserves reset work and aborts the active run", async () => {
+    const activeStarted = createDeferred<void>();
+    const order: string[] = [];
+    const scheduler = new ThreadRunScheduler({
+      maxConcurrentRuns: 1,
+      async run(_threadId, signal) {
+        order.push("run");
+        activeStarted.resolve();
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => resolve(), {once: true});
+        });
+        order.push("aborted");
+        return {outcome: "aborted"};
+      },
+    });
+
+    scheduler.start();
+    scheduler.schedule("thread");
+    await activeStarted.promise;
+    const reason = new Error("reset requested");
+    const exclusive = scheduler.runExclusively("thread", async () => {
+      order.push("exclusive");
+    }, {
+      abortActiveReason: reason,
+      beforeActiveAbort: async () => {
+        order.push("persist");
+      },
+    });
+
+    await exclusive;
+    expect(order).toEqual(["run", "persist", "aborted", "exclusive"]);
+  });
+
   it("lets a queued exclusive operation supersede a queued run", async () => {
     const blocker = createDeferred<void>();
     const order: string[] = [];

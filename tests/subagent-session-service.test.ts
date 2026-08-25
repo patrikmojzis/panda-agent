@@ -20,8 +20,10 @@ import {ensurePostgresSubagentSchema} from "../src/domain/subagents/postgres-sch
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/postgres.js";
 import {ensurePostgresThreadRuntimeSchema} from "../src/domain/threads/runtime/postgres-schema.js";
 import {buildThreadRuntimeTableNames} from "../src/domain/threads/runtime/postgres-shared.js";
+import {ensurePostgresRuntimeRequestSchema} from "../src/domain/threads/requests/postgres-schema.js";
 import {SubagentSessionService} from "../src/app/runtime/subagent-session-service.js";
 import {ExecutionEnvironmentLifecycleService} from "../src/app/runtime/execution-environment-service.js";
+import {RetryableRuntimeRequestError} from "../src/domain/threads/requests/errors.js";
 import {
   createCommandCatalog,
   type CommandCatalog,
@@ -84,12 +86,18 @@ describe("SubagentSessionService", () => {
     await ensurePostgresAgentTableSchema(pool);
     await ensurePostgresSessionSchema(pool);
     await ensurePostgresThreadRuntimeSchema(pool);
+    await ensurePostgresRuntimeRequestSchema(pool);
     await ensurePostgresSubagentSchema(pool);
     await ensurePostgresExecutionEnvironmentSchema(pool);
     await ensurePostgresA2ASessionBindingSchema(pool);
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
+    });
+    await identityStore.createIdentity({
+      id: "identity-1",
+      handle: "identity-1",
+      displayName: "Identity 1",
     });
     await sessionStore.createSession({
       id: "parent-session",
@@ -131,7 +139,12 @@ describe("SubagentSessionService", () => {
       return originalBind(input);
     };
     const threadTables = buildThreadRuntimeTableNames();
-    const submitInput = vi.fn(async (threadId: string, payload: any, deliveryMode = "wake") => {
+    const submitInput = vi.fn(async (
+      threadId: string,
+      payload: any,
+      deliveryMode = "wake",
+      enqueueOptions?: {inputId?: string},
+    ) => {
       events.push(`enqueue:${threadId}:${payload.source}`);
       await pool.query(`
         INSERT INTO ${threadTables.inputs} (
@@ -140,7 +153,7 @@ describe("SubagentSessionService", () => {
         ) VALUES ($1, $2, $3, $4, '', $5, $6, NOW(), $7::jsonb, $8::jsonb)
         ON CONFLICT DO NOTHING
       `, [
-        randomUUID(),
+        enqueueOptions?.inputId ?? randomUUID(),
         threadId,
         deliveryMode,
         payload.source,
@@ -156,6 +169,15 @@ describe("SubagentSessionService", () => {
       store: environmentStore,
       manager: null,
     });
+    const submitSessionInput = vi.fn(async (
+      sessionId: string,
+      payload: any,
+      deliveryMode = "wake",
+      enqueueOptions?: {inputId?: string},
+    ) => {
+      const session = await sessionStore.getSession(sessionId);
+      return submitInput(session.currentThreadId, payload, deliveryMode, enqueueOptions);
+    });
     const commandCatalog = options.commandCatalog ?? (
       options.commandModules ? undefined : createDefaultAgentCommandCatalog()
     );
@@ -167,13 +189,14 @@ describe("SubagentSessionService", () => {
       environments,
       a2aBindings: a2a,
       commandCatalog,
-      coordinator: {submitInput},
+      coordinator: {submitSessionInput},
       ...(!commandCatalog ? {commandModules: options.commandModules ?? DEFAULT_AGENT_COMMAND_MODULES} : {}),
     });
 
     return {
       a2a,
       agentStore,
+      environments,
       environmentStore,
       events,
       pool,
@@ -248,23 +271,38 @@ describe("SubagentSessionService", () => {
     expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM ${threadTables.inputs} WHERE thread_id = 'subagent-thread' AND source = 'subagent'`)).toBe(1);
   });
 
-  it("replays stable subagent creation without duplicating the session, thread, or handoff", async () => {
-    const {pool, service, sessionStore} = await createHarness();
+  it("replays the persisted creation snapshot after its mutable profile changes", async () => {
+    const {pool, profileStore, service, sessionStore} = await createHarness();
+    const operationId = "11111111-1111-4111-8111-111111111111";
+    await pool.query(`
+      INSERT INTO "runtime"."runtime_requests" (
+        id, kind, status, payload, ordering_key
+      ) VALUES ($1, 'create_subagent_session', 'pending', '{}'::jsonb, $2)
+    `, [operationId, `v1:${"1".repeat(64)}`]);
     const input = {
+      operationId,
+      replayAttempt: false,
       agentKey: "panda",
       parentSessionId: "parent-session",
       profile: "workspace",
       task: "Inspect package files.",
       sessionId: "replayed-subagent",
       threadId: "replayed-thread",
+      createdByIdentityId: "identity-1",
     } as const;
 
     const first = await service.createSubagentSession(input);
+    const getProfile = vi.spyOn(profileStore, "getProfile");
+    await pool.query(`
+      UPDATE ${buildSubagentTableNames().subagentProfiles}
+      SET prompt = 'Changed after spawn.', enabled = FALSE
+      WHERE slug = 'workspace' AND agent_key IS NULL
+    `);
     await sessionStore.updateSessionRuntimeConfig({
       sessionId: input.sessionId,
       model: "openai/gpt-5.2",
     });
-    const replay = await service.createSubagentSession(input);
+    const replay = await service.createSubagentSession({...input, replayAttempt: true});
     expect(replay).toMatchObject({
       session: {id: first.session.id},
       thread: {id: first.thread.id},
@@ -274,6 +312,67 @@ describe("SubagentSessionService", () => {
     expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM "runtime"."inputs" WHERE thread_id = 'replayed-thread' AND external_message_id = 'subagent-handoff:replayed-thread'`)).toBe(1);
     await expect(sessionStore.getSessionRuntimeConfig(input.sessionId)).resolves.toMatchObject({
       model: "openai/gpt-5.2",
+    });
+    expect(getProfile).not.toHaveBeenCalled();
+  });
+
+  it("trusts the subagent creation receipt after its creator identity is deleted", async () => {
+    const {pool, service} = await createHarness();
+    const operationId = "22222222-2222-4222-8222-222222222222";
+    await pool.query(`
+      INSERT INTO "runtime"."runtime_requests" (
+        id, kind, status, payload, ordering_key
+      ) VALUES ($1, 'create_subagent_session', 'pending', '{}'::jsonb, $2)
+    `, [operationId, `v1:${"2".repeat(64)}`]);
+    const input = {
+      operationId,
+      replayAttempt: false,
+      agentKey: "panda",
+      parentSessionId: "parent-session",
+      task: "Survive identity deletion.",
+      sessionId: "identity-deleted-subagent",
+      threadId: "identity-deleted-thread",
+      createdByIdentityId: "identity-1",
+    } as const;
+
+    await service.createSubagentSession(input);
+    await pool.query(`DELETE FROM "runtime"."identities" WHERE id = 'identity-1'`);
+
+    await expect(service.createSubagentSession({...input, replayAttempt: true})).resolves.toMatchObject({
+      session: {id: input.sessionId, createdByIdentityId: undefined},
+      thread: {id: input.threadId},
+    });
+  });
+
+  it("replays subagent creation after reset moves the session to a newer thread", async () => {
+    const {pool, service, sessionStore, threadStore} = await createHarness();
+    const operationId = "33333333-3333-4333-8333-333333333333";
+    await pool.query(`
+      INSERT INTO "runtime"."runtime_requests" (
+        id, kind, status, payload, ordering_key
+      ) VALUES ($1, 'create_subagent_session', 'pending', '{}'::jsonb, $2)
+    `, [operationId, `v1:${"3".repeat(64)}`]);
+    const input = {
+      operationId,
+      replayAttempt: false,
+      agentKey: "panda",
+      parentSessionId: "parent-session",
+      task: "Survive reset.",
+      sessionId: "reset-subagent",
+      threadId: "reset-subagent-initial-thread",
+      createdByIdentityId: "identity-1",
+    } as const;
+
+    await service.createSubagentSession(input);
+    await threadStore.createThread({id: "reset-subagent-current-thread", sessionId: input.sessionId});
+    await sessionStore.updateCurrentThread({
+      sessionId: input.sessionId,
+      currentThreadId: "reset-subagent-current-thread",
+    });
+
+    await expect(service.createSubagentSession({...input, replayAttempt: true})).resolves.toMatchObject({
+      session: {id: input.sessionId, currentThreadId: "reset-subagent-current-thread"},
+      thread: {id: input.threadId},
     });
   });
 
@@ -465,6 +564,184 @@ describe("SubagentSessionService", () => {
     });
   });
 
+  it("preserves later environment binding policy when creation effects replay", async () => {
+    const {environmentStore, pool, service} = await createHarness();
+    const operationId = "44444444-4444-4444-8444-444444444444";
+    await pool.query(`
+      INSERT INTO "runtime"."runtime_requests" (
+        id, kind, status, payload, ordering_key
+      ) VALUES ($1, 'create_subagent_session', 'pending', '{}'::jsonb, $2)
+    `, [operationId, `v1:${"4".repeat(64)}`]);
+    await environmentStore.createEnvironment({
+      id: "env-replay-policy",
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "ready",
+      createdBySessionId: "parent-session",
+    });
+    const input = {
+      operationId,
+      replayAttempt: false,
+      agentKey: "panda",
+      parentSessionId: "parent-session",
+      task: "Preserve the operator policy.",
+      execution: "isolated_environment" as const,
+      environmentId: "env-replay-policy",
+      sessionId: "policy-subagent",
+      threadId: "policy-subagent-thread",
+      createdByIdentityId: "identity-1",
+    };
+
+    await service.createSubagentSession(input);
+    await environmentStore.bindSession({
+      sessionId: input.sessionId,
+      environmentId: input.environmentId,
+      alias: "operator-policy",
+      isDefault: false,
+      credentialPolicy: {mode: "none"},
+      skillPolicy: {mode: "none"},
+      toolPolicy: {bash: {allowed: false}},
+    });
+    await expect(environmentStore.getBinding(input.sessionId, input.environmentId)).resolves.toMatchObject({
+      alias: "operator-policy",
+      credentialPolicy: {mode: "none"},
+    });
+
+    await expect(service.createSubagentSession({...input, replayAttempt: true})).resolves.toMatchObject({
+      binding: {
+        alias: "operator-policy",
+        isDefault: false,
+        credentialPolicy: {mode: "none"},
+        skillPolicy: {mode: "none"},
+        toolPolicy: {bash: {allowed: false}},
+      },
+    });
+    await expect(environmentStore.getBinding(input.sessionId, input.environmentId)).resolves.toMatchObject({
+      alias: "operator-policy",
+      credentialPolicy: {mode: "none"},
+    });
+
+    await environmentStore.createEnvironment({
+      id: input.environmentId,
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "stopped",
+      createdBySessionId: "parent-session",
+    });
+    await expect(service.createSubagentSession({...input, replayAttempt: true})).resolves.toMatchObject({
+      environment: {id: input.environmentId, state: "stopped"},
+      binding: {alias: "operator-policy"},
+    });
+    expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM "runtime"."agent_sessions" WHERE id = 'policy-subagent'`)).toBe(1);
+  });
+
+  it("finishes dependent effects after an attached environment later stops", async () => {
+    const {environmentStore, pool, service, submitInput} = await createHarness();
+    const operationId = "55555555-5555-4555-8555-555555555555";
+    await pool.query(`
+      INSERT INTO "runtime"."runtime_requests" (
+        id, kind, status, payload, ordering_key
+      ) VALUES ($1, 'create_subagent_session', 'pending', '{}'::jsonb, $2)
+    `, [operationId, `v1:${"5".repeat(64)}`]);
+    await environmentStore.createEnvironment({
+      id: "env-partial-effects",
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "ready",
+      createdBySessionId: "parent-session",
+    });
+    const input = {
+      operationId,
+      replayAttempt: false,
+      agentKey: "panda",
+      parentSessionId: "parent-session",
+      task: "Finish the partial saga.",
+      execution: "isolated_environment" as const,
+      environmentId: "env-partial-effects",
+      sessionId: "partial-effects-subagent",
+      threadId: "partial-effects-thread",
+      createdByIdentityId: "identity-1",
+    };
+    submitInput.mockRejectedValueOnce(new Error("handoff response lost"));
+
+    await expect(service.createSubagentSession(input)).rejects.toBeInstanceOf(RetryableRuntimeRequestError);
+    await environmentStore.createEnvironment({
+      id: input.environmentId,
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "stopped",
+      createdBySessionId: "parent-session",
+    });
+
+    await expect(service.createSubagentSession({...input, replayAttempt: true})).resolves.toMatchObject({
+      environment: {id: input.environmentId, state: "stopped"},
+      binding: {sessionId: input.sessionId, environmentId: input.environmentId},
+    });
+    await expect(pool.query(`
+      SELECT thread_id, source, external_message_id
+      FROM "runtime"."inputs"
+      WHERE id = $1
+    `, [operationId])).resolves.toMatchObject({rows: [{
+      thread_id: input.threadId,
+      source: "subagent",
+      external_message_id: `subagent-handoff:${input.threadId}`,
+    }]});
+  });
+
+  it("compensates an anchored isolated spawn when its unbound environment becomes terminal", async () => {
+    const {a2a, environments, environmentStore, pool, service} = await createHarness();
+    const operationId = "66666666-6666-4666-8666-666666666666";
+    await pool.query(`
+      INSERT INTO "runtime"."runtime_requests" (
+        id, kind, status, payload, ordering_key
+      ) VALUES ($1, 'create_subagent_session', 'pending', '{}'::jsonb, $2)
+    `, [operationId, `v1:${"6".repeat(64)}`]);
+    await environmentStore.createEnvironment({
+      id: "env-anchor-expired",
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "ready",
+      createdBySessionId: "parent-session",
+    });
+    const input = {
+      operationId,
+      replayAttempt: false,
+      agentKey: "panda",
+      parentSessionId: "parent-session",
+      task: "Do not leave an incomplete isolated spawn.",
+      execution: "isolated_environment" as const,
+      environmentId: "env-anchor-expired",
+      sessionId: "terminal-env-subagent",
+      threadId: "terminal-env-thread",
+      createdByIdentityId: "identity-1",
+    };
+    const attach = environments.attachReadySessionToDisposableEnvironment.bind(environments);
+    vi.spyOn(environments, "attachReadySessionToDisposableEnvironment")
+      .mockRejectedValueOnce(new Error("transient attach failure"))
+      .mockImplementation(attach);
+
+    await expect(service.createSubagentSession(input)).rejects.toBeInstanceOf(RetryableRuntimeRequestError);
+    expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM "runtime"."agent_sessions" WHERE id = 'terminal-env-subagent'`)).toBe(1);
+
+    await environmentStore.createEnvironment({
+      id: input.environmentId,
+      agentKey: "panda",
+      kind: "disposable_container",
+      state: "stopped",
+      createdBySessionId: "parent-session",
+    });
+    await expect(service.createSubagentSession({...input, replayAttempt: true}))
+      .rejects.toThrow("Execution environment env-anchor-expired is stopped.");
+
+    expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM "runtime"."agent_sessions" WHERE id = 'terminal-env-subagent'`)).toBe(0);
+    expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM "runtime"."threads" WHERE id = 'terminal-env-thread'`)).toBe(0);
+    expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM "runtime"."session_creation_operations" WHERE operation_id = '${operationId}'`)).toBe(0);
+    expect(await a2a.hasBinding({
+      senderSessionId: "parent-session",
+      recipientSessionId: input.sessionId,
+    })).toBe(false);
+  });
+
   it("cleans up session/thread when isolated attach fails", async () => {
     const {environmentStore, pool, service} = await createHarness();
     await environmentStore.createEnvironment({
@@ -644,6 +921,22 @@ describe("SubagentSessionService", () => {
     expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM ${sessionTables.sessions} WHERE id LIKE 'bad-parent-%'`)).toBe(0);
     expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM ${threadTables.threads} WHERE id LIKE 'bad-parent-thread-%'`)).toBe(0);
     expect(events).toEqual([]);
+  });
+
+  it("preserves transient parent-session reads as retryable infrastructure failures", async () => {
+    const {service, sessionStore} = await createHarness();
+    sessionStore.getSession = vi.fn(async () => {
+      throw Object.assign(new Error("connection reset"), {code: "ECONNRESET"});
+    });
+
+    await expect(service.createSubagentSession({
+      operationId: randomUUID(),
+      agentKey: "panda",
+      parentSessionId: "parent-session",
+      task: "Retry after the database recovers.",
+      sessionId: "transient-parent-session",
+      threadId: "transient-parent-thread",
+    })).rejects.toBeInstanceOf(RetryableRuntimeRequestError);
   });
 
   it("requires isolated environment id and rejects workspace env ids", async () => {

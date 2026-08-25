@@ -123,11 +123,16 @@ function createDaemonLifecycleContext(overrides: DaemonLifecycleContextOverrides
     requests: {
       claimNextPendingRequest: vi.fn(async () => null),
       renewRequestClaim: vi.fn(async () => true),
+      deferRequestClaim: vi.fn(async () => true),
       releaseRequestClaim: vi.fn(async () => true),
       completeRequest: vi.fn(async () => undefined),
       failRequest: vi.fn(async () => undefined),
       pruneSettledRequests: vi.fn(async () => 0),
       listenPendingRequests: vi.fn(async () => async () => undefined),
+    },
+    mediaReceiptJanitor: {
+      startReceiptJanitor: vi.fn(),
+      stopReceiptJanitor: vi.fn(async () => undefined),
     },
     a2aOutboundWorker: createStartStopService(),
     emailOutboundWorker: createStartStopService(),
@@ -285,6 +290,14 @@ describe("createDaemonLifecycle", () => {
         }),
       },
       discordVoice: {close: vi.fn(async () => { order.push("voice-store-close"); })},
+      mediaReceiptJanitor: {
+        startReceiptJanitor: vi.fn(() => {
+          order.push("media-receipt-janitor-start");
+        }),
+        stopReceiptJanitor: vi.fn(async () => {
+          order.push("media-receipt-janitor-stop");
+        }),
+      },
       runtime: {
         close: vi.fn(async () => {
           order.push("runtime-close");
@@ -319,6 +332,7 @@ describe("createDaemonLifecycle", () => {
         "coordinator-start",
         "heartbeat",
         "listen",
+        "media-receipt-janitor-start",
         "a2a-start",
         "email-outbound-start",
         "email-sync-start",
@@ -335,6 +349,7 @@ describe("createDaemonLifecycle", () => {
         "voice-store-close",
         "coordinator-stop",
         "background-jobs-close",
+        "media-receipt-janitor-stop",
         "release",
         "runtime-close",
       ]);
@@ -434,6 +449,53 @@ describe("createDaemonLifecycle", () => {
     expect(context.scheduledTaskRunner.start).not.toHaveBeenCalled();
     expect(context.watchRunner.start).not.toHaveBeenCalled();
     expect(context.sessionHeartbeatRunner.start).not.toHaveBeenCalled();
+  });
+
+  it("bounds shutdown during stuck startup and fences a late starter", async () => {
+    const previousStopTimeout = process.env.PANDA_DAEMON_SERVICE_STOP_TIMEOUT_MS;
+    process.env.PANDA_DAEMON_SERVICE_STOP_TIMEOUT_MS = "20";
+    const coordinatorStartEntered = deferred();
+    const finishCoordinatorStart = deferred();
+    const context = createDaemonLifecycleContext({
+      runtime: {
+        coordinator: {
+          start: vi.fn(async () => {
+            coordinatorStartEntered.resolve();
+            await finishCoordinatorStart.promise;
+          }),
+          stop: vi.fn(async () => undefined),
+        },
+      },
+    });
+    const lifecycle = createDaemonLifecycle({
+      context,
+      processRequest: vi.fn(async () => undefined),
+    });
+
+    try {
+      const runPromise = lifecycle.run();
+      await coordinatorStartEntered.promise;
+      await expect(Promise.race([
+        lifecycle.stop(),
+        sleep(1_000).then(() => { throw new Error("stuck startup blocked daemon stop"); }),
+      ])).resolves.toBeUndefined();
+      await expect(runPromise).resolves.toBeUndefined();
+      expect(context.runtime.close).toHaveBeenCalledOnce();
+      expect(context.connectorLeases.release).toHaveBeenCalledOnce();
+
+      finishCoordinatorStart.resolve();
+      await waitFor(() => {
+        expect(context.runtime.coordinator.stop).toHaveBeenCalledTimes(2);
+      });
+      expect(context.a2aOutboundWorker.start).not.toHaveBeenCalled();
+    } finally {
+      finishCoordinatorStart.resolve();
+      if (previousStopTimeout === undefined) {
+        delete process.env.PANDA_DAEMON_SERVICE_STOP_TIMEOUT_MS;
+      } else {
+        process.env.PANDA_DAEMON_SERVICE_STOP_TIMEOUT_MS = previousStopTimeout;
+      }
+    }
   });
 
   it("stops receipt-producing runners concurrently with their coordinator", async () => {

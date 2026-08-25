@@ -12,6 +12,7 @@ import {Agent, BashTool, RunContext,} from "../src/index.js";
 import type {CreateSessionInput, SessionRecord, UpdateSessionCurrentThreadInput} from "../src/domain/sessions/index.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {TEST_IDENTITY_ID, TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
+import {RetryableRuntimeRequestError} from "../src/domain/threads/requests/errors.js";
 
 function createRunContext(context: Record<string, unknown>): RunContext<Record<string, unknown>> {
   return new RunContext({
@@ -66,6 +67,15 @@ describe("createDaemonThreadHelpers", () => {
     let boundThreadId = options.currentThreadId ?? "thread-old-home";
     const identity = createIdentity();
     const sessions = new Map<string, SessionRecord>();
+    const creationOperations = new Map<string, {
+      operationId: string;
+      identityId: string;
+      agentKey: string;
+      sessionId: string;
+      threadId: string;
+      kind: "main" | "branch" | "subagent";
+      createdAt: number;
+    }>();
     const conversationBindings = {
       bindConversation: vi.fn(async () => undefined),
       getConversationBinding: vi.fn(async () => options.conversationBinding ?? null),
@@ -78,14 +88,14 @@ describe("createDaemonThreadHelpers", () => {
       getMainSession: vi.fn(async (agentKey: string) => {
         return [...sessions.values()].find((session) => session.agentKey === agentKey && session.kind === "main") ?? null;
       }),
-      createSession: vi.fn(async ({id, agentKey, kind, currentThreadId}: CreateSessionInput) => {
+      createSession: vi.fn(async ({id, agentKey, kind, currentThreadId, createdByIdentityId}: CreateSessionInput) => {
         boundThreadId = currentThreadId;
         const session = {
           id,
           agentKey,
           kind,
           currentThreadId,
-          createdByIdentityId: options.createdByIdentityId,
+          createdByIdentityId,
           metadata: undefined,
           createdAt: Date.now(),
           updatedAt: Date.now(),
@@ -140,6 +150,22 @@ describe("createDaemonThreadHelpers", () => {
         sessions.set(sessionId, updated);
         return updated;
       }),
+      getSessionCreationOperation: vi.fn(async (operationId: string) => creationOperations.get(operationId) ?? null),
+      recordSessionCreationOperation: vi.fn(async (input) => {
+        const record = creationOperations.get(input.operationId) ?? {...input, createdAt: Date.now()};
+        creationOperations.set(input.operationId, record);
+        return record;
+      }),
+      recordMainSessionResolutionOperation: vi.fn(async (input) => {
+        const record = creationOperations.get(input.operationId) ?? {
+          ...input,
+          threadId: sessions.get(input.sessionId)?.currentThreadId ?? boundThreadId,
+          kind: "main" as const,
+          createdAt: Date.now(),
+        };
+        creationOperations.set(input.operationId, record);
+        return record;
+      }),
     };
 
     const context: DaemonThreadHelperContext = {
@@ -178,6 +204,7 @@ describe("createDaemonThreadHelpers", () => {
         sessionRoutes,
         outboundDeliveries: {
           enqueueDelivery: vi.fn(async () => undefined),
+          findDeliveryByIdempotencyKey: vi.fn(async () => null),
         },
       };
 
@@ -262,15 +289,18 @@ describe("createDaemonThreadHelpers", () => {
   it("rejects explicit agent access when the identity has no pairings", async () => {
     const {helpers, identity} = createHelpers({
       pairings: [],
+      throwOnMissingSession: true,
     });
 
     await expect(helpers.openMainSession({
       identityId: identity.id,
       agentKey: "panda",
-    })).rejects.toThrow("Identity home is not paired to agent panda.");
+    }, "request-denied-main", false)).rejects.toThrow("Identity home is not paired to agent panda.");
 
     await expect(helpers.createBranchSession({
-      identity,
+      operationId: "request-denied-branch",
+      replayAttempt: false,
+      identityId: identity.id,
       sessionId: "denied-branch-session",
       threadId: "denied-branch-thread",
       agentKey: "panda",
@@ -280,7 +310,7 @@ describe("createDaemonThreadHelpers", () => {
       identityId: identity.id,
       source: "tui",
       agentKey: "panda",
-    }, "request-denied")).rejects.toThrow("Identity home is not paired to agent panda.");
+    }, "request-denied", 1, false)).rejects.toThrow("Identity home is not paired to agent panda.");
   });
 
   it("fails on unknown identity ids instead of auto-healing them", async () => {
@@ -293,30 +323,87 @@ describe("createDaemonThreadHelpers", () => {
     await expect(helpers.openMainSession({
       identityId: "missing-identity",
       agentKey: "panda",
-    })).rejects.toThrow("Unknown identity missing-identity");
+    }, "request-missing-main", false)).rejects.toThrow("Unknown identity missing-identity");
   });
 
   it("replays stable branch creation without creating another session or thread", async () => {
+    const pairings = [{agentKey: "panda"}];
     const {helpers, identity, sessionStore, store} = createHelpers({
-      pairings: [{agentKey: "panda"}],
+      pairings,
       createdByIdentityId: TEST_IDENTITY_ID,
       throwOnMissingSession: true,
     });
     const input = {
-      identity,
+      operationId: "request-branch",
+      replayAttempt: false,
+      identityId: identity.id,
       sessionId: "branch-session",
       threadId: "branch-thread",
       model: "openai/gpt-5.1",
     };
 
     const first = await helpers.createBranchSession(input);
+    pairings.splice(0);
     sessionStore.updateSessionRuntimeConfig.mockClear();
-    const replay = await helpers.createBranchSession(input);
+    const replay = await helpers.createBranchSession({...input, replayAttempt: true});
     expect(first.id).toBe("branch-thread");
     expect(replay.id).toBe(first.id);
     expect(sessionStore.createSession).toHaveBeenCalledTimes(1);
     expect(sessionStore.updateSessionRuntimeConfig).not.toHaveBeenCalled();
     await expect(store.getThread("branch-thread")).resolves.toMatchObject({sessionId: "branch-session"});
+  });
+
+  it("trusts the branch creation receipt after its creator identity is deleted", async () => {
+    const {helpers, identity, sessionStore} = createHelpers({
+      pairings: [{agentKey: "panda"}],
+      throwOnMissingSession: true,
+    });
+    const input = {
+      operationId: "request-branch-deleted-identity",
+      replayAttempt: false,
+      identityId: identity.id,
+      sessionId: "branch-deleted-identity",
+      threadId: "branch-deleted-identity-thread",
+    };
+
+    await helpers.createBranchSession(input);
+    const created = await sessionStore.getSession(input.sessionId);
+    sessionStore.getSession.mockResolvedValue({...created, createdByIdentityId: undefined});
+
+    await expect(helpers.createBranchSession({...input, replayAttempt: true})).resolves.toMatchObject({
+      id: input.threadId,
+      sessionId: input.sessionId,
+    });
+    expect(sessionStore.createSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("replays branch creation after reset moves the session to a newer thread", async () => {
+    const {helpers, identity, sessionStore, store} = createHelpers({
+      pairings: [{agentKey: "panda"}],
+      throwOnMissingSession: true,
+    });
+    const input = {
+      operationId: "request-branch-after-reset",
+      replayAttempt: false,
+      identityId: identity.id,
+      sessionId: "branch-after-reset",
+      threadId: "branch-initial-thread",
+    };
+
+    await helpers.createBranchSession(input);
+    await store.createThread({id: "branch-current-thread", sessionId: input.sessionId});
+    await sessionStore.updateCurrentThread({
+      sessionId: input.sessionId,
+      currentThreadId: "branch-current-thread",
+    });
+
+    await expect(helpers.createBranchSession({...input, replayAttempt: true})).resolves.toMatchObject({
+      id: input.threadId,
+      sessionId: input.sessionId,
+    });
+    await expect(sessionStore.getSession(input.sessionId)).resolves.toMatchObject({
+      currentThreadId: "branch-current-thread",
+    });
   });
 
   it("does not persist synthetic cwd context for new main sessions", async () => {
@@ -330,7 +417,7 @@ describe("createDaemonThreadHelpers", () => {
 
     const thread = await helpers.openMainSession({
       identityId: identity.id,
-    });
+    }, "request-main-context", false);
 
     expect(thread).not.toHaveProperty("context");
   });
@@ -342,9 +429,58 @@ describe("createDaemonThreadHelpers", () => {
 
     await helpers.openMainSession({
       identityId: identity.id,
-    });
+    }, "request-main-unpinned", false);
 
     expect(sessionStore.updateSessionRuntimeConfig).not.toHaveBeenCalled();
+  });
+
+  it("adopts the unique main-session winner under concurrent first ingress", async () => {
+    const {helpers, identity, sessionStore} = createHelpers({
+      pairings: [{agentKey: "panda"}],
+    });
+    const originalCreate = sessionStore.createSession.getMockImplementation()!;
+    let initialReads = 0;
+    let winnerSession: SessionRecord | null = null;
+    let publishWinner!: () => void;
+    const winnerCreated = new Promise<void>((resolve) => {
+      publishWinner = resolve;
+    });
+    let releaseReads!: () => void;
+    const bothRead = new Promise<void>((resolve) => {
+      releaseReads = resolve;
+    });
+    sessionStore.getMainSession.mockImplementation(async () => {
+      initialReads += 1;
+      if (initialReads <= 2) {
+        if (initialReads === 2) releaseReads();
+        await bothRead;
+        return null;
+      }
+      return winnerSession;
+    });
+    let creates = 0;
+    sessionStore.createSession.mockImplementation(async (input) => {
+      creates += 1;
+      if (creates > 1) {
+        await winnerCreated;
+        throw new Error("duplicate main session");
+      }
+      winnerSession = await originalCreate(input);
+      publishWinner();
+      return winnerSession;
+    });
+
+    const [first, second] = await Promise.all([
+      helpers.openMainSession({identityId: identity.id}, "request-main-race-a", false),
+      helpers.openMainSession({identityId: identity.id}, "request-main-race-b", false),
+    ]);
+
+    expect(first.id).toBe(second.id);
+    expect(sessionStore.createSession).toHaveBeenCalledTimes(2);
+    await expect(sessionStore.getSessionCreationOperation("request-main-race-a"))
+      .resolves.toMatchObject({threadId: first.id});
+    await expect(sessionStore.getSessionCreationOperation("request-main-race-b"))
+      .resolves.toMatchObject({threadId: first.id});
   });
 
   it("does not turn main-session resolution into a replayable config update", async () => {
@@ -354,16 +490,42 @@ describe("createDaemonThreadHelpers", () => {
 
     const initial = await helpers.openMainSession({
       identityId: identity.id,
-    });
+    }, "request-main-initial", false);
     expect(sessionStore.updateSessionRuntimeConfig).not.toHaveBeenCalled();
 
     const updated = await helpers.openMainSession({
       identityId: identity.id,
       model: "anthropic-oauth/claude-opus-4-7",
-    });
+    }, "request-main-updated", false);
 
     expect(updated.id).toBe(initial.id);
     expect(sessionStore.updateSessionRuntimeConfig).not.toHaveBeenCalled();
+  });
+
+  it("reconciles a later-attempt main-session receipt when its commit response is lost", async () => {
+    const {helpers, identity, sessionStore} = createHelpers({
+      pairings: [{agentKey: "panda"}],
+    });
+    const initial = await helpers.openMainSession({identityId: identity.id}, "request-main-seed", false);
+
+    const recordResolution = sessionStore.recordMainSessionResolutionOperation.getMockImplementation()!;
+    sessionStore.recordMainSessionResolutionOperation.mockImplementationOnce(async (input) => {
+      await recordResolution(input);
+      throw new Error("database response lost after main resolution receipt commit");
+    });
+
+    await expect(helpers.openMainSession(
+      {identityId: identity.id},
+      "request-main-late-attempt",
+      true,
+    )).rejects.toBeInstanceOf(RetryableRuntimeRequestError);
+    await expect(helpers.openMainSession(
+      {identityId: identity.id},
+      "request-main-late-attempt",
+      true,
+    )).resolves.toMatchObject({sessionId: initial.sessionId});
+
+    expect(sessionStore.recordMainSessionResolutionOperation).toHaveBeenCalledTimes(1);
   });
 
   it("cancels old-thread background jobs during session reset", async () => {
@@ -412,7 +574,7 @@ describe("createDaemonThreadHelpers", () => {
       identityId: TEST_IDENTITY_ID,
       source: "tui",
       threadId: "thread-old-home",
-    }, "request-reset-background");
+    }, "request-reset-background", 1, false);
 
     expect(result.previousThreadId).toBe("thread-old-home");
     expect(result.threadId).not.toBe("thread-old-home");
@@ -445,7 +607,7 @@ describe("createDaemonThreadHelpers", () => {
       externalConversationId: "421900000000@s.whatsapp.net",
       externalActorId: "421900000000@s.whatsapp.net",
       externalMessageId: "reset-1",
-    }, "request-reset-channel");
+    }, "request-reset-channel", 1, false);
     const replay = await helpers.handleResetSession({
       identityId: TEST_IDENTITY_ID,
       source: "whatsapp",
@@ -453,7 +615,7 @@ describe("createDaemonThreadHelpers", () => {
       externalConversationId: "421900000000@s.whatsapp.net",
       externalActorId: "421900000000@s.whatsapp.net",
       externalMessageId: "reset-1",
-    }, "request-reset-channel");
+    }, "request-reset-channel", 1, true);
     const newerReset = await helpers.handleResetSession({
       identityId: TEST_IDENTITY_ID,
       source: "whatsapp",
@@ -461,7 +623,7 @@ describe("createDaemonThreadHelpers", () => {
       externalConversationId: "421900000000@s.whatsapp.net",
       externalActorId: "421900000000@s.whatsapp.net",
       externalMessageId: "reset-2",
-    }, "request-reset-channel-2");
+    }, "request-reset-channel-2", 2, false);
     const replayAfterNewerReset = await helpers.handleResetSession({
       identityId: TEST_IDENTITY_ID,
       source: "whatsapp",
@@ -469,7 +631,7 @@ describe("createDaemonThreadHelpers", () => {
       externalConversationId: "421900000000@s.whatsapp.net",
       externalActorId: "421900000000@s.whatsapp.net",
       externalMessageId: "reset-1",
-    }, "request-reset-channel");
+    }, "request-reset-channel", 1, true);
 
     expect(result.previousThreadId).toBe("thread-old-channel");
     expect(result.threadId).not.toBe("thread-old-channel");
@@ -519,6 +681,41 @@ describe("createDaemonThreadHelpers", () => {
     await expect(store.getThread(String(result.threadId))).resolves.not.toHaveProperty("context");
   });
 
+  it("resumes reset from its authorized main-session receipt after pairing revocation", async () => {
+    let identityAvailable = true;
+    const pairings = [{agentKey: "panda"}];
+    const {helpers, identity, conversationBindings, sessionRoutes} = createHelpers({
+      pairings,
+      conversationBinding: null,
+      getIdentity: async () => {
+        if (!identityAvailable) throw new Error("identity was deleted");
+        return createIdentity();
+      },
+    });
+    await helpers.openMainSession({identityId: identity.id}, "request-reset-resume", false);
+    identityAvailable = false;
+    pairings.splice(0);
+
+    const result = await helpers.handleResetSession({
+      source: "telegram",
+      connectorKey: "main",
+      externalConversationId: "777",
+      externalActorId: "123",
+      externalMessageId: "555",
+    }, "request-reset-resume", 2, true);
+
+    expect(result).toMatchObject({previousThreadId: expect.any(String), sessionId: expect.any(String)});
+    expect(conversationBindings.bindConversation).toHaveBeenCalledWith(expect.objectContaining({
+      source: "telegram",
+      externalConversationId: "777",
+      sessionId: result.sessionId,
+    }));
+    expect(sessionRoutes.saveLastRoute).toHaveBeenCalledWith(expect.objectContaining({
+      sessionId: result.sessionId,
+      identityId: identity.id,
+    }));
+  });
+
   it("allows operator reset for an ownerless session", async () => {
     const store = new TestThreadRuntimeStore();
     await store.createThread({
@@ -535,13 +732,124 @@ describe("createDaemonThreadHelpers", () => {
     const result = await helpers.handleResetSession({
       source: "operator",
       sessionId: "session-main",
-    }, "request-reset-ownerless");
+    }, "request-reset-ownerless", 1, false);
 
     expect(result.previousThreadId).toBe("thread-ownerless");
     expect(result.threadId).not.toBe("thread-ownerless");
     await expect(store.getThread(String(result.threadId))).resolves.toMatchObject({
       sessionId: "session-main",
     });
+  });
+
+  it("defers reset when the request-keyed abort outcome is ambiguous", async () => {
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({id: "thread-reset-ambiguous", sessionId: "session-main"});
+    const order: string[] = [];
+    const abort = vi.fn(async (
+      threadId: string,
+      reason?: string,
+      operationId?: string,
+      options?: {blocksNewRuns?: boolean},
+    ) => {
+      order.push("abort");
+      await store.requestRunAbort(threadId, reason, operationId, options);
+      if (abort.mock.calls.length === 1) {
+        throw new Error("database response lost after abort receipt commit");
+      }
+      return false;
+    });
+    const {helpers, conversationBindings} = createHelpers({
+      store,
+      currentThreadId: "thread-reset-ambiguous",
+      createdByIdentityId: undefined,
+      conversationBinding: {sessionId: "session-main"},
+      coordinator: {
+        abort,
+        runExclusively: vi.fn(async (_threadId, operation) => {
+          order.push("reserve");
+          return operation({
+            signal: new AbortController().signal,
+            owner: {
+              source: "panda-core",
+              connectorKey: "test",
+              holderId: "daemon-threads-test",
+            },
+          });
+        }),
+      },
+    });
+
+    await expect(helpers.handleResetSession({
+      source: "telegram",
+      connectorKey: "main",
+      externalConversationId: "777",
+    }, "request-reset-ambiguous", 1, false)).rejects.toBeInstanceOf(RetryableRuntimeRequestError);
+    conversationBindings.getConversationBinding.mockResolvedValue(null);
+    await expect(helpers.handleResetSession({
+      source: "telegram",
+      connectorKey: "main",
+      externalConversationId: "777",
+    }, "request-reset-ambiguous", 2, true)).resolves.toMatchObject({
+      previousThreadId: "thread-reset-ambiguous",
+      sessionId: "session-main",
+    });
+
+    expect(abort).toHaveBeenCalledTimes(2);
+    expect(conversationBindings.getConversationBinding).toHaveBeenCalledTimes(1);
+    expect(order.slice(0, 2)).toEqual(["reserve", "abort"]);
+  });
+
+  it("keeps the old thread fenced while a partially committed reset retries", async () => {
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({id: "thread-reset-fenced", sessionId: "session-main"});
+    await store.enqueueInput("thread-reset-fenced", {
+      source: "tui",
+      externalMessageId: "pending-after-reset",
+      actorId: "operator",
+      message: {role: "user", content: [{type: "text", text: "do not replay"}]},
+    });
+    const cancelThreadJobs = vi.fn()
+      .mockRejectedValueOnce(new Error("background cancellation unavailable"))
+      .mockResolvedValue(undefined);
+    const abort = vi.fn(async (
+      threadId: string,
+      reason?: string,
+      operationId?: string,
+      options?: {blocksNewRuns?: boolean},
+    ) => {
+      return (await store.requestRunAbort(threadId, reason, operationId, options)) !== null;
+    });
+    const {helpers} = createHelpers({
+      store,
+      currentThreadId: "thread-reset-fenced",
+      createdByIdentityId: undefined,
+      backgroundJobService: {cancelThreadJobs},
+      coordinator: {
+        abort,
+        runExclusively: vi.fn(async (_threadId, operation) => operation({
+          signal: new AbortController().signal,
+          owner: {
+            source: "panda-core",
+            connectorKey: "test",
+            holderId: "daemon-threads-test",
+          },
+        })),
+      },
+    });
+
+    const payload = {source: "operator", sessionId: "session-main"} as const;
+    await expect(helpers.handleResetSession(payload, "request-reset-fenced", 1, false))
+      .rejects.toBeInstanceOf(RetryableRuntimeRequestError);
+    await expect(store.tryStartRun("thread-reset-fenced", {
+      source: "panda-core",
+      connectorKey: "test",
+      holderId: "would-replay-old-thread",
+    })).resolves.toBeNull();
+
+    await expect(helpers.handleResetSession(payload, "request-reset-fenced", 2, true))
+      .resolves.toMatchObject({previousThreadId: "thread-reset-fenced", sessionId: "session-main"});
+    expect(abort).toHaveBeenCalledTimes(2);
+    expect(cancelThreadJobs).toHaveBeenCalledTimes(2);
   });
 
 });

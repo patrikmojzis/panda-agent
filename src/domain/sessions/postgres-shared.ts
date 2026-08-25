@@ -7,6 +7,8 @@ export interface SessionTableNames {
   sessionPrompts: string;
   sessionTodos: string;
   sessionRuntimeConfig: string;
+  sessionRuntimeConfigOperations: string;
+  sessionCreationOperations: string;
 }
 
 export function buildSessionTableNames(): SessionTableNames {
@@ -16,5 +18,7 @@ export function buildSessionTableNames(): SessionTableNames {
     sessionPrompts: "session_prompts",
     sessionTodos: "session_todos",
     sessionRuntimeConfig: "session_runtime_config",
+    sessionRuntimeConfigOperations: "session_runtime_config_operations",
+    sessionCreationOperations: "session_creation_operations",
   });
 }

@@ -63,9 +63,24 @@ import {
   PostgresPairedIdentityDirectory,
   type PairedIdentityDirectoryReader,
 } from "../../domain/agents/paired-identity-directory.js";
+import {closePiAiRuntimeResources} from "../../integrations/providers/shared/runtime.js";
 
 const DEFAULT_THREAD_RUN_CONCURRENCY = 4;
 const DEFAULT_THREAD_RUN_DRAIN_TIMEOUT_MS = 30_000;
+const RUNTIME_CLOSE_STEP_TIMEOUT_MS = 5_000;
+
+async function closeWithin(label: string, run: () => Promise<void>, timeoutMs: number): Promise<void> {
+  let timer: NodeJS.Timeout | null = null;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} did not close within ${timeoutMs}ms.`)), timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    await Promise.race([run(), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 export {
   createPostgresPool,
@@ -208,16 +223,17 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     subagentTools: runtime.subagentTools,
   };
 
+  const coordinatorDrainTimeoutMs = readPositiveIntegerEnv(
+    "PANDA_CORE_THREAD_RUN_DRAIN_TIMEOUT_MS",
+    DEFAULT_THREAD_RUN_DRAIN_TIMEOUT_MS,
+  );
   const coordinator = new ThreadRuntimeCoordinator({
     store: runtime.store,
     maxConcurrentRuns: readPositiveIntegerEnv(
       "PANDA_CORE_THREAD_RUN_CONCURRENCY",
       DEFAULT_THREAD_RUN_CONCURRENCY,
     ),
-    shutdownDrainTimeoutMs: readPositiveIntegerEnv(
-      "PANDA_CORE_THREAD_RUN_DRAIN_TIMEOUT_MS",
-      DEFAULT_THREAD_RUN_DRAIN_TIMEOUT_MS,
-    ),
+    shutdownDrainTimeoutMs: coordinatorDrainTimeoutMs,
     modelCallObserver: runtime.modelCallRecorder,
     resolveDefinition: (thread) => options.resolveDefinition(thread, resolverContext),
     onEvent: options.onEvent,
@@ -284,9 +300,26 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     const unsubscribe = notificationUnsubscribe;
     notificationUnsubscribe = null;
     closePromise = runCleanupSteps([
-      {label: "thread-runtime-listener", run: async () => unsubscribe?.()},
-      {label: "thread-runtime-coordinator", run: () => coordinator.stop()},
-      {label: "runtime", run: () => runtime.close()},
+      {
+        label: "thread-runtime-listener",
+        run: () => closeWithin("thread runtime listener", async () => unsubscribe?.(), RUNTIME_CLOSE_STEP_TIMEOUT_MS),
+      },
+      {
+        label: "thread-runtime-coordinator",
+        run: () => closeWithin(
+          "thread runtime coordinator",
+          () => coordinator.stop(),
+          coordinatorDrainTimeoutMs + RUNTIME_CLOSE_STEP_TIMEOUT_MS,
+        ),
+      },
+      // Pi-AI caches provider transports by prompt-cache session. The daemon
+      // owns one runtime, so process teardown must close that global cache
+      // after model work settles or WebSockets keep the process alive.
+      {label: "provider-runtime-resources", run: async () => closePiAiRuntimeResources()},
+      {
+        label: "runtime",
+        run: () => closeWithin("runtime resources", () => runtime.close(), RUNTIME_CLOSE_STEP_TIMEOUT_MS),
+      },
     ], undefined, {rethrow: true});
     return closePromise;
   };

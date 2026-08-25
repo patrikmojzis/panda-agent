@@ -10,6 +10,7 @@ import {
   SESSION_BRIEF_PROMPT_SLUG,
   SESSION_HEARTBEAT_PROMPT_SLUG,
 } from "./types.js";
+import {ensurePostgresRuntimeOperationReceiptSchema} from "../threads/requests/postgres-operation-schema.js";
 
 export function buildSessionIntegrityChecks(): IntegrityCheckGroup {
   const tables = buildSessionTableNames();
@@ -172,6 +173,12 @@ export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<vo
       inference_projection JSONB,
       pending_wake_at TIMESTAMPTZ,
       pending_wake_generation BIGINT NOT NULL DEFAULT 0,
+      model_applied_at TIMESTAMPTZ NOT NULL DEFAULT TIMESTAMPTZ '1970-01-01 00:00:00+00',
+      model_operation_id UUID,
+      thinking_applied_at TIMESTAMPTZ NOT NULL DEFAULT TIMESTAMPTZ '1970-01-01 00:00:00+00',
+      thinking_operation_id UUID,
+      inference_projection_applied_at TIMESTAMPTZ NOT NULL DEFAULT TIMESTAMPTZ '1970-01-01 00:00:00+00',
+      inference_projection_operation_id UUID,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
@@ -179,6 +186,11 @@ export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<vo
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_session_runtime_config_session_idx`)}
     ON ${tables.sessionRuntimeConfig} (session_id)
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_session_runtime_config_pending_wake_idx`)}
+    ON ${tables.sessionRuntimeConfig} (pending_wake_at, session_id)
+    WHERE pending_wake_at IS NOT NULL
   `);
   await pool.query(`
     ALTER TABLE ${tables.sessionRuntimeConfig}
@@ -195,6 +207,30 @@ export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<vo
   await pool.query(`
     ALTER TABLE ${tables.sessionRuntimeConfig}
     ADD COLUMN IF NOT EXISTS pending_wake_generation BIGINT NOT NULL DEFAULT 0
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.sessionRuntimeConfig}
+    ADD COLUMN IF NOT EXISTS model_applied_at TIMESTAMPTZ NOT NULL DEFAULT TIMESTAMPTZ '1970-01-01 00:00:00+00'
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.sessionRuntimeConfig}
+    ADD COLUMN IF NOT EXISTS model_operation_id UUID
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.sessionRuntimeConfig}
+    ADD COLUMN IF NOT EXISTS thinking_applied_at TIMESTAMPTZ NOT NULL DEFAULT TIMESTAMPTZ '1970-01-01 00:00:00+00'
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.sessionRuntimeConfig}
+    ADD COLUMN IF NOT EXISTS thinking_operation_id UUID
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.sessionRuntimeConfig}
+    ADD COLUMN IF NOT EXISTS inference_projection_applied_at TIMESTAMPTZ NOT NULL DEFAULT TIMESTAMPTZ '1970-01-01 00:00:00+00'
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.sessionRuntimeConfig}
+    ADD COLUMN IF NOT EXISTS inference_projection_operation_id UUID
   `);
 
   await pool.query(`
@@ -266,4 +302,5 @@ export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<vo
     REFERENCES ${tables.sessions}(id)
     ON DELETE CASCADE
   `);
+  await ensurePostgresRuntimeOperationReceiptSchema(pool);
 }

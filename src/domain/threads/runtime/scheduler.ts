@@ -171,7 +171,14 @@ export class ThreadRunScheduler {
     this.kick();
   }
 
-  async runExclusively<T>(threadId: string, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  async runExclusively<T>(
+    threadId: string,
+    operation: (signal: AbortSignal) => Promise<T>,
+    options: {
+      abortActiveReason?: unknown;
+      beforeActiveAbort?: () => Promise<void>;
+    } = {},
+  ): Promise<T> {
     if (this.state !== "running") {
       throw new Error("Thread runtime is not running.");
     }
@@ -182,11 +189,15 @@ export class ThreadRunScheduler {
     }
 
     const deferred = createDeferred<T>();
+    let activeAbortPreparation: Promise<void> | undefined;
     const work: ScheduledWork<T> = {
       threadId,
       kind: "exclusive",
       priority: "control",
-      execute: operation,
+      execute: async (signal) => {
+        await activeAbortPreparation;
+        return operation(signal);
+      },
       deferred,
       controller: null,
     };
@@ -195,6 +206,18 @@ export class ThreadRunScheduler {
       // slip between the current run settling and the exclusive operation.
       this.exclusiveAfterActive.set(threadId, work);
       this.queuedByThreadId.set(threadId, work);
+      if (options.abortActiveReason !== undefined) {
+        activeAbortPreparation = (async () => {
+          // The lane is already reserved, but the active run stays alive until
+          // its durable abort is recorded. If the run settles first, the
+          // exclusive operation still observes the same completed preparation.
+          await options.beforeActiveAbort?.();
+          active.controller?.abort(options.abortActiveReason);
+        })();
+        // Execution awaits and reports this error once the active lane drains.
+        // Attach a handler now so a fast DB failure is never unhandled.
+        void activeAbortPreparation.catch(() => undefined);
+      }
     } else if (queued) {
       // The run hint still represents durable work. If exclusive work fails,
       // it must not disappear merely because it won the process-local lane.

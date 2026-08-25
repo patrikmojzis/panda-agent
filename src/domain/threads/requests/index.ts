@@ -2,6 +2,7 @@ export {
   RuntimeRequestRepo,
   type RuntimeRequestRepoOptions,
 } from "./repo.js";
+export {RetryableRuntimeRequestError} from "./errors.js";
 export type {
   A2AEnvironmentPathHints,
   A2AMessageItem,

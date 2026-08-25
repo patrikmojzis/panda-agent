@@ -90,8 +90,8 @@ Rules:
 - rendering caps completed-heavy lists; done items are not auto-deleted
 - no due dates, reminders, priorities, owners, global/project todos, or auto-spawn behavior in V1
 
-Session runtime config is stored per session in `session_runtime_config`. Runtime knobs such as `model`, `thinking`, `thinking_configured`, and `inference_projection` follow the session across `/reset`; thread rows no longer own those scalar settings. `pending_wake_at` and `pending_wake_generation` share the table but are owned exclusively by runtime wake/admission operations, not by the generic config update API.
-`pending_wake_at` is a durable admission edge, not a second work queue. Every wake advances `pending_wake_generation`; a consumer compare-and-clears only the generation visible to its PostgreSQL snapshot. A concurrent newer wake therefore survives a row-lock wait even though the statement still uses its older snapshot. A run claim records `admitted_run_id` on the exact visible input set and demotes those inputs to `queue`. That identity carries admission across bounded input pages without absorbing later queue-only deliveries. Abort leaves its admitted set dormant until a genuinely new wake re-admits it; non-abort failure and orphan recovery atomically re-arm only that set. The durable input ledger remains the payload source of truth.
+Session runtime config is stored per session in `session_runtime_config`. Runtime knobs such as `model`, `thinking`, `thinking_configured`, and `inference_projection` follow the session across `/reset`; thread rows no longer own those scalar settings. Request-driven patches carry per-field acceptance clocks and operation ids. That prevents an older reset/update from overwriting a newer value while still allowing disjoint partial patches to merge. `pending_wake_at` and `pending_wake_generation` share the table but are owned exclusively by runtime wake/admission operations, not by the generic config update API.
+`pending_wake_at` is the sole durable scheduler latch, not a second work queue. Every wake advances `pending_wake_generation`; a consumer compare-and-clears only the generation visible to its PostgreSQL snapshot. A concurrent newer wake therefore survives a row-lock wait even though the statement still uses its older snapshot. A run snapshots the largest visible pending `input_order` into `runs.admitted_through_input_order` and may apply that immutable FIFO prefix in bounded pages. Later queue-only inputs remain beyond the cutoff. Abort leaves the prefix dormant until a genuinely new wake advances the cutoff; non-abort failure and orphan recovery re-arm the session latch when unapplied work remains inside the cutoff. `inputs.delivery_mode` records submission policy and history; it is not another scheduling signal.
 
 `/reset`:
 
@@ -106,6 +106,17 @@ Session runtime config is stored per session in `session_runtime_config`. Runtim
 
 That lineage lets a replayed reset return its original result even after a newer
 reset has superseded it. The session indirection is the whole point.
+
+Before replacing the pointer, reset reserves the old thread's scheduler lane
+and records a request-keyed abort receipt while setting
+`threads.run_claims_blocked_at`. The thread-owned fence survives receipt pruning
+and blocks every new run claim before local cancellation begins. Session ingress
+that encounters the retiring current thread is deferred until the pointer
+advances, so accepted work is never inserted into a thread that reset is about to
+discard. A crash after the fence leaves the old thread dormant, and the durable
+request retry completes the same replacement instead of replaying old input.
+Upgrade refuses the one unsafe legacy state: an interrupted reset receipt whose
+old thread is still current.
 
 ## Routing
 

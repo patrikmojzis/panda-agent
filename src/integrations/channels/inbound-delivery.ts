@@ -1,5 +1,4 @@
 import type {RememberedRoute} from "../../domain/channels/types.js";
-import type {SessionRouteRepo} from "../../domain/sessions/routes/repo.js";
 import {submitCurrentSessionInput, type SessionInputDeliveryResult} from "../../domain/sessions/current-thread.js";
 import type {
   ThreadRuntimeCoordinator,
@@ -7,10 +6,26 @@ import type {
 } from "../../domain/threads/runtime/coordinator.js";
 import type {ThreadEnqueueOptions, ThreadInputPayload} from "../../domain/threads/runtime/types.js";
 
+export async function submitDurableRuntimeRequestInput(input: {
+  coordinator: Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
+  enqueueOptions?: ThreadEnqueueOptions;
+  mode?: ThreadWakeMode;
+  payload: ThreadInputPayload;
+  sessionId: string;
+}): Promise<SessionInputDeliveryResult> {
+  return submitCurrentSessionInput({
+    sessionId: input.sessionId,
+    coordinator: input.coordinator,
+    ...(input.mode === undefined ? {} : {mode: input.mode}),
+    ...(input.enqueueOptions === undefined ? {} : {options: input.enqueueOptions}),
+    payload: input.payload,
+  });
+}
+
 /**
- * Persists the latest channel route before waking the thread. This keeps
- * `outbound` route memory available to the very run caused by the inbound
- * message, instead of racing behind `submitInput`.
+ * Persists the route and input in one database statement. The run can never
+ * observe the input without its outbound route, and replay cannot move routing
+ * backwards because the store compares the transport capture timestamp.
  */
 export async function submitRememberedChannelInput(input: {
   coordinator: Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
@@ -19,19 +34,19 @@ export async function submitRememberedChannelInput(input: {
   mode?: ThreadWakeMode;
   payload: ThreadInputPayload;
   route: RememberedRoute;
-  routes: Pick<SessionRouteRepo, "saveLastRoute">;
   sessionId: string;
 }): Promise<SessionInputDeliveryResult> {
-  await input.routes.saveLastRoute({
-    sessionId: input.sessionId,
-    identityId: input.identityId,
-    route: input.route,
-  });
-  return submitCurrentSessionInput({
+  return submitDurableRuntimeRequestInput({
     sessionId: input.sessionId,
     coordinator: input.coordinator,
     ...(input.mode === undefined ? {} : {mode: input.mode}),
-    ...(input.enqueueOptions === undefined ? {} : {options: input.enqueueOptions}),
+    enqueueOptions: {
+      ...input.enqueueOptions,
+      rememberedRoute: {
+        ...(input.identityId === undefined ? {} : {identityId: input.identityId}),
+        route: input.route,
+      },
+    },
     payload: input.payload,
   });
 }

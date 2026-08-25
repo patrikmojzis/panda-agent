@@ -63,6 +63,7 @@ export interface CompactThreadOptions {
   operationId?: string;
   owningRunId?: string;
   runtime?: Pick<LlmRuntime, "complete">;
+  signal?: AbortSignal;
 }
 
 export interface CompactThreadResult {
@@ -306,6 +307,7 @@ async function requestCompactSummary(options: {
   maxSummaryTokens?: number;
   runtime?: Pick<LlmRuntime, "complete">;
   diagnostics: CompactAttemptDiagnostics;
+  signal?: AbortSignal;
 }): Promise<{ summary: string; diagnostics: CompactAttemptDiagnostics }> {
   const runtime = options.runtime ?? new PiAiRuntime();
   const modelSelection = resolveModelSelector(options.model);
@@ -317,6 +319,7 @@ async function requestCompactSummary(options: {
       systemPrompt: getCompactPrompt(options.customInstructions, options.maxSummaryTokens),
       messages: [stringToUserMessage(options.compactionInput)],
     },
+    signal: options.signal,
   });
 
   const rawSummary = joinMessageTextParts(response.content);
@@ -419,6 +422,7 @@ export function shouldAutoCompactThread(options: {
 }
 
 export async function compactThread(options: CompactThreadOptions): Promise<CompactThreadResult | null> {
+  options.signal?.throwIfAborted();
   const modelSelection = resolveModelSelector(options.model);
   const apiKeyMessage = readMissingApiKeyMessage(modelSelection.providerName);
   if (apiKeyMessage) {
@@ -426,6 +430,7 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
   }
 
   const transcript = options.transcript ?? await options.store.loadActiveTranscript(options.thread.id);
+  options.signal?.throwIfAborted();
   const activeTranscript = transcript.records;
   const tokensBefore = estimateTranscriptTokens(activeTranscript, {
     replayToolArtifacts: true,
@@ -501,7 +506,9 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
     maxSummaryTokens: summaryTokenBudget,
     runtime: options.runtime,
     diagnostics: splitDiagnostics,
+    signal: options.signal,
   });
+  options.signal?.throwIfAborted();
   const {summary} = summaryResult;
 
   const compactMessage = createCompactBoundaryMessage(summary);

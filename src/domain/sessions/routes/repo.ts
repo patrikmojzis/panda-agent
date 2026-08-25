@@ -1,7 +1,7 @@
 import type {DeliveryContext, RememberedRoute} from "../../channels/types.js";
+import {isUniqueViolation} from "../../../lib/postgres-errors.js";
 import {requireTimestampMillis, toJson} from "../../../lib/postgres-values.js";
 import {isJsonObject} from "../../../lib/json.js";
-import {isUniqueViolation} from "../../../lib/postgres-errors.js";
 import type {PgPoolLike} from "../../../lib/postgres-query.js";
 import {requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
 import {buildSessionRouteTableNames, type SessionRouteTableNames} from "./postgres-shared.js";
@@ -156,118 +156,76 @@ export class SessionRouteRepo {
 
   async saveLastRoute(input: SessionRouteInput): Promise<SessionRouteRecord> {
     const normalized = normalizeInput(input);
-    const client = await this.pool.connect();
-    let inTransaction = false;
-
-    try {
+    const identityPredicate = normalized.identityId
+      ? "identity_id = $2"
+      : "identity_id IS NULL";
+    const values = [
+      normalized.sessionId,
+      normalized.identityId ?? null,
+      normalized.route.source,
+      normalized.route.connectorKey,
+      normalized.route.externalConversationId,
+      normalized.route.externalActorId ?? null,
+      normalized.route.externalMessageId ?? null,
+      normalized.route.capturedAt,
+      toJson(normalized.route),
+    ];
+    for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        const inserted = await client.query(`
-          INSERT INTO ${this.tables.sessionRoutes} (
-            session_id,
-            identity_id,
-            channel,
-            connector_key,
-            external_conversation_id,
-            external_actor_id,
-            external_message_id,
-            captured_at_ms,
-            metadata
-          ) VALUES (
-            $1,
-            $2,
-            $3,
-            $4,
-            $5,
-            $6,
-            $7,
-            $8,
-            $9::jsonb
-          )
-          RETURNING *
-        `, [
-          normalized.sessionId,
-          normalized.identityId ?? null,
-          normalized.route.source,
-          normalized.route.connectorKey,
-          normalized.route.externalConversationId,
-          normalized.route.externalActorId ?? null,
-          normalized.route.externalMessageId ?? null,
-          normalized.route.capturedAt,
-          toJson(normalized.route),
-        ]);
-        return parseRecord(inserted.rows[0] as Record<string, unknown>);
+        const result = await this.pool.query(`
+      WITH updated AS (
+        UPDATE ${this.tables.sessionRoutes}
+        SET connector_key = $4,
+            external_conversation_id = $5,
+            external_actor_id = $6,
+            external_message_id = $7,
+            captured_at_ms = $8::bigint,
+            metadata = $9::jsonb,
+            updated_at = NOW()
+        WHERE session_id = $1
+          AND ${identityPredicate}
+          AND channel = $3
+          AND captured_at_ms <= $8::bigint
+        RETURNING *
+      ), inserted AS (
+        INSERT INTO ${this.tables.sessionRoutes} (
+          session_id,
+          identity_id,
+          channel,
+          connector_key,
+          external_conversation_id,
+          external_actor_id,
+          external_message_id,
+          captured_at_ms,
+          metadata
+        )
+        SELECT $1, $2, $3, $4, $5, $6, $7, $8::bigint, $9::jsonb
+        WHERE NOT EXISTS (
+          SELECT 1 FROM ${this.tables.sessionRoutes}
+          WHERE session_id = $1 AND ${identityPredicate} AND channel = $3
+        )
+        RETURNING *
+      ), current_route AS (
+        SELECT * FROM ${this.tables.sessionRoutes}
+        WHERE session_id = $1 AND ${identityPredicate} AND channel = $3
+      )
+      SELECT * FROM updated
+      UNION ALL SELECT * FROM inserted
+      UNION ALL SELECT * FROM current_route
+        WHERE NOT EXISTS (SELECT 1 FROM updated)
+          AND NOT EXISTS (SELECT 1 FROM inserted)
+      LIMIT 1
+        `, values);
+        const row = result.rows[0];
+        if (row) return parseRecord(row as Record<string, unknown>);
       } catch (error) {
-        if (!isUniqueViolation(error)) {
-          throw error;
-        }
+        if (!isUniqueViolation(error) || attempt > 0) throw error;
       }
-
-      await client.query("BEGIN");
-      inTransaction = true;
-
-      const result = normalized.identityId
-        ? await client.query(`
-          UPDATE ${this.tables.sessionRoutes}
-          SET connector_key = $4,
-              external_conversation_id = $5,
-              external_actor_id = $6,
-              external_message_id = $7,
-              captured_at_ms = $8,
-              metadata = $9::jsonb,
-              updated_at = NOW()
-          WHERE session_id = $1
-            AND identity_id = $2
-            AND channel = $3
-          RETURNING *
-        `, [
-          normalized.sessionId,
-          normalized.identityId,
-          normalized.route.source,
-          normalized.route.connectorKey,
-          normalized.route.externalConversationId,
-          normalized.route.externalActorId ?? null,
-          normalized.route.externalMessageId ?? null,
-          normalized.route.capturedAt,
-          toJson(normalized.route),
-        ])
-        : await client.query(`
-          UPDATE ${this.tables.sessionRoutes}
-          SET connector_key = $3,
-              external_conversation_id = $4,
-              external_actor_id = $5,
-              external_message_id = $6,
-              captured_at_ms = $7,
-              metadata = $8::jsonb,
-              updated_at = NOW()
-          WHERE session_id = $1
-            AND identity_id IS NULL
-            AND channel = $2
-          RETURNING *
-        `, [
-          normalized.sessionId,
-          normalized.route.source,
-          normalized.route.connectorKey,
-          normalized.route.externalConversationId,
-          normalized.route.externalActorId ?? null,
-          normalized.route.externalMessageId ?? null,
-          normalized.route.capturedAt,
-          toJson(normalized.route),
-        ]);
-      const row = result.rows[0];
-      if (!row) {
-        throw new Error("Failed to update remembered session route after uniqueness conflict.");
-      }
-
-      await client.query("COMMIT");
-      inTransaction = false;
-      return parseRecord(row as Record<string, unknown>);
-    } catch (error) {
-      if (inTransaction) {
-        await client.query("ROLLBACK");
-      }
-      throw error;
-    } finally {
-      client.release();
+      // A concurrent insert can win after this statement's snapshot. The
+      // second statement reads its committed row; uncontended ingress stays
+      // one round trip.
+      if (attempt === 0) continue;
     }
+    throw new Error("Failed to persist remembered session route after a concurrent insert.");
   }
 }

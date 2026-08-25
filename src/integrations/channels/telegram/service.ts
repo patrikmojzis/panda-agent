@@ -18,7 +18,7 @@ import {
   type ManagedConnectorLease,
   PostgresConnectorLeaseRepo
 } from "../../../domain/connector-leases/repo.js";
-import {FileSystemMediaStore} from "../../../domain/channels/media-store.js";
+import {FileSystemMediaStore, type MediaReceiptOwner} from "../../../domain/channels/media-store.js";
 import {PostgresOutboundDeliveryStore} from "../../../domain/channels/deliveries/postgres.js";
 import {ChannelOutboundDeliveryWorker} from "../../../domain/channels/deliveries/worker.js";
 import {
@@ -102,12 +102,13 @@ export class TelegramService {
       expectedConnectorKey: options.expectedConnectorKey,
     };
     const pool = options.runtime.pool;
+    const requests = new RuntimeRequestRepo({pool});
     this.stores = {
       channelCursors: new ChannelCursorRepo({pool}),
       outboundDeliveries: new PostgresOutboundDeliveryStore({pool}),
       channelActions: new PostgresChannelActionStore({pool}),
       connectorLeases: new PostgresConnectorLeaseRepo({pool}),
-      requests: new RuntimeRequestRepo({pool}),
+      requests,
       mediaStore: new FileSystemMediaStore({rootDir: options.dataDir}),
     };
     this.bot = new Bot<TelegramContext>(options.token);
@@ -562,8 +563,8 @@ export class TelegramService {
       connectorKey,
       botUsername,
       requests: stores.requests,
-      downloadMedia: async (message) => {
-        return this.downloadSupportedMedia(message, stores, connectorKey);
+      downloadMedia: async (message, receiptOwner) => {
+        return this.downloadSupportedMedia(message, stores, connectorKey, receiptOwner);
       },
       log: (event, payload) => this.log(event, payload),
     });
@@ -573,12 +574,15 @@ export class TelegramService {
     message: TelegramContext["msg"],
     stores: TelegramWorkerStores,
     connectorKey: string,
+    receiptOwner: MediaReceiptOwner,
   ): Promise<TelegramMediaDownloadResult> {
     return downloadTelegramSupportedMedia(message, {
       api: this.bot.api,
       token: this.token,
       connectorKey,
-      mediaStore: stores.mediaStore,
+      mediaStore: {
+        writeMedia: (input) => stores.mediaStore.writeMedia({...input, receiptOwner}),
+      },
       onUnavailable: (item) => {
         this.log("media_download_skipped", {
           connectorKey,

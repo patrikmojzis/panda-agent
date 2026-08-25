@@ -3,6 +3,7 @@ import type {ThinkingLevel} from "@earendil-works/pi-ai";
 
 import {resolveModelSelector} from "../../kernel/models/model-selector.js";
 import {buildThreadRuntimeTableNames} from "../threads/runtime/postgres-shared.js";
+import {buildRuntimeRequestTableNames} from "../threads/requests/postgres-shared.js";
 import {requireBoolean} from "../../lib/booleans.js";
 import {type JsonValue, readOptionalJsonValue, stringifyOptionalJsonValue} from "../../lib/json.js";
 import type {PgPoolLike, PgQueryable} from "../../lib/postgres-query.js";
@@ -25,6 +26,8 @@ import type {
     SessionPromptSlug,
     SessionRecord,
     SessionRuntimeConfigRecord,
+    SessionRuntimeConfigOperationRecord,
+    SessionCreationOperationRecord,
     SetSessionPromptInput,
     TransformSessionPromptInput,
     TransformSessionPromptResult,
@@ -614,8 +617,14 @@ export class PostgresSessionStore implements SessionStore {
 
   async updateSessionRuntimeConfigRecord(
     input: UpdateSessionRuntimeConfigInput,
-    queryable: PgQueryable = this.pool,
+    queryable?: PgQueryable,
+    settingsOrder?: {appliedAt: Date; operationId: string},
   ): Promise<SessionRuntimeConfigRecord> {
+    if (!queryable) {
+      return withTransaction(this.pool, (client) => {
+        return this.updateSessionRuntimeConfigRecord(input, client, settingsOrder);
+      });
+    }
     const updatesModel = input.model !== undefined;
     const updatesThinking = input.thinking !== undefined;
     const updatesThinkingConfigured = input.thinkingConfigured !== undefined;
@@ -629,6 +638,15 @@ export class PostgresSessionStore implements SessionStore {
     }
 
     const sessionId = requireSessionString("id", input.sessionId);
+    const lockedSession = await queryable.query(`
+      SELECT id
+      FROM ${this.tables.sessions}
+      WHERE id = $1
+      FOR UPDATE
+    `, [sessionId]);
+    if (lockedSession.rows.length === 0) {
+      throw new Error(`Unknown session ${sessionId}`);
+    }
     const model = updatesModel && input.model !== null && input.model !== undefined
       ? resolveModelSelector(input.model).canonical
       : null;
@@ -650,19 +668,37 @@ export class PostgresSessionStore implements SessionStore {
         model,
         thinking,
         thinking_configured,
-        inference_projection
+        inference_projection,
+        model_applied_at,
+        model_operation_id,
+        thinking_applied_at,
+        thinking_operation_id,
+        inference_projection_applied_at,
+        inference_projection_operation_id
       ) VALUES (
         $1,
         $2,
         $3,
         $4,
-        $5::jsonb
+        $5::jsonb,
+        CASE WHEN $6 THEN ${settingsOrder ? "$9" : "NOW()"} ELSE TIMESTAMPTZ '1970-01-01 00:00:00+00' END,
+        CASE WHEN $6 THEN ${settingsOrder ? "$10::uuid" : "NULL"} ELSE NULL END,
+        CASE WHEN $7 THEN ${settingsOrder ? "$9" : "NOW()"} ELSE TIMESTAMPTZ '1970-01-01 00:00:00+00' END,
+        CASE WHEN $7 THEN ${settingsOrder ? "$10::uuid" : "NULL"} ELSE NULL END,
+        CASE WHEN $8 THEN ${settingsOrder ? "$9" : "NOW()"} ELSE TIMESTAMPTZ '1970-01-01 00:00:00+00' END,
+        CASE WHEN $8 THEN ${settingsOrder ? "$10::uuid" : "NULL"} ELSE NULL END
       )
       ON CONFLICT (session_id) DO UPDATE
       SET model = CASE WHEN $6 THEN EXCLUDED.model ELSE ${this.tables.sessionRuntimeConfig}.model END,
           thinking = CASE WHEN $7 THEN EXCLUDED.thinking ELSE ${this.tables.sessionRuntimeConfig}.thinking END,
           thinking_configured = CASE WHEN $7 THEN EXCLUDED.thinking_configured ELSE ${this.tables.sessionRuntimeConfig}.thinking_configured END,
           inference_projection = CASE WHEN $8 THEN EXCLUDED.inference_projection ELSE ${this.tables.sessionRuntimeConfig}.inference_projection END,
+          model_applied_at = CASE WHEN $6 THEN EXCLUDED.model_applied_at ELSE ${this.tables.sessionRuntimeConfig}.model_applied_at END,
+          model_operation_id = CASE WHEN $6 THEN EXCLUDED.model_operation_id ELSE ${this.tables.sessionRuntimeConfig}.model_operation_id END,
+          thinking_applied_at = CASE WHEN $7 THEN EXCLUDED.thinking_applied_at ELSE ${this.tables.sessionRuntimeConfig}.thinking_applied_at END,
+          thinking_operation_id = CASE WHEN $7 THEN EXCLUDED.thinking_operation_id ELSE ${this.tables.sessionRuntimeConfig}.thinking_operation_id END,
+          inference_projection_applied_at = CASE WHEN $8 THEN EXCLUDED.inference_projection_applied_at ELSE ${this.tables.sessionRuntimeConfig}.inference_projection_applied_at END,
+          inference_projection_operation_id = CASE WHEN $8 THEN EXCLUDED.inference_projection_operation_id ELSE ${this.tables.sessionRuntimeConfig}.inference_projection_operation_id END,
           updated_at = NOW()
       RETURNING *
     `, [
@@ -674,6 +710,7 @@ export class PostgresSessionStore implements SessionStore {
       updatesModel,
       updatesThinkingState,
       updatesInferenceProjection,
+      ...(settingsOrder ? [settingsOrder.appliedAt, settingsOrder.operationId] : []),
     ]);
 
     return parseSessionRuntimeConfigRow(result.rows[0] as Record<string, unknown>);
@@ -683,6 +720,283 @@ export class PostgresSessionStore implements SessionStore {
     input: UpdateSessionRuntimeConfigInput,
   ): Promise<SessionRuntimeConfigRecord> {
     return this.updateSessionRuntimeConfigRecord(input);
+  }
+
+  async updateSessionRuntimeConfigForOperationRecord(
+    operationId: string,
+    input: UpdateSessionRuntimeConfigInput,
+    queryable: PgQueryable,
+  ): Promise<SessionRuntimeConfigRecord> {
+    const normalizedOperationId = requireSessionString("runtime config operation id", operationId);
+    const normalizedSessionId = requireSessionString("id", input.sessionId);
+    const updatesModel = input.model !== undefined;
+    const updatesThinkingState = input.thinking !== undefined || input.thinkingConfigured !== undefined;
+    const updatesInferenceProjection = input.inferenceProjection !== undefined;
+    const lockedSession = await queryable.query(`
+      SELECT id
+      FROM ${this.tables.sessions}
+      WHERE id = $1
+      FOR UPDATE
+    `, [normalizedSessionId]);
+    if (lockedSession.rows.length === 0) {
+      throw new Error(`Unknown session ${normalizedSessionId}`);
+    }
+
+    const requestTable = buildRuntimeRequestTableNames().runtimeRequests;
+    const ordering = await queryable.query(`
+      SELECT request.created_at AS requested_at,
+             config.session_id IS NULL
+               OR request.created_at > config.model_applied_at
+               OR (
+                 request.created_at = config.model_applied_at
+                 AND (
+                   config.model_operation_id IS NULL
+                   OR request.id > config.model_operation_id
+                 )
+               ) AS apply_model,
+             config.session_id IS NULL
+               OR request.created_at > config.thinking_applied_at
+               OR (
+                 request.created_at = config.thinking_applied_at
+                 AND (
+                   config.thinking_operation_id IS NULL
+                   OR request.id > config.thinking_operation_id
+                 )
+               ) AS apply_thinking,
+             config.session_id IS NULL
+               OR request.created_at > config.inference_projection_applied_at
+               OR (
+                 request.created_at = config.inference_projection_applied_at
+                 AND (
+                   config.inference_projection_operation_id IS NULL
+                   OR request.id > config.inference_projection_operation_id
+                 )
+               ) AS apply_inference_projection
+      FROM ${requestTable} AS request
+      LEFT JOIN ${this.tables.sessionRuntimeConfig} AS config
+        ON config.session_id = $2
+      WHERE request.id = $1
+    `, [normalizedOperationId, normalizedSessionId]);
+    const order = ordering.rows[0] as {
+      requested_at?: unknown;
+      apply_model?: unknown;
+      apply_thinking?: unknown;
+      apply_inference_projection?: unknown;
+    } | undefined;
+    if (!order) {
+      throw new Error(`Unknown runtime config operation ${normalizedOperationId}.`);
+    }
+    if (!(order.requested_at instanceof Date)) {
+      throw new Error(`Runtime config operation ${normalizedOperationId} has an invalid creation timestamp.`);
+    }
+    const orderedInput: UpdateSessionRuntimeConfigInput = {
+      sessionId: normalizedSessionId,
+      ...(updatesModel && order.apply_model === true ? {model: input.model} : {}),
+      ...(updatesThinkingState && order.apply_thinking === true
+        ? {
+            ...(input.thinking !== undefined ? {thinking: input.thinking} : {}),
+            ...(input.thinkingConfigured !== undefined ? {thinkingConfigured: input.thinkingConfigured} : {}),
+          }
+        : {}),
+      ...(updatesInferenceProjection && order.apply_inference_projection === true
+        ? {inferenceProjection: input.inferenceProjection}
+        : {}),
+    };
+    if (Object.keys(orderedInput).length === 1) {
+      return this.getSessionRuntimeConfigRecord(normalizedSessionId, queryable);
+    }
+    return this.updateSessionRuntimeConfigRecord(orderedInput, queryable, {
+      appliedAt: order.requested_at,
+      operationId: normalizedOperationId,
+    });
+  }
+
+  async updateSessionRuntimeConfigOnce(
+    operationId: string,
+    threadId: string,
+    input: UpdateSessionRuntimeConfigInput,
+  ): Promise<{config: SessionRuntimeConfigRecord; replayed: boolean}> {
+    const normalizedOperationId = requireSessionString("runtime config operation id", operationId);
+    const normalizedThreadId = requireSessionString("runtime config thread id", threadId);
+    const normalizedSessionId = requireSessionString("id", input.sessionId);
+    return withTransaction(this.pool, async (client) => {
+      const lockedSession = await client.query(`
+        SELECT id
+        FROM ${this.tables.sessions}
+        WHERE id = $1
+        FOR UPDATE
+      `, [normalizedSessionId]);
+      if (lockedSession.rows.length === 0) {
+        throw new Error(`Unknown session ${normalizedSessionId}`);
+      }
+      const inserted = await client.query(`
+        INSERT INTO ${this.tables.sessionRuntimeConfigOperations} (
+          operation_id,
+          session_id,
+          thread_id
+        )
+        SELECT $1, thread.session_id, thread.id
+        FROM ${this.threadTableName} AS thread
+        WHERE thread.id = $2
+          AND thread.session_id = $3
+        ON CONFLICT (operation_id) DO NOTHING
+        RETURNING session_id, thread_id
+      `, [normalizedOperationId, normalizedThreadId, normalizedSessionId]);
+      if (inserted.rows.length > 0) {
+        return {
+          config: await this.updateSessionRuntimeConfigForOperationRecord(
+            normalizedOperationId,
+            input,
+            client,
+          ),
+          replayed: false,
+        };
+      }
+
+      const existing = await client.query(`
+        SELECT session_id, thread_id
+        FROM ${this.tables.sessionRuntimeConfigOperations}
+        WHERE operation_id = $1
+      `, [normalizedOperationId]);
+      const receipt = existing.rows[0] as {session_id?: unknown; thread_id?: unknown} | undefined;
+      if (receipt?.session_id !== normalizedSessionId || receipt.thread_id !== normalizedThreadId) {
+        throw new Error(`Session runtime config operation ${normalizedOperationId} conflicts with another target.`);
+      }
+      // A later update may have legitimately changed the row. Replays return
+      // its current state but never reapply this operation's stale values.
+      return {
+        config: await this.getSessionRuntimeConfigRecord(normalizedSessionId, client),
+        replayed: true,
+      };
+    });
+  }
+
+  async getSessionRuntimeConfigOperation(
+    operationId: string,
+  ): Promise<SessionRuntimeConfigOperationRecord | null> {
+    const normalizedOperationId = requireSessionString("runtime config operation id", operationId);
+    const result = await this.pool.query(`
+      SELECT operation_id, session_id, thread_id, created_at
+      FROM ${this.tables.sessionRuntimeConfigOperations}
+      WHERE operation_id = $1
+    `, [normalizedOperationId]);
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    if (!row) return null;
+    return {
+      operationId: requireSessionString("runtime config operation id", row.operation_id),
+      sessionId: requireSessionString("runtime config operation session id", row.session_id),
+      threadId: requireSessionString("runtime config operation thread id", row.thread_id),
+      createdAt: requireTimestampMillis(
+        row.created_at,
+        "Session runtime config operation created_at must be valid.",
+      ),
+    };
+  }
+
+  async getSessionCreationOperationRecord(
+    operationId: string,
+    queryable: PgQueryable = this.pool,
+  ): Promise<SessionCreationOperationRecord | null> {
+    const result = await queryable.query(`
+      SELECT *
+      FROM ${this.tables.sessionCreationOperations}
+      WHERE operation_id = $1
+    `, [requireSessionString("creation operation id", operationId)]);
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    if (!row) return null;
+    const kind = requireSessionString("creation operation kind", row.kind);
+    if (kind !== "main" && kind !== "branch" && kind !== "subagent") {
+      throw new Error(`Session creation operation kind ${kind} is invalid.`);
+    }
+    return {
+      operationId: requireSessionString("creation operation id", row.operation_id),
+      identityId: requireSessionString("creation operation identity id", row.identity_id),
+      agentKey: requireSessionString("creation operation agent key", row.agent_key),
+      sessionId: requireSessionString("creation operation session id", row.session_id),
+      threadId: requireSessionString("creation operation thread id", row.thread_id),
+      kind,
+      createdAt: requireTimestampMillis(row.created_at, "Session creation operation created_at must be valid."),
+    };
+  }
+
+  async getSessionCreationOperation(operationId: string): Promise<SessionCreationOperationRecord | null> {
+    return this.getSessionCreationOperationRecord(operationId);
+  }
+
+  async recordSessionCreationOperationRecord(
+    input: Omit<SessionCreationOperationRecord, "createdAt">,
+    queryable: PgQueryable = this.pool,
+  ): Promise<SessionCreationOperationRecord> {
+    await queryable.query(`
+      INSERT INTO ${this.tables.sessionCreationOperations} (
+        operation_id,
+        identity_id,
+        agent_key,
+        session_id,
+        thread_id,
+        kind
+      ) VALUES ($1, $2, $3, $4, $5, $6)
+      ON CONFLICT (operation_id) DO NOTHING
+    `, [input.operationId, input.identityId, input.agentKey, input.sessionId, input.threadId, input.kind]);
+    const recorded = await this.getSessionCreationOperationRecord(input.operationId, queryable);
+    if (
+      !recorded
+      || recorded.identityId !== input.identityId
+      || recorded.agentKey !== input.agentKey
+      || recorded.sessionId !== input.sessionId
+      || recorded.threadId !== input.threadId
+      || recorded.kind !== input.kind
+    ) {
+      throw new Error(`Session creation operation ${input.operationId} conflicts with another target.`);
+    }
+    return recorded;
+  }
+
+  async recordSessionCreationOperation(
+    input: Omit<SessionCreationOperationRecord, "createdAt">,
+  ): Promise<SessionCreationOperationRecord> {
+    return this.recordSessionCreationOperationRecord(input);
+  }
+
+  async recordMainSessionResolutionOperation(input: {
+    operationId: string;
+    identityId: string;
+    agentKey: string;
+    sessionId: string;
+  }): Promise<SessionCreationOperationRecord> {
+    return withTransaction(this.pool, async (client) => {
+      const locked = await client.query(`
+        SELECT current_thread_id
+        FROM ${this.tables.sessions}
+        WHERE id = $1
+          AND agent_key = $2
+          AND kind = 'main'
+        FOR UPDATE
+      `, [input.sessionId, input.agentKey]);
+      const threadId = (locked.rows[0] as {current_thread_id?: unknown} | undefined)?.current_thread_id;
+      if (typeof threadId !== "string" || !threadId) {
+        throw new Error(`Main session ${input.sessionId} could not be resolved for operation ${input.operationId}.`);
+      }
+      return this.recordSessionCreationOperationRecord({
+        ...input,
+        threadId,
+        kind: "main",
+      }, client);
+    });
+  }
+
+  async deleteSubagentCreation(sessionId: string, threadId: string): Promise<boolean> {
+    const result = await this.pool.query(`
+      DELETE FROM ${this.tables.sessions}
+      WHERE id = $1
+        AND kind = 'subagent'
+        AND current_thread_id = $2
+      RETURNING id
+    `, [
+      requireSessionString("id", sessionId),
+      requireSessionString("subagent creation thread id", threadId),
+    ]);
+    return result.rows.length > 0;
   }
 
   async readSessionPrompt(

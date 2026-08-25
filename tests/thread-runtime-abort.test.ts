@@ -194,9 +194,9 @@ describe("thread runtime abort delivery", () => {
     const harness = await createHarness(new AdmissionHeldStore());
     expect(await harness.store.getInput(harness.submitted.input.id)).toMatchObject({
       status: "pending",
-      deliveryMode: "queue",
-      admittedRunId: harness.run.id,
+      deliveryMode: "wake",
     });
+    expect(harness.run.admittedThroughInputOrder).toBeGreaterThan(0);
 
     await harness.coordinator.stop();
 
@@ -206,7 +206,6 @@ describe("thread runtime abort delivery", () => {
     expect(await harness.store.getInput(harness.submitted.input.id)).toMatchObject({
       status: "pending",
       deliveryMode: "wake",
-      admittedRunId: undefined,
     });
     await expect(harness.store.hasPendingWake(harness.thread.id)).resolves.toBe(true);
   });
@@ -222,7 +221,6 @@ describe("thread runtime abort delivery", () => {
     expect(await store.getInput(harness.submitted.input.id)).toMatchObject({
       status: "pending",
       deliveryMode: "wake",
-      admittedRunId: undefined,
     });
   });
 
@@ -310,7 +308,8 @@ describe("thread runtime abort delivery", () => {
     await coordinator.handleStoreNotificationStatus("listening");
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(await store.listRuns(thread.id)).toHaveLength(1);
-    expect((await store.getInput(submitted.input.id)).deliveryMode).toBe("queue");
+    expect((await store.getInput(submitted.input.id)).deliveryMode).toBe("wake");
+    await expect(store.hasPendingWake(thread.id)).resolves.toBe(false);
     await coordinator.stop();
   });
 

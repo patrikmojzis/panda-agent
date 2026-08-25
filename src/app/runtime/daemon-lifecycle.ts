@@ -39,6 +39,8 @@ import type {ThreadRunOwner} from "../../domain/threads/runtime/types.js";
 
 const DAEMON_HEALTH_STALE_AFTER_MS = DAEMON_HEARTBEAT_INTERVAL_MS * 3;
 const DAEMON_HEALTH_POOL_WAITING_STALE_AFTER_MS = 60_000;
+const DEFAULT_DAEMON_SERVICE_STOP_TIMEOUT_MS = 5_000;
+const DEFAULT_THREAD_RUN_DRAIN_TIMEOUT_MS = 30_000;
 
 interface StartStopService {
   start(): Promise<void>;
@@ -87,6 +89,10 @@ export interface DaemonLifecycleContext {
   runtime: DaemonLifecycleRuntime;
   connectorLeases: ConnectorLeaseRepository;
   requests: DaemonLifecycleRequests;
+  mediaReceiptJanitor: {
+    startReceiptJanitor(): void;
+    stopReceiptJanitor(): Promise<void>;
+  };
   daemonState: {
     heartbeat(daemonKey: string): Promise<unknown>;
   };
@@ -102,6 +108,7 @@ export interface DaemonLifecycleContext {
 export function createDaemonLifecycle(input: {
   context: DaemonLifecycleContext;
   processRequest: (request: RuntimeRequestRecord, signal: AbortSignal) => Promise<unknown>;
+  afterRequestSettle?: (request: RuntimeRequestRecord, status: "completed" | "failed") => Promise<void> | void;
 }): DaemonServices {
   let requestUnsubscribe: (() => Promise<void>) | null = null;
   let heartbeatTimer: NodeJS.Timeout | null = null;
@@ -123,19 +130,49 @@ export function createDaemonLifecycle(input: {
   let wakeRunLoop: (() => void) | null = null;
   let requestListenerStarted = false;
   let requestListenerSnapshot: PostgresListenSnapshot | null = null;
+  let stopStartupWait: (() => void) | null = null;
+  let cleanupStarted = false;
   const queryPoolWaitingStaleAfterMs = readPositiveIntegerEnv(
     "PANDA_CORE_HEALTH_POOL_WAITING_STALE_MS",
     DAEMON_HEALTH_POOL_WAITING_STALE_AFTER_MS,
   );
+  const serviceStopTimeoutMs = readPositiveIntegerEnv(
+    "PANDA_DAEMON_SERVICE_STOP_TIMEOUT_MS",
+    DEFAULT_DAEMON_SERVICE_STOP_TIMEOUT_MS,
+  );
+  const requestDrainTimeoutMs = readPositiveIntegerEnv(
+    "PANDA_RUNTIME_REQUEST_DRAIN_TIMEOUT_MS",
+    DEFAULT_RUNTIME_REQUEST_SHUTDOWN_DRAIN_TIMEOUT_MS,
+  );
+  const threadRunDrainTimeoutMs = readPositiveIntegerEnv(
+    "PANDA_CORE_THREAD_RUN_DRAIN_TIMEOUT_MS",
+    DEFAULT_THREAD_RUN_DRAIN_TIMEOUT_MS,
+  );
+  const stopServiceWithinDeadline = async (
+    label: string,
+    run: () => Promise<void>,
+    timeoutMs = serviceStopTimeoutMs,
+  ): Promise<void> => {
+    let timer: NodeJS.Timeout | null = null;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`${label} did not stop within ${timeoutMs}ms.`));
+      }, timeoutMs);
+      timer.unref?.();
+    });
+    try {
+      await Promise.race([run(), timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
   const requestDrain = new RuntimeRequestDrain({
     requests: input.context.requests,
     processRequest: input.processRequest,
+    afterSettle: input.afterRequestSettle,
     label: "daemon runtime request drain",
     maxConcurrency: readPositiveIntegerEnv("PANDA_RUNTIME_REQUEST_CONCURRENCY", DEFAULT_RUNTIME_REQUEST_CONCURRENCY),
-    shutdownDrainTimeoutMs: readPositiveIntegerEnv(
-      "PANDA_RUNTIME_REQUEST_DRAIN_TIMEOUT_MS",
-      DEFAULT_RUNTIME_REQUEST_SHUTDOWN_DRAIN_TIMEOUT_MS,
-    ),
+    shutdownDrainTimeoutMs: requestDrainTimeoutMs,
     onError: (error) => {
       console.error("Daemon request drain failed", {
         daemonKey: input.context.daemonKey,
@@ -179,12 +216,29 @@ export function createDaemonLifecycle(input: {
     }
     wakeRunLoop?.();
     wakeRunLoop = null;
+    stopStartupWait?.();
+    stopStartupWait = null;
+    // Cancellation starts at the lifecycle boundary, before any potentially
+    // blocking listener, heartbeat, or HTTP shutdown joins.
+    requestDrainStopPromise ??= requestDrain.stop();
+    void requestDrainStopPromise.catch(() => undefined);
     stopPromise = (async () => {
-      // Startup owns the daemon lease and may still be reconciling durable run
-      // state. Do not release that lease or close its pools underneath it.
       if (startupPromise) {
-        await Promise.allSettled([startupPromise]);
+        try {
+          await stopServiceWithinDeadline("daemon startup", () => startupPromise as Promise<void>);
+        } catch (error) {
+          console.error("Daemon cleanup failed", {
+            daemonKey: input.context.daemonKey,
+            step: "daemon-startup",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
+
+      // A starter that settles before this boundary is handed to the normal
+      // cleanup pass. Only resources that settle after it must self-clean;
+      // otherwise a stop racing startup invokes service stop hooks twice.
+      cleanupStarted = true;
 
       const unsubscribe = requestUnsubscribe;
       requestUnsubscribe = null;
@@ -207,58 +261,61 @@ export function createDaemonLifecycle(input: {
           {
             label: "request-unsubscribe",
             run: async () => {
-              await unsubscribe?.();
+              if (unsubscribe) await stopServiceWithinDeadline("request listener", unsubscribe);
             },
           },
           {
             label: "daemon-heartbeat",
             run: async () => {
-              await heartbeatInFlight;
+              if (heartbeatInFlight) {
+                await stopServiceWithinDeadline("daemon heartbeat", () => heartbeatInFlight as Promise<void>);
+              }
             },
           },
           {
             label: "app-server",
             run: async () => {
-              await resolvedAppServer?.close();
+              if (resolvedAppServer) await stopServiceWithinDeadline("app server", () => resolvedAppServer.close());
             },
           },
           {
             label: "control-server",
             run: async () => {
-              await resolvedControlServer?.close();
+              if (resolvedControlServer) {
+                await stopServiceWithinDeadline("control server", () => resolvedControlServer.close());
+              }
             },
           },
           {
             label: "command-server",
             run: async () => {
-              await resolvedCommandServer?.close();
-            },
-          },
-          {
-            label: "request-drain-cancel",
-            run: async () => {
-              requestDrainStopPromise ??= requestDrain.stop();
-              // Settlement is joined with coordinator shutdown below. Starting
-              // cancellation here stops new claims before workers wind down.
-              void requestDrainStopPromise.catch(() => undefined);
+              if (resolvedCommandServer) {
+                await stopServiceWithinDeadline("command server", () => resolvedCommandServer.close());
+              }
             },
           },
           {
             label: "a2a-outbound-worker",
             run: async () => {
-              await input.context.a2aOutboundWorker.stop();
+              await stopServiceWithinDeadline(
+                "a2a outbound worker",
+                () => input.context.a2aOutboundWorker.stop(),
+              );
             },
           },
           {
             label: "email-outbound-worker",
             run: async () => {
-              await input.context.emailOutboundWorker.stop();
+              await stopServiceWithinDeadline(
+                "email outbound worker",
+                () => input.context.emailOutboundWorker.stop(),
+              );
             },
           },
           {
             label: "email-sync-runner",
             run: async () => {
-              await input.context.emailSyncRunner.stop();
+              await stopServiceWithinDeadline("email sync runner", () => input.context.emailSyncRunner.stop());
             },
           },
           {
@@ -277,7 +334,12 @@ export function createDaemonLifecycle(input: {
               ];
               await Promise.all(steps.map(async (step) => {
                 try {
-                  await step.run();
+                  const timeoutMs = step.label === "request-drain"
+                    ? requestDrainTimeoutMs + serviceStopTimeoutMs
+                    : step.label === "thread-runtime"
+                      ? threadRunDrainTimeoutMs + serviceStopTimeoutMs
+                      : serviceStopTimeoutMs;
+                  await stopServiceWithinDeadline(step.label, step.run, timeoutMs);
                 } catch (error) {
                   console.error("Daemon cleanup failed", {
                     daemonKey: input.context.daemonKey,
@@ -291,23 +353,35 @@ export function createDaemonLifecycle(input: {
           {
             label: "background-job-service",
             run: async () => {
-              await input.context.runtime.backgroundJobService.close();
+              await stopServiceWithinDeadline(
+                "background job service",
+                () => input.context.runtime.backgroundJobService.close(),
+              );
             },
           },
           {
+            label: "media-receipt-janitor",
+            run: () => stopServiceWithinDeadline(
+              "media receipt janitor",
+              () => input.context.mediaReceiptJanitor.stopReceiptJanitor(),
+            ),
+          },
+          {
             label: "daemon-lease",
-            run: releaseLease,
+            run: () => stopServiceWithinDeadline("daemon lease", releaseLease),
           },
           {
             label: "runtime",
             run: async () => {
-              await input.context.runtime.close();
+              await stopServiceWithinDeadline("runtime", () => input.context.runtime.close());
             },
           },
           {
             label: "health-server",
             run: async () => {
-              await resolvedHealthServer?.close();
+              if (resolvedHealthServer) {
+                await stopServiceWithinDeadline("health server", () => resolvedHealthServer.close());
+              }
             },
           },
         ],
@@ -330,7 +404,7 @@ export function createDaemonLifecycle(input: {
       connectorKey: input.context.daemonKey,
       holderId: randomUUID(),
     };
-    lease = await acquireManagedConnectorLease({
+    const acquiredLease = await acquireManagedConnectorLease({
       repo: input.context.connectorLeases,
       source: owner.source,
       connectorKey: owner.connectorKey,
@@ -350,6 +424,11 @@ export function createDaemonLifecycle(input: {
         await stop();
       },
     });
+    if (stopped) {
+      await acquiredLease.release();
+      return;
+    }
+    lease = acquiredLease;
     runOwner = owner;
     input.context.runtime.backgroundJobService.setOwner(owner);
     input.context.runtime.commandExecutor.setOwner(owner);
@@ -409,9 +488,15 @@ export function createDaemonLifecycle(input: {
     run: async () => {
       stopped = false;
       shuttingDown = false;
+      cleanupStarted = false;
       stopPromise = null;
       requestListenerStarted = false;
       requestListenerSnapshot = null;
+      let resolveStartupStop!: () => void;
+      const startupStop = new Promise<"stopped">((resolve) => {
+        resolveStartupStop = () => resolve("stopped");
+      });
+      stopStartupWait = resolveStartupStop;
       try {
         const startup = (async () => {
           await acquireLease();
@@ -430,9 +515,16 @@ export function createDaemonLifecycle(input: {
             }),
           );
           if (stopped) {
+            if (cleanupStarted) {
+              await stopServiceWithinDeadline(
+                "late-started thread runtime",
+                () => input.context.runtime.coordinator.stop(),
+                threadRunDrainTimeoutMs + serviceStopTimeoutMs,
+              );
+            }
             return;
           }
-          healthServer = await (async () => {
+          const startedHealthServer = await (async () => {
             const binding = resolveOptionalHealthServerBinding({
               hostEnvKey: "PANDA_CORE_HEALTH_HOST",
               portEnvKey: "PANDA_CORE_HEALTH_PORT",
@@ -471,9 +563,15 @@ export function createDaemonLifecycle(input: {
             });
           })();
           if (stopped) {
+            if (cleanupStarted && startedHealthServer) {
+              await stopServiceWithinDeadline("late-started health server", () => startedHealthServer.close());
+            } else {
+              healthServer = startedHealthServer;
+            }
             return;
           }
-          appServer = await (async () => {
+          healthServer = startedHealthServer;
+          const startedAppServer = await (async () => {
             const binding = resolveOptionalAgentAppServerBinding({
               hostEnvKey: "PANDA_APPS_HOST",
               portEnvKey: "PANDA_APPS_PORT",
@@ -493,9 +591,15 @@ export function createDaemonLifecycle(input: {
             });
           })();
           if (stopped) {
+            if (cleanupStarted) {
+              await stopServiceWithinDeadline("late-started app server", () => startedAppServer.close());
+            } else {
+              appServer = startedAppServer;
+            }
             return;
           }
-          controlServer = await (async () => {
+          appServer = startedAppServer;
+          const startedControlServer = await (async () => {
             const binding = resolveOptionalControlServerBinding(process.env);
             if (!binding) {
               return null;
@@ -525,9 +629,15 @@ export function createDaemonLifecycle(input: {
             });
           })();
           if (stopped) {
+            if (cleanupStarted && startedControlServer) {
+              await stopServiceWithinDeadline("late-started control server", () => startedControlServer.close());
+            } else {
+              controlServer = startedControlServer;
+            }
             return;
           }
-          commandServer = await (async () => {
+          controlServer = startedControlServer;
+          const startedCommandServer = await (async () => {
             const binding = resolveOptionalCommandServerBinding(process.env);
             if (!binding) {
               return null;
@@ -543,8 +653,14 @@ export function createDaemonLifecycle(input: {
             });
           })();
           if (stopped) {
+            if (cleanupStarted && startedCommandServer) {
+              await stopServiceWithinDeadline("late-started command server", () => startedCommandServer.close());
+            } else {
+              commandServer = startedCommandServer;
+            }
             return;
           }
+          commandServer = startedCommandServer;
           await runHeartbeat();
           if (stopped) {
             return;
@@ -557,7 +673,7 @@ export function createDaemonLifecycle(input: {
               });
             });
           }, DAEMON_HEARTBEAT_INTERVAL_MS);
-          requestUnsubscribe = await input.context.requests.listenPendingRequests(
+          const startedRequestUnsubscribe = await input.context.requests.listenPendingRequests(
             () => {
               requestDrain.kick();
             },
@@ -574,8 +690,14 @@ export function createDaemonLifecycle(input: {
             },
           );
           if (stopped) {
+            if (cleanupStarted) {
+              await stopServiceWithinDeadline("late-started request listener", startedRequestUnsubscribe);
+            } else {
+              requestUnsubscribe = startedRequestUnsubscribe;
+            }
             return;
           }
+          requestUnsubscribe = startedRequestUnsubscribe;
           requestListenerStarted = true;
           requestListenerSnapshot ??= {
             status: "listening",
@@ -588,45 +710,94 @@ export function createDaemonLifecycle(input: {
           if (stopped) {
             return;
           }
+          // The media tree is process-global. Only the daemon that owns the
+          // singleton lease may scan it or run the recurring janitor timer.
+          input.context.mediaReceiptJanitor.startReceiptJanitor();
+          if (stopped) {
+            return;
+          }
           await input.context.a2aOutboundWorker.start();
           if (stopped) {
+            if (cleanupStarted) {
+              await stopServiceWithinDeadline(
+                "late-started a2a outbound worker",
+                () => input.context.a2aOutboundWorker.stop(),
+              );
+            }
             return;
           }
           await input.context.emailOutboundWorker.start();
           if (stopped) {
+            if (cleanupStarted) {
+              await stopServiceWithinDeadline(
+                "late-started email outbound worker",
+                () => input.context.emailOutboundWorker.stop(),
+              );
+            }
             return;
           }
           await input.context.emailSyncRunner.start();
           if (stopped) {
+            if (cleanupStarted) {
+              await stopServiceWithinDeadline("late-started email sync runner", () => input.context.emailSyncRunner.stop());
+            }
             return;
           }
           await input.context.scheduledTaskRunner.start();
           if (stopped) {
+            if (cleanupStarted) {
+              await stopServiceWithinDeadline(
+                "late-started scheduled task runner",
+                () => input.context.scheduledTaskRunner.stop(),
+              );
+            }
             return;
           }
           await input.context.watchRunner.start();
           if (stopped) {
+            if (cleanupStarted) {
+              await stopServiceWithinDeadline("late-started watch runner", () => input.context.watchRunner.stop());
+            }
             return;
           }
           await input.context.sessionHeartbeatRunner.start();
           if (stopped) {
+            if (cleanupStarted) {
+              await stopServiceWithinDeadline(
+                "late-started session heartbeat runner",
+                () => input.context.sessionHeartbeatRunner.stop(),
+              );
+            }
             return;
           }
           running = true;
           requestDrain.start();
         })();
         startupPromise = startup;
-        try {
-          await startup;
-        } finally {
+        void startup.then(() => {
           if (startupPromise === startup) {
             startupPromise = null;
           }
-        }
-        if (stopped) {
-          await stopPromise;
+        }, (error) => {
+          if (startupPromise === startup) {
+            startupPromise = null;
+          }
+          if (stopped) {
+            console.error("Daemon startup settled after shutdown", {
+              daemonKey: input.context.daemonKey,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        });
+        const startupOutcome = await Promise.race([
+          startup.then(() => "started" as const),
+          startupStop,
+        ]);
+        if (startupOutcome === "stopped" || stopped) {
+          if (stopPromise) await stopPromise;
           return;
         }
+        stopStartupWait = null;
       } catch (error) {
         try {
           await stop();

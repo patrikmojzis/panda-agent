@@ -227,6 +227,8 @@ export async function startAgentAppServer(options: AgentAppServerOptions): Promi
 
           resolve();
         });
+        server.closeIdleConnections();
+        server.closeAllConnections();
       });
     },
   };

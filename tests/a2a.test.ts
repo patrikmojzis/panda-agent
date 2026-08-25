@@ -8,7 +8,7 @@ import {DataType, newDb} from "pg-mem";
 import {A2ASessionBindingRepo} from "../src/domain/a2a/repo.js";
 import {ensurePostgresA2ASessionBindingSchema} from "../src/domain/a2a/postgres-schema.js";
 import {A2AMessagingService} from "../src/domain/a2a/service.js";
-import {FileSystemMediaStore, PostgresOutboundDeliveryStore,} from "../src/domain/channels/index.js";
+import {FileSystemMediaStore, PostgresOutboundDeliveryStore, relocateMediaDescriptor,} from "../src/domain/channels/index.js";
 import {ensurePostgresOutboundDeliverySchema} from "../src/domain/channels/deliveries/postgres-schema.js";
 import {stringToUserMessage} from "../src/kernel/agent/index.js";
 import {buildA2AInboundPersistence, buildA2AInboundText} from "../src/integrations/channels/a2a/helpers.js";
@@ -21,6 +21,7 @@ import type {SessionRecord} from "../src/domain/sessions/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 import {seedPendingThreadInput} from "./helpers/thread-runtime-fixtures.js";
 import {FileSystemCommandUploadStore} from "../src/integrations/commands/file-uploads.js";
+import {discardSettledRuntimeRequestMedia} from "../src/app/runtime/runtime-request-media.js";
 
 function createDisposableSenderEnvironment(id = "worker:session-a") {
   return {
@@ -672,6 +673,7 @@ describe("createA2AOutboundAdapter", () => {
     };
     const adapter = createA2AOutboundAdapter({
       requests: {
+        getRequestByIdempotencyKey: vi.fn(async () => null),
         enqueueRequest,
       },
       sessionStore,
@@ -799,7 +801,10 @@ describe("createA2AOutboundAdapter", () => {
       chunks: (async function* () { yield Buffer.from("retry me"); })(),
     });
     const adapter = createA2AOutboundAdapter({
-      requests: {enqueueRequest: vi.fn()},
+      requests: {
+        getRequestByIdempotencyKey: vi.fn(async () => null),
+        enqueueRequest: vi.fn(),
+      },
       sessionStore: {getSession: vi.fn()},
       createMediaStore: (rootDir) => new FileSystemMediaStore({rootDir}),
       resolveAgentMediaDir: () => path.join(tempDir, "receiver-media"),
@@ -831,6 +836,84 @@ describe("createA2AOutboundAdapter", () => {
     });
     await adapter.onTerminalFailure?.(request);
     await expect(commandUploads.resolve(sender, upload.uploadRef)).rejects.toThrow("unknown or not available");
+  });
+
+  it("replays a committed attachment delivery after its staged upload is gone", async () => {
+    const tempDir = await mkdtemp(path.join(tmpdir(), "panda-a2a-replay-"));
+    directories.add(tempDir);
+    const commandUploads = new FileSystemCommandUploadStore({
+      env: {...process.env, DATA_DIR: path.join(tempDir, "sender-data")},
+    });
+    const sender = {agentKey: "panda", sessionId: "session-a"};
+    const upload = await commandUploads.stage({
+      scope: sender,
+      filename: "once.txt",
+      mimeType: "text/plain",
+      chunks: (async function* () { yield Buffer.from("persist once"); })(),
+    });
+    let committedRequest: {id: string; payload: unknown} | undefined;
+    const getRequestByIdempotencyKey = vi.fn(async () => committedRequest ? committedRequest as never : null);
+    const enqueueRequest = vi.fn(async (input: {payload: unknown}) => {
+      committedRequest = {id: "request-committed", payload: input.payload};
+      return committedRequest as never;
+    });
+    const adapter = createA2AOutboundAdapter({
+      requests: {getRequestByIdempotencyKey, enqueueRequest},
+      sessionStore: {
+        getSession: vi.fn(async () => ({
+          id: "session-b",
+          agentKey: "koala",
+          kind: "main" as const,
+          currentThreadId: "thread-b",
+          createdAt: 0,
+          updatedAt: 0,
+        })),
+      },
+      createMediaStore: (rootDir) => new FileSystemMediaStore({rootDir}),
+      resolveAgentMediaDir: () => path.join(tempDir, "receiver-media"),
+      commandUploads,
+    });
+    const request = {
+      channel: "a2a",
+      target: {
+        source: "a2a",
+        connectorKey: "local",
+        externalConversationId: "session-b",
+      },
+      items: [{type: "file" as const, ...upload}],
+      metadata: {
+        a2a: {
+          messageId: "a2a:replay",
+          fromAgentKey: "panda",
+          fromSessionId: "session-a",
+          fromThreadId: "thread-a",
+          toAgentKey: "koala",
+          toSessionId: "session-b",
+          sentAt: 1_777_000_000_000,
+        },
+      },
+    };
+
+    await expect(adapter.send(request)).resolves.toMatchObject({ok: true});
+    await expect(commandUploads.resolve(sender, upload.uploadRef)).rejects.toThrow("unknown or not available");
+    await expect(adapter.send(request)).resolves.toMatchObject({ok: true});
+    expect(enqueueRequest).toHaveBeenCalledTimes(1);
+    expect(getRequestByIdempotencyKey).toHaveBeenCalledTimes(2);
+
+    await expect(adapter.send({
+      ...request,
+      items: [{type: "text", text: "different body"}],
+    })).rejects.toThrow("already bound to different items");
+    await expect(adapter.send({
+      ...request,
+      metadata: {
+        a2a: {
+          ...request.metadata.a2a,
+          toAgentKey: "other-agent",
+          toSessionId: "other-session",
+        },
+      },
+    })).rejects.toThrow("already bound to a different delivery");
   });
 });
 
@@ -877,6 +960,7 @@ describe("handleA2AMessageRequest", () => {
         },
       },
       coordinator: {submitSessionInput},
+      relocateAgentMedia: async (_agentKey, media) => media,
       sessions: {
         getSession: async (sessionId) => {
           expect(sessionId).toBe("session-b");
@@ -895,6 +979,72 @@ describe("handleA2AMessageRequest", () => {
       externalMessageId: "a2a:after-reset",
       actorId: "panda",
     }), "wake", undefined);
+  });
+
+  it("persists agent-owned media paths before terminal staging cleanup", async () => {
+    const rootDir = await mkdtemp(path.join(tmpdir(), "panda-a2a-inbound-media-"));
+    try {
+      const store = new FileSystemMediaStore({rootDir});
+      const staged = await store.writeMedia({
+        bytes: Buffer.from("durable A2A attachment"),
+        source: "a2a",
+        connectorKey: "local",
+        mimeType: "text/plain",
+        hintFilename: "note.txt",
+        idempotencyKey: "a2a:media:item:0",
+        createdAt: 1,
+        receiptOwner: {requestKind: "a2a_message", requestIdempotencyKey: "request-a2a-media"},
+      });
+      const request = {
+        id: "11111111-1111-4111-8111-111111111111",
+        kind: "a2a_message" as const,
+        status: "pending" as const,
+        createdAt: 1,
+        updatedAt: 1,
+        payload: {
+          connectorKey: "local",
+          externalMessageId: "a2a:media",
+          fromAgentKey: "panda",
+          fromSessionId: "session-a",
+          fromThreadId: "thread-a",
+          toAgentKey: "koala",
+          toSessionId: "session-b",
+          sentAt: 1,
+          items: [{type: "file" as const, media: staged, filename: "note.txt", mimeType: "text/plain"}],
+        },
+      };
+      const submitSessionInput = vi.fn(async (_sessionId: string, payload: unknown) => ({
+        input: {id: request.id, threadId: "thread-b", order: 1, deliveryMode: "wake" as const, status: "pending" as const, connectorKey: "", source: "a2a", createdAt: 1},
+        disposition: "inserted" as const,
+        payload,
+      }));
+
+      await handleA2AMessageRequest(request.payload, {
+        bindings: {hasBinding: async () => true, hasReceivedMessage: async () => false},
+        coordinator: {submitSessionInput},
+        relocateAgentMedia: async (agentKey, media) => {
+          expect(agentKey).toBe("koala");
+          return Promise.all(media.map((descriptor) => relocateMediaDescriptor(descriptor, {rootDir})));
+        },
+        sessions: {getSession: async () => ({
+          id: "session-b", agentKey: "koala", kind: "main", currentThreadId: "thread-b", createdAt: 0, updatedAt: 0,
+        })},
+      });
+
+      const submitted = submitSessionInput.mock.calls[0]?.[1] as {
+        metadata: {a2a: {items: Array<{media?: {localPath?: string}}>}};
+      };
+      const durablePath = submitted.metadata.a2a.items[0]?.media?.localPath;
+      expect(durablePath).toBeTruthy();
+      expect(durablePath).not.toBe(staged.localPath);
+
+      await discardSettledRuntimeRequestMedia(request);
+
+      await expect(readFile(staged.localPath)).rejects.toMatchObject({code: "ENOENT"});
+      await expect(readFile(durablePath!, "utf8")).resolves.toBe("durable A2A attachment");
+    } finally {
+      await rm(rootDir, {recursive: true, force: true});
+    }
   });
 });
 

@@ -36,10 +36,10 @@ function createHarness(options: {connectError?: Error} = {}) {
     upsertSession: vi.fn(async (input) => ({...input, healthReasons: [], startedAt: 1, updatedAt: 1})),
     updateSessionHealth: vi.fn(async () => undefined),
     markSessionDisconnected: vi.fn(async () => undefined),
-    createOrGetTurn: vi.fn(async (input: Record<string, unknown>) => {
+    createOrGetTurnAndEnqueueDelegation: vi.fn(async (input: Record<string, unknown>) => {
       const turn = {...input, status: "pending", createdAt: 1, updatedAt: 1};
       turns.set(String(input.id), turn);
-      return {turn, created: true};
+      return turn;
     }),
     getTurn: vi.fn(async (id: string) => turns.get(id)),
     completeTurn: vi.fn(async (id: string, text: string) => ({...turns.get(id), status: "completed", resultText: text})),
@@ -48,18 +48,17 @@ function createHarness(options: {connectError?: Error} = {}) {
     releaseFinalDelivery: vi.fn(async (id: string) => turns.get(id)),
     completeReservedFinal: vi.fn(async (id: string) => ({...turns.get(id), status: "completed"})),
   };
-  const requests = {enqueueRequest: vi.fn(async () => ({id: "request-1"}))};
   const encoder = {encode: vi.fn(() => new Uint8Array([1, 2, 3])), free: vi.fn()};
   const manager = new DiscordVoiceSessionManager({
     connectorKey: "bot-1", botToken: "secret",
     gatewayAdapter: vi.fn(() => (() => ({sendPayload: () => true, destroy: () => undefined}))),
     restClient: {getChannelMetadata: vi.fn(async () => ({id: "12345", type: 2, guildId: "guild-1"}))},
-    controls: controls as never, voice: voice as never, requests: requests as never, log: vi.fn(),
+    controls: controls as never, voice: voice as never, log: vi.fn(),
     openVoiceTransport: vi.fn(async () => ({connection: connection as never, player: player as never, outputEncoder: encoder as never})),
     createInputDecoder: vi.fn(async () => ({decode: vi.fn(() => new Int16Array(1_920).fill(100)), free: vi.fn()})) as never,
     provider: {id: "openai-live", model: "gpt-live-1-codex", createSession: (created) => { bridgeOptions = created; return bridge; }},
   });
-  return {manager, connection, streams, bridge, get bridgeOptions() { return bridgeOptions; }, voice, turns, requests};
+  return {manager, connection, streams, bridge, get bridgeOptions() { return bridgeOptions; }, voice, turns};
 }
 
 describe("DiscordVoiceSessionManager", () => {
@@ -76,13 +75,9 @@ describe("DiscordVoiceSessionManager", () => {
     await vi.waitFor(() => expect(harness.bridge.sendAudio).toHaveBeenCalledOnce());
     harness.bridgeOptions.onTurnDone?.({role: "user"});
     await harness.bridgeOptions.onDelegation({id: "delegation-1", prompt: "check status"});
-    expect(harness.voice.createOrGetTurn).toHaveBeenCalledWith(expect.objectContaining({liveVoiceSessionId: expect.any(String), providerDelegationId: "delegation-1", externalActorId: "user-1"}));
-    expect(harness.requests.enqueueRequest).toHaveBeenCalledWith({kind: "live_voice_delegation", payload: {
-      liveVoiceTurnId: expect.any(String),
-      sessionId: "session-1",
-    }}, {idempotencyKey: expect.stringContaining("live_voice_delegation:")});
+    expect(harness.voice.createOrGetTurnAndEnqueueDelegation).toHaveBeenCalledWith(expect.objectContaining({liveVoiceSessionId: expect.any(String), providerDelegationId: "delegation-1", externalActorId: "user-1"}));
 
-    const liveVoiceTurnId = String(harness.voice.createOrGetTurn.mock.calls[0]![0].id);
+    const liveVoiceTurnId = String(harness.voice.createOrGetTurnAndEnqueueDelegation.mock.calls[0]![0].id);
     harness.turns.set(liveVoiceTurnId, {...harness.turns.get(liveVoiceTurnId), status: "running"});
     await harness.manager.handle({id: "progress", connectorKey: "bot-1", operation: "send", sessionId: "session-1", agentKey: "panda", channelId: "12345", text: "Checking.", mode: "progress", voiceTurnId: liveVoiceTurnId, status: "running", createdAt: 2, updatedAt: 2});
     expect(harness.bridge.appendDelegationContext).toHaveBeenCalledWith("delegation-1", "Checking.", "commentary");
@@ -108,6 +103,30 @@ describe("DiscordVoiceSessionManager", () => {
     await harness.manager.handle({id: "join", connectorKey: "bot-1", operation: "join", sessionId: "session-1", agentKey: "panda", channelId: "12345", status: "running", createdAt: 1, updatedAt: 1});
     harness.connection.receiver.speaking.emit("start", "bot-1");
     expect(harness.connection.receiver.subscribe).not.toHaveBeenCalled();
+    await harness.manager.stop();
+  });
+
+  it("does not attach participant audio before the connected session fence commits", async () => {
+    const harness = createHarness();
+    let releaseConnected!: () => void;
+    const connectedBlocked = new Promise<void>((resolve) => { releaseConnected = resolve; });
+    harness.voice.upsertSession
+      .mockImplementationOnce(async (input) => ({...input, healthReasons: [], startedAt: 1, updatedAt: 1}))
+      .mockImplementationOnce(async (input) => {
+        await connectedBlocked;
+        return {...input, healthReasons: [], startedAt: 1, updatedAt: 1};
+      });
+    await harness.manager.start();
+    const joining = harness.manager.handle({id: "join", connectorKey: "bot-1", operation: "join", sessionId: "session-1", agentKey: "panda", channelId: "12345", status: "running", createdAt: 1, updatedAt: 1});
+    await vi.waitFor(() => expect(harness.voice.upsertSession).toHaveBeenCalledTimes(2));
+
+    harness.connection.receiver.speaking.emit("start", "user-1");
+    expect(harness.connection.receiver.subscribe).not.toHaveBeenCalled();
+    releaseConnected();
+    await joining;
+
+    harness.connection.receiver.speaking.emit("start", "user-1");
+    await vi.waitFor(() => expect(harness.connection.receiver.subscribe).toHaveBeenCalledOnce());
     await harness.manager.stop();
   });
 });

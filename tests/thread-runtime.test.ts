@@ -1369,13 +1369,12 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(run).not.toBeNull();
     await expect(store.getInput(queued.input.id)).resolves.toMatchObject({
       deliveryMode: "queue",
-      admittedRunId: run!.id,
     });
+    expect(run!.admittedThroughInputOrder).toBeGreaterThanOrEqual(queued.input.order);
 
     await store.failRun(run!.id, "provider failed before apply");
     await expect(store.getInput(queued.input.id)).resolves.toMatchObject({
-      deliveryMode: "wake",
-      admittedRunId: undefined,
+      deliveryMode: "queue",
     });
     await expect(store.hasPendingWake("thread-queued-fail-before-apply")).resolves.toBe(true);
   });
@@ -1403,7 +1402,6 @@ describe("ThreadRuntimeCoordinator", () => {
     });
     const boundary = await store.takeRunBoundary("thread-boundary-admission", run!.id);
     expect(boundary).toEqual({
-      hasRunnableInputs: false,
       hasAdmittedInputs: true,
       hadPendingWake: true,
     });
@@ -1485,7 +1483,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     await coordinator.waitForCurrentRun("thread-poke-held-lease");
     expect(store.attempts).toBeLessThanOrEqual(2);
-    expect(await store.hasRunnableInputs("thread-poke-held-lease")).toBe(true);
+    expect(await store.hasPendingWake("thread-poke-held-lease")).toBe(true);
   });
 
   it("treats pending durable wakes as busy", async () => {
@@ -1619,7 +1617,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     expect(runtime.complete).toHaveBeenCalledTimes(3);
     expect(await store.hasPendingInputs("thread-queued-during-run")).toBe(true);
-    expect(await store.hasRunnableInputs("thread-queued-during-run")).toBe(false);
+    expect(await store.hasPendingWake("thread-queued-during-run")).toBe(false);
 
     let transcript = await store.loadTranscriptHistory("thread-queued-during-run");
     expect(transcript.map((entry) => entry.source)).toEqual([
@@ -1682,7 +1680,7 @@ describe("ThreadRuntimeCoordinator", () => {
       });
 
       expect(runtime.complete).toHaveBeenCalledTimes(0);
-      expect(await store.hasRunnableInputs("thread-exclusive")).toBe(true);
+      expect(await store.hasPendingWake("thread-exclusive")).toBe(true);
     });
 
     await coordinator.waitForIdle("thread-exclusive");
@@ -2326,22 +2324,20 @@ describe("ThreadRuntimeCoordinator", () => {
     let coordinator!: ThreadRuntimeCoordinator;
     let injected = false;
     class BoundaryRaceStore extends TestThreadRuntimeStore {
-      override async hasRunnableInputs(threadId: string): Promise<boolean> {
-        const base = await super.hasRunnableInputs(threadId);
-        if (!injected && !base && runtime.complete.mock.calls.length === 1) {
+      override async takeRunBoundary(threadId: string, runId: string) {
+        const boundary = await super.takeRunBoundary(threadId, runId);
+        if (!injected && runtime.complete.mock.calls.length === 1) {
           injected = true;
-          queueMicrotask(() => {
-            void coordinator.submitInput(threadId, {
-              message: stringToUserMessage("late ping"),
-              source: "telegram",
-              channelId: "chat-race",
-              externalMessageId: "late-1",
-              actorId: "user-race",
-            });
+          await coordinator.submitInput(threadId, {
+            message: stringToUserMessage("late ping"),
+            source: "telegram",
+            channelId: "chat-race",
+            externalMessageId: "late-1",
+            actorId: "user-race",
           });
         }
 
-        return base;
+        return boundary;
       }
     }
 
@@ -3015,7 +3011,7 @@ describe("ThreadRuntimeCoordinator", () => {
       return entry.message.role === "assistant"
         && entry.message.content.some((block) => block.type === "text" && block.text === "after later wake");
     })).toBe(true);
-    expect(await store.hasRunnableInputs("thread-auto-compact-retry")).toBe(false);
+    expect(await store.hasPendingWake("thread-auto-compact-retry")).toBe(false);
   });
 
   it("opens a cooldown breaker after repeated auto-compaction failures and retries after cooldown", async () => {
@@ -3920,7 +3916,7 @@ describe("Thread runtime stores", () => {
       message: stringToUserMessage("stale delivery"),
       source: "runtime",
     })).rejects.toThrow("Unknown thread retired-thread");
-    await expect(store.promoteQueuedInputs("retired-thread")).resolves.toEqual([]);
+    await expect(store.wakePendingInputs("retired-thread")).resolves.toEqual([]);
   });
 
   it("persists input metadata from pending inputs into the transcript", async () => {

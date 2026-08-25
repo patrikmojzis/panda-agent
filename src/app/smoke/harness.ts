@@ -457,13 +457,12 @@ export async function waitForSmokeThreadIdle(input: {
   const deadline = Date.now() + input.timeoutMs;
 
   while (Date.now() <= deadline) {
-    const [runs, hasRunnableInputs, hasPendingWake] = await Promise.all([
+    const [runs, hasPendingWake] = await Promise.all([
       input.store.listRuns(input.threadId),
-      input.store.hasRunnableInputs(input.threadId),
       input.store.hasPendingWake(input.threadId),
     ]);
 
-    if (!runs.some((run) => run.status === "running") && !hasRunnableInputs && !hasPendingWake) {
+    if (!runs.some((run) => run.status === "running") && !hasPendingWake) {
       return;
     }
 

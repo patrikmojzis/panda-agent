@@ -42,7 +42,8 @@ export function buildActiveThreadRunGuardCte(
       run.owner_source,
       run.owner_key,
       run.owner_holder_id,
-      run.abort_requested_at
+      run.abort_requested_at,
+      run.admitted_through_input_order
     FROM ${tables.runs} AS run
     INNER JOIN active_run_owner AS owner_lease
       ON owner_lease.source = run.owner_source
@@ -153,23 +154,23 @@ export async function tryStartThreadRun(input: {
       INNER JOIN current_session AS session ON session.id = config.session_id
       WHERE config.pending_wake_at IS NOT NULL
     ), claimable_thread AS (
-      SELECT thread.id
+      SELECT thread.id, (
+        SELECT MAX(pending_input.input_order)
+        FROM ${input.tables.inputs} AS pending_input
+        WHERE pending_input.thread_id = thread.id
+          AND pending_input.applied_at IS NULL
+          AND pending_input.discarded_at IS NULL
+      ) AS admitted_through_input_order
       FROM ${input.tables.threads} AS thread
       INNER JOIN current_session AS session
         ON session.id = thread.session_id
        AND session.current_thread_id = thread.id
       WHERE thread.id = $2
-        AND (
-          EXISTS (SELECT 1 FROM observed_wake)
-          OR EXISTS (
-            SELECT 1
-            FROM ${input.tables.inputs} AS pending_input
-            WHERE pending_input.thread_id = thread.id
-              AND pending_input.applied_at IS NULL
-              AND pending_input.discarded_at IS NULL
-              AND pending_input.delivery_mode = 'wake'
-          )
-        )
+        AND EXISTS (SELECT 1 FROM observed_wake)
+        -- PostgreSQL rechecks this row predicate after waiting for the row
+        -- lock. A reset fence committed after the statement snapshot therefore
+        -- still defeats the stale claim instead of admitting a successor run.
+        AND thread.run_claims_blocked_at IS NULL
       FOR UPDATE OF thread
     ), inserted_run AS (
       INSERT INTO ${input.tables.runs} (
@@ -179,25 +180,13 @@ export async function tryStartThreadRun(input: {
         owner_key,
         owner_holder_id,
         status,
-        started_at
+        started_at,
+        admitted_through_input_order
       )
-      SELECT $1, claimable_thread.id, $3, $4, $5, 'running', NOW()
+      SELECT $1, claimable_thread.id, $3, $4, $5, 'running', NOW(), claimable_thread.admitted_through_input_order
       FROM claimable_thread
       ON CONFLICT (thread_id) WHERE status = 'running' DO NOTHING
       RETURNING *
-    ), admitted_inputs AS (
-      UPDATE ${input.tables.inputs} AS pending_input
-      SET delivery_mode = 'queue',
-          admitted_run_id = inserted_run.id
-      FROM inserted_run
-      WHERE pending_input.thread_id = inserted_run.thread_id
-        AND pending_input.applied_at IS NULL
-        AND pending_input.discarded_at IS NULL
-        -- Claim snapshots every pending input visible at this admission edge.
-      -- Later queue-only input stays outside the run until a future wake.
-      RETURNING pending_input.id
-    ), admission_mutation AS MATERIALIZED (
-      SELECT COUNT(*) AS admitted_count FROM admitted_inputs
     ), consumed_wake AS (
       -- Clear only the generation visible to this statement. PostgreSQL may
       -- recheck the row after a lock wait without refreshing the statement
@@ -207,7 +196,6 @@ export async function tryStartThreadRun(input: {
           updated_at = NOW()
       FROM observed_wake
       CROSS JOIN inserted_run
-      CROSS JOIN admission_mutation
       WHERE config.session_id = observed_wake.session_id
         AND config.pending_wake_generation = observed_wake.pending_wake_generation
       RETURNING config.session_id
@@ -225,8 +213,7 @@ export async function tryStartThreadRun(input: {
       FROM updated_thread
     )
     SELECT inserted_run.*, notified.notification,
-           (SELECT COUNT(*) FROM consumed_wake) AS consumed_wake_count,
-           (SELECT COUNT(*) FROM admitted_inputs) AS admitted_input_count
+           (SELECT COUNT(*) FROM consumed_wake) AS consumed_wake_count
     FROM inserted_run
     INNER JOIN notified ON TRUE
   `, [
@@ -309,37 +296,32 @@ export async function failOwnedThreadRun(input: {
       FROM active_run
       WHERE run.id = active_run.id
       RETURNING run.*
-    ), rearmed_inputs AS (
-      -- Claim admission demotes wake inputs to queue. A provider/shutdown
-      -- failure must make those inputs runnable again, but an explicit abort
-      -- is a durable instruction to leave them dormant until a later wake.
-      UPDATE ${input.tables.inputs} AS pending_input
-      SET delivery_mode = 'wake',
-          admitted_run_id = NULL
+    ), changed_threads AS (
+      -- A failed run re-arms its remaining cutoff with one session wake. Input
+      -- rows stay immutable; an explicit abort deliberately leaves them dormant.
+      SELECT thread.id AS thread_id, thread.session_id
       FROM active_run
-      INNER JOIN locked_thread AS thread
-        ON thread.id = active_run.thread_id
+      INNER JOIN locked_thread AS thread ON thread.id = active_run.thread_id
       INNER JOIN ${input.sessionTables.sessions} AS session
         ON session.id = thread.session_id
        AND session.current_thread_id = thread.id
       WHERE active_run.abort_requested_at IS NULL
-        AND pending_input.thread_id = active_run.thread_id
-        AND pending_input.applied_at IS NULL
-        AND pending_input.discarded_at IS NULL
-        AND pending_input.admitted_run_id = active_run.id
-      RETURNING pending_input.thread_id
-    ), changed_threads AS (
-      SELECT DISTINCT thread_id FROM rearmed_inputs
+        AND EXISTS (
+          SELECT 1
+          FROM ${input.tables.inputs} AS pending_input
+          WHERE pending_input.thread_id = active_run.thread_id
+            AND pending_input.applied_at IS NULL
+            AND pending_input.discarded_at IS NULL
+            AND pending_input.input_order <= active_run.admitted_through_input_order
+        )
     ), woken_sessions AS (
       INSERT INTO ${input.sessionTables.sessionRuntimeConfig} (
         session_id,
         pending_wake_at,
         pending_wake_generation
       )
-      SELECT thread.session_id, NOW(), 1
+      SELECT changed_threads.session_id, NOW(), 1
       FROM changed_threads
-      INNER JOIN locked_thread AS thread
-        ON thread.id = changed_threads.thread_id
       ON CONFLICT (session_id) DO UPDATE
       SET pending_wake_at = NOW(),
           pending_wake_generation = ${input.sessionTables.sessionRuntimeConfig}.pending_wake_generation + 1,
@@ -410,37 +392,30 @@ export async function failOrphanedThreadRuns(input: {
       INNER JOIN failed_runs ON failed_runs.thread_id = thread.id
       ORDER BY thread.id
       FOR UPDATE OF thread
-    ), rearmed_inputs AS (
-      -- Orphan recovery is the successor owner's terminal boundary. Re-arm
-      -- work from crashed runs in the same transaction so no input can be
-      -- stranded between failure recovery and a later wake notification.
-      UPDATE ${input.tables.inputs} AS pending_input
-      SET delivery_mode = 'wake',
-          admitted_run_id = NULL
+    ), changed_threads AS (
+      SELECT thread.id AS thread_id, thread.session_id
       FROM failed_runs
-      INNER JOIN locked_threads AS thread
-        ON thread.id = failed_runs.thread_id
+      INNER JOIN locked_threads AS thread ON thread.id = failed_runs.thread_id
       INNER JOIN ${input.sessionTables.sessions} AS session
         ON session.id = thread.session_id
        AND session.current_thread_id = thread.id
       WHERE failed_runs.abort_requested_at IS NULL
-        AND pending_input.thread_id = failed_runs.thread_id
-        AND pending_input.applied_at IS NULL
-        AND pending_input.discarded_at IS NULL
-        AND pending_input.admitted_run_id = failed_runs.id
-      RETURNING pending_input.thread_id
-    ), changed_threads AS (
-      SELECT DISTINCT thread_id FROM rearmed_inputs
+        AND EXISTS (
+          SELECT 1
+          FROM ${input.tables.inputs} AS pending_input
+          WHERE pending_input.thread_id = failed_runs.thread_id
+            AND pending_input.applied_at IS NULL
+            AND pending_input.discarded_at IS NULL
+            AND pending_input.input_order <= failed_runs.admitted_through_input_order
+        )
     ), woken_sessions AS (
       INSERT INTO ${input.sessionTables.sessionRuntimeConfig} (
         session_id,
         pending_wake_at,
         pending_wake_generation
       )
-      SELECT thread.session_id, NOW(), 1
+      SELECT changed_threads.session_id, NOW(), 1
       FROM changed_threads
-      INNER JOIN locked_threads AS thread
-        ON thread.id = changed_threads.thread_id
       ON CONFLICT (session_id) DO UPDATE
       SET pending_wake_at = NOW(),
           pending_wake_generation = ${input.sessionTables.sessionRuntimeConfig}.pending_wake_generation + 1,
@@ -480,26 +455,17 @@ export async function listRunnableThreadIds(input: {
     INNER JOIN ${input.sessionTables.sessions} AS session
       ON session.id = thread.session_id
      AND session.current_thread_id = thread.id
-    LEFT JOIN ${input.sessionTables.sessionRuntimeConfig} AS config
+    INNER JOIN ${input.sessionTables.sessionRuntimeConfig} AS config
       ON config.session_id = session.id
-    WHERE (
-      config.pending_wake_at IS NOT NULL
-      OR EXISTS (
-        SELECT 1
-        FROM ${input.tables.inputs} AS input
-        WHERE input.thread_id = thread.id
-          AND input.applied_at IS NULL
-          AND input.discarded_at IS NULL
-          AND input.delivery_mode = 'wake'
-      )
-    )
+    WHERE config.pending_wake_at IS NOT NULL
+      AND thread.run_claims_blocked_at IS NULL
       AND NOT EXISTS (
         SELECT 1
         FROM ${input.tables.runs} AS run
         WHERE run.thread_id = thread.id
           AND run.status = 'running'
       )
-    ORDER BY COALESCE(config.pending_wake_at, thread.updated_at), thread.id
+    ORDER BY config.pending_wake_at, config.session_id
     LIMIT $1
   `, [input.limit]);
   return result.rows.flatMap((row) => {
@@ -521,20 +487,11 @@ export async function isRunnableThread(input: {
       INNER JOIN ${input.sessionTables.sessions} AS session
         ON session.id = thread.session_id
        AND session.current_thread_id = thread.id
-      LEFT JOIN ${input.sessionTables.sessionRuntimeConfig} AS config
+      INNER JOIN ${input.sessionTables.sessionRuntimeConfig} AS config
         ON config.session_id = session.id
       WHERE thread.id = $1
-        AND (
-          config.pending_wake_at IS NOT NULL
-          OR EXISTS (
-            SELECT 1
-            FROM ${input.tables.inputs} AS pending_input
-            WHERE pending_input.thread_id = thread.id
-              AND pending_input.applied_at IS NULL
-              AND pending_input.discarded_at IS NULL
-              AND pending_input.delivery_mode = 'wake'
-          )
-        )
+        AND config.pending_wake_at IS NOT NULL
+        AND thread.run_claims_blocked_at IS NULL
         AND NOT EXISTS (
           SELECT 1
           FROM ${input.tables.runs} AS run
@@ -552,7 +509,7 @@ export async function takeOwnedThreadRunBoundary(input: {
   sessionTables: SessionTableNames;
   threadId: string;
   runId: string;
-}): Promise<{hasRunnableInputs: boolean; hasAdmittedInputs: boolean; hadPendingWake: boolean}> {
+}): Promise<{hasAdmittedInputs: boolean; hadPendingWake: boolean}> {
   const result = await input.queryable.query(`
     WITH ${buildActiveThreadRunGuardCte(input.tables, {
       runIdParameter: 1,
@@ -572,40 +529,35 @@ export async function takeOwnedThreadRunBoundary(input: {
         ON session.id = thread.session_id
        AND session.current_thread_id = thread.id
       WHERE config.pending_wake_at IS NOT NULL
-    ), visible_wake_input AS MATERIALIZED (
-      SELECT 1 AS present
+    ), admission_cutoff AS MATERIALIZED (
+      SELECT MAX(pending_input.input_order) AS input_order
       FROM ${input.tables.inputs} AS pending_input
-      INNER JOIN locked_thread ON locked_thread.id = pending_input.thread_id
+      INNER JOIN active_run ON active_run.thread_id = pending_input.thread_id
+      CROSS JOIN observed_wake
       WHERE pending_input.applied_at IS NULL
         AND pending_input.discarded_at IS NULL
-        AND pending_input.delivery_mode = 'wake'
-      LIMIT 1
-    ), admission_edge AS MATERIALIZED (
-      SELECT 1 AS present FROM observed_wake
-      UNION ALL
-      SELECT 1 AS present FROM visible_wake_input
-      WHERE NOT EXISTS (SELECT 1 FROM observed_wake)
-    ), admitted_inputs AS (
-      -- A wake arriving during a run is another admission edge. The durable
-      -- wake-row fallback also repairs an edge left by an older runtime. Admit
-      -- the complete visible set so failure can re-arm exactly that set.
-      UPDATE ${input.tables.inputs} AS pending_input
-      SET delivery_mode = 'queue',
-          admitted_run_id = active_run.id
+      HAVING MAX(pending_input.input_order) IS NOT NULL
+    ), extended_run AS (
+      UPDATE ${input.tables.runs} AS run
+      SET admitted_through_input_order = GREATEST(
+        COALESCE(run.admitted_through_input_order, 0),
+        admission_cutoff.input_order
+      )
       FROM active_run
-      CROSS JOIN admission_edge
-      WHERE pending_input.thread_id = active_run.thread_id
-        AND pending_input.applied_at IS NULL
-        AND pending_input.discarded_at IS NULL
-      RETURNING pending_input.id
-    ), admission_mutation AS MATERIALIZED (
-      SELECT COUNT(*) AS admitted_count FROM admitted_inputs
+      CROSS JOIN admission_cutoff
+      WHERE run.id = active_run.id
+      RETURNING run.*
+    ), effective_run AS MATERIALIZED (
+      SELECT id, thread_id, admitted_through_input_order FROM extended_run
+      UNION ALL
+      SELECT id, thread_id, admitted_through_input_order FROM active_run
+      WHERE NOT EXISTS (SELECT 1 FROM extended_run)
     ), consumed_wake AS (
       UPDATE ${input.sessionTables.sessionRuntimeConfig} AS config
       SET pending_wake_at = NULL,
           updated_at = NOW()
       FROM observed_wake
-      CROSS JOIN admission_mutation
+      CROSS JOIN effective_run
       WHERE config.session_id = observed_wake.session_id
         AND config.pending_wake_generation = observed_wake.pending_wake_generation
       RETURNING config.session_id
@@ -614,24 +566,15 @@ export async function takeOwnedThreadRunBoundary(input: {
       EXISTS (
         SELECT 1
         FROM ${input.tables.inputs} AS pending_input
-        INNER JOIN active_run ON active_run.thread_id = pending_input.thread_id
+        INNER JOIN effective_run AS run ON run.thread_id = pending_input.thread_id
         WHERE pending_input.applied_at IS NULL
           AND pending_input.discarded_at IS NULL
-          AND pending_input.delivery_mode = 'wake'
-      ) AS has_runnable_inputs,
-      (EXISTS (SELECT 1 FROM admitted_inputs) OR EXISTS (
-        SELECT 1
-        FROM ${input.tables.inputs} AS pending_input
-        INNER JOIN active_run ON active_run.thread_id = pending_input.thread_id
-        WHERE pending_input.applied_at IS NULL
-          AND pending_input.discarded_at IS NULL
-          AND pending_input.admitted_run_id = active_run.id
-      )) AS has_admitted_inputs,
+          AND pending_input.input_order <= run.admitted_through_input_order
+      ) AS has_admitted_inputs,
       EXISTS (SELECT 1 FROM observed_wake) AS had_pending_wake,
-      EXISTS (SELECT 1 FROM active_run) AS run_active
+      EXISTS (SELECT 1 FROM effective_run) AS run_active
   `, [input.runId, input.threadId]);
   const row = result.rows[0] as {
-    has_runnable_inputs?: unknown;
     has_admitted_inputs?: unknown;
     had_pending_wake?: unknown;
     run_active?: unknown;
@@ -640,14 +583,12 @@ export async function takeOwnedThreadRunBoundary(input: {
     throw new ThreadRunClaimLostError(input.runId);
   }
   if (
-    typeof row.has_runnable_inputs !== "boolean"
-    || typeof row.has_admitted_inputs !== "boolean"
+    typeof row.has_admitted_inputs !== "boolean"
     || typeof row.had_pending_wake !== "boolean"
   ) {
     throw new Error("Invalid thread run boundary result.");
   }
   return {
-    hasRunnableInputs: row.has_runnable_inputs,
     hasAdmittedInputs: row.has_admitted_inputs,
     hadPendingWake: row.had_pending_wake,
   };

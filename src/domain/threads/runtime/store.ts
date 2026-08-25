@@ -2,6 +2,8 @@ import type {
     CreateThreadInput,
     CreateThreadToolJobInput,
     ThreadCompactionCommit,
+    ThreadCompactionNoopOperationRecord,
+    ThreadAbortOperationRecord,
     ThreadChannelMediaFilter,
     ThreadChannelMediaRecord,
     ThreadChannelMessageFilter,
@@ -43,6 +45,15 @@ export class ThreadRunClaimLostError extends Error {
   }
 }
 
+/** The current thread is durably retiring; session-targeted work must retry after reset swaps it. */
+export class ThreadInputAdmissionBlockedError extends Error {
+  override readonly name = "ThreadInputAdmissionBlockedError";
+
+  constructor(readonly sessionId: string, readonly threadId: string) {
+    super(`Session ${sessionId} current thread ${threadId} is retiring.`);
+  }
+}
+
 export class ThreadToolJobOwnershipLostError extends Error {
   constructor(jobId: string) {
     super(`Background tool job ${jobId} is no longer owned by this daemon.`);
@@ -69,6 +80,13 @@ export interface ThreadRuntimeStore {
     commit: ThreadCompactionCommit,
     owner: ThreadRunOwner,
   ): Promise<ThreadMessageRecord>;
+  getCompactionNoopOperation(operationId: string): Promise<ThreadCompactionNoopOperationRecord | null>;
+  recordCompactionNoopOperation(
+    operationId: string,
+    sessionId: string,
+    threadId: string,
+    owner: ThreadRunOwner,
+  ): Promise<ThreadCompactionNoopOperationRecord>;
   listChannelMessages(filter: ThreadChannelMessageFilter): Promise<readonly ThreadMessageRecord[]>;
   findChannelMedia(filter: ThreadChannelMediaFilter): Promise<ThreadChannelMediaRecord | null>;
   enqueueInput(
@@ -87,13 +105,13 @@ export interface ThreadRuntimeStore {
     threadId: string,
     runId: string,
   ): Promise<readonly ThreadMessageRecord[]>;
+  findInput(inputId: string): Promise<ThreadInputRecord | null>;
   getInput(inputId: string): Promise<ThreadInputRecord>;
   discardPendingInputs(threadId: string): Promise<number>;
   hasPendingInputs(threadId: string): Promise<boolean>;
-  hasRunnableInputs(threadId: string): Promise<boolean>;
   hasPendingWake(threadId: string): Promise<boolean>;
   isThreadRunnable(threadId: string): Promise<boolean>;
-  promoteQueuedInputs(threadId?: string): Promise<readonly string[]>;
+  wakePendingInputs(threadId: string): Promise<readonly string[]>;
   requestWake(threadId: string): Promise<void>;
   appendRuntimeMessage(
     threadId: string,
@@ -115,7 +133,7 @@ export interface ThreadRuntimeStore {
   takeRunBoundary(
     threadId: string,
     runId: string,
-  ): Promise<{hasRunnableInputs: boolean; hasAdmittedInputs: boolean; hadPendingWake: boolean}>;
+  ): Promise<{hasAdmittedInputs: boolean; hadPendingWake: boolean}>;
   getLatestRun(threadId: string): Promise<ThreadRunRecord | null>;
   listRuns(threadId: string): Promise<readonly ThreadRunRecord[]>;
   createToolJob(input: CreateThreadToolJobInput): Promise<ThreadToolJobRecord>;
@@ -133,5 +151,11 @@ export interface ThreadRuntimeStore {
     limit: number,
   ): Promise<number>;
   listPendingInputs(threadId: string): Promise<readonly ThreadPendingInputRecord[]>;
-  requestRunAbort(threadId: string, reason?: string, operationId?: string): Promise<ThreadRunRecord | null>;
+  getThreadAbortOperation(operationId: string): Promise<ThreadAbortOperationRecord | null>;
+  requestRunAbort(
+    threadId: string,
+    reason?: string,
+    operationId?: string,
+    options?: {blocksNewRuns?: boolean},
+  ): Promise<ThreadRunRecord | null>;
 }
