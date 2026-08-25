@@ -5,7 +5,7 @@ import process from "node:process";
 import path from "node:path";
 
 import {Command} from "commander";
-import {DB_URL_OPTION_DESCRIPTION} from "./cli-shared.js";
+import {commandUsesDatabase, DB_URL_OPTION_DESCRIPTION} from "./cli-shared.js";
 import {parsePortOption} from "../lib/cli.js";
 import {createPostgresPool, requireDatabaseUrl} from "../lib/postgres-database.js";
 import {withPostgresPool} from "../lib/postgres-database.js";
@@ -394,15 +394,6 @@ program
   .description("Panda AI assistant")
   .version("0.1.0");
 
-function commandUsesDatabase(command: Command): boolean {
-  let current: Command | null = command;
-  while (current) {
-    if (current.options.some((option) => option.long === "--db-url")) return true;
-    current = current.parent;
-  }
-  return false;
-}
-
 function commandBelongsTo(command: Command, name: string): boolean {
   let current: Command | null = command;
   while (current) {
@@ -415,7 +406,7 @@ function commandBelongsTo(command: Command, name: string): boolean {
 // Operator actions get one central revision gate before touching stores. Long-
 // running processes verify again at their programmatic construction seam.
 program.hook("preAction", async (_command, actionCommand) => {
-  if (!commandUsesDatabase(actionCommand) || commandBelongsTo(actionCommand, "db") || commandBelongsTo(actionCommand, "smoke")) {
+  if (!commandUsesDatabase(actionCommand, program) || commandBelongsTo(actionCommand, "db") || commandBelongsTo(actionCommand, "smoke")) {
     return;
   }
   const options = actionCommand.optsWithGlobals<{dbUrl?: string}>();
