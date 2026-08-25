@@ -1,5 +1,5 @@
 import type {PostgresMigration} from "../../../lib/postgres-migrations.js";
-import {PANDA_PRE_LEDGER_BASELINE} from "../../../integrations/postgres/schema-version.js";
+import {PANDA_PRE_LEDGER_BASELINE} from "./pre-ledger/0001-schema-version.js";
 import {applyPreLedgerBaseline} from "./pre-ledger/0001-pre-ledger-baseline.generated.js";
 
 /**

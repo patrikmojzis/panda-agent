@@ -9,7 +9,7 @@ Panda changes its Postgres schema during deployment, never during application st
 - `src/lib/postgres-migrations.ts` owns only the generic transaction, advisory lock, and ledger mechanics.
 - `runtime.schema_migrations` is the sole schema-history ledger.
 
-The initial migration is a frozen baseline that absorbs every schema shipped before the ledger. Its generated implementation vendors the complete executable helper graph, so later edits to domain schema test fixtures or generic Postgres helpers cannot rewrite 0001. Its checksum covers only that closed executable artifact and CI rejects any behavioral edit. Never regenerate or hand-edit the released baseline; add the next ordered migration instead. The old domain installers remain only for lightweight database test setup and are not production schema paths. Forward-only expand/contract migrations are preferred when an old and new build must overlap during a rolling deployment; a deliberate hard cut must stop all Panda database writers first.
+The initial migration is a frozen baseline that absorbs every schema shipped before the ledger. Its generated implementation vendors the complete executable helper graph, and its `pre-ledger/0001-schema-version.ts` pin preserves the exact metadata import graph covered by the published checksum. Later edits to domain schema test fixtures or generic Postgres helpers therefore cannot rewrite 0001. CI rejects any behavioral edit to that closed artifact. Never regenerate or hand-edit the released baseline; add the next ordered migration instead. The old domain installers remain only for lightweight database test setup and are not production schema paths. Forward-only expand/contract migrations are preferred when an old and new build must overlap during a rolling deployment; a deliberate hard cut must stop all Panda database writers first.
 
 ## Deploy contract
 
@@ -50,7 +50,7 @@ The `session.*` views are schema and therefore created by a migration. Grants ar
 
 ## Adding a migration
 
-1. Add one ordered migration module under `src/app/database/migrations`, give it a stable SHA-256 checksum, append its metadata to `src/integrations/postgres/schema-version.ts`, and register its entry point in `PANDA_SCHEMA_MIGRATION_SOURCES`. CI bundles every entry point and rejects checksum drift.
+1. Add one ordered migration module under `src/app/database/migrations`, add its immutable summary under `src/integrations/postgres/schema-versions`, append that summary to `PANDA_SCHEMA_VERSION`, and register the executable entry point in `PANDA_SCHEMA_MIGRATION_SOURCES`. CI bundles every entry point and rejects checksum drift.
 2. Keep all SQL and data repair on the supplied `PgQueryable`. Never acquire another client or open a nested transaction.
 3. Put destructive preconditions and one-time integrity checks in the migration. Export ongoing invariants to the `db check` catalog as well.
 4. Add real-Postgres coverage for fresh install, upgrade from checked-in historical SQL, rollback, and a second no-op run. Never construct a legacy fixture with current schema installers. Use concurrency coverage when locks or unique constraints are involved.

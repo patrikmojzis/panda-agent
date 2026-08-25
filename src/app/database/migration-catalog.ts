@@ -2,15 +2,18 @@ import type {PostgresMigrationLog} from "../../lib/postgres-migrations.js";
 import {createPostgresMigrator} from "../../lib/postgres-migrations.js";
 import type {PgPoolLike, PgQueryable} from "../../lib/postgres-query.js";
 import {PRE_LEDGER_BASELINE_MIGRATION} from "./migrations/0001-pre-ledger-baseline.js";
+import {THREAD_INPUT_ADMISSION_MIGRATION} from "./migrations/0002-thread-input-admission.js";
 import {reconcileReadonlySessionRole} from "./readonly-role.js";
 
 export const PANDA_SCHEMA_MIGRATIONS = Object.freeze([
   PRE_LEDGER_BASELINE_MIGRATION,
+  THREAD_INPUT_ADMISSION_MIGRATION,
 ]);
 
 /** Entry points bundled by CI to prove every persisted checksum matches code. */
 export const PANDA_SCHEMA_MIGRATION_SOURCES: Readonly<Record<string, string>> = Object.freeze({
   "0001_pre_ledger_baseline": "src/app/database/migrations/0001-pre-ledger-baseline.ts",
+  "0002_thread_input_admission": "src/app/database/migrations/0002-thread-input-admission.ts",
 });
 
 export interface CreatePandaSchemaMigratorOptions {

@@ -252,6 +252,9 @@ async function assertSchemaObjectManifestExact(pool: ReturnType<typeof createPos
              relation.relkind::TEXT COLLATE "C",
              relation.relname COLLATE "C"
   `);
+  // Keep this query identical to the generator. PostgreSQL 18 materializes
+  // NOT NULL as history-dependent pg_constraint rows; columns already encode
+  // nullability exactly, so those rows are deliberately excluded here.
   const constraints = await pool.query(`
     SELECT namespace.nspname AS schema_name,
            relation.relname AS table_name,
@@ -262,6 +265,7 @@ async function assertSchemaObjectManifestExact(pool: ReturnType<typeof createPos
     INNER JOIN pg_class AS relation ON relation.oid = constraint_record.conrelid
     INNER JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
     WHERE namespace.nspname IN ('runtime', 'session')
+      AND constraint_record.contype <> 'n'
     ORDER BY namespace.nspname COLLATE "C",
              relation.relname COLLATE "C",
              constraint_record.conname COLLATE "C"

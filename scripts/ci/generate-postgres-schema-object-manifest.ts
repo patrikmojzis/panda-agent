@@ -84,6 +84,9 @@ async function main(): Promise<void> {
                relation.relkind::TEXT COLLATE "C",
                relation.relname COLLATE "C"
     `);
+    // PostgreSQL 18 exposes NOT NULL as pg_constraint rows. Nullability already
+    // lives in the column manifest, and constraint names differ by DDL history,
+    // so including contype=n would make an equivalent schema non-portable.
     const constraints = await pool.query<ConstraintRow>(`
       SELECT namespace.nspname AS schema_name,
              relation.relname AS table_name,
@@ -94,6 +97,7 @@ async function main(): Promise<void> {
       INNER JOIN pg_class AS relation ON relation.oid = constraint_record.conrelid
       INNER JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
       WHERE namespace.nspname IN ('runtime', 'session')
+        AND constraint_record.contype <> 'n'
       ORDER BY namespace.nspname COLLATE "C",
                relation.relname COLLATE "C",
                constraint_record.conname COLLATE "C"
