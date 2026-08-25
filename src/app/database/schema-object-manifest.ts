@@ -1280,6 +1280,7 @@ export const PANDA_EXPECTED_COLUMNS = Object.freeze([
   ["runtime","session_runtime_config","inference_projection","jsonb","false","d41d8cd98f00b204e9800998ecf8427e","","",""],
   ["runtime","session_runtime_config","model","text","false","d41d8cd98f00b204e9800998ecf8427e","","","default"],
   ["runtime","session_runtime_config","pending_wake_at","timestamp with time zone","false","d41d8cd98f00b204e9800998ecf8427e","","",""],
+  ["runtime","session_runtime_config","pending_wake_generation","bigint","true","cfcd208495d565ef66e7dff9f98764da","","",""],
   ["runtime","session_runtime_config","session_id","text","true","d41d8cd98f00b204e9800998ecf8427e","","","default"],
   ["runtime","session_runtime_config","thinking","text","false","d41d8cd98f00b204e9800998ecf8427e","","","default"],
   ["runtime","session_runtime_config","thinking_configured","boolean","true","68934a3e9455fa72420237eb05902327","","",""],
