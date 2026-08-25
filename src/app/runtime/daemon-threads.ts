@@ -36,7 +36,7 @@ import {
 } from "../../domain/threads/runtime/types.js";
 import type {PgPoolLike} from "../../lib/postgres-query.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
-import type {JsonValue} from "../../lib/json.js";
+import {isJsonObject, type JsonValue} from "../../lib/json.js";
 import {trimToUndefined} from "../../lib/strings.js";
 import {resolveAgentMediaDir} from "./data-dir.js";
 import {requireIdentityId} from "./daemon-shared.js";
@@ -120,6 +120,8 @@ export interface DaemonThreadHelpers {
   ): Promise<ThreadRecord>;
   resolveOrCreateConversationThread(input: {
     identityId: string;
+    authorizedAgentKey?: string;
+    authorizedActorBindingId?: string;
     source: string;
     connectorKey: string;
     externalConversationId: string;
@@ -176,7 +178,11 @@ export function createDaemonThreadHelpers(
   context: DaemonThreadHelperContext,
 ): DaemonThreadHelpers {
   const ensureIdentity = async (identityId: string): Promise<IdentityRecord> => {
-    return context.runtime.identityStore.getIdentity(identityId);
+    const identity = await context.runtime.identityStore.getIdentity(identityId);
+    if (identity.status !== "active") {
+      throw new Error(`Identity ${identity.handle} is not active.`);
+    }
+    return identity;
   };
 
   const resolveAccessibleAgentKey = async (
@@ -620,33 +626,67 @@ export function createDaemonThreadHelpers(
 
   const resolveOrCreateConversationThread = async (input: {
     identityId: string;
+    authorizedAgentKey?: string;
+    authorizedActorBindingId?: string;
     source: string;
     connectorKey: string;
     externalConversationId: string;
     metadata?: JsonValue;
   }): Promise<ThreadRecord | null> => {
+    const identity = await ensureIdentity(input.identityId);
     const existing = await context.conversationBindings.getConversationBinding({
       source: input.source,
       connectorKey: input.connectorKey,
       externalConversationId: input.externalConversationId,
     });
     if (existing) {
+      const session = await context.runtime.sessionStore.getSession(existing.sessionId);
+      const pairings = await context.runtime.agentStore.listIdentityPairings(identity.id);
+      const authority = isJsonObject(existing.metadata) && isJsonObject(existing.metadata.channelAuthorization)
+        ? existing.metadata.channelAuthorization
+        : null;
+      if (
+        (input.authorizedAgentKey && session.agentKey !== input.authorizedAgentKey)
+        || (input.authorizedActorBindingId && (
+          authority?.identityId !== identity.id
+          || authority.agentKey !== input.authorizedAgentKey
+          || authority.actorBindingId !== input.authorizedActorBindingId
+        ))
+        || !pairings.some((pairing) => pairing.agentKey === session.agentKey)
+      ) {
+        return null;
+      }
       return resolveCurrentThread(existing.sessionId);
     }
 
-    const identity = await ensureIdentity(input.identityId);
     const pairings = await context.runtime.agentStore.listIdentityPairings(identity.id);
-    if (pairings.length !== 1) {
+    const agentKey = input.authorizedAgentKey
+      ? pairings.some((pairing) => pairing.agentKey === input.authorizedAgentKey)
+        ? input.authorizedAgentKey
+        : null
+      : pairings.length === 1
+        ? pairings[0]!.agentKey
+        : null;
+    if (!agentKey) {
       return null;
     }
 
-    const {session} = await ensureMainSession(pairings[0]!.agentKey, identity);
+    const {session} = await ensureMainSession(agentKey, identity);
     await context.conversationBindings.bindConversation({
       source: input.source,
       connectorKey: input.connectorKey,
       externalConversationId: input.externalConversationId,
       sessionId: session.id,
-      metadata: input.metadata,
+      metadata: input.authorizedActorBindingId
+        ? {
+            ...(isJsonObject(input.metadata) ? input.metadata : {}),
+            channelAuthorization: {
+              identityId: identity.id,
+              agentKey,
+              actorBindingId: input.authorizedActorBindingId,
+            },
+          }
+        : input.metadata,
     });
     return resolveCurrentThread(session.id);
   };

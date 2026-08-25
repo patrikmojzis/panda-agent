@@ -2,6 +2,7 @@ import type {WAMessage} from "baileys";
 import {describe, expect, it, vi} from "vitest";
 
 import {ingestWhatsAppMessagesUpsert} from "../src/integrations/channels/whatsapp/message-ingestion.js";
+import {WhatsAppMediaPolicyError} from "../src/integrations/channels/whatsapp/media-work-queue.js";
 
 vi.mock("baileys", () => ({
   isJidBroadcast: (jid?: string) => Boolean(jid?.endsWith("@broadcast")),
@@ -23,6 +24,14 @@ function createIngestionOptions(media = []) {
         id: "request-1",
       })),
     },
+    authorizeActor: vi.fn(async () => ({
+      authorized: true as const,
+      identityId: "identity-1",
+      identityHandle: "alice",
+      agentKey: "panda",
+      actorBindingId: "binding-1",
+      authorizationVersion: "grant-1",
+    })),
     downloadMedia: vi.fn(async () => media),
     logs: [] as Array<{event: string; payload: Record<string, unknown>}>,
   };
@@ -55,6 +64,7 @@ async function ingest(
   }, {
     connectorKey: options.connectorKey,
     requests: options.requests,
+    authorizeActor: options.authorizeActor,
     downloadMedia: options.downloadMedia,
     log: (event, payload) => {
       options.logs.push({event, payload});
@@ -71,6 +81,13 @@ describe("WhatsApp message ingestion", () => {
     expect(options.requests.enqueueRequest).toHaveBeenCalledWith({
       kind: "whatsapp_message",
       payload: {
+        identityId: "identity-1",
+        authorization: {
+          identityId: "identity-1",
+          agentKey: "panda",
+          actorBindingId: "binding-1",
+          authorizationVersion: "grant-1",
+        },
         connectorKey: "main",
         externalConversationId: "123@s.whatsapp.net",
         externalActorId: "123@s.whatsapp.net",
@@ -101,6 +118,43 @@ describe("WhatsApp message ingestion", () => {
     ]);
 
     expect(options.requests.enqueueRequest).not.toHaveBeenCalled();
+  });
+
+  it("drops unauthorized messages before media download or persistence", async () => {
+    const options = createIngestionOptions();
+    options.authorizeActor.mockResolvedValue({
+      authorized: false as const,
+      reason: "actor_not_authorized" as const,
+    });
+
+    await ingest(options, [
+      createPrivateMessage({
+        message: {
+          imageMessage: {
+            mimetype: "image/jpeg",
+            fileLength: 128,
+          },
+        },
+      }),
+      createPrivateMessage({
+        key: {
+          remoteJid: "123@s.whatsapp.net",
+          participant: undefined,
+          id: "reaction-unauthorized",
+          fromMe: false,
+        },
+        message: {
+          reactionMessage: {text: "👍", key: {id: "target-1"}},
+        },
+      }),
+    ]);
+
+    expect(options.downloadMedia).not.toHaveBeenCalled();
+    expect(options.requests.enqueueRequest).not.toHaveBeenCalled();
+    expect(options.logs).toContainEqual(expect.objectContaining({
+      event: "message_dropped",
+      payload: expect.objectContaining({reason: "actor_not_authorized"}),
+    }));
   });
 
   it("includes downloaded media in message requests", async () => {
@@ -137,6 +191,32 @@ describe("WhatsApp message ingestion", () => {
         media,
       }),
     }), expect.objectContaining({idempotencyKey: expect.stringMatching(/^ingress:v1:/)}));
+  });
+
+  it("keeps media-policy rejection local and continues with the next message", async () => {
+    const options = createIngestionOptions();
+    options.downloadMedia
+      .mockRejectedValueOnce(new WhatsAppMediaPolicyError("media_queue_full", "queue full"))
+      .mockResolvedValueOnce([]);
+
+    await ingest(options, [
+      createPrivateMessage({
+        message: {imageMessage: {mimetype: "image/jpeg"}},
+      }),
+      createPrivateMessage({
+        key: {...createPrivateMessage().key, id: "msg-2"},
+        message: {conversation: "still accepted"},
+      }),
+    ]);
+
+    expect(options.requests.enqueueRequest).toHaveBeenCalledOnce();
+    expect(options.requests.enqueueRequest).toHaveBeenCalledWith(expect.objectContaining({
+      payload: expect.objectContaining({externalMessageId: "msg-2", text: "still accepted"}),
+    }), expect.anything());
+    expect(options.logs).toContainEqual({
+      event: "message_dropped",
+      payload: expect.objectContaining({reason: "media_queue_full"}),
+    });
   });
 
   it("enqueues voice-only audio messages as media", async () => {

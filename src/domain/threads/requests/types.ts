@@ -101,7 +101,16 @@ export interface TelegramReactionRequestPayload extends BaseRuntimeRequestPayloa
   lastName?: string;
 }
 
+export interface WhatsAppAuthorizationSnapshot {
+  identityId: string;
+  agentKey: string;
+  actorBindingId: string;
+  authorizationVersion: string;
+}
+
 export interface WhatsAppMessageRequestPayload extends BaseRuntimeRequestPayload {
+  /** Missing only on pre-hardening durable requests, which fail closed at delivery. */
+  authorization?: WhatsAppAuthorizationSnapshot;
   connectorKey: string;
   sentAt?: number;
   externalConversationId: string;
@@ -116,6 +125,8 @@ export interface WhatsAppMessageRequestPayload extends BaseRuntimeRequestPayload
 }
 
 export interface WhatsAppReactionRequestPayload extends BaseRuntimeRequestPayload {
+  /** Missing only on pre-hardening durable requests, which fail closed at delivery. */
+  authorization?: WhatsAppAuthorizationSnapshot;
   connectorKey: string;
   sentAt?: number;
   externalConversationId: string;

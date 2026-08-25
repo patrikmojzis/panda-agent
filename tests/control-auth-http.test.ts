@@ -2279,6 +2279,7 @@ describe("Control operator HTTP", () => {
     });
     expect(invalidTelegramActor.status).toBe(400);
 
+    await harness.agents.deletePairing("panda", "identity-patrik");
     const deleteWhatsAppActor = await fetch(`${base}/api/control/agents/panda/channel-actor-pairings/whatsapp/${encodeURIComponent(whatsappAccount.connectorKey)}/${encodeURIComponent("421900123456@s.whatsapp.net")}`, {
       method: "DELETE",
       headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},

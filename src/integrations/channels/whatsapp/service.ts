@@ -22,7 +22,13 @@ import {
 import {ChannelOutboundDeliveryWorker} from "../../../domain/channels/deliveries/worker.js";
 import {PostgresConnectorAccountStore} from "../../../domain/connectors/postgres.js";
 import type {SecretCrypto} from "../../../domain/secrets/crypto.js";
-import {resolveWhatsAppSocketVersion, WHATSAPP_SOURCE} from "./config.js";
+import {
+  resolveWhatsAppIngressLimits,
+  resolveWhatsAppSocketVersion,
+  WHATSAPP_SOURCE,
+} from "./config.js";
+import {createWhatsAppActorAuthorizer} from "./authorization.js";
+import {WhatsAppMediaWorkQueue} from "./media-work-queue.js";
 import {PostgresWhatsAppAuthStore, type WhatsAppAuthStateHandle} from "./auth-store.js";
 import {
   toWhatsAppWhoamiResult,
@@ -58,6 +64,7 @@ export interface WhatsAppServiceOptions {
   dataDir: string;
   pool?: Pool;
   runtime?: ConnectorDaemonRuntimeHandle;
+  mediaQueue?: WhatsAppMediaWorkQueue;
   disableHealthServer?: boolean;
 }
 
@@ -89,9 +96,13 @@ export class WhatsAppService {
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private runtimeFailed = false;
   private runtimeStarted = false;
+  private mediaQueue: WhatsAppMediaWorkQueue | null;
+  private readonly ownsMediaQueue: boolean;
 
   constructor(options: WhatsAppServiceOptions) {
     this.options = options;
+    this.mediaQueue = options.mediaQueue ?? null;
+    this.ownsMediaQueue = !options.mediaQueue;
     const pool = options.runtime?.pool ?? options.pool;
     if (!pool) throw new Error("WhatsApp service requires a daemon runtime or an existing Postgres pool.");
     const requests = new RuntimeRequestRepo({pool});
@@ -130,8 +141,20 @@ export class WhatsAppService {
     return this.stores;
   }
 
+  private ensureMediaQueue(): WhatsAppMediaWorkQueue {
+    if (!this.mediaQueue) {
+      const limits = resolveWhatsAppIngressLimits();
+      this.mediaQueue = new WhatsAppMediaWorkQueue({
+        concurrency: limits.mediaConcurrency,
+        queueMax: limits.mediaQueueMax,
+      });
+    }
+    return this.mediaQueue;
+  }
+
   private async createSocket(options: {
     authHandle?: WhatsAppAuthStateHandle;
+    queryTimeoutMs?: number;
     persistCredsOnUpdate?: boolean;
   } = {}): Promise<{
     authHandle: WhatsAppAuthStateHandle;
@@ -512,6 +535,15 @@ export class WhatsAppService {
           },
         },
         {
+          label: "media-queue",
+          run: async () => {
+            if (this.ownsMediaQueue) {
+              await this.mediaQueue?.close();
+              this.mediaQueue = null;
+            }
+          },
+        },
+        {
           label: "health-server",
           run: async () => {
             await healthServer?.close();
@@ -530,7 +562,12 @@ export class WhatsAppService {
   }
 
   private async runSocketCycle(stores: WhatsAppWorkerStores): Promise<{reconnect: boolean; reason?: string}> {
-    const {authHandle, socket} = await this.createSocket();
+    const ingressLimits = resolveWhatsAppIngressLimits();
+    const {authHandle, socket} = await this.createSocket({
+      queryTimeoutMs: ingressLimits.mediaDownloadTimeoutMs,
+    });
+    const authorizer = createWhatsAppActorAuthorizer({pool: stores.pool});
+    const mediaQueue = this.ensureMediaQueue();
 
     try {
       return await waitForWhatsAppSocketCycle({
@@ -539,6 +576,13 @@ export class WhatsAppService {
         authHandle,
         requests: stores.requests,
         mediaStore: stores.mediaStore,
+        mediaQueue,
+        authorizeActor: (externalActorId) => authorizer.authorizeActor({
+          connectorKey: this.options.connectorKey,
+          externalActorId,
+        }),
+        maxMediaBytes: ingressLimits.maxMediaBytes,
+        mediaDownloadTimeoutMs: ingressLimits.mediaDownloadTimeoutMs,
         isStopping: () => this.stopping,
         setStopWaiter: (waiter) => {
           this.socketWaiterResolve = waiter;

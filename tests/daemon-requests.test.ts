@@ -42,6 +42,12 @@ function whatsappReactionRequest(
     createdAt: 1,
     updatedAt: 1,
     payload: {
+      authorization: {
+        identityId: "identity-1",
+        agentKey: "panda",
+        actorBindingId: "binding-1",
+        authorizationVersion: "grant-1",
+      },
       connectorKey: "main",
       externalConversationId: "421900000000@s.whatsapp.net",
       externalActorId: "421900000000@s.whatsapp.net",
@@ -252,6 +258,18 @@ function createRequestContext(input: {
       hasReceivedMessage: vi.fn(async () => false),
     },
     liveVoice: {} as DaemonRequestProcessorContext["liveVoice"],
+    whatsAppAuthorizer: {
+      authorizeActor: vi.fn(async () => input.binding === null
+        ? {authorized: false as const, reason: "actor_not_authorized" as const}
+        : {
+            authorized: true as const,
+            identityId: "identity-1",
+            identityHandle: "patrik",
+            agentKey: "panda",
+            actorBindingId: "binding-1",
+            authorizationVersion: "grant-1",
+          }),
+    },
   };
 }
 
@@ -1365,6 +1383,8 @@ describe("daemon request processor", () => {
 
     expect(harness.resolveOrCreateConversationThread).toHaveBeenCalledWith({
       identityId: "identity-1",
+      authorizedAgentKey: "panda",
+      authorizedActorBindingId: "binding-1",
       source: "whatsapp",
       connectorKey: "main",
       externalConversationId: "421900000000@s.whatsapp.net",
@@ -1405,9 +1425,44 @@ describe("daemon request processor", () => {
 
     await expect(processor(whatsappReactionRequest())).resolves.toEqual({
       status: "dropped",
-      reason: "unpaired_actor",
+      reason: "authorization_revoked",
     });
 
+    expect(harness.submitInput).not.toHaveBeenCalled();
+  });
+
+  it("drops queued WhatsApp work when its authorization grant changes", async () => {
+    const harness = createHarness();
+    vi.mocked(harness.context.whatsAppAuthorizer.authorizeActor).mockResolvedValue({
+      authorized: true,
+      identityId: "identity-1",
+      identityHandle: "patrik",
+      agentKey: "panda",
+      actorBindingId: "binding-1",
+      authorizationVersion: "grant-after-repair",
+    });
+    const processor = createDaemonRequestProcessor(harness.context, harness.threads);
+
+    await expect(processor(whatsappReactionRequest())).resolves.toEqual({
+      status: "dropped",
+      reason: "authorization_revoked",
+    });
+
+    expect(harness.resolveOrCreateConversationThread).not.toHaveBeenCalled();
+    expect(harness.submitInput).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for pre-hardening WhatsApp work without authorization provenance", async () => {
+    const harness = createHarness();
+    const processor = createDaemonRequestProcessor(harness.context, harness.threads);
+
+    await expect(processor(whatsappReactionRequest({authorization: undefined}))).resolves.toEqual({
+      status: "dropped",
+      reason: "authorization_revoked",
+    });
+
+    expect(harness.context.whatsAppAuthorizer.authorizeActor).not.toHaveBeenCalled();
+    expect(harness.resolveOrCreateConversationThread).not.toHaveBeenCalled();
     expect(harness.submitInput).not.toHaveBeenCalled();
   });
 

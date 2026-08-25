@@ -1,0 +1,24 @@
+diff --git a/lib/Utils/messages-media.js b/lib/Utils/messages-media.js
+index 87618e0..49d43a2 100644
+--- a/lib/Utils/messages-media.js
++++ b/lib/Utils/messages-media.js
+@@ -297,6 +297,7 @@ export const getHttpStream = async (url, options = {}) => {
+     const response = await fetch(url.toString(), {
+         dispatcher: options.dispatcher,
+         method: 'GET',
++        signal: options.signal,
+         headers: options.headers
+     });
+     if (!response.ok) {
+diff --git a/lib/Socket/messages-send.js b/lib/Socket/messages-send.js
+index 66f822d..101df8d 100644
+--- a/lib/Socket/messages-send.js
++++ b/lib/Socket/messages-send.js
+@@ -1043,6 +1043,6 @@ export const makeMessagesSocket = (config) => {
+                         return true;
+                     }
+-                })
++                }, config.defaultQueryTimeoutMs)
+             ]);
+             if (error) {
+                 throw error;

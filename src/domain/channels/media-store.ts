@@ -1,4 +1,5 @@
 import {createHash, randomUUID} from "node:crypto";
+import {createReadStream} from "node:fs";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 
@@ -158,6 +159,24 @@ async function assertExistingMediaMatches(localPath: string, expected: Uint8Arra
   }
 }
 
+async function hashMediaFile(localPath: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(localPath)) {
+    hash.update(chunk);
+  }
+  return hash.digest("hex");
+}
+
+async function assertExistingMediaFileMatches(localPath: string, expectedPath: string): Promise<void> {
+  const [existingStat, expectedStat] = await Promise.all([fs.stat(localPath), fs.stat(expectedPath)]);
+  if (
+    existingStat.size !== expectedStat.size
+    || await hashMediaFile(localPath) !== await hashMediaFile(expectedPath)
+  ) {
+    throw new Error(`Idempotent media key is already bound to different bytes: ${localPath}`);
+  }
+}
+
 function inferExtension(mimeType: string, hintFilename?: string): string {
   const normalizedMimeType = mimeType.toLowerCase();
   const known = MIME_EXTENSION_MAP.get(normalizedMimeType);
@@ -221,7 +240,7 @@ async function installIdempotentMedia(input: {
   originalFilename?: string;
   metadata?: JsonValue;
   populate(path: string): Promise<void>;
-  expectedBytes(): Promise<Uint8Array>;
+  assertExisting(localPath: string): Promise<void>;
   accessedAt: Date;
   receiptOwner?: MediaReceiptOwner;
 }): Promise<MediaDescriptor> {
@@ -293,7 +312,7 @@ async function installIdempotentMedia(input: {
   )) {
     throw new Error(`Idempotent media descriptor is bound to a different request owner: ${manifestPath}`);
   }
-  await assertExistingMediaMatches(canonical.localPath, await input.expectedBytes());
+  await input.assertExisting(canonical.localPath);
   await fs.utimes(manifestPath, input.accessedAt, input.accessedAt);
   if (path.dirname(canonical.localPath) !== finalDirectory) {
     // Relocation turns this directory into a descriptor-only receipt. Clean a
@@ -847,7 +866,7 @@ export class FileSystemMediaStore {
         originalFilename,
         metadata: input.metadata,
         populate: (temporaryPath) => fs.writeFile(temporaryPath, input.bytes, {flag: "wx"}),
-        expectedBytes: async () => input.bytes,
+        assertExisting: (localPath) => assertExistingMediaMatches(localPath, input.bytes),
         accessedAt,
         receiptOwner: input.receiptOwner,
       });
@@ -907,7 +926,7 @@ export class FileSystemMediaStore {
         originalFilename,
         metadata: input.metadata,
         populate: (temporaryPath) => fs.copyFile(sourcePath, temporaryPath, fs.constants.COPYFILE_EXCL),
-        expectedBytes: () => fs.readFile(sourcePath),
+        assertExisting: (localPath) => assertExistingMediaFileMatches(localPath, sourcePath),
         accessedAt,
         receiptOwner: input.receiptOwner,
       });

@@ -19,13 +19,14 @@ import {withPostgresPool} from "../../../lib/postgres-database.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
 import {PostgresWhatsAppAuthStore} from "./auth-store.js";
 import {whatsappChatListCommandDescriptor, whatsappHistoryCommandDescriptor, whatsappSendCommandDescriptor} from "./commands.js";
-import {WHATSAPP_SOURCE} from "./config.js";
+import {resolveWhatsAppIngressLimits, WHATSAPP_SOURCE} from "./config.js";
 import {
   createWhatsAppConnectorAccount,
   requireWhatsAppConnectorAccount,
   resetWhatsAppConnectorAccount,
 } from "./connector-account.js";
 import {WhatsAppService, type WhatsAppServiceOptions} from "./service.js";
+import {WhatsAppMediaWorkQueue} from "./media-work-queue.js";
 import {ConnectorAccountSupervisor, type ConnectorAccountSupervisorWorker} from "../account-supervisor.js";
 import {startConnectorDaemonRuntime, type ConnectorDaemonRuntimeHandle} from "../worker-runtime.js";
 
@@ -140,7 +141,7 @@ function serviceOptions(
   account: ConnectorAccountRecord,
   crypto: SecretCrypto,
   connection: Pick<WhatsAppServiceOptions, "pool" | "runtime">,
-  overrides: Partial<Pick<WhatsAppServiceOptions, "disableHealthServer">> = {},
+  overrides: Partial<Pick<WhatsAppServiceOptions, "disableHealthServer" | "mediaQueue">> = {},
 ): WhatsAppServiceOptions {
   return {
     accountId: account.id,
@@ -310,6 +311,11 @@ async function runSingleAccount(
 ): Promise<void> {
   const crypto = requireWhatsAppCrypto(dependencies);
   const runtime = await startWhatsAppDaemonRuntime(options, dependencies, crypto);
+  const mediaLimits = resolveWhatsAppIngressLimits();
+  const mediaQueue = new WhatsAppMediaWorkQueue({
+    concurrency: mediaLimits.mediaConcurrency,
+    queueMax: mediaLimits.mediaQueueMax,
+  });
   let service: WhatsAppRunService | null = null;
   let stopPromise: Promise<void> | null = null;
   let shutdown: (() => void) | null = null;
@@ -317,7 +323,7 @@ async function runSingleAccount(
     const accounts = new PostgresConnectorAccountStore({pool: runtime.pool});
     const resolved = await requireWhatsAppConnectorAccount({accountKey, accounts});
     if (resolved.status !== "enabled") throw new Error(`WhatsApp account ${resolved.accountKey} is ${resolved.status}.`);
-    service = createRunService(serviceOptions(resolved, crypto, {runtime}), dependencies);
+    service = createRunService(serviceOptions(resolved, crypto, {runtime}, {mediaQueue}), dependencies);
     const stopService = () => stopPromise ??= service!.stop();
     shutdown = () => void stopService();
     process.once("SIGINT", shutdown);
@@ -332,6 +338,7 @@ async function runSingleAccount(
       {label: "whatsapp-service", run: async () => {
         if (service) await (stopPromise ??= service.stop());
       }},
+      {label: "whatsapp-media-queue", run: async () => mediaQueue.close()},
       {label: "whatsapp-daemon-runtime", run: async () => runtime.close()},
     ]);
   }
@@ -351,6 +358,11 @@ async function runAllEnabled(
 ): Promise<void> {
   const crypto = requireWhatsAppCrypto(dependencies);
   const runtime = await startWhatsAppDaemonRuntime(options, dependencies, crypto);
+  const mediaLimits = resolveWhatsAppIngressLimits();
+  const mediaQueue = new WhatsAppMediaWorkQueue({
+    concurrency: mediaLimits.mediaConcurrency,
+    queueMax: mediaLimits.mediaQueueMax,
+  });
   const accounts = new PostgresConnectorAccountStore({pool: runtime.pool});
   let stopping = false;
   let shutdownPromise: Promise<void> | null = null;
@@ -363,6 +375,7 @@ async function runAllEnabled(
     },
     createWorker: (account) => createRunService(serviceOptions(account, crypto, {runtime}, {
       disableHealthServer: true,
+      mediaQueue,
     }), dependencies),
     log: logRunEvent,
   });
@@ -370,6 +383,7 @@ async function runAllEnabled(
   const createHealthServer = () => startSupervisorHealthServer(() => ({
     supervisor: "running",
     ...supervisor.snapshot(),
+    media: mediaQueue.snapshot(),
     listener: runtime.getNotificationSnapshot(),
   }));
   const shutdown = () => shutdownPromise ??= (async () => {
@@ -393,9 +407,15 @@ async function runAllEnabled(
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
-    await shutdown();
-    await runtime.close();
-    await health?.close();
+    await runCleanupSteps([
+      {label: "whatsapp-supervisor", run: async () => shutdown()},
+      {label: "whatsapp-media-queue", run: async () => mediaQueue.close()},
+      {label: "whatsapp-daemon-runtime", run: async () => runtime.close()},
+      {label: "whatsapp-health-server", run: async () => health?.close()},
+    ], (step, error) => logRunEvent("worker_supervisor_cleanup_failed", {
+      step: step.label,
+      message: error instanceof Error ? error.message : String(error),
+    }));
   }
 }
 

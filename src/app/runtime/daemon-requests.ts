@@ -45,6 +45,7 @@ import {DISCORD_SOURCE} from "../../integrations/channels/discord/config.js";
 import {TELEGRAM_SOURCE} from "../../integrations/channels/telegram/config.js";
 import {TUI_CONVERSATION_ID, TUI_SOURCE} from "../../integrations/channels/tui/helpers.js";
 import {WHATSAPP_SOURCE} from "../../integrations/channels/whatsapp/config.js";
+import type {WhatsAppActorAuthorizer} from "../../integrations/channels/whatsapp/authorization.js";
 
 export interface DaemonRequestProcessorContext {
   runtime: {
@@ -63,6 +64,7 @@ export interface DaemonRequestProcessorContext {
   };
   a2aBindings: Parameters<typeof handleA2AMessageRequest>[1]["bindings"];
   liveVoice: LiveVoiceRepo;
+  whatsAppAuthorizer: WhatsAppActorAuthorizer;
 }
 
 type DaemonRequestStore = Pick<
@@ -490,18 +492,18 @@ export function createDaemonRequestProcessor(
         });
       case "whatsapp_message":
         return handleWhatsAppMessageRequest(request.payload, {
+          authorizer: context.whatsAppAuthorizer,
           capturedAt: request.createdAt,
           coordinator: context.runtime.coordinator,
           enqueueOptions,
-          identityStore: context.runtime.identityStore,
           threads,
         });
       case "whatsapp_reaction":
         return handleWhatsAppReactionRequest(request.payload, {
+          authorizer: context.whatsAppAuthorizer,
           capturedAt: request.createdAt,
           coordinator: context.runtime.coordinator,
           enqueueOptions,
-          identityStore: context.runtime.identityStore,
           threads,
         });
       case "tui_input":

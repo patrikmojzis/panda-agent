@@ -61,6 +61,7 @@ describe("WhatsApp socket factory", () => {
     createWhatsAppSocket({
       authHandle,
       socketVersion: [2, 3000, 1038819500],
+      queryTimeoutMs: 12_345,
     });
 
     expect(whatsappSocketMocks.ubuntuBrowser).toHaveBeenCalledWith("Chrome");
@@ -72,6 +73,7 @@ describe("WhatsApp socket factory", () => {
       }),
       browser: ["Panda"],
       version: [2, 3000, 1038819500],
+      defaultQueryTimeoutMs: 12_345,
       syncFullHistory: false,
       markOnlineOnConnect: false,
     }));

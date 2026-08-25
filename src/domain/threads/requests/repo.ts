@@ -464,6 +464,21 @@ function parseThreadUpdate(value: unknown): RuntimeRequestPayloadByKind["update_
   return parseJsonObject(value, "thread update") as RuntimeRequestPayloadByKind["update_thread"]["update"];
 }
 
+function parseWhatsAppAuthorizationSnapshot(
+  value: unknown,
+): NonNullable<RuntimeRequestPayloadByKind["whatsapp_message"]["authorization"]> {
+  const snapshot = parseJsonObject(value, "WhatsApp authorization snapshot");
+  return {
+    identityId: parseRequiredString(snapshot.identityId, "WhatsApp authorization identity id"),
+    agentKey: parseRequiredString(snapshot.agentKey, "WhatsApp authorization agent key"),
+    actorBindingId: parseRequiredString(snapshot.actorBindingId, "WhatsApp authorization actor binding id"),
+    authorizationVersion: parseRequiredString(
+      snapshot.authorizationVersion,
+      "WhatsApp authorization version",
+    ),
+  };
+}
+
 function parsePayload<K extends RuntimeRequestKind>(
   kind: K,
   value: unknown,
@@ -526,6 +541,9 @@ function parsePayload<K extends RuntimeRequestKind>(
     case "whatsapp_message":
       return {
         identityId,
+        authorization: payload.authorization === undefined || payload.authorization === null
+          ? undefined
+          : parseWhatsAppAuthorizationSnapshot(payload.authorization),
         connectorKey: parseRequiredString(payload.connectorKey, "WhatsApp connector key"),
         sentAt: parseOptionalNumber(payload.sentAt, "WhatsApp sent timestamp"),
         externalConversationId: parseRequiredString(payload.externalConversationId, "WhatsApp conversation id"),
@@ -542,6 +560,9 @@ function parsePayload<K extends RuntimeRequestKind>(
     case "whatsapp_reaction":
       return {
         identityId,
+        authorization: payload.authorization === undefined || payload.authorization === null
+          ? undefined
+          : parseWhatsAppAuthorizationSnapshot(payload.authorization),
         connectorKey: parseRequiredString(payload.connectorKey, "WhatsApp reaction connector key"),
         sentAt: parseOptionalNumber(payload.sentAt, "WhatsApp reaction sent timestamp"),
         externalConversationId: parseRequiredString(payload.externalConversationId, "WhatsApp reaction conversation id"),

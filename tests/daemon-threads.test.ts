@@ -60,7 +60,7 @@ describe("createDaemonThreadHelpers", () => {
     createdByIdentityId?: string;
     throwOnMissingSession?: boolean;
     getIdentity?: (identityId: string) => Promise<ReturnType<typeof createIdentity>>;
-    conversationBinding?: {sessionId: string} | null;
+    conversationBinding?: {sessionId: string; metadata?: Record<string, unknown>} | null;
     backgroundJobService?: { cancelThreadJobs(threadId: string): Promise<void> };
     coordinator?: DaemonThreadHelperContext["runtime"]["coordinator"];
   } = {}) {
@@ -285,6 +285,108 @@ describe("createDaemonThreadHelpers", () => {
       id: "thread-after-reset",
       sessionId: "session-bound",
     });
+  });
+
+  it("revalidates an established conversation against its exact authorized agent", async () => {
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({id: "thread-current", sessionId: "session-bound"});
+    const {helpers} = createHelpers({
+      store,
+      pairings: [{agentKey: "panda"}, {agentKey: "other"}],
+      conversationBinding: {
+        sessionId: "session-bound",
+        metadata: {
+          channelAuthorization: {
+            identityId: TEST_IDENTITY_ID,
+            agentKey: "panda",
+            actorBindingId: "binding-1",
+          },
+        },
+      },
+      currentThreadId: "thread-current",
+    });
+
+    await expect(helpers.resolveOrCreateConversationThread({
+      identityId: TEST_IDENTITY_ID,
+      authorizedAgentKey: "panda",
+      authorizedActorBindingId: "binding-1",
+      source: "whatsapp",
+      connectorKey: "main",
+      externalConversationId: "421900000000@s.whatsapp.net",
+    })).resolves.toMatchObject({id: "thread-current"});
+
+    await expect(helpers.resolveOrCreateConversationThread({
+      identityId: TEST_IDENTITY_ID,
+      authorizedAgentKey: "other",
+      authorizedActorBindingId: "binding-1",
+      source: "whatsapp",
+      connectorKey: "main",
+      externalConversationId: "421900000000@s.whatsapp.net",
+    })).resolves.toBeNull();
+
+    await expect(helpers.resolveOrCreateConversationThread({
+      identityId: TEST_IDENTITY_ID,
+      authorizedAgentKey: "panda",
+      authorizedActorBindingId: "binding-after-repair",
+      source: "whatsapp",
+      connectorKey: "main",
+      externalConversationId: "421900000000@s.whatsapp.net",
+    })).resolves.toBeNull();
+  });
+
+  it("rejects an established conversation after its identity-agent pairing is removed", async () => {
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({id: "thread-current", sessionId: "session-bound"});
+    const {helpers} = createHelpers({
+      store,
+      pairings: [],
+      conversationBinding: {
+        sessionId: "session-bound",
+        metadata: {
+          channelAuthorization: {
+            identityId: TEST_IDENTITY_ID,
+            agentKey: "panda",
+            actorBindingId: "binding-1",
+          },
+        },
+      },
+      currentThreadId: "thread-current",
+    });
+
+    await expect(helpers.resolveOrCreateConversationThread({
+      identityId: TEST_IDENTITY_ID,
+      authorizedAgentKey: "panda",
+      authorizedActorBindingId: "binding-1",
+      source: "whatsapp",
+      connectorKey: "main",
+      externalConversationId: "421900000000@s.whatsapp.net",
+    })).resolves.toBeNull();
+  });
+
+  it("binds a new authorized conversation to the exact account owner and grant", async () => {
+    const {helpers, conversationBindings} = createHelpers({
+      pairings: [{agentKey: "panda"}, {agentKey: "other"}],
+      conversationBinding: null,
+    });
+
+    await expect(helpers.resolveOrCreateConversationThread({
+      identityId: TEST_IDENTITY_ID,
+      authorizedAgentKey: "panda",
+      authorizedActorBindingId: "binding-1",
+      source: "whatsapp",
+      connectorKey: "main",
+      externalConversationId: "421900000000@s.whatsapp.net",
+    })).resolves.toMatchObject({sessionId: expect.any(String)});
+
+    expect(conversationBindings.bindConversation).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: {
+        channelAuthorization: {
+          identityId: TEST_IDENTITY_ID,
+          agentKey: "panda",
+          actorBindingId: "binding-1",
+        },
+      },
+    }));
   });
 
   it("rejects explicit agent access when the identity has no pairings", async () => {

@@ -131,6 +131,11 @@
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.33.0",
+  "pnpm": {
+    "patchedDependencies": {
+      "baileys@7.0.0-rc14": "patches/baileys@7.0.0-rc14.patch"
+    }
+  },
   "dependencies": {
     "@discordjs/voice": "0.19.2",
     "@discordjs/ws": "2.0.4",

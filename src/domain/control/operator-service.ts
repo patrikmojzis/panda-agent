@@ -2868,8 +2868,6 @@ export class ControlOperatorService {
       throw new Error(`Control ${source} actor pairing requires an owned connector account.`);
     }
     const externalActorId = controlChannelActorId(source, externalActorIdInput);
-    const existing = await this.identities.resolveIdentityBinding({source, connectorKey, externalActorId});
-    if (existing) await this.assertIdentityPairedToAgent(normalizedAgentKey, existing.identityId);
     const deleted = await this.identities.deleteIdentityBinding({
       source,
       connectorKey,

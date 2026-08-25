@@ -41,6 +41,7 @@ import {EmailSyncRunner} from "../../integrations/channels/email/sync-runner.js"
 import {TELEGRAM_SOURCE,} from "../../integrations/channels/telegram/config.js";
 import {createTelegramStickerSetReader} from "../../integrations/channels/telegram/sticker-set-reader.js";
 import {WHATSAPP_SOURCE} from "../../integrations/channels/whatsapp/config.js";
+import {createWhatsAppActorAuthorizer, type WhatsAppActorAuthorizer} from "../../integrations/channels/whatsapp/authorization.js";
 import {createDiscordRestClient} from "../../integrations/channels/discord/api.js";
 import {createDiscordStickerCatalogReader} from "../../integrations/channels/discord/stickers.js";
 import {createDiscordGifService} from "../../integrations/channels/discord/gifs.js";
@@ -73,6 +74,7 @@ interface DaemonContext {
   watchRunner: WatchRunner;
   sessionHeartbeatRunner: HeartbeatRunner;
   liveVoice: LiveVoiceRepo;
+  whatsAppAuthorizer: WhatsAppActorAuthorizer;
   discordVoice: {controls: DiscordVoiceControlRepo; live: LiveVoiceRepo; close(): Promise<void>};
 }
 
@@ -447,6 +449,7 @@ export async function bootstrapDaemonContext(
         });
       },
     });
+    const whatsAppAuthorizer = createWhatsAppActorAuthorizer({pool: runtime.pool});
     return {
       fallbackContext,
       daemonKey,
@@ -467,6 +470,7 @@ export async function bootstrapDaemonContext(
       watchRunner,
       sessionHeartbeatRunner,
       liveVoice,
+      whatsAppAuthorizer,
       discordVoice,
     };
   } catch (error) {

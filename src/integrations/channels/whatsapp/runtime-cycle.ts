@@ -1,6 +1,7 @@
 import type {BaileysEventMap, ConnectionState, WASocket} from "baileys";
 
 import type {WhatsAppAuthStateHandle} from "./auth-store.js";
+import type {WhatsAppActorAuthorization} from "./authorization.js";
 import {
   describeWhatsAppDisconnectStatus,
   extractWhatsAppDisconnectStatusCode,
@@ -12,6 +13,10 @@ import {
   downloadWhatsAppSupportedMedia,
   type WhatsAppMediaStore,
 } from "./media.js";
+import type {WhatsAppMediaWorkQueue} from "./media-work-queue.js";
+
+const DEFAULT_WHATSAPP_MESSAGE_INGRESS_CONCURRENCY = 4;
+const DEFAULT_WHATSAPP_MESSAGE_INGRESS_QUEUE_MAX = 64;
 
 export interface WhatsAppSocketCycleOptions {
   connectorKey: string;
@@ -19,6 +24,12 @@ export interface WhatsAppSocketCycleOptions {
   authHandle: Pick<WhatsAppAuthStateHandle, "saveCreds">;
   requests: WhatsAppMessageRequestQueue;
   mediaStore: WhatsAppMediaStore;
+  mediaQueue: WhatsAppMediaWorkQueue;
+  authorizeActor(externalActorId: string): Promise<WhatsAppActorAuthorization>;
+  ingressConcurrency?: number;
+  ingressQueueMax?: number;
+  maxMediaBytes: number;
+  mediaDownloadTimeoutMs: number;
   isStopping(): boolean;
   setStopWaiter?(waiter: (() => void) | null): void;
   markSocketState?(state: "open" | "closed"): void;
@@ -35,9 +46,72 @@ export async function waitForWhatsAppSocketCycle(
   options: WhatsAppSocketCycleOptions,
 ): Promise<WhatsAppSocketCycleResult> {
   return new Promise<WhatsAppSocketCycleResult>((resolve, reject) => {
+    const ingressConcurrency = options.ingressConcurrency ?? DEFAULT_WHATSAPP_MESSAGE_INGRESS_CONCURRENCY;
+    const ingressQueueMax = options.ingressQueueMax ?? DEFAULT_WHATSAPP_MESSAGE_INGRESS_QUEUE_MAX;
     let settled = false;
+    let activeIngress = 0;
+    let ingressClosed = false;
+    const ingressAbort = new AbortController();
+    const ingressQueue: Array<BaileysEventMap["messages.upsert"]> = [];
+
+    const runIngress = async (update: BaileysEventMap["messages.upsert"]): Promise<void> => {
+      await ingestWhatsAppMessagesUpsert(update, {
+        connectorKey: options.connectorKey,
+        requests: options.requests,
+        authorizeActor: options.authorizeActor,
+        downloadMedia: async (message, receiptOwner) => {
+          const parts = collectWhatsAppMediaParts(message);
+          if (parts.length === 0) return [];
+          return options.mediaQueue.run((signal) => downloadWhatsAppSupportedMedia(message, {
+              connectorKey: options.connectorKey,
+              mediaStore: {
+                writeMediaFile: (input) => options.mediaStore.writeMediaFile({...input, receiptOwner}),
+              },
+              reuploadRequest: options.socket.updateMediaMessage,
+              parts,
+              maxBytes: options.maxMediaBytes,
+              timeoutMs: options.mediaDownloadTimeoutMs,
+              signal,
+              onCleanupError: (error) => options.log("media_cleanup_failed", {
+                connectorKey: options.connectorKey,
+                message: error instanceof Error ? error.message : String(error),
+              }),
+            }), {
+              signal: ingressAbort.signal,
+              singleFlightKey: `${receiptOwner.requestKind}:${receiptOwner.requestIdempotencyKey}`,
+            });
+        },
+        log: options.log,
+      });
+    };
+
+    const drainIngress = (): void => {
+      while (!ingressClosed && activeIngress < ingressConcurrency && ingressQueue.length > 0) {
+        const update = ingressQueue.shift()!;
+        activeIngress += 1;
+        void runIngress(update).catch((error) => {
+          options.log("upsert_error", {
+            connectorKey: options.connectorKey,
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }).finally(() => {
+          activeIngress -= 1;
+          drainIngress();
+        });
+      }
+    };
+
+    const enqueueIngress = (update: BaileysEventMap["messages.upsert"]): boolean => {
+      if (ingressClosed || ingressQueue.length >= ingressQueueMax) return false;
+      ingressQueue.push(update);
+      drainIngress();
+      return true;
+    };
 
     const cleanup = () => {
+      ingressClosed = true;
+      ingressQueue.length = 0;
+      ingressAbort.abort(new Error("WhatsApp socket cycle ended."));
       options.socket.ev.off("connection.update", onConnectionUpdate);
       options.socket.ev.off("messages.upsert", onMessagesUpsert);
       options.socket.ev.off("messaging-history.set", onHistorySet);
@@ -65,34 +139,27 @@ export async function waitForWhatsAppSocketCycle(
     };
 
     const onMessagesUpsert = (update: BaileysEventMap["messages.upsert"]) => {
-      void ingestWhatsAppMessagesUpsert(update, {
-        connectorKey: options.connectorKey,
-        requests: options.requests,
-        downloadMedia: async (message, receiptOwner) => {
-          const parts = collectWhatsAppMediaParts(message);
-          if (parts.length === 0) {
-            return [];
-          }
-
-          return downloadWhatsAppSupportedMedia(message, {
-            connectorKey: options.connectorKey,
-            mediaStore: {
-              writeMedia: (input) => options.mediaStore.writeMedia({...input, receiptOwner}),
-            },
-            reuploadRequest: options.socket.updateMediaMessage,
-            parts,
-          });
-        },
-        log: options.log,
-      }).catch((error) => {
-        options.log("upsert_error", {
+      if (update.type !== "notify") {
+        options.log("message_ignored", {
           connectorKey: options.connectorKey,
-          message: error instanceof Error ? error.message : String(error),
+          reason: "non_notify_upsert",
+          upsertType: update.type,
+          messageCount: update.messages.length,
         });
-        if (!options.isStopping()) {
-          finish({reconnect: true, reason: "upsert_error"});
-        }
-      });
+        return;
+      }
+
+      let dropped = 0;
+      for (const message of update.messages) {
+        if (!enqueueIngress({...update, messages: [message]})) dropped += 1;
+      }
+      if (dropped > 0) {
+        options.log("message_dropped", {
+          connectorKey: options.connectorKey,
+          reason: "ingress_overloaded",
+          messageCount: dropped,
+        });
+      }
     };
 
     const onHistorySet = (update: BaileysEventMap["messaging-history.set"]) => {

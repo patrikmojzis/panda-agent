@@ -1,10 +1,22 @@
+import {createWriteStream} from "node:fs";
+import * as fs from "node:fs/promises";
+import {tmpdir} from "node:os";
+import path from "node:path";
+import {Transform} from "node:stream";
+import {pipeline} from "node:stream/promises";
+
 import type {WAMessage, WASocket} from "baileys";
 import {downloadMediaMessage, normalizeMessageContent} from "baileys/lib/Utils/messages.js";
 
-import type {WriteMediaInput} from "../../../domain/channels/media-store.js";
+import {
+  discardStagedMediaDescriptor,
+  discardStagedMediaDescriptors,
+  type WriteMediaFileInput,
+} from "../../../domain/channels/media-store.js";
 import type {MediaDescriptor} from "../../../domain/channels/types.js";
 import type {JsonObject} from "../../../lib/json.js";
 import {WHATSAPP_SOURCE} from "./config.js";
+import {WhatsAppMediaPolicyError} from "./media-work-queue.js";
 import {readWhatsAppMessageSentAtMs} from "./helpers.js";
 import {WHATSAPP_LOGGER} from "./transport.js";
 
@@ -16,7 +28,7 @@ export interface WhatsAppMediaPart {
 }
 
 export interface WhatsAppMediaStore {
-  writeMedia(input: WriteMediaInput): Promise<MediaDescriptor>;
+  writeMediaFile(input: WriteMediaFileInput): Promise<MediaDescriptor>;
 }
 
 export interface DownloadWhatsAppSupportedMediaOptions {
@@ -24,6 +36,10 @@ export interface DownloadWhatsAppSupportedMediaOptions {
   mediaStore: WhatsAppMediaStore;
   reuploadRequest: WASocket["updateMediaMessage"];
   parts?: readonly WhatsAppMediaPart[];
+  maxBytes: number;
+  timeoutMs: number;
+  signal?: AbortSignal;
+  onCleanupError?(error: unknown): void;
 }
 
 function readWhatsAppMediaSizeBytes(value: unknown): number | undefined {
@@ -112,23 +128,117 @@ async function downloadWhatsAppMediaPart(
   part: WhatsAppMediaPart,
   partIndex: number,
   options: DownloadWhatsAppSupportedMediaOptions,
+  maxBytes: number,
 ): Promise<MediaDescriptor> {
-  const bytes = new Uint8Array(await downloadMediaMessage(message, "buffer", {}, {
-    reuploadRequest: options.reuploadRequest,
-    logger: WHATSAPP_LOGGER,
-  }));
+  if (part.sizeBytes !== undefined && part.sizeBytes > maxBytes) {
+    throw new WhatsAppMediaPolicyError(
+      "media_too_large",
+      `WhatsApp media exceeds the ${String(options.maxBytes)} byte message limit.`,
+    );
+  }
 
-  return options.mediaStore.writeMedia({
-    bytes,
-    source: WHATSAPP_SOURCE,
-    connectorKey: options.connectorKey,
-    mimeType: part.mimeType,
-    sizeBytes: part.sizeBytes,
-    hintFilename: part.hintFilename,
-    metadata: buildWhatsAppMediaMetadata(message, part),
-    idempotencyKey: `${message.key.remoteJid ?? "unknown"}:${message.key.id ?? "unknown"}:${partIndex}`,
-    createdAt: readWhatsAppMessageSentAtMs(message.messageTimestamp) ?? 0,
+  const timeoutController = new AbortController();
+  const timeout = setTimeout(() => {
+    timeoutController.abort(new WhatsAppMediaPolicyError(
+      "media_timeout",
+      `WhatsApp media download timed out after ${String(options.timeoutMs)}ms.`,
+    ));
+  }, options.timeoutMs);
+  timeout.unref?.();
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, timeoutController.signal])
+    : timeoutController.signal;
+  const temporaryDirectory = await fs.mkdtemp(path.join(tmpdir(), "panda-whatsapp-media-"));
+  const temporaryPath = path.join(temporaryDirectory, "media.bin");
+  let downloadedBytes = 0;
+  const limiter = new Transform({
+    transform(chunk: Buffer | Uint8Array, _encoding, callback) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      downloadedBytes += bytes.byteLength;
+      if (downloadedBytes > maxBytes) {
+        callback(new WhatsAppMediaPolicyError(
+          "media_too_large",
+          `WhatsApp media exceeds the ${String(options.maxBytes)} byte message limit.`,
+        ));
+        return;
+      }
+      callback(null, bytes);
+    },
   });
+
+  try {
+    const streamPromise = downloadMediaMessage(message, "stream", {options: {signal}}, {
+      reuploadRequest: options.reuploadRequest,
+      logger: WHATSAPP_LOGGER,
+    });
+    const stream = await new Promise<Awaited<typeof streamPromise>>((resolve, reject) => {
+      const onAbort = () => reject(signal.reason ?? new Error("WhatsApp media download aborted."));
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener("abort", onAbort, {once: true});
+      void streamPromise.then((value) => {
+        signal.removeEventListener("abort", onAbort);
+        if (signal.aborted) {
+          value.destroy(signal.reason instanceof Error ? signal.reason : undefined);
+          return;
+        }
+        resolve(value);
+      }, (error) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      });
+    });
+    await pipeline(
+      stream,
+      limiter,
+      createWriteStream(temporaryPath, {flags: "wx"}),
+      {signal},
+    );
+    if (part.sizeBytes !== undefined && part.sizeBytes !== downloadedBytes) {
+      throw new WhatsAppMediaPolicyError(
+        "media_invalid",
+        `WhatsApp media declared ${String(part.sizeBytes)} bytes but downloaded ${String(downloadedBytes)}.`,
+      );
+    }
+
+    const descriptor = await options.mediaStore.writeMediaFile({
+      path: temporaryPath,
+      source: WHATSAPP_SOURCE,
+      connectorKey: options.connectorKey,
+      mimeType: part.mimeType,
+      sizeBytes: downloadedBytes,
+      hintFilename: part.hintFilename,
+      metadata: buildWhatsAppMediaMetadata(message, part),
+      idempotencyKey: `${message.key.remoteJid ?? "unknown"}:${message.key.id ?? "unknown"}:${partIndex}`,
+      createdAt: readWhatsAppMessageSentAtMs(message.messageTimestamp) ?? 0,
+    });
+    if (signal.aborted) {
+      try {
+        await discardStagedMediaDescriptor(descriptor);
+      } catch (cleanupError) {
+        options.onCleanupError?.(cleanupError);
+      }
+      throw signal.reason ?? new WhatsAppMediaPolicyError("media_aborted", "WhatsApp media download was aborted.");
+    }
+    return descriptor;
+  } catch (error) {
+    if (timeoutController.signal.aborted && !options.signal?.aborted) {
+      throw timeoutController.signal.reason;
+    }
+    if (options.signal?.aborted) {
+      throw new WhatsAppMediaPolicyError("media_aborted", "WhatsApp media download was aborted.", {cause: error});
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    try {
+      await fs.rm(temporaryDirectory, {recursive: true, force: true});
+    } catch (cleanupError) {
+      options.onCleanupError?.(cleanupError);
+    }
+  }
 }
 
 export async function downloadWhatsAppSupportedMedia(
@@ -136,8 +246,21 @@ export async function downloadWhatsAppSupportedMedia(
   options: DownloadWhatsAppSupportedMediaOptions,
 ): Promise<readonly MediaDescriptor[]> {
   const descriptors: MediaDescriptor[] = [];
-  for (const [partIndex, part] of (options.parts ?? collectWhatsAppMediaParts(message)).entries()) {
-    descriptors.push(await downloadWhatsAppMediaPart(message, part, partIndex, options));
+  try {
+    for (const [partIndex, part] of (options.parts ?? collectWhatsAppMediaParts(message)).entries()) {
+      const remainingBytes = options.maxBytes - descriptors.reduce(
+        (total, descriptor) => total + descriptor.sizeBytes,
+        0,
+      );
+      descriptors.push(await downloadWhatsAppMediaPart(message, part, partIndex, options, remainingBytes));
+    }
+  } catch (error) {
+    try {
+      await discardStagedMediaDescriptors(descriptors);
+    } catch (cleanupError) {
+      options.onCleanupError?.(cleanupError);
+    }
+    throw error;
   }
 
   return descriptors;

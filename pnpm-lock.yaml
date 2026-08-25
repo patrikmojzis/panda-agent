@@ -17,6 +17,11 @@ overrides:
   nodemailer: 9.0.1
   linkify-it: 5.0.2
 
+patchedDependencies:
+  baileys@7.0.0-rc14:
+    hash: eaa14e177445e9576568a412e16f6308d4c092b13b3f337961273834695f3655
+    path: patches/baileys@7.0.0-rc14.patch
+
 importers:
 
   .:
@@ -41,7 +46,7 @@ importers:
         version: 3.0.0
       baileys:
         specifier: 7.0.0-rc14
-        version: 7.0.0-rc14(sharp@0.35.3(@types/node@25.9.5))
+        version: 7.0.0-rc14(patch_hash=eaa14e177445e9576568a412e16f6308d4c092b13b3f337961273834695f3655)(sharp@0.35.3(@types/node@25.9.5))
       commander:
         specifier: ^14.0.3
         version: 14.0.3
@@ -7918,7 +7923,7 @@ snapshots:
 
   aws-ssl-profiles@1.1.2: {}
 
-  baileys@7.0.0-rc14(sharp@0.35.3(@types/node@25.9.5)):
+  baileys@7.0.0-rc14(patch_hash=eaa14e177445e9576568a412e16f6308d4c092b13b3f337961273834695f3655)(sharp@0.35.3(@types/node@25.9.5)):
     dependencies:
       '@cacheable/node-cache': 1.7.6
       '@hapi/boom': 9.1.4

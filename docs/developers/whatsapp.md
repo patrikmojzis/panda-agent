@@ -24,6 +24,7 @@ And must satisfy these rules:
 - DM only
 - paired senders only
 - unpaired senders are dropped and logged
+- authorization is checked before media download or durable request creation, then checked again before thread delivery
 - no raw message bodies in logs
 - no history sync messages enter the transcript
 
@@ -48,6 +49,7 @@ Docker stack support is profile-gated:
 - set `WHATSAPP_ENABLED=true` to run `panda-whatsapp`
 - set `CREDENTIALS_MASTER_KEY`; WhatsApp auth cannot be read or written without it
 - leave `PANDA_WHATSAPP_VERSION` empty unless you need to pin a specific WhatsApp Web version
+- keep the default 25 MiB media cap and 30-second deadline unless the host has a deliberately different budget
 - create/link accounts in Control, or use `panda whatsapp account create/link`
 - authorize sender identities with `panda whatsapp pair --account <account-key> --identity <handle> --actor <sender-phone-or-lid>`
 - remove stale sender bindings with `panda whatsapp unpair --account <account-key> --actor <sender-phone-or-jid>`
@@ -115,9 +117,15 @@ Keep it simple.
 
 Media ingestion should:
 
-- download and decrypt WhatsApp media bytes
+- authorize the actor before downloading any bytes
+- stream and decrypt WhatsApp media through a strict plaintext byte limit and deadline
+- share one bounded media queue across every account in the supervisor
 - push them through the existing filesystem media store
 - attach stable local file paths and useful metadata for the model
+
+Oversize, timed-out, and queue-saturated media is dropped as a message-local policy failure. It does not reconnect the WhatsApp account. Defaults are controlled by `PANDA_WHATSAPP_MAX_MEDIA_BYTES`, `PANDA_WHATSAPP_MEDIA_DOWNLOAD_TIMEOUT_MS`, `PANDA_WHATSAPP_MEDIA_CONCURRENCY`, and `PANDA_WHATSAPP_MEDIA_QUEUE_MAX`.
+
+Conversation bindings created before the authorization-snapshot hardening do not contain actor-grant provenance and therefore fail closed. Remove the old WhatsApp conversation binding once in Control; the next authorized DM recreates it with current identity, agent, and actor-binding provenance.
 
 Byte-based only. No URL download assumptions.
 

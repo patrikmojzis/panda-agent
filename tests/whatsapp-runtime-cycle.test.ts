@@ -1,7 +1,10 @@
+import {Readable} from "node:stream";
+
 import type {WAMessage} from "baileys";
 import {describe, expect, it, vi} from "vitest";
 
 import {waitForWhatsAppSocketCycle} from "../src/integrations/channels/whatsapp/runtime-cycle.js";
+import {WhatsAppMediaWorkQueue} from "../src/integrations/channels/whatsapp/media-work-queue.js";
 
 vi.mock("baileys", () => ({
   DisconnectReason: {
@@ -20,7 +23,7 @@ vi.mock("baileys", () => ({
 }));
 
 vi.mock("baileys/lib/Utils/messages.js", () => ({
-  downloadMediaMessage: vi.fn(async () => Buffer.from("media")),
+  downloadMediaMessage: vi.fn(async () => Readable.from([Buffer.from("media")])),
   normalizeMessageContent: vi.fn((message) => message ?? undefined),
 }));
 
@@ -40,6 +43,12 @@ function readHandler<T>(socket: ReturnType<typeof createSocket>, event: string):
   return handler as T;
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return {promise, resolve};
+}
+
 function createCycleOptions(overrides: Record<string, unknown> = {}) {
   return {
     connectorKey: "main",
@@ -52,8 +61,19 @@ function createCycleOptions(overrides: Record<string, unknown> = {}) {
         id: "request-1",
       })),
     },
+    authorizeActor: vi.fn(async () => ({
+      authorized: true as const,
+      identityId: "identity-1",
+      identityHandle: "alice",
+      agentKey: "panda",
+      actorBindingId: "binding-1",
+      authorizationVersion: "grant-1",
+    })),
+    mediaQueue: new WhatsAppMediaWorkQueue({concurrency: 2, queueMax: 4}),
+    maxMediaBytes: 1024,
+    mediaDownloadTimeoutMs: 1_000,
     mediaStore: {
-      writeMedia: vi.fn(async () => ({
+      writeMediaFile: vi.fn(async () => ({
         id: "media-1",
         source: "whatsapp",
         connectorKey: "main",
@@ -135,9 +155,7 @@ describe("WhatsApp socket runtime cycle", () => {
       type: "notify",
       messages: [createPrivateMessage()],
     });
-    await Promise.resolve();
-
-    expect(options.requests.enqueueRequest).toHaveBeenCalledWith({
+    await vi.waitFor(() => expect(options.requests.enqueueRequest).toHaveBeenCalledWith({
       kind: "whatsapp_message",
       payload: expect.objectContaining({
         connectorKey: "main",
@@ -146,7 +164,7 @@ describe("WhatsApp socket runtime cycle", () => {
         externalMessageId: "msg-1",
         text: "hello from whatsapp",
       }),
-    }, expect.objectContaining({idempotencyKey: expect.stringMatching(/^ingress:v1:/)}));
+    }, expect.objectContaining({idempotencyKey: expect.stringMatching(/^ingress:v1:/)})));
 
     const stopWaiter = options.setStopWaiter.mock.calls.find(([waiter]) => typeof waiter === "function")?.[0];
     expect(stopWaiter).toBeTypeOf("function");
@@ -157,7 +175,7 @@ describe("WhatsApp socket runtime cycle", () => {
     });
   });
 
-  it("reconnects when upsert ingestion fails before shutdown", async () => {
+  it("keeps one bad upsert local instead of reconnecting the account", async () => {
     const options = createCycleOptions();
     options.requests.enqueueRequest.mockRejectedValue(new Error("queue unavailable"));
 
@@ -173,10 +191,16 @@ describe("WhatsApp socket runtime cycle", () => {
       messages: [createPrivateMessage()],
     });
 
-    await expect(cycle).resolves.toEqual({
-      reconnect: true,
-      reason: "upsert_error",
-    });
+    await vi.waitFor(() => expect(options.logs).toContainEqual({
+      event: "upsert_error",
+      payload: {
+        connectorKey: "main",
+        message: "queue unavailable",
+      },
+    }));
+    const stopWaiter = options.setStopWaiter.mock.calls.find(([waiter]) => typeof waiter === "function")?.[0];
+    stopWaiter();
+    await expect(cycle).resolves.toEqual({reconnect: false, reason: "stopped"});
     expect(options.logs).toContainEqual({
       event: "upsert_error",
       payload: {
@@ -184,5 +208,55 @@ describe("WhatsApp socket runtime cycle", () => {
         message: "queue unavailable",
       },
     });
+  });
+
+  it("bounds per-socket ingress work and drops overload before authorization", async () => {
+    const authorization = {
+      authorized: true as const,
+      identityId: "identity-1",
+      identityHandle: "alice",
+      agentKey: "panda",
+      actorBindingId: "binding-1",
+      authorizationVersion: "grant-1",
+    };
+    const firstAuthorization = deferred<typeof authorization>();
+    const options = createCycleOptions({
+      ingressConcurrency: 1,
+      ingressQueueMax: 1,
+    });
+    options.authorizeActor
+      .mockReturnValueOnce(firstAuthorization.promise)
+      .mockResolvedValue(authorization);
+
+    const cycle = waitForWhatsAppSocketCycle(options);
+    await Promise.resolve();
+    const upsertHandler = readHandler<(update: {type: "notify"; messages: WAMessage[]}) => void>(
+      options.socket,
+      "messages.upsert",
+    );
+    upsertHandler({
+      type: "notify",
+      messages: [
+        createPrivateMessage({key: {...createPrivateMessage().key, id: "msg-1"}}),
+        createPrivateMessage({key: {...createPrivateMessage().key, id: "msg-2"}}),
+        createPrivateMessage({key: {...createPrivateMessage().key, id: "msg-3"}}),
+      ],
+    });
+
+    await vi.waitFor(() => expect(options.logs).toContainEqual({
+      event: "message_dropped",
+      payload: {
+        connectorKey: "main",
+        reason: "ingress_overloaded",
+        messageCount: 1,
+      },
+    }));
+    expect(options.authorizeActor).toHaveBeenCalledOnce();
+
+    firstAuthorization.resolve(authorization);
+    await vi.waitFor(() => expect(options.requests.enqueueRequest).toHaveBeenCalledTimes(2));
+    const stopWaiter = options.setStopWaiter.mock.calls.find(([waiter]) => typeof waiter === "function")?.[0];
+    stopWaiter();
+    await expect(cycle).resolves.toEqual({reconnect: false, reason: "stopped"});
   });
 });

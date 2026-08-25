@@ -20,6 +20,7 @@ const WHATSAPP_BROWSER_NAME = "Chrome";
 export interface CreateWhatsAppSocketOptions {
   authHandle: WhatsAppAuthStateHandle;
   socketVersion?: WAVersion;
+  queryTimeoutMs?: number;
   persistCredsOnUpdate?: boolean;
 }
 
@@ -39,6 +40,7 @@ export function createWhatsAppSocket(options: CreateWhatsAppSocketOptions): WASo
     syncFullHistory: false,
     shouldSyncHistoryMessage: () => false,
     markOnlineOnConnect: false,
+    defaultQueryTimeoutMs: options.queryTimeoutMs ?? 30_000,
     getMessage: async () => undefined,
   });
 
