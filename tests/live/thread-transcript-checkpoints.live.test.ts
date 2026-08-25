@@ -77,6 +77,13 @@ function compactMetadata(compactedThroughSequence: number) {
   };
 }
 
+function planNodes(value: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(value)) return value.flatMap(planNodes);
+  if (!value || typeof value !== "object") return [];
+  const record = value as Record<string, unknown>;
+  return [record, ...Object.values(record).flatMap(planNodes)];
+}
+
 describe("Postgres transcript checkpoints", () => {
   it("requires TEST_DATABASE_URL for the PostgreSQL contract check", () => {
     expect(databaseUrl).toMatch(/^postgres(?:ql)?:\/\//);
@@ -162,7 +169,8 @@ describe("Postgres transcript checkpoints", () => {
           owner_holder_id TEXT,
           status TEXT NOT NULL,
           started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          abort_requested_at TIMESTAMPTZ
+          abort_requested_at TIMESTAMPTZ,
+          admitted_through_input_order BIGINT
         );
         CREATE INDEX messages_thread_sequence_idx
           ON ${quotedSchema}.messages (thread_id, sequence);
@@ -193,6 +201,15 @@ describe("Postgres transcript checkpoints", () => {
           message: stringToUserMessage(`message ${index}`),
         });
       }
+      await expect(store.loadActiveTranscript("thread-live-checkpoint")).resolves.toMatchObject({
+        checkpointId: null,
+        records: [
+          {sequence: 1},
+          {sequence: 2},
+          {sequence: 3},
+          {sequence: 4},
+        ],
+      });
 
       const first = await store.commitCompactionExclusively("thread-live-checkpoint", {
         expectedCheckpointId: null,
@@ -386,28 +403,32 @@ describe("Postgres transcript checkpoints", () => {
         VALUES ('thread-live-plan', 'session-live-plan')
       `);
       const inserted = await pool.query(`
-        INSERT INTO ${quotedSchema}.messages (
-          id,
-          thread_id,
-          origin,
-          source,
-          created_at,
-          message
+        WITH inserted AS (
+          INSERT INTO ${quotedSchema}.messages (
+            id,
+            thread_id,
+            origin,
+            source,
+            created_at,
+            message
+          )
+          SELECT
+            ('10000000-0000-4000-8000-' || LPAD(value::text, 12, '0'))::uuid,
+            'thread-live-plan',
+            'runtime',
+            'assistant',
+            NOW(),
+            jsonb_build_object('role', 'user', 'content', 'message ' || value, 'timestamp', value)
+          FROM generate_series(1, 100000) AS value
+          RETURNING sequence
         )
-        SELECT
-          ('10000000-0000-4000-8000-' || LPAD(value::text, 12, '0'))::uuid,
-          'thread-live-plan',
-          'runtime',
-          'assistant',
-          NOW(),
-          jsonb_build_object('role', 'user', 'content', 'message ' || value, 'timestamp', value)
-        FROM generate_series(1, 10000) AS value
-        RETURNING sequence
+        SELECT MAX(sequence) AS latest_sequence
+        FROM inserted
       `);
-      const latestOrdinarySequence = Math.max(
-        ...inserted.rows.map((row) => Number((row as {sequence: string}).sequence)),
+      const latestOrdinarySequence = Number(
+        (inserted.rows[0] as {latest_sequence: string}).latest_sequence,
       );
-      const compactedThroughSequence = latestOrdinarySequence - 100;
+      const compactedThroughSequence = latestOrdinarySequence - 300;
       await pool.query(`
         INSERT INTO ${quotedSchema}.messages (
           id,
@@ -431,9 +452,10 @@ describe("Postgres transcript checkpoints", () => {
         JSON.stringify(createCompactBoundaryMessage("bounded active history")),
         compactedThroughSequence,
       ]);
+      await pool.query(`ANALYZE ${quotedSchema}.messages`);
 
       const bounded = await store.loadActiveTranscript("thread-live-plan");
-      expect(bounded.records).toHaveLength(101);
+      expect(bounded.records).toHaveLength(301);
 
       const activeQuery = scopedPool.queries.findLast((query) => query.sql.includes("WITH checkpoint AS"));
       const forwardPageQuery = scopedPool.queries.findLast((query) => query.sql.includes("sequence > $2"));
@@ -441,17 +463,32 @@ describe("Postgres transcript checkpoints", () => {
       expect(forwardPageQuery).toBeDefined();
       const planClient = await pool.connect();
       try {
-        await planClient.query("SET enable_seqscan = off");
         const explained = await planClient.query(
-          `EXPLAIN (FORMAT JSON) ${scopedPool.scopeSql(activeQuery!.sql)}`,
+          `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${scopedPool.scopeSql(activeQuery!.sql)}`,
           [...activeQuery!.params],
         );
-        const planText = JSON.stringify(explained.rows[0]);
-        expect(planText).toContain("messages_compact_checkpoint_idx");
-        expect(planText).toContain("messages_thread_sequence_idx");
+        const nodes = planNodes(explained.rows[0]);
+        expect(nodes.some((node) => node["Index Name"] === "messages_compact_checkpoint_idx")).toBe(true);
+        const tailIndexNodes = nodes.filter((node) => (
+          node["Index Name"] === "messages_thread_sequence_idx"
+          && String(node["Index Cond"] ?? "").includes("sequence >")
+        ));
+        expect(tailIndexNodes.length).toBeGreaterThan(0);
+        expect(tailIndexNodes.every((node) => (
+          Number(node["Actual Rows"]) * Number(node["Actual Loops"]) <= 301
+        ))).toBe(true);
+        const lifetimeMessageScans = nodes.filter((node) => (
+          (node["Relation Name"] === "messages" || String(node["Index Name"] ?? "").startsWith("messages_"))
+          && Number(node["Actual Rows"]) * Number(node["Actual Loops"]) > 1_000
+        ));
+        expect(lifetimeMessageScans).toEqual([]);
+        const rowsRemovedByFilters = nodes.reduce((total, node) => (
+          total + Number(node["Rows Removed by Filter"] ?? 0) * Number(node["Actual Loops"] ?? 1)
+        ), 0);
+        expect(rowsRemovedByFilters).toBeLessThanOrEqual(1);
 
         const forwardPagePlan = await planClient.query(
-          `EXPLAIN (FORMAT JSON) ${scopedPool.scopeSql(forwardPageQuery!.sql)}`,
+          `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${scopedPool.scopeSql(forwardPageQuery!.sql)}`,
           [...forwardPageQuery!.params],
         );
         expect(JSON.stringify(forwardPagePlan.rows[0])).toContain("messages_thread_sequence_idx");

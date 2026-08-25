@@ -495,6 +495,9 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
   }
 
   async loadActiveTranscript(threadId: string): Promise<ThreadTranscriptSnapshot> {
+    // Keep the checkpoint cutoff as a scalar InitPlan value. A LEFT JOIN plus
+    // an OR looks equivalent, but PostgreSQL applies that cutoff after scanning
+    // the thread and makes compaction useless for database work.
     const result = await this.pool.query(`
       WITH checkpoint AS (
         SELECT id, compacted_through_sequence
@@ -510,20 +513,20 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
 
         UNION ALL
 
-        SELECT message.*, checkpoint.id AS active_checkpoint_id, 1 AS replay_order
+        SELECT
+          message.*,
+          NULL::uuid AS active_checkpoint_id,
+          1 AS replay_order
         FROM ${this.tables.messages} AS message
-        LEFT JOIN checkpoint ON TRUE
         WHERE message.thread_id = $1
+          AND message.compacted_through_sequence IS NULL
+          AND message.sequence > COALESCE(
+            (SELECT compacted_through_sequence FROM checkpoint),
+            -1
+          )
           AND (
             message.source <> 'compact'
             OR COALESCE(message.metadata ->> 'kind', '') <> 'compact_failure_notice'
-          )
-          AND (
-            checkpoint.id IS NULL
-            OR (
-              message.compacted_through_sequence IS NULL
-              AND message.sequence > checkpoint.compacted_through_sequence
-            )
           )
       )
       SELECT *
