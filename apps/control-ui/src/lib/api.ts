@@ -610,6 +610,7 @@ export type RuntimeActivity = {
 export type ModelCallTraceMode = "complete" | "stream" | string
 
 export type ModelCallTraceStatus = "completed" | "failed" | string
+export type ModelCallSnapshotStatus = "not_captured" | "captured" | "truncated" | "dropped" | string
 
 export type ModelCallTraceSummary = {
   id: string
@@ -622,7 +623,7 @@ export type ModelCallTraceSummary = {
   sessionAlias?: string | null
   sessionKind?: string | null
   turn: number | null
-  callIndex: number | null
+  attempt: number
   provider: string
   model: string
   mode: ModelCallTraceMode
@@ -633,6 +634,14 @@ export type ModelCallTraceSummary = {
   promptCacheKey: string | null
   usage: unknown | null
   error: Record<string, unknown> | null
+  snapshotStatus: ModelCallSnapshotStatus
+  requestShape: {
+    systemPromptChars: number
+    messageCount: number
+    toolCount: number
+    contextSectionCount: number
+    contextChars: number
+  }
   expiresAt: string
 }
 
@@ -649,7 +658,8 @@ export type ModelCallTraceList = PaginatedResponse<ModelCallTraceSummary> & {
 }
 
 export type ModelCallTraceDetail = ModelCallTraceSummary & {
-  request: Record<string, unknown>
+  snapshotAvailable: boolean
+  request: Record<string, unknown> | null
   response: unknown | null
 }
 
@@ -685,11 +695,18 @@ export type ModelCallUsage = {
 
 export type ScheduledTaskRun = {
   id: string
-  status: "queued" | "running" | "completed" | "failed" | "cancelled" | string
+  status:
+    | "pending"
+    | "claimed"
+    | "running"
+    | "succeeded"
+    | "failed"
+    | "cancelled"
   scheduledFor: string
   startedAt: string | null
   finishedAt: string | null
   resolvedThreadId?: string
+  threadInputId?: string
   threadRunId?: string
 }
 
@@ -707,6 +724,7 @@ export type ScheduledTask = {
     | "disabled"
     | "running"
     | "completed"
+    | "failed"
     | "cancelled"
   nextFireAt: string | null
   completedAt: string | null

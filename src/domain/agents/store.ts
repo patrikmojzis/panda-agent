@@ -7,7 +7,6 @@ import type {
 } from "./types.js";
 
 export interface AgentStore {
-  ensureSchema(): Promise<void>;
   bootstrapAgent(input: BootstrapAgentInput): Promise<AgentRecord>;
   getAgent(agentKey: string): Promise<AgentRecord>;
   listAgents(): Promise<readonly AgentRecord[]>;

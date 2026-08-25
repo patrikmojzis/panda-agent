@@ -67,7 +67,9 @@ For Panda runtime assembly, keep the public facade thin:
 - `daemon-lifecycle.ts` exposes `DaemonLifecycleContext`, the runtime/worker
   method slice the lifecycle actually uses. Do not make lifecycle tests or
   helpers assemble the full bootstrap `DaemonContext`.
-- `request-drain.ts` owns runtime request queue draining; daemon lifecycle only arms and stops it
+- `request-drain.ts` owns bounded runtime request queue draining; PostgreSQL
+  ordering keys preserve FIFO per causal stream while unrelated streams run in
+  parallel. Daemon lifecycle only configures, arms, and stops it.
 - `state/repo.ts` owns daemon heartbeat state parsing; lifecycle code should not
   consume raw daemon-state timestamps, stringified timestamp leftovers, or blank
   daemon keys
@@ -84,8 +86,8 @@ For Panda runtime assembly, keep the public facade thin:
   the stores/coordinator/helper methods it calls, not on the full daemon
   bootstrap context.
   Its thread store seam is intentionally small: thread lookup/update, runnable
-  checks, and compaction transcript load/append. Do not re-expand it to the full
-  runtime store for request handlers.
+  checks, and active transcript checkpoint reads/commits. Do not re-expand it
+  to the full runtime store for request handlers.
 - `execution-environment-resolver.ts` owns default environment resolution and
   should depend only on default-binding/environment lookup plus the optional
   lifecycle recovery seam. It should not require the full execution-environment
@@ -209,10 +211,11 @@ not from the thread runtime transaction helper.
 Generic Postgres transaction wrappers come from
 `src/lib/postgres-transaction.ts`; transaction control is not a thread runtime
 concept.
-Generic Postgres pool and CLI bootstrap helpers come from
-`src/lib/postgres-database.ts` and `src/lib/postgres-bootstrap.ts`; domain,
-integration, and model-facing modules should not import app runtime just to open
-a pool or ensure schemas.
+Generic Postgres pool and bounded CLI helpers come from
+`src/lib/postgres-database.ts`; domain, integration, and model-facing modules
+should not import app runtime just to open a pool. Schema changes belong to the
+append-only deployment migration catalog; stores and application startup never
+ensure or repair schema.
 Generic Postgres schema/identifier/relation-name helpers come from
 `src/lib/postgres-relations.ts`, not from any domain store's local
 `postgres-shared.ts`.
@@ -250,13 +253,30 @@ Keep domain Postgres code split by responsibility:
   roles before replay. Keep that boundary compatibility-light: validate the
   durable role invariant without freezing provider-specific message payloads.
 
+Thread history is append-only, but model replay is not a full-history read.
+`runtime.messages.compacted_through_sequence` is the canonical indexed
+checkpoint marker. Runtime execution loads the newest checkpoint plus ordinary
+messages after its cutoff; older checkpoints and compact failure notices never
+enter replay. A compaction commit locks the thread, verifies the checkpoint it
+summarized is still current, and appends the replacement checkpoint in one
+transaction. Auto-compaction also carries the owning run id so the run-ownership
+fence can reject stale writers.
+
+There is deliberately no production `loadTranscript()` escape hatch. Human
+history uses bounded newest-first pages, and chat lazily fetches older pages
+when the operator scrolls. Incremental refresh seeks forward from its last seen
+sequence, so notifications transfer only newly appended rows and large bursts
+cannot create gaps. Explicit diagnostics
+that need whole-thread totals scan bounded pages instead of materializing one
+unbounded database result.
+
 Session is the durable wake anchor. Scheduled tasks, watches, channel routing,
 A2A bindings, subagent handoff, and gateway delivery must resolve the session's
 current thread at the point where they enqueue or record work. Public ingress
 must reserve/claim durable state before resolving the current thread, so `/reset`
 cannot deliver to a stale backing thread.
 Claimed session-owned work must also settle its own claim locally. Runners that
-claim scheduled tasks, watches, or heartbeats own the complete/skip/fail policy
+claim scheduled-task occurrences, watches, or heartbeats own the complete/skip/fail policy
 for that claim, including current-thread resolution failures. Do not leave those
 failures to outer error logging or TTL expiry.
 
@@ -343,15 +363,34 @@ Public surfaces are security-sensitive:
 
 Session-owned inbound work must target sessions, then resolve the current
 thread at delivery time. The durable route/session state must be written before
-`submitInput`, and wake callbacks should carry `sessionId`, not captured
-`SessionRecord` objects.
-`src/domain/sessions/current-thread.ts` owns this delivery seam for both live
-wakes and queued inputs; callers should not open-code current-thread lookup
-next to `submitInput` or `enqueueInput`.
+`submitSessionInput`, and wake callbacks should carry `sessionId`, not captured
+`SessionRecord` objects. `ThreadRuntimeStore.enqueueSessionInput` locks the
+session and persists against its current thread in one statement; a separate
+`getSession` followed by thread enqueue is a reset race, not a valid delivery
+seam. `src/domain/sessions/current-thread.ts` owns the remaining helpers.
+
+Runtime input persistence has three deliberate boundaries:
+
+- `runtime_requests` is the daemon command queue. Claims use renewable tokens;
+  completion, failure, and cooperative shutdown release are fenced by the exact
+  token. Transport ingress carries a stable external-event idempotency key;
+  request effects use the request UUID as their operation identity.
+- `inputs` is the idempotency and delivery state machine. Pending rows own the
+  payload; applied or discarded rows retain only small lineage tombstones.
+- `messages` is canonical transcript history. Applying a bounded input batch
+  inserts messages, records `applied_run_id`, scrubs duplicate payloads, touches
+  the thread, and publishes the committed notification in one SQL statement.
+
+Input messages use the input UUID as their message UUID and persist `input_id`.
+Do not reintroduce pre-read dedupe, metadata-expression indexes, row-at-a-time
+application, or best-effort notify calls after commit. Run-owned mutations must
+use the shared active-run/daemon-lease fence.
 
 Runtime request records are discriminated by `kind`; each kind owns exactly one
 payload shape in `src/domain/threads/requests/types.ts`. Daemon dispatch should
-narrow by kind instead of casting payloads by hand.
+narrow by kind instead of casting payloads by hand. Completed requests are kept
+for 7 days and failed requests for 30 days; this is also the request idempotency
+window. The drain prunes both in bounded batches.
 
 ### `ui`
 
@@ -363,8 +402,8 @@ Human-facing surfaces.
 
 The UI can talk to the app layer, but it should not become the runtime source of truth.
 UI runtime services should expose read-shaped thread store slices, not the full
-mutation-capable runtime store. Chat and observe surfaces need snapshots,
-transcripts, and run lists; daemon requests own mutation.
+mutation-capable runtime store. Chat and observe surfaces need bounded
+transcript pages and the indexed latest-run state; daemon requests own mutation.
 
 ### `lib`
 
@@ -423,8 +462,10 @@ These are not "maybe later" ideas. They are structure rules.
   instead of cloning timer, single-flight drain, pending rerun, and stop-wait
   logic in each runner.
 - Daemon lifecycle should not inline runtime request queue draining. Keep
-  claim/process/complete/fail behavior behind `src/app/runtime/request-drain.ts`;
-  startup arms it in the background, and shutdown waits for active request work
+  claim/process/complete/fail/release behavior behind
+  `src/app/runtime/request-drain.ts`; startup arms it in the background, and
+  shutdown cooperatively cancels active work, releases its claim after unwind,
+  bounds non-cooperative drain time, and stops the coordinator concurrently
   before closing runtime resources.
 - Tests at public seams should use the same narrow contracts and guards as the
   runtime. If a test needs `as any` to inspect a payload, either type the fake

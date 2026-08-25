@@ -1,7 +1,6 @@
 import {AbortController} from "abort-controller";
 import path from "node:path";
 import {Bot, InputFile, type Context} from "grammy";
-import type {Pool} from "pg";
 
 import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../../../lib/health-server.js";
 import {ChannelActionWorker} from "../../../domain/channels/actions/worker.js";
@@ -29,7 +28,6 @@ import {
   stopConnectorWorkerRuntime,
   type ConnectorWorkerRuntimeHandle,
 } from "../worker-runtime.js";
-import {ensureSchemas} from "../../../lib/postgres-bootstrap.js";
 import {RuntimeRequestRepo} from "../../../domain/threads/requests/repo.js";
 import {TELEGRAM_POLL_TIMEOUT_SECONDS, TELEGRAM_SOURCE, TELEGRAM_UPDATES_CURSOR_KEY} from "./config.js";
 import {createTelegramOutboundAdapter} from "./outbound.js";
@@ -71,16 +69,6 @@ interface TelegramWorkerStores {
   connectorLeases: PostgresConnectorLeaseRepo;
   requests: RuntimeRequestRepo;
   mediaStore: FileSystemMediaStore;
-}
-
-export async function initializeTelegramWorkerSchemas(pool: Pool): Promise<void> {
-  await ensureSchemas([
-    new ChannelCursorRepo({pool}),
-    new PostgresOutboundDeliveryStore({pool}),
-    new PostgresChannelActionStore({pool}),
-    new PostgresConnectorLeaseRepo({pool}),
-    new RuntimeRequestRepo({pool}),
-  ]);
 }
 
 function rejectUnsupportedTelegramAction(_action: never): never {

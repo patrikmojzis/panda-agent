@@ -2,6 +2,7 @@ import type {LiveVoiceRepo} from "../../domain/live-voice/repo.js";
 import type {LiveVoiceSessionRecord, LiveVoiceTurnRecord} from "../../domain/live-voice/types.js";
 import type {LiveVoiceDelegationRequestPayload} from "../../domain/threads/requests/types.js";
 import type {ThreadRuntimeCoordinator, ThreadRuntimeEvent} from "../../domain/threads/runtime/coordinator.js";
+import type {ThreadEnqueueOptions} from "../../domain/threads/runtime/types.js";
 import {submitCurrentSessionInput} from "../../domain/sessions/current-thread.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
@@ -18,7 +19,8 @@ export async function handleLiveVoiceDelegationRequest(
   payload: LiveVoiceDelegationRequestPayload,
   options: {
     voice: LiveVoiceRepo;
-    coordinator: Pick<ThreadRuntimeCoordinator, "submitInput">;
+    coordinator: Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
+    enqueueOptions?: ThreadEnqueueOptions;
     sessions: Pick<SessionStore, "getSession">;
     identityStore: Pick<IdentityStore, "resolveIdentityBinding">;
     renderDelegation(input: LiveVoiceDelegationRenderInput): string;
@@ -38,9 +40,9 @@ export async function handleLiveVoiceDelegationRequest(
       : undefined;
     const identityId = binding?.identityId ?? turn.identityId;
     const target = await submitCurrentSessionInput({
-      sessions: options.sessions,
       sessionId: turn.sessionId,
       coordinator: options.coordinator,
+      ...(options.enqueueOptions === undefined ? {} : {options: options.enqueueOptions}),
       payload: {
         source: liveSession.source,
         channelId: liveSession.roomKey,

@@ -26,6 +26,7 @@ describe("image generate command", () => {
         id: "thread-1",
         sessionId: "session-main",
       });
+      const run = await store.createRun("thread-1");
       const jobService = new BackgroundToolJobService({store});
       let capturedRequest: GenerateOpenAIImageRequest | undefined;
       const command = createImageGenerateCommand({
@@ -70,6 +71,7 @@ describe("image generate command", () => {
           agentKey: "panda",
           sessionId: "session-main",
           threadId: "thread-1",
+          runId: run.id,
         },
       });
 
@@ -79,6 +81,7 @@ describe("image generate command", () => {
         summary: "Generate a sticker.",
       });
       const record = await jobService.wait("thread-1", String(result.output.jobId), 1_000);
+      expect(record.runId).toBe(run.id);
       expect(record.status).toBe("completed");
       expect(capturedRequest?.images).toHaveLength(1);
       const artifact = record.result?.details?.artifact as {path?: string} | undefined;

@@ -1,13 +1,12 @@
 import type {MediaDescriptor, RememberedRoute} from "../../../domain/channels/types.js";
 import type {IdentityStore} from "../../../domain/identity/store.js";
 import type {SessionRouteRepo} from "../../../domain/sessions/routes/repo.js";
-import type {SessionStore} from "../../../domain/sessions/store.js";
 import type {
   WhatsAppMessageRequestPayload,
   WhatsAppReactionRequestPayload,
 } from "../../../domain/threads/requests/types.js";
 import type {ThreadRuntimeCoordinator} from "../../../domain/threads/runtime/coordinator.js";
-import type {ThreadRecord} from "../../../domain/threads/runtime/types.js";
+import type {ThreadEnqueueOptions, ThreadRecord} from "../../../domain/threads/runtime/types.js";
 import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
 import {submitRememberedChannelInput} from "../inbound-delivery.js";
 import {WHATSAPP_SOURCE} from "./config.js";
@@ -32,10 +31,10 @@ interface WhatsAppInboundThreadResolver {
 }
 
 interface WhatsAppInboundRequestHandlerOptions {
-  coordinator: Pick<ThreadRuntimeCoordinator, "submitInput">;
+  coordinator: Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
+  enqueueOptions?: ThreadEnqueueOptions;
   identityStore: Pick<IdentityStore, "getIdentity" | "resolveIdentityBinding">;
   routes: Pick<SessionRouteRepo, "saveLastRoute">;
-  sessions: Pick<SessionStore, "getSession">;
   threads: WhatsAppInboundThreadResolver;
 }
 
@@ -110,8 +109,8 @@ export async function handleWhatsAppMessageRequest(
 
   const target = await submitRememberedChannelInput({
     coordinator: options.coordinator,
+    ...(options.enqueueOptions === undefined ? {} : {enqueueOptions: options.enqueueOptions}),
     routes: options.routes,
-    sessions: options.sessions,
     sessionId: thread.sessionId,
     identityId: binding.identityId,
     route: buildRoute(payload),
@@ -175,8 +174,8 @@ export async function handleWhatsAppReactionRequest(
 
   const target = await submitRememberedChannelInput({
     coordinator: options.coordinator,
+    ...(options.enqueueOptions === undefined ? {} : {enqueueOptions: options.enqueueOptions}),
     routes: options.routes,
-    sessions: options.sessions,
     sessionId: thread.sessionId,
     identityId: binding.identityId,
     route: buildRoute(payload),

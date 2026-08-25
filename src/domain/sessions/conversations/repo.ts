@@ -4,7 +4,6 @@ import type {PgPoolLike} from "../../../lib/postgres-query.js";
 import {isUniqueViolation} from "../../../lib/postgres-errors.js";
 import {requireNonEmptyString} from "../../../lib/strings.js";
 import {buildConversationSessionTableNames, type ConversationSessionTableNames} from "./postgres-shared.js";
-import {ensurePostgresConversationSessionSchema} from "./postgres-schema.js";
 import type {
   BindConversationInput,
   BindConversationResult,
@@ -69,10 +68,6 @@ export class ConversationRepo {
   constructor(options: ConversationRepoOptions) {
     this.pool = options.pool;
     this.tables = buildConversationSessionTableNames();
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresConversationSessionSchema(this.pool);
   }
 
   async getConversationBinding(lookup: ConversationLookup): Promise<ConversationBinding | null> {

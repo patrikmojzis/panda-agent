@@ -414,25 +414,25 @@ describe("postgres readonly query command", () => {
     expect(pool.connectCalls).toBe(0);
   });
 
-  it("blocks direct model call trace table reads while allowing session views", async () => {
+  it("blocks direct model call telemetry table reads while allowing session views", async () => {
     const pool = new FakeReadonlyPool([{id: "message-1"}]);
     const command = createCommand(pool);
     const blockedSql = [
-      "select * from runtime.model_call_traces limit 1",
-      "select '--' as marker, id from runtime.model_call_traces limit 1",
-      "select $tag$--$tag$ as marker, id from runtime.model_call_traces limit 1",
-      "select * from model_call_traces limit 1",
-      'select * from "runtime"."model_call_traces" limit 1',
-      'select * from runtime.U&"model_call\\005Ftraces" limit 1',
-      'select * from U&"model_call\\005Ftraces" limit 1',
-      "select * from runtime /* bypass */ . /* bypass */ model_call_traces limit 1",
-      "with traces as (select * from runtime.model_call_traces) select * from traces",
-      'select * from (select * from "model_call_traces") traces',
-      'with "model_call_traces" as (select 1) select * from "model_call_traces"',
+      "select * from runtime.model_call_attempts limit 1",
+      "select '--' as marker, id from runtime.model_call_snapshots limit 1",
+      "select $tag$--$tag$ as marker, id from runtime.model_call_attempts limit 1",
+      "select * from model_call_snapshots limit 1",
+      'select * from "runtime"."model_call_attempts" limit 1',
+      'select * from runtime.U&"model_call\\005Fattempts" limit 1',
+      'select * from U&"model_call\\005Fsnapshots" limit 1',
+      "select * from runtime /* bypass */ . /* bypass */ model_call_attempts limit 1",
+      "with attempts as (select * from runtime.model_call_attempts) select * from attempts",
+      'select * from (select * from "model_call_snapshots") snapshots',
+      'with "model_call_attempts" as (select 1) select * from "model_call_attempts"',
     ];
 
     for (const sql of blockedSql) {
-      await expect(command.execute(request(sql))).rejects.toThrow("Model call traces are not exposed through readonly SQL.");
+      await expect(command.execute(request(sql))).rejects.toThrow("Model call telemetry is not exposed through readonly SQL.");
     }
     expect(pool.connectCalls).toBe(0);
 

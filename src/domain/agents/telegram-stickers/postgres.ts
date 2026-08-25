@@ -3,7 +3,6 @@ import {requireNonNegativeInteger} from "../../../lib/numbers.js";
 import {requireTimestampMillis} from "../../../lib/postgres-values.js";
 import {optionalTrimmedString, requireNonEmptyString} from "../../../lib/strings.js";
 import {normalizeAgentKey} from "../types.js";
-import {ensurePostgresTelegramStickerSchema} from "./postgres-schema.js";
 import {buildTelegramStickerTableNames, type TelegramStickerTableNames} from "./postgres-shared.js";
 import type {TelegramStickerStore} from "./store.js";
 import {
@@ -127,10 +126,6 @@ export class PostgresTelegramStickerStore implements TelegramStickerStore {
 
   constructor(options: {pool: PgPoolLike}) {
     this.pool = options.pool;
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresTelegramStickerSchema(this.pool);
   }
 
   async importStickers(rawInput: ImportTelegramStickersInput): Promise<ImportTelegramStickersResult> {

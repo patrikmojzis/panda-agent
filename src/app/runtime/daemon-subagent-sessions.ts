@@ -7,8 +7,8 @@ import type {
 
 export interface DaemonCreateSubagentSessionInput {
   identity: IdentityRecord;
-  sessionId?: string;
-  threadId?: string;
+  sessionId: string;
+  threadId: string;
   agentKey?: string;
   parentSessionId: string;
   prompt: string;

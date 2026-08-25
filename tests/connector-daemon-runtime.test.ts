@@ -38,13 +38,12 @@ describe("connector daemon runtime", () => {
       end,
     };
     const createPool = vi.fn(() => pool);
-    const initialize = vi.fn(async () => {});
+    const verifySchema = vi.fn(async () => {});
     const runtime = await startConnectorDaemonRuntime({
       source: "discord",
       dbUrl: "postgres://connector-test",
       poolMaxEnvKey: "PANDA_DISCORD_DB_POOL_MAX",
       reconnectDelayMs: 1,
-      initialize,
       log: vi.fn(),
       additionalNotifications: [{
         key: "voice",
@@ -56,10 +55,10 @@ describe("connector daemon runtime", () => {
           return typeof value === "string" ? value : null;
         },
       }],
-      dependencies: {createPool: createPool as never},
+      dependencies: {createPool: createPool as never, verifySchema: verifySchema as never},
     });
 
-    expect(initialize).toHaveBeenCalledOnce();
+    expect(verifySchema).toHaveBeenCalledOnce();
     expect(createPool).toHaveBeenCalledWith(expect.objectContaining({
       applicationName: "panda/discord",
       max: 2,
@@ -139,7 +138,6 @@ describe("connector daemon runtime", () => {
         source: "telegram",
         dbUrl: "postgres://connector-test",
         poolMaxEnvKey: "PANDA_TELEGRAM_DB_POOL_MAX",
-        initialize: vi.fn(),
         log: vi.fn(),
       })).rejects.toThrow("must be at least 2");
     }
@@ -155,11 +153,11 @@ describe("connector daemon runtime", () => {
       source: "whatsapp",
       dbUrl: "postgres://connector-test",
       poolMaxEnvKey: "PANDA_WHATSAPP_DB_POOL_MAX",
-      initialize: vi.fn(async () => {}),
       log: vi.fn(),
       dependencies: {
         createPool: createPool as never,
         observePool: () => ({stop: vi.fn()}),
+        verifySchema: vi.fn(async () => {}) as never,
         startNotificationListener: vi.fn(async () => ({
           close: closeListener,
           getSnapshot: () => ({status: "listening", listening: true}),
@@ -182,11 +180,11 @@ describe("connector daemon runtime", () => {
       source: "telegram",
       dbUrl: "postgres://connector-test",
       poolMaxEnvKey: "PANDA_TELEGRAM_DB_POOL_MAX",
-      initialize: vi.fn(async () => {}),
       log: vi.fn(),
       dependencies: {
         createPool: vi.fn(() => ({end})) as never,
         observePool: () => ({stop: stopObserver}),
+        verifySchema: vi.fn(async () => {}) as never,
         startNotificationListener: vi.fn(async () => {
           throw new Error("listen startup failed");
         }) as never,
@@ -204,7 +202,6 @@ describe("connector daemon runtime", () => {
       source: "discord",
       dbUrl: "postgres://connector-test",
       poolMaxEnvKey: "PANDA_DISCORD_DB_POOL_MAX",
-      initialize: vi.fn(async () => {}),
       log: vi.fn(),
       dependencies: {
         createPool: vi.fn(() => ({end})) as never,

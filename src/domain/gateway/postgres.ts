@@ -32,7 +32,6 @@ import {
   parseOptionalGatewayMetadata,
   requireGatewayTrimmedString,
 } from "./postgres-rows.js";
-import {ensurePostgresGatewaySchema} from "./postgres-schema.js";
 import {buildGatewayTableNames} from "./postgres-shared.js";
 import type {
   CreateGatewaySourceInput,
@@ -213,10 +212,6 @@ export class PostgresGatewayStore {
 
   constructor(options: {pool: PgQueryable}) {
     this.pool = options.pool;
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresGatewaySchema(this.pool);
   }
 
   private requireTransactionalPool(): PgPoolLike {

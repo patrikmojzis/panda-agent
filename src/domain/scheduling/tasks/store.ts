@@ -1,22 +1,23 @@
 import type {
-    CancelScheduledTaskInput,
-    ClaimScheduledTaskInput,
-    ClaimScheduledTaskResult,
-    CompleteScheduledTaskRunInput,
-    CreateScheduledTaskInput,
-    FailScheduledTaskRunInput,
-    ListActiveScheduledTasksInput,
-    ListScheduledTaskRunsInput,
-    ListScheduledTasksInput,
-    ListDueScheduledTasksInput,
-    ScheduledTaskRecord,
-    ScheduledTaskRunRecord,
-    StartScheduledTaskRunInput,
-    UpdateScheduledTaskInput,
+  CancelScheduledTaskInput,
+  ClaimScheduledTaskResult,
+  ClaimScheduledTaskRunInput,
+  CompleteScheduledTaskRunInput,
+  CreateScheduledTaskInput,
+  FailScheduledTaskRunInput,
+  ListActiveScheduledTasksInput,
+  ListDueScheduledTasksInput,
+  ListScheduledTaskRunsInput,
+  ListScheduledTasksInput,
+  MaterializeScheduledTaskRunsInput,
+  RenewScheduledTaskRunClaimInput,
+  ScheduledTaskRecord,
+  ScheduledTaskRunRecord,
+  StartScheduledTaskRunInput,
+  UpdateScheduledTaskInput,
 } from "./types.js";
 
 export interface ScheduledTaskStore {
-  ensureSchema(): Promise<void>;
   createTask(input: CreateScheduledTaskInput): Promise<ScheduledTaskRecord>;
   updateTask(input: UpdateScheduledTaskInput): Promise<ScheduledTaskRecord>;
   cancelTask(input: CancelScheduledTaskInput): Promise<ScheduledTaskRecord>;
@@ -25,11 +26,10 @@ export interface ScheduledTaskStore {
   listTaskRuns(input: ListScheduledTaskRunsInput): Promise<readonly ScheduledTaskRunRecord[]>;
   listActiveTasks(input: ListActiveScheduledTasksInput): Promise<readonly ScheduledTaskRecord[]>;
   listDueTasks(input?: ListDueScheduledTasksInput): Promise<readonly ScheduledTaskRecord[]>;
-  claimTask(input: ClaimScheduledTaskInput): Promise<ClaimScheduledTaskResult | null>;
+  materializeTaskRuns(input: MaterializeScheduledTaskRunsInput): Promise<readonly ScheduledTaskRunRecord[]>;
+  claimTaskRun(input: ClaimScheduledTaskRunInput): Promise<ClaimScheduledTaskResult | null>;
+  renewTaskRunClaim(input: RenewScheduledTaskRunClaimInput): Promise<ScheduledTaskRunRecord | null>;
   startTaskRun(input: StartScheduledTaskRunInput): Promise<ScheduledTaskRunRecord>;
   completeTaskRun(input: CompleteScheduledTaskRunInput): Promise<ScheduledTaskRunRecord>;
   failTaskRun(input: FailScheduledTaskRunInput): Promise<ScheduledTaskRunRecord>;
-  clearTaskClaim(taskId: string): Promise<ScheduledTaskRecord>;
-  markTaskCompleted(taskId: string): Promise<ScheduledTaskRecord>;
-  markTaskFailed(taskId: string): Promise<ScheduledTaskRecord>;
 }

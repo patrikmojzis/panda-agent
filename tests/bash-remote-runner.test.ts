@@ -20,6 +20,7 @@ import {
 } from "../src/index.js";
 import {ExecutionEnvironmentResolver} from "../src/app/runtime/execution-environment-resolver.js";
 import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/postgres.js";
+import {ensurePostgresExecutionEnvironmentSchema} from "../src/domain/execution-environments/postgres-schema.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {RemoteShellExecutor, resolveRunnerUrl,} from "../src/integrations/shell/bash-executor.js";
 import {
@@ -161,7 +162,7 @@ describe("remote bash runner", () => {
     const pool = await createDbPool();
     const stores = await createRuntimeStores(pool);
     const environmentStore = new PostgresExecutionEnvironmentStore({pool});
-    await environmentStore.ensureSchema();
+    await ensurePostgresExecutionEnvironmentSchema(pool);
     const session = await stores.sessionStore.createSession({
       id: "session-db-bound-runner",
       agentKey: "panda",
@@ -248,6 +249,7 @@ describe("remote bash runner", () => {
     });
     const service = new BackgroundToolJobService({
       store,
+      owner: {source: "test", connectorKey: "remote-bash", holderId: "remote-bash-owner"},
       env: {
         ...process.env,
         BASH_EXECUTION_MODE: "remote",
@@ -1412,6 +1414,91 @@ describe("remote bash runner", () => {
     expect(pendingStarts).toHaveLength(2);
   });
 
+  it("cancels a pending start while its initial snapshot is blocked", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    let snapshotStarted!: () => void;
+    let releaseSnapshot!: () => void;
+    const started = new Promise<void>((resolve) => { snapshotStarted = resolve; });
+    const released = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
+    let status: BashJobSnapshot["status"] = "running";
+    let cancelCalls = 0;
+    const runner = await createRunner("panda", {
+      commandExecutor: {
+        execute: async () => { throw new Error("unexpected exec"); },
+        startJob: async (input) => ({
+          snapshot: async () => {
+            snapshotStarted();
+            await released;
+            return fakeJobSnapshot(input, status);
+          },
+          wait: async () => fakeJobSnapshot(input, status),
+          cancel: async () => {
+            cancelCalls += 1;
+            status = "cancelled";
+            return fakeJobSnapshot(input, status);
+          },
+        }),
+      },
+    });
+    const request = directJobStartRequest("job-cancel-blocked-snapshot", agentHome, "sleep 60");
+
+    const start = requestDirectRunnerJob(runner, "start", request);
+    await started;
+    const cancel = await requestDirectRunnerJob(runner, "cancel", {
+      jobId: request.jobId,
+      reserveIfMissing: true,
+    });
+    expect(cancel.status).toBe(200);
+    await expect(cancel.json()).resolves.toMatchObject({cancelled: true, pending: true});
+    expect(cancelCalls).toBe(1);
+
+    releaseSnapshot();
+    const startResponse = await start;
+    expect(startResponse.status).toBe(409);
+    await expect(startResponse.json()).resolves.toMatchObject({
+      error: "Background job job-cancel-blocked-snapshot was cancelled during start.",
+    });
+  });
+
+  it("keeps cancellation on a pending start instead of an expiring tombstone", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    let resolveStart!: (job: CommandExecutorJob) => void;
+    let startInput!: CommandExecutorJobStartInput;
+    let cancelCalls = 0;
+    const runner = await createRunner("panda", {
+      commandExecutor: {
+        execute: async () => { throw new Error("unexpected exec"); },
+        startJob: (input) => {
+          startInput = input;
+          return new Promise<CommandExecutorJob>((resolve) => { resolveStart = resolve; });
+        },
+      },
+    });
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const request = directJobStartRequest("job-pending-cancel-state", agentHome, "sleep 60");
+
+    const start = requestDirectRunnerJob(runner, "start", request);
+    await waitFor(() => resolveStart !== undefined);
+    const cancel = await requestDirectRunnerJob(runner, "cancel", {
+      jobId: request.jobId,
+      timeoutMs: 1,
+      reserveIfMissing: true,
+    });
+    expect(cancel.status).toBe(200);
+    expect(setTimeoutSpy.mock.calls.some((call) => call[1] === 30_000)).toBe(false);
+
+    resolveStart({
+      snapshot: () => fakeJobSnapshot(startInput, "running"),
+      wait: async () => fakeJobSnapshot(startInput, "cancelled"),
+      cancel: async () => {
+        cancelCalls += 1;
+        return fakeJobSnapshot(startInput, "cancelled");
+      },
+    });
+    expect((await start).status).toBe(409);
+    expect(cancelCalls).toBe(1);
+  });
+
   it("drains a created job when snapshot publication fails before ownership transfer", async () => {
     const agentHome = await createWorkspace("runtime-agent-home-");
     const cleanupCalls: string[] = [];
@@ -1478,6 +1565,9 @@ describe("remote bash runner", () => {
   it("does not recreate an abort timer when close races an accepted slow body", async () => {
     const runner = await createRunner("panda");
     const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+    const requestAccepted = new Promise<void>((resolve) => {
+      runner.server.once("request", () => resolve());
+    });
     let closeStarted: Promise<void> | undefined;
     const response = new Promise<{statusCode: number; body: string}>((resolve, reject) => {
       const clientRequest = httpRequest({
@@ -1505,8 +1595,7 @@ describe("remote bash runner", () => {
         });
       });
       clientRequest.write('{"requestId":"slow');
-      void connected.then(async () => {
-        await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+      void Promise.all([connected, requestAccepted]).then(async () => {
         closeStarted = runner.close();
         clientRequest.end('-abort"}');
         await closeStarted;
@@ -2446,6 +2535,180 @@ describe("remote bash runner", () => {
     expect(JSON.stringify(output)).not.toContain("call-secret");
   });
 
+  it("compensates an accepted remote start whose response is lost during shutdown", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const runner = await createRunner("panda");
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({
+      id: "thread-ambiguous-remote-start",
+      sessionId: "session-ambiguous-remote-start",
+    });
+    const service = new BackgroundToolJobService({
+      store,
+      owner: {source: "test", connectorKey: "remote-bash", holderId: "ambiguous-start-owner"},
+      shutdownSettleTimeoutMs: 2_000,
+    });
+    let acceptedStart!: () => void;
+    const startAccepted = new Promise<void>((resolve) => {
+      acceptedStart = resolve;
+    });
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (!url.endsWith("/jobs/start")) {
+        return fetch(input, init);
+      }
+
+      await fetch(input, init);
+      acceptedStart();
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        const rejectFromAbort = () => reject(signal?.reason ?? new Error("start response lost"));
+        if (signal?.aborted) {
+          rejectFromAbort();
+          return;
+        }
+        signal?.addEventListener("abort", rejectFromAbort, {once: true});
+      });
+    };
+    const bash = new BashTool({
+      env: {
+        BASH_EXECUTION_MODE: "remote",
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+      },
+      fetchImpl,
+      jobService: service,
+    });
+    const pidFile = path.join(agentHome, "ambiguous-start.pid");
+    const context: DefaultAgentSessionContext = {
+      threadId: "thread-ambiguous-remote-start",
+      agentKey: "panda",
+      cwd: agentHome,
+      shell: {cwd: agentHome, env: {}},
+    };
+
+    const starting = bash.run({
+      command: `printf '%s' "$$" > ${JSON.stringify(pidFile)}; exec sleep 60`,
+      background: true,
+    }, createRunContext(context));
+    await startAccepted;
+    await waitFor(async () => {
+      try {
+        return Number.isInteger(Number((await readFile(pidFile, "utf8")).trim()));
+      } catch {
+        return false;
+      }
+    });
+    const pid = Number((await readFile(pidFile, "utf8")).trim());
+    expect(() => process.kill(pid, 0)).not.toThrow();
+
+    const rejectedStart = expect(starting).rejects.toThrow("Runtime shutdown");
+    await service.close();
+    await rejectedStart;
+    await waitFor(() => {
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code === "ESRCH";
+      }
+    });
+    await expect(store.listToolJobs("thread-ambiguous-remote-start")).resolves.toEqual([
+      expect.objectContaining({status: "cancelled", statusReason: "Runtime shutdown."}),
+    ]);
+  }, 10_000);
+
+  it("compensates when a proxy rejects an origin-accepted remote start", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const runner = await createRunner("panda");
+    const store = new TestThreadRuntimeStore();
+    await store.createThread({
+      id: "thread-proxy-rejected-start",
+      sessionId: "session-proxy-rejected-start",
+    });
+    const service = new BackgroundToolJobService({
+      store,
+      owner: {source: "test", connectorKey: "remote-bash", holderId: "proxy-start-owner"},
+    });
+    const pidFile = path.join(agentHome, "proxy-rejected-start.pid");
+    const fetchImpl: typeof fetch = async (input, init) => {
+      if (!String(input).endsWith("/jobs/start")) return fetch(input, init);
+      const accepted = await fetch(input, init);
+      expect(accepted.status).toBe(200);
+      await waitFor(async () => {
+        try {
+          return (await readFile(pidFile, "utf8")).trim().length > 0;
+        } catch {
+          return false;
+        }
+      });
+      return new Response(JSON.stringify({ok: false, error: "proxy lost the origin response"}), {
+        status: 502,
+        headers: {"content-type": "application/json"},
+      });
+    };
+    const bash = new BashTool({
+      env: {
+        BASH_EXECUTION_MODE: "remote",
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+      },
+      fetchImpl,
+      jobService: service,
+    });
+    const context: DefaultAgentSessionContext = {
+      threadId: "thread-proxy-rejected-start",
+      agentKey: "panda",
+      cwd: agentHome,
+      shell: {cwd: agentHome, env: {}},
+    };
+
+    await expect(bash.run({
+      command: `printf '%s' "$$" > ${JSON.stringify(pidFile)}; exec sleep 60`,
+      background: true,
+    }, createRunContext(context))).rejects.toThrow("proxy lost the origin response");
+    const pid = Number((await readFile(pidFile, "utf8")).trim());
+    await waitFor(() => {
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code === "ESRCH";
+      }
+    });
+    await service.close();
+  }, 10_000);
+
+  it("reserves cancellation before an ambiguous remote start arrives", async () => {
+    const agentHome = await createWorkspace("runtime-agent-home-");
+    const runner = await createRunner("panda");
+    const headers = buildDirectRunnerHeaders("panda");
+    const cancelled = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/cancel`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({jobId: "job-cancel-before-start", reserveIfMissing: true}),
+    });
+    expect(cancelled.status).toBe(200);
+    await expect(cancelled.json()).resolves.toMatchObject({ok: true, cancelled: true});
+
+    const start = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/jobs/start`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jobId: "job-cancel-before-start",
+        command: "sleep 60",
+        cwd: agentHome,
+        maxRuntimeMs: 60_000,
+        trackedEnvKeys: [],
+        maxOutputChars: 8_000,
+        persistOutputThresholdChars: 8_000,
+      }),
+    });
+    expect(start.status).toBe(409);
+    await expect(start.json()).resolves.toMatchObject({
+      ok: false,
+      error: "Background job job-cancel-before-start was cancelled before start.",
+    });
+  });
+
   it("redacts explicit short source secret output for remote background jobs without hiding unrelated output", async () => {
     const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda");
@@ -2587,16 +2850,21 @@ describe("remote bash runner", () => {
       id: "thread-bg-remote",
       sessionId: "session-bg-remote",
     });
-    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
-      ok: false,
-      error: "Not found.",
-    }), {
-      status: 404,
-      headers: {
-        "content-type": "application/json",
-      },
-    }));
-    const service = new BackgroundToolJobService({store});
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo) => (
+      String(input).endsWith("/jobs/cancel")
+        ? new Response(JSON.stringify({ok: true, cancelled: true}), {
+            status: 200,
+            headers: {"content-type": "application/json"},
+          })
+        : new Response(JSON.stringify({ok: false, error: "Not found."}), {
+            status: 404,
+            headers: {"content-type": "application/json"},
+          })
+    ));
+    const service = new BackgroundToolJobService({
+      store,
+      owner: {source: "test", connectorKey: "remote-bash", holderId: "remote-bash-owner"},
+    });
     const bash = new BashTool({
       env: {
         BASH_EXECUTION_MODE: "remote",
@@ -2620,8 +2888,13 @@ describe("remote bash runner", () => {
       createRunContext(context),
     )).rejects.toBeInstanceOf(ToolError);
 
-    await expect(store.listToolJobs("thread-bg-remote")).resolves.toHaveLength(0);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    await expect(store.listToolJobs("thread-bg-remote")).resolves.toEqual([
+      expect.objectContaining({
+        status: "failed",
+        statusReason: "Background tool job failed to start.",
+      }),
+    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it("returns a clean error for unknown remote background jobs", async () => {
@@ -2720,7 +2993,12 @@ describe("remote bash runner", () => {
       createRunContext(context),
     )).rejects.toThrow(`Requested cwd does not exist inside the remote bash runner: ${missingCwd}`);
 
-    await expect(store.listToolJobs("thread-bg-remote")).resolves.toHaveLength(0);
+    await expect(store.listToolJobs("thread-bg-remote")).resolves.toEqual([
+      expect.objectContaining({
+        status: "failed",
+        statusReason: "Background tool job failed to start.",
+      }),
+    ]);
   });
 
   it("routes runner urls by agent key", async () => {

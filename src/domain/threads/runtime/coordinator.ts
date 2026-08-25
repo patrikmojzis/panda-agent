@@ -1,25 +1,33 @@
 import type {Message, ThinkingLevel} from "@earendil-works/pi-ai";
+import {randomUUID} from "node:crypto";
 
-import {sleep} from "../../../lib/async.js";
+import {runInBackground, sleep, withFallbackTimeout} from "../../../lib/async.js";
 import {runThreadStep, Thread, type ThreadResumeState, type ThreadStepResult} from "../../../kernel/agent/thread.js";
 import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
 import {resolveModelRuntimeBudget} from "../../../kernel/models/model-context-policy.js";
 import {ContextWindowExceededError, ProviderRuntimeError} from "../../../kernel/agent/exceptions.js";
 import {resolveRuntimeDefaultModelSelector} from "../../../kernel/models/default-model.js";
 import type {ThreadRunEvent} from "../../../kernel/agent/types.js";
-import type {LlmModelCallTracer} from "../../../kernel/agent/runtime.js";
+import type {LlmModelCallObserver} from "../../../kernel/agent/runtime.js";
 import {stringifyUnknown} from "../../../kernel/agent/helpers/stringify.js";
 import type {
   AutoCompactionRuntimeState,
   InferenceProjection,
   ResolvedThreadDefinition,
   ThreadDefinitionResolver,
+  ThreadEnqueueOptions,
   ThreadInputPayload,
   ThreadMessageRecord,
   ThreadRecord,
   ThreadRunRecord,
+  ThreadRunOwner,
+  ThreadTranscriptSnapshot,
 } from "./types.js";
-import type {ThreadInputApplyScope, ThreadRuntimeStore} from "./store.js";
+import {
+  ThreadRunClaimLostError,
+  type ThreadEnqueueResult,
+  type ThreadRuntimeStore,
+} from "./store.js";
 import {
   appendCompactionFailureNotice,
   AUTO_COMPACT_BREAKER_COOLDOWN_MS,
@@ -27,7 +35,6 @@ import {
   compactThread,
   CompactThreadError,
   estimateTranscriptTokens,
-  projectTranscriptForRun,
   readAutoCompactionRuntimeState,
   shouldAutoCompactThread,
   updateAutoCompactionRuntimeState,
@@ -39,6 +46,11 @@ import {
 import {rehydrateProjectedToolArtifacts} from "./tool-artifact-replay.js";
 import {isRecord} from "../../../lib/records.js";
 import {renderRuntimeAutonomyContext} from "../../../prompts/runtime/autonomy-context.js";
+import type {ThreadRuntimeNotification} from "./postgres-notifications.js";
+import {
+  ThreadRunScheduler,
+  type ThreadRunExecutionResult,
+} from "./scheduler.js";
 
 export type ThreadWakeMode = "wake" | "queue";
 
@@ -47,9 +59,16 @@ export type OrphanedRunRecoveryProbableCause =
   | "unknown"
   | "previous_runtime_stopped_before_run_completed";
 
-const ABORT_POLL_MS = 250;
-const LEASE_RETRY_BACKOFF_MS = 250;
-const ORPHANED_RUN_RECOVERY_MECHANISM = "thread_lease_gated_orphan_sweep";
+const NOTIFICATION_FALLBACK_INTERVAL_MS = 5_000;
+const RUNNABLE_RECONCILIATION_BATCH_SIZE = 100;
+const RUNNABLE_BACKLOG_RETRY_INTERVAL_MS = 5_000;
+const ORPHANED_RUN_RECOVERY_BATCH_SIZE = 1_000;
+const ORPHANED_TOOL_JOB_RECOVERY_BATCH_SIZE = 1_000;
+const RUN_SETTLEMENT_MAX_RETRY_DELAY_MS = 1_000;
+const THREAD_SETTLEMENT_RECONCILIATION_INITIAL_RETRY_DELAY_MS = 25;
+const THREAD_SETTLEMENT_RECONCILIATION_MAX_RETRY_DELAY_MS = 1_000;
+const ORPHANED_RUN_RECOVERY_MECHANISM = "daemon_lease_fenced_run_claim_sweep";
+const ORPHANED_TOOL_JOB_REASON = "The owning runtime stopped before the background tool job finished.";
 
 export function formatOrphanedRunRecoveryReason(input: {
   recoveryTrigger: OrphanedRunRecoveryTrigger;
@@ -62,20 +81,12 @@ export function formatOrphanedRunRecoveryReason(input: {
   return `Run marked failed during orphaned-run recovery; recoveryTrigger=${input.recoveryTrigger}; recoveryMechanism=${ORPHANED_RUN_RECOVERY_MECHANISM}; probableCause=${probableCause}; recoveredAt=${recoveredAt}.`;
 }
 
-export interface ThreadLease {
-  threadId: string;
-  release(): Promise<void>;
-}
-
-export interface ThreadLeaseManager {
-  tryAcquire(threadId: string): Promise<ThreadLease | null>;
-}
-
 export interface ThreadRuntimeCoordinatorOptions {
   store: ThreadRuntimeStore;
   resolveDefinition: ThreadDefinitionResolver;
-  leaseManager: ThreadLeaseManager;
-  modelCallTracer?: LlmModelCallTracer;
+  maxConcurrentRuns: number;
+  shutdownDrainTimeoutMs?: number;
+  modelCallObserver?: LlmModelCallObserver;
   onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
 }
 
@@ -105,12 +116,25 @@ export type ThreadRuntimeEvent =
 
 interface ThreadBoundaryState {
   hasRunnableInputs: boolean;
+  hasAdmittedInputs: boolean;
   hadPendingWake: boolean;
 }
 
-interface ThreadRunAttemptResult {
-  restartRequested: boolean;
-  acquiredLease: boolean;
+export type ThreadRuntimeNotificationStatus = "listening" | "reconnecting" | "closed";
+
+interface ActiveRunSignal {
+  threadId: string;
+  signal: AbortSignal;
+}
+
+interface ThreadChangeWaiter {
+  promise: Promise<void>;
+  resolve(): void;
+}
+
+export interface ThreadExclusiveAccess {
+  signal: AbortSignal;
+  owner: ThreadRunOwner;
 }
 
 const IDLE_REROLL_SUPPRESSED_INPUT_SOURCES = new Set([
@@ -271,18 +295,70 @@ type AutoCompactionPreflightResult =
 export class ThreadRuntimeCoordinator {
   private readonly store: ThreadRuntimeStore;
   private readonly resolveDefinition: ThreadDefinitionResolver;
-  private readonly leaseManager: ThreadLeaseManager;
-  private readonly modelCallTracer?: LlmModelCallTracer;
+  private readonly modelCallObserver?: LlmModelCallObserver;
   private readonly onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
-  private readonly activeRuns = new Map<string, Promise<ThreadRunAttemptResult>>();
-  private readonly activeSignals = new Map<string, AbortController>();
+  private readonly scheduler: ThreadRunScheduler;
+  private readonly shutdownDrainTimeoutMs: number;
+  private readonly activeSignalsByRun = new Map<string, ActiveRunSignal>();
+  private readonly changeWaitersByThread = new Map<string, Set<ThreadChangeWaiter>>();
+  private readonly abortReconciliations = new Set<Promise<void>>();
+  private notificationFallbackTimer: NodeJS.Timeout | null = null;
+  private notificationFallbackInFlight = false;
+  private runnableReconciliation: Promise<void> | null = null;
+  private runnableBacklog = false;
+  private runnableBacklogRetryTimer: NodeJS.Timeout | null = null;
+  private notificationStatus: ThreadRuntimeNotificationStatus = "closed";
+  private notificationStatusGeneration = 0;
+  private owner: ThreadRunOwner | null = null;
+  private shutdownSettlementDeadlineAt: number | null = null;
+  private stopped = true;
+  private closed = false;
 
   constructor(options: ThreadRuntimeCoordinatorOptions) {
     this.store = options.store;
     this.resolveDefinition = options.resolveDefinition;
-    this.leaseManager = options.leaseManager;
-    this.modelCallTracer = options.modelCallTracer;
+    this.modelCallObserver = options.modelCallObserver;
     this.onEvent = options.onEvent;
+    this.shutdownDrainTimeoutMs = options.shutdownDrainTimeoutMs ?? 30_000;
+    if (!Number.isInteger(this.shutdownDrainTimeoutMs) || this.shutdownDrainTimeoutMs <= 0) {
+      throw new Error("Thread run shutdown drain timeout must be a positive integer.");
+    }
+    this.scheduler = new ThreadRunScheduler({
+      maxConcurrentRuns: options.maxConcurrentRuns,
+      shutdownDrainTimeoutMs: this.shutdownDrainTimeoutMs,
+      run: (threadId, signal) => this.runUntilIdle(threadId, signal),
+      onRunSettled: async (threadId, result) => {
+        if (result.outcome === "completed" || result.outcome === "no_claim") {
+          await this.reconcileThreadSettlement(
+            threadId,
+            () => this.store.isThreadRunnable(threadId),
+          );
+        } else if (result.outcome === "aborted") {
+          // Claiming a run consumes the wake bit that admitted it. An abort
+          // leaves original inputs pending, so only a fresh durable wake may
+          // re-admit them without turning abort into a reclaim loop.
+          await this.reconcileThreadSettlement(
+            threadId,
+            () => this.store.hasPendingWake(threadId),
+          );
+        }
+      },
+      onExclusiveSettled: (threadId) => this.reconcileThreadSettlement(
+        threadId,
+        () => this.store.isThreadRunnable(threadId),
+      ),
+      onCapacityAvailable: async () => {
+        if (this.shouldRefillRunnableBacklog()) {
+          await this.reconcileRunnableThreads();
+        }
+      },
+      onError: (threadId, error) => {
+        console.error("Thread run failed", {
+          threadId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
   }
 
   async resolveThreadRunConfig(
@@ -303,21 +379,58 @@ export class ThreadRuntimeCoordinator {
     threadId: string,
     payload: ThreadInputPayload,
     mode: ThreadWakeMode = "wake",
-  ): Promise<void> {
-    const result = await this.store.enqueueInput(threadId, payload, mode);
-    if (!result.inserted && result.input.appliedAt !== undefined) {
-      return;
+    enqueueOptions?: ThreadEnqueueOptions,
+  ): Promise<ThreadEnqueueResult> {
+    const result = await this.store.enqueueInput(threadId, payload, mode, enqueueOptions);
+    if (result.disposition === "duplicate_applied" || result.disposition === "duplicate_discarded") {
+      return result;
     }
 
-    if (mode === "queue") {
-      return;
+    if (mode === "wake") {
+      this.scheduler.schedule(result.input.threadId);
     }
+    return result;
+  }
 
-    if (this.activeRuns.has(threadId)) {
-      return;
+  async submitSessionInput(
+    sessionId: string,
+    payload: ThreadInputPayload,
+    mode: ThreadWakeMode = "wake",
+    enqueueOptions?: ThreadEnqueueOptions,
+  ): Promise<ThreadEnqueueResult> {
+    const result = await this.store.enqueueSessionInput(sessionId, payload, mode, enqueueOptions);
+    if (
+      mode === "wake"
+      && result.disposition !== "duplicate_applied"
+      && result.disposition !== "duplicate_discarded"
+    ) {
+      this.scheduler.schedule(result.input.threadId);
     }
+    return result;
+  }
 
-    this.ensureRunning(threadId);
+  async start(owner: ThreadRunOwner, orphanedRunReason?: string): Promise<void> {
+    if (this.closed) {
+      throw new Error("Thread runtime coordinator cannot be restarted after shutdown.");
+    }
+    if (!this.stopped || this.owner) {
+      throw new Error("Thread runtime coordinator is already running.");
+    }
+    this.owner = {...owner};
+    this.shutdownSettlementDeadlineAt = null;
+    this.stopped = false;
+    try {
+      await this.recoverOrphanedRuns(orphanedRunReason);
+      await this.recoverOrphanedToolJobs();
+      this.scheduler.start();
+      await this.reconcileRunnableThreads();
+      if (this.notificationStatus !== "listening") {
+        this.startNotificationFallback();
+      }
+    } catch (error) {
+      await this.stop(error);
+      throw error;
+    }
   }
 
   async wake(threadId: string, mode: ThreadWakeMode = "wake"): Promise<void> {
@@ -326,213 +439,509 @@ export class ThreadRuntimeCoordinator {
     }
 
     await this.store.requestWake(threadId);
-
-    if (!this.activeRuns.has(threadId)) {
-      this.ensureRunning(threadId);
-    }
+    this.scheduler.schedule(threadId);
   }
 
   async flushQueued(threadId?: string): Promise<void> {
     const promotedThreadIds = await this.store.promoteQueuedInputs(threadId);
     for (const queuedThreadId of promotedThreadIds) {
-      this.ensureRunning(queuedThreadId);
+      this.scheduler.schedule(queuedThreadId);
     }
   }
 
-  async abort(threadId: string, reason = "Aborted by runtime request."): Promise<boolean> {
-    const requestedRun = await this.store.requestRunAbort(threadId, reason);
-    const controller = this.activeSignals.get(threadId);
-    if (controller) {
-      controller.abort(new Error(reason));
+  async abort(
+    threadId: string,
+    reason = "Aborted by runtime request.",
+    operationId: string = randomUUID(),
+  ): Promise<boolean> {
+    const requestedRun = await this.store.requestRunAbort(threadId, reason, operationId);
+    if (!requestedRun) {
+      return false;
     }
 
-    return requestedRun !== null || controller !== undefined;
+    const active = this.activeSignalsByRun.get(requestedRun.id);
+    if (active) {
+      this.scheduler.abort(active.threadId, new Error(requestedRun.abortReason ?? reason));
+    }
+    return true;
+  }
+
+  async handleStoreNotification(notification: ThreadRuntimeNotification): Promise<void> {
+    if (this.stopped) {
+      return;
+    }
+
+    if (notification.kind === "thread_changed") {
+      this.pulseThreadChange(notification.threadId);
+      return;
+    }
+
+    if (notification.kind === "thread_runnable") {
+      this.pulseThreadChange(notification.threadId);
+      this.scheduler.schedule(notification.threadId);
+      return;
+    }
+
+    const active = this.activeSignalsByRun.get(notification.runId);
+    if (!active || active.threadId !== notification.threadId || active.signal.aborted) {
+      return;
+    }
+
+    // NOTIFY is broadcast to every daemon. Filter by local run ownership before
+    // spending a query, then confirm the hint against authoritative durable state.
+    try {
+      await this.reconcileAbortRequests([notification.runId]);
+    } catch (error) {
+      // A notification is only a hint. If its confirmation read fails, keep a
+      // bounded fallback sweep alive even though LISTEN itself still looks healthy.
+      this.startNotificationFallback();
+      throw error;
+    }
+  }
+
+  async handleStoreNotificationStatus(status: ThreadRuntimeNotificationStatus): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+
+    // Listener state callbacks are fire-and-forget and may finish out of order.
+    // Only the newest generation may change fallback reconciliation mode.
+    const generation = ++this.notificationStatusGeneration;
+    this.notificationStatus = status;
+    this.pulseAllThreadChanges();
+    if (this.stopped) {
+      return;
+    }
+
+    if (status === "closed") {
+      this.stopNotificationFallback();
+      return;
+    }
+
+    if (status === "reconnecting") {
+      this.startNotificationFallback();
+      return;
+    }
+
+    try {
+      await Promise.all([
+        this.reconcileAbortRequests([...this.activeSignalsByRun.keys()]),
+        this.reconcileRunnableThreads(),
+      ]);
+      if (
+        !this.stopped
+        && this.notificationStatusGeneration === generation
+        && this.notificationStatus === "listening"
+      ) {
+        this.stopNotificationFallback();
+      }
+    } catch (error) {
+      if (
+        !this.stopped
+        && this.notificationStatusGeneration === generation
+        && this.notificationStatus === "listening"
+      ) {
+        this.startNotificationFallback();
+      }
+      throw error;
+    }
+  }
+
+  async stop(reason: unknown = new Error("Thread runtime stopped.")): Promise<void> {
+    if (this.stopped && !this.owner) {
+      return;
+    }
+    this.shutdownSettlementDeadlineAt ??= Date.now() + this.shutdownDrainTimeoutMs;
+    this.stopped = true;
+    this.closed = true;
+    this.notificationStatus = "closed";
+    this.notificationStatusGeneration += 1;
+    this.stopNotificationFallback();
+    this.stopRunnableBacklogRetry();
+    this.runnableBacklog = false;
+    this.pulseAllThreadChanges();
+    await this.scheduler.stop(reason);
+    const reconciliations = Promise.allSettled([
+      ...this.abortReconciliations,
+      ...(this.runnableReconciliation ? [this.runnableReconciliation] : []),
+    ]);
+    // These reads are only notification reconciliation. A half-open database
+    // query must not defeat the bounded scheduler drain and retain the daemon
+    // lease forever during shutdown.
+    await withFallbackTimeout(reconciliations, this.shutdownDrainTimeoutMs, () => null);
+    this.owner = null;
   }
 
   async poke(threadId: string): Promise<void> {
-    if (this.activeRuns.has(threadId)) {
-      return;
-    }
-
-    if (!(await this.store.hasRunnableInputs(threadId)) && !(await this.store.hasPendingWake(threadId))) {
-      return;
-    }
-
-    const attempt = this.ensureRunning(threadId);
-    if (!attempt) {
-      return;
-    }
-
-    const result = await attempt;
-    if (result.acquiredLease) {
-      return;
-    }
-
-    await this.sleep(LEASE_RETRY_BACKOFF_MS);
-    if (!this.activeRuns.has(threadId)
-      && ((await this.store.hasRunnableInputs(threadId)) || (await this.store.hasPendingWake(threadId)))) {
-      this.ensureRunning(threadId);
+    if (!this.stopped) {
+      this.scheduler.schedule(threadId);
     }
   }
 
   async waitForIdle(threadId: string): Promise<void> {
+    await this.reconcileRunnableThread(threadId);
+    await this.scheduler.waitForIdle(threadId);
+  }
+
+  async waitForInputRun(inputId: string): Promise<ThreadRunRecord> {
     while (true) {
-      const activeRun = this.activeRuns.get(threadId);
-      if (activeRun) {
-        const result = await activeRun;
-        if (!result.acquiredLease) {
-          await this.sleep(LEASE_RETRY_BACKOFF_MS);
+      if (this.stopped) {
+        throw new Error("Thread runtime stopped while waiting for an input run.");
+      }
+
+      const input = await this.store.getInput(inputId);
+      if (input.status === "discarded") {
+        throw new Error(`Thread input ${inputId} was discarded before execution.`);
+      }
+
+      const waiter = this.createThreadChangeWaiter(input.threadId);
+      try {
+        // Register before the authoritative reads so a commit between the read
+        // and wait cannot strand a cross-daemon scheduled-task claim.
+        const refreshedInput = await this.store.getInput(inputId);
+        if (refreshedInput.status === "discarded") {
+          throw new Error(`Thread input ${inputId} was discarded before execution.`);
         }
-        continue;
-      }
+        if (refreshedInput.appliedRunId) {
+          const run = await this.store.getRun(refreshedInput.appliedRunId);
+          if (run.status !== "running") {
+            return run;
+          }
+        }
 
-      if (!(await this.store.hasRunnableInputs(threadId)) && !(await this.store.hasPendingWake(threadId))) {
-        return;
-      }
-
-      const result = await this.ensureRunning(threadId);
-      if (result && !result.acquiredLease) {
-        await this.sleep(LEASE_RETRY_BACKOFF_MS);
+        if (this.notificationStatus === "listening") {
+          await waiter.promise;
+        } else {
+          let timeout: NodeJS.Timeout | undefined;
+          try {
+            await Promise.race([
+              waiter.promise,
+              new Promise<void>((resolve) => {
+                timeout = setTimeout(resolve, NOTIFICATION_FALLBACK_INTERVAL_MS);
+                timeout.unref?.();
+              }),
+            ]);
+          } finally {
+            if (timeout) {
+              clearTimeout(timeout);
+            }
+          }
+        }
+      } finally {
+        this.removeThreadChangeWaiter(input.threadId, waiter);
       }
     }
   }
 
   async waitForCurrentRun(threadId: string): Promise<void> {
-    const activeRun = this.activeRuns.get(threadId);
-    if (!activeRun) {
-      return;
-    }
-
-    await activeRun;
+    await this.scheduler.waitForCurrent(threadId);
   }
 
   async isThreadBusy(threadId: string): Promise<boolean> {
-    if (this.activeRuns.has(threadId)) {
+    if (this.scheduler.isBusy(threadId)) {
       return true;
     }
 
     return (await this.store.hasPendingInputs(threadId)) || (await this.store.hasPendingWake(threadId));
   }
 
-  async runExclusively<T>(threadId: string, fn: () => Promise<T>): Promise<T> {
-    const lease = await this.leaseManager.tryAcquire(threadId);
-    if (!lease) {
-      throw new Error("Thread is already active. Abort or wait before compacting.");
+  async runExclusively<T>(
+    threadId: string,
+    fn: (access: ThreadExclusiveAccess) => Promise<T>,
+  ): Promise<T> {
+    const owner = this.owner;
+    if (this.stopped || !owner) {
+      throw new Error("Thread runtime is not running.");
     }
-
-    try {
-      return await fn();
-    } finally {
-      await lease.release();
-
-      if (this.shouldContinueFromBoundary(await this.takeBoundaryState(threadId))) {
-        this.ensureRunning(threadId);
-      }
-    }
+    const result = await this.scheduler.runExclusively(
+      threadId,
+      (signal) => fn({signal, owner}),
+    );
+    return result;
   }
 
   async recoverOrphanedRuns(
     reason = formatOrphanedRunRecoveryReason({ recoveryTrigger: "coordinator_call" }),
   ): Promise<readonly ThreadRunRecord[]> {
+    const owner = this.owner;
+    if (!owner) {
+      throw new Error("Thread runtime has no daemon owner.");
+    }
     const recoveredRuns: ThreadRunRecord[] = [];
-    const runningRuns = await this.store.listRunningRuns();
-
-    for (const run of runningRuns) {
-      const lease = await this.leaseManager.tryAcquire(run.threadId);
-      if (!lease) {
-        continue;
-      }
-
-      try {
-        const recovered = await this.store.failRunIfRunning(run.id, reason);
-        if (recovered) {
-          recoveredRuns.push(recovered);
-        }
-      } finally {
-        await lease.release();
+    while (true) {
+      const batch = await this.store.failOrphanedRuns(
+        owner,
+        reason,
+        ORPHANED_RUN_RECOVERY_BATCH_SIZE,
+      );
+      recoveredRuns.push(...batch);
+      if (batch.length < ORPHANED_RUN_RECOVERY_BATCH_SIZE) {
+        break;
       }
     }
 
     return recoveredRuns;
   }
 
+  private async recoverOrphanedToolJobs(): Promise<void> {
+    const owner = this.owner;
+    if (!owner) {
+      throw new Error("Thread runtime has no daemon owner.");
+    }
+    while (true) {
+      const recovered = await this.store.markOrphanedToolJobsLost(
+        owner,
+        ORPHANED_TOOL_JOB_REASON,
+        ORPHANED_TOOL_JOB_RECOVERY_BATCH_SIZE,
+      );
+      if (recovered < ORPHANED_TOOL_JOB_RECOVERY_BATCH_SIZE) {
+        return;
+      }
+    }
+  }
+
   private async emit(event: ThreadRuntimeEvent): Promise<void> {
     await this.onEvent?.(event);
   }
 
-  private async sleep(ms: number): Promise<void> {
-    await sleep(ms);
-  }
-
   private shouldContinueFromBoundary(boundary: ThreadBoundaryState): boolean {
-    return boundary.hasRunnableInputs || boundary.hadPendingWake;
+    return boundary.hasRunnableInputs || boundary.hasAdmittedInputs || boundary.hadPendingWake;
   }
 
-  private async takeBoundaryState(threadId: string): Promise<ThreadBoundaryState> {
-    const hasRunnableInputs = await this.store.hasRunnableInputs(threadId);
-    const hadPendingWake = await this.store.consumePendingWake(threadId);
-    return {
-      hasRunnableInputs,
-      hadPendingWake,
-    };
-  }
-
-  private ensureRunning(threadId: string): Promise<ThreadRunAttemptResult> | null {
-    if (this.activeRuns.has(threadId)) {
-      return null;
+  private async reconcileRunnableThreads(): Promise<void> {
+    if (this.stopped) {
+      return;
+    }
+    if (this.runnableReconciliation) {
+      return this.runnableReconciliation;
     }
 
-    const promise = this.runUntilIdle(threadId)
-      .then(async ({restartRequested, acquiredLease}) => {
-        this.activeRuns.delete(threadId);
-        if (acquiredLease && (restartRequested || this.shouldContinueFromBoundary(await this.takeBoundaryState(threadId)))) {
-          this.ensureRunning(threadId);
-        }
-        return {restartRequested, acquiredLease};
-      })
-      .catch((error) => {
-        this.activeRuns.delete(threadId);
-        throw error;
-      });
-
-    this.activeRuns.set(threadId, promise);
-    void promise.catch(() => {
-      // The run already persisted failure state and emitted run_finished; avoid unhandled rejections.
-    });
-    return promise;
-  }
-
-  private startAbortWatcher(run: ThreadRunRecord, controller: AbortController): () => void {
-    let closed = false;
-    let pollInFlight = false;
-    const timer = setInterval(async () => {
-      if (closed || pollInFlight || controller.signal.aborted) {
+    const reconciliation = (async () => {
+      // Fetch one sentinel row beyond the admission batch. The sentinel keeps
+      // backlog state explicit without loading an unbounded runnable set.
+      const threadIds = await this.store.listRunnableThreadIds(RUNNABLE_RECONCILIATION_BATCH_SIZE + 1);
+      if (this.stopped) {
         return;
       }
+      const hasMore = threadIds.length > RUNNABLE_RECONCILIATION_BATCH_SIZE;
+      // A successful scan supersedes any failure retry that was armed by an
+      // older scan. Re-arm only if this result cannot create settling work.
+      this.stopRunnableBacklogRetry();
+      this.runnableBacklog = hasMore;
+      for (const threadId of threadIds.slice(0, RUNNABLE_RECONCILIATION_BATCH_SIZE)) {
+        this.scheduler.schedule(threadId, "backlog");
+      }
+      const snapshot = this.scheduler.getSnapshot();
+      if (hasMore && snapshot.active === 0 && snapshot.queued === 0) {
+        this.startRunnableBacklogRetry();
+      }
+    })();
+    this.runnableReconciliation = reconciliation;
+    try {
+      await reconciliation;
+    } catch (error) {
+      if (this.runnableBacklog) {
+        this.startRunnableBacklogRetry();
+      }
+      throw error;
+    } finally {
+      if (this.runnableReconciliation === reconciliation) {
+        this.runnableReconciliation = null;
+      }
+    }
+  }
 
-      pollInFlight = true;
+  private startRunnableBacklogRetry(): void {
+    if (this.stopped || !this.runnableBacklog || this.runnableBacklogRetryTimer) {
+      return;
+    }
+    this.runnableBacklogRetryTimer = setTimeout(() => {
+      this.runnableBacklogRetryTimer = null;
+      if (this.stopped || !this.runnableBacklog) {
+        return;
+      }
+      runInBackground(
+        () => this.reconcileRunnableThreads(),
+        {label: "Runnable thread backlog reconciliation"},
+      );
+    }, RUNNABLE_BACKLOG_RETRY_INTERVAL_MS);
+    this.runnableBacklogRetryTimer.unref?.();
+  }
 
+  private shouldRefillRunnableBacklog(): boolean {
+    if (!this.runnableBacklog || this.runnableBacklogRetryTimer) {
+      return false;
+    }
+    const snapshot = this.scheduler.getSnapshot();
+    return snapshot.queued <= snapshot.maxConcurrentRuns;
+  }
+
+  private stopRunnableBacklogRetry(): void {
+    if (!this.runnableBacklogRetryTimer) {
+      return;
+    }
+    clearTimeout(this.runnableBacklogRetryTimer);
+    this.runnableBacklogRetryTimer = null;
+  }
+
+  private async reconcileRunnableThread(threadId: string): Promise<void> {
+    if (this.stopped) {
+      return;
+    }
+    if (await this.store.isThreadRunnable(threadId)) {
+      this.scheduler.schedule(threadId);
+    }
+  }
+
+  private async reconcileThreadSettlement(
+    threadId: string,
+    isRunnable: () => Promise<boolean>,
+  ): Promise<void> {
+    let retryDelayMs = THREAD_SETTLEMENT_RECONCILIATION_INITIAL_RETRY_DELAY_MS;
+    while (!this.stopped) {
       try {
-        const latest = await this.store.getRun(run.id);
-        if (latest.status !== "running") {
-          clearInterval(timer);
+        if (await isRunnable()) {
+          this.scheduler.schedule(threadId);
+        }
+        return;
+      } catch {
+        if (this.stopped) {
           return;
         }
-
-        if (latest.abortRequestedAt) {
-          controller.abort(new Error(latest.abortReason ?? "Aborted by runtime request."));
-        }
-      } catch {
-        // Ignore transient polling failures; the active run will still settle through normal execution paths.
-      } finally {
-        pollInFlight = false;
+        // A coalesced NOTIFY may already be gone. Keep the lane settling until
+        // an authoritative read succeeds; unrelated threads retain capacity.
+        await sleep(retryDelayMs);
+        retryDelayMs = Math.min(
+          retryDelayMs * 2,
+          THREAD_SETTLEMENT_RECONCILIATION_MAX_RETRY_DELAY_MS,
+        );
       }
-    }, ABORT_POLL_MS);
+    }
+  }
 
-    return () => {
-      closed = true;
-      clearInterval(timer);
+  private startNotificationFallback(): void {
+    if (this.stopped || this.notificationFallbackTimer) {
+      return;
+    }
+
+    // NOTIFY is a delivery hint, not durable state. Poll bounded global state
+    // while LISTEN is unhealthy or a notification-dependent confirmation is
+    // uncertain, then stop after one successful healthy reconciliation.
+    this.notificationFallbackTimer = setInterval(() => {
+      this.scheduleNotificationFallback();
+    }, NOTIFICATION_FALLBACK_INTERVAL_MS);
+    this.notificationFallbackTimer.unref?.();
+    this.scheduleNotificationFallback();
+  }
+
+  private stopNotificationFallback(): void {
+    if (!this.notificationFallbackTimer) {
+      return;
+    }
+
+    clearInterval(this.notificationFallbackTimer);
+    this.notificationFallbackTimer = null;
+  }
+
+  private scheduleNotificationFallback(): void {
+    if (this.notificationFallbackInFlight) {
+      return;
+    }
+
+    const generation = this.notificationStatusGeneration;
+    this.notificationFallbackInFlight = true;
+    runInBackground(async () => {
+      try {
+        await Promise.all([
+          this.reconcileAbortRequests([...this.activeSignalsByRun.keys()]),
+          this.reconcileRunnableThreads(),
+        ]);
+        if (
+          !this.stopped
+          && this.notificationStatusGeneration === generation
+          && this.notificationStatus === "listening"
+        ) {
+          this.stopNotificationFallback();
+        }
+      } finally {
+        this.notificationFallbackInFlight = false;
+      }
+    }, {label: "Runtime notification fallback reconciliation"});
+  }
+
+  private reconcileAbortRequests(runIds: readonly string[]): Promise<void> {
+    if (this.stopped || runIds.length === 0) {
+      return Promise.resolve();
+    }
+
+    const reconciliation = this.loadAbortRequests(runIds);
+    this.abortReconciliations.add(reconciliation);
+    return reconciliation.then(
+      () => {
+        this.abortReconciliations.delete(reconciliation);
+      },
+      (error: unknown) => {
+        this.abortReconciliations.delete(reconciliation);
+        throw error;
+      },
+    );
+  }
+
+  private createThreadChangeWaiter(threadId: string): ThreadChangeWaiter {
+    let resolve!: () => void;
+    const waiter: ThreadChangeWaiter = {
+      promise: new Promise<void>((resolvePromise) => {
+        resolve = resolvePromise;
+      }),
+      resolve: () => resolve(),
     };
+    const waiters = this.changeWaitersByThread.get(threadId) ?? new Set<ThreadChangeWaiter>();
+    waiters.add(waiter);
+    this.changeWaitersByThread.set(threadId, waiters);
+    return waiter;
+  }
+
+  private removeThreadChangeWaiter(threadId: string, waiter: ThreadChangeWaiter): void {
+    const waiters = this.changeWaitersByThread.get(threadId);
+    if (!waiters) {
+      return;
+    }
+    waiters.delete(waiter);
+    if (waiters.size === 0) {
+      this.changeWaitersByThread.delete(threadId);
+    }
+  }
+
+  private pulseThreadChange(threadId: string): void {
+    const waiters = this.changeWaitersByThread.get(threadId);
+    if (!waiters) {
+      return;
+    }
+    this.changeWaitersByThread.delete(threadId);
+    for (const waiter of waiters) {
+      waiter.resolve();
+    }
+  }
+
+  private pulseAllThreadChanges(): void {
+    for (const threadId of [...this.changeWaitersByThread.keys()]) {
+      this.pulseThreadChange(threadId);
+    }
+  }
+
+  private async loadAbortRequests(runIds: readonly string[]): Promise<void> {
+    const abortedRuns = await this.store.listAbortRequestedRuns(runIds);
+    for (const run of abortedRuns) {
+      const active = this.activeSignalsByRun.get(run.id);
+      if (!active || active.threadId !== run.threadId || active.signal.aborted) {
+        continue;
+      }
+
+      this.scheduler.abort(
+        active.threadId,
+        new Error(run.abortReason ?? "Aborted by runtime request."),
+      );
+    }
   }
 
   private buildThreadOptions(
@@ -559,7 +968,7 @@ export class ThreadRuntimeCoordinator {
       temperature: definition.temperature,
       thinking: modelConfig.thinking,
       runtime: definition.runtime,
-      modelCallTracer: this.modelCallTracer,
+      modelCallObserver: this.modelCallObserver,
       countTokens: definition.countTokens,
       signal,
       resumeState,
@@ -568,14 +977,19 @@ export class ThreadRuntimeCoordinator {
           ? checkpoint.toolCalls
           : checkpoint.remainingToolCalls;
 
-        const latestRun = await this.store.getRun(run.id);
-        if (latestRun.abortRequestedAt) {
+        if (signal?.aborted) {
+          const reason = signal.reason instanceof Error
+            ? signal.reason.message
+            : typeof signal.reason === "string" && signal.reason.trim()
+              ? signal.reason
+              : "Aborted by runtime request.";
           return {
             action: "interrupt",
-            reason: latestRun.abortReason ?? "Aborted by runtime request.",
+            reason,
             cancelPendingToolCalls: pendingToolCalls.length > 0,
           } as const;
         }
+        await this.store.assertRunActive(run.id);
         return { action: "continue" } as const;
       },
     };
@@ -599,12 +1013,13 @@ export class ThreadRuntimeCoordinator {
   private async setAutoCompactionState(
     thread: ThreadRecord,
     next: AutoCompactionRuntimeState | null,
+    runId: string,
   ): Promise<ThreadRecord> {
     const runtimeState = updateAutoCompactionRuntimeState(thread, next);
-    return this.store.updateThread(thread.id, { runtimeState: runtimeState ?? null });
+    return this.store.updateThreadForRun(thread.id, runId, {runtimeState: runtimeState ?? null});
   }
 
-  private async clearAutoCompactionState(thread: ThreadRecord): Promise<ThreadRecord> {
+  private async clearAutoCompactionState(thread: ThreadRecord, runId: string): Promise<ThreadRecord> {
     const state = readAutoCompactionRuntimeState(thread);
     if (
       state.consecutiveFailures === 0
@@ -616,7 +1031,7 @@ export class ThreadRuntimeCoordinator {
       return thread;
     }
 
-    return this.setAutoCompactionState(thread, null);
+    return this.setAutoCompactionState(thread, null, runId);
   }
 
   private async recordAutoCompactionFailure(options: {
@@ -641,7 +1056,7 @@ export class ThreadRuntimeCoordinator {
       ...(options.diagnostics ? {lastAttempt: options.diagnostics} : {}),
     };
 
-    const updatedThread = await this.setAutoCompactionState(options.thread, nextState);
+    const updatedThread = await this.setAutoCompactionState(options.thread, nextState, options.run.id);
     await appendCompactionFailureNotice({
       store: this.store,
       threadId: updatedThread.id,
@@ -660,17 +1075,17 @@ export class ThreadRuntimeCoordinator {
     run: ThreadRunRecord;
     thread: ThreadRecord;
     definition: ResolvedThreadDefinition;
-    transcript: readonly ThreadMessageRecord[];
+    transcript: ThreadTranscriptSnapshot;
     allowAttempt: boolean;
   }): Promise<AutoCompactionPreflightResult> {
     let thread = options.thread;
     const now = Date.now();
     const currentState = readAutoCompactionRuntimeState(thread);
     if (currentState.cooldownUntil !== undefined && currentState.cooldownUntil <= now) {
-      thread = await this.clearAutoCompactionState(thread);
+      thread = await this.clearAutoCompactionState(thread, options.run.id);
     }
 
-    const transcriptTokens = estimateTranscriptTokens(options.transcript, {
+    const transcriptTokens = estimateTranscriptTokens(options.transcript.records, {
       replayToolArtifacts: true,
     });
     const modelConfig = this.resolveModelConfig(options.definition);
@@ -703,9 +1118,10 @@ export class ThreadRuntimeCoordinator {
         model: modelConfig.model,
         thinking: modelConfig.thinking,
         trigger: "auto",
+        owningRunId: options.run.id,
       });
 
-      await this.clearAutoCompactionState(thread);
+      await this.clearAutoCompactionState(thread, options.run.id);
       return { action: "restart", attemptedAutoCompact: true };
     } catch (error) {
       const reason = stringifyUnknown(error, { preferErrorMessage: true });
@@ -730,7 +1146,7 @@ export class ThreadRuntimeCoordinator {
     run: ThreadRunRecord;
     thread: ThreadRecord;
     definition: ResolvedThreadDefinition;
-    transcript: readonly ThreadMessageRecord[];
+    transcript: ThreadTranscriptSnapshot;
   }): Promise<boolean> {
     const modelConfig = this.resolveModelConfig(options.definition);
 
@@ -742,8 +1158,9 @@ export class ThreadRuntimeCoordinator {
         model: modelConfig.model,
         thinking: modelConfig.thinking,
         trigger: "auto",
+        owningRunId: options.run.id,
       });
-      await this.clearAutoCompactionState(options.thread);
+      await this.clearAutoCompactionState(options.thread, options.run.id);
       return true;
     } catch (error) {
       await this.recordAutoCompactionFailure({
@@ -758,42 +1175,109 @@ export class ThreadRuntimeCoordinator {
     }
   }
 
-  private async runUntilIdle(threadId: string): Promise<ThreadRunAttemptResult> {
-    const lease = await this.leaseManager.tryAcquire(threadId);
-    if (!lease) {
-      return {
-        restartRequested: false,
-        acquiredLease: false,
-      };
-    }
+  /**
+   * Resolve an ambiguous terminal write before releasing process-local
+   * serialization. A connection failure can happen after Postgres commits;
+   * rereading the row distinguishes that case from a genuinely pending run.
+   * While this daemon still owns the run, retrying is the only safe way to
+   * avoid leaving a permanent `running` row that blocks every later wake.
+   */
+  private async settleRun(
+    runId: string,
+    settlement: {kind: "complete"} | {kind: "fail"; error: string},
+  ): Promise<ThreadRunRecord | null> {
+    let retryDelayMs = 25;
+    let failedAttempts = 0;
+    let claimLost = false;
 
-    const controller = new AbortController();
-    this.activeSignals.set(threadId, controller);
-    const run = await this.store.createRun(threadId);
-    const stopAbortWatcher = this.startAbortWatcher(run, controller);
-    await this.emit({
-      type: "run_started",
-      threadId,
-      run,
-    });
+    while (true) {
+      const shutdownDeadline = this.shutdownSettlementDeadlineAt;
+      if (this.stopped && shutdownDeadline !== null && Date.now() >= shutdownDeadline) {
+        return null;
+      }
+
+      if (!claimLost) {
+        try {
+          return settlement.kind === "complete"
+            ? await this.store.completeRun(runId)
+            : await this.store.failRun(runId, settlement.error);
+        } catch (error) {
+          claimLost = error instanceof ThreadRunClaimLostError;
+        }
+      }
+
+      try {
+        const observed = await this.store.getRun(runId);
+        if (observed.status !== "running") {
+          return observed;
+        }
+        if (claimLost) {
+          // The immutable run owner no longer has a live lease. A successor
+          // now owns orphan recovery; this process must not mutate the row.
+          return null;
+        }
+      } catch {
+        // A read can fail in the same transient outage as the write. Retrying
+        // below is bounded by coordinator shutdown and the daemon lease.
+      }
+
+      failedAttempts += 1;
+      if (failedAttempts === 3 || failedAttempts % 30 === 0) {
+        console.error("Thread run terminal settlement is retrying", {
+          runId,
+          settlement: settlement.kind,
+          failedAttempts,
+        });
+      }
+      const remainingShutdownMs = shutdownDeadline === null
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, shutdownDeadline - Date.now());
+      if (remainingShutdownMs === 0) {
+        return null;
+      }
+      await sleep(Math.min(retryDelayMs, remainingShutdownMs));
+      retryDelayMs = Math.min(retryDelayMs * 2, RUN_SETTLEMENT_MAX_RETRY_DELAY_MS);
+    }
+  }
+
+  private async runUntilIdle(
+    threadId: string,
+    signal: AbortSignal,
+  ): Promise<ThreadRunExecutionResult> {
+    const owner = this.owner;
+    if (this.stopped || !owner) {
+      return {outcome: "stopped"};
+    }
+    signal.throwIfAborted();
+    const run = await this.store.tryStartRun(threadId, owner);
+    if (!run) {
+      return {outcome: "no_claim"};
+    }
+    this.activeSignalsByRun.set(run.id, {threadId, signal});
 
     let finishedRun: ThreadRunRecord | null = null;
-    let restartRequested = false;
     let resumeState: ThreadResumeState | undefined;
-    let inputApplyScope: ThreadInputApplyScope = "all";
     let autoCompactionAttemptedThisRun = false;
     let overflowRecoveryAttemptedThisRun = false;
-    const runMessages: ThreadMessageRecord[] = [];
     // Stop once is a bit too eager for Panda's current autonomy model.
     // Eligible input waves get one blind extra step before we finally let the
     // run go idle. Keep the source denylist small and intentional.
     let idleRerollAvailable = false;
 
     try {
+      // A durable abort can commit before this process registers its controller.
+      // Reconcile once at registration so that a missed notification cannot start model work.
+      await this.reconcileAbortRequests([run.id]);
+      await this.emit({
+        type: "run_started",
+        threadId,
+        run,
+      });
+      signal.throwIfAborted();
+
       runLoop: while (true) {
-        const appliedInputs = await this.store.applyPendingInputs(threadId, inputApplyScope);
+        const appliedInputs = await this.store.applyPendingInputs(threadId, run.id);
         if (appliedInputs.length > 0) {
-          runMessages.push(...appliedInputs);
           // Eligible input waves arm one blind extra step. Suppressed internal
           // inputs may arrive later in the same run; they should not disarm an
           // already-armed human/channel continuation.
@@ -810,7 +1294,7 @@ export class ThreadRuntimeCoordinator {
 
         const thread = await this.store.getThread(threadId);
         const definition = await this.resolveDefinition(thread);
-        const transcript = projectTranscriptForRun(await this.store.loadTranscript(threadId));
+        const transcript = await this.store.loadActiveTranscript(threadId);
         const preflight = await this.handleAutoCompactionPreflight({
           run,
           thread,
@@ -825,7 +1309,7 @@ export class ThreadRuntimeCoordinator {
 
         const inferenceProjection = definition.inferenceProjection;
         const projectedTranscript = projectTranscriptForInference(
-          transcript,
+          transcript.records,
           inferenceProjection
             ? {
                 ...inferenceProjection,
@@ -838,14 +1322,18 @@ export class ThreadRuntimeCoordinator {
           replayedTranscript,
           inferenceProjection?.dropImages,
         );
+        // The provider call is an external side effect and cannot share a DB
+        // transaction with the run. Check immediately before it; all persisted
+        // results are fenced again by their own SQL mutations.
+        await this.store.assertRunActive(run.id);
         const executor = new Thread(
           this.buildThreadOptions(
             run,
             definition,
             finalTranscript,
-            controller.signal,
+            signal,
             resumeState,
-            transcript,
+            transcript.records,
           ),
         );
 
@@ -862,12 +1350,11 @@ export class ThreadRuntimeCoordinator {
 
             const event = next.value;
             if (isPersistedThreadMessage(event)) {
-              const persisted = await this.store.appendRuntimeMessage(threadId, {
+              await this.store.appendRuntimeMessage(threadId, {
                 message: sanitizePersistedMessage(event, definition.agent.tools),
                 source: runtimeSourceForMessage(event),
                 runId: run.id,
               });
-              runMessages.push(persisted);
             }
 
             await this.emit({
@@ -900,11 +1387,10 @@ export class ThreadRuntimeCoordinator {
         }
 
         resumeState = stepResult?.resumeState;
-        const boundary = await this.takeBoundaryState(threadId);
+        const boundary = await this.store.takeRunBoundary(threadId, run.id);
         const continueForWakeCycle = this.shouldContinueFromBoundary(boundary);
         const continueForThread = stepResult?.needsAnotherTurn ?? false;
         if (continueForThread || continueForWakeCycle) {
-          inputApplyScope = continueForWakeCycle ? "all" : "runnable";
           continue;
         }
 
@@ -914,7 +1400,7 @@ export class ThreadRuntimeCoordinator {
           // an empty stop. A machine-generated runtime user message gives the
           // model an explicit continuation event while keeping the source honest.
           idleRerollAvailable = false;
-          const runtimeMessage = await this.store.appendRuntimeMessage(threadId, {
+          await this.store.appendRuntimeMessage(threadId, {
             message: stringToUserMessage(renderRuntimeAutonomyContext()),
             source: "runtime",
             runId: run.id,
@@ -924,8 +1410,6 @@ export class ThreadRuntimeCoordinator {
               },
             },
           });
-          runMessages.push(runtimeMessage);
-          inputApplyScope = "runnable";
           continue;
         }
 
@@ -934,31 +1418,44 @@ export class ThreadRuntimeCoordinator {
         }
       }
 
-      finishedRun = await this.store.completeRun(run.id);
+      finishedRun = await this.settleRun(run.id, {kind: "complete"});
     } catch (error) {
-      finishedRun = await this.store.failRunIfRunning(run.id, stringifyUnknown(error, { preferErrorMessage: true }))
-        ?? await this.store.getRun(run.id);
+      if (error instanceof ThreadRunClaimLostError) {
+        return {outcome: "claim_lost"};
+      }
+      finishedRun = await this.settleRun(run.id, {
+        kind: "fail",
+        error: stringifyUnknown(error, {preferErrorMessage: true}),
+      });
+      if (signal.aborted) {
+        return {outcome: finishedRun?.abortRequestedAt !== undefined ? "aborted" : "stopped"};
+      }
       throw error;
     } finally {
-      stopAbortWatcher();
-
       if (finishedRun) {
-        await this.emit({
-          type: "run_finished",
-          threadId,
-          run: finishedRun,
-        });
-
+        try {
+          await this.emit({
+            type: "run_finished",
+            threadId,
+            run: finishedRun,
+          });
+        } catch (error) {
+          // The terminal mutation already committed. Observer delivery is
+          // post-commit and must not erase that durable outcome or suppress
+          // final-boundary reconciliation.
+          console.error("Thread run-finished observer failed", {
+            threadId,
+            runId: finishedRun.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
 
-      this.activeSignals.delete(threadId);
-      await lease.release();
-      restartRequested = this.shouldContinueFromBoundary(await this.takeBoundaryState(threadId));
+      this.activeSignalsByRun.delete(run.id);
     }
-
-    return {
-      restartRequested,
-      acquiredLease: true,
-    };
+    if (finishedRun?.status === "completed") {
+      return {outcome: "completed"};
+    }
+    return {outcome: finishedRun?.abortRequestedAt !== undefined ? "aborted" : "stopped"};
   }
 }

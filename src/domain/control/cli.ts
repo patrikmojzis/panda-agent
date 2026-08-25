@@ -1,6 +1,6 @@
 import type {Command} from "commander";
 import {DB_URL_OPTION_DESCRIPTION} from "../../app/cli-shared.js";
-import {withPostgresPool} from "../../app/runtime/postgres-bootstrap.js";
+import {withPostgresPool} from "../../lib/postgres-database.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
 import {normalizeIdentityHandle} from "../identity/types.js";
 import type {IdentityRecord} from "../identity/types.js";
@@ -82,8 +82,6 @@ export function registerControlCommands(program: Command): void {
       await withPostgresPool(options.dbUrl, async (pool) => {
         const auth = new PostgresControlAuthService({pool});
         const identities = new PostgresIdentityStore({pool});
-        await identities.ensureSchema();
-        await auth.ensureSchema();
         const identityId = await resolveControlGrantIdentityId(identities, options.identity);
         const created = await auth.createGrant({
           identityId,

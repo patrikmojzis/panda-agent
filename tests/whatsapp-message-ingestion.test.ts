@@ -82,7 +82,7 @@ describe("WhatsApp message ingestion", () => {
         quotedMessageId: undefined,
         media: [],
       },
-    });
+    }, expect.objectContaining({idempotencyKey: expect.stringMatching(/^ingress:v1:/)}));
   });
 
   it("drops group messages and ignores non-notify upserts", async () => {
@@ -136,7 +136,7 @@ describe("WhatsApp message ingestion", () => {
         text: "see screenshot",
         media,
       }),
-    }));
+    }), expect.objectContaining({idempotencyKey: expect.stringMatching(/^ingress:v1:/)}));
   });
 
   it("enqueues voice-only audio messages as media", async () => {
@@ -181,7 +181,7 @@ describe("WhatsApp message ingestion", () => {
         text: "",
         media,
       }),
-    }));
+    }), expect.objectContaining({idempotencyKey: expect.stringMatching(/^ingress:v1:/)}));
     expect(options.logs).not.toContainEqual(expect.objectContaining({
       payload: expect.objectContaining({reason: "unsupported_message_shape"}),
     }));
@@ -290,7 +290,7 @@ describe("WhatsApp message ingestion", () => {
         targetMessageId: "target-1",
         emoji: "👍",
       }),
-    });
+    }, expect.objectContaining({idempotencyKey: expect.stringMatching(/^ingress:v1:/)}));
   });
 
   it("ignores WhatsApp reaction removals", async () => {

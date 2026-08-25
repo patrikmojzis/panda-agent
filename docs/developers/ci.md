@@ -52,14 +52,23 @@ it explicitly.
 ## Postgres Startup Rehearsal
 
 `pnpm ci:postgres-startup` uses `TEST_DATABASE_URL`, recreates that disposable
-database, and runs the real startup schema path.
+database, and runs the real deployment migration path. Application startup is
+verify-only.
 
 It currently rehearses:
 
-- fresh database startup
-- legacy fixture startup from `scripts/ci/postgres-fixtures/*.sql`
+- fresh database migration
+- legacy fixture migration from `scripts/ci/postgres-fixtures/*.sql`
 - readonly `session.*` view creation
 - core `runtime.*` and `session.*` relation existence
+
+The same PostgreSQL job then runs focused live contracts, including
+`pnpm ci:postgres-migrations` and `pnpm ci:runtime-persistence-postgres`. The
+migration contract proves whole-batch rollback, advisory-lock serialization,
+and named-constraint preflight. The runtime contract exercises concurrent
+dedupe, atomic session targeting, input-to-run lineage, payload scrubbing,
+discard tombstones, stale-run fencing, request claim concurrency, and
+token-fenced settlement on PostgreSQL rather than pg-mem.
 
 GitHub Actions provides `TEST_DATABASE_URL` through a Postgres service. For a
 local run, use a disposable database name containing `test`, `smoke`, or `tmp`:
@@ -72,9 +81,9 @@ pnpm ci:postgres-startup
 The rehearsal intentionally refuses non-disposable names. Do not point it at a
 real Panda database.
 
-When adding a new startup schema resource, add it to
-`scripts/ci/postgres-startup-rehearsal.ts`. When adding a migration or repair
-path for old data, add a tiny synthetic SQL fixture under
+When adding a migration, append it to the database migration catalog and add
+its assertions to `scripts/ci/postgres-startup-rehearsal.ts`. When adding a
+repair path for old data, add a tiny synthetic SQL fixture under
 `scripts/ci/postgres-fixtures/`. Do not use prod dumps.
 
 ## Local Pre-PR Run
@@ -87,6 +96,8 @@ pnpm ci:build
 pnpm ci:architecture
 pnpm ci:prompt-contracts
 TEST_DATABASE_URL=postgresql://localhost:5432/panda_test_ci_local pnpm ci:postgres-startup
+TEST_DATABASE_URL=postgresql://localhost:5432/panda_test_ci_local pnpm ci:postgres-migrations
+TEST_DATABASE_URL=postgresql://localhost:5432/panda_test_ci_local pnpm ci:runtime-persistence-postgres
 ```
 
 Docs-only changes do not need the Postgres rehearsal. Runtime, schema, prompt,

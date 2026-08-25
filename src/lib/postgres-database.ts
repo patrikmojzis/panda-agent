@@ -14,6 +14,8 @@ export interface CreatePostgresPoolOptions {
   max?: number;
   idleTimeoutMillis?: number;
   connectionTimeoutMillis?: number;
+  queryTimeoutMillis?: number;
+  statementTimeoutMillis?: number;
 }
 
 /**
@@ -177,6 +179,8 @@ export function createPostgresPool(options: CreatePostgresPoolOptions): Pool {
     max,
     idleTimeoutMillis,
     connectionTimeoutMillis,
+    ...(options.queryTimeoutMillis !== undefined ? {query_timeout: options.queryTimeoutMillis} : {}),
+    ...(options.statementTimeoutMillis !== undefined ? {statement_timeout: options.statementTimeoutMillis} : {}),
     ...(options.applicationName ? {application_name: options.applicationName} : {}),
   });
 }

@@ -150,19 +150,49 @@ export function observeLatestStoredRun(input: {
 }
 
 export async function loadStoredThreadSnapshot(input: {
-  store: Pick<ThreadRuntimeStore, "getThread" | "loadTranscript" | "listRuns"> & Partial<Pick<ThreadRuntimeStore, "listToolJobs">>;
+  store: Pick<ThreadRuntimeStore, "getThread" | "listTranscriptPage" | "getLatestRun"> & Partial<Pick<ThreadRuntimeStore, "listToolJobs">>;
   threadId: string;
   includeToolJobs?: boolean;
+  transcriptLimit?: number;
+  afterSequence?: number;
 }): Promise<{
   thread: ThreadRecord;
   transcript: readonly ThreadMessageRecord[];
+  nextTranscriptBeforeSequence?: number;
   runs: readonly ThreadRunRecord[];
   toolJobs: readonly ThreadToolJobRecord[];
 }> {
-  const [thread, transcript, runs, toolJobs] = await Promise.all([
+  const loadTranscriptPageWindow = async () => {
+    if (input.afterSequence !== undefined) {
+      const pages: ThreadMessageRecord[][] = [];
+      let afterSequence: number | undefined = input.afterSequence;
+
+      while (afterSequence !== undefined) {
+        const page = await input.store.listTranscriptPage(input.threadId, {
+          afterSequence,
+          limit: 500,
+        });
+        pages.push([...page.records]);
+        afterSequence = page.nextAfterSequence;
+      }
+
+      return {records: pages.flat()};
+    }
+
+    const page = await input.store.listTranscriptPage(input.threadId, {
+      limit: input.transcriptLimit,
+    });
+
+    return {
+      records: page.records,
+      nextTranscriptBeforeSequence: page.nextBeforeSequence,
+    };
+  };
+
+  const [thread, transcriptPage, latestRun, toolJobs] = await Promise.all([
     input.store.getThread(input.threadId),
-    input.store.loadTranscript(input.threadId),
-    input.store.listRuns(input.threadId),
+    loadTranscriptPageWindow(),
+    input.store.getLatestRun(input.threadId),
     input.includeToolJobs && input.store.listToolJobs
       ? input.store.listToolJobs(input.threadId)
       : Promise.resolve([]),
@@ -170,8 +200,9 @@ export async function loadStoredThreadSnapshot(input: {
 
   return {
     thread,
-    transcript,
-    runs,
+    transcript: transcriptPage.records,
+    nextTranscriptBeforeSequence: transcriptPage.nextTranscriptBeforeSequence,
+    runs: latestRun ? [latestRun] : [],
     toolJobs,
   };
 }

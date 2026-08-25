@@ -265,6 +265,9 @@ Treat these views as the public interface:
 If the agent needs more safe query surface later, add another scoped view.
 Do not solve that by handing the SQL command raw table access.
 
+`session.inputs` is the pending inbox only. Once an input is applied, its content
+lives in `session.messages`; the internal input row keeps only delivery lineage.
+
 `session.agent_skills` exposes stored skill bodies.
 Use `description` or `substring(content from ... for ...)` for large skills instead of yanking the whole blob every time.
 

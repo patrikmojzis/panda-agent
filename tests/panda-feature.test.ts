@@ -25,6 +25,7 @@ import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 function createBackgroundJobService(): BackgroundToolJobService {
   return new BackgroundToolJobService({
     store: new TestThreadRuntimeStore(),
+    owner: {source: "test", connectorKey: "panda-feature", holderId: "panda-feature-owner"},
   });
 }
 
@@ -133,7 +134,10 @@ describe("Panda feature surface", () => {
       id: "thread-1",
       sessionId: "session-main",
     });
-    const jobService = new BackgroundToolJobService({store});
+    const jobService = new BackgroundToolJobService({
+      store,
+      owner: {source: "test", connectorKey: "panda-feature", holderId: "panda-feature-owner"},
+    });
     const tools = buildDefaultAgentTools([], {
       bash: {
         jobService,

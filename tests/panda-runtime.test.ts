@@ -11,7 +11,8 @@ const runtimeMocks = vi.hoisted(() => {
     query: ReturnType<typeof vi.fn>;
   }> = [];
   const poolOptions: unknown[] = [];
-  const leaseManagerPools: unknown[] = [];
+  const coordinatorOptions: unknown[] = [];
+  const coordinatorStop = vi.fn(async () => {});
   const readonlyToolOptions: unknown[] = [];
   const client = {
     off: vi.fn(),
@@ -37,14 +38,13 @@ const runtimeMocks = vi.hoisted(() => {
 
   return {
     client,
-    ensureReadonlySessionQuerySchema: vi.fn(async () => {}),
-    ensureSchema: vi.fn(async () => {}),
+    coordinatorOptions,
+    coordinatorStop,
     MockPool,
-    leaseManagerPools,
     poolOptions,
     poolInstances,
     readonlyToolOptions,
-    readDatabaseUsername: vi.fn(() => "readonly_user"),
+    schemaAssertCurrent: vi.fn(async () => {}),
   };
 });
 
@@ -78,34 +78,14 @@ vi.mock("pg", () => ({
   Pool: runtimeMocks.MockPool,
 }));
 
-vi.mock("../src/domain/threads/runtime/postgres-lease.js", () => ({
-  PostgresThreadLeaseManager: class {
-    constructor(pool: unknown) {
-      runtimeMocks.leaseManagerPools.push(pool);
-    }
-  },
-}));
-
 vi.mock("../src/domain/threads/runtime/postgres.js", () => ({
   PostgresThreadRuntimeStore: class {
     identityStore = {};
-
-    async ensureSchema(): Promise<void> {
-      await runtimeMocks.ensureSchema();
-    }
-
-    async markRunningToolJobsLost(): Promise<number> {
-      return 0;
-    }
   },
 }));
 
 vi.mock("../src/domain/subagents/postgres.js", () => ({
   PostgresSubagentProfileStore: class {
-    async ensureSchema(): Promise<void> {
-      await runtimeMocks.ensureSchema();
-    }
-
     async seedBuiltinProfiles(): Promise<never[]> {
       return [];
     }
@@ -113,12 +93,22 @@ vi.mock("../src/domain/subagents/postgres.js", () => ({
 }));
 
 vi.mock("../src/domain/threads/runtime/coordinator.js", () => ({
-  ThreadRuntimeCoordinator: class {},
+  ThreadRuntimeCoordinator: class {
+    constructor(options: unknown) {
+      runtimeMocks.coordinatorOptions.push(options);
+    }
+    async handleStoreNotification(): Promise<void> {}
+    async handleStoreNotificationStatus(): Promise<void> {}
+    async stop(): Promise<void> {
+      await runtimeMocks.coordinatorStop();
+    }
+  },
 }));
 
-vi.mock("../src/domain/threads/runtime/postgres-readonly.js", () => ({
-  ensureReadonlySessionQuerySchema: runtimeMocks.ensureReadonlySessionQuerySchema,
-  readDatabaseUsername: runtimeMocks.readDatabaseUsername,
+vi.mock("../src/integrations/postgres/schema-version.js", () => ({
+  createPandaSchemaVerifier: vi.fn(() => ({
+    assertCurrent: runtimeMocks.schemaAssertCurrent,
+  })),
 }));
 
 vi.mock("../src/domain/threads/runtime/postgres-notifications.js", () => ({
@@ -166,15 +156,16 @@ vi.mock("../src/integrations/browser/client.js", () => ({
 
 describe("createRuntime", () => {
   afterEach(() => {
-    runtimeMocks.ensureSchema.mockReset();
-    runtimeMocks.ensureReadonlySessionQuerySchema.mockReset();
-    runtimeMocks.readDatabaseUsername.mockClear();
+    runtimeMocks.schemaAssertCurrent.mockReset();
+    runtimeMocks.schemaAssertCurrent.mockResolvedValue(undefined);
     runtimeMocks.client.on.mockClear();
     runtimeMocks.client.off.mockClear();
     runtimeMocks.client.query.mockReset();
     runtimeMocks.client.query.mockImplementation(async () => ({rows: []}));
-    runtimeMocks.client.release.mockClear();
-    runtimeMocks.leaseManagerPools.length = 0;
+    runtimeMocks.client.release.mockReset();
+    runtimeMocks.coordinatorOptions.length = 0;
+    runtimeMocks.coordinatorStop.mockReset();
+    runtimeMocks.coordinatorStop.mockResolvedValue(undefined);
     runtimeMocks.poolOptions.length = 0;
     runtimeMocks.poolInstances.length = 0;
     runtimeMocks.readonlyToolOptions.length = 0;
@@ -183,13 +174,13 @@ describe("createRuntime", () => {
     browserMocks.instances.length = 0;
   });
 
-  it("ends the pool when schema bootstrap fails", async () => {
-    runtimeMocks.ensureSchema.mockRejectedValueOnce(new Error("schema blew up"));
+  it("ends every pool when the schema revision check fails", async () => {
+    runtimeMocks.schemaAssertCurrent.mockRejectedValueOnce(new Error("schema revision is stale"));
 
     await expect(createRuntime({
       dbUrl: "postgres://panda:test@localhost:5432/panda",
       resolveDefinition: vi.fn(),
-    })).rejects.toThrow("schema blew up");
+    })).rejects.toThrow("schema revision is stale");
 
     expect(runtimeMocks.poolInstances).toHaveLength(3);
     expect(runtimeMocks.poolInstances.map((pool) => pool.end.mock.calls.length)).toEqual([1, 1, 1]);
@@ -203,13 +194,11 @@ describe("createRuntime", () => {
 
     await expect(createRuntime({
       dbUrl: "postgres://panda:test@localhost:5432/panda",
-      onStoreNotification: vi.fn(),
       resolveDefinition: vi.fn(),
     })).rejects.toThrow("listen blew up");
 
     expect(runtimeMocks.client.off).toHaveBeenCalledTimes(3);
-    // One pinned client is used by the transactional WhatsApp hard cut and one by LISTEN.
-    expect(runtimeMocks.client.release).toHaveBeenCalledTimes(2);
+    expect(runtimeMocks.client.release).toHaveBeenCalledTimes(1);
     expect(runtimeMocks.poolInstances).toHaveLength(3);
     expect(runtimeMocks.poolInstances.map((pool) => pool.end.mock.calls.length)).toEqual([1, 1, 1]);
   });
@@ -226,6 +215,22 @@ describe("createRuntime", () => {
     await runtime.close();
 
     expect(browserMocks.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("drains the coordinator and closes every pool when listener shutdown fails", async () => {
+    const runtime = await createRuntime({
+      dbUrl: "postgres://panda:test@localhost:5432/panda",
+      resolveDefinition: vi.fn(),
+    });
+    runtimeMocks.client.release.mockImplementationOnce(() => {
+      throw new Error("listener release blew up");
+    });
+
+    await expect(runtime.close()).rejects.toThrow("listener release blew up");
+    await expect(runtime.close()).rejects.toThrow("listener release blew up");
+
+    expect(runtimeMocks.coordinatorStop).toHaveBeenCalledTimes(1);
+    expect(runtimeMocks.poolInstances.map((pool) => pool.end.mock.calls.length)).toEqual([1, 1, 1]);
   });
 
   it("keeps the readonly pool lazy until the tool actually needs it", async () => {
@@ -254,7 +259,7 @@ describe("createRuntime", () => {
     expect(runtimeMocks.poolInstances[3]?.end).toHaveBeenCalledTimes(1);
   });
 
-  it("splits core query, notification, and thread lease pools", async () => {
+  it("splits core query, notification, and bounded trace-writer pools", async () => {
     const runtime = await createRuntime({
       dbUrl: "postgres://panda:test@localhost:5432/panda",
       resolveDefinition: vi.fn(),
@@ -263,13 +268,36 @@ describe("createRuntime", () => {
     expect(runtimeMocks.poolOptions).toEqual([
       expect.objectContaining({application_name: "panda/core", max: 4}),
       expect.objectContaining({application_name: "panda/core-notify", max: 4}),
-      expect.objectContaining({application_name: "panda/core-lease", max: 4}),
+      expect.objectContaining({
+        application_name: "panda/core-trace",
+        max: 1,
+        statement_timeout: 5_000,
+        query_timeout: 7_500,
+      }),
     ]);
     expect(runtime.pool).toBe(runtimeMocks.poolInstances[0]);
     expect(runtime.notificationPool).toBe(runtimeMocks.poolInstances[1]);
-    expect(runtimeMocks.leaseManagerPools).toEqual([runtimeMocks.poolInstances[2]]);
+    expect(runtimeMocks.coordinatorOptions.at(-1)).toEqual(expect.objectContaining({
+      maxConcurrentRuns: 4,
+      modelCallObserver: expect.any(Object),
+    }));
+    const publicTraceStore = runtime.modelCallTraces as unknown as {pool: unknown};
+    const recorder = (runtimeMocks.coordinatorOptions.at(-1) as {modelCallObserver: unknown})
+      .modelCallObserver as {close(): Promise<void>; sink: {pool: unknown}};
+    expect(publicTraceStore.pool).toBe(runtimeMocks.poolInstances[0]);
+    expect(recorder.sink.pool).toBe(runtimeMocks.poolInstances[2]);
 
+    const closeOrder: string[] = [];
+    const originalRecorderClose = recorder.close.bind(recorder);
+    vi.spyOn(recorder, "close").mockImplementation(async () => {
+      closeOrder.push("recorder");
+      await originalRecorderClose();
+    });
+    runtimeMocks.poolInstances[2]!.end.mockImplementationOnce(async () => {
+      closeOrder.push("trace-pool");
+    });
     await runtime.close();
+    expect(closeOrder).toEqual(["recorder", "trace-pool"]);
   });
 
   it("registers supplied command modules with the runtime dispatcher", async () => {

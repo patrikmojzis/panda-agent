@@ -6,7 +6,6 @@ import type {PgQueryable} from "../../lib/postgres-query.js";
 import {requireNonEmptyString} from "../../lib/strings.js";
 import {requireTimestampMillis} from "../../lib/postgres-values.js";
 import {buildIdentityTableNames, type IdentityTableNames} from "./postgres-shared.js";
-import {ensurePostgresIdentitySchema} from "./postgres-schema.js";
 import {
     type CreateIdentityBindingInput,
     type CreateIdentityInput,
@@ -162,10 +161,6 @@ export class PostgresIdentityStore implements IdentityStore {
     ]);
 
     return parseIdentityBindingRow(result.rows[0] as Record<string, unknown>);
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresIdentitySchema(this.pool);
   }
 
   async createIdentity(input: CreateIdentityInput): Promise<IdentityRecord> {

@@ -4,7 +4,9 @@ import {DataType, newDb} from "pg-mem";
 
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 import {ConversationRepo} from "../src/domain/sessions/conversations/repo.js";
+import {ensurePostgresConversationSessionSchema} from "../src/domain/sessions/conversations/postgres-schema.js";
 import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/postgres.js";
+import {ensurePostgresExecutionEnvironmentSchema} from "../src/domain/execution-environments/postgres-schema.js";
 import {registerSessionCommands} from "../src/app/sessions/cli.js";
 
 const sessionCreateCliMocks = vi.hoisted(() => {
@@ -30,8 +32,8 @@ const sessionCreateCliMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("../src/lib/postgres-bootstrap.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/lib/postgres-bootstrap.js")>();
+vi.mock("../src/lib/postgres-database.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/postgres-database.js")>();
   return {
     ...actual,
     withPostgresPool: sessionCreateCliMocks.withPostgresPool,
@@ -73,6 +75,8 @@ async function createHarness() {
   const pool = new adapter.Pool();
   sessionCreateCliMocks.state.pool = pool;
   const stores = await createRuntimeStores(pool);
+  await ensurePostgresConversationSessionSchema(pool);
+  await ensurePostgresExecutionEnvironmentSchema(pool);
   return {
     pool,
     ...stores,

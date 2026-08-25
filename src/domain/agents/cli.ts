@@ -7,9 +7,12 @@ import type {Pool} from "pg";
 
 import {DB_URL_OPTION_DESCRIPTION} from "../../lib/cli.js";
 import {resolveAgentDir} from "../../lib/data-dir.js";
-import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
+import {withPostgresPool} from "../../lib/postgres-database.js";
 import {PostgresIdentityStore} from "../identity/postgres.js";
-import {createSessionWithInitialThread, resetSessionCurrentThread} from "../sessions/lifecycle.js";
+import {
+  createSessionWithInitialThread,
+  repairMissingSessionCurrentThread,
+} from "../sessions/lifecycle.js";
 import {PostgresSessionStore} from "../sessions/postgres.js";
 import {PostgresThreadRuntimeStore} from "../threads/runtime/postgres.js";
 import {isMissingThreadError} from "../threads/runtime/types.js";
@@ -63,12 +66,6 @@ async function withAgentStores<T>(
 ): Promise<T> {
   return withPostgresPool(options.dbUrl, async (pool) => {
     const stores = createAgentCliStores(pool);
-    await ensureSchemas([
-      stores.identityStore,
-      stores.agentStore,
-      stores.sessionStore,
-      stores.threadStore,
-    ]);
     return fn(stores);
   });
 }
@@ -174,7 +171,7 @@ export async function ensureAgent(
 
       threadId = randomUUID();
       if (stores.pool) {
-        await resetSessionCurrentThread({
+        await repairMissingSessionCurrentThread({
           pool: stores.pool,
           sessionStore: stores.sessionStore,
           threadStore: stores.threadStore,
@@ -186,6 +183,7 @@ export async function ensureAgent(
             sessionId,
             currentThreadId: threadId,
           },
+          previousThreadId: mainSession.currentThreadId,
         });
       } else {
         await stores.threadStore.createThread({

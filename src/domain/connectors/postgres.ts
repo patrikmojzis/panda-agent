@@ -5,7 +5,6 @@ import type {PgPoolLike} from "../../lib/postgres-query.js";
 import {requireTimestampMillis} from "../../lib/postgres-values.js";
 import {requireNonEmptyString, trimToUndefined} from "../../lib/strings.js";
 import type {CredentialCrypto} from "../credentials/crypto.js";
-import {ensurePostgresConnectorAccountSchema} from "./postgres-schema.js";
 import {buildConnectorAccountTableNames, type ConnectorAccountTableNames} from "./postgres-shared.js";
 import {
   type ConnectorAccountListFilter,
@@ -164,10 +163,6 @@ export class PostgresConnectorAccountStore {
   constructor(options: PostgresConnectorAccountStoreOptions) {
     this.pool = options.pool;
     this.tables = buildConnectorAccountTableNames();
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresConnectorAccountSchema(this.pool);
   }
 
   async upsertAccount(input: UpsertConnectorAccountInput): Promise<ConnectorAccountRecord> {

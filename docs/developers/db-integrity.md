@@ -23,6 +23,7 @@ Some invariants are stricter than a plain single-column FK:
 - `messages.run_id` must belong to `messages.thread_id`
 - `bash_jobs.run_id` must belong to `bash_jobs.thread_id`
 - resolved task/watch thread pointers must stay inside the same session
+- scheduled task input pointers must stay inside the resolved thread
 - scheduled task thread-run pointers must stay inside the resolved thread
 
 When `SET NULL` semantics matter, Panda prefers a composite FK shape over triggers:

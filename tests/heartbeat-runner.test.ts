@@ -7,6 +7,7 @@ import {HeartbeatRunner, type HeartbeatRunnerOptions} from "../src/domain/schedu
 import {type SessionHeartbeatRecord, type SessionRecord} from "../src/domain/sessions/index.js";
 import {ThreadRuntimeCoordinator,} from "../src/domain/threads/runtime/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
+import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 import {waitFor} from "./helpers/wait-for.js";
 
 function createAssistantMessage(text: string): AssistantMessage {
@@ -44,13 +45,20 @@ function createMockRuntime(...responses: AssistantMessage[]) {
   };
 }
 
-class SelectiveLeaseManager {
-  async tryAcquire(threadId: string) {
-    return {
+function heartbeatDeliveryResult(threadId: string) {
+  return {
+    input: {
+      id: "input-1",
       threadId,
-      release: async () => {},
-    };
-  }
+      order: 1,
+      deliveryMode: "wake" as const,
+      status: "pending" as const,
+      connectorKey: "",
+      source: "heartbeat",
+      createdAt: 1,
+    },
+    disposition: "inserted" as const,
+  };
 }
 
 function createDueHeartbeatSessionStore(input: {
@@ -93,7 +101,8 @@ async function createHarness(options: {
   const adapter = db.adapters.createPg();
   const pool = new adapter.Pool();
 
-  const {identityStore, sessionStore, threadStore} = await createRuntimeStores(pool);
+  const {identityStore, sessionStore, threadStore: postgresThreadStore} = await createRuntimeStores(pool);
+  const threadStore = new TestThreadRuntimeStore();
 
   const alice = await identityStore.createIdentity({
     id: "alice-id",
@@ -107,6 +116,10 @@ async function createHarness(options: {
     currentThreadId: "session-thread",
     createdByIdentityId: alice.id,
   });
+  await postgresThreadStore.createThread({
+    id: "session-thread",
+    sessionId: "session-main",
+  });
   await threadStore.createThread({
     id: "session-thread",
     sessionId: "session-main",
@@ -117,7 +130,7 @@ async function createHarness(options: {
   );
   const coordinator = new ThreadRuntimeCoordinator({
     store: threadStore,
-    leaseManager: new SelectiveLeaseManager(),
+    maxConcurrentRuns: 1,
     resolveDefinition: async () => ({
       agent: new Agent({
         name: "panda",
@@ -126,6 +139,8 @@ async function createHarness(options: {
       runtime,
     }),
   });
+  await coordinator.handleStoreNotificationStatus("listening");
+  await coordinator.start({source: "panda-core", connectorKey: "test", holderId: "heartbeat-runner-test"});
 
   const runner = new HeartbeatRunner({
     sessions: sessionStore,
@@ -145,16 +160,17 @@ async function createHarness(options: {
 }
 
 describe("HeartbeatRunner", () => {
-  const pools: Array<{end(): Promise<void>}> = [];
+  const harnesses: Array<Awaited<ReturnType<typeof createHarness>>> = [];
 
   afterEach(async () => {
-    while (pools.length > 0) {
-      const pool = pools.pop();
-      if (!pool) {
+    while (harnesses.length > 0) {
+      const harness = harnesses.pop();
+      if (!harness) {
         continue;
       }
 
-      await pool.end();
+      await harness.coordinator.stop();
+      await harness.pool.end();
     }
   });
 
@@ -162,7 +178,7 @@ describe("HeartbeatRunner", () => {
     const harness = await createHarness({
       heartbeatInstructions: "Always check unfinished promises before going quiet.",
     });
-    pools.push(harness.pool);
+    harnesses.push(harness);
 
     await harness.pool.query(
       `UPDATE "runtime"."session_heartbeats" SET next_fire_at = $2 WHERE session_id = $1`,
@@ -177,7 +193,7 @@ describe("HeartbeatRunner", () => {
     await harness.coordinator.waitForIdle("session-thread");
     await harness.runner.stop();
 
-    const transcript = await harness.threadStore.loadTranscript("session-thread");
+    const transcript = await harness.threadStore.loadTranscriptHistory("session-thread");
     const heartbeatInput = transcript.find((entry) => entry.origin === "input" && entry.source === "heartbeat");
     expect(heartbeatInput?.identityId).toBe(harness.alice.id);
     expect(heartbeatInput?.metadata).toMatchObject({
@@ -204,7 +220,7 @@ describe("HeartbeatRunner", () => {
 
   it("skips busy session threads instead of queueing stale heartbeats", async () => {
     const harness = await createHarness();
-    pools.push(harness.pool);
+    harnesses.push(harness);
 
     await harness.coordinator.submitInput("session-thread", {
       message: stringToUserMessage("queued work"),
@@ -222,11 +238,8 @@ describe("HeartbeatRunner", () => {
     });
     await harness.runner.stop();
 
-    const heartbeatInputs = await harness.pool.query(
-      `SELECT id FROM "runtime"."inputs" WHERE thread_id = $1 AND source = 'heartbeat'`,
-      ["session-thread"],
-    );
-    expect(heartbeatInputs.rows).toHaveLength(0);
+    const transcript = await harness.threadStore.loadTranscriptHistory("session-thread");
+    expect(transcript.some((entry) => entry.origin === "input" && entry.source === "heartbeat")).toBe(false);
     expect(harness.runtime.complete).not.toHaveBeenCalled();
 
     const heartbeat = await harness.sessionStore.getHeartbeat("session-main");
@@ -255,7 +268,7 @@ describe("HeartbeatRunner", () => {
     const {store: sessions} = createDueHeartbeatSessionStore({heartbeat, session});
     const coordinator = {
       isThreadBusy: vi.fn(async () => false),
-      submitInput: vi.fn(async () => {}),
+      submitSessionInput: vi.fn(async () => heartbeatDeliveryResult("unused")),
     };
     const onError = vi.fn();
     const runner = new HeartbeatRunner({
@@ -275,7 +288,7 @@ describe("HeartbeatRunner", () => {
     await runner.stop();
 
     expect(coordinator.isThreadBusy).not.toHaveBeenCalled();
-    expect(coordinator.submitInput).not.toHaveBeenCalled();
+    expect(coordinator.submitSessionInput).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalledWith(expect.any(Error), "session-main");
   });
 
@@ -297,8 +310,9 @@ describe("HeartbeatRunner", () => {
       updatedAt: 1,
     };
     const {store: sessions} = createDueHeartbeatSessionStore({heartbeat, session});
-    const submitInput = vi.fn(async (threadId: string) => {
-      expect(threadId).toBe("new-home");
+    const submitSessionInput = vi.fn(async (sessionId: string) => {
+      expect(sessionId).toBe("session-main");
+      return heartbeatDeliveryResult("new-home");
     });
     const busyChecks: string[] = [];
     const coordinator = {
@@ -309,7 +323,7 @@ describe("HeartbeatRunner", () => {
         }
         return false;
       }),
-      submitInput,
+      submitSessionInput,
     };
 
     const runner = new HeartbeatRunner({
@@ -319,7 +333,7 @@ describe("HeartbeatRunner", () => {
 
     await runner.start();
     await waitFor(() => {
-      expect(submitInput).toHaveBeenCalled();
+      expect(submitSessionInput).toHaveBeenCalled();
     });
     await runner.stop();
 
@@ -344,7 +358,7 @@ describe("HeartbeatRunner", () => {
       updatedAt: 1,
     };
     const {store: sessions} = createDueHeartbeatSessionStore({heartbeat, session});
-    const submitInput = vi.fn(async () => {});
+    const submitSessionInput = vi.fn(async () => heartbeatDeliveryResult("new-home"));
     const coordinator = {
       isThreadBusy: vi.fn(async (threadId: string) => {
         if (threadId === "old-home") {
@@ -356,7 +370,7 @@ describe("HeartbeatRunner", () => {
         }
         throw new Error(`Unexpected heartbeat target ${threadId}`);
       }),
-      submitInput,
+      submitSessionInput,
     };
 
     const runner = new HeartbeatRunner({
@@ -376,7 +390,7 @@ describe("HeartbeatRunner", () => {
 
     expect(coordinator.isThreadBusy).toHaveBeenNthCalledWith(1, "old-home");
     expect(coordinator.isThreadBusy).toHaveBeenNthCalledWith(2, "new-home");
-    expect(submitInput).not.toHaveBeenCalled();
+    expect(submitSessionInput).not.toHaveBeenCalled();
   });
 
   it("re-resolves the session after claim so a reset thread gets the heartbeat", async () => {
@@ -405,8 +419,9 @@ describe("HeartbeatRunner", () => {
         expect(threadId).toBe("new-home");
         return false;
       }),
-      submitInput: vi.fn(async (threadId: string) => {
-        expect(threadId).toBe("new-home");
+      submitSessionInput: vi.fn(async (sessionId: string) => {
+        expect(sessionId).toBe("session-main");
+        return heartbeatDeliveryResult("new-home");
       }),
     };
 

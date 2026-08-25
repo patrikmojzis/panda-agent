@@ -56,13 +56,11 @@ describe("createDaemonThreadHelpers", () => {
     sessionKind?: "main" | "branch";
     sessionMetadata?: Record<string, unknown>;
     createdByIdentityId?: string;
+    throwOnMissingSession?: boolean;
     getIdentity?: (identityId: string) => Promise<ReturnType<typeof createIdentity>>;
     conversationBinding?: {sessionId: string} | null;
     backgroundJobService?: { cancelThreadJobs(threadId: string): Promise<void> };
-    coordinator?: {
-      abort(threadId: string, reason?: string): Promise<boolean>;
-      waitForCurrentRun(threadId: string): Promise<void>;
-    };
+    coordinator?: DaemonThreadHelperContext["runtime"]["coordinator"];
   } = {}) {
     const store = options.store ?? new TestThreadRuntimeStore();
     let boundThreadId = options.currentThreadId ?? "thread-old-home";
@@ -99,6 +97,9 @@ describe("createDaemonThreadHelpers", () => {
         const session = sessions.get(sessionId);
         if (session) {
           return session;
+        }
+        if (options.throwOnMissingSession) {
+          throw new Error(`Unknown session ${sessionId}`);
         }
 
         return {
@@ -150,7 +151,14 @@ describe("createDaemonThreadHelpers", () => {
           },
           coordinator: options.coordinator ?? {
             abort: vi.fn(async () => true),
-            waitForCurrentRun: vi.fn(async () => undefined),
+            runExclusively: vi.fn(async (_threadId, operation) => operation({
+              signal: new AbortController().signal,
+              owner: {
+                source: "panda-core",
+                connectorKey: "test",
+                holderId: "daemon-threads-test",
+              },
+            })),
           },
           agentStore: {
             getAgent: vi.fn(async () => undefined),
@@ -263,6 +271,8 @@ describe("createDaemonThreadHelpers", () => {
 
     await expect(helpers.createBranchSession({
       identity,
+      sessionId: "denied-branch-session",
+      threadId: "denied-branch-thread",
       agentKey: "panda",
     })).rejects.toThrow("Identity home is not paired to agent panda.");
 
@@ -270,7 +280,7 @@ describe("createDaemonThreadHelpers", () => {
       identityId: identity.id,
       source: "tui",
       agentKey: "panda",
-    })).rejects.toThrow("Identity home is not paired to agent panda.");
+    }, "request-denied")).rejects.toThrow("Identity home is not paired to agent panda.");
   });
 
   it("fails on unknown identity ids instead of auto-healing them", async () => {
@@ -284,6 +294,29 @@ describe("createDaemonThreadHelpers", () => {
       identityId: "missing-identity",
       agentKey: "panda",
     })).rejects.toThrow("Unknown identity missing-identity");
+  });
+
+  it("replays stable branch creation without creating another session or thread", async () => {
+    const {helpers, identity, sessionStore, store} = createHelpers({
+      pairings: [{agentKey: "panda"}],
+      createdByIdentityId: TEST_IDENTITY_ID,
+      throwOnMissingSession: true,
+    });
+    const input = {
+      identity,
+      sessionId: "branch-session",
+      threadId: "branch-thread",
+      model: "openai/gpt-5.1",
+    };
+
+    const first = await helpers.createBranchSession(input);
+    sessionStore.updateSessionRuntimeConfig.mockClear();
+    const replay = await helpers.createBranchSession(input);
+    expect(first.id).toBe("branch-thread");
+    expect(replay.id).toBe(first.id);
+    expect(sessionStore.createSession).toHaveBeenCalledTimes(1);
+    expect(sessionStore.updateSessionRuntimeConfig).not.toHaveBeenCalled();
+    await expect(store.getThread("branch-thread")).resolves.toMatchObject({sessionId: "branch-session"});
   });
 
   it("does not persist synthetic cwd context for new main sessions", async () => {
@@ -314,7 +347,7 @@ describe("createDaemonThreadHelpers", () => {
     expect(sessionStore.updateSessionRuntimeConfig).not.toHaveBeenCalled();
   });
 
-  it("applies an explicit model when opening an existing main session", async () => {
+  it("does not turn main-session resolution into a replayable config update", async () => {
     const {helpers, identity, sessionStore} = createHelpers({
       pairings: [{agentKey: "panda"}],
     });
@@ -330,10 +363,7 @@ describe("createDaemonThreadHelpers", () => {
     });
 
     expect(updated.id).toBe(initial.id);
-    expect(sessionStore.updateSessionRuntimeConfig).toHaveBeenCalledWith({
-      sessionId: initial.sessionId,
-      model: "anthropic-oauth/claude-opus-4-7",
-    });
+    expect(sessionStore.updateSessionRuntimeConfig).not.toHaveBeenCalled();
   });
 
   it("cancels old-thread background jobs during session reset", async () => {
@@ -346,7 +376,10 @@ describe("createDaemonThreadHelpers", () => {
       sessionId: "session-main",
     });
 
-    const backgroundJobService = new BackgroundToolJobService({ store });
+    const backgroundJobService = new BackgroundToolJobService({
+      store,
+      owner: {source: "test", connectorKey: "daemon-threads", holderId: "daemon-threads-owner"},
+    });
     const bash = new BashTool({
       outputDirectory: path.join(workspace, "tool-results"),
       jobService: backgroundJobService,
@@ -379,7 +412,7 @@ describe("createDaemonThreadHelpers", () => {
       identityId: TEST_IDENTITY_ID,
       source: "tui",
       threadId: "thread-old-home",
-    });
+    }, "request-reset-background");
 
     expect(result.previousThreadId).toBe("thread-old-home");
     expect(result.threadId).not.toBe("thread-old-home");
@@ -399,7 +432,7 @@ describe("createDaemonThreadHelpers", () => {
       sessionId: "session-main",
     });
 
-    const {helpers, conversationBindings, sessionRoutes} = createHelpers({
+    const {helpers, conversationBindings, sessionRoutes, sessionStore} = createHelpers({
       store,
       currentThreadId: "thread-old-channel",
       conversationBinding: {sessionId: "session-main"},
@@ -412,10 +445,48 @@ describe("createDaemonThreadHelpers", () => {
       externalConversationId: "421900000000@s.whatsapp.net",
       externalActorId: "421900000000@s.whatsapp.net",
       externalMessageId: "reset-1",
-    });
+    }, "request-reset-channel");
+    const replay = await helpers.handleResetSession({
+      identityId: TEST_IDENTITY_ID,
+      source: "whatsapp",
+      connectorKey: "main",
+      externalConversationId: "421900000000@s.whatsapp.net",
+      externalActorId: "421900000000@s.whatsapp.net",
+      externalMessageId: "reset-1",
+    }, "request-reset-channel");
+    const newerReset = await helpers.handleResetSession({
+      identityId: TEST_IDENTITY_ID,
+      source: "whatsapp",
+      connectorKey: "main",
+      externalConversationId: "421900000000@s.whatsapp.net",
+      externalActorId: "421900000000@s.whatsapp.net",
+      externalMessageId: "reset-2",
+    }, "request-reset-channel-2");
+    const replayAfterNewerReset = await helpers.handleResetSession({
+      identityId: TEST_IDENTITY_ID,
+      source: "whatsapp",
+      connectorKey: "main",
+      externalConversationId: "421900000000@s.whatsapp.net",
+      externalActorId: "421900000000@s.whatsapp.net",
+      externalMessageId: "reset-1",
+    }, "request-reset-channel");
 
     expect(result.previousThreadId).toBe("thread-old-channel");
     expect(result.threadId).not.toBe("thread-old-channel");
+    expect(replay).toMatchObject({
+      threadId: result.threadId,
+      previousThreadId: "thread-old-channel",
+      replayed: true,
+    });
+    expect(newerReset).toMatchObject({previousThreadId: result.threadId});
+    expect(replayAfterNewerReset).toMatchObject({
+      threadId: result.threadId,
+      previousThreadId: "thread-old-channel",
+      replayed: true,
+    });
+    await expect(sessionStore.getSession("session-main")).resolves.toMatchObject({
+      currentThreadId: newerReset.threadId,
+    });
     expect(conversationBindings.getConversationBinding).toHaveBeenCalledWith({
       source: "whatsapp",
       connectorKey: "main",
@@ -464,7 +535,7 @@ describe("createDaemonThreadHelpers", () => {
     const result = await helpers.handleResetSession({
       source: "operator",
       sessionId: "session-main",
-    });
+    }, "request-reset-ownerless");
 
     expect(result.previousThreadId).toBe("thread-ownerless");
     expect(result.threadId).not.toBe("thread-ownerless");

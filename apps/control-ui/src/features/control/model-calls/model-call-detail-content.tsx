@@ -480,7 +480,7 @@ function TraceDebugOverview({
           items={viewModel.summary.triageItems}
           onSelectSpan={onSelectSpan}
         />
-        <CaptureHealth viewModel={viewModel} />
+        <CaptureHealth trace={trace} viewModel={viewModel} />
         <div className="flex min-w-0 flex-wrap gap-2">
           <Button
             variant={failing ? "default" : "outline"}
@@ -541,10 +541,16 @@ function TraceDebugOverview({
           <SmallField label="Started" value={formatDate(trace.startedAt) ?? "-"} />
           <SmallField label="Finished" value={formatDate(trace.finishedAt) ?? "-"} />
           <SmallField label="Turn" value={trace.turn !== null ? String(trace.turn) : "-"} />
-          <SmallField label="Call index" value={trace.callIndex !== null ? `#${trace.callIndex}` : "-"} />
+          <SmallField label="Attempt" value={`#${trace.attempt}`} />
           <SmallField label="Run" value={<CodeValue value={trace.runId} short />} />
           <SmallField label="Thread" value={<CodeValue value={trace.threadId} short />} />
           <SmallField label="Expires" value={formatDate(trace.expiresAt) ?? "-"} />
+          <SmallField
+            label="Snapshot"
+            value={!trace.snapshotAvailable && (trace.snapshotStatus === "captured" || trace.snapshotStatus === "truncated")
+              ? "Expired"
+              : humanize(trace.snapshotStatus)}
+          />
           <SmallField label="Prompt cache" value={<RedactedValue value={trace.promptCacheKey} />} />
         </div>
       </div>
@@ -805,7 +811,7 @@ function buildOriginSummary(trace: ModelCallTraceDetail) {
     `thread: ${trace.threadId ?? "-"}`,
     `run: ${trace.runId ?? "-"}`,
     `turn: ${trace.turn ?? "-"}`,
-    `call index: ${trace.callIndex ?? "-"}`,
+    `attempt: ${trace.attempt}`,
     `started: ${formatDate(trace.startedAt) ?? "-"}`,
     `status: ${trace.status}`,
   ].join("\n")
@@ -848,8 +854,35 @@ function TraceShapePills({ viewModel }: { viewModel: ModelCallTraceViewModel }) 
   )
 }
 
-function CaptureHealth({ viewModel }: { viewModel: ModelCallTraceViewModel }) {
+function CaptureHealth({ trace, viewModel }: {
+  trace: ModelCallTraceDetail
+  viewModel: ModelCallTraceViewModel
+}) {
   const findings = traceDebugFindings(viewModel)
+  if (!trace.snapshotAvailable && (trace.snapshotStatus === "captured" || trace.snapshotStatus === "truncated")) {
+    return (
+      <div className="grid min-w-0 gap-1 border bg-background/70 p-3">
+        <div className="text-xs font-medium text-muted-foreground uppercase">Capture health</div>
+        <div className="text-xs text-muted-foreground">Forensic snapshot expired; attempt metadata is still available.</div>
+      </div>
+    )
+  }
+  if (trace.snapshotStatus === "not_captured") {
+    return (
+      <div className="grid min-w-0 gap-1 border bg-background/70 p-3">
+        <div className="text-xs font-medium text-muted-foreground uppercase">Capture health</div>
+        <div className="text-xs text-muted-foreground">Metadata only; no forensic snapshot was requested.</div>
+      </div>
+    )
+  }
+  if (trace.snapshotStatus === "dropped") {
+    return (
+      <div className="grid min-w-0 gap-1 border border-destructive/40 bg-destructive/5 p-3">
+        <div className="text-xs font-medium text-destructive uppercase">Capture health</div>
+        <div className="text-xs text-muted-foreground">Snapshot dropped by recorder backpressure.</div>
+      </div>
+    )
+  }
   if (findings.length === 0) {
     return (
       <div className="grid min-w-0 gap-1 border bg-background/70 p-3">
@@ -1092,8 +1125,6 @@ function InputShapeView({
                 value={contextSectionPayload(section)}
               />
             ))
-          ) : shape.contextDump !== undefined ? (
-            <PayloadSection title="LLM context dump" value={shape.contextDump} />
           ) : (
             <EmptyShapeBlock label="No context sections captured." />
           )}
@@ -1300,11 +1331,9 @@ function traceDiffHighlights(
   const previousTokens = tokenTotalForDiff(compareTrace.usage)
   const promptChanged = stableComparisonValue([
     shape.systemPrompt,
-    shape.contextDump,
     shape.contextSections,
   ]) !== stableComparisonValue([
     compareShape.systemPrompt,
-    compareShape.contextDump,
     compareShape.contextSections,
   ])
   const messagesChanged = stableComparisonValue(shape.messages) !== stableComparisonValue(compareShape.messages)
@@ -2127,8 +2156,8 @@ function traceNavigation(
 
 function compareTraceOrder(a: ModelCallTraceSummary, b: ModelCallTraceSummary) {
   if (a.turn !== null && b.turn !== null && a.turn !== b.turn) return a.turn - b.turn
-  if (a.callIndex !== null && b.callIndex !== null && a.callIndex !== b.callIndex) {
-    return a.callIndex - b.callIndex
+  if (a.attempt !== b.attempt) {
+    return a.attempt - b.attempt
   }
   const aTime = timestampSortValue(a.startedAt)
   const bTime = timestampSortValue(b.startedAt)
@@ -2145,7 +2174,6 @@ function timestampSortValue(value: string | null | undefined) {
 function traceInputShape(trace: ModelCallTraceDetail) {
   const request = asRecord(trace.request) ?? {}
   return {
-    contextDump: hasRenderableValue(request.llmContextDump) ? request.llmContextDump : undefined,
     contextSections: Array.isArray(request.llmContextSections) ? request.llmContextSections : [],
     hasSystemPrompt: hasRenderableValue(request.systemPrompt),
     messages: Array.isArray(request.messages) ? request.messages : [],
@@ -2162,7 +2190,7 @@ function sectionTitle(section: unknown, index: number) {
 function contextSectionPayload(section: unknown) {
   const record = asRecord(section)
   if (!record) return section
-  return firstExistingValue(record, ["content", "contentPreview", "preview", "dump"]) ?? section
+  return firstExistingValue(record, ["contentPreview"]) ?? section
 }
 
 function toolSchemaTitle(tool: unknown, index: number) {

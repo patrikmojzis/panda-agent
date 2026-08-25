@@ -17,7 +17,8 @@ import {startGatewayServer} from "../src/integrations/gateway/http.js";
 import {createGatewayDeviceCommandWaiter} from "../src/integrations/gateway/device-command-waiter.js";
 import {createGatewayGuardFromEnv, type GatewayGuard, LlmGatewayGuard} from "../src/integrations/gateway/guard.js";
 import {startGatewayWorker} from "../src/integrations/gateway/worker.js";
-import {ensureSchemas} from "../src/app/runtime/postgres-bootstrap.js";
+import {installGatewayTestSchema} from "./helpers/gateway-schema.js";
+import {seedPendingThreadInput} from "./helpers/thread-runtime-fixtures.js";
 import {hashOpaqueToken} from "../src/lib/opaque-tokens.js";
 
 describe("Panda gateway", () => {
@@ -56,7 +57,7 @@ describe("Panda gateway", () => {
     const identityStore = new PostgresIdentityStore({pool});
     const sessionStore = new PostgresSessionStore({pool});
     const threadStore = new PostgresThreadRuntimeStore({pool});
-    await ensureSchemas([identityStore, agentStore, sessionStore, threadStore, gatewayStore]);
+    await installGatewayTestSchema(pool);
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
@@ -83,6 +84,40 @@ describe("Panda gateway", () => {
         sessionId: "session-1",
       },
     });
+    // pg-mem cannot execute the production session-locking data-modifying CTE.
+    // Keep this gateway suite focused on delivery policy; real PostgreSQL tests
+    // cover the atomic session-to-current-thread enqueue contract.
+    const gatewayThreadStore = {
+      enqueueSessionInput: async (
+        sessionId: string,
+        payload: Parameters<PostgresThreadRuntimeStore["enqueueInput"]>[1],
+        mode: Parameters<PostgresThreadRuntimeStore["enqueueInput"]>[2],
+        enqueueOptions?: Parameters<PostgresThreadRuntimeStore["enqueueInput"]>[3],
+      ) => {
+        const session = await sessionStore.getSession(sessionId);
+        if (!session) {
+          throw new Error(`Unknown gateway target session ${sessionId}.`);
+        }
+        const inputId = enqueueOptions?.inputId;
+        const id = await seedPendingThreadInput(pool, {
+          ...(inputId ? {id: inputId} : {}),
+          threadId: session.currentThreadId,
+          source: payload.source,
+          deliveryMode: mode,
+          connectorKey: payload.connectorKey,
+          channelId: payload.channelId,
+          externalMessageId: payload.externalMessageId,
+          actorId: payload.actorId,
+          identityId: payload.identityId,
+          message: payload.message,
+          metadata: payload.metadata,
+        });
+        return {
+          disposition: "inserted" as const,
+          input: await threadStore.getInput(id),
+        };
+      },
+    };
     const createdSource = await gatewayStore.createSource({
       sourceId: "work-prod",
       agentKey: "panda",
@@ -103,7 +138,7 @@ describe("Panda gateway", () => {
       pollMs: 1_000_000,
       store: gatewayStore,
       sessionStore,
-      threadStore,
+      threadStore: gatewayThreadStore,
     });
     const httpStore = options.beforeEventStore
       ? new Proxy(gatewayStore, {
@@ -156,6 +191,37 @@ describe("Panda gateway", () => {
     await harness.worker.close();
     await harness.server.close();
     await harness.deviceCommandWaiter.close();
+  }
+
+  async function materializeGatewayInputs(
+    harness: Awaited<ReturnType<typeof createHarness>>,
+    threadId: string,
+  ) {
+    // The production apply command is a fenced writable CTE that pg-mem cannot
+    // parse. Materialize the already-tested gateway payload with simple fixture
+    // statements; PostgreSQL live tests own the atomic apply contract.
+    await harness.pool.query(`
+      INSERT INTO "runtime"."messages" (
+        id, input_id, thread_id, origin, source, channel_id,
+        external_message_id, actor_id, identity_id, created_at, metadata, message
+      )
+      SELECT
+        input.id, input.id, input.thread_id, 'input', input.source, input.channel_id,
+        input.external_message_id, input.actor_id, input.identity_id,
+        input.created_at, input.metadata, input.message
+      FROM "runtime"."inputs" AS input
+      WHERE input.thread_id = $1
+        AND input.applied_at IS NULL
+        AND input.discarded_at IS NULL
+    `, [threadId]);
+    await harness.pool.query(`
+      UPDATE "runtime"."inputs"
+      SET applied_at = NOW(), metadata = NULL, message = NULL
+      WHERE thread_id = $1
+        AND applied_at IS NULL
+        AND discarded_at IS NULL
+    `, [threadId]);
+    return (await harness.threadStore.loadActiveTranscript(threadId)).records;
   }
 
   async function getToken(harness: Awaited<ReturnType<typeof createHarness>>): Promise<string> {
@@ -224,7 +290,7 @@ describe("Panda gateway", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     const event = await harness.gatewayStore.getEvent(eventId);
-    expect(event.status).toBe(status);
+    expect(event.status, JSON.stringify(event)).toBe(status);
   }
 
   it("accepts gateway routes below a configured path prefix", async () => {
@@ -288,7 +354,7 @@ describe("Panda gateway", () => {
       expect(event.text).toBe("");
       expect(event.textScrubbedAt).toBeTypeOf("number");
       expect(await harness.threadStore.hasRunnableInputs("thread-1")).toBe(true);
-      const transcript = await harness.threadStore.applyPendingInputs("thread-1", "all");
+      const transcript = await materializeGatewayInputs(harness, "thread-1");
       expect(JSON.stringify(transcript[0]?.message)).toContain("Meeting transcript text.");
       expect(JSON.stringify(transcript[0]?.message)).toContain("External untrusted event");
     } finally {
@@ -366,7 +432,7 @@ describe("Panda gateway", () => {
         trusted: false,
       });
 
-      const transcript = await harness.threadStore.applyPendingInputs("thread-1", "all");
+      const transcript = await materializeGatewayInputs(harness, "thread-1");
       const rendered = JSON.stringify(transcript[0]?.message);
       expect(rendered).toContain("Trusted gateway event");
       expect(rendered).toContain("guard_status: bypassed");
@@ -537,7 +603,7 @@ describe("Panda gateway", () => {
       expect(attachments[0]?.localPath).toContain(path.join(dataDir, "agents", "panda", "media", "gateway", "work-prod"));
       await expect(fs.readFile(attachments[0]?.localPath ?? "", "utf8")).resolves.toBe("hello gateway attachment");
 
-      const transcript = await harness.threadStore.applyPendingInputs("thread-1", "all");
+      const transcript = await materializeGatewayInputs(harness, "thread-1");
       const renderedMessage = JSON.stringify(transcript[0]?.message);
       expect(renderedMessage).toContain("attachments:");
       expect(renderedMessage).toContain(attachments[0]?.localPath);

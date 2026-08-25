@@ -10,7 +10,6 @@ const identityCliMocks = vi.hoisted(() => {
   const identityStoreInstances: MockPostgresIdentityStore[] = [];
 
   class MockPostgresIdentityStore {
-    readonly ensureSchema = vi.fn(async () => {});
     readonly listIdentities = vi.fn(async () => ([
       {
         id: "test-user",
@@ -37,11 +36,6 @@ const identityCliMocks = vi.hoisted(() => {
     pool,
     identityStoreInstances,
     MockPostgresIdentityStore,
-    ensureSchemas: vi.fn(async (resources: Array<{ ensureSchema(): Promise<void> }>) => {
-      for (const resource of resources) {
-        await resource.ensureSchema();
-      }
-    }),
     randomUUID: vi.fn(() => "identity-created"),
     withPostgresPool: vi.fn(async (_dbUrl: string | undefined, fn: (pool: typeof pool) => Promise<unknown>) => {
       try {
@@ -61,8 +55,7 @@ vi.mock("../src/domain/identity/postgres.js", () => ({
   PostgresIdentityStore: identityCliMocks.MockPostgresIdentityStore,
 }));
 
-vi.mock("../src/lib/postgres-bootstrap.js", () => ({
-  ensureSchemas: identityCliMocks.ensureSchemas,
+vi.mock("../src/lib/postgres-database.js", () => ({
   withPostgresPool: identityCliMocks.withPostgresPool,
 }));
 
@@ -85,7 +78,6 @@ describe("Identity CLI", () => {
   afterEach(() => {
     identityCliMocks.identityStoreInstances.length = 0;
     identityCliMocks.pool.end.mockClear();
-    identityCliMocks.ensureSchemas.mockClear();
     identityCliMocks.randomUUID.mockClear();
     identityCliMocks.withPostgresPool.mockClear();
     vi.restoreAllMocks();
@@ -99,7 +91,6 @@ describe("Identity CLI", () => {
       {from: "user"},
     );
 
-    expect(latestIdentityStore().ensureSchema).toHaveBeenCalledOnce();
     expect(latestIdentityStore().listIdentities).toHaveBeenCalledOnce();
     expect(identityCliMocks.withPostgresPool).toHaveBeenCalledWith(
       "postgres://identity-db",

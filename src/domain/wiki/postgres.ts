@@ -2,7 +2,6 @@ import type {PgQueryable} from "../../lib/postgres-query.js";
 import {requireNonEmptyString} from "../../lib/strings.js";
 import {normalizeAgentKey} from "../agents/types.js";
 import {requireTimestampMillis} from "../../lib/postgres-values.js";
-import {ensurePostgresWikiBindingSchema} from "./postgres-schema.js";
 import {buildWikiBindingTableNames} from "./postgres-shared.js";
 import type {SetWikiBindingInput, WikiBindingRecord} from "./types.js";
 import {normalizeWikiGroupId, normalizeWikiNamespacePath} from "./types.js";
@@ -69,10 +68,6 @@ export class PostgresWikiBindingStore {
 
   constructor(options: PostgresWikiBindingStoreOptions) {
     this.pool = options.pool;
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresWikiBindingSchema(this.pool);
   }
 
   async getBinding(agentKey: string, queryable: PgQueryable = this.pool): Promise<WikiBindingRecord | null> {

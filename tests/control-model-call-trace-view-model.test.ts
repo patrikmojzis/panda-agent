@@ -30,7 +30,7 @@ function traceSummary(overrides: Partial<ModelCallTraceSummary>): ModelCallTrace
     sessionId: "session-1",
     agentKey: "panda",
     turn: 1,
-    callIndex: 0,
+    attempt: 1,
     provider: "openai",
     model: "gpt-5",
     mode: "complete",
@@ -41,6 +41,14 @@ function traceSummary(overrides: Partial<ModelCallTraceSummary>): ModelCallTrace
     promptCacheKey: null,
     usage: null,
     error: null,
+    snapshotStatus: "captured",
+    requestShape: {
+      systemPromptChars: 0,
+      messageCount: 0,
+      toolCount: 0,
+      contextSectionCount: 0,
+      contextChars: 0,
+    },
     expiresAt: "2026-06-24T10:00:00.000Z",
     ...overrides,
   };
@@ -49,6 +57,7 @@ function traceSummary(overrides: Partial<ModelCallTraceSummary>): ModelCallTrace
 function traceDetail(overrides: Partial<ModelCallTraceDetail>): ModelCallTraceDetail {
   return {
     ...traceSummary(overrides),
+    snapshotAvailable: true,
     request: {},
     response: null,
     ...overrides,
@@ -56,16 +65,15 @@ function traceDetail(overrides: Partial<ModelCallTraceDetail>): ModelCallTraceDe
 }
 
 describe("Control model call trace view model", () => {
-  it("shows context content once with real line breaks instead of its JSON wrappers", () => {
+  it("shows the bounded context descriptor preview without duplicate context payloads", () => {
     const content = "Available profiles:\n- browser\n- implementation-coder";
+    const preview = "Available profiles:…";
     const span = buildModelCallTraceViewModel({
       id: "trace-context",
       request: {
         llmContextSections: [{
           name: "Subagents",
-          content,
-          contentPreview: "Available profiles:…",
-          dump: `**Subagents:**\n\`\`\`${content}\`\`\``,
+          contentPreview: preview,
           contentChars: content.length,
           estimatedTokens: 12,
         }],
@@ -73,7 +81,7 @@ describe("Control model call trace view model", () => {
     }).spans.find((entry) => entry.kind === "context");
 
     expect(span).toBeDefined();
-    expect(readableContextContent(span!)).toBe(content);
+    expect(readableContextContent(span!)).toBe(preview);
   });
 
   it("reads a string system prompt from its trace wrapper", () => {

@@ -3,7 +3,6 @@ import {randomUUID} from "node:crypto";
 import type {PgPoolLike, PgQueryable} from "../../lib/postgres-query.js";
 import {requireNonEmptyString} from "../../lib/strings.js";
 import {requireTimestampMillis} from "../../lib/postgres-values.js";
-import {ensurePostgresCredentialSchema} from "./postgres-schema.js";
 import {buildCredentialTableNames, type CredentialTableNames} from "./postgres-shared.js";
 import {
   type CredentialListFilter,
@@ -88,10 +87,6 @@ export class PostgresCredentialStore {
   constructor(options: PostgresCredentialStoreOptions) {
     this.pool = options.pool;
     this.tables = buildCredentialTableNames();
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresCredentialSchema(this.pool);
   }
 
   async listCredentials(filter: CredentialListFilter = {}): Promise<readonly CredentialRecord[]> {

@@ -12,7 +12,7 @@ const DEFAULT_POLL_INTERVAL_MS = 15_000;
 const DEFAULT_CLAIM_TTL_MS = 10 * 60_000;
 const DEFAULT_BATCH_SIZE = 25;
 const WATCH_EVENT_SOURCE = "watch_event";
-type WatchCoordinator = Pick<ThreadRuntimeCoordinator, "submitInput">;
+type WatchCoordinator = Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
 type WatchSessionStore = Pick<SessionStore, "getSession">;
 
 export type WatchEvaluator = (
@@ -200,7 +200,7 @@ export class WatchRunner {
     if (!deliveryTarget) {
       return;
     }
-    const deliveryThreadId = deliveryTarget.threadId;
+    let deliveryThreadId = deliveryTarget.threadId;
 
     const event = await this.watches.recordEvent({
       watchId: claim.watch.id,
@@ -214,7 +214,7 @@ export class WatchRunner {
     });
 
     try {
-      await this.coordinator.submitInput(deliveryThreadId, {
+      const enqueue = await this.coordinator.submitSessionInput(claim.watch.sessionId, {
         message: stringToUserMessage(buildWatchEventPrompt({
           claim,
           eventId: event.event.id,
@@ -226,6 +226,7 @@ export class WatchRunner {
         identityId: claim.watch.createdByIdentityId ?? session.createdByIdentityId,
         metadata: buildWatchEventMetadata(claim, event.event.id),
       });
+      deliveryThreadId = enqueue.input.threadId;
     } catch (error) {
       await this.failClaimRun(claim, error, {resolvedThreadId: deliveryThreadId});
       return;

@@ -24,8 +24,9 @@ import {createRuntimeClient} from "../runtime/client.js";
 import {createDaemon} from "../runtime/daemon.js";
 import {DAEMON_STALE_AFTER_MS, DEFAULT_DAEMON_KEY} from "../runtime/daemon-shared.js";
 import {createPostgresPool} from "../runtime/database.js";
-import {ensureSchemas, withPostgresPool} from "../runtime/postgres-bootstrap.js";
+import {withPostgresPool} from "../../lib/postgres-database.js";
 import {DaemonStateRepo} from "../runtime/state/repo.js";
+import {createPandaSchemaMigrator} from "../database/migration-catalog.js";
 import {
     DEFAULT_SMOKE_TIMEOUT_MS,
     requireSmokeDatabaseUrl,
@@ -357,7 +358,6 @@ async function bootstrapSmokeFixtures(input: {
     const identityStore = new PostgresIdentityStore({pool});
     const agentStore = new PostgresAgentStore({pool});
     const sessionStore = new PostgresSessionStore({pool});
-    await ensureSchemas([identityStore, agentStore, sessionStore]);
 
     const identity = await ensureSmokeIdentity(identityStore, input.identityHandle);
     const requestedSessionId = trimToUndefined(input.sessionId);
@@ -416,7 +416,6 @@ async function waitForDaemonOnline(input: {
   const daemonState = new DaemonStateRepo({pool});
 
   try {
-    await ensureSchemas([daemonState]);
     while (Date.now() <= deadline) {
       const daemonError = input.getDaemonError();
       if (daemonError) {
@@ -489,11 +488,27 @@ async function loadSmokeRecords(input: {
       transcript: [],
     };
   }
+  const client = input.client;
+  const thread = input.thread;
+
+  const loadSmokeTranscriptPages = async (): Promise<readonly ThreadMessageRecord[]> => {
+    const pages: ThreadMessageRecord[][] = [];
+    let beforeSequence: number | undefined;
+    do {
+      const page = await client.store.listTranscriptPage(thread.id, {
+        beforeSequence,
+        limit: 500,
+      });
+      pages.unshift([...page.records]);
+      beforeSequence = page.nextBeforeSequence;
+    } while (beforeSequence !== undefined);
+    return pages.flat();
+  };
 
   const [transcript, runs, toolJobs] = await Promise.all([
-    input.client.store.loadTranscript(input.thread.id),
-    input.client.store.listRuns(input.thread.id),
-    input.client.store.listToolJobs(input.thread.id),
+    loadSmokeTranscriptPages(),
+    client.store.listRuns(thread.id),
+    client.store.listToolJobs(thread.id),
   ]);
 
   return {
@@ -581,6 +596,10 @@ export async function runSmoke(input: SmokeInput): Promise<SmokeResult> {
         allowUnsafeReset: input.allowUnsafeDbReset,
       });
     }
+
+    await withPostgresPool(dbUrl, async (pool) => {
+      await createPandaSchemaMigrator({pool, readonlyRole: null}).migrate();
+    });
 
     stage = "daemon_start";
     daemon = await createDaemon({

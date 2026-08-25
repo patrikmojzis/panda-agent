@@ -117,7 +117,7 @@ export function buildModelCallTraceViewModel(trace: TraceLike): ModelCallTraceVi
     const name = record ? firstString(record, ["label", "name", "source"]) : null
     const source = record ? firstString(record, ["source", "name"]) : null
     const content = record
-      ? firstRenderable(record, ["contentPreview", "preview", "content", "dump"])
+      ? firstRenderable(record, ["contentPreview"])
       : section
     const chars = record ? firstNumber(record, ["contentChars", "charCount", "chars", "dumpChars"]) : null
     const tokens = record ? firstNumber(record, ["estimatedTokens", "tokenEstimate", "tokens"]) : null
@@ -133,16 +133,6 @@ export function buildModelCallTraceViewModel(trace: TraceLike): ModelCallTraceVi
       ].filter(isPresent),
     }))
   })
-
-  if (contextSections.length === 0 && hasRenderableValue(request.llmContextDump)) {
-    addSpan(contextSpan({
-      id: "context:dump",
-      title: "LLM context dump",
-      subtitle: payloadSubtitle(request.llmContextDump),
-      preview: previewForValue(request.llmContextDump),
-      raw: {llmContextDump: request.llmContextDump},
-    }))
-  }
 
   if (Array.isArray(request.tools) && request.tools.length > 0) {
     const toolNames = request.tools

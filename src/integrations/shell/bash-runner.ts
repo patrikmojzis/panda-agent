@@ -16,6 +16,7 @@ import type {
     BashRunnerAbortRequest,
     BashRunnerExecRequest,
     BashRunnerJobQueryRequest,
+    BashRunnerJobCancelRequest,
     BashRunnerJobStartRequest,
     BashRunnerJobWaitRequest,
 } from "./bash-protocol.js";
@@ -43,6 +44,8 @@ const BACKGROUND_JOB_WATCH_EXPIRY_GRACE_MS = 90_000;
 const BACKGROUND_JOB_TERMINAL_RETENTION_MS = 90_000;
 const CLOSE_JOB_WAIT_MS = 1_000;
 const DEFAULT_BACKGROUND_JOB_CANCEL_WAIT_MS = 5_000;
+const BACKGROUND_JOB_CANCEL_TOMBSTONE_MS = 30_000;
+const BASH_RUNNER_REQUEST_BODY_TIMEOUT_MS = 10_000;
 const DEFAULT_RUNNER_HOST = "0.0.0.0";
 const MAX_BASH_RUNNER_JSON_BODY_BYTES = 8 * 1024 * 1024;
 
@@ -69,6 +72,11 @@ type BackgroundJobState = RunningBackgroundJobState | TerminalBackgroundJobState
 
 interface PendingBackgroundJobStart {
   promise?: Promise<CommandExecutorJob>;
+  job?: CommandExecutorJob;
+  cancelRequested: boolean;
+  cancellation?: Promise<void>;
+  settled: Promise<void>;
+  resolveSettled(): void;
 }
 
 export interface CommandExecutorExecInput {
@@ -376,13 +384,39 @@ function validateJobWaitRequest(value: unknown): BashRunnerJobWaitRequest {
   };
 }
 
+function validateJobCancelRequest(value: unknown): BashRunnerJobCancelRequest {
+  const base = validateJobWaitRequest(value);
+  const reserveIfMissing = isRecord(value) ? value.reserveIfMissing : undefined;
+  if (reserveIfMissing !== undefined && typeof reserveIfMissing !== "boolean") {
+    throw new ToolError("Background job reserveIfMissing must be a boolean.");
+  }
+  return {
+    ...base,
+    ...(reserveIfMissing === undefined ? {} : {reserveIfMissing}),
+  };
+}
+
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
-  return readJsonHttpBody(request, {
+  const body = readJsonHttpBody(request, {
     createError: createBashRunnerBodyError,
     invalidJsonPrefix: "Request body must be valid JSON",
     maxBytes: MAX_BASH_RUNNER_JSON_BODY_BYTES,
     tooLargeMessage: "Runner request body is too large.",
   });
+  let timeout: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      body,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => {
+          reject(createBashRunnerBodyError(408, "Runner request body timed out."));
+        }, BASH_RUNNER_REQUEST_BODY_TIMEOUT_MS);
+        timeout.unref();
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 function createBashRunnerBodyError(statusCode: number, message: string): ToolError {
@@ -590,6 +624,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
   const commandExecutor = options.commandExecutor ?? new LocalCommandExecutor({env, shell, outputDirectory});
   const backgroundJobs = new Map<string, BackgroundJobState>();
   const pendingJobStarts = new Map<string, PendingBackgroundJobStart>();
+  const pendingJobCancels = new Map<string, NodeJS.Timeout>();
   const backgroundWatchers = new Set<Promise<void>>();
   const closingJobCancellations = new Map<CommandExecutorJob, Promise<void>>();
   const pendingAborts = new Map<string, NodeJS.Timeout>();
@@ -750,6 +785,48 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
     }
   };
 
+  const createPendingJobStart = (): PendingBackgroundJobStart => {
+    let resolveSettled!: () => void;
+    const settled = new Promise<void>((resolve) => {
+      resolveSettled = resolve;
+    });
+    return {
+      cancelRequested: false,
+      settled,
+      resolveSettled,
+    };
+  };
+
+  const requestPendingJobStartCancellation = (
+    reservation: PendingBackgroundJobStart,
+  ): Promise<void> => {
+    reservation.cancelRequested = true;
+    if (!reservation.cancellation) {
+      const job = reservation.job
+        ? Promise.resolve(reservation.job)
+        : reservation.promise;
+      if (job) {
+        reservation.cancellation = job.then(drainJob, () => undefined);
+      }
+    }
+    return reservation.cancellation ?? reservation.settled;
+  };
+
+  const waitWithin = async (promise: Promise<void>, timeoutMs: number): Promise<void> => {
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        promise,
+        new Promise<void>((resolve) => {
+          timeout = setTimeout(resolve, timeoutMs);
+          timeout.unref();
+        }),
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  };
+
   const cancelJobForClose = (job: CommandExecutorJob): Promise<void> => {
     const existing = closingJobCancellations.get(job);
     if (existing) {
@@ -788,6 +865,24 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
     }, 30_000);
     timer.unref();
     pendingAborts.set(requestId, timer);
+  };
+
+  const consumePendingJobCancel = (jobId: string): boolean => {
+    const timer = pendingJobCancels.get(jobId);
+    if (!timer) return false;
+    clearTimeout(timer);
+    pendingJobCancels.delete(jobId);
+    return true;
+  };
+
+  const rememberPendingJobCancel = (jobId: string): void => {
+    const existing = pendingJobCancels.get(jobId);
+    if (existing) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      pendingJobCancels.delete(jobId);
+    }, BACKGROUND_JOB_CANCEL_TOMBSTONE_MS);
+    timer.unref();
+    pendingJobCancels.set(jobId, timer);
   };
 
   const server = createServer(async (request, response) => {
@@ -916,8 +1011,13 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
         if (backgroundJobs.has(parsed.jobId) || pendingJobStarts.has(parsed.jobId)) {
           throw new ToolError(`Background job ${parsed.jobId} already exists.`);
         }
+        if (consumePendingJobCancel(parsed.jobId)) {
+          throw new ToolError(`Background job ${parsed.jobId} was cancelled before start.`, {
+            details: {statusCode: 409},
+          });
+        }
 
-        const reservation: PendingBackgroundJobStart = {};
+        const reservation = createPendingJobStart();
         pendingJobStarts.set(parsed.jobId, reservation);
         let ownsReservation = true;
         let job: CommandExecutorJob | undefined;
@@ -928,10 +1028,26 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
           if (pendingJobStarts.get(parsed.jobId) === reservation) {
             pendingJobStarts.delete(parsed.jobId);
           }
+          reservation.resolveSettled();
+        };
+
+        const rejectCancelledStart = async (stage: "before start" | "during start"): Promise<void> => {
+          if (!reservation.cancelRequested && !consumePendingJobCancel(parsed.jobId)) return;
+          reservation.cancelRequested = true;
+          if (job) {
+            reservation.job = job;
+            await requestPendingJobStartCancellation(reservation);
+            job = undefined;
+          }
+          throw new ToolError(`Background job ${parsed.jobId} was cancelled ${stage}.`, {
+            details: {statusCode: 409},
+          });
         };
 
         try {
           const resolvedCwd = await resolveRequestCwd(parsed.cwd, allowedRoots);
+          if (closing) throw runnerClosingError();
+          await rejectCancelledStart("before start");
           const spawnFailure = await readBashSpawnPreflightFailure({
             cwd: resolvedCwd,
             shell,
@@ -943,6 +1059,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
           if (closing) {
             throw runnerClosingError();
           }
+          await rejectCancelledStart("before start");
 
           const startPromise = commandExecutor.startJob({
             request: parsed,
@@ -950,16 +1067,21 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
           });
           reservation.promise = startPromise;
           job = await startPromise;
+          reservation.job = job;
           if (closing) {
-            await cancelJobForClose(job);
+            await requestPendingJobStartCancellation(reservation);
+            job = undefined;
             throw runnerClosingError();
           }
+          await rejectCancelledStart("during start");
 
           const snapshot = await job.snapshot();
           if (closing) {
-            await cancelJobForClose(job);
+            await requestPendingJobStartCancellation(reservation);
+            job = undefined;
             throw runnerClosingError();
           }
+          await rejectCancelledStart("during start");
 
           const ownershipStartedAt = Date.now();
           const state: RunningBackgroundJobState = {
@@ -1079,12 +1201,29 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
         if (closing) {
           throw runnerClosingError();
         }
-        const parsed = validateJobWaitRequest(await readJsonBody(request));
+        const parsed = validateJobCancelRequest(await readJsonBody(request));
         if (closing) {
           throw runnerClosingError();
         }
+        const pendingStart = pendingJobStarts.get(parsed.jobId);
+        if (pendingStart) {
+          await waitWithin(
+            requestPendingJobStartCancellation(pendingStart),
+            parsed.timeoutMs ?? DEFAULT_BACKGROUND_JOB_CANCEL_WAIT_MS,
+          );
+          writeJsonResponse(response, 200, {ok: true, cancelled: true, pending: true});
+          return;
+        }
         const state = backgroundJobs.get(parsed.jobId);
         if (!state) {
+          if (parsed.reserveIfMissing) {
+            // A start response can be lost after the process was accepted.
+            // Retain a bounded tombstone so pending or slightly later starts
+            // are cancelled before ownership can become observable.
+            rememberPendingJobCancel(parsed.jobId);
+            writeJsonResponse(response, 200, {ok: true, cancelled: true});
+            return;
+          }
           writeJsonResponse(response, 404, {
             ok: false,
             error: `Unknown background job ${parsed.jobId}.`,
@@ -1168,20 +1307,17 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       clearTimeout(timer);
     }
     pendingAborts.clear();
+    for (const timer of pendingJobCancels.values()) {
+      clearTimeout(timer);
+    }
+    pendingJobCancels.clear();
     for (const active of activeRequests.values()) {
       active.controller.abort(new Error("Runner is closing."));
     }
 
-    const pendingStarts = await Promise.allSettled(
-      [...pendingJobStarts.values()].flatMap((reservation) => (
-        reservation.promise ? [reservation.promise] : []
-      )),
+    const pendingStartCancellations = [...pendingJobStarts.values()].map(
+      requestPendingJobStartCancellation,
     );
-    for (const result of pendingStarts) {
-      if (result.status === "fulfilled") {
-        void cancelJobForClose(result.value);
-      }
-    }
 
     const watchers = [...backgroundWatchers];
     for (const [jobId, state] of backgroundJobs) {
@@ -1193,6 +1329,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
 
     const results = await Promise.allSettled([
       serverClosed,
+      ...pendingStartCancellations,
       ...closingJobCancellations.values(),
       ...watchers,
     ]);
@@ -1202,6 +1339,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
     backgroundWatchers.clear();
     closingJobCancellations.clear();
     pendingJobStarts.clear();
+    pendingJobCancels.clear();
     activeRequests.clear();
     if (failure) {
       throw failure.reason;

@@ -4,7 +4,6 @@ import {readOptionalJsonValue} from "../../lib/json.js";
 import type {PgPoolLike} from "../../lib/postgres-query.js";
 import {isRecord} from "../../lib/records.js";
 import {optionalTrimmedString, requireNonEmptyString, uniqueTrimmedStrings} from "../../lib/strings.js";
-import {ensurePostgresExecutionEnvironmentSchema} from "./postgres-schema.js";
 import {normalizeAgentSkillOperations} from "./policy.js";
 import {buildExecutionEnvironmentTableNames, type ExecutionEnvironmentTableNames} from "./postgres-shared.js";
 import type {ExecutionEnvironmentStore} from "./store.js";
@@ -165,10 +164,6 @@ export class PostgresExecutionEnvironmentStore implements ExecutionEnvironmentSt
   constructor(options: PostgresExecutionEnvironmentStoreOptions) {
     this.pool = options.pool;
     this.tables = buildExecutionEnvironmentTableNames();
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresExecutionEnvironmentSchema(this.pool);
   }
 
   async createEnvironment(input: CreateExecutionEnvironmentInput): Promise<ExecutionEnvironmentRecord> {

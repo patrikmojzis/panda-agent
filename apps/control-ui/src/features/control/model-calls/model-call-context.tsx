@@ -38,7 +38,7 @@ export function TraceContext({
     trace.runId ? { label: "Run", value: trace.runId } : null,
     trace.threadId ? { label: "Thread", value: trace.threadId } : null,
     trace.turn !== null ? { label: "Turn", value: String(trace.turn) } : null,
-    trace.callIndex !== null ? { label: "Call", value: `#${trace.callIndex}` } : null,
+    { label: "Attempt", value: `#${trace.attempt}` },
   ].filter((item): item is { label: string; value: string; title?: string } => Boolean(item))
 
   if (items.length === 0) return <span className="text-muted-foreground">-</span>

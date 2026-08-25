@@ -13,7 +13,7 @@ import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js";
 import {startGatewayServer} from "../src/integrations/gateway/http.js";
 import {createGatewayDeviceCommandWaiter} from "../src/integrations/gateway/device-command-waiter.js";
-import {ensureSchemas} from "../src/app/runtime/postgres-bootstrap.js";
+import {installGatewayTestSchema} from "./helpers/gateway-schema.js";
 import {hashOpaqueToken} from "../src/lib/opaque-tokens.js";
 
 function sha256Hex(bytes: Buffer): string {
@@ -49,7 +49,7 @@ describe("gateway device command HTTP endpoints", () => {
     const identityStore = new PostgresIdentityStore({pool});
     const sessionStore = new PostgresSessionStore({pool});
     const threadStore = new PostgresThreadRuntimeStore({pool});
-    await ensureSchemas([identityStore, agentStore, sessionStore, threadStore, gatewayStore]);
+    await installGatewayTestSchema(pool);
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",

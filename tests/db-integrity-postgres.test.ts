@@ -3,18 +3,34 @@ import {DataType, newDb} from "pg-mem";
 
 import {stringToUserMessage} from "../src/index.js";
 import {ConversationRepo, SessionRouteRepo} from "../src/domain/sessions/index.js";
+import {ensurePostgresConversationSessionSchema} from "../src/domain/sessions/conversations/postgres-schema.js";
+import {ensurePostgresSessionRouteSchema} from "../src/domain/sessions/routes/postgres-schema.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/index.js";
+import {ensurePostgresScheduledTaskSchema} from "../src/domain/scheduling/tasks/postgres-schema.js";
 import {PostgresWatchStore} from "../src/domain/watches/index.js";
+import {ensurePostgresWatchSchema} from "../src/domain/watches/postgres-schema.js";
 import {PostgresOutboundDeliveryStore} from "../src/domain/channels/deliveries/index.js";
+import {ensurePostgresOutboundDeliverySchema} from "../src/domain/channels/deliveries/postgres-schema.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
+import {seedPendingThreadInput} from "./helpers/thread-runtime-fixtures.js";
 
 function createPool() {
-  const db = newDb();
+  const db = newDb({noAstCoverageCheck: true});
   db.public.registerFunction({
     name: "pg_notify",
     args: [DataType.text, DataType.text],
     returns: DataType.text,
     implementation: () => "",
+  });
+  db.public.registerFunction({
+    name: "jsonb_typeof",
+    args: [DataType.jsonb],
+    returns: DataType.text,
+    implementation: (value: unknown) => value === null
+      ? "null"
+      : Array.isArray(value)
+        ? "array"
+        : typeof value,
   });
   const adapter = db.adapters.createPg();
   return new adapter.Pool();
@@ -93,8 +109,8 @@ describe("Database integrity hardening", () => {
     const {identityStore, sessionStore} = await createRuntimeStores(pool);
     const routes = new SessionRouteRepo({pool});
     const conversations = new ConversationRepo({pool});
-    await routes.ensureSchema();
-    await conversations.ensureSchema();
+    await ensurePostgresSessionRouteSchema(pool);
+    await ensurePostgresConversationSessionSchema(pool);
 
     await expect(routes.saveLastRoute({
       sessionId: "missing-session",
@@ -170,7 +186,7 @@ describe("Database integrity hardening", () => {
     }]);
   });
 
-  it("rejects cross-thread message and bash run links", async () => {
+  it("rejects cross-session thread replacement and cross-thread run links", async () => {
     const pool = createPool();
     pools.push(pool);
 
@@ -195,22 +211,47 @@ describe("Database integrity hardening", () => {
       id: "thread-b",
       sessionId: "session-b",
     });
-
-    const run = await threadStore.createRun("thread-a");
-
-    await expect(threadStore.appendRuntimeMessage("thread-b", {
-      source: "tui",
-      message: stringToUserMessage("hello"),
-      runId: run.id,
+    await expect(threadStore.createThread({
+      id: "thread-invalid-replacement",
+      sessionId: "session-a",
+      replacesThreadId: "thread-b",
     })).rejects.toThrow();
 
-    await expect(threadStore.createToolJob({
-      id: "job-1",
-      threadId: "thread-b",
-      runId: run.id,
-      kind: "bash",
-      summary: "echo hi",
-    })).rejects.toThrow();
+    const runId = "00000000-0000-4000-8000-000000000001";
+    await pool.query(`
+      INSERT INTO "runtime"."runs" (id, thread_id, status, started_at, finished_at)
+      VALUES ($1, 'thread-a', 'completed', NOW(), NOW())
+    `, [runId]);
+
+    await expect(pool.query(`
+      INSERT INTO "runtime"."messages" (
+        id, thread_id, origin, source, run_id, run_thread_id, created_at, message
+      ) VALUES (
+        '00000000-0000-4000-8000-000000000002',
+        'thread-b',
+        'runtime',
+        'tui',
+        $1,
+        'thread-b',
+        NOW(),
+        $2::jsonb
+      )
+    `, [runId, JSON.stringify(stringToUserMessage("hello"))])).rejects.toThrow();
+
+    await expect(pool.query(`
+      INSERT INTO "runtime"."tool_jobs" (
+        id, thread_id, run_id, run_thread_id, kind, status, summary, started_at
+      ) VALUES (
+        '00000000-0000-4000-8000-000000000003',
+        'thread-b',
+        $1,
+        'thread-b',
+        'bash',
+        'running',
+        'echo hi',
+        NOW()
+      )
+    `, [runId])).rejects.toThrow();
   });
 
   it("rejects scheduled task run scope mismatches", async () => {
@@ -219,7 +260,7 @@ describe("Database integrity hardening", () => {
 
     const {sessionStore, threadStore} = await createRuntimeStores(pool);
     const tasks = new PostgresScheduledTaskStore({pool});
-    await tasks.ensureSchema();
+    await ensurePostgresScheduledTaskSchema(pool);
 
     await sessionStore.createSession({
       id: "session-a",
@@ -264,28 +305,94 @@ describe("Database integrity hardening", () => {
         $1,
         'session-b',
         NOW(),
-        'claimed'
+        'pending'
       )
     `, [task.id])).rejects.toThrow();
 
-    const claim = await tasks.claimTask({
-      taskId: task.id,
-      claimedBy: "runner",
-      claimExpiresAt: Date.now() + 60_000,
+    const scheduledRunId = "00000000-0000-4000-8000-000000000002";
+    const claimToken = "00000000-0000-4000-8000-000000000003";
+    await pool.query(`
+      INSERT INTO "runtime"."scheduled_task_runs" (
+        id,
+        task_id,
+        session_id,
+        scheduled_for,
+        status,
+        claim_token,
+        claimed_at,
+        claimed_by,
+        claim_expires_at
+      ) VALUES ($1, $2, 'session-a', NOW(), 'claimed', $3, NOW(), 'runner', NOW() + INTERVAL '1 minute')
+    `, [scheduledRunId, task.id, claimToken]);
+    const unrelatedInputId = await seedPendingThreadInput(pool, {
+      threadId: "thread-a",
+      source: "scheduled_task",
+      message: stringToUserMessage("unrelated stable input"),
     });
-    expect(claim).not.toBeNull();
+    await expect(pool.query(`
+      UPDATE "runtime"."scheduled_task_runs"
+      SET status = 'running',
+          resolved_thread_id = 'thread-a',
+          resolved_thread_session_id = 'session-a',
+          thread_input_id = $2,
+          thread_input_thread_id = 'thread-a',
+          lineage_recorded_at = NOW(),
+          started_at = NOW()
+      WHERE id = $1
+    `, [scheduledRunId, unrelatedInputId])).rejects.toThrow();
 
-    await expect(tasks.startTaskRun({
-      runId: claim!.run.id,
-      resolvedThreadId: "thread-b",
-    })).rejects.toThrow();
+    const wrongInputId = await seedPendingThreadInput(pool, {
+      id: scheduledRunId,
+      threadId: "thread-b",
+      source: "scheduled_task",
+      message: stringToUserMessage("wrong thread"),
+    });
 
-    const threadRun = await threadStore.createRun("thread-b");
-    await expect(tasks.completeTaskRun({
-      runId: claim!.run.id,
-      resolvedThreadId: "thread-a",
-      threadRunId: threadRun.id,
-    })).rejects.toThrow();
+    await expect(pool.query(`
+      UPDATE "runtime"."scheduled_task_runs"
+      SET status = 'running',
+          resolved_thread_id = 'thread-a',
+          resolved_thread_session_id = 'session-a',
+          thread_input_id = $2,
+          thread_input_thread_id = 'thread-b',
+          lineage_recorded_at = NOW(),
+          started_at = NOW()
+      WHERE id = $1
+    `, [scheduledRunId, wrongInputId])).rejects.toThrow();
+    await pool.query(`DELETE FROM "runtime"."inputs" WHERE id = $1`, [wrongInputId]);
+
+    const correctInputId = await seedPendingThreadInput(pool, {
+      id: scheduledRunId,
+      threadId: "thread-a",
+      source: "scheduled_task",
+      message: stringToUserMessage("correct thread"),
+    });
+    await pool.query(`
+      UPDATE "runtime"."scheduled_task_runs"
+      SET status = 'running',
+          resolved_thread_id = 'thread-a',
+          resolved_thread_session_id = 'session-a',
+          thread_input_id = $2,
+          thread_input_thread_id = 'thread-a',
+          lineage_recorded_at = NOW(),
+          started_at = NOW()
+      WHERE id = $1
+    `, [scheduledRunId, correctInputId]);
+    const threadRunId = "00000000-0000-4000-8000-000000000004";
+    await pool.query(`
+      INSERT INTO "runtime"."runs" (id, thread_id, status, started_at, finished_at)
+      VALUES ($1, 'thread-b', 'completed', NOW(), NOW())
+    `, [threadRunId]);
+    await expect(pool.query(`
+      UPDATE "runtime"."scheduled_task_runs"
+      SET status = 'succeeded',
+          thread_run_id = $2,
+          thread_run_thread_id = 'thread-b',
+          finished_at = NOW(),
+          claim_token = NULL,
+          claim_expires_at = NULL
+      WHERE id = $1
+    `, [scheduledRunId, threadRunId])).rejects.toThrow();
   });
 
   it("rejects watch scope mismatches and nulls audit links on delete", async () => {
@@ -294,7 +401,7 @@ describe("Database integrity hardening", () => {
 
     const {sessionStore, threadStore} = await createRuntimeStores(pool);
     const watches = new PostgresWatchStore({pool});
-    await watches.ensureSchema();
+    await ensurePostgresWatchSchema(pool);
 
     await sessionStore.createSession({
       id: "session-a",
@@ -422,7 +529,7 @@ describe("Database integrity hardening", () => {
 
     const {sessionStore, threadStore} = await createRuntimeStores(pool);
     const outbound = new PostgresOutboundDeliveryStore({pool});
-    await outbound.ensureSchema();
+    await ensurePostgresOutboundDeliverySchema(pool);
 
     await sessionStore.createSession({
       id: "session-a",

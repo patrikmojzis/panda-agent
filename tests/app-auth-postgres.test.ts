@@ -2,9 +2,13 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentAppAuthService} from "../src/domain/apps/auth.js";
+import {ensurePostgresAgentAppAuthSchema} from "../src/domain/apps/auth-schema.js";
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
+import {ensurePostgresAgentSchema} from "../src/domain/agents/postgres-schema.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
+import {ensurePostgresIdentitySchema} from "../src/domain/identity/postgres-schema.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
+import {ensurePostgresSessionSchema} from "../src/domain/sessions/postgres-schema.js";
 
 describe("PostgresAgentAppAuthService", () => {
   const pools: Array<{end(): Promise<void>}> = [];
@@ -31,10 +35,10 @@ describe("PostgresAgentAppAuthService", () => {
     const agentStore = new PostgresAgentStore({pool});
     const sessionStore = new PostgresSessionStore({pool});
     const auth = new PostgresAgentAppAuthService({pool});
-    await identityStore.ensureSchema();
-    await agentStore.ensureSchema();
-    await sessionStore.ensureSchema();
-    await auth.ensureSchema();
+    await ensurePostgresIdentitySchema(pool);
+    await ensurePostgresAgentSchema(pool);
+    await ensurePostgresSessionSchema(pool);
+    await ensurePostgresAgentAppAuthSchema(pool);
 
     await identityStore.createIdentity({
       id: "identity-patrik",

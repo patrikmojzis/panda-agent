@@ -1,7 +1,6 @@
 import type {MediaDescriptor} from "../../../domain/channels/types.js";
 import type {IdentityStore} from "../../../domain/identity/store.js";
 import type {SessionRouteRepo} from "../../../domain/sessions/routes/repo.js";
-import type {SessionStore} from "../../../domain/sessions/store.js";
 import type {
   ResetSessionRequestPayload,
   ResetSessionResult,
@@ -9,7 +8,7 @@ import type {
   TelegramReactionRequestPayload,
 } from "../../../domain/threads/requests/types.js";
 import type {ThreadRuntimeCoordinator} from "../../../domain/threads/runtime/coordinator.js";
-import type {ThreadRecord} from "../../../domain/threads/runtime/types.js";
+import type {ThreadEnqueueOptions, ThreadRecord} from "../../../domain/threads/runtime/types.js";
 import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
 import {submitRememberedChannelInput} from "../inbound-delivery.js";
 import {TELEGRAM_SOURCE} from "./config.js";
@@ -36,6 +35,7 @@ interface TelegramInboundThreadResolver {
 
 interface TelegramRuntimeMessageThreadResolver extends TelegramInboundThreadResolver {
   queueSystemReply(input: {
+    idempotencyKey: string;
     channel: string;
     connectorKey: string;
     externalConversationId: string;
@@ -44,14 +44,14 @@ interface TelegramRuntimeMessageThreadResolver extends TelegramInboundThreadReso
     replyToMessageId?: string;
     threadId?: string;
   }): Promise<void>;
-  handleResetSession(payload: ResetSessionRequestPayload): Promise<ResetSessionResult>;
+  handleResetSession(payload: ResetSessionRequestPayload, requestId: string): Promise<ResetSessionResult>;
 }
 
 interface TelegramInboundRequestHandlerOptions {
-  coordinator: Pick<ThreadRuntimeCoordinator, "submitInput">;
+  coordinator: Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
+  enqueueOptions?: ThreadEnqueueOptions;
   identityStore: Pick<IdentityStore, "getIdentity" | "resolveIdentityBinding">;
   routes: Pick<SessionRouteRepo, "saveLastRoute">;
-  sessions: Pick<SessionStore, "getSession">;
   threads: TelegramInboundThreadResolver;
 }
 
@@ -139,8 +139,8 @@ export async function handleTelegramMessageRequest(
 
   const target = await submitRememberedChannelInput({
     coordinator: options.coordinator,
+    ...(options.enqueueOptions === undefined ? {} : {enqueueOptions: options.enqueueOptions}),
     routes: options.routes,
-    sessions: options.sessions,
     sessionId: thread.sessionId,
     identityId,
     route: persistence.rememberedRoute,
@@ -162,6 +162,13 @@ export async function handleTelegramRuntimeMessageRequest(
   options: TelegramRuntimeMessageRequestHandlerOptions,
 ): Promise<Record<string, unknown>> {
   const command = normalizeTelegramCommand(payload.text, payload.botUsername);
+  const systemReplyIdempotencyKey = (): string => {
+    const requestId = options.enqueueOptions?.inputId;
+    if (!requestId) {
+      throw new Error("Telegram control replies require the durable runtime request id.");
+    }
+    return `runtime-request:${requestId}:system-reply`;
+  };
   const binding = await options.identityStore.resolveIdentityBinding({
     source: TELEGRAM_SOURCE,
     connectorKey: payload.connectorKey,
@@ -170,6 +177,7 @@ export async function handleTelegramRuntimeMessageRequest(
 
   if (command === "start" && !binding) {
     await options.threads.queueSystemReply({
+      idempotencyKey: systemReplyIdempotencyKey(),
       channel: TELEGRAM_SOURCE,
       connectorKey: payload.connectorKey,
       externalConversationId: payload.externalConversationId,
@@ -186,6 +194,7 @@ export async function handleTelegramRuntimeMessageRequest(
 
   if (command === "new") {
     await options.threads.queueSystemReply({
+      idempotencyKey: systemReplyIdempotencyKey(),
       channel: TELEGRAM_SOURCE,
       connectorKey: payload.connectorKey,
       externalConversationId: payload.externalConversationId,
@@ -197,6 +206,10 @@ export async function handleTelegramRuntimeMessageRequest(
   }
 
   if (command === "reset") {
+    const requestId = options.enqueueOptions?.inputId;
+    if (!requestId) {
+      throw new Error("Telegram reset requires the durable runtime request id.");
+    }
     const result = await options.threads.handleResetSession({
       identityId: binding.identityId,
       source: TELEGRAM_SOURCE,
@@ -204,8 +217,9 @@ export async function handleTelegramRuntimeMessageRequest(
       externalConversationId: payload.externalConversationId,
       externalActorId: payload.externalActorId,
       externalMessageId: payload.externalMessageId,
-    });
+    }, requestId);
     await options.threads.queueSystemReply({
+      idempotencyKey: systemReplyIdempotencyKey(),
       channel: TELEGRAM_SOURCE,
       connectorKey: payload.connectorKey,
       externalConversationId: payload.externalConversationId,
@@ -277,8 +291,8 @@ export async function handleTelegramReactionRequest(
 
   const target = await submitRememberedChannelInput({
     coordinator: options.coordinator,
+    ...(options.enqueueOptions === undefined ? {} : {enqueueOptions: options.enqueueOptions}),
     routes: options.routes,
-    sessions: options.sessions,
     sessionId: thread.sessionId,
     identityId: binding.identityId,
     route: persistence.rememberedRoute,

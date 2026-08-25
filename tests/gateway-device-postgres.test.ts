@@ -7,7 +7,7 @@ import type {GatewayDeviceCapability} from "../src/domain/gateway/types.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js";
-import {ensureSchemas} from "../src/app/runtime/postgres-bootstrap.js";
+import {installGatewayTestSchema} from "./helpers/gateway-schema.js";
 import {hashOpaqueToken} from "../src/lib/opaque-tokens.js";
 
 function requireResolved<T>(value: T | null | undefined): T {
@@ -46,7 +46,7 @@ describe("gateway device registry store", () => {
     const identityStore = new PostgresIdentityStore({pool});
     const sessionStore = new PostgresSessionStore({pool});
     const threadStore = new PostgresThreadRuntimeStore({pool});
-    await ensureSchemas([identityStore, agentStore, sessionStore, threadStore, gatewayStore]);
+    await installGatewayTestSchema(pool);
 
     await agentStore.bootstrapAgent({
       agentKey: "panda",

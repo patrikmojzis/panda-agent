@@ -544,9 +544,10 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
         runId: context?.runId,
         kind: "bash",
         summary: redactSecretsInString(args.command, secretInventory.redactionValues),
-        start: async ({jobId}) => {
+        start: async ({jobId, signal}) => {
           const handle = await startBashBackgroundJob({
             jobId,
+            signal,
             command: args.command,
             cwd,
             maxRuntimeMs,
@@ -621,10 +622,11 @@ export class BashTool<TContext = DefaultAgentSessionContext> extends Tool<typeof
         (run.context as Record<string, unknown>).cwd = result.finalCwd;
       }
 
-      if (this.shellStateStore && context?.sessionId && context.threadId) {
+      if (this.shellStateStore && context?.sessionId && context.threadId && context.runId) {
         await this.shellStateStore.upsertShellSession({
           sessionId: context.sessionId,
           threadId: context.threadId,
+          runId: context.runId,
           executionEnvironmentId: readExecutionEnvironmentId(context),
           shellSession: buildDurableShellSession({
             shellSession,

@@ -1,8 +1,7 @@
 import type {SessionRouteRepo} from "../../../domain/sessions/routes/repo.js";
-import type {SessionStore} from "../../../domain/sessions/store.js";
 import type {TuiInputRequestPayload} from "../../../domain/threads/requests/types.js";
 import type {ThreadRuntimeCoordinator} from "../../../domain/threads/runtime/coordinator.js";
-import type {ThreadRecord} from "../../../domain/threads/runtime/types.js";
+import type {ThreadEnqueueOptions, ThreadRecord} from "../../../domain/threads/runtime/types.js";
 import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
 import {submitRememberedChannelInput} from "../inbound-delivery.js";
 import {
@@ -13,9 +12,9 @@ import {
 } from "./helpers.js";
 
 export interface TuiInboundRequestHandlerOptions {
-  coordinator: Pick<ThreadRuntimeCoordinator, "submitInput">;
+  coordinator: Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
+  enqueueOptions?: ThreadEnqueueOptions;
   routes: Pick<SessionRouteRepo, "saveLastRoute">;
-  sessions: Pick<SessionStore, "getSession">;
 }
 
 export async function handleTuiInputRequest(
@@ -33,8 +32,8 @@ export async function handleTuiInputRequest(
 
   const target = await submitRememberedChannelInput({
     coordinator: options.coordinator,
+    ...(options.enqueueOptions === undefined ? {} : {enqueueOptions: options.enqueueOptions}),
     routes: options.routes,
-    sessions: options.sessions,
     sessionId: thread.sessionId,
     identityId,
     route: persistence.rememberedRoute,

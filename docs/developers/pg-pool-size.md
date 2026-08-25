@@ -10,7 +10,7 @@ The failure mode is simple:
 
 - Panda opens separate pools per long-running service.
 - `pg` defaults each pool to `10`.
-- Some Panda services also keep long-lived clients around for `LISTEN`, advisory locks, and other always-on work.
+- Some Panda services also keep long-lived clients around for `LISTEN` and other always-on work.
 - The database does not care about our feelings. It only cares about total open sessions.
 
 On `clankerino`, Postgres is currently:
@@ -27,7 +27,7 @@ Today the expensive pieces are not just burst traffic. They are the always-on cl
 
 - `panda-core` uses `PANDA_CORE_DB_POOL_MAX` for short queries. Default: `4`.
 - `panda-core` uses `PANDA_CORE_NOTIFICATION_DB_POOL_MAX` for `LISTEN/NOTIFY` clients. Default: `4`.
-- `panda-core` uses `PANDA_CORE_THREAD_LEASE_DB_POOL_MAX` for advisory-lock thread leases. Default: `4`.
+- `panda-core` uses `PANDA_CORE_MODEL_CALL_DB_POOL_MAX` for bounded asynchronous trace batches. Default: `1`.
 - `panda-core` has a separate readonly pool with default `1`, but it is lazy and only exists after the readonly tool is actually used.
 - Each channel daemon owns one bounded pool and one shared `LISTEN` client, regardless of account count.
 - Telegram, Discord, and WhatsApp account workers reuse their daemon pool. Protocol connections remain per account.
@@ -43,15 +43,15 @@ For a small 22-slot Postgres plan like `clankerino`, use this core budget:
 
 - `panda-core` query pool: `4`
 - `panda-core` notification pool: `4`
-- `panda-core` thread lease pool: `4`
+- `panda-core` model-call trace writer pool: `1`
 - `panda-core` readonly pool: `1`, lazy
 - `panda-telegram`: `2` per daemon or single-account run
 - `panda-discord`: `2` per daemon or single-account run
 - `panda-whatsapp`: `2` per daemon or single-account run
 
-The standard core-plus-three-channel ceiling is `4 + 4 + 4 + 1 + 2 + 2 + 2 = 19`. That leaves three slots on a 22-usable-connection plan.
+The standard core-plus-three-channel ceiling is `4 + 4 + 1 + 1 + 2 + 2 + 2 = 16`. That leaves six slots on a 22-usable-connection plan.
 
-That `19` is only the baseline. Gateway, Wiki.js, admin sessions, migrations, and other optional consumers need their own additional budget. They are not squeezed into those three spare slots by wishful arithmetic.
+That `16` is only the baseline. Gateway, Wiki.js, admin sessions, migrations, and other optional consumers need their own additional budget. They are not squeezed into those six spare slots by wishful arithmetic.
 
 That is intentionally explicit. It gives Panda room to breathe without pretending the database is infinite.
 
@@ -70,18 +70,29 @@ The first real fixes are in:
 
 - Connector action, delivery, and Discord voice workers share one `LISTEN` client per process.
 - Connector ownership uses `runtime.connector_leases` with expiry and renewal.
-- `panda-core` splits query, notification, and advisory-lock traffic into separate pools.
+- `panda-core` splits query, notification, and asynchronous trace-write traffic into separate pools.
+- The trace-writer pool bounds statements at 5 seconds and client queries at 7.5 seconds so best-effort telemetry cannot wedge shutdown.
+- Thread concurrency is process-local backpressure capped by `PANDA_CORE_THREAD_RUN_CONCURRENCY`; durable run claims do not pin database clients.
+- Scheduled occurrence supervision is independently capped by `PANDA_SCHEDULED_TASK_CONCURRENCY` (default `4`); it keeps unrelated tasks moving without pinning database clients while their exact thread runs execute.
 - `panda-core` no longer pays for `panda/core-ro` at boot.
 - Healthchecks are local HTTP probes instead of DB-backed pokes.
 - Long-running pools set `application_name` and emit pool stats on startup, on errors, and while waiters exist.
-- Runtime requests stuck in `running` are reclaimed after `PANDA_RUNTIME_REQUEST_CLAIM_TIMEOUT_MS`.
+- Runtime request claims use renewable leases configured by
+  `PANDA_RUNTIME_REQUEST_CLAIM_LEASE_MS`; token-fenced settlement prevents a
+  reclaimed worker from overwriting the new owner.
+- Runtime request processing is capped by `PANDA_RUNTIME_REQUEST_CONCURRENCY`
+  (default `4`). Handlers borrow connections only for bounded statements; they
+  do not pin clients while media, provider, or compaction work runs.
+- Runtime request shutdown waits at most
+  `PANDA_RUNTIME_REQUEST_DRAIN_TIMEOUT_MS` (default `30000`) and stops claim
+  renewal immediately, so a stuck handler cannot pin daemon teardown.
 
 ## Visibility
 
 If Panda is going to use multiple pools, each client needs a name.
 
 - set `application_name` on every pool
-- include service role in the name: `panda/core`, `panda/core-notify`, `panda/core-lease`, `panda/core-ro`, `panda/telegram`, `panda/discord`, `panda/whatsapp`
+- include service role in the name: `panda/core`, `panda/core-notify`, `panda/core-trace`, `panda/core-ro`, `panda/telegram`, `panda/discord`, `panda/whatsapp`
 - log pool stats on error and periodically: `totalCount`, `idleCount`, `waitingCount`
 - fail health when the query pool has sustained waiters; that is backpressure, not vibes
 - keep a canned `pg_stat_activity` query in the runbook so we can see who is hoarding connections in seconds, not after a crime scene reconstruction

@@ -6,6 +6,7 @@ import {
   type ConnectorLeaseRepository,
   PostgresConnectorLeaseRepo,
 } from "../src/domain/connector-leases/repo.js";
+import {ensurePostgresConnectorLeaseSchema} from "../src/domain/connector-leases/postgres-schema.js";
 
 describe("PostgresConnectorLeaseRepo", () => {
   const pools: Array<{end(): Promise<void>}> = [];
@@ -24,13 +25,13 @@ describe("PostgresConnectorLeaseRepo", () => {
     pools.push(pool);
 
     const repo = new PostgresConnectorLeaseRepo({pool});
-    await repo.ensureSchema();
+    await ensurePostgresConnectorLeaseSchema(pool);
 
     const acquired = await repo.tryAcquire({
       source: "telegram",
       connectorKey: "bot-1",
       holderId: "holder-a",
-      leasedUntil: Date.now() + 10_000,
+      ttlMs: 10_000,
     });
 
     expect(acquired).toMatchObject({
@@ -43,14 +44,14 @@ describe("PostgresConnectorLeaseRepo", () => {
       source: "telegram",
       connectorKey: "bot-1",
       holderId: "holder-b",
-      leasedUntil: Date.now() + 10_000,
+      ttlMs: 10_000,
     })).resolves.toBeNull();
 
     const renewed = await repo.renew({
       source: "telegram",
       connectorKey: "bot-1",
       holderId: "holder-a",
-      leasedUntil: Date.now() + 20_000,
+      ttlMs: 20_000,
     });
     expect(renewed?.leasedUntil).toBeGreaterThan(acquired?.leasedUntil ?? 0);
 
@@ -64,7 +65,7 @@ describe("PostgresConnectorLeaseRepo", () => {
       source: "telegram",
       connectorKey: "bot-1",
       holderId: "holder-b",
-      leasedUntil: Date.now() + 10_000,
+      ttlMs: 10_000,
     });
     expect(reacquired).toMatchObject({
       holderId: "holder-b",
@@ -78,20 +79,26 @@ describe("PostgresConnectorLeaseRepo", () => {
     pools.push(pool);
 
     const repo = new PostgresConnectorLeaseRepo({pool});
-    await repo.ensureSchema();
+    await ensurePostgresConnectorLeaseSchema(pool);
 
     await repo.tryAcquire({
       source: "whatsapp",
       connectorKey: "main",
       holderId: "holder-a",
-      leasedUntil: Date.now() - 1_000,
+      ttlMs: 10_000,
     });
+    await pool.query(`
+      UPDATE "runtime"."connector_leases"
+      SET leased_until = NOW() - INTERVAL '1 second'
+      WHERE source = 'whatsapp'
+        AND connector_key = 'main'
+    `);
 
     const replacement = await repo.tryAcquire({
       source: "whatsapp",
       connectorKey: "main",
       holderId: "holder-b",
-      leasedUntil: Date.now() + 10_000,
+      ttlMs: 10_000,
     });
 
     expect(replacement).toMatchObject({
@@ -99,11 +106,39 @@ describe("PostgresConnectorLeaseRepo", () => {
     });
   });
 
+  it("does not let an application clock jump steal a database lease", async () => {
+    const db = newDb();
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const repo = new PostgresConnectorLeaseRepo({pool});
+    await ensurePostgresConnectorLeaseSchema(pool);
+    await repo.tryAcquire({
+      source: "discord",
+      connectorKey: "main",
+      holderId: "holder-a",
+      ttlMs: 10_000,
+    });
+
+    const localClock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 24 * 60 * 60_000);
+    try {
+      await expect(repo.tryAcquire({
+        source: "discord",
+        connectorKey: "main",
+        holderId: "holder-b",
+        ttlMs: 10_000,
+      })).resolves.toBeNull();
+    } finally {
+      localClock.mockRestore();
+    }
+  });
+
   it("rejects corrupted persisted lease timestamps before returning records", async () => {
-    const client = {
-      query: vi.fn()
-        .mockResolvedValueOnce({rows: []})
-        .mockResolvedValueOnce({
+    const repo = new PostgresConnectorLeaseRepo({
+      pool: {
+        connect: vi.fn(),
+        query: vi.fn(async () => ({
           rows: [{
             source: "telegram",
             connector_key: "bot-1",
@@ -112,13 +147,7 @@ describe("PostgresConnectorLeaseRepo", () => {
             created_at: new Date(),
             updated_at: new Date(),
           }],
-        }),
-      release: vi.fn(),
-    };
-    const repo = new PostgresConnectorLeaseRepo({
-      pool: {
-        connect: async () => client,
-        query: vi.fn(),
+        })),
       },
     });
 
@@ -126,15 +155,15 @@ describe("PostgresConnectorLeaseRepo", () => {
       source: "telegram",
       connectorKey: "bot-1",
       holderId: "holder-a",
-      leasedUntil: Date.now() + 10_000,
+      ttlMs: 10_000,
     })).rejects.toThrow("Connector lease leasedUntil must be a valid timestamp.");
   });
 
   it("rejects stringified persisted lease timestamps before returning records", async () => {
-    const client = {
-      query: vi.fn()
-        .mockResolvedValueOnce({rows: []})
-        .mockResolvedValueOnce({
+    const repo = new PostgresConnectorLeaseRepo({
+      pool: {
+        connect: vi.fn(),
+        query: vi.fn(async () => ({
           rows: [{
             source: "telegram",
             connector_key: "bot-1",
@@ -143,13 +172,7 @@ describe("PostgresConnectorLeaseRepo", () => {
             created_at: new Date(),
             updated_at: new Date(),
           }],
-        }),
-      release: vi.fn(),
-    };
-    const repo = new PostgresConnectorLeaseRepo({
-      pool: {
-        connect: async () => client,
-        query: vi.fn(),
+        })),
       },
     });
 
@@ -157,7 +180,7 @@ describe("PostgresConnectorLeaseRepo", () => {
       source: "telegram",
       connectorKey: "bot-1",
       holderId: "holder-a",
-      leasedUntil: Date.now() + 10_000,
+      ttlMs: 10_000,
     })).rejects.toThrow("Connector lease leasedUntil must be a valid timestamp.");
   });
 

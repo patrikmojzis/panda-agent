@@ -1,9 +1,27 @@
 import {quoteIdentifier, CREATE_RUNTIME_SCHEMA_SQL} from "../../../lib/postgres-relations.js";
 
-import {addConstraint, assertIntegrityChecks} from "../../../lib/postgres-integrity.js";
+import {addConstraint, assertIntegrityChecks, type IntegrityCheckGroup} from "../../../lib/postgres-integrity.js";
 import type {PgQueryable} from "../../../lib/postgres-query.js";
 import {buildSessionTableNames} from "../postgres-shared.js";
 import {buildConversationSessionTableNames} from "./postgres-shared.js";
+
+export function buildConversationSessionIntegrityChecks(): IntegrityCheckGroup {
+  const tables = buildConversationSessionTableNames();
+  const sessionTableName = buildSessionTableNames().sessions;
+  return {
+    scope: "Conversation binding schema",
+    checks: [{
+      label: "conversation_sessions.session_id orphaned from agent_sessions.id",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.conversationSessions} AS binding
+        LEFT JOIN ${sessionTableName} AS session
+          ON session.id = binding.session_id
+        WHERE session.id IS NULL
+      `,
+    }],
+  };
+}
 
 export async function ensurePostgresConversationSessionSchema(pool: PgQueryable): Promise<void> {
   const tables = buildConversationSessionTableNames();
@@ -26,18 +44,8 @@ export async function ensurePostgresConversationSessionSchema(pool: PgQueryable)
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_conversation_sessions_session_id_idx`)}
     ON ${tables.conversationSessions} (session_id)
   `);
-  await assertIntegrityChecks(pool, "Conversation binding schema", [
-    {
-      label: "conversation_sessions.session_id orphaned from agent_sessions.id",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.conversationSessions} AS binding
-        LEFT JOIN ${sessionTableName} AS session
-          ON session.id = binding.session_id
-        WHERE session.id IS NULL
-      `,
-    },
-  ]);
+  const integrity = buildConversationSessionIntegrityChecks();
+  await assertIntegrityChecks(pool, integrity.scope, integrity.checks);
   await addConstraint(pool, `
     ALTER TABLE ${tables.conversationSessions}
     ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_conversation_sessions_session_fk`)}

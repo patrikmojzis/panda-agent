@@ -1,6 +1,7 @@
 import type {Context} from "grammy";
 
 import type {CreateRuntimeRequestInput, RuntimeRequestKind} from "../../../domain/threads/requests/types.js";
+import {deriveRuntimeRequestIngressIdempotencyKey} from "../../../domain/threads/requests/ordering-key.js";
 import {buildTelegramConversationId} from "./helpers.js";
 import {
   describeTelegramMessageShape,
@@ -19,6 +20,7 @@ type TelegramIngestedRequestKind = Extract<RuntimeRequestKind, "telegram_message
 interface TelegramMessageRequestQueue {
   enqueueRequest(
     input: CreateRuntimeRequestInput<TelegramIngestedRequestKind>,
+    options?: {idempotencyKey?: string},
   ): Promise<{id: string}>;
 }
 
@@ -149,7 +151,12 @@ export async function ingestTelegramMessageReaction(
       firstName: reaction.user?.first_name,
       lastName: reaction.user?.last_name,
     },
-  });
+  }, {idempotencyKey: deriveRuntimeRequestIngressIdempotencyKey({
+    kind: "telegram_reaction",
+    connectorKey: options.connectorKey,
+    externalEventScope: externalConversationId,
+    externalEventId: String(updateId),
+  })});
 
   options.log("reaction_ingested", {
     connectorKey: options.connectorKey,
@@ -234,7 +241,12 @@ export async function ingestTelegramMessage(
         : undefined,
       media: mediaDownload.media,
     },
-  });
+  }, {idempotencyKey: deriveRuntimeRequestIngressIdempotencyKey({
+    kind: "telegram_message",
+    connectorKey: options.connectorKey,
+    externalEventScope: externalConversationId,
+    externalEventId: String(message.message_id),
+  })});
 
   options.log("message_ingested", {
     connectorKey: options.connectorKey,

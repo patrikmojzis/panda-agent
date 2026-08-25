@@ -1,7 +1,7 @@
 import type {PgPoolLike} from "../../../lib/postgres-query.js";
 import {requireTimestampMillis} from "../../../lib/postgres-values.js";
 import {requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
-import {buildWhatsAppAuthTableNames, ensurePostgresWhatsAppAuthSchema} from "./auth-schema.js";
+import {buildWhatsAppAuthTableNames} from "./auth-schema.js";
 import type {WhatsAppSocketHealthState} from "./health.js";
 
 export type WhatsAppRuntimeSocketState = WhatsAppSocketHealthState | "error";
@@ -31,10 +31,6 @@ export class PostgresWhatsAppRuntimeStatusStore {
 
   constructor(options: {pool: PgPoolLike}) {
     this.pool = options.pool;
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresWhatsAppAuthSchema(this.pool);
   }
 
   async setStatus(

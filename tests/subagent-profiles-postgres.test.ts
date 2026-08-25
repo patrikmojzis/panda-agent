@@ -2,12 +2,15 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
+import {ensurePostgresAgentSchema} from "../src/domain/agents/postgres-schema.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
+import {ensurePostgresIdentitySchema} from "../src/domain/identity/postgres-schema.js";
 import {
   BUILTIN_SUBAGENT_PROFILES,
   PostgresSubagentProfileStore,
 } from "../src/domain/subagents/index.js";
 import {buildSubagentTableNames} from "../src/domain/subagents/postgres-shared.js";
+import {ensurePostgresSubagentSchema} from "../src/domain/subagents/postgres-schema.js";
 
 describe("PostgresSubagentProfileStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
@@ -149,9 +152,9 @@ describe("PostgresSubagentProfileStore", () => {
     const identityStore = new PostgresIdentityStore({pool});
     const agentStore = new PostgresAgentStore({pool});
     const profileStore = new PostgresSubagentProfileStore({pool});
-    await identityStore.ensureSchema();
-    await agentStore.ensureSchema();
-    await profileStore.ensureSchema();
+    await ensurePostgresIdentitySchema(pool);
+    await ensurePostgresAgentSchema(pool);
+    await ensurePostgresSubagentSchema(pool);
 
     return {
       pool,

@@ -11,9 +11,26 @@ import {
     projectTranscriptForInference,
     type ResolvedThreadDefinition,
     type ThreadMessageRecord,
+    type ThreadRunOwner,
     ThreadRuntimeCoordinator,
+    type ThreadRuntimeCoordinatorOptions,
 } from "../src/domain/threads/runtime/index.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
+
+const TEST_RUN_OWNER: ThreadRunOwner = {
+  source: "panda-core",
+  connectorKey: "test",
+  holderId: "thread-runtime-inference-projection-test",
+};
+
+async function createTestCoordinator(
+  options: Omit<ThreadRuntimeCoordinatorOptions, "maxConcurrentRuns">,
+): Promise<ThreadRuntimeCoordinator> {
+  const coordinator = new ThreadRuntimeCoordinator({...options, maxConcurrentRuns: 1});
+  await coordinator.handleStoreNotificationStatus("listening");
+  await coordinator.start(TEST_RUN_OWNER);
+  return coordinator;
+}
 
 function createAssistantMessage(
   content: AssistantMessage["content"],
@@ -92,15 +109,6 @@ function createMockRuntime(...responses: AssistantMessage[]): LlmRuntime & {
   };
 }
 
-class SelectiveLeaseManager {
-  async tryAcquire(threadId: string) {
-    return {
-      threadId,
-      release: async () => {},
-    };
-  }
-}
-
 describe("projectTranscriptForInference", () => {
   it("leaves the transcript alone when no projection rules are enabled", () => {
     const transcript = [
@@ -125,7 +133,7 @@ describe("projectTranscriptForInference", () => {
         source: "compact",
         metadata: {
           kind: "compact_boundary",
-          compactedUpToSequence: 2,
+          compactedThroughSequence: 2,
           preservedTailUserTurns: 3,
           trigger: "manual",
         },
@@ -320,7 +328,9 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
       message: stringToUserMessage("old request"),
       source: "tui",
     });
-    await store.applyPendingInputs("thread-inference-projection");
+    const seedRun = await store.createRun("thread-inference-projection");
+    await store.applyPendingInputs("thread-inference-projection", seedRun.id);
+    await store.completeRun(seedRun.id);
     await store.appendRuntimeMessage("thread-inference-projection", {
       message: createAssistantMessage([{type: "text", text: "old reply"}]),
       source: "assistant",
@@ -334,9 +344,8 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
       inferenceProjection,
       runtime,
     };
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: async () => definition,
     });
 
@@ -354,7 +363,7 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
       },
     ]);
 
-    const storedTranscript = await store.loadTranscript("thread-inference-projection");
+    const storedTranscript = await store.loadTranscriptHistory("thread-inference-projection");
     expect(storedTranscript.map((record) => record.sequence)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(storedTranscript[0]?.message).toMatchObject({
       role: "user",
@@ -433,9 +442,8 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
         }),
         runtime,
       };
-      const coordinator = new ThreadRuntimeCoordinator({
+      const coordinator = await createTestCoordinator({
         store,
-        leaseManager: new SelectiveLeaseManager(),
         resolveDefinition: async () => definition,
       });
 
@@ -445,7 +453,7 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
       });
       await coordinator.waitForIdle("thread-browser-redaction");
 
-      const storedTranscript = await store.loadTranscript("thread-browser-redaction");
+      const storedTranscript = await store.loadTranscriptHistory("thread-browser-redaction");
       const persistedToolResult = storedTranscript.find((record) => record.message.role === "toolResult");
 
       expect(persistedToolResult?.message).toMatchObject({
@@ -560,9 +568,8 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
           },
         },
       };
-      const coordinator = new ThreadRuntimeCoordinator({
+      const coordinator = await createTestCoordinator({
         store,
-        leaseManager: new SelectiveLeaseManager(),
         resolveDefinition: async () => definition,
       });
 
@@ -613,7 +620,9 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
       message: stringToUserMessage("previous request"),
       source: "tui",
     });
-    await store.applyPendingInputs("thread-missing-artifact");
+    const seedRun = await store.createRun("thread-missing-artifact");
+    await store.applyPendingInputs("thread-missing-artifact", seedRun.id);
+    await store.completeRun(seedRun.id);
     await store.appendRuntimeMessage("thread-missing-artifact", {
       message: createToolResultMessage("call-1", [
         {type: "text", text: "Artifact was stored on disk"},
@@ -638,9 +647,8 @@ describe("ThreadRuntimeCoordinator inference projection", () => {
       }),
       runtime,
     };
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: async () => definition,
     });
 

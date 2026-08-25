@@ -5,7 +5,6 @@ import {isUniqueViolation} from "../../../lib/postgres-errors.js";
 import type {PgPoolLike} from "../../../lib/postgres-query.js";
 import {requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
 import {buildSessionRouteTableNames, type SessionRouteTableNames} from "./postgres-shared.js";
-import {ensurePostgresSessionRouteSchema} from "./postgres-schema.js";
 import type {SessionRouteInput, SessionRouteLookup, SessionRouteRecord} from "./types.js";
 
 export interface SessionRouteRepoOptions {
@@ -126,10 +125,6 @@ export class SessionRouteRepo {
   constructor(options: SessionRouteRepoOptions) {
     this.pool = options.pool;
     this.tables = buildSessionRouteTableNames();
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresSessionRouteSchema(this.pool);
   }
 
   async getLastRoute(lookup: SessionRouteLookup): Promise<RememberedRoute | null> {

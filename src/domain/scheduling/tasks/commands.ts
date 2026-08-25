@@ -18,6 +18,8 @@ export const SCHEDULE_CREATE_COMMAND_NAME = "schedule.create";
 export const SCHEDULE_UPDATE_COMMAND_NAME = "schedule.update";
 export const SCHEDULE_CANCEL_COMMAND_NAME = "schedule.cancel";
 
+const MAX_SCHEDULE_READ_LIMIT = 100;
+
 type ScheduleListStore = Pick<ScheduledTaskStore, "listTasks">;
 type ScheduleShowStore = Pick<ScheduledTaskStore, "getTask">;
 type ScheduleRunsStore = Pick<ScheduledTaskStore, "getTask" | "listTaskRuns">;
@@ -122,6 +124,9 @@ function readOptionalPositiveInteger(value: unknown, label: string): number | un
   }
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
     throw new Error(`${label} must be a positive integer.`);
+  }
+  if (value > MAX_SCHEDULE_READ_LIMIT) {
+    throw new Error(`${label} must not exceed ${MAX_SCHEDULE_READ_LIMIT}.`);
   }
 
   return value;
@@ -295,6 +300,7 @@ function serializeTaskRun(run: ScheduledTaskRunRecord): JsonObject {
     status: run.status,
     scheduledFor: run.scheduledFor,
     ...(run.resolvedThreadId !== undefined ? {resolvedThreadId: run.resolvedThreadId} : {}),
+    ...(run.threadInputId !== undefined ? {threadInputId: run.threadInputId} : {}),
     ...(run.threadRunId !== undefined ? {threadRunId: run.threadRunId} : {}),
     ...(run.error !== undefined ? {error: run.error} : {}),
     createdAt: run.createdAt,
@@ -393,7 +399,7 @@ export const scheduleListCommandDescriptor: CommandDescriptor = {
     },
     {
       name: "limit",
-      description: "Maximum number of scheduled tasks to return. Defaults to 25.",
+      description: "Maximum number of scheduled tasks to return. Defaults to 25; maximum 100.",
       valueType: "number",
       valueName: "n",
       defaultValue: 25,
@@ -488,7 +494,7 @@ export const scheduleRunsCommandDescriptor: CommandDescriptor = {
     },
     {
       name: "limit",
-      description: "Maximum number of runs to return. Defaults to 25.",
+      description: "Maximum number of runs to return. Defaults to 25; maximum 100.",
       valueType: "number",
       valueName: "n",
       defaultValue: 25,
@@ -516,8 +522,9 @@ export const scheduleRunsCommandDescriptor: CommandDescriptor = {
     count: "number",
     runs: [{
       runId: "string",
-      status: "claimed|running|succeeded|failed|cancelled",
+      status: "pending|claimed|running|succeeded|failed|cancelled",
       scheduledFor: "number",
+      threadInputId: "string|absent",
       threadRunId: "string|absent",
       error: "string|absent",
     }],

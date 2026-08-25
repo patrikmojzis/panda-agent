@@ -1,6 +1,7 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 import {PostgresWatchStore} from "../src/domain/watches/index.js";
+import {ensurePostgresWatchSchema} from "../src/domain/watches/postgres-schema.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
 function createPool() {
@@ -64,7 +65,7 @@ describe("PostgresWatchStore", () => {
     });
 
     const watches = new PostgresWatchStore({pool});
-    await watches.ensureSchema();
+    await ensurePostgresWatchSchema(pool);
 
     const created = await watches.createWatch({
       sessionId: "session-main",
@@ -136,7 +137,7 @@ describe("PostgresWatchStore", () => {
     });
 
     const watches = new PostgresWatchStore({pool});
-    await watches.ensureSchema();
+    await ensurePostgresWatchSchema(pool);
 
     const created = await watches.createWatch({
       sessionId: "session-main",
@@ -584,7 +585,7 @@ describe("PostgresWatchStore", () => {
     });
 
     const watches = new PostgresWatchStore({pool});
-    await watches.ensureSchema();
+    await ensurePostgresWatchSchema(pool);
 
     const created = await watches.createWatch({
       sessionId: "session-main",
@@ -659,7 +660,7 @@ describe("PostgresWatchStore", () => {
     });
 
     const watches = new PostgresWatchStore({pool});
-    await watches.ensureSchema();
+    await ensurePostgresWatchSchema(pool);
 
     const created = await watches.createWatch({
       sessionId: "session-main",

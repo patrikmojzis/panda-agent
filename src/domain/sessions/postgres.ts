@@ -10,7 +10,6 @@ import {withTransaction} from "../../lib/postgres-transaction.js";
 import {optionalNonEmptyString, requireNonEmptyString} from "../../lib/strings.js";
 import {resolveSessionRef} from "./refs.js";
 import {buildSessionTableNames, type SessionTableNames} from "./postgres-shared.js";
-import {ensurePostgresSessionSchema} from "./postgres-schema.js";
 import type {SessionStore} from "./store.js";
 import type {ReplaceSessionTodoInput, SessionTodoRecord} from "./todos.js";
 import {calculateSessionTodoItemsHash, normalizeSessionTodoItems} from "./todos.js";
@@ -309,10 +308,6 @@ export class PostgresSessionStore implements SessionStore {
       LIMIT 1
     `);
     return result.rows.length > 0;
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresSessionSchema(this.pool);
   }
 
   async createSessionRecord(input: CreateSessionInput, queryable: PgQueryable = this.pool): Promise<SessionRecord> {
@@ -626,8 +621,7 @@ export class PostgresSessionStore implements SessionStore {
     const updatesThinkingConfigured = input.thinkingConfigured !== undefined;
     const updatesThinkingState = updatesThinking || updatesThinkingConfigured;
     const updatesInferenceProjection = input.inferenceProjection !== undefined;
-    const updatesPendingWake = input.pendingWakeAt !== undefined;
-    if (!updatesModel && !updatesThinkingState && !updatesInferenceProjection && !updatesPendingWake) {
+    if (!updatesModel && !updatesThinkingState && !updatesInferenceProjection) {
       return this.getSessionRuntimeConfigRecord(input.sessionId, queryable);
     }
     if (input.thinkingConfigured === false && input.thinking !== undefined && input.thinking !== null) {
@@ -650,32 +644,25 @@ export class PostgresSessionStore implements SessionStore {
     const inferenceProjection = updatesInferenceProjection
       ? stringifyOptionalJsonValue(inferenceProjectionValue, "Session runtime inference projection")
       : null;
-    const pendingWakeAt = updatesPendingWake && input.pendingWakeAt !== null && input.pendingWakeAt !== undefined
-      ? new Date(input.pendingWakeAt)
-      : null;
-
     const result = await queryable.query(`
       INSERT INTO ${this.tables.sessionRuntimeConfig} (
         session_id,
         model,
         thinking,
         thinking_configured,
-        inference_projection,
-        pending_wake_at
+        inference_projection
       ) VALUES (
         $1,
         $2,
         $3,
         $4,
-        $5::jsonb,
-        $6
+        $5::jsonb
       )
       ON CONFLICT (session_id) DO UPDATE
-      SET model = CASE WHEN $7 THEN EXCLUDED.model ELSE ${this.tables.sessionRuntimeConfig}.model END,
-          thinking = CASE WHEN $8 THEN EXCLUDED.thinking ELSE ${this.tables.sessionRuntimeConfig}.thinking END,
-          thinking_configured = CASE WHEN $8 THEN EXCLUDED.thinking_configured ELSE ${this.tables.sessionRuntimeConfig}.thinking_configured END,
-          inference_projection = CASE WHEN $9 THEN EXCLUDED.inference_projection ELSE ${this.tables.sessionRuntimeConfig}.inference_projection END,
-          pending_wake_at = CASE WHEN $10 THEN EXCLUDED.pending_wake_at ELSE ${this.tables.sessionRuntimeConfig}.pending_wake_at END,
+      SET model = CASE WHEN $6 THEN EXCLUDED.model ELSE ${this.tables.sessionRuntimeConfig}.model END,
+          thinking = CASE WHEN $7 THEN EXCLUDED.thinking ELSE ${this.tables.sessionRuntimeConfig}.thinking END,
+          thinking_configured = CASE WHEN $7 THEN EXCLUDED.thinking_configured ELSE ${this.tables.sessionRuntimeConfig}.thinking_configured END,
+          inference_projection = CASE WHEN $8 THEN EXCLUDED.inference_projection ELSE ${this.tables.sessionRuntimeConfig}.inference_projection END,
           updated_at = NOW()
       RETURNING *
     `, [
@@ -684,11 +671,9 @@ export class PostgresSessionStore implements SessionStore {
       thinking,
       thinkingConfigured,
       inferenceProjection,
-      pendingWakeAt,
       updatesModel,
       updatesThinkingState,
       updatesInferenceProjection,
-      updatesPendingWake,
     ]);
 
     return parseSessionRuntimeConfigRow(result.rows[0] as Record<string, unknown>);

@@ -2,6 +2,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {startAgentAppServer} from "../src/integrations/apps/http-server.js";
 import {AgentAppService} from "../src/integrations/apps/sqlite-service.js";
+import type {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/postgres.js";
 import {type ExampleAppFixture, installExampleAppFixture} from "./helpers/example-app.js";
 
 describe("example apps", () => {
@@ -265,8 +266,24 @@ describe("example apps", () => {
     const service = new AgentAppService({
       env: {...process.env, DATA_DIR: fixture.dataDir},
     });
-    const submitInput = vi.fn(async () => undefined);
     let mainThreadId = "thread-main";
+    const submitSessionInput = vi.fn(async (
+      _sessionId: string,
+      payload: Parameters<PostgresThreadRuntimeStore["enqueueInput"]>[1],
+      mode: Parameters<PostgresThreadRuntimeStore["enqueueInput"]>[2] = "wake",
+    ) => ({
+      disposition: "inserted" as const,
+      input: {
+        ...payload,
+        id: "app-input",
+        threadId: mainThreadId,
+        order: 1,
+        deliveryMode: mode,
+        status: "pending" as const,
+        connectorKey: "app-http",
+        createdAt: 1,
+      },
+    }));
     const server = await startAgentAppServer({
       host: "127.0.0.1",
       port: 0,
@@ -300,7 +317,7 @@ describe("example apps", () => {
         }),
       },
       coordinator: {
-        submitInput,
+        submitSessionInput,
       },
     });
     servers.push(server);
@@ -331,8 +348,8 @@ describe("example apps", () => {
       changes: 1,
       wakeRequested: true,
     });
-    expect(submitInput).toHaveBeenCalledTimes(1);
-    expect(submitInput).toHaveBeenCalledWith("thread-main", expect.objectContaining({
+    expect(submitSessionInput).toHaveBeenCalledTimes(1);
+    expect(submitSessionInput).toHaveBeenCalledWith("session-main", expect.objectContaining({
       source: "app_http",
       channelId: fixture.slug,
       identityId: "identity-angelina",
@@ -344,8 +361,8 @@ describe("example apps", () => {
       message: expect.objectContaining({
         content: expect.stringContaining("The user logged a period entry for 2026-04-22 with flow medium"),
       }),
-    }), "wake");
-    const wakeMessage = submitInput.mock.calls[0]?.[1]?.message?.content;
+    }), "wake", undefined);
+    const wakeMessage = submitSessionInput.mock.calls[0]?.[1]?.message?.content;
     expect(wakeMessage).toContain("symptoms cramps");
     expect(wakeMessage).toContain("notes Wake test.");
     expect(wakeMessage).not.toContain("Input:\n{");

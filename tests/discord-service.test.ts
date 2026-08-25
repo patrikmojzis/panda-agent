@@ -396,7 +396,7 @@ describe("DiscordService", () => {
           reason: "untrusted_url",
         }],
       }),
-    });
+    }, expect.objectContaining({idempotencyKey: expect.stringMatching(/^ingress:v1:/)}));
     expect(fixture.order).toEqual(["request:enqueue"]);
     const output = collectWrites(write);
     expect(output).toContain("message_queued");
@@ -474,7 +474,7 @@ describe("DiscordService", () => {
           },
         })],
       }),
-    });
+    }, expect.objectContaining({idempotencyKey: expect.stringMatching(/^ingress:v1:/)}));
     const output = collectWrites(write);
     expect(output).toContain("message_queued");
     expect(output).toContain('"mediaCount":1');
@@ -532,7 +532,7 @@ describe("DiscordService", () => {
         }],
         media: [],
       }),
-    });
+    }, expect.objectContaining({idempotencyKey: expect.stringMatching(/^ingress:v1:/)}));
     const output = collectWrites(write);
     expect(output).toContain("media_download_skipped");
     expect(output).toContain('"reason":"no_trusted_media"');

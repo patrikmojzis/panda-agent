@@ -21,6 +21,7 @@ import {A2A_CONNECTOR_KEY, A2A_SOURCE} from "../../../domain/a2a/constants.js";
 import {requireA2AString} from "../../../domain/a2a/shared.js";
 import type {SessionStore} from "../../../domain/sessions/store.js";
 import type {CommandUploadStore} from "../../../domain/commands/uploads.js";
+import {deriveRuntimeRequestIngressIdempotencyKey} from "../../../domain/threads/requests/ordering-key.js";
 
 const IMAGE_MIME_BY_EXTENSION = new Map<string, string>([
   [".png", "image/png"],
@@ -49,7 +50,10 @@ interface A2ADeliveryMetadata {
 
 export interface CreateA2AOutboundAdapterOptions {
   requests: {
-    enqueueRequest(input: CreateRuntimeRequestInput<"a2a_message">): Promise<RuntimeRequestRecord<"a2a_message">>;
+    enqueueRequest(
+      input: CreateRuntimeRequestInput<"a2a_message">,
+      options?: {idempotencyKey?: string},
+    ): Promise<RuntimeRequestRecord<"a2a_message">>;
   };
   sessionStore: Pick<SessionStore, "getSession">;
   createMediaStore(rootDir: string): FileSystemMediaStore;
@@ -268,7 +272,12 @@ export function createA2AOutboundAdapter(
       await options.requests.enqueueRequest({
         kind: "a2a_message",
         payload,
-      });
+      }, {idempotencyKey: deriveRuntimeRequestIngressIdempotencyKey({
+        kind: "a2a_message",
+        connectorKey: A2A_CONNECTOR_KEY,
+        externalEventScope: `${a2a.fromAgentKey}:${a2a.fromSessionId}`,
+        externalEventId: a2a.messageId,
+      })});
       await Promise.allSettled(inbound.uploadRefs.map((uploadRef) => options.commandUploads.remove({
         agentKey: a2a.fromAgentKey,
         sessionId: a2a.fromSessionId,

@@ -2,10 +2,16 @@ import type {JsonObject, JsonValue} from "../../../lib/json.js";
 import type {MediaDescriptor} from "../../channels/types.js";
 import type {ExecutionEnvironmentKind} from "../../execution-environments/types.js";
 import type {ThinkingLevel} from "@earendil-works/pi-ai";
-import type {InferenceProjection, ThreadUpdate} from "../runtime/types.js";
+import type {InferenceProjection} from "../runtime/types.js";
 import type {UpdateSessionRuntimeConfigInput} from "../../sessions/types.js";
 
 export type RuntimeRequestStatus = "pending" | "running" | "completed" | "failed";
+export const RUNTIME_REQUEST_STATUSES = [
+  "pending",
+  "running",
+  "completed",
+  "failed",
+] as const satisfies readonly RuntimeRequestStatus[];
 
 interface BaseRuntimeRequestPayload {
   identityId?: string;
@@ -199,6 +205,7 @@ export interface DiscordMessageRequestPayload extends BaseRuntimeRequestPayload 
 
 export interface LiveVoiceDelegationRequestPayload extends BaseRuntimeRequestPayload {
   liveVoiceTurnId: string;
+  sessionId: string;
 }
 
 export interface TuiInputRequestPayload extends BaseRuntimeRequestPayload {
@@ -211,7 +218,8 @@ export interface TuiInputRequestPayload extends BaseRuntimeRequestPayload {
 }
 
 export interface CreateBranchSessionRequestPayload extends BaseRuntimeRequestPayload {
-  sessionId?: string;
+  sessionId: string;
+  threadId: string;
   agentKey?: string;
   model?: string;
   thinking?: ThinkingLevel;
@@ -221,8 +229,8 @@ export interface CreateBranchSessionRequestPayload extends BaseRuntimeRequestPay
 export type RuntimeRequestSubagentExecution = "agent_workspace" | "isolated_environment";
 
 export interface CreateSubagentSessionRequestPayload extends BaseRuntimeRequestPayload {
-  sessionId?: string;
-  threadId?: string;
+  sessionId: string;
+  threadId: string;
   agentKey?: string;
   parentSessionId: string;
   prompt: string;
@@ -236,11 +244,6 @@ export interface CreateSubagentSessionRequestPayload extends BaseRuntimeRequestP
   model?: string;
   thinking?: ThinkingLevel;
   inferenceProjection?: InferenceProjection;
-}
-
-/** Storage compatibility only: stale persisted rows are claimed and failed by the daemon. */
-export interface LegacyCreateWorkerSessionRequestPayload extends BaseRuntimeRequestPayload {
-  [key: string]: JsonValue | undefined;
 }
 
 export interface ResolveMainSessionThreadRequestPayload extends BaseRuntimeRequestPayload {
@@ -262,8 +265,6 @@ export interface ResetSessionRequestPayload extends BaseRuntimeRequestPayload {
   externalConversationId?: string;
   externalActorId?: string;
   externalMessageId?: string;
-  /** Legacy persisted name for channel reset command messages. New callers use externalMessageId. */
-  commandExternalMessageId?: string;
   agentKey?: string;
   model?: string;
   thinking?: ThinkingLevel;
@@ -274,6 +275,7 @@ export type ResetSessionResult = Record<string, unknown> & {
   threadId: string;
   previousThreadId: string;
   sessionId: string;
+  replayed?: boolean;
 };
 
 export interface AbortThreadRequestPayload extends BaseRuntimeRequestPayload {
@@ -291,7 +293,7 @@ export interface CompactSessionRequestPayload extends BaseRuntimeRequestPayload 
   customInstructions: string;
 }
 
-export type RuntimeThreadUpdate = ThreadUpdate & Omit<UpdateSessionRuntimeConfigInput, "sessionId">;
+export type RuntimeThreadUpdate = Omit<UpdateSessionRuntimeConfigInput, "sessionId">;
 
 export interface UpdateThreadRequestPayload extends BaseRuntimeRequestPayload {
   threadId: string;
@@ -309,7 +311,6 @@ export interface RuntimeRequestPayloadByKind {
   tui_input: TuiInputRequestPayload;
   create_branch_session: CreateBranchSessionRequestPayload;
   create_subagent_session: CreateSubagentSessionRequestPayload;
-  create_worker_session: LegacyCreateWorkerSessionRequestPayload;
   resolve_main_session_thread: ResolveMainSessionThreadRequestPayload;
   resolve_thread_run_config: ResolveThreadRunConfigRequestPayload;
   reset_session: ResetSessionRequestPayload;
@@ -320,6 +321,25 @@ export interface RuntimeRequestPayloadByKind {
 }
 
 export type RuntimeRequestKind = keyof RuntimeRequestPayloadByKind;
+export const RUNTIME_REQUEST_KINDS = [
+  "a2a_message",
+  "telegram_message",
+  "telegram_reaction",
+  "whatsapp_message",
+  "whatsapp_reaction",
+  "discord_message",
+  "live_voice_delegation",
+  "tui_input",
+  "create_branch_session",
+  "create_subagent_session",
+  "resolve_main_session_thread",
+  "resolve_thread_run_config",
+  "reset_session",
+  "abort_thread",
+  "compact_thread",
+  "compact_session",
+  "update_thread",
+] as const satisfies readonly RuntimeRequestKind[];
 export type RuntimeRequestPayload = RuntimeRequestPayloadByKind[RuntimeRequestKind];
 
 export type CreateRuntimeRequestInput<K extends RuntimeRequestKind = RuntimeRequestKind> = {
@@ -331,12 +351,15 @@ export type CreateRuntimeRequestInput<K extends RuntimeRequestKind = RuntimeRequ
 
 type RuntimeRequestRecordForKind<K extends RuntimeRequestKind> = {
   id: string;
+  orderingKey: string;
   kind: K;
   status: RuntimeRequestStatus;
   payload: RuntimeRequestPayloadByKind[K];
   result?: JsonValue;
   error?: string;
   claimedAt?: number;
+  claimToken?: string;
+  claimExpiresAt?: number;
   createdAt: number;
   updatedAt: number;
   finishedAt?: number;

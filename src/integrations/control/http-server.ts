@@ -625,7 +625,7 @@ function parseModelCallUsageInput(params: URLSearchParams) {
 
 function parseScheduledTaskStatus(value: string | null): ControlScheduledTaskLifecycleStatus | undefined {
   if (value === null || value.trim() === "") return undefined;
-  if (value === "scheduled" || value === "disabled" || value === "running" || value === "completed" || value === "cancelled") return value;
+  if (value === "scheduled" || value === "disabled" || value === "running" || value === "completed" || value === "failed" || value === "cancelled") return value;
   throw new ControlHttpError(400, "Control scheduled task status filter is unsupported.");
 }
 

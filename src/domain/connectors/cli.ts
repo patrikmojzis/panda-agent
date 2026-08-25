@@ -3,7 +3,7 @@ import process from "node:process";
 import {Command, InvalidArgumentError} from "commander";
 
 import {DB_URL_OPTION_DESCRIPTION} from "../../lib/cli.js";
-import {withPostgresPool} from "../../lib/postgres-bootstrap.js";
+import {withPostgresPool} from "../../lib/postgres-database.js";
 import {PostgresConnectorAccountStore} from "./postgres.js";
 import {
   type ConnectorAccountRecord,
@@ -43,7 +43,6 @@ async function withConnectorAccountStore<T>(
 ): Promise<T> {
   return withPostgresPool(options.dbUrl, async (pool) => {
     const store = new PostgresConnectorAccountStore({pool});
-    await store.ensureSchema();
     return fn(store);
   });
 }

@@ -12,7 +12,6 @@ export type {
   CreateRuntimeRequestInput,
   CreateBranchSessionRequestPayload,
   CreateSubagentSessionRequestPayload,
-  LegacyCreateWorkerSessionRequestPayload,
   DiscordAttachmentSummary,
   DiscordMessageRequestPayload,
   ResolveThreadRunConfigRequestPayload,

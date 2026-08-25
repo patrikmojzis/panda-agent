@@ -13,16 +13,16 @@
       "sha256": "5bdd27237cdbea0029962f848523647def7fb81053ec670d6d708d4eb51a8c10"
     },
     {
-      "bytes": 12831,
-      "lines": 290,
+      "bytes": 14318,
+      "lines": 340,
       "path": "src/app/runtime/create-runtime.ts",
-      "sha256": "878c47c31ce72094a7973105c0bd4151e416037e2af944118791aa61dbcd0486"
+      "sha256": "d85941bb67e6860405eedafafbc7641678ad24a836fa52f19cf569ae44d007c6"
     },
     {
-      "bytes": 18671,
-      "lines": 477,
+      "bytes": 17772,
+      "lines": 453,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "0b6f6794d4d9360ec3c163d098e1aeb60c2bacdc600aeedc48c054a23e098f13"
+      "sha256": "8bd68bded3a3760df982b129819ad3524190cf1572c9591db44b2258adba73b1"
     },
     {
       "bytes": 12121,
@@ -37,10 +37,10 @@
       "sha256": "033685d9e20dc15874865f8bf3e8b9c0d4244ede32cd871ea21590f8b47c45c4"
     },
     {
-      "bytes": 32297,
-      "lines": 873,
+      "bytes": 32608,
+      "lines": 861,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "3d5b07818c7028745b6e4f8c0a4f336247a5d19cd062fab16d5666074be32e59"
+      "sha256": "ed7979888b46239a136bb9f163809803e5eb96d489b336913d07589b4cd5c71e"
     },
     {
       "bytes": 10873,

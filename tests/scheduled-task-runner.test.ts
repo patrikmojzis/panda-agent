@@ -1,499 +1,349 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
-import type {AssistantMessage} from "@earendil-works/pi-ai";
-import {DataType, newDb} from "pg-mem";
 
-import {Agent,} from "../src/index.js";
 import {
-  PostgresScheduledTaskStore,
   ScheduledTaskRunner,
+  type ClaimedScheduledTaskRunRecord,
   type ScheduledTaskRecord,
-  type ScheduledTaskRunRecord,
   type ScheduledTaskRunnerOptions,
 } from "../src/domain/scheduling/tasks/index.js";
-import {ThreadRuntimeCoordinator,} from "../src/domain/threads/runtime/index.js";
-import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
+import type {ThreadEnqueueResult} from "../src/domain/threads/runtime/store.js";
+import type {
+  ThreadInputPayload,
+  ThreadInputRecord,
+  ThreadRunRecord,
+} from "../src/domain/threads/runtime/types.js";
 import {sleep, waitFor} from "./helpers/wait-for.js";
 
 const RUNNER_WAIT_TIMEOUT_MS = 5_000;
 
-function createAssistantMessage(text: string): AssistantMessage {
+function createTask(overrides: Partial<ScheduledTaskRecord> = {}): ScheduledTaskRecord {
+  const scheduledFor = Date.now() - 1_000;
   return {
-    role: "assistant",
-    content: [{type: "text", text}],
-    api: "openai-responses",
-    model: "openai/gpt-5.1",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0},
-    },
-    stopReason: "stop",
-    timestamp: Date.now(),
-  };
-}
-
-function createMockRuntime(...responses: AssistantMessage[]) {
-  return {
-    complete: vi.fn().mockImplementation(async () => {
-      const response = responses.shift();
-      if (!response) {
-        throw new Error("No more runtime responses queued.");
-      }
-
-      return response;
-    }),
-    stream: vi.fn(() => {
-      throw new Error("Streaming was not expected in this test.");
-    }),
-  };
-}
-
-class SelectiveLeaseManager {
-  async tryAcquire(threadId: string) {
-    return {
-      threadId,
-      release: async () => {},
-    };
-  }
-}
-
-async function createHarness(options: {
-  responseText: string;
-}) {
-  const db = newDb();
-  db.public.registerFunction({
-    name: "pg_notify",
-    args: [DataType.text, DataType.text],
-    returns: DataType.text,
-    implementation: () => "",
-  });
-  const adapter = db.adapters.createPg();
-  const pool = new adapter.Pool();
-
-  const {identityStore, sessionStore, threadStore} = await createRuntimeStores(pool);
-  const scheduledTasks = new PostgresScheduledTaskStore({pool});
-  await scheduledTasks.ensureSchema();
-
-  const alice = await identityStore.createIdentity({
-    id: "alice-id",
-    handle: "alice",
-    displayName: "Alice",
-  });
-  await sessionStore.createSession({
-    id: "session-main",
-    agentKey: "panda",
-    kind: "main",
-    currentThreadId: "session-thread",
-    createdByIdentityId: alice.id,
-  });
-  await threadStore.createThread({
-    id: "session-thread",
+    id: "00000000-0000-4000-8000-000000000001",
     sessionId: "session-main",
-  });
+    createdByIdentityId: "alice-id",
+    title: "Morning report",
+    instruction: "Prepare the morning report.",
+    schedule: {
+      kind: "once",
+      runAt: new Date(scheduledFor).toISOString(),
+    },
+    enabled: true,
+    nextFireAt: scheduledFor,
+    createdAt: scheduledFor,
+    updatedAt: scheduledFor,
+    ...overrides,
+  };
+}
 
-  const runtime = createMockRuntime(
-    createAssistantMessage(options.responseText),
-    createAssistantMessage(options.responseText),
-    createAssistantMessage(options.responseText),
-    createAssistantMessage(options.responseText),
-    createAssistantMessage(options.responseText),
-    createAssistantMessage(options.responseText),
-    createAssistantMessage(options.responseText),
-    createAssistantMessage(options.responseText),
-  );
-  const coordinator = new ThreadRuntimeCoordinator({
-    store: threadStore,
-    leaseManager: new SelectiveLeaseManager(),
-    resolveDefinition: async () => ({
-      agent: new Agent({
-        name: "panda",
-        instructions: "Reply briefly.",
-      }),
-      runtime,
+function createClaim(
+  task: ScheduledTaskRecord,
+  overrides: Partial<ClaimedScheduledTaskRunRecord> = {},
+): ClaimedScheduledTaskRunRecord {
+  const claimedAt = Date.now();
+  return {
+    id: "00000000-0000-4000-8000-000000000002",
+    taskId: task.id,
+    sessionId: task.sessionId,
+    createdByIdentityId: task.createdByIdentityId,
+    scheduledFor: task.nextFireAt ?? claimedAt,
+    status: "claimed",
+    claimToken: "00000000-0000-4000-8000-000000000003",
+    claimedAt,
+    claimedBy: "scheduled-task-runner",
+    claimExpiresAt: claimedAt + 60_000,
+    createdAt: claimedAt,
+    ...overrides,
+  };
+}
+
+function createInput(inputId: string, threadId: string, payload: ThreadInputPayload): ThreadInputRecord {
+  return {
+    id: inputId,
+    threadId,
+    order: 1,
+    deliveryMode: "wake",
+    status: "pending",
+    connectorKey: "",
+    source: payload.source,
+    externalMessageId: payload.externalMessageId,
+    identityId: payload.identityId,
+    createdAt: Date.now(),
+  };
+}
+
+function createThreadRun(
+  threadId: string,
+  overrides: Partial<ThreadRunRecord> = {},
+): ThreadRunRecord {
+  const startedAt = Date.now();
+  return {
+    id: "00000000-0000-4000-8000-000000000005",
+    threadId,
+    status: "completed",
+    startedAt,
+    finishedAt: startedAt + 1,
+    ...overrides,
+  };
+}
+
+function createHarness(options: {
+  task?: ScheduledTaskRecord;
+  run?: ClaimedScheduledTaskRunRecord;
+  threadRun?: ThreadRunRecord;
+  renewTaskRunClaim?: ScheduledTaskRunnerOptions["tasks"]["renewTaskRunClaim"];
+  waitForInputRun?: (inputId: string) => Promise<ThreadRunRecord>;
+} = {}) {
+  const task = options.task ?? createTask();
+  const run = options.run ?? createClaim(task);
+  const threadId = run.resolvedThreadId ?? "thread-current";
+  const threadRun = options.threadRun ?? createThreadRun(threadId);
+  let claimed = false;
+  let materialized = task.nextFireAt === undefined;
+
+  const tasks: ScheduledTaskRunnerOptions["tasks"] = {
+    listDueTasks: vi.fn()
+      .mockResolvedValueOnce(task.nextFireAt === undefined ? [] : [task])
+      .mockResolvedValue([]),
+    materializeTaskRuns: vi.fn(async ({runs}) => {
+      if (runs.length === 0) return [];
+      materialized = true;
+      return [run];
     }),
-  });
+    claimTaskRun: vi.fn(async () => {
+      if (claimed || !materialized) return null;
+      claimed = true;
+      return {task, run};
+    }),
+    renewTaskRunClaim: vi.fn(options.renewTaskRunClaim ?? (async () => run)),
+    startTaskRun: vi.fn(async () => ({
+      ...run,
+      status: "running",
+      resolvedThreadId: threadId,
+      threadInputId: run.id,
+      startedAt: Date.now(),
+    })),
+    completeTaskRun: vi.fn(async ({threadRunId}) => ({
+      ...run,
+      status: "succeeded",
+      resolvedThreadId: threadId,
+      threadInputId: run.id,
+      threadRunId,
+      finishedAt: Date.now(),
+    })),
+    failTaskRun: vi.fn(async ({threadRunId, error}) => ({
+      ...run,
+      status: "failed",
+      resolvedThreadId: threadId,
+      ...(threadRunId ? {threadRunId} : {}),
+      error,
+      finishedAt: Date.now(),
+    })),
+  };
 
+  const submitSessionInput = vi.fn(async (
+    _sessionId: string,
+    payload: ThreadInputPayload,
+    _mode: "wake",
+    options: {inputId: string},
+  ): Promise<ThreadEnqueueResult> => ({
+    input: createInput(options.inputId, threadId, payload),
+    disposition: "inserted",
+  }));
+  const waitForInputRun = vi.fn(options.waitForInputRun ?? (async () => threadRun));
+  const sessions = {
+    getSession: vi.fn(async () => ({
+      id: task.sessionId,
+      agentKey: "panda",
+      kind: "main" as const,
+      currentThreadId: threadId,
+      createdByIdentityId: "session-creator-id",
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    })),
+  };
   const runner = new ScheduledTaskRunner({
-    tasks: scheduledTasks,
-    sessions: sessionStore,
-    threadStore,
-    coordinator,
+    tasks,
+    sessions,
+    coordinator: {submitSessionInput, waitForInputRun},
   });
 
   return {
-    alice,
-    pool,
-    threadStore,
-    sessionStore,
-    scheduledTasks,
-    coordinator,
     runner,
-    runtime,
+    run,
+    sessions,
+    submitSessionInput,
+    task,
+    tasks,
+    threadId,
+    threadRun,
+    waitForInputRun,
   };
+}
+
+async function drainRunner(runner: ScheduledTaskRunner): Promise<void> {
+  await runner.start();
+  await runner.triggerDrain();
+  await runner.stop();
 }
 
 describe("ScheduledTaskRunner", () => {
-  const pools: Array<{end(): Promise<void>}> = [];
-
-  afterEach(async () => {
+  afterEach(() => {
     vi.useRealTimers();
-
-    while (pools.length > 0) {
-      const pool = pools.pop();
-      if (!pool) {
-        continue;
-      }
-
-      await pool.end();
-    }
   });
 
-  it("completes a once task without auto-delivering assistant text", async () => {
-    const harness = await createHarness({
-      responseText: "Buy apples tomorrow.",
-    });
-    pools.push(harness.pool);
+  it("materializes due occurrences in one batch and settles the exact consuming run", async () => {
+    const harness = createHarness();
 
-    const task = await harness.scheduledTasks.createTask({
-      sessionId: "session-main",
-      createdByIdentityId: harness.alice.id,
-      title: "Buy apples",
-      instruction: "Remind me to buy apples.",
-      schedule: {
-        kind: "once",
-        runAt: new Date(Date.now() - 60_000).toISOString(),
+    await drainRunner(harness.runner);
+
+    expect(harness.tasks.materializeTaskRuns).toHaveBeenCalledWith({
+      runs: [{
+        taskId: harness.task.id,
+        scheduledFor: harness.task.nextFireAt,
+        nextFireAt: undefined,
+      }],
+    });
+    expect(harness.submitSessionInput).toHaveBeenCalledTimes(1);
+    expect(harness.sessions.getSession).not.toHaveBeenCalled();
+    const [submittedSessionId, payload, mode, options] = harness.submitSessionInput.mock.calls[0]!;
+    expect(submittedSessionId).toBe(harness.task.sessionId);
+    expect(mode).toBe("wake");
+    expect(options).toEqual({inputId: harness.run.id});
+    expect(payload).toMatchObject({
+      source: "scheduled_task",
+      externalMessageId: harness.run.id,
+      identityId: harness.task.createdByIdentityId,
+      metadata: {
+        scheduledTask: {
+          taskId: harness.task.id,
+          taskRunId: harness.run.id,
+          title: harness.task.title,
+        },
       },
     });
-
-    await harness.runner.start();
-    await harness.runner.triggerDrain();
-    await harness.runner.stop();
-
-    const updated = await harness.scheduledTasks.getTask(task.id);
-    expect(updated.completedAt).toEqual(expect.any(Number));
-    expect(updated.nextFireAt).toBeUndefined();
-
-    const runs = await harness.pool.query(
-      `SELECT status FROM "runtime"."scheduled_task_runs" WHERE task_id = $1`,
-      [task.id],
-    );
-    expect(runs.rows).toEqual([{status: "succeeded"}]);
-
-    const transcript = await harness.threadStore.loadTranscript("session-thread");
-    const input = transcript.find((entry) => entry.origin === "input" && entry.source === "scheduled_task");
-    expect(input?.identityId).toBe(harness.alice.id);
-    expect(JSON.stringify(input?.message)).toContain("The user is not actively watching this session right now.");
+    expect(harness.tasks.startTaskRun).toHaveBeenCalledWith({
+      runId: harness.run.id,
+      claimToken: harness.run.claimToken,
+    });
+    expect(harness.waitForInputRun).toHaveBeenCalledWith(harness.run.id);
+    expect(harness.tasks.completeTaskRun).toHaveBeenCalledWith({
+      runId: harness.run.id,
+      claimToken: harness.run.claimToken,
+      threadRunId: harness.threadRun.id,
+    });
+    expect(harness.tasks.failTaskRun).not.toHaveBeenCalled();
   });
 
-  it("advances recurring tasks before execution and keeps them active after success", async () => {
-    const harness = await createHarness({
-      responseText: "Here is your morning report.",
-    });
-    pools.push(harness.pool);
-
-    const task = await harness.scheduledTasks.createTask({
-      sessionId: "session-main",
-      createdByIdentityId: harness.alice.id,
-      title: "Morning report",
-      instruction: "Deliver the report.",
-      schedule: {
-        kind: "recurring",
-        cron: "* * * * *",
-        timezone: "UTC",
-      },
-    });
-
-    await harness.pool.query(
-      `UPDATE "runtime"."scheduled_tasks" SET next_fire_at = $2 WHERE id = $1`,
-      [task.id, new Date(Date.now() - 1_000)],
-    );
-    await harness.runner.start();
-    await harness.runner.triggerDrain();
-    await harness.runner.stop();
-
-    const updated = await harness.scheduledTasks.getTask(task.id);
-    expect(updated.completedAt).toBeUndefined();
-    expect(updated.nextFireAt).toBeGreaterThan(Date.now());
-    expect(updated.claimedAt).toBeUndefined();
-  });
-
-  it("still executes due tasks when there is no channel route", async () => {
-    const harness = await createHarness({
-      responseText: "This should stay in the thread.",
-    });
-    pools.push(harness.pool);
-
-    const task = await harness.scheduledTasks.createTask({
-      sessionId: "session-main",
-      createdByIdentityId: harness.alice.id,
-      title: "No route",
-      instruction: "Do the work anyway.",
-      schedule: {
-        kind: "once",
-        runAt: new Date(Date.now() - 60_000).toISOString(),
-      },
-    });
-
-    await harness.runner.start();
-    await harness.runner.triggerDrain();
-    await harness.runner.stop();
-
-    const updated = await harness.scheduledTasks.getTask(task.id);
-    expect(updated.completedAt).toEqual(expect.any(Number));
-
-    const runs = await harness.pool.query(
-      `SELECT status FROM "runtime"."scheduled_task_runs" WHERE task_id = $1`,
-      [task.id],
-    );
-    expect(runs.rows).toEqual([{status: "succeeded"}]);
-  });
-
-  it("uses the session creator identity when a scheduled task has no creator identity", async () => {
-    const harness = await createHarness({
-      responseText: "Fallback identity used.",
-    });
-    pools.push(harness.pool);
-
-    const task = await harness.scheduledTasks.createTask({
-      sessionId: "session-main",
-      title: "Fallback identity",
-      instruction: "Use the session creator identity.",
-      schedule: {
-        kind: "once",
-        runAt: new Date(Date.now() - 60_000).toISOString(),
-      },
-    });
-
-    await harness.runner.start();
-    await harness.runner.triggerDrain();
-    await harness.runner.stop();
-
-    const transcript = await harness.threadStore.loadTranscript("session-thread");
-    const input = transcript.find((entry) => entry.origin === "input" && entry.source === "scheduled_task");
-    expect(input?.identityId).toBe(harness.alice.id);
-
-    const runs = await harness.pool.query(
-      `SELECT status FROM "runtime"."scheduled_task_runs" WHERE task_id = $1`,
-      [task.id],
-    );
-    expect(runs.rows).toEqual([{status: "succeeded"}]);
-  });
-
-  it("resolves the session current thread when the task fires", async () => {
-    const harness = await createHarness({
-      responseText: "Handled after reset.",
-    });
-    pools.push(harness.pool);
-
-    const resetThreadId = "session-thread-after-reset";
-    await harness.threadStore.createThread({
-      id: resetThreadId,
-      sessionId: "session-main",
-    });
-    await harness.sessionStore.updateCurrentThread({
-      sessionId: "session-main",
-      currentThreadId: resetThreadId,
-    });
-
-    const task = await harness.scheduledTasks.createTask({
-      sessionId: "session-main",
-      createdByIdentityId: harness.alice.id,
-      title: "After reset",
-      instruction: "Run on the current session thread.",
-      schedule: {
-        kind: "once",
-        runAt: new Date(Date.now() - 60_000).toISOString(),
-      },
-    });
-
-    await harness.runner.start();
-    await harness.runner.triggerDrain();
-    await harness.coordinator.waitForIdle(resetThreadId);
-    await harness.runner.stop();
-
-    const updated = await harness.scheduledTasks.getTask(task.id);
-    expect(updated.completedAt).toEqual(expect.any(Number));
-
-    const oldTranscript = await harness.threadStore.loadTranscript("session-thread");
-    expect(oldTranscript.some((entry) => entry.origin === "input" && entry.source === "scheduled_task")).toBe(false);
-
-    const resetTranscript = await harness.threadStore.loadTranscript(resetThreadId);
-    expect(resetTranscript.some((entry) => entry.origin === "input" && entry.source === "scheduled_task")).toBe(true);
-
-    const runs = await harness.pool.query(
-      `SELECT resolved_thread_id FROM "runtime"."scheduled_task_runs" WHERE task_id = $1`,
-      [task.id],
-    );
-    expect(runs.rows).toEqual([{resolved_thread_id: resetThreadId}]);
-  });
-
-  it("re-resolves the delivery thread after waiting for an existing run", async () => {
-    const task: ScheduledTaskRecord = {
-      id: "task-1",
-      sessionId: "session-main",
-      createdByIdentityId: "alice-id",
-      title: "Wait then run",
-      instruction: "Run on the current thread after the wait.",
-      schedule: {
-        kind: "once",
-        runAt: new Date(Date.now() - 1_000).toISOString(),
-      },
-      enabled: true,
-      nextFireAt: Date.now() - 1_000,
-      updatedAt: Date.now(),
-      createdAt: Date.now(),
-    };
-    const run: ScheduledTaskRunRecord = {
-      id: "scheduled-run-1",
-      taskId: task.id,
-      sessionId: task.sessionId,
-      createdByIdentityId: task.createdByIdentityId,
-      scheduledFor: Date.now() - 1_000,
-      status: "claimed",
-      createdAt: Date.now(),
-    };
-    let listed = false;
-    let currentThreadId = "thread-before-wait";
-    let submitted = false;
-    const tasks: ScheduledTaskRunnerOptions["tasks"] = {
-      listDueTasks: vi.fn(async () => {
-        if (listed) {
-          return [];
-        }
-        listed = true;
-        return [task];
-      }),
-      claimTask: vi.fn(async () => ({task, run})),
-      startTaskRun: vi.fn(async () => ({...run, status: "running"})),
-      completeTaskRun: vi.fn(async () => ({...run, status: "succeeded"})),
-      failTaskRun: vi.fn(),
-      markTaskCompleted: vi.fn(async () => ({...task, completedAt: Date.now()})),
-      markTaskFailed: vi.fn(),
-      clearTaskClaim: vi.fn(),
-    };
-    const runner = new ScheduledTaskRunner({
-      tasks,
-      sessions: {
-        getSession: vi.fn(async () => ({
-          id: task.sessionId,
-          agentKey: "panda",
-          kind: "main",
-          currentThreadId,
-          createdByIdentityId: "session-creator-id",
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        })),
-      },
-      threadStore: {
-        listRuns: vi.fn(async (threadId: string) => {
-          expect(threadId).toBe("thread-after-wait");
-          return submitted ? [{id: "thread-run-1", status: "completed"}] : [];
-        }),
-      },
-      coordinator: {
-        waitForCurrentRun: vi.fn(async (threadId: string) => {
-          expect(threadId).toBe("thread-before-wait");
-          currentThreadId = "thread-after-wait";
-        }),
-        submitInput: vi.fn(async (threadId: string, payload: {identityId?: string}) => {
-          expect(threadId).toBe("thread-after-wait");
-          expect(payload.identityId).toBe("alice-id");
-          submitted = true;
-        }),
-        waitForIdle: vi.fn(async (threadId: string) => {
-          expect(threadId).toBe("thread-after-wait");
-        }),
-      },
-    });
-
-    await runner.start();
-    await runner.triggerDrain();
-    await runner.stop();
-
-    expect(tasks.completeTaskRun).toHaveBeenCalledTimes(1);
-    expect(tasks.startTaskRun).toHaveBeenCalledWith({
-      runId: run.id,
-      resolvedThreadId: "thread-after-wait",
-    });
-  });
-
-  it("does not block start on an active scheduled task drain but stop still waits", async () => {
-    let released = false;
-    let releaseIdle!: () => void;
-    const idle = new Promise<void>((resolve) => {
-      releaseIdle = () => {
-        released = true;
-        resolve();
-      };
-    });
-    const task: ScheduledTaskRecord = {
-      id: "task-1",
-      sessionId: "session-main",
-      createdByIdentityId: "alice-id",
-      title: "Slow task",
-      instruction: "Do slow work.",
-      schedule: {
-        kind: "once",
-        runAt: new Date(Date.now() - 1_000).toISOString(),
-      },
-      enabled: true,
-      nextFireAt: Date.now() - 1_000,
-      updatedAt: Date.now(),
-      createdAt: Date.now(),
-    };
-    const run: ScheduledTaskRunRecord = {
-      id: "scheduled-run-1",
-      taskId: task.id,
-      sessionId: task.sessionId,
-      createdByIdentityId: task.createdByIdentityId,
-      scheduledFor: Date.now() - 1_000,
+  it("resumes an already-linked occurrence without enqueuing duplicate input", async () => {
+    const task = createTask({nextFireAt: undefined});
+    const run = createClaim(task, {
       status: "running",
-      createdAt: Date.now(),
-    };
-    let listed = false;
-    const tasks: ScheduledTaskRunnerOptions["tasks"] = {
-      listDueTasks: vi.fn(async () => {
-        if (listed) {
-          return [];
-        }
-        listed = true;
-        return [task];
-      }),
-      claimTask: vi.fn(async () => ({task, run})),
-      startTaskRun: vi.fn(async () => run),
-      completeTaskRun: vi.fn(async () => ({...run, status: "succeeded"})),
-      failTaskRun: vi.fn(),
-      markTaskCompleted: vi.fn(async () => ({...task, completedAt: Date.now()})),
-      markTaskFailed: vi.fn(),
-      clearTaskClaim: vi.fn(),
-    };
+      resolvedThreadId: "thread-before-restart",
+      threadInputId: "00000000-0000-4000-8000-000000000099",
+      startedAt: Date.now() - 5_000,
+    });
+    const harness = createHarness({task, run});
+
+    await drainRunner(harness.runner);
+
+    expect(harness.submitSessionInput).not.toHaveBeenCalled();
+    expect(harness.tasks.startTaskRun).not.toHaveBeenCalled();
+    expect(harness.waitForInputRun).toHaveBeenCalledWith(run.threadInputId);
+    expect(harness.tasks.completeTaskRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("records the exact failed thread run as the occurrence failure", async () => {
+    const failedRun = createThreadRun("thread-current", {
+      status: "failed",
+      error: "Provider exhausted retries.",
+    });
+    const harness = createHarness({threadRun: failedRun});
+
+    await drainRunner(harness.runner);
+
+    expect(harness.tasks.failTaskRun).toHaveBeenCalledWith({
+      runId: harness.run.id,
+      claimToken: harness.run.claimToken,
+      threadRunId: failedRun.id,
+      error: failedRun.error,
+    });
+    expect(harness.tasks.completeTaskRun).not.toHaveBeenCalled();
+  });
+
+  it("fails an occurrence whose stable input was discarded instead of recreating it", async () => {
+    const harness = createHarness();
+    harness.submitSessionInput.mockImplementation(async (_sessionId, payload, _mode, options) => ({
+      input: {
+        ...createInput(options.inputId, harness.threadId, payload),
+        status: "discarded",
+        discardedAt: Date.now(),
+      },
+      disposition: "duplicate_discarded",
+    }));
+
+    await drainRunner(harness.runner);
+
+    expect(harness.tasks.startTaskRun).not.toHaveBeenCalled();
+    expect(harness.tasks.failTaskRun).toHaveBeenCalledWith({
+      runId: harness.run.id,
+      claimToken: harness.run.claimToken,
+      error: `Scheduled task input ${harness.run.id} was discarded before execution.`,
+    });
+  });
+
+  it("submits by durable session instead of retaining a thread target across reset", async () => {
+    const task = createTask({createdByIdentityId: undefined});
+    const harness = createHarness({task, run: createClaim(task)});
+
+    await drainRunner(harness.runner);
+
+    expect(harness.sessions.getSession).toHaveBeenCalledWith(harness.task.sessionId);
+    expect(harness.submitSessionInput).toHaveBeenCalledWith(
+      harness.task.sessionId,
+      expect.any(Object),
+      "wake",
+      {inputId: harness.run.id},
+    );
+  });
+
+  it("cannot mark an enqueued input failed when the linkage response is lost", async () => {
+    const harness = createHarness();
+    vi.mocked(harness.tasks.startTaskRun).mockRejectedValueOnce(new Error("link response lost"));
+    vi.mocked(harness.tasks.failTaskRun).mockRejectedValueOnce(
+      new Error("exact input exists; occurrence remains recoverable"),
+    );
+
+    await drainRunner(harness.runner);
+
+    expect(harness.submitSessionInput).toHaveBeenCalledTimes(1);
+    expect(harness.tasks.failTaskRun).toHaveBeenCalledWith({
+      runId: harness.run.id,
+      claimToken: harness.run.claimToken,
+      error: "link response lost",
+    });
+    expect(harness.tasks.completeTaskRun).not.toHaveBeenCalled();
+  });
+
+  it("does not block start on active work, renews its claim, and makes stop drain it", async () => {
+    let releaseRun!: () => void;
+    const runFinished = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    const harness = createHarness({
+      waitForInputRun: async () => {
+        await runFinished;
+        return createThreadRun("thread-current");
+      },
+    });
     const runner = new ScheduledTaskRunner({
-      tasks,
-      sessions: {
-        getSession: vi.fn(async () => ({
-          id: task.sessionId,
-          agentKey: "panda",
-          kind: "main",
-          currentThreadId: "thread-1",
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        })),
-      },
-      threadStore: {
-        listRuns: vi.fn(async () => released
-          ? [{id: "thread-run-1", status: "completed"}]
-          : []),
-      },
+      tasks: harness.tasks,
+      sessions: harness.sessions,
       coordinator: {
-        waitForCurrentRun: vi.fn(async () => {}),
-        submitInput: vi.fn(async () => {}),
-        waitForIdle: vi.fn(async () => {
-          await idle;
-        }),
+        submitSessionInput: harness.submitSessionInput,
+        waitForInputRun: harness.waitForInputRun,
       },
+      claimTtlMs: 3_000,
     });
 
     const startResult = await Promise.race([
@@ -502,8 +352,15 @@ describe("ScheduledTaskRunner", () => {
     ]);
     expect(startResult).toBe("resolved");
     await waitFor(() => {
-      expect(tasks.startTaskRun).toHaveBeenCalledTimes(1);
+      expect(harness.tasks.startTaskRun).toHaveBeenCalledTimes(1);
     }, RUNNER_WAIT_TIMEOUT_MS);
+
+    await sleep(1_100);
+    expect(harness.tasks.renewTaskRunClaim).toHaveBeenCalledWith({
+      runId: harness.run.id,
+      claimToken: harness.run.claimToken,
+      claimTtlMs: 3_000,
+    });
 
     const stopPromise = runner.stop();
     const stopResult = await Promise.race([
@@ -512,8 +369,216 @@ describe("ScheduledTaskRunner", () => {
     ]);
     expect(stopResult).toBe("blocked");
 
-    releaseIdle();
+    releaseRun();
     await stopPromise;
-    expect(tasks.completeTaskRun).toHaveBeenCalledTimes(1);
+    expect(harness.tasks.completeTaskRun).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let one long run block unrelated scheduled occurrences", async () => {
+    let releaseFirst!: () => void;
+    const firstFinished = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const firstTask = createTask({nextFireAt: undefined});
+    const firstRun = createClaim(firstTask);
+    const secondTask = createTask({
+      id: "00000000-0000-4000-8000-000000000007",
+      sessionId: "session-other",
+      nextFireAt: undefined,
+    });
+    const secondRun = createClaim(secondTask, {
+      id: "00000000-0000-4000-8000-000000000008",
+      sessionId: secondTask.sessionId,
+      taskId: secondTask.id,
+    });
+    const harness = createHarness({task: firstTask, run: firstRun});
+    harness.tasks.listDueTasks = vi.fn(async () => []);
+    harness.tasks.claimTaskRun = vi.fn()
+      .mockResolvedValueOnce({task: firstTask, run: firstRun})
+      .mockResolvedValueOnce({task: secondTask, run: secondRun})
+      .mockResolvedValue(null);
+    harness.waitForInputRun.mockImplementation(async (inputId) => {
+      if (inputId === firstRun.id) {
+        await firstFinished;
+      }
+      return createThreadRun("thread-current", {
+        id: inputId === firstRun.id
+          ? "00000000-0000-4000-8000-000000000009"
+          : "00000000-0000-4000-8000-000000000010",
+      });
+    });
+    const runner = new ScheduledTaskRunner({
+      tasks: harness.tasks,
+      sessions: harness.sessions,
+      coordinator: {
+        submitSessionInput: harness.submitSessionInput,
+        waitForInputRun: harness.waitForInputRun,
+      },
+      maxConcurrentRuns: 2,
+    });
+
+    await runner.start();
+    await waitFor(() => {
+      expect(harness.tasks.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
+        runId: secondRun.id,
+      }));
+    }, RUNNER_WAIT_TIMEOUT_MS);
+    expect(harness.tasks.completeTaskRun).not.toHaveBeenCalledWith(expect.objectContaining({
+      runId: firstRun.id,
+    }));
+
+    releaseFirst();
+    await runner.stop();
+    expect(harness.tasks.completeTaskRun).toHaveBeenCalledWith(expect.objectContaining({
+      runId: firstRun.id,
+    }));
+  });
+
+  it("does not materialize backlog while every execution slot is occupied", async () => {
+    let releaseRun!: () => void;
+    const runFinished = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    const harness = createHarness({
+      waitForInputRun: async () => {
+        await runFinished;
+        return createThreadRun("thread-current");
+      },
+    });
+    // Model a pending occurrence from an earlier daemon alongside an overdue
+    // definition. Capacity must be spent on the durable occurrence first;
+    // creating fresh backlog while it runs would amplify downtime catch-up.
+    harness.tasks.claimTaskRun = vi.fn()
+      .mockResolvedValueOnce({task: harness.task, run: harness.run})
+      .mockResolvedValue(null);
+    const runner = new ScheduledTaskRunner({
+      tasks: harness.tasks,
+      sessions: harness.sessions,
+      coordinator: {
+        submitSessionInput: harness.submitSessionInput,
+        waitForInputRun: harness.waitForInputRun,
+      },
+      maxConcurrentRuns: 1,
+    });
+
+    await runner.start();
+    await waitFor(() => {
+      expect(harness.tasks.startTaskRun).toHaveBeenCalledTimes(1);
+    }, RUNNER_WAIT_TIMEOUT_MS);
+    vi.mocked(harness.tasks.listDueTasks).mockClear();
+    vi.mocked(harness.tasks.materializeTaskRuns).mockClear();
+    vi.mocked(harness.tasks.claimTaskRun).mockClear();
+
+    await runner.triggerDrain();
+
+    expect(harness.tasks.listDueTasks).not.toHaveBeenCalled();
+    expect(harness.tasks.materializeTaskRuns).not.toHaveBeenCalled();
+    expect(harness.tasks.claimTaskRun).not.toHaveBeenCalled();
+    releaseRun();
+    await runner.stop();
+  });
+
+  it("leaves an occurrence recoverable when claim renewal becomes uncertain", async () => {
+    let releaseSubmit!: () => void;
+    const submitBlocked = new Promise<void>((resolve) => {
+      releaseSubmit = resolve;
+    });
+    const onError = vi.fn();
+    const harness = createHarness({
+      renewTaskRunClaim: async () => null,
+    });
+    harness.submitSessionInput.mockImplementation(async (_sessionId, payload, _mode, options) => {
+      await submitBlocked;
+      return {
+        input: createInput(options.inputId, harness.threadId, payload),
+        disposition: "inserted",
+      };
+    });
+    vi.mocked(harness.tasks.startTaskRun).mockRejectedValue(
+      new Error("old claim token is fenced"),
+    );
+    const runner = new ScheduledTaskRunner({
+      tasks: harness.tasks,
+      sessions: harness.sessions,
+      coordinator: {
+        submitSessionInput: harness.submitSessionInput,
+        waitForInputRun: harness.waitForInputRun,
+      },
+      claimTtlMs: 3_000,
+      onError,
+    });
+
+    await runner.start();
+    await waitFor(() => {
+      expect(harness.submitSessionInput).toHaveBeenCalledTimes(1);
+    }, RUNNER_WAIT_TIMEOUT_MS);
+    await sleep(1_100);
+    await runner.stop();
+
+    expect(harness.tasks.renewTaskRunClaim).toHaveBeenCalledTimes(1);
+    expect(harness.tasks.startTaskRun).not.toHaveBeenCalled();
+    expect(harness.tasks.failTaskRun).not.toHaveBeenCalled();
+    expect(harness.tasks.completeTaskRun).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({name: "ScheduledTaskClaimLostError"}),
+      harness.task.id,
+    );
+
+    releaseSubmit();
+    await waitFor(() => {
+      expect(harness.tasks.startTaskRun).toHaveBeenCalledWith({
+        runId: harness.run.id,
+        claimToken: harness.run.claimToken,
+      });
+    }, RUNNER_WAIT_TIMEOUT_MS);
+    expect(harness.tasks.failTaskRun).not.toHaveBeenCalled();
+    expect(harness.tasks.completeTaskRun).not.toHaveBeenCalled();
+  });
+
+  it("keeps catching up one overdue recurring definition until no occurrence advances", async () => {
+    const firstFire = Date.now() - 120_000;
+    const task = createTask({
+      schedule: {kind: "recurring", cron: "* * * * *", timezone: "UTC"},
+      nextFireAt: firstFire,
+    });
+    const firstRun = createClaim(task, {scheduledFor: firstFire});
+    const secondFire = firstFire + 60_000;
+    const secondRun = createClaim(task, {
+      id: "00000000-0000-4000-8000-000000000006",
+      scheduledFor: secondFire,
+    });
+    const harness = createHarness({task, run: firstRun});
+    harness.tasks.listDueTasks = vi.fn()
+      .mockResolvedValueOnce([task])
+      .mockResolvedValueOnce([{...task, nextFireAt: secondFire}])
+      .mockResolvedValue([]);
+    harness.tasks.materializeTaskRuns = vi.fn()
+      .mockResolvedValueOnce([firstRun])
+      .mockResolvedValueOnce([secondRun])
+      .mockResolvedValue([]);
+    harness.tasks.claimTaskRun = vi.fn()
+      .mockResolvedValueOnce({task, run: firstRun})
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({task, run: secondRun})
+      .mockResolvedValue(null);
+
+    const runner = new ScheduledTaskRunner({
+      tasks: harness.tasks,
+      sessions: harness.sessions,
+      coordinator: {
+        submitSessionInput: harness.submitSessionInput,
+        waitForInputRun: harness.waitForInputRun,
+      },
+      maxConcurrentRuns: 1,
+    });
+    await runner.start();
+    await waitFor(() => {
+      expect(harness.submitSessionInput).toHaveBeenCalledTimes(2);
+    }, RUNNER_WAIT_TIMEOUT_MS);
+    await runner.stop();
+
+    expect(vi.mocked(harness.tasks.listDueTasks).mock.calls.length).toBeGreaterThanOrEqual(3);
+    expect(harness.tasks.materializeTaskRuns).toHaveBeenCalledTimes(2);
+    expect(harness.submitSessionInput).toHaveBeenCalledTimes(2);
   });
 });

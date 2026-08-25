@@ -4,10 +4,17 @@ import {ToolError} from "../../../kernel/agent/exceptions.js";
 import {withFallbackTimeout} from "../../../lib/async.js";
 import type {JsonObject} from "../../../lib/json.js";
 import type {ThreadRuntimeStore} from "./store.js";
-import type {ThreadToolJobKind, ThreadToolJobRecord, ThreadToolJobStatus, ThreadToolJobUpdate,} from "./types.js";
+import type {
+  ThreadRunOwner,
+  ThreadToolJobKind,
+  ThreadToolJobRecord,
+  ThreadToolJobStatus,
+  ThreadToolJobUpdate,
+} from "./types.js";
 
 const DEFAULT_WAIT_TIMEOUT_MS = 300_000;
 const DEFAULT_CANCEL_WAIT_TIMEOUT_MS = 1_000;
+const DEFAULT_SHUTDOWN_SETTLE_TIMEOUT_MS = 5_000;
 
 export interface BackgroundToolJobSnapshot {
   status?: ThreadToolJobStatus;
@@ -52,6 +59,24 @@ export type BackgroundToolJobTerminalHandler = (record: ThreadToolJobRecord) => 
 interface LiveToolJob {
   controller: AbortController;
   handle: BackgroundToolJobHandle;
+}
+
+interface StartingToolJob {
+  controller: AbortController;
+  reservation: Promise<ThreadToolJobRecord>;
+  startupSettled: Promise<void>;
+  resolveStartupSettled(): void;
+}
+
+function createStartingToolJob(
+  controller: AbortController,
+  reservation: Promise<ThreadToolJobRecord>,
+): StartingToolJob {
+  let resolveStartupSettled!: () => void;
+  const startupSettled = new Promise<void>((resolve) => {
+    resolveStartupSettled = resolve;
+  });
+  return {controller, reservation, startupSettled, resolveStartupSettled};
 }
 
 function isTerminalStatus(status: ThreadToolJobStatus | undefined): boolean {
@@ -102,13 +127,29 @@ export class BackgroundToolJobService {
     "createToolJob" | "getToolJob" | "listToolJobs" | "updateToolJob"
   >;
   private readonly liveJobs = new Map<string, LiveToolJob>();
+  private readonly startingJobs = new Map<string, StartingToolJob>();
   private readonly quietJobIds = new Set<string>();
+  private readonly shutdownSettleTimeoutMs: number;
   private onTerminalJob?: BackgroundToolJobTerminalHandler;
+  private owner: ThreadRunOwner | null;
+  private closed = false;
+  private closePromise: Promise<void> | null = null;
 
   constructor(options: {
     store: Pick<ThreadRuntimeStore, "createToolJob" | "getToolJob" | "listToolJobs" | "updateToolJob">;
+    owner?: ThreadRunOwner;
+    shutdownSettleTimeoutMs?: number;
   }) {
     this.store = options.store;
+    this.owner = options.owner ? {...options.owner} : null;
+    this.shutdownSettleTimeoutMs = options.shutdownSettleTimeoutMs ?? DEFAULT_SHUTDOWN_SETTLE_TIMEOUT_MS;
+    if (!Number.isInteger(this.shutdownSettleTimeoutMs) || this.shutdownSettleTimeoutMs <= 0) {
+      throw new Error("Background tool job shutdown timeout must be a positive integer.");
+    }
+  }
+
+  setOwner(owner: ThreadRunOwner | null): void {
+    this.owner = owner ? {...owner} : null;
   }
 
   setBackgroundCompletionHandler(handler?: BackgroundToolJobTerminalHandler): void {
@@ -116,47 +157,122 @@ export class BackgroundToolJobService {
   }
 
   async start(options: BackgroundToolJobStartOptions): Promise<ThreadToolJobRecord> {
+    if (this.closed) {
+      throw new Error("Background tool job service is closed.");
+    }
+    const owner = options.runId ? undefined : this.owner ?? undefined;
+    if (!options.runId && !owner) {
+      throw new Error("Standalone background work requires an active daemon lease.");
+    }
     const jobId = randomUUID();
     const controller = new AbortController();
     let lastProgress: JsonObject | undefined;
-    let recordCreated = false;
 
     const emitProgress = (progress: JsonObject): void => {
       lastProgress = progress;
-      if (recordCreated) {
-        void this.store.updateToolJob(jobId, {progress}).catch(() => undefined);
-      }
+      void this.store.updateToolJob(jobId, {progress}).catch(() => undefined);
     };
 
-    const handle = await options.start({
-      jobId,
-      signal: controller.signal,
-      emitProgress,
-    });
+    // Register before the first await. Shutdown must own the whole reservation
+    // handshake, otherwise a delayed INSERT could return after lease release
+    // and start an untracked external process.
+    const reservation = Promise.resolve().then(() => this.store.createToolJob({
+      id: jobId,
+      threadId: options.threadId,
+      runId: options.runId,
+      owner,
+      kind: options.kind,
+      summary: options.summary,
+      startedAt: Date.now(),
+    }));
+    const starting = createStartingToolJob(controller, reservation);
+    this.startingJobs.set(jobId, starting);
 
     let record: ThreadToolJobRecord;
     try {
-      record = await this.store.createToolJob({
-        id: jobId,
-        threadId: options.threadId,
-        runId: options.runId,
-        kind: options.kind,
-        summary: options.summary,
-        startedAt: handle.startedAt,
-        progress: lastProgress ?? handle.progress,
-        result: handle.result,
-      });
-      recordCreated = true;
+      record = await reservation;
     } catch (error) {
-      controller.abort(error);
-      await handle.cancel?.("Background tool job could not be persisted.");
+      this.startingJobs.delete(jobId);
+      starting.resolveStartupSettled();
+      throw error;
+    }
+    if (this.closed || controller.signal.aborted) {
+      try {
+        return await this.cancelStartingJobRecord(jobId, starting);
+      } finally {
+        this.startingJobs.delete(jobId);
+        starting.resolveStartupSettled();
+      }
+    }
+
+    let handle: BackgroundToolJobHandle;
+    try {
+      handle = await options.start({
+        jobId,
+        signal: controller.signal,
+        emitProgress,
+      });
+    } catch (error) {
+      try {
+        await this.store.updateToolJob(jobId, {
+          status: controller.signal.aborted ? "cancelled" : "failed",
+          finishedAt: Date.now(),
+          error: controller.signal.aborted ? null : errorMessage(error),
+          statusReason: controller.signal.aborted
+            ? abortReason(controller.signal)
+            : "Background tool job failed to start.",
+        });
+      } catch (persistError) {
+        throw new AggregateError(
+          [error, persistError],
+          "Background tool job failed to start and its durable record could not be settled.",
+        );
+      } finally {
+        this.startingJobs.delete(jobId);
+        starting.resolveStartupSettled();
+      }
       throw error;
     }
 
-    this.liveJobs.set(jobId, {
-      controller,
-      handle,
-    });
+    if (this.closed || controller.signal.aborted) {
+      try {
+        // Some adapters cannot interrupt handle acquisition. Once they do
+        // return, shutdown still owns that handle and must cancel it before
+        // the daemon lease can be released.
+        controller.abort(new Error("Runtime shutdown."));
+        await handle.cancel?.("Runtime shutdown.");
+        return await this.cancelStartingJobRecord(jobId, starting);
+      } finally {
+        this.startingJobs.delete(jobId);
+        starting.resolveStartupSettled();
+      }
+    }
+
+    this.startingJobs.delete(jobId);
+    starting.resolveStartupSettled();
+    this.liveJobs.set(jobId, {controller, handle});
+
+    try {
+      const initialProgress = lastProgress ?? handle.progress;
+      record = await this.store.updateToolJob(jobId, {
+        ...(handle.startedAt !== undefined ? {startedAt: handle.startedAt} : {}),
+        ...(initialProgress ? {progress: initialProgress} : {}),
+        ...(handle.result ? {result: handle.result} : {}),
+      });
+    } catch (error) {
+      this.liveJobs.delete(jobId);
+      controller.abort(error);
+      await handle.cancel?.("Background tool job ownership was lost before startup completed.");
+      throw error;
+    }
+
+    if (record.status !== "running" || this.closed) {
+      this.liveJobs.delete(jobId);
+      controller.abort(new Error("Runtime shutdown."));
+      await handle.cancel?.("Runtime shutdown.");
+      return record;
+    }
+
     void this.watchJob(jobId);
     return record;
   }
@@ -245,13 +361,81 @@ export class BackgroundToolJobService {
   }
 
   async close(): Promise<void> {
-    await Promise.all([...this.liveJobs.entries()].map(async ([jobId, live]) => {
-      this.quietJobIds.add(jobId);
-      live.controller.abort(new Error("Runtime shutdown."));
-      await live.handle.cancel?.("Runtime shutdown.");
-    }));
-    this.liveJobs.clear();
-    this.quietJobIds.clear();
+    if (this.closePromise) {
+      return this.closePromise;
+    }
+    this.closed = true;
+    this.closePromise = (async () => {
+      const jobs = [...this.liveJobs.entries()];
+      const startingJobs = [...this.startingJobs.entries()];
+      for (const [jobId, starting] of startingJobs) {
+        this.quietJobIds.add(jobId);
+        starting.controller.abort(new Error("Runtime shutdown."));
+      }
+      for (const [jobId, live] of jobs) {
+        this.quietJobIds.add(jobId);
+        live.controller.abort(new Error("Runtime shutdown."));
+      }
+
+      // Cooperative jobs settle durably while the daemon lease is still held.
+      // A non-cooperative external process gets only this bounded grace; later
+      // writes are rejected by the immutable owner tuple after lease release.
+      const settlement = Promise.allSettled([
+        ...startingJobs.map(([jobId, starting]) => this.settleStartingJobForShutdown(jobId, starting)),
+        ...jobs.map(([jobId, live]) => this.settleJobForShutdown(jobId, live)),
+      ]);
+      await withFallbackTimeout(settlement, this.shutdownSettleTimeoutMs, () => null);
+    })();
+    return this.closePromise;
+  }
+
+  private async settleStartingJobForShutdown(
+    jobId: string,
+    starting: StartingToolJob,
+  ): Promise<ThreadToolJobRecord> {
+    const record = await this.cancelStartingJobRecord(jobId, starting);
+    await starting.startupSettled;
+    return record;
+  }
+
+  private async cancelStartingJobRecord(
+    jobId: string,
+    starting: StartingToolJob,
+  ): Promise<ThreadToolJobRecord> {
+    const record = await starting.reservation;
+    const finishedAt = Date.now();
+    return this.store.updateToolJob(jobId, {
+      status: "cancelled",
+      finishedAt,
+      durationMs: Math.max(0, finishedAt - record.startedAt),
+      error: null,
+      statusReason: "Runtime shutdown.",
+    });
+  }
+
+  private async settleJobForShutdown(jobId: string, live: LiveToolJob): Promise<void> {
+    let record: ThreadToolJobRecord;
+    try {
+      record = await this.store.getToolJob(jobId);
+    } catch {
+      return;
+    }
+    if (record.status !== "running") {
+      this.liveJobs.delete(jobId);
+      return;
+    }
+
+    try {
+      const cancelled = await live.handle.cancel?.("Runtime shutdown.");
+      if (cancelled && isTerminalStatus(cancelled.status)) {
+        await this.finalizeJob(record, cancelled);
+        return;
+      }
+      const completion = await live.handle.done;
+      await this.finalizeJob(record, this.normalizeCompletion(record, completion, live.controller.signal));
+    } catch (error) {
+      await this.finalizeJob(record, this.errorCompletion(error, live.controller.signal));
+    }
   }
 
   private async requireJob(threadId: string, jobId: string): Promise<ThreadToolJobRecord> {

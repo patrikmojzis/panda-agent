@@ -13,6 +13,7 @@ import {
   startAgentAppServer,
 } from "../src/integrations/apps/http-server.js";
 import {type AgentAppSessionRecord, buildAgentAppCookieNames} from "../src/domain/apps/auth.js";
+import type {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/postgres.js";
 import {AgentAppService} from "../src/integrations/apps/sqlite-service.js";
 import {type AgentAppFixture, createAgentAppFixture} from "./helpers/app-fixture.js";
 
@@ -189,8 +190,24 @@ describe("agent app server", () => {
     const service = new AgentAppService({
       env: {...process.env, DATA_DIR: fixture.dataDir},
     });
-    const submitInput = vi.fn(async () => undefined);
     let mainThreadId = "thread-main";
+    const submitSessionInput = vi.fn(async (
+      _sessionId: string,
+      payload: Parameters<PostgresThreadRuntimeStore["enqueueInput"]>[1],
+      mode: Parameters<PostgresThreadRuntimeStore["enqueueInput"]>[2] = "wake",
+    ) => ({
+      disposition: "inserted" as const,
+      input: {
+        ...payload,
+        id: "app-input",
+        threadId: mainThreadId,
+        order: 1,
+        deliveryMode: mode,
+        status: "pending" as const,
+        connectorKey: "app-http",
+        createdAt: 1,
+      },
+    }));
     const server = await startAgentAppServer({
       host: "127.0.0.1",
       port: 0,
@@ -214,7 +231,7 @@ describe("agent app server", () => {
         }),
       },
       coordinator: {
-        submitInput,
+        submitSessionInput,
       },
     });
     servers.push(server);
@@ -277,8 +294,8 @@ describe("agent app server", () => {
       changes: 1,
       wakeRequested: true,
     });
-    expect(submitInput).toHaveBeenCalledTimes(1);
-    expect(submitInput).toHaveBeenCalledWith("thread-main", expect.objectContaining({
+    expect(submitSessionInput).toHaveBeenCalledTimes(1);
+    expect(submitSessionInput).toHaveBeenCalledWith("session-main", expect.objectContaining({
       source: "app_http",
       channelId: fixture.appSlug,
       metadata: expect.objectContaining({
@@ -286,7 +303,7 @@ describe("agent app server", () => {
         appSlug: fixture.appSlug,
         actionName: "increment",
       }),
-    }), "wake");
+    }), "wake", undefined);
 
     const summary = await fetch(`${baseUrl}/api/apps/${fixture.agentKey}/${fixture.appSlug}/views/summary`, {
       method: "POST",
@@ -323,10 +340,10 @@ describe("agent app server", () => {
       }),
     });
     expect(secondAction.status).toBe(200);
-    expect(submitInput).toHaveBeenLastCalledWith("thread-after-reset", expect.objectContaining({
+    expect(submitSessionInput).toHaveBeenLastCalledWith("session-main", expect.objectContaining({
       source: "app_http",
       channelId: fixture.appSlug,
-    }), "wake");
+    }), "wake", undefined);
   });
 
   it("rejects oversized app API JSON bodies before parsing them", async () => {

@@ -125,8 +125,8 @@ function createServices(input: {
   getMainSession?: () => Promise<SessionRecord | null>;
   getSession?: () => Promise<SessionRecord>;
   getThread: (threadId: string) => Promise<ThreadRecord>;
-  loadTranscript: (threadId: string) => Promise<readonly ThreadMessageRecord[]>;
-  listRuns?: (threadId: string) => Promise<readonly ThreadRunRecord[]>;
+  readTranscript: (threadId: string) => Promise<readonly ThreadMessageRecord[]>;
+  getLatestRun?: (threadId: string) => Promise<ThreadRunRecord | null>;
   listToolJobs?: (threadId: string) => Promise<readonly ThreadToolJobRecord[]>;
   getSessionRuntimeConfig?: (sessionId: string) => Promise<SessionRuntimeConfigRecord>;
 }): ObserveServices {
@@ -138,8 +138,31 @@ function createServices(input: {
     },
     store: {
       getThread: input.getThread,
-      loadTranscript: input.loadTranscript,
-      listRuns: input.listRuns ?? (async () => []),
+      listTranscriptPage: async (threadId, options = {}) => {
+        const transcript = await input.readTranscript(threadId);
+        const limit = options.limit ?? 200;
+        if (options.afterSequence !== undefined) {
+          const candidates = transcript.filter((record) => record.sequence > options.afterSequence!);
+          const records = candidates.slice(0, limit);
+          return {
+            records,
+            ...(candidates.length > records.length && records.at(-1)
+              ? {nextAfterSequence: records.at(-1)!.sequence}
+              : {}),
+          };
+        }
+        const candidates = options.beforeSequence === undefined
+          ? transcript
+          : transcript.filter((record) => record.sequence < options.beforeSequence!);
+        const records = candidates.slice(-limit);
+        return {
+          records,
+          ...(candidates.length > records.length && records[0]
+            ? {nextBeforeSequence: records[0].sequence}
+            : {}),
+        };
+      },
+      getLatestRun: input.getLatestRun ?? (async () => null),
       listToolJobs: input.listToolJobs ?? (async () => []),
     },
     subscribe: async () => async () => {},
@@ -162,7 +185,7 @@ describe("ObserveApp", () => {
       createServices: async () => createServices({
         getMainSession,
         getThread: async (threadId) => createThread(threadId, "session-main"),
-        loadTranscript: async () => [],
+        readTranscript: async () => [],
       }),
       output,
     });
@@ -191,7 +214,7 @@ describe("ObserveApp", () => {
     app.services = createServices({
       getSession: async () => createSession("session-1", currentThreadId),
       getThread: async (threadId) => createThread(threadId, "session-1"),
-      loadTranscript: async (threadId) => transcriptByThread.get(threadId) ?? [],
+      readTranscript: async (threadId) => transcriptByThread.get(threadId) ?? [],
     });
 
     await app.syncStoredState(true);
@@ -205,7 +228,7 @@ describe("ObserveApp", () => {
 
   it("keeps a thread target pinned when another thread changes", async () => {
     const output = createOutput();
-    const loadTranscript = vi.fn(async () => [
+    const readTranscript = vi.fn(async () => [
       createMessageRecord({id: "message-a", threadId: "thread-a", sequence: 1, text: "pinned"}),
     ]);
     const app = new ObserveApp({
@@ -216,13 +239,13 @@ describe("ObserveApp", () => {
 
     app.services = createServices({
       getThread: async (threadId) => createThread(threadId, "session-1"),
-      loadTranscript,
+      readTranscript,
     });
 
     await app.syncStoredState(true);
     await app.handleStoreNotification("thread-b");
 
-    expect(loadTranscript).toHaveBeenCalledTimes(1);
+    expect(readTranscript).toHaveBeenCalledTimes(1);
   });
 
   it("prints only the last N stored messages on the initial snapshot", async () => {
@@ -236,7 +259,7 @@ describe("ObserveApp", () => {
 
     app.services = createServices({
       getThread: async (threadId) => createThread(threadId),
-      loadTranscript: async () => [
+      readTranscript: async () => [
         createMessageRecord({id: "message-1", threadId: "thread-1", sequence: 1, text: "oldest"}),
         createMessageRecord({id: "message-2", threadId: "thread-1", sequence: 2, text: "middle"}),
         createMessageRecord({id: "message-3", threadId: "thread-1", sequence: 3, text: "latest"}),
@@ -262,7 +285,7 @@ describe("ObserveApp", () => {
 
     app.services = createServices({
       getThread: async (threadId) => createThread(threadId),
-      loadTranscript: async () => [
+      readTranscript: async () => [
         createMessageRecord({id: "message-1", threadId: "thread-1", sequence: 1, text: "oldest"}),
         createMessageRecord({id: "message-2", threadId: "thread-1", sequence: 10, text: "middle"}),
         createMessageRecord({id: "message-3", threadId: "thread-1", sequence: 20, text: "latest"}),
@@ -325,7 +348,7 @@ describe("ObserveApp", () => {
 
     app.services = createServices({
       getThread: async (threadId) => createThread(threadId),
-      loadTranscript: async () => transcript,
+      readTranscript: async () => transcript,
     });
 
     await app.syncStoredState(true);
@@ -339,6 +362,33 @@ describe("ObserveApp", () => {
     expect(output.buffer.split("second").length - 1).toBe(1);
   });
 
+  it("does not skip the oldest records in the first large burst after an empty snapshot", async () => {
+    const output = createOutput();
+    let transcript: readonly ThreadMessageRecord[] = [];
+    const app = new ObserveApp({
+      target: {kind: "thread", threadId: "thread-1"},
+    }, {
+      output,
+    }) as ObserveApp & { services: ObserveServices | null };
+
+    app.services = createServices({
+      getThread: async (threadId) => createThread(threadId),
+      readTranscript: async () => transcript,
+    });
+
+    await app.syncStoredState(true);
+    transcript = Array.from({length: 750}, (_, index) => createMessageRecord({
+      id: `message-${index + 1}`,
+      threadId: "thread-1",
+      sequence: index + 1,
+      text: `burst-record-${index + 1}`,
+    }));
+    await app.syncStoredState(true);
+
+    expect(output.buffer).toContain("burst-record-1");
+    expect(output.buffer).toContain("burst-record-750");
+  });
+
   it("prints command tool-job status changes without raw payload details", async () => {
     const output = createOutput({isTTY: false});
     let toolJobs: readonly ThreadToolJobRecord[] = [];
@@ -350,7 +400,7 @@ describe("ObserveApp", () => {
 
     app.services = createServices({
       getThread: async (threadId) => createThread(threadId),
-      loadTranscript: async () => [],
+      readTranscript: async () => [],
       listToolJobs: async () => toolJobs,
     });
 
@@ -389,7 +439,7 @@ describe("ObserveApp", () => {
     vi.useFakeTimers();
 
     const output = createOutput();
-    const loadTranscript = vi.fn(async () => []);
+    const readTranscript = vi.fn(async () => []);
     const app = new ObserveApp({
       target: {kind: "session", sessionId: "session-1"},
     }, {
@@ -399,17 +449,17 @@ describe("ObserveApp", () => {
     app.services = createServices({
       getSession: async () => createSession("session-1", "thread-1"),
       getThread: async (threadId) => createThread(threadId),
-      loadTranscript,
+      readTranscript,
     });
 
     await app.handleStoreNotification("thread-1");
     await app.handleStoreNotification("thread-2");
 
     await vi.advanceTimersByTimeAsync(149);
-    expect(loadTranscript).not.toHaveBeenCalled();
+    expect(readTranscript).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(1);
-    expect(loadTranscript).toHaveBeenCalledTimes(1);
+    expect(readTranscript).toHaveBeenCalledTimes(1);
   });
 
   it("prints failed run transitions and the error text", async () => {
@@ -423,8 +473,8 @@ describe("ObserveApp", () => {
 
     app.services = createServices({
       getThread: async (threadId) => createThread(threadId),
-      loadTranscript: async () => [],
-      listRuns: async () => runs,
+      readTranscript: async () => [],
+      getLatestRun: async () => runs.at(-1) ?? null,
     });
 
     await app.syncStoredState(true);
@@ -450,7 +500,7 @@ describe("ObserveApp", () => {
     }, {
       createServices: async () => createServices({
         getThread: async (threadId) => createThread(threadId),
-        loadTranscript: async () => [
+        readTranscript: async () => [
           createMessageRecord({id: "message-1", threadId: "thread-1", sequence: 1, text: "plain"}),
         ],
       }),

@@ -4,6 +4,7 @@ import {DataType, newDb} from "pg-mem";
 import {
   PostgresIdentityStore,
 } from "../src/domain/identity/index.js";
+import {ensurePostgresIdentitySchema} from "../src/domain/identity/postgres-schema.js";
 
 describe("PostgresIdentityStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
@@ -32,7 +33,7 @@ describe("PostgresIdentityStore", () => {
     pools.push(pool);
 
     const store = new PostgresIdentityStore({ pool });
-    await store.ensureSchema();
+    await ensurePostgresIdentitySchema(pool);
 
     await expect(store.listIdentities()).resolves.toEqual([]);
 
@@ -157,7 +158,7 @@ describe("PostgresIdentityStore", () => {
     pools.push(pool);
 
     const store = new PostgresIdentityStore({ pool });
-    await store.ensureSchema();
+    await ensurePostgresIdentitySchema(pool);
 
     const alice = await store.createIdentity({
       id: "alice-id",

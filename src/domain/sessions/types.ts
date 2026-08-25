@@ -43,7 +43,6 @@ export interface UpdateSessionRuntimeConfigInput {
   thinking?: ThinkingLevel | null;
   thinkingConfigured?: boolean;
   inferenceProjection?: InferenceProjection | null;
-  pendingWakeAt?: number | null;
 }
 
 export interface UpdateSessionLabelInput {

@@ -891,6 +891,7 @@ describe("BashTool", () => {
         agentKey: "panda",
         sessionId: "session-shell",
         threadId: "thread-shell",
+        runId: "run-shell-first",
         cwd: workspace,
       };
 
@@ -906,6 +907,7 @@ describe("BashTool", () => {
         agentKey: "panda",
         sessionId: "session-shell",
         threadId: "thread-shell",
+        runId: "run-shell-second",
         cwd: workspace,
         shellSessions: await shellStateStore.listShellSessions({
           sessionId: "session-shell",
@@ -944,6 +946,7 @@ describe("BashTool", () => {
         agentKey: "panda",
         sessionId: "session-shell-envs",
         threadId: "thread-shell-envs",
+        runId: "run-shell-envs",
         cwd: workspace,
         executionEnvironment: {
           id: "env-one",
@@ -1008,6 +1011,7 @@ describe("BashTool", () => {
         agentKey: "panda",
         sessionId: "session-filter",
         threadId: "thread-filter",
+        runId: "run-filter",
         cwd: workspace,
       };
       const tool = new BashTool({
@@ -1054,13 +1058,20 @@ describe("BashTool", () => {
 
       await tool.run(
         {command: 'cd nested && export OLD_THREAD_ONLY="old"'},
-        createRunContext({agentKey: "panda", sessionId: "session-reset", threadId: "thread-old", cwd: workspace}),
+        createRunContext({
+          agentKey: "panda",
+          sessionId: "session-reset",
+          threadId: "thread-old",
+          runId: "run-thread-old",
+          cwd: workspace,
+        }),
       );
 
       const replacementContext: DefaultAgentSessionContext = {
         agentKey: "panda",
         sessionId: "session-reset",
         threadId: "thread-new",
+        runId: "run-thread-new",
         cwd: workspace,
         shellSessions: await shellStateStore.listShellSessions({sessionId: "session-reset"}),
       };
@@ -2150,7 +2161,7 @@ describe("BashTool", () => {
     expect(service.capturedTimeoutMs).toBe(300_000);
   });
 
-  it("does not leave a durable job behind when local background spawn fails", async () => {
+  it("settles the durable job when local background spawn fails", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-bg-start-fail-"));
     try {
       const store = new TestThreadRuntimeStore();
@@ -2158,7 +2169,10 @@ describe("BashTool", () => {
         id: "thread-bg",
         sessionId: "session-bg",
       });
-      const service = new BackgroundToolJobService({store});
+      const service = new BackgroundToolJobService({
+        store,
+        owner: {source: "test", connectorKey: "local-bash", holderId: "local-bash-owner"},
+      });
       const bash = new BashTool({
         shell: path.join(workspace, "missing-shell"),
         outputDirectory: path.join(workspace, "tool-results"),
@@ -2180,7 +2194,12 @@ describe("BashTool", () => {
         createRunContext(context),
       )).rejects.toBeInstanceOf(Error);
 
-      await expect(store.listToolJobs("thread-bg")).resolves.toHaveLength(0);
+      await expect(store.listToolJobs("thread-bg")).resolves.toEqual([
+        expect.objectContaining({
+          status: "failed",
+          statusReason: "Background tool job failed to start.",
+        }),
+      ]);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -2458,7 +2477,10 @@ describe("BashTool", () => {
         id: "thread-bg",
         sessionId: "session-bg",
       });
-      const service = new BackgroundToolJobService({ store });
+      const service = new BackgroundToolJobService({
+        store,
+        owner: {source: "test", connectorKey: "local-bash", holderId: "local-bash-owner"},
+      });
       const bash = new BashTool({
         outputDirectory: path.join(workspace, "tool-results"),
         maxOutputChars: 80,

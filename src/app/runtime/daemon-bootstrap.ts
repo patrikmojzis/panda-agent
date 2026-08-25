@@ -10,11 +10,14 @@ import {resolveCredentialCrypto} from "../../domain/credentials/crypto.js";
 import {PostgresTelegramStickerStore} from "../../domain/agents/telegram-stickers/postgres.js";
 import {TelegramStickerLibrary} from "../../domain/agents/telegram-stickers/service.js";
 import {HeartbeatRunner} from "../../domain/scheduling/heartbeats/runner.js";
-import {ScheduledTaskRunner} from "../../domain/scheduling/tasks/runner.js";
+import {
+  DEFAULT_SCHEDULED_TASK_CONCURRENCY,
+  ScheduledTaskRunner,
+} from "../../domain/scheduling/tasks/runner.js";
 import {ConversationRepo} from "../../domain/sessions/conversations/repo.js";
 import {SessionRouteRepo} from "../../domain/sessions/routes/repo.js";
 import {WatchRunner} from "../../domain/watches/runner.js";
-import {DEFAULT_RUNTIME_REQUEST_CLAIM_TIMEOUT_MS, RuntimeRequestRepo,} from "../../domain/threads/requests/repo.js";
+import {DEFAULT_RUNTIME_REQUEST_CLAIM_LEASE_MS, RuntimeRequestRepo,} from "../../domain/threads/requests/repo.js";
 import {createChannelTypingEventHandler} from "../../domain/threads/runtime/channel-typing.js";
 import {A2AMessagingService} from "../../domain/a2a/service.js";
 import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
@@ -26,7 +29,6 @@ import {
   buildDaemonChannelCommandDependencies,
 } from "./command-dependencies.js";
 import {resolveVisibleCommandDescriptors} from "./command-visibility.js";
-import {ensureSchemas} from "./postgres-bootstrap.js";
 import {DaemonStateRepo} from "./state/repo.js";
 import type {DaemonOptions} from "./daemon-shared.js";
 import {DEFAULT_DAEMON_KEY} from "./daemon-shared.js";
@@ -102,9 +104,7 @@ export async function bootstrapDaemonContext(
   let connectorLeases!: PostgresConnectorLeaseRepo;
   let a2aBindings!: A2ASessionBindingRepo;
   let a2aMessagingService!: A2AMessagingService;
-  let runtimeForNotifications: RuntimeServices | undefined;
   let liveVoiceForEvents: LiveVoiceRepo | undefined;
-  const notificationPokesInFlight = new Set<string>();
 
   const typingDispatcher = new ChannelTypingDispatcher([
     {
@@ -154,24 +154,6 @@ export async function bootstrapDaemonContext(
           error: error instanceof Error ? error.message : String(error),
         });
       }
-    },
-    onStoreNotification: (notification) => {
-      const runtime = runtimeForNotifications;
-      if (!runtime || notificationPokesInFlight.has(notification.threadId)) {
-        return;
-      }
-
-      notificationPokesInFlight.add(notification.threadId);
-      void runtime.coordinator.poke(notification.threadId)
-        .catch((error) => {
-          console.error("Daemon failed to poke thread from store notification", {
-            threadId: notification.threadId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        })
-        .finally(() => {
-          notificationPokesInFlight.delete(notification.threadId);
-        });
     },
     resolveDefinition: async (thread, {agentStore, backgroundJobService, browserService, credentialResolver, executionEnvironments, scheduledTasks, executionEnvironmentResolver, pairedIdentities, sessionStore, subagentProfiles, store, shellStateStore, wikiBindingService, commandCatalog, mainTools, subagentTools}) => {
       const session = await sessionStore.getSession(thread.sessionId);
@@ -258,7 +240,6 @@ export async function bootstrapDaemonContext(
       });
     },
   });
-  runtimeForNotifications = runtime;
   a2aBindings = runtime.a2aBindings;
 
   try {
@@ -286,8 +267,6 @@ export async function bootstrapDaemonContext(
     const discordGifs = createDiscordGifService();
     const discordVoiceControls = new DiscordVoiceControlRepo({pool: runtime.pool});
     const liveVoice = new LiveVoiceRepo({pool: runtime.pool});
-    await Promise.all([discordVoiceControls.ensureSchema(), liveVoice.ensureSchema()]);
-    await liveVoice.hardCutLegacyDiscordTables();
     liveVoiceForEvents = liveVoice;
     voiceEventHandler = createLiveVoiceRuntimeEventHandler({
       getVoiceRepo: () => liveVoiceForEvents,
@@ -335,27 +314,15 @@ export async function bootstrapDaemonContext(
     const requests = new RuntimeRequestRepo({
       pool: runtime.pool,
       notificationPool: runtime.notificationPool,
-      staleRunningRequestMs: readPositiveIntegerEnv(
-        "PANDA_RUNTIME_REQUEST_CLAIM_TIMEOUT_MS",
-        DEFAULT_RUNTIME_REQUEST_CLAIM_TIMEOUT_MS,
+      claimLeaseMs: readPositiveIntegerEnv(
+        "PANDA_RUNTIME_REQUEST_CLAIM_LEASE_MS",
+        DEFAULT_RUNTIME_REQUEST_CLAIM_LEASE_MS,
       ),
     });
 
     const daemonState = new DaemonStateRepo({
       pool: runtime.pool,
     });
-    await ensureSchemas([
-      conversationBindings,
-      sessionRoutes,
-      outboundDeliveries,
-      a2aBindings,
-      channelActions,
-      telegramStickerStore,
-      connectorLeases,
-      requests,
-      daemonState,
-    ]);
-
     const commandUploads = new FileSystemCommandUploadStore();
     a2aMessagingService = new A2AMessagingService({
       bindings: a2aBindings,
@@ -408,8 +375,17 @@ export async function bootstrapDaemonContext(
     const scheduledTaskRunner = new ScheduledTaskRunner({
       tasks: runtime.scheduledTasks,
       sessions: runtime.sessionStore,
-      threadStore: runtime.store,
       coordinator: runtime.coordinator,
+      maxConcurrentRuns: readPositiveIntegerEnv(
+        "PANDA_SCHEDULED_TASK_CONCURRENCY",
+        DEFAULT_SCHEDULED_TASK_CONCURRENCY,
+      ),
+      onError: (error, taskId) => {
+        console.error("Scheduled task execution failed", {
+          taskId: taskId ?? null,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
     });
     const evaluateWatch = createWatchEvaluator({
       credentialResolver: runtime.credentialResolver,

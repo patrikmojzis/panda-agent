@@ -3,6 +3,7 @@ import {DataType, newDb} from "pg-mem";
 
 import type {ChannelTypingRequest} from "../src/domain/channels/index.js";
 import {ChannelActionWorker, parseActionNotification, PostgresChannelActionStore,} from "../src/domain/channels/actions/index.js";
+import {ensurePostgresChannelActionSchema} from "../src/domain/channels/actions/postgres-schema.js";
 import type {
     ActionNotification,
     ActionWorkerLookup,
@@ -141,7 +142,7 @@ describe("PostgresChannelActionStore", () => {
     pools.push(pool);
 
     const store = new PostgresChannelActionStore({pool});
-    await store.ensureSchema();
+    await ensurePostgresChannelActionSchema(pool);
 
     const action = await store.enqueueAction({
       channel: "telegram",
@@ -182,7 +183,7 @@ describe("PostgresChannelActionStore", () => {
     pools.push(pool);
 
     const store = new PostgresChannelActionStore({pool});
-    await store.ensureSchema();
+    await ensurePostgresChannelActionSchema(pool);
 
     const action = await store.enqueueAction({
       channel: "telegram",
@@ -290,7 +291,7 @@ describe("PostgresChannelActionStore", () => {
     pools.push(pool);
 
     const store = new PostgresChannelActionStore({pool});
-    await store.ensureSchema();
+    await ensurePostgresChannelActionSchema(pool);
 
     const action = await store.enqueueAction(input);
     const claimed = await store.claimNextPendingAction({
@@ -319,7 +320,7 @@ describe("PostgresChannelActionStore", () => {
     pools.push(pool);
 
     const store = new PostgresChannelActionStore({pool});
-    await store.ensureSchema();
+    await ensurePostgresChannelActionSchema(pool);
     await pool.query(`
       INSERT INTO "runtime"."channel_actions" (
         id,
@@ -415,7 +416,7 @@ describe("PostgresChannelActionStore", () => {
     pools.push(pool);
 
     const store = new PostgresChannelActionStore({pool});
-    await store.ensureSchema();
+    await ensurePostgresChannelActionSchema(pool);
 
     const action = await store.enqueueAction({
       channel: "telegram",

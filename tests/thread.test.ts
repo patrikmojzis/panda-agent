@@ -952,7 +952,10 @@ describe("Thread", () => {
         id: "thread-bg",
         sessionId: "session-thread-bg",
       });
-      const service = new BackgroundToolJobService({ store });
+      const service = new BackgroundToolJobService({
+        store,
+        owner: {source: "test", connectorKey: "thread-test", holderId: "thread-test-owner"},
+      });
       let turn = 0;
       const runtime: LlmRuntime = {
         complete: vi.fn().mockImplementation(async () => {

@@ -1,7 +1,7 @@
 import type {PgQueryable} from "../../../lib/postgres-query.js";
 import {requireTimestampMillis} from "../../../lib/postgres-values.js";
 import {requireNonEmptyString} from "../../../lib/strings.js";
-import {buildRuntimeRelationNames, CREATE_RUNTIME_SCHEMA_SQL} from "../../../lib/postgres-relations.js";
+import {buildRuntimeRelationNames} from "../../../lib/postgres-relations.js";
 
 export interface DaemonStateRepoOptions {
   pool: PgQueryable;
@@ -36,18 +36,6 @@ export class DaemonStateRepo {
     this.daemonStateTable = buildRuntimeRelationNames({
       daemonState: "daemon_state",
     }).daemonState;
-  }
-
-  async ensureSchema(): Promise<void> {
-    await this.pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS ${this.daemonStateTable} (
-        daemon_key TEXT PRIMARY KEY,
-        heartbeat_at TIMESTAMPTZ NOT NULL,
-        started_at TIMESTAMPTZ NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-      )
-    `);
   }
 
   async heartbeat(daemonKey: string): Promise<DaemonStateRecord> {

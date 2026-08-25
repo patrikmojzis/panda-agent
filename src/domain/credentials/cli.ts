@@ -5,7 +5,7 @@ import {Command} from "commander";
 
 import {parseAgentKey} from "../agents/cli.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
-import {withPostgresPool} from "../../lib/postgres-bootstrap.js";
+import {withPostgresPool} from "../../lib/postgres-database.js";
 import {PostgresCredentialStore} from "./postgres.js";
 import {CredentialService} from "./resolver.js";
 import {resolveCredentialCrypto} from "./crypto.js";
@@ -61,8 +61,6 @@ async function withCredentialStores<T>(
     const agentStore = new PostgresAgentStore({pool});
     const credentialStore = new PostgresCredentialStore({pool});
 
-    await agentStore.ensureAgentTableSchema();
-    await credentialStore.ensureSchema();
     return await fn({agentStore, credentialStore});
   });
 }

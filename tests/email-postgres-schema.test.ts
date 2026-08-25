@@ -8,7 +8,7 @@ describe("email Postgres schema", () => {
     await ensurePostgresEmailSchema({
       query: async (text: string) => {
         queries.push(text);
-        return {rows: [{count: 0}]};
+        return {rows: text.includes("information_schema.table_constraints") ? [] : [{count: 0}]};
       },
     });
 

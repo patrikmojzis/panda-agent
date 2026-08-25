@@ -6,15 +6,25 @@ import {DataType, newDb} from "pg-mem";
 import {stringToUserMessage} from "../src/index.js";
 import {observePostgresPool} from "../src/app/runtime/database.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js";
+import type {ThreadMessageRecord} from "../src/domain/threads/runtime/types.js";
 import {buildThreadRuntimeTableNames} from "../src/domain/threads/runtime/postgres-shared.js";
 import {parseInputRow, parseMessageRow, parseToolJobRow,} from "../src/domain/threads/runtime/postgres-rows.js";
 import {
     backfillWorkerMetadataFromLegacyThreadContext,
     buildThreadRuntimeSchemaSql,
+    ensurePostgresThreadRuntimeSchema,
     migrateSessionRuntimeConfigFromThreadRows,
 } from "../src/domain/threads/runtime/postgres-schema.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
-import {THREAD_RUNTIME_JSONB_NUL_PLACEHOLDER,} from "../src/domain/threads/runtime/postgres-jsonb-safety.js";
+import {
+  seedAppliedThreadInput,
+  seedPendingThreadInput,
+  seedRuntimeMessage,
+} from "./helpers/thread-runtime-fixtures.js";
+import {
+  serializeThreadRuntimeJsonb,
+  THREAD_RUNTIME_JSONB_NUL_PLACEHOLDER,
+} from "../src/domain/threads/runtime/postgres-jsonb-safety.js";
 
 const NUL = "\0";
 const NUL_PLACEHOLDER = THREAD_RUNTIME_JSONB_NUL_PLACEHOLDER;
@@ -33,6 +43,23 @@ function createQueryOnlyThreadRuntimePool(
   };
 }
 
+async function loadTranscriptHistory(
+  store: PostgresThreadRuntimeStore,
+  threadId: string,
+) {
+  const pages: ThreadMessageRecord[][] = [];
+  let beforeSequence: number | undefined;
+  do {
+    const page = await store.listTranscriptPage(threadId, {
+      beforeSequence,
+      limit: 500,
+    });
+    pages.unshift([...page.records]);
+    beforeSequence = page.nextBeforeSequence;
+  } while (beforeSequence !== undefined);
+  return pages.flat();
+}
+
 describe("PostgresThreadRuntimeStore", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
   const SESSION_TABLE = "\"runtime\".\"agent_sessions\"";
@@ -47,6 +74,39 @@ describe("PostgresThreadRuntimeStore", () => {
 
       await pool.end();
     }
+  });
+
+  it("loads only the newest run for refresh callers", async () => {
+    const query = vi.fn(async (text: string, values?: readonly unknown[]) => {
+      expect(text).toContain("ORDER BY started_at DESC");
+      expect(text).toContain("LIMIT 1");
+      expect(values).toEqual(["thread-latest-run"]);
+      return {
+        rows: [{
+          id: "run-latest",
+          thread_id: "thread-latest-run",
+          owner_source: null,
+          owner_key: null,
+          owner_holder_id: null,
+          status: "completed",
+          started_at: new Date(2),
+          finished_at: new Date(3),
+          abort_requested_at: null,
+          abort_reason: null,
+          error: null,
+        }],
+      };
+    });
+    const store = new PostgresThreadRuntimeStore({
+      pool: createQueryOnlyThreadRuntimePool(query, "getLatestRun must not acquire a client"),
+    });
+
+    await expect(store.getLatestRun("thread-latest-run")).resolves.toMatchObject({
+      id: "run-latest",
+      threadId: "thread-latest-run",
+      status: "completed",
+    });
+    expect(query).toHaveBeenCalledOnce();
   });
 
   async function seedSession(
@@ -102,18 +162,18 @@ describe("PostgresThreadRuntimeStore", () => {
       ],
       timestamp: Date.now(),
     };
-    let migrationApplied = false;
+    const appliedMigrations = new Set<string>();
     let markerInsertCount = 0;
     let candidateSelectCount = 0;
     let updateCount = 0;
     const pool = createQueryOnlyThreadRuntimePool(async (text, values) => {
       if (text.includes("FROM") && text.includes("thread_runtime_migrations")) {
-        return { rows: migrationApplied ? [{ "?column?": 1 }] : [] };
+        return { rows: appliedMigrations.has(String(values?.[0])) ? [{ "?column?": 1 }] : [] };
       }
 
       if (text.includes("INSERT INTO") && text.includes("thread_runtime_migrations")) {
         markerInsertCount += 1;
-        migrationApplied = true;
+        appliedMigrations.add(String(values?.[0]));
         return { rows: [] };
       }
 
@@ -141,14 +201,12 @@ describe("PostgresThreadRuntimeStore", () => {
 
       return { rows: [] };
     }, "connect was not expected for schema ensure");
-    const store = new PostgresThreadRuntimeStore({pool});
-
-    await store.ensureSchema();
-    await store.ensureSchema();
+    await ensurePostgresThreadRuntimeSchema(pool);
+    await ensurePostgresThreadRuntimeSchema(pool);
 
     expect(candidateSelectCount).toBe(1);
     expect(updateCount).toBe(1);
-    expect(markerInsertCount).toBe(1);
+    expect(markerInsertCount).toBe(2);
     expect(persistedMessage).toMatchObject({
       role: "assistant",
       content: [
@@ -222,8 +280,7 @@ describe("PostgresThreadRuntimeStore", () => {
     });
 
     try {
-      const store = new PostgresThreadRuntimeStore({pool});
-      await store.ensureSchema();
+      await ensurePostgresThreadRuntimeSchema(pool);
     } finally {
       observer.stop();
     }
@@ -272,65 +329,21 @@ describe("PostgresThreadRuntimeStore", () => {
       sessionId: "other-shell-state",
     });
 
-    await store.upsertShellSession({
-      sessionId: "session-shell-state",
-      threadId: "thread-shell-state",
-      executionEnvironmentId: "default",
-      shellSession: {
-        cwd: "/workspace/default-old",
-        env: {FOO: "old"},
-      },
-    });
-    await store.upsertShellSession({
-      sessionId: "session-shell-state",
-      threadId: "thread-shell-state",
-      executionEnvironmentId: "env-one",
-      shellSession: {
-        cwd: "/workspace/env-one",
-        env: {FOO: "env-one"},
-      },
-    });
-    await store.upsertShellSession({
-      sessionId: "session-shell-state",
-      threadId: "replacement-thread",
-      executionEnvironmentId: "default",
-      shellSession: {
-        cwd: "/workspace/default-new",
-        env: {FOO: "new"},
-      },
-    });
-    await store.upsertShellSession({
-      sessionId: "other-shell-state",
-      threadId: "other-thread",
-      executionEnvironmentId: "default",
-      shellSession: {
-        cwd: "/workspace/other",
-        env: {FOO: "other"},
-      },
-    });
-
     const shellStatesTable = buildThreadRuntimeTableNames().shellStates;
     await pool.query(`
-      UPDATE ${shellStatesTable}
-      SET updated_at = $4
-      WHERE session_id = $1
-        AND thread_id = $2
-        AND execution_environment_id = $3
-    `, ["session-shell-state", "thread-shell-state", "default", new Date("2026-01-01T00:00:00.000Z")]);
-    await pool.query(`
-      UPDATE ${shellStatesTable}
-      SET updated_at = $4
-      WHERE session_id = $1
-        AND thread_id = $2
-        AND execution_environment_id = $3
-    `, ["session-shell-state", "thread-shell-state", "env-one", new Date("2026-01-01T00:01:00.000Z")]);
-    await pool.query(`
-      UPDATE ${shellStatesTable}
-      SET updated_at = $4
-      WHERE session_id = $1
-        AND thread_id = $2
-        AND execution_environment_id = $3
-    `, ["session-shell-state", "replacement-thread", "default", new Date("2026-01-01T00:02:00.000Z")]);
+      INSERT INTO ${shellStatesTable} (
+        session_id,
+        thread_id,
+        execution_environment_id,
+        cwd,
+        env,
+        updated_at
+      ) VALUES
+        ('session-shell-state', 'thread-shell-state', 'default', '/workspace/default-old', '{"FOO":"old"}'::jsonb, TIMESTAMPTZ '2026-01-01 00:00:00+00'),
+        ('session-shell-state', 'thread-shell-state', 'env-one', '/workspace/env-one', '{"FOO":"env-one"}'::jsonb, TIMESTAMPTZ '2026-01-01 00:01:00+00'),
+        ('session-shell-state', 'replacement-thread', 'default', '/workspace/default-new', '{"FOO":"new"}'::jsonb, TIMESTAMPTZ '2026-01-01 00:02:00+00'),
+        ('other-shell-state', 'other-thread', 'default', '/workspace/other', '{"FOO":"other"}'::jsonb, TIMESTAMPTZ '2026-01-01 00:03:00+00')
+    `);
 
     expect(await store.listShellSessions({
       sessionId: "session-shell-state",
@@ -345,7 +358,7 @@ describe("PostgresThreadRuntimeStore", () => {
     });
   });
 
-  it("persists threads, pending inputs, transcript messages, and runs", async () => {
+  it("persists threads and session runtime configuration", async () => {
     const db = newDb();
     db.public.registerFunction({
       name: "pg_notify",
@@ -482,210 +495,16 @@ describe("PostgresThreadRuntimeStore", () => {
     expect(defaultThinkingRuntimeConfig.thinking).toBeUndefined();
     expect(defaultThinkingRuntimeConfig.thinkingConfigured).toBe(false);
 
-    const telegramInput = await store.enqueueInput("pg-thread", {
-      message: stringToUserMessage("hello from telegram"),
-      source: "telegram",
-      channelId: "chat-1",
-      externalMessageId: "telegram-1",
-      metadata: {
-        media: [
-          {
-            id: "media-1",
-            localPath: "/tmp/panda/photo.jpg",
-          },
-        ],
-      },
-    });
-    expect(telegramInput.inserted).toBe(true);
-
-    const duplicateTelegramInput = await store.enqueueInput("pg-thread", {
-      message: stringToUserMessage("hello from telegram"),
-      source: "telegram",
-      channelId: "chat-1",
-      externalMessageId: "telegram-1",
-    });
-    expect(duplicateTelegramInput.inserted).toBe(false);
-
-    const secondChannelInput = await store.enqueueInput("pg-thread", {
-      message: stringToUserMessage("hello from another telegram chat"),
-      source: "telegram",
-      channelId: "chat-2",
-      externalMessageId: "telegram-1",
-    });
-    expect(secondChannelInput.inserted).toBe(true);
-
-    await store.enqueueInput("pg-thread", {
-      message: stringToUserMessage("hello from tui"),
-      source: "tui",
-    }, "queue");
-
-    expect(await store.hasPendingInputs("pg-thread")).toBe(true);
-    expect(await store.hasRunnableInputs("pg-thread")).toBe(true);
-    expect((await store.listPendingInputs("pg-thread")).map((input) => input.source)).toEqual([
-      "telegram",
-      "telegram",
-      "tui",
-    ]);
-    expect((await store.listPendingInputs("pg-thread"))[0]?.metadata).toEqual({
-      media: [
-        {
-          id: "media-1",
-          localPath: "/tmp/panda/photo.jpg",
-        },
-      ],
-    });
-    expect((await store.listPendingInputs("pg-thread")).map((input) => input.deliveryMode)).toEqual([
-      "wake",
-      "wake",
-      "queue",
-    ]);
-
-    expect(await store.promoteQueuedInputs("pg-thread")).toEqual(["pg-thread"]);
-    expect((await store.listPendingInputs("pg-thread")).map((input) => input.deliveryMode)).toEqual([
-      "wake",
-      "wake",
-      "wake",
-    ]);
-
-    const applied = await store.applyPendingInputs("pg-thread");
-    expect(applied.map((message) => message.source)).toEqual([
-      "telegram",
-      "telegram",
-      "tui",
-    ]);
-    expect(applied[0]?.metadata).toEqual({
-      media: [
-        {
-          id: "media-1",
-          localPath: "/tmp/panda/photo.jpg",
-        },
-      ],
-    });
-    expect(await store.hasPendingInputs("pg-thread")).toBe(false);
-    expect(await store.listPendingInputs("pg-thread")).toHaveLength(0);
-
-    const run = await store.createRun("pg-thread");
-    await store.appendRuntimeMessage("pg-thread", {
-      message: {
-        role: "assistant",
-        content: [{ type: "text", text: "done" }],
-        api: "openai-responses",
-        model: "openai/gpt-5.1",
-        usage: {
-          input: 0,
-          output: 0,
-          cacheRead: 0,
-          cacheWrite: 0,
-          totalTokens: 0,
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-        },
-        stopReason: "stop",
-        timestamp: Date.now(),
-      },
-      metadata: {
-        kind: "assistant-debug",
-      },
-      source: "assistant",
-      runId: run.id,
-    });
-    const completedRun = await store.completeRun(run.id);
-
-    expect(completedRun.status).toBe("completed");
-    expect((await store.loadTranscript("pg-thread")).map((entry) => entry.source)).toEqual([
-      "telegram",
-      "telegram",
-      "tui",
-      "assistant",
-    ]);
-    expect((await store.loadTranscript("pg-thread"))[0]?.metadata).toEqual({
-      media: [
-        {
-          id: "media-1",
-          localPath: "/tmp/panda/photo.jpg",
-        },
-      ],
-    });
-    expect((await store.loadTranscript("pg-thread"))[3]?.metadata).toEqual({
-      kind: "assistant-debug",
-    });
-    expect((await store.listRuns("pg-thread")).map((entry) => entry.status)).toEqual([
-      "completed",
-    ]);
-
     const summaries = await store.listThreadSummaries();
     expect(summaries).toHaveLength(2);
-    expect(summaries[0]).toMatchObject({
+    expect(summaries.find((summary) => summary.thread.id === "pg-thread")).toMatchObject({
       thread: {
         id: "pg-thread",
         sessionId: "session-alice",
       },
-      messageCount: 4,
+      messageCount: 0,
       pendingInputCount: 0,
-      lastMessage: {
-        source: "assistant",
-      },
     });
-
-    const failedRun = await store.createRun("pg-thread");
-    const abortRequested = await store.requestRunAbort("pg-thread", "recover me");
-    expect(abortRequested?.id).toBe(failedRun.id);
-    const completedAfterAbort = await store.completeRun(failedRun.id);
-    expect(completedAfterAbort.status).toBe("failed");
-    expect(completedAfterAbort.error).toBe("recover me");
-  });
-
-  it("migrates external message idempotency to connector account scope", async () => {
-    const db = newDb();
-    db.public.registerFunction({
-      name: "pg_notify",
-      args: [DataType.text, DataType.text],
-      returns: DataType.text,
-      implementation: () => "",
-    });
-    const adapter = db.adapters.createPg();
-    const pool = new adapter.Pool();
-    pools.push(pool);
-
-    const {threadStore: store} = await createRuntimeStores(pool);
-    await pool.query(`
-      DROP INDEX "runtime"."runtime_inputs_external_message_connector_idx";
-      CREATE UNIQUE INDEX "runtime_inputs_external_message_idx"
-      ON "runtime"."inputs" (thread_id, source, COALESCE(channel_id, ''), external_message_id)
-      WHERE external_message_id IS NOT NULL
-    `);
-    const tables = buildThreadRuntimeTableNames();
-    const schemaSql = buildThreadRuntimeSchemaSql(tables, '"runtime"."identities"');
-    const migrationStart = schemaSql.indexOf(
-      'CREATE UNIQUE INDEX IF NOT EXISTS "runtime_inputs_external_message_connector_idx"',
-    );
-    const migrationEnd = schemaSql.indexOf(`CREATE TABLE IF NOT EXISTS ${tables.runs}`, migrationStart);
-    await pool.query(schemaSql.slice(migrationStart, migrationEnd));
-    await seedSession(pool, {
-      sessionId: "connector-idempotency-session",
-      threadId: "connector-idempotency-thread",
-    });
-    await store.createThread({
-      id: "connector-idempotency-thread",
-      sessionId: "connector-idempotency-session",
-    });
-
-    const enqueue = (connectorKey: string) => store.enqueueInput("connector-idempotency-thread", {
-      message: stringToUserMessage(`hello from ${connectorKey}`),
-      source: "telegram",
-      channelId: "chat-1",
-      externalMessageId: "message-1",
-      metadata: {
-        route: {
-          source: "telegram",
-          connectorKey,
-          externalConversationId: "chat-1",
-        },
-      },
-    });
-
-    expect((await enqueue("bot-1")).inserted).toBe(true);
-    expect((await enqueue("bot-1")).inserted).toBe(false);
-    expect((await enqueue("bot-2")).inserted).toBe(true);
   });
 
   it("lists channel messages scoped by session and connector route metadata", async () => {
@@ -720,7 +539,8 @@ describe("PostgresThreadRuntimeStore", () => {
     await store.createThread({id: "thread-1", sessionId: "session-1"});
     await store.createThread({id: "thread-2", sessionId: "session-2"});
 
-    await store.enqueueInput("thread-1", {
+    await seedAppliedThreadInput(pool, {
+      threadId: "thread-1",
       message: stringToUserMessage("visible"),
       source: "telegram",
       channelId: "chat-1",
@@ -747,7 +567,8 @@ describe("PostgresThreadRuntimeStore", () => {
         },
       },
     });
-    await store.enqueueInput("thread-2", {
+    await seedAppliedThreadInput(pool, {
+      threadId: "thread-2",
       message: stringToUserMessage("other session"),
       source: "telegram",
       channelId: "chat-1",
@@ -760,7 +581,8 @@ describe("PostgresThreadRuntimeStore", () => {
         },
       },
     });
-    await store.enqueueInput("thread-1", {
+    await seedAppliedThreadInput(pool, {
+      threadId: "thread-1",
       message: stringToUserMessage("other connector"),
       source: "telegram",
       channelId: "chat-1",
@@ -773,9 +595,6 @@ describe("PostgresThreadRuntimeStore", () => {
         },
       },
     });
-    await store.applyPendingInputs("thread-1");
-    await store.applyPendingInputs("thread-2");
-
     await expect(store.listChannelMessages({
       sessionId: "session-1",
       source: "telegram",
@@ -1198,9 +1017,8 @@ describe("PostgresThreadRuntimeStore", () => {
       id: "pg-thread-bash-nul",
       sessionId: "session-bash-nul",
     });
-    const run = await store.createRun("pg-thread-bash-nul");
-
-    await store.appendRuntimeMessage("pg-thread-bash-nul", {
+    await seedRuntimeMessage(pool, {
+      threadId: "pg-thread-bash-nul",
       message: {
         role: "toolResult",
         toolCallId: "call-bash-nul",
@@ -1216,39 +1034,16 @@ describe("PostgresThreadRuntimeStore", () => {
         timestamp: Date.now(),
       },
       source: "tool:bash",
-      runId: run.id,
     });
 
-    const [persisted] = await store.loadTranscript("pg-thread-bash-nul");
+    const [persisted] = await loadTranscriptHistory(store, "pg-thread-bash-nul");
     const message = persisted?.message as {details?: {stdout?: unknown; stderr?: unknown}} | undefined;
     expect(message?.details?.stdout).toBe("hello␀stdout");
     expect(message?.details?.stderr).toBe("warn␀stderr");
     expect(JSON.stringify(persisted?.message)).not.toContain("\\u0000");
   });
 
-  it("sanitizes actual NULs in runtime input and message JSONB fields", async () => {
-    const db = newDb();
-    db.public.registerFunction({
-      name: "pg_notify",
-      args: [DataType.text, DataType.text],
-      returns: DataType.text,
-      implementation: () => "",
-    });
-    const adapter = db.adapters.createPg();
-    const pool = new adapter.Pool();
-    pools.push(pool);
-
-    const {threadStore: store} = await createRuntimeStores(pool);
-
-    await seedSession(pool, {
-      sessionId: "session-jsonb-nul",
-      threadId: "pg-thread-jsonb-nul",
-    });
-    await store.createThread({
-      id: "pg-thread-jsonb-nul",
-      sessionId: "session-jsonb-nul",
-    });
-
+  it("sanitizes actual NULs before runtime JSONB persistence", () => {
     const inputMessage = stringToUserMessage(`hello${NUL}input`);
     const inputMetadata = {
       label: `meta${NUL}data`,
@@ -1256,71 +1051,25 @@ describe("PostgresThreadRuntimeStore", () => {
         [`key${NUL}name`]: `value${NUL}text`,
       },
     };
-
-    const queued = await store.enqueueInput("pg-thread-jsonb-nul", {
+    const serialized = serializeThreadRuntimeJsonb({
       message: inputMessage,
-      source: "telegram",
       metadata: inputMetadata,
     });
-
-    expect((queued.input.message as {content?: unknown}).content).toBe(`hello${NUL_PLACEHOLDER}input`);
-    expect(queued.input.metadata).toEqual({
+    expect(JSON.parse(serialized.json)).toEqual({
+      message: expect.objectContaining({content: `hello${NUL_PLACEHOLDER}input`}),
+      metadata: {
       label: `meta${NUL_PLACEHOLDER}data`,
       nested: {
         [`key${NUL_PLACEHOLDER}name`]: `value${NUL_PLACEHOLDER}text`,
       },
+      },
     });
+    expect(serialized.nulCount).toBe(4);
     expect(inputMessage.content).toBe(`hello${NUL}input`);
     expect(inputMetadata.label).toBe(`meta${NUL}data`);
     expect(Object.keys(inputMetadata.nested)).toEqual([`key${NUL}name`]);
-
-    const applied = await store.applyPendingInputs("pg-thread-jsonb-nul");
-    expect((applied[0]?.message as {content?: unknown} | undefined)?.content).toBe(`hello${NUL_PLACEHOLDER}input`);
-    expect(applied[0]?.metadata).toEqual({
-      label: `meta${NUL_PLACEHOLDER}data`,
-      nested: {
-        [`key${NUL_PLACEHOLDER}name`]: `value${NUL_PLACEHOLDER}text`,
-      },
-    });
-
-    const run = await store.createRun("pg-thread-jsonb-nul");
-    const assistantMessage = {
-      role: "assistant" as const,
-      content: [{ type: "text" as const, text: `assistant${NUL}reply` }],
-      api: "openai-responses",
-      model: "openai/gpt-5.1",
-      usage: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        totalTokens: 0,
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-      },
-      stopReason: "stop",
-      timestamp: Date.now(),
-    };
-    const assistantMetadata = {
-      note: `assistant${NUL}meta`,
-    };
-
-    await store.appendRuntimeMessage("pg-thread-jsonb-nul", {
-      message: assistantMessage,
-      metadata: assistantMetadata,
-      source: "assistant",
-      runId: run.id,
-    });
-
-    const transcript = await store.loadTranscript("pg-thread-jsonb-nul");
-    const persistedAssistant = transcript[1]?.message as {content?: Array<{text?: string}>} | undefined;
-    expect(persistedAssistant?.content?.[0]?.text).toBe(`assistant${NUL_PLACEHOLDER}reply`);
-    expect(transcript[1]?.metadata).toEqual({
-      note: `assistant${NUL_PLACEHOLDER}meta`,
-    });
-    expect(assistantMessage.content[0]?.text).toBe(`assistant${NUL}reply`);
-    expect(assistantMetadata.note).toBe(`assistant${NUL}meta`);
-    expect(JSON.stringify(transcript)).not.toContain("\\u0000");
-    expect(JSON.stringify(transcript)).not.toContain(NUL);
+    expect(serialized.json).not.toContain("\\u0000");
+    expect(serialized.json).not.toContain(NUL);
   });
 
   it("rejects malformed persisted thread summary counts", async () => {
@@ -1400,44 +1149,6 @@ describe("PostgresThreadRuntimeStore", () => {
     ]);
   });
 
-  it("discards unapplied wake and queued inputs", async () => {
-    const db = newDb();
-    db.public.registerFunction({
-      name: "pg_notify",
-      args: [DataType.text, DataType.text],
-      returns: DataType.text,
-      implementation: () => "",
-    });
-    const adapter = db.adapters.createPg();
-    const pool = new adapter.Pool();
-    pools.push(pool);
-
-    const {threadStore: store} = await createRuntimeStores(pool);
-
-    await seedSession(pool, {
-      sessionId: "session-reset",
-      threadId: "pg-thread-reset",
-    });
-    await store.createThread({
-      id: "pg-thread-reset",
-      sessionId: "session-reset",
-    });
-
-    await store.enqueueInput("pg-thread-reset", {
-      message: stringToUserMessage("wake me"),
-      source: "telegram",
-    });
-    await store.enqueueInput("pg-thread-reset", {
-      message: stringToUserMessage("queue me"),
-      source: "tui",
-    }, "queue");
-
-    await expect(store.discardPendingInputs("pg-thread-reset")).resolves.toBe(2);
-    await expect(store.hasPendingInputs("pg-thread-reset")).resolves.toBe(false);
-    await expect(store.listPendingInputs("pg-thread-reset")).resolves.toEqual([]);
-    await expect(store.loadTranscript("pg-thread-reset")).resolves.toEqual([]);
-  });
-
   it("rejects malformed promoted input thread ids before notifying threads", async () => {
     const query = vi.fn(async () => ({
       rows: [{
@@ -1462,6 +1173,15 @@ describe("PostgresThreadRuntimeStore", () => {
       returns: DataType.text,
       implementation: () => "",
     });
+    db.public.registerFunction({
+      name: "json_build_object",
+      args: [DataType.text, DataType.text, DataType.text, DataType.text],
+      returns: DataType.jsonb,
+      implementation: (firstKey: string, firstValue: string, secondKey: string, secondValue: string) => ({
+        [firstKey]: firstValue,
+        [secondKey]: secondValue,
+      }),
+    });
     const adapter = db.adapters.createPg();
     const pool = new adapter.Pool();
     pools.push(pool);
@@ -1482,261 +1202,50 @@ describe("PostgresThreadRuntimeStore", () => {
     await store.requestWake("pg-thread-pending-wake");
 
     await expect(store.hasPendingWake("pg-thread-pending-wake")).resolves.toBe(true);
-    await expect(store.consumePendingWake("pg-thread-pending-wake")).resolves.toBe(true);
-    await expect(store.hasPendingWake("pg-thread-pending-wake")).resolves.toBe(false);
-    await expect(store.consumePendingWake("pg-thread-pending-wake")).resolves.toBe(false);
+
+    await store.requestWake("pg-thread-pending-wake");
+    const wakeState = await pool.query(`
+      SELECT pending_wake_generation
+      FROM "runtime"."session_runtime_config"
+      WHERE session_id = 'session-pending-wake'
+    `);
+    expect(Number(wakeState.rows[0]?.pending_wake_generation)).toBe(2);
+
+    await store.createThread({
+      id: "pg-thread-after-reset",
+      sessionId: "session-pending-wake",
+      replacesThreadId: "pg-thread-pending-wake",
+    });
+    await pool.query(`
+      UPDATE ${SESSION_TABLE}
+      SET current_thread_id = 'pg-thread-after-reset'
+      WHERE id = 'session-pending-wake'
+    `);
+    await expect(store.requestWake("pg-thread-pending-wake")).rejects.toThrow(
+      "Unknown thread pg-thread-pending-wake",
+    );
   });
 
-  it("round-trips background bash job metadata", async () => {
-    const db = newDb();
-    db.public.registerFunction({
-      name: "pg_notify",
-      args: [DataType.text, DataType.text],
-      returns: DataType.text,
-      implementation: () => "",
-    });
-    const adapter = db.adapters.createPg();
-    const pool = new adapter.Pool();
-    pools.push(pool);
-
-    const {threadStore: store} = await createRuntimeStores(pool);
-
-    await seedSession(pool, {
-      sessionId: "session-bash-job",
-      threadId: "pg-thread-bash-job",
-    });
-    await store.createThread({
-      id: "pg-thread-bash-job",
-      sessionId: "session-bash-job",
-    });
-    const run = await store.createRun("pg-thread-bash-job");
-
-    const created = await store.createToolJob({
-      id: "00000000-0000-4000-8000-000000000001",
-      threadId: "pg-thread-bash-job",
-      runId: run.id,
+  it("rejects malformed persisted tool-job timestamps", () => {
+    expect(() => parseToolJobRow({
+      id: "job-1",
+      thread_id: "thread-1",
+      run_id: null,
+      parent_tool_call_id: null,
+      command_ordinal: null,
       kind: "bash",
-      summary: "sleep 1 && printf hi",
-      result: {
-        command: "sleep 1 && printf hi",
-        mode: "local",
-        initialCwd: "/workspace",
-        trackedEnvKeys: ["TEST_VAR"],
-      },
-    });
-
-    expect(created).toMatchObject({
-      threadId: "pg-thread-bash-job",
-      runId: run.id,
       status: "running",
-      result: {
-        trackedEnvKeys: ["TEST_VAR"],
-      },
-    });
-
-    const finished = await store.updateToolJob(created.id, {
-      status: "completed",
-      finishedAt: created.startedAt + 250,
-      durationMs: 250,
-      result: {
-        command: "sleep 1 && printf hi",
-        mode: "local",
-        initialCwd: "/workspace",
-        finalCwd: "/workspace/nested",
-        exitCode: 0,
-        stdout: "hello",
-        stderr: "",
-        stdoutChars: 5,
-        stderrChars: 0,
-        stdoutTruncated: false,
-        stderrTruncated: false,
-        stdoutPersisted: true,
-        stderrPersisted: false,
-        stdoutPath: "/tmp/stdout.txt",
-        trackedEnvKeys: ["TEST_VAR"],
-      },
-    });
-
-    expect(finished).toMatchObject({
-      status: "completed",
-      result: {
-        finalCwd: "/workspace/nested",
-        stdout: "hello",
-        stdoutPersisted: true,
-        stdoutPath: "/tmp/stdout.txt",
-      },
-    });
-    expect(await store.getToolJob(created.id)).toMatchObject({
-      status: "completed",
-      result: {
-        stdout: "hello",
-      },
-    });
-    expect(await store.listToolJobs("pg-thread-bash-job")).toHaveLength(1);
-  });
-
-  it("persists trusted command lineage with parent-scoped ordinals and same-thread runs", async () => {
-    const db = newDb();
-    db.public.registerFunction({
-      name: "pg_notify",
-      args: [DataType.text, DataType.text],
-      returns: DataType.text,
-      implementation: () => "",
-    });
-    const adapter = db.adapters.createPg();
-    const pool = new adapter.Pool();
-    pools.push(pool);
-
-    const {threadStore: store} = await createRuntimeStores(pool);
-    await seedSession(pool, {
-      sessionId: "session-command-lineage",
-      threadId: "pg-thread-command-lineage",
-    });
-    await store.createThread({
-      id: "pg-thread-command-lineage",
-      sessionId: "session-command-lineage",
-    });
-    await store.createThread({
-      id: "pg-thread-command-lineage-other",
-      sessionId: "session-command-lineage",
-    });
-    const run = await store.createRun("pg-thread-command-lineage");
-
-    const first = await store.createToolJob({
-        id: "00000000-0000-4000-8000-000000000260",
-        threadId: "pg-thread-command-lineage",
-        runId: run.id,
-        parentToolCallId: "bash-call-260",
-        kind: "command",
-        summary: "schedule.create",
-      });
-    const second = await store.createToolJob({
-        id: "00000000-0000-4000-8000-000000000261",
-        threadId: "pg-thread-command-lineage",
-        runId: run.id,
-        parentToolCallId: "bash-call-260",
-        kind: "command",
-        summary: "a2a.history",
-      });
-
-    expect([first.commandOrdinal, second.commandOrdinal].sort()).toEqual([1, 2]);
-    await expect(store.listCommandToolJobsByParent(
-      "pg-thread-command-lineage",
-      run.id,
-      "bash-call-260",
-    )).resolves.toMatchObject([
-      {
-        runId: run.id,
-        parentToolCallId: "bash-call-260",
-        commandOrdinal: 1,
-      },
-      {
-        runId: run.id,
-        parentToolCallId: "bash-call-260",
-        commandOrdinal: 2,
-      },
-    ]);
-
-    const nextRun = await store.createRun("pg-thread-command-lineage");
-    const reusedParentId = await store.createToolJob({
-      id: "00000000-0000-4000-8000-000000000264",
-      threadId: "pg-thread-command-lineage",
-      runId: nextRun.id,
-      parentToolCallId: "bash-call-260",
-      kind: "command",
-      summary: "watch.list",
-    });
-    expect(reusedParentId.commandOrdinal).toBe(1);
-    await expect(store.listCommandToolJobsByParent(
-      "pg-thread-command-lineage",
-      nextRun.id,
-      "bash-call-260",
-    )).resolves.toMatchObject([{commandOrdinal: 1, runId: nextRun.id}]);
-
-    await expect(store.createToolJob({
-      id: "00000000-0000-4000-8000-000000000262",
-      threadId: "pg-thread-command-lineage-other",
-      runId: run.id,
-      parentToolCallId: "bash-call-forged-thread",
-      kind: "command",
-      summary: "watch.list",
-    })).rejects.toThrow("does not belong to thread pg-thread-command-lineage-other");
-
-    await expect(pool.query(`
-      INSERT INTO "runtime"."tool_jobs" (
-        id,
-        thread_id,
-        parent_tool_call_id,
-        command_ordinal,
-        kind,
-        status,
-        summary,
-        started_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-    `, [
-      "00000000-0000-4000-8000-000000000263",
-      "pg-thread-command-lineage",
-      "bash-call-invalid",
-      1,
-      "command",
-      "running",
-      "watch.list",
-    ])).rejects.toThrow();
-  });
-
-  it("marks orphaned running background bash jobs as lost", async () => {
-    const db = newDb();
-    db.public.registerFunction({
-      name: "pg_notify",
-      args: [DataType.text, DataType.text],
-      returns: DataType.text,
-      implementation: () => "",
-    });
-    const adapter = db.adapters.createPg();
-    const pool = new adapter.Pool();
-    pools.push(pool);
-
-    const {threadStore: store} = await createRuntimeStores(pool);
-
-    await seedSession(pool, {
-      sessionId: "session-lost-job",
-      threadId: "pg-thread-lost-job",
-    });
-    await store.createThread({
-      id: "pg-thread-lost-job",
-      sessionId: "session-lost-job",
-    });
-    const created = await store.createToolJob({
-      id: "00000000-0000-4000-8000-000000000002",
-      threadId: "pg-thread-lost-job",
-      kind: "bash",
       summary: "sleep 5",
-    });
-
-    expect(await store.markRunningToolJobsLost("runtime restarted")).toBe(1);
-
-    const lost = await store.getToolJob(created.id);
-    expect(lost.status).toBe("lost");
-    expect(lost.statusReason).toBe("runtime restarted");
-    expect(lost.finishedAt).toEqual(expect.any(Number));
-  });
-
-  it("rejects malformed running tool-job rows before startup loss recovery", async () => {
-    const query = vi.fn(async () => ({
-      rows: [{
-        id: "job-1",
-        thread_id: "thread-1",
-        started_at: "2026-05-01T12:00:00.000Z",
-      }],
-    }));
-    const store = new PostgresThreadRuntimeStore({
-      pool: createQueryOnlyThreadRuntimePool(query, "connect should not be used by loss recovery"),
-    });
-
-    await expect(store.markRunningToolJobsLost("runtime restarted")).rejects.toThrow(
+      started_at: "2026-05-01T12:00:00.000Z",
+      finished_at: null,
+      duration_ms: null,
+      result: null,
+      error: null,
+      status_reason: null,
+      progress: null,
+    })).toThrow(
       "Thread runtime tool job started_at must be a valid timestamp.",
     );
-    expect(query).toHaveBeenCalledTimes(1);
   });
 
   it("rejects unsupported persisted input delivery modes", async () => {
@@ -1761,7 +1270,8 @@ describe("PostgresThreadRuntimeStore", () => {
       id: "pg-thread-bad-input-mode",
       sessionId: "session-bad-input-mode",
     });
-    await store.enqueueInput("pg-thread-bad-input-mode", {
+    await seedPendingThreadInput(pool, {
+      threadId: "pg-thread-bad-input-mode",
       message: stringToUserMessage("bad mode"),
       source: "tui",
     });
@@ -1798,19 +1308,24 @@ describe("PostgresThreadRuntimeStore", () => {
       id: "pg-thread-bad-tool-status",
       sessionId: "session-bad-tool-status",
     });
-    const job = await store.createToolJob({
-      id: "00000000-0000-4000-8000-000000000003",
-      threadId: "pg-thread-bad-tool-status",
-      kind: "bash",
-      summary: "sleep 5",
-    });
+    const jobId = "00000000-0000-4000-8000-000000000003";
+    await pool.query(`
+      INSERT INTO "runtime"."tool_jobs" (
+        id,
+        thread_id,
+        kind,
+        status,
+        summary,
+        started_at
+      ) VALUES ($1, $2, 'bash', 'completed', 'sleep 5', NOW())
+    `, [jobId, "pg-thread-bad-tool-status"]);
     await pool.query(`
       UPDATE "runtime"."tool_jobs"
       SET status = 'ghost'
       WHERE id = $1
-    `, [job.id]);
+    `, [jobId]);
 
-    await expect(store.getToolJob(job.id)).rejects.toThrow("Unsupported thread tool job status ghost");
+    await expect(store.getToolJob(jobId)).rejects.toThrow("Unsupported thread tool job status ghost");
   });
 
   it("rejects threads without a session id instead of silently creating one", async () => {
@@ -1862,6 +1377,7 @@ describe("PostgresThreadRuntimeStore", () => {
       thread_id: "thread-1",
       input_order: "7",
       delivery_mode: "wake",
+      connector_key: "",
       message,
       metadata: null,
       source: "user",
@@ -1871,6 +1387,8 @@ describe("PostgresThreadRuntimeStore", () => {
       identity_id: null,
       created_at: new Date(1),
       applied_at: null,
+      applied_run_id: null,
+      discarded_at: null,
     })).toMatchObject({
       order: 7,
     });

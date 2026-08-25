@@ -2,6 +2,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {SessionRouteRepo} from "../src/domain/sessions/index.js";
+import {ensurePostgresSessionRouteSchema} from "../src/domain/sessions/routes/postgres-schema.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
 function createPool() {
@@ -49,7 +50,7 @@ describe("SessionRouteRepo", () => {
 
     const {sessionStore} = await createRuntimeStores(pool);
     const store = new SessionRouteRepo({pool});
-    await store.ensureSchema();
+    await ensurePostgresSessionRouteSchema(pool);
     await sessionStore.createSession({
       id: "session-a",
       agentKey: "panda",
@@ -99,7 +100,7 @@ describe("SessionRouteRepo", () => {
 
     const {sessionStore} = await createRuntimeStores(pool);
     const store = new SessionRouteRepo({pool});
-    await store.ensureSchema();
+    await ensurePostgresSessionRouteSchema(pool);
     await sessionStore.createSession({
       id: "session-a",
       agentKey: "panda",
@@ -152,7 +153,7 @@ describe("SessionRouteRepo", () => {
       displayName: "Patrik",
     });
     const store = new SessionRouteRepo({pool});
-    await store.ensureSchema();
+    await ensurePostgresSessionRouteSchema(pool);
     await sessionStore.createSession({
       id: "session-a",
       agentKey: "panda",
@@ -246,7 +247,7 @@ describe("SessionRouteRepo", () => {
 
     await createRuntimeStores(pool);
     const store = new SessionRouteRepo({pool});
-    await store.ensureSchema();
+    await ensurePostgresSessionRouteSchema(pool);
 
     await expect(store.saveLastRoute({
       sessionId: "session-a",
@@ -306,7 +307,7 @@ describe("SessionRouteRepo", () => {
     `);
 
     const store = new SessionRouteRepo({pool});
-    await store.ensureSchema();
+    await ensurePostgresSessionRouteSchema(pool);
 
     await expect(pool.query(`
       SELECT id
@@ -348,7 +349,7 @@ describe("SessionRouteRepo", () => {
 
     await createRuntimeStores(pool);
     const store = new SessionRouteRepo({pool});
-    await store.ensureSchema();
+    await ensurePostgresSessionRouteSchema(pool);
 
     await expect(store.saveLastRoute({
       sessionId: "   ",

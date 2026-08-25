@@ -24,8 +24,8 @@ describe("syncChatStoredThreadState", () => {
     const services = {
       store: {
         getThread: vi.fn(async () => thread),
-        loadTranscript: vi.fn(async () => []),
-        listRuns: vi.fn(async () => []),
+        listTranscriptPage: vi.fn(async () => ({records: []})),
+        getLatestRun: vi.fn(async () => null),
       },
       getSession: vi.fn(async () => session),
     };
@@ -47,6 +47,7 @@ describe("syncChatStoredThreadState", () => {
       setLastStoredSyncAt: (value) => {
         lastStoredSyncAt = value;
       },
+      getLastStoredSequence: () => 0,
       applyLoadedSnapshot,
       requestRender,
       isClosed: () => false,
@@ -61,6 +62,10 @@ describe("syncChatStoredThreadState", () => {
       [],
       resolveStoredThreadDisplayConfig(),
     );
+    expect(services.store.listTranscriptPage).toHaveBeenCalledWith("thread-sync", {
+      afterSequence: 0,
+      limit: 500,
+    });
     expect(requestRender).toHaveBeenCalledOnce();
   });
 });

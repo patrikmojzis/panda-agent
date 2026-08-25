@@ -104,7 +104,7 @@ async function buildBootstrapPayload(input: {
 export async function maybeWriteAgentAppApiResponse(input: {
   auth?: AgentAppAuthService;
   authMode: AgentAppAuthMode;
-  coordinator?: Pick<ThreadRuntimeCoordinator, "submitInput">;
+  coordinator?: Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
   identityStore?: Pick<IdentityStore, "getIdentityByHandle">;
   method?: string;
   parts: readonly string[];
@@ -203,7 +203,6 @@ export async function maybeWriteAgentAppApiResponse(input: {
         actionName,
         identityId,
         sessionId: wakeSession.id,
-        sessionStore: input.sessionStore,
         coordinator: input.coordinator,
       })
       : undefined;

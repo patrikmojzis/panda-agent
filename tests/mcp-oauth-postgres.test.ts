@@ -2,9 +2,11 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/postgres.js";
+import {ensurePostgresAgentTableSchema} from "../src/domain/agents/postgres-schema.js";
 import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
 import {McpOAuthService} from "../src/domain/mcp/oauth-service.js";
 import {PostgresMcpOAuthStore} from "../src/domain/mcp/oauth-postgres.js";
+import {ensurePostgresMcpSchema} from "../src/domain/mcp/postgres-schema.js";
 import {MCP_OAUTH_STATE_VERSION} from "../src/domain/mcp/oauth-types.js";
 import {McpOAuthProviderSession} from "../src/integrations/mcp/oauth.js";
 
@@ -29,8 +31,8 @@ describe("MCP OAuth persistence", () => {
     pools.push(pool);
     const agents = new PostgresAgentStore({pool});
     const store = new PostgresMcpOAuthStore(pool);
-    await agents.ensureAgentTableSchema();
-    await store.ensureSchema();
+    await ensurePostgresAgentTableSchema(pool);
+    await ensurePostgresMcpSchema(pool);
     await agents.bootstrapAgent({agentKey: "panda", displayName: "Panda"});
     return {pool, store, service: new McpOAuthService({store, crypto: new CredentialCrypto("test-master-key")})};
   }

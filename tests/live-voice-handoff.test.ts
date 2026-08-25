@@ -24,7 +24,19 @@ function liveSession() {
 
 describe("live voice durable handoff", () => {
   it("resolves the current thread and keeps source rendering outside the generic handler", async () => {
-    const submitInput = vi.fn(async () => undefined);
+    const submitSessionInput = vi.fn(async (_sessionId: string, payload: {source: string}) => ({
+      input: {
+        id: "input-1",
+        threadId: "thread-after-reset",
+        order: 1,
+        deliveryMode: "wake" as const,
+        status: "pending" as const,
+        connectorKey: "",
+        source: payload.source,
+        createdAt: 1,
+      },
+      disposition: "inserted" as const,
+    }));
     const renderDelegation = vi.fn(() => "source-specific voice instructions");
     const voice = {
       getTurn: vi.fn(async () => turn()),
@@ -35,20 +47,20 @@ describe("live voice durable handoff", () => {
     const result = await handleLiveVoiceDelegationRequest({liveVoiceTurnId: turn().id}, {
       voice: voice as never,
       sessions: {getSession: vi.fn(async () => ({id: "session-1", agentKey: "panda", currentThreadId: "thread-after-reset"}))},
-      coordinator: {submitInput},
+      coordinator: {submitSessionInput},
       identityStore: {resolveIdentityBinding: vi.fn(async () => ({identityId: "identity-1"}))},
       renderDelegation,
     });
 
     expect(result).toMatchObject({threadId: "thread-after-reset", liveVoiceTurnId: turn().id});
     expect(renderDelegation).toHaveBeenCalledWith({liveSession: expect.objectContaining({source: "discord"}), turn: expect.objectContaining({id: turn().id})});
-    expect(submitInput).toHaveBeenCalledWith("thread-after-reset", expect.objectContaining({
+    expect(submitSessionInput).toHaveBeenCalledWith("session-1", expect.objectContaining({
       source: "discord",
       channelId: "voice-1",
       externalMessageId: turn().id,
       metadata: {liveVoice: expect.objectContaining({liveVoiceTurnId: turn().id, liveVoiceSessionId: liveSession().id, identityId: "identity-1"})},
-    }));
-    expect((submitInput.mock.calls[0]![1] as {metadata?: unknown}).metadata).not.toHaveProperty("route");
+    }), "wake", undefined);
+    expect((submitSessionInput.mock.calls[0]![1] as {metadata?: unknown}).metadata).not.toHaveProperty("route");
   });
 
   it("correlates generic metadata with the Panda run and awaits explicit final delivery", async () => {

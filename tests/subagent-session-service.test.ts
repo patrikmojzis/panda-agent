@@ -1,16 +1,24 @@
-import {afterEach, describe, expect, it} from "vitest";
+import {randomUUID} from "node:crypto";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {A2ASessionBindingRepo} from "../src/domain/a2a/repo.js";
+import {ensurePostgresA2ASessionBindingSchema} from "../src/domain/a2a/postgres-schema.js";
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
+import {ensurePostgresAgentTableSchema} from "../src/domain/agents/postgres-schema.js";
 import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/postgres.js";
+import {ensurePostgresExecutionEnvironmentSchema} from "../src/domain/execution-environments/postgres-schema.js";
 import type {ExecutionEnvironmentStore} from "../src/domain/execution-environments/store.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
+import {ensurePostgresIdentitySchema} from "../src/domain/identity/postgres-schema.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
+import {ensurePostgresSessionSchema} from "../src/domain/sessions/postgres-schema.js";
 import {buildSessionTableNames} from "../src/domain/sessions/postgres-shared.js";
 import {PostgresSubagentProfileStore} from "../src/domain/subagents/index.js";
 import {buildSubagentTableNames} from "../src/domain/subagents/postgres-shared.js";
+import {ensurePostgresSubagentSchema} from "../src/domain/subagents/postgres-schema.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/postgres.js";
+import {ensurePostgresThreadRuntimeSchema} from "../src/domain/threads/runtime/postgres-schema.js";
 import {buildThreadRuntimeTableNames} from "../src/domain/threads/runtime/postgres-shared.js";
 import {SubagentSessionService} from "../src/app/runtime/subagent-session-service.js";
 import {ExecutionEnvironmentLifecycleService} from "../src/app/runtime/execution-environment-service.js";
@@ -72,13 +80,13 @@ describe("SubagentSessionService", () => {
     const profileStore = new PostgresSubagentProfileStore({pool});
     const environmentStore = new PostgresExecutionEnvironmentStore({pool});
     const a2a = new A2ASessionBindingRepo({pool});
-    await identityStore.ensureSchema();
-    await agentStore.ensureAgentTableSchema();
-    await sessionStore.ensureSchema();
-    await threadStore.ensureSchema();
-    await profileStore.ensureSchema();
-    await environmentStore.ensureSchema();
-    await a2a.ensureSchema();
+    await ensurePostgresIdentitySchema(pool);
+    await ensurePostgresAgentTableSchema(pool);
+    await ensurePostgresSessionSchema(pool);
+    await ensurePostgresThreadRuntimeSchema(pool);
+    await ensurePostgresSubagentSchema(pool);
+    await ensurePostgresExecutionEnvironmentSchema(pool);
+    await ensurePostgresA2ASessionBindingSchema(pool);
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",
@@ -122,11 +130,27 @@ describe("SubagentSessionService", () => {
       events.push(`bind:${input.senderSessionId}->${input.recipientSessionId}`);
       return originalBind(input);
     };
-    const originalEnqueue = threadStore.enqueueInput.bind(threadStore);
-    threadStore.enqueueInput = async (threadId, payload, deliveryMode) => {
+    const threadTables = buildThreadRuntimeTableNames();
+    const submitInput = vi.fn(async (threadId: string, payload: any, deliveryMode = "wake") => {
       events.push(`enqueue:${threadId}:${payload.source}`);
-      return originalEnqueue(threadId, payload, deliveryMode);
-    };
+      await pool.query(`
+        INSERT INTO ${threadTables.inputs} (
+          id, thread_id, delivery_mode, source, connector_key,
+          external_message_id, identity_id, created_at, metadata, message
+        ) VALUES ($1, $2, $3, $4, '', $5, $6, NOW(), $7::jsonb, $8::jsonb)
+        ON CONFLICT DO NOTHING
+      `, [
+        randomUUID(),
+        threadId,
+        deliveryMode,
+        payload.source,
+        payload.externalMessageId ?? null,
+        payload.identityId ?? null,
+        JSON.stringify(payload.metadata ?? null),
+        JSON.stringify(payload.message),
+      ]);
+      return undefined as never;
+    });
 
     const environments = new ExecutionEnvironmentLifecycleService({
       store: environmentStore,
@@ -143,6 +167,7 @@ describe("SubagentSessionService", () => {
       environments,
       a2aBindings: a2a,
       commandCatalog,
+      coordinator: {submitInput},
       ...(!commandCatalog ? {commandModules: options.commandModules ?? DEFAULT_AGENT_COMMAND_MODULES} : {}),
     });
 
@@ -154,6 +179,7 @@ describe("SubagentSessionService", () => {
       pool,
       profileStore,
       service,
+      submitInput,
       sessionStore,
       threadStore,
     };
@@ -220,6 +246,35 @@ describe("SubagentSessionService", () => {
     expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM ${envTables} WHERE session_id = 'subagent-session'`)).toBe(0);
     const threadTables = buildThreadRuntimeTableNames();
     expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM ${threadTables.inputs} WHERE thread_id = 'subagent-thread' AND source = 'subagent'`)).toBe(1);
+  });
+
+  it("replays stable subagent creation without duplicating the session, thread, or handoff", async () => {
+    const {pool, service, sessionStore} = await createHarness();
+    const input = {
+      agentKey: "panda",
+      parentSessionId: "parent-session",
+      profile: "workspace",
+      task: "Inspect package files.",
+      sessionId: "replayed-subagent",
+      threadId: "replayed-thread",
+    } as const;
+
+    const first = await service.createSubagentSession(input);
+    await sessionStore.updateSessionRuntimeConfig({
+      sessionId: input.sessionId,
+      model: "openai/gpt-5.2",
+    });
+    const replay = await service.createSubagentSession(input);
+    expect(replay).toMatchObject({
+      session: {id: first.session.id},
+      thread: {id: first.thread.id},
+    });
+    expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM "runtime"."agent_sessions" WHERE id = 'replayed-subagent'`)).toBe(1);
+    expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM "runtime"."threads" WHERE id = 'replayed-thread'`)).toBe(1);
+    expect(await countRows(pool, `SELECT COUNT(*)::INTEGER AS count FROM "runtime"."inputs" WHERE thread_id = 'replayed-thread' AND external_message_id = 'subagent-handoff:replayed-thread'`)).toBe(1);
+    await expect(sessionStore.getSessionRuntimeConfig(input.sessionId)).resolves.toMatchObject({
+      model: "openai/gpt-5.2",
+    });
   });
 
   it("resolves subagent tool policy from the supplied command module catalog", async () => {
@@ -351,10 +406,8 @@ describe("SubagentSessionService", () => {
 
 
   it("cleans up A2A bindings when handoff enqueue fails after bind", async () => {
-    const {a2a, pool, service, threadStore} = await createHarness();
-    threadStore.enqueueInput = async () => {
-      throw new Error("handoff queue down");
-    };
+    const {a2a, pool, service, submitInput} = await createHarness();
+    submitInput.mockRejectedValueOnce(new Error("handoff queue down"));
 
     await expect(service.createSubagentSession({
       agentKey: "panda",

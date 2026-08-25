@@ -28,6 +28,7 @@ Start here:
 - [DB Integrity](./db-integrity.md)
 - [Database Migrations](./database-migrations.md)
 - [Prompt Caching](./caching.md)
+- [Model-Call Observability](./model-call-observability.md)
 - [Postgres Pool Sizing](./pg-pool-size.md)
 - [Heartbeat](./heartbeat.md)
 - [Watches](./watches.md)

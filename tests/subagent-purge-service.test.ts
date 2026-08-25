@@ -7,6 +7,7 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/postgres.js";
+import {ensurePostgresExecutionEnvironmentSchema} from "../src/domain/execution-environments/postgres-schema.js";
 import type {
   DisposableEnvironmentCreateRequest,
   DisposableEnvironmentCreateResult,
@@ -14,12 +15,19 @@ import type {
 } from "../src/domain/execution-environments/types.js";
 import {createSessionWithInitialThread} from "../src/domain/sessions/index.js";
 import {A2ASessionBindingRepo} from "../src/domain/a2a/repo.js";
+import {ensurePostgresA2ASessionBindingSchema} from "../src/domain/a2a/postgres-schema.js";
 import {PostgresOutboundDeliveryStore} from "../src/domain/channels/deliveries/postgres.js";
+import {ensurePostgresOutboundDeliverySchema} from "../src/domain/channels/deliveries/postgres-schema.js";
 import {RuntimeRequestRepo} from "../src/domain/threads/requests/repo.js";
+import {ensurePostgresRuntimeRequestSchema} from "../src/domain/threads/requests/postgres-schema.js";
 import {SubagentPurgeService, type SubagentPurgeServiceOptions} from "../src/app/runtime/subagent-purge-service.js";
-import {ensureSchemas} from "../src/app/runtime/postgres-bootstrap.js";
 import {buildPurgeInput, parseDurationOption} from "../src/app/subagents/cli.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
+import {seedPendingThreadInput, seedRuntimeMessage} from "./helpers/thread-runtime-fixtures.js";
+
+// This test builds the complete pg-mem schema and filesystem fixture; under the
+// full parallel suite that setup can exceed Vitest's generic five-second limit.
+const pgMemIntegrationTimeoutMs = 15_000;
 
 class FakeEnvironmentManager implements ExecutionEnvironmentManager {
   readonly stopped: string[] = [];
@@ -148,12 +156,10 @@ describe("SubagentPurgeService", () => {
     const a2a = new A2ASessionBindingRepo({pool});
     const outbound = new PostgresOutboundDeliveryStore({pool});
     const requests = new RuntimeRequestRepo({pool});
-    await ensureSchemas([
-      environmentStore,
-      a2a,
-      outbound,
-      requests,
-    ]);
+    await ensurePostgresExecutionEnvironmentSchema(pool);
+    await ensurePostgresA2ASessionBindingSchema(pool);
+    await ensurePostgresOutboundDeliverySchema(pool);
+    await ensurePostgresRuntimeRequestSchema(pool);
 
     await createSessionWithInitialThread({
       pool,
@@ -238,12 +244,14 @@ describe("SubagentPurgeService", () => {
   }
 
   it("plans stopped subagent purge candidates with row and file counts without mutating", async () => {
-    const {pool, envRoot, service, threadStore} = await createHarness();
-    await threadStore.enqueueInput("subagent-thread", {
+    const {pool, envRoot, service} = await createHarness();
+    await seedPendingThreadInput(pool, {
+      threadId: "subagent-thread",
       source: "test",
       message: {role: "user", content: "hello"},
     });
-    await threadStore.appendRuntimeMessage("subagent-thread", {
+    await seedRuntimeMessage(pool, {
+      threadId: "subagent-thread",
       source: "test",
       message: {role: "assistant", content: "done"},
     });
@@ -257,14 +265,18 @@ describe("SubagentPurgeService", () => {
         id,
         kind,
         status,
+        ordering_key,
         payload,
-        result
+        result,
+        finished_at
       ) VALUES (
         $1,
         'a2a_message',
         'completed',
+        'v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         $2::jsonb,
-        $3::jsonb
+        $3::jsonb,
+        NOW()
       )
     `, [
       randomUUID(),
@@ -306,7 +318,7 @@ describe("SubagentPurgeService", () => {
     await expect(service.plan({selector: {sessionId: "main-session"}})).rejects.toThrow(
       "No disposable subagent environment matched",
     );
-  });
+  }, pgMemIntegrationTimeoutMs);
 
   it("does not scan transcript JSON references while planning dry-run candidates", async () => {
     const {pool, environmentStore, environmentsRoot, manager} = await createHarness();
@@ -461,14 +473,18 @@ describe("SubagentPurgeService", () => {
         id,
         kind,
         status,
+        ordering_key,
         payload,
-        result
+        result,
+        finished_at
       ) VALUES (
         $1,
         'a2a_message',
         'completed',
+        'v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         $2::jsonb,
-        $3::jsonb
+        $3::jsonb,
+        NOW()
       )
     `, [
       randomUUID(),
@@ -532,14 +548,18 @@ describe("SubagentPurgeService", () => {
         id,
         kind,
         status,
+        ordering_key,
         payload,
-        result
+        result,
+        finished_at
       ) VALUES (
         $1,
         'tui_input',
         'completed',
+        'v1:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
         $2::jsonb,
-        $3::jsonb
+        $3::jsonb,
+        NOW()
       )
     `, [
       unrelatedRequestId,

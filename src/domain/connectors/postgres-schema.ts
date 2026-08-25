@@ -1,4 +1,4 @@
-import {addConstraint, assertIntegrityChecks} from "../../lib/postgres-integrity.js";
+import {addConstraint, assertIntegrityChecks, type IntegrityCheckGroup} from "../../lib/postgres-integrity.js";
 import type {PgQueryable} from "../../lib/postgres-query.js";
 import {quoteIdentifier, CREATE_RUNTIME_SCHEMA_SQL} from "../../lib/postgres-relations.js";
 import {buildAgentTableNames} from "../agents/postgres-shared.js";
@@ -6,6 +6,113 @@ import {ensurePostgresAgentTableSchema} from "../agents/postgres-schema.js";
 import {buildIdentityTableNames} from "../identity/postgres-shared.js";
 import {ensurePostgresIdentitySchema} from "../identity/postgres-schema.js";
 import {buildConnectorAccountTableNames} from "./postgres-shared.js";
+
+export function buildConnectorAccountIntegrityChecks(): IntegrityCheckGroup {
+  const tables = buildConnectorAccountTableNames();
+  const agentTableName = buildAgentTableNames().agents;
+  const identityTableName = buildIdentityTableNames().identities;
+  return {
+    scope: "Connector account schema",
+    checks: [
+      {
+        label: "connector_accounts duplicate source/account_key",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM (
+            SELECT COUNT(*)::INTEGER AS duplicate_count
+            FROM ${tables.connectorAccounts}
+            GROUP BY source, account_key
+          ) AS duplicates
+          WHERE duplicate_count > 1
+        `,
+      },
+      {
+        label: "connector_accounts duplicate source/connector_key",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM (
+            SELECT COUNT(*)::INTEGER AS duplicate_count
+            FROM ${tables.connectorAccounts}
+            GROUP BY source, connector_key
+          ) AS duplicates
+          WHERE duplicate_count > 1
+        `,
+      },
+      {
+        label: "connector_account_secrets duplicate account/secret_key",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM (
+            SELECT COUNT(*)::INTEGER AS duplicate_count
+            FROM ${tables.connectorAccountSecrets}
+            GROUP BY account_id, secret_key
+          ) AS duplicates
+          WHERE duplicate_count > 1
+        `,
+      },
+      {
+        label: "connector_accounts invalid owner_kind",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.connectorAccounts}
+          WHERE owner_kind NOT IN ('system', 'identity', 'agent')
+        `,
+      },
+      {
+        label: "connector_accounts invalid status",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.connectorAccounts}
+          WHERE status NOT IN ('enabled', 'disabled', 'revoked', 'error')
+        `,
+      },
+      {
+        label: "connector_accounts invalid owner fields",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.connectorAccounts}
+          WHERE NOT (
+            (owner_kind = 'system' AND owner_identity_id IS NULL AND owner_agent_key IS NULL)
+            OR (owner_kind = 'identity' AND owner_identity_id IS NOT NULL AND owner_agent_key IS NULL)
+            OR (owner_kind = 'agent' AND owner_agent_key IS NOT NULL AND owner_identity_id IS NULL)
+          )
+        `,
+      },
+      {
+        label: "connector_accounts.owner_identity_id orphaned from identities.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.connectorAccounts} AS account
+          LEFT JOIN ${identityTableName} AS identity
+            ON identity.id = account.owner_identity_id
+          WHERE account.owner_identity_id IS NOT NULL
+            AND identity.id IS NULL
+        `,
+      },
+      {
+        label: "connector_accounts.owner_agent_key orphaned from agents.agent_key",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.connectorAccounts} AS account
+          LEFT JOIN ${agentTableName} AS agent
+            ON agent.agent_key = account.owner_agent_key
+          WHERE account.owner_agent_key IS NOT NULL
+            AND agent.agent_key IS NULL
+        `,
+      },
+      {
+        label: "connector_account_secrets.account_id orphaned from connector_accounts.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.connectorAccountSecrets} AS secret
+          LEFT JOIN ${tables.connectorAccounts} AS account
+            ON account.id = secret.account_id
+          WHERE account.id IS NULL
+        `,
+      },
+    ],
+  };
+}
 
 export async function ensurePostgresConnectorAccountSchema(pool: PgQueryable): Promise<void> {
   const tables = buildConnectorAccountTableNames();
@@ -48,104 +155,8 @@ export async function ensurePostgresConnectorAccountSchema(pool: PgQueryable): P
     )
   `);
 
-  await assertIntegrityChecks(pool, "Connector account schema", [
-    {
-      label: "connector_accounts duplicate source/account_key",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM (
-          SELECT COUNT(*)::INTEGER AS duplicate_count
-          FROM ${tables.connectorAccounts}
-          GROUP BY source, account_key
-        ) AS duplicates
-        WHERE duplicate_count > 1
-      `,
-    },
-    {
-      label: "connector_accounts duplicate source/connector_key",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM (
-          SELECT COUNT(*)::INTEGER AS duplicate_count
-          FROM ${tables.connectorAccounts}
-          GROUP BY source, connector_key
-        ) AS duplicates
-        WHERE duplicate_count > 1
-      `,
-    },
-    {
-      label: "connector_account_secrets duplicate account/secret_key",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM (
-          SELECT COUNT(*)::INTEGER AS duplicate_count
-          FROM ${tables.connectorAccountSecrets}
-          GROUP BY account_id, secret_key
-        ) AS duplicates
-        WHERE duplicate_count > 1
-      `,
-    },
-    {
-      label: "connector_accounts invalid owner_kind",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.connectorAccounts}
-        WHERE owner_kind NOT IN ('system', 'identity', 'agent')
-      `,
-    },
-    {
-      label: "connector_accounts invalid status",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.connectorAccounts}
-        WHERE status NOT IN ('enabled', 'disabled', 'revoked', 'error')
-      `,
-    },
-    {
-      label: "connector_accounts invalid owner fields",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.connectorAccounts}
-        WHERE NOT (
-          (owner_kind = 'system' AND owner_identity_id IS NULL AND owner_agent_key IS NULL)
-          OR (owner_kind = 'identity' AND owner_identity_id IS NOT NULL AND owner_agent_key IS NULL)
-          OR (owner_kind = 'agent' AND owner_agent_key IS NOT NULL AND owner_identity_id IS NULL)
-        )
-      `,
-    },
-    {
-      label: "connector_accounts.owner_identity_id orphaned from identities.id",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.connectorAccounts} AS account
-        LEFT JOIN ${identityTableName} AS identity
-          ON identity.id = account.owner_identity_id
-        WHERE account.owner_identity_id IS NOT NULL
-          AND identity.id IS NULL
-      `,
-    },
-    {
-      label: "connector_accounts.owner_agent_key orphaned from agents.agent_key",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.connectorAccounts} AS account
-        LEFT JOIN ${agentTableName} AS agent
-          ON agent.agent_key = account.owner_agent_key
-        WHERE account.owner_agent_key IS NOT NULL
-          AND agent.agent_key IS NULL
-      `,
-    },
-    {
-      label: "connector_account_secrets.account_id orphaned from connector_accounts.id",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.connectorAccountSecrets} AS secret
-        LEFT JOIN ${tables.connectorAccounts} AS account
-          ON account.id = secret.account_id
-        WHERE account.id IS NULL
-      `,
-    },
-  ]);
+  const integrity = buildConnectorAccountIntegrityChecks();
+  await assertIntegrityChecks(pool, integrity.scope, integrity.checks);
 
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_connector_accounts_source_account_key_idx`)}

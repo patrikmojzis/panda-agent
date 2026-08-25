@@ -13,9 +13,7 @@ export async function createWhatsAppConnectorAccount(input: {
   agentKey: string;
   displayName?: string;
   accounts: Pick<PostgresConnectorAccountStore, "getAccountByKey" | "upsertAccount">;
-  auth: Pick<PostgresWhatsAppAuthStore, "ensureSchema">;
 }): Promise<ConnectorAccountRecord> {
-  await input.auth.ensureSchema();
   const accountKey = normalizeConnectorAccountKey(input.accountKey);
   const agentKey = normalizeAgentKey(input.agentKey);
   if (await input.accounts.getAccountByKey(WHATSAPP_SOURCE, accountKey)) {

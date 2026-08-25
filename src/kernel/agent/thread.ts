@@ -27,7 +27,7 @@ import {type ResolvedModelSelector, resolveModelSelector,} from "../models/model
 import {resolveRuntimeDefaultModelSelector} from "../models/default-model.js";
 import {resolveModelRuntimeBudget} from "../models/model-context-policy.js";
 import {RunContext} from "./run-context.js";
-import type {LlmModelCallTracer, LlmRuntime, LlmRuntimeRequest} from "./runtime.js";
+import type {LlmModelCallObserver, LlmRuntime, LlmRuntimeRequest} from "./runtime.js";
 import type {RunPipeline} from "./run-pipeline.js";
 import type {ThreadCheckpointDecision, ThreadCheckpointHandler} from "./thread-checkpoint.js";
 import {isToolResultPayload} from "./tool.js";
@@ -50,7 +50,7 @@ export interface ThreadOptions<TContext = unknown, TOutput = unknown> {
   temperature?: number;
   thinking?: ThinkingLevel;
   runtime?: LlmRuntime;
-  modelCallTracer?: LlmModelCallTracer;
+  modelCallObserver?: LlmModelCallObserver;
   countTokens?: TokenCounter;
   signal?: AbortSignal;
   checkpoint?: ThreadCheckpointHandler;
@@ -730,7 +730,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
 
   private readonly modelSelection: ResolvedModelSelector;
   private readonly runtime: LlmRuntime;
-  private readonly modelCallTracer?: LlmModelCallTracer;
+  private readonly modelCallObserver?: LlmModelCallObserver;
   private readonly countTokens: TokenCounter;
   private readonly contextWindowTokens: number;
   private readonly history: Message[];
@@ -761,7 +761,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     this.effectiveThinking = options.resumeState?.thinking ?? options.thinking;
     this.preserveThinkingOnNextScopeEntry = options.resumeState !== undefined;
     this.runtime = options.runtime ?? new PiAiRuntime();
-    this.modelCallTracer = options.modelCallTracer;
+    this.modelCallObserver = options.modelCallObserver;
     this.countTokens = options.countTokens ?? estimateTokensFromString;
     this.signal = options.signal;
     this.checkpoint = options.checkpoint;
@@ -1132,7 +1132,6 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       metadata: buildRuntimeRequestMetadata(this.context, this.turnCount),
       trace: llmContextRuntimeDump
         ? {
-            llmContextDump: llmContextRuntimeDump.dump,
             llmContextSections: llmContextRuntimeDump.sections,
           }
         : undefined,
@@ -1153,26 +1152,36 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     }
   }
 
-  private async recordModelCallTrace(input: {
+  private observeModelCall(input: {
     mode: "complete" | "stream";
+    attempt: number;
     request: LlmRuntimeRequest;
     startedAt: number;
     response?: AssistantMessage;
     error?: unknown;
-  }): Promise<void> {
-    if (!this.modelCallTracer) {
-      return;
-    }
+  }): void {
+    if (!this.modelCallObserver) return;
 
-    await this.modelCallTracer.recordModelCallTrace({
-      mode: input.mode,
-      request: input.request,
-      tools: this.agent.tools,
-      startedAt: input.startedAt,
-      finishedAt: Date.now(),
-      ...(input.response !== undefined ? {response: input.response} : {}),
-      ...(input.error !== undefined ? {error: input.error} : {}),
-    });
+    try {
+      this.modelCallObserver.observeModelCall({
+        mode: input.mode,
+        attempt: input.attempt,
+        request: input.request,
+        tools: this.agent.tools,
+        startedAt: input.startedAt,
+        finishedAt: Date.now(),
+        ...(input.response !== undefined ? {response: input.response} : {}),
+        ...(input.error !== undefined ? {error: input.error} : {}),
+      });
+    } catch (error) {
+      // Observability must never alter the provider result or retry decision.
+      console.error("Model call observer failed", {
+        runId: input.request.metadata?.runId,
+        turn: input.request.metadata?.turn,
+        attempt: input.attempt,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private async *runStepWithinScope(): AsyncGenerator<ThreadRunEvent, ThreadStepResult> {
@@ -1203,12 +1212,13 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       }
 
       if (attemptError === undefined) {
-        await this.recordModelCallTrace({mode: "complete", request, startedAt, response: response!});
+        this.observeModelCall({mode: "complete", attempt, request, startedAt, response: response!});
         break;
       }
 
-      await this.recordModelCallTrace({
+      this.observeModelCall({
         mode: "complete",
+        attempt,
         request,
         startedAt,
         ...(response !== undefined ? {response} : {}),
@@ -1325,12 +1335,13 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       }
 
       if (attemptError === undefined) {
-        await this.recordModelCallTrace({mode: "stream", request, startedAt, response: response!});
+        this.observeModelCall({mode: "stream", attempt, request, startedAt, response: response!});
         break;
       }
 
-      await this.recordModelCallTrace({
+      this.observeModelCall({
         mode: "stream",
+        attempt,
         request,
         startedAt,
         ...(response !== undefined ? {response} : {}),

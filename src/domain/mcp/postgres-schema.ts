@@ -1,9 +1,9 @@
-import type {PgPoolLike} from "../../lib/postgres-query.js";
+import type {PgQueryable} from "../../lib/postgres-query.js";
 import {CREATE_RUNTIME_SCHEMA_SQL} from "../../lib/postgres-relations.js";
 import {buildAgentTableNames} from "../agents/postgres-shared.js";
 import {buildMcpTableNames} from "./postgres-shared.js";
 
-export async function ensurePostgresMcpSchema(pool: PgPoolLike): Promise<void> {
+export async function ensurePostgresMcpSchema(pool: PgQueryable): Promise<void> {
   const tables = buildMcpTableNames();
   const agents = buildAgentTableNames();
   await pool.query(CREATE_RUNTIME_SCHEMA_SQL);

@@ -3,6 +3,8 @@ import {describe, expect, it, vi} from "vitest";
 import {RuntimeRequestRepo} from "../src/domain/threads/requests/repo.js";
 import type {DiscordMessageRequestPayload} from "../src/domain/threads/requests/types.js";
 
+const ORDERING_KEY = `v1:${"a".repeat(64)}`;
+
 function createFakeNotificationClient() {
   return {
     off: vi.fn(),
@@ -33,16 +35,13 @@ function createEnqueueRepo() {
   const pool = {
     connect: vi.fn(),
     query: vi.fn(async (sql: string, params: unknown[]) => {
-      if (sql.includes("pg_notify")) {
-        return {rows: []};
-      }
-
       return {
         rows: [{
           id: String(params[0]),
           kind: params[1],
           status: "pending",
           payload: JSON.parse(String(params[2])) as unknown,
+          ordering_key: params[3],
           result: null,
           error: null,
           claimed_at: null,
@@ -58,6 +57,35 @@ function createEnqueueRepo() {
     pool,
     repo: new RuntimeRequestRepo({pool}),
   };
+}
+
+function createMalformedClaimRepo(payload: unknown) {
+  const now = new Date();
+  const query = vi.fn(async (sql: string) => {
+    if (sql.includes("SET status = 'failed'")) {
+      return {rows: []};
+    }
+
+    return {
+      rows: [{
+        id: "7a0b9429-d5bf-41dc-9224-088cff4d2137",
+        kind: "telegram_message",
+        status: "running",
+        payload,
+        ordering_key: ORDERING_KEY,
+        result: null,
+        error: null,
+        claimed_at: now,
+        claim_token: "11111111-1111-4111-8111-111111111111",
+        claim_expires_at: new Date(now.getTime() + 60_000),
+        finished_at: null,
+        created_at: now,
+        updated_at: now,
+      }],
+    };
+  });
+  const pool = {connect: vi.fn(), query};
+  return {pool, repo: new RuntimeRequestRepo({pool})};
 }
 
 describe("RuntimeRequestRepo", () => {
@@ -77,13 +105,19 @@ describe("RuntimeRequestRepo", () => {
 
     await repo.enqueueRequest({kind: "discord_message", payload: validDiscordPayload()}, {idempotencyKey: "live_voice_delegation:turn-1"});
 
-    expect(pool.query.mock.calls[0]![1]![3]).toBe("live_voice_delegation:turn-1");
+    expect(pool.query.mock.calls[0]![1]![4]).toBe("live_voice_delegation:turn-1");
   });
 
   it("normalizes generic live voice delegation requests", async () => {
     const {repo} = createEnqueueRepo();
-    const request = await repo.enqueueRequest({kind: "live_voice_delegation", payload: {liveVoiceTurnId: "11111111-1111-4111-8111-111111111111"}});
-    expect(request).toMatchObject({kind: "live_voice_delegation", payload: {liveVoiceTurnId: "11111111-1111-4111-8111-111111111111"}});
+    const request = await repo.enqueueRequest({kind: "live_voice_delegation", payload: {
+      liveVoiceTurnId: "11111111-1111-4111-8111-111111111111",
+      sessionId: "session-1",
+    }});
+    expect(request).toMatchObject({kind: "live_voice_delegation", payload: {
+      liveVoiceTurnId: "11111111-1111-4111-8111-111111111111",
+      sessionId: "session-1",
+    }});
   });
 
   it("uses the notification pool for LISTEN clients", async () => {
@@ -143,6 +177,7 @@ describe("RuntimeRequestRepo", () => {
       kind: "telegram_message",
       status: "running",
       payload: validTelegramPayload,
+      ordering_key: ORDERING_KEY,
       result: null,
       error: null,
       claimed_at: claimedAt,
@@ -150,22 +185,17 @@ describe("RuntimeRequestRepo", () => {
       created_at: claimedAt,
       updated_at: claimedAt,
     };
-    const client = {
-      query: vi.fn(async (sql: string) => {
-        if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
-          return {rows: []};
-        }
-        return {rows: [row]};
-      }),
-      release: vi.fn(),
-    };
     const pool = {
-      connect: vi.fn(async () => client),
-      query: vi.fn(async () => ({rows: []})),
+      connect: vi.fn(),
+      query: vi.fn(async () => ({rows: [{
+        ...row,
+        claim_token: "11111111-1111-4111-8111-111111111111",
+        claim_expires_at: new Date(Date.now() + 123_456),
+      }]})),
     };
     const repo = new RuntimeRequestRepo({
       pool,
-      staleRunningRequestMs: 123_456,
+      claimLeaseMs: 123_456,
     });
 
     const claimed = await repo.claimNextPendingRequest();
@@ -175,90 +205,31 @@ describe("RuntimeRequestRepo", () => {
       status: "running",
       payload: row.payload,
     });
-    expect(client.query).toHaveBeenCalledWith(expect.stringContaining("status = 'running'"), [
-      expect.any(Date),
+    expect(pool.query).toHaveBeenCalledWith(expect.stringContaining("status = 'running'"), [
+      expect.any(String),
+      123_456,
     ]);
-    expect(client.query).toHaveBeenCalledWith(expect.stringContaining("claimed_at < $1"), [
-      expect.any(Date),
+    expect(pool.query).toHaveBeenCalledWith(expect.stringContaining("claim_expires_at <= NOW()"), [
+      expect.any(String),
+      123_456,
     ]);
-    expect(client.release).toHaveBeenCalledTimes(1);
+    expect(pool.connect).not.toHaveBeenCalled();
   });
 
-  it("claims stale legacy create_worker_session rows even when old payloads are incomplete", async () => {
-    const claimedAt = new Date(Date.now() - 10 * 60_000);
-    const row = {
-      id: "7a0b9429-d5bf-41dc-9224-088cff4d2137",
-      kind: "create_worker_session",
-      status: "running",
-      payload: {sessionId: "old-worker-session"},
-      result: null,
-      error: null,
-      claimed_at: claimedAt,
-      finished_at: null,
-      created_at: claimedAt,
-      updated_at: claimedAt,
-    };
-    const client = {
-      query: vi.fn(async (sql: string) => {
-        if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
-          return {rows: []};
-        }
-        return {rows: [row]};
-      }),
-      release: vi.fn(),
-    };
-    const repo = new RuntimeRequestRepo({
-      pool: {
-        connect: vi.fn(async () => client),
-        query: vi.fn(async () => ({rows: []})),
-      },
-      staleRunningRequestMs: 1,
-    });
+  it("returns an unfinished claim to the pending queue with the same token fence", async () => {
+    const query = vi.fn(async () => ({rows: [{id: "request-1"}]}));
+    const repo = new RuntimeRequestRepo({pool: {connect: vi.fn(), query}});
 
-    const claimed = await repo.claimNextPendingRequest();
+    await expect(repo.releaseRequestClaim(
+      "request-1",
+      "11111111-1111-4111-8111-111111111111",
+    )).resolves.toBe(true);
 
-    expect(claimed).toMatchObject({
-      kind: "create_worker_session",
-      status: "running",
-      payload: {sessionId: "old-worker-session"},
-    });
-    expect(client.query).toHaveBeenCalledWith(expect.stringContaining("SET status = 'running'"), [row.id]);
-  });
-
-  it("normalizes legacy reset command message ids", async () => {
-    const now = new Date();
-    const repo = new RuntimeRequestRepo({
-      pool: {
-        connect: vi.fn(),
-        query: vi.fn(async () => ({
-          rows: [{
-            id: "7a0b9429-d5bf-41dc-9224-088cff4d2137",
-            kind: "reset_session",
-            status: "pending",
-            payload: {
-              source: "telegram",
-              connectorKey: "bot-1",
-              externalConversationId: "chat-1",
-              commandExternalMessageId: "message-1",
-            },
-            result: null,
-            error: null,
-            claimed_at: null,
-            finished_at: null,
-            created_at: now,
-            updated_at: now,
-          }],
-        })),
-      },
-    });
-
-    const request = await repo.getRequest("7a0b9429-d5bf-41dc-9224-088cff4d2137");
-
-    expect(request.payload).toMatchObject({
-      source: "telegram",
-      externalMessageId: "message-1",
-    });
-    expect(request.payload).not.toHaveProperty("commandExternalMessageId");
+    expect(query).toHaveBeenCalledWith(expect.stringMatching(/SET status = 'pending'[\s\S]*claimed_at = NULL[\s\S]*claim_token = NULL/), [
+      "request-1",
+      "11111111-1111-4111-8111-111111111111",
+      "runtime_request_events",
+    ]);
   });
 
   it("loads session compaction requests without requiring custom instructions", async () => {
@@ -272,6 +243,7 @@ describe("RuntimeRequestRepo", () => {
             kind: "compact_session",
             status: "pending",
             payload: {sessionId: "session-1", customInstructions: ""},
+            ordering_key: ORDERING_KEY,
             result: null,
             error: null,
             claimed_at: null,
@@ -290,141 +262,37 @@ describe("RuntimeRequestRepo", () => {
       });
   });
 
-  it("rejects malformed persisted payloads before claiming requests", async () => {
-    const now = new Date();
-    const queries: string[] = [];
-    const client = {
-      query: vi.fn(async (sql: string) => {
-        queries.push(sql);
-        if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
-          return {rows: []};
-        }
-
-        if (sql.trimStart().startsWith("UPDATE")) {
-          throw new Error("should not update malformed runtime request");
-        }
-
-        return {
-          rows: [{
-            id: "7a0b9429-d5bf-41dc-9224-088cff4d2137",
-            kind: "telegram_message",
-            status: "pending",
-            payload: {connectorKey: "bot-1"},
-            result: null,
-            error: null,
-            claimed_at: null,
-            finished_at: null,
-            created_at: now,
-            updated_at: now,
-          }],
-        };
-      }),
-      release: vi.fn(),
-    };
-    const repo = new RuntimeRequestRepo({
-      pool: {
-        connect: vi.fn(async () => client),
-        query: vi.fn(async () => ({rows: []})),
-      },
-    });
+  it("quarantines malformed persisted payloads after claiming them", async () => {
+    const {pool, repo} = createMalformedClaimRepo({connectorKey: "bot-1"});
 
     await expect(repo.claimNextPendingRequest()).rejects.toThrow("Telegram conversation id");
 
-    expect(queries.some((query) => query.trimStart().startsWith("UPDATE"))).toBe(false);
-    expect(client.query).toHaveBeenCalledWith("ROLLBACK");
-    expect(client.release).toHaveBeenCalledTimes(1);
+    expect(pool.query.mock.calls.some(([sql]) => String(sql).includes("SET status = 'failed'"))).toBe(true);
+    expect(pool.connect).not.toHaveBeenCalled();
   });
 
-  it("rejects driver-shaped numeric payload fields before claiming requests", async () => {
-    const now = new Date();
-    const client = {
-      query: vi.fn(async (sql: string) => {
-        if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
-          return {rows: []};
-        }
-
-        if (sql.trimStart().startsWith("UPDATE")) {
-          throw new Error("should not update malformed runtime request");
-        }
-
-        return {
-          rows: [{
-            id: "7a0b9429-d5bf-41dc-9224-088cff4d2137",
-            kind: "telegram_message",
-            status: "pending",
-            payload: {
-              ...validTelegramPayload,
-              sentAt: "1",
-            },
-            result: null,
-            error: null,
-            claimed_at: null,
-            finished_at: null,
-            created_at: now,
-            updated_at: now,
-          }],
-        };
-      }),
-      release: vi.fn(),
-    };
-    const repo = new RuntimeRequestRepo({
-      pool: {
-        connect: vi.fn(async () => client),
-        query: vi.fn(async () => ({rows: []})),
-      },
+  it("quarantines driver-shaped numeric payload fields after claiming them", async () => {
+    const {pool, repo} = createMalformedClaimRepo({
+      ...validTelegramPayload,
+      sentAt: "1",
     });
 
     await expect(repo.claimNextPendingRequest()).rejects.toThrow(
       "Runtime request Telegram sent timestamp must be a finite number.",
     );
-    expect(client.query).toHaveBeenCalledWith("ROLLBACK");
-    expect(client.release).toHaveBeenCalledTimes(1);
+    expect(pool.query.mock.calls.some(([sql]) => String(sql).includes("SET status = 'failed'"))).toBe(true);
   });
 
-  it("rejects object-shaped optional string payload fields before claiming requests", async () => {
-    const now = new Date();
-    const client = {
-      query: vi.fn(async (sql: string) => {
-        if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
-          return {rows: []};
-        }
-
-        if (sql.trimStart().startsWith("UPDATE")) {
-          throw new Error("should not update malformed runtime request");
-        }
-
-        return {
-          rows: [{
-            id: "7a0b9429-d5bf-41dc-9224-088cff4d2137",
-            kind: "telegram_message",
-            status: "pending",
-            payload: {
-              ...validTelegramPayload,
-              username: {bad: true},
-            },
-            result: null,
-            error: null,
-            claimed_at: null,
-            finished_at: null,
-            created_at: now,
-            updated_at: now,
-          }],
-        };
-      }),
-      release: vi.fn(),
-    };
-    const repo = new RuntimeRequestRepo({
-      pool: {
-        connect: vi.fn(async () => client),
-        query: vi.fn(async () => ({rows: []})),
-      },
+  it("quarantines object-shaped optional string payload fields after claiming them", async () => {
+    const {pool, repo} = createMalformedClaimRepo({
+      ...validTelegramPayload,
+      username: {bad: true},
     });
 
     await expect(repo.claimNextPendingRequest()).rejects.toThrow(
       "Runtime request optional string field must be a string.",
     );
-    expect(client.query).toHaveBeenCalledWith("ROLLBACK");
-    expect(client.release).toHaveBeenCalledTimes(1);
+    expect(pool.query.mock.calls.some(([sql]) => String(sql).includes("SET status = 'failed'"))).toBe(true);
   });
 
   it("rejects unsupported persisted request statuses", async () => {

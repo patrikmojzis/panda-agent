@@ -16,12 +16,17 @@ import type {
 import type {MediaDescriptor} from "../../channels/types.js";
 
 export type {
-  AutoCompactionRuntimeState,
-  InferenceProjection,
+    AutoCompactionRuntimeState,
+    CompactBoundaryMetadata,
+    InferenceProjection,
   InferenceProjectionRule,
   ThreadMessageMetadata,
   ThreadMessageOrigin,
-  ThreadMessageRecord,
+    ThreadMessageRecord,
+    ThreadCompactionCommit,
+    ThreadTranscriptPage,
+    ThreadTranscriptPageOptions,
+    ThreadTranscriptSnapshot,
   ThreadRuntimeMessagePayload,
   ThreadRuntimeState,
 } from "../../../kernel/transcript/types.js";
@@ -29,10 +34,12 @@ export type {
 export interface CreateThreadInput {
   id: string;
   sessionId: string;
+  /** Thread replaced by this one in the same durable session, when applicable. */
+  replacesThreadId?: string;
   runtimeState?: ThreadRuntimeState;
 }
 
-export interface ThreadUpdate {
+export interface ThreadRuntimeStateUpdate {
   runtimeState?: ThreadRuntimeState | null;
 }
 
@@ -79,6 +86,7 @@ export function isMissingThreadError(error: unknown, threadId?: string): boolean
 }
 
 export type ThreadInputDeliveryMode = "wake" | "queue";
+export type ThreadInputStatus = "pending" | "applied" | "discarded";
 
 export interface ThreadSummaryRecord {
   thread: ThreadRecord;
@@ -92,15 +100,30 @@ export interface ThreadInputRecord extends ThreadMessageMetadata {
   threadId: string;
   order: number;
   deliveryMode: ThreadInputDeliveryMode;
+  status: ThreadInputStatus;
+  connectorKey: string;
+  createdAt: number;
+  /** Run that durably admitted this still-pending input. */
+  admittedRunId?: string;
+  appliedAt?: number;
+  appliedRunId?: string;
+  discardedAt?: number;
+}
+
+export type ThreadPendingInputRecord = ThreadInputRecord & {
+  status: "pending";
   message: Message;
   metadata?: JsonValue;
-  createdAt: number;
-  appliedAt?: number;
-}
+};
 
 export interface ThreadInputPayload extends ThreadMessageMetadata {
   message: Message;
   metadata?: JsonValue;
+}
+
+export interface ThreadEnqueueOptions {
+  /** Stable UUID supplied by durable producers that must survive retry and /reset. */
+  inputId?: string;
 }
 
 export interface ThreadChannelMessageFilter {
@@ -126,9 +149,17 @@ export interface ThreadChannelMediaRecord {
 
 export type ThreadRunStatus = "running" | "completed" | "failed";
 
+/** The renewable daemon lease that owns a durable thread run. */
+export interface ThreadRunOwner {
+  source: string;
+  connectorKey: string;
+  holderId: string;
+}
+
 export interface ThreadRunRecord {
   id: string;
   threadId: string;
+  owner?: ThreadRunOwner;
   status: ThreadRunStatus;
   startedAt: number;
   finishedAt?: number;
@@ -144,6 +175,8 @@ export interface ThreadToolJobRecord {
   id: string;
   threadId: string;
   runId?: string;
+  /** Immutable daemon lease owner used to fence every running-job mutation. */
+  owner?: ThreadRunOwner;
   parentToolCallId?: string;
   commandOrdinal?: number;
   kind: ThreadToolJobKind;
@@ -162,6 +195,8 @@ export interface CreateThreadToolJobInput {
   id: string;
   threadId: string;
   runId?: string;
+  /** Required for standalone jobs; run-owned jobs derive this from the run. */
+  owner?: ThreadRunOwner;
   parentToolCallId?: string;
   kind: ThreadToolJobKind;
   status?: ThreadToolJobStatus;
@@ -174,7 +209,7 @@ export interface CreateThreadToolJobInput {
 }
 
 export type ThreadToolJobUpdate = Partial<
-  Omit<CreateThreadToolJobInput, "id" | "threadId" | "runId" | "parentToolCallId" | "kind" | "result" | "error" | "statusReason" | "progress">
+  Omit<CreateThreadToolJobInput, "id" | "threadId" | "runId" | "owner" | "parentToolCallId" | "kind" | "result" | "error" | "statusReason" | "progress">
 > & {
   finishedAt?: number | null;
   durationMs?: number | null;

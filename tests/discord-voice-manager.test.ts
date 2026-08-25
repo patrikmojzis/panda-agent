@@ -77,7 +77,10 @@ describe("DiscordVoiceSessionManager", () => {
     harness.bridgeOptions.onTurnDone?.({role: "user"});
     await harness.bridgeOptions.onDelegation({id: "delegation-1", prompt: "check status"});
     expect(harness.voice.createOrGetTurn).toHaveBeenCalledWith(expect.objectContaining({liveVoiceSessionId: expect.any(String), providerDelegationId: "delegation-1", externalActorId: "user-1"}));
-    expect(harness.requests.enqueueRequest).toHaveBeenCalledWith({kind: "live_voice_delegation", payload: {liveVoiceTurnId: expect.any(String)}}, {idempotencyKey: expect.stringContaining("live_voice_delegation:")});
+    expect(harness.requests.enqueueRequest).toHaveBeenCalledWith({kind: "live_voice_delegation", payload: {
+      liveVoiceTurnId: expect.any(String),
+      sessionId: "session-1",
+    }}, {idempotencyKey: expect.stringContaining("live_voice_delegation:")});
 
     const liveVoiceTurnId = String(harness.voice.createOrGetTurn.mock.calls[0]![0].id);
     harness.turns.set(liveVoiceTurnId, {...harness.turns.get(liveVoiceTurnId), status: "running"});

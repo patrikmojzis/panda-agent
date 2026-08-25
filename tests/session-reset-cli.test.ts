@@ -78,8 +78,8 @@ const sessionResetCliMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("../src/lib/postgres-bootstrap.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/lib/postgres-bootstrap.js")>();
+vi.mock("../src/lib/postgres-database.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/postgres-database.js")>();
   return {
     ...actual,
     withPostgresPool: sessionResetCliMocks.withPostgresPool,

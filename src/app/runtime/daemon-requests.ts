@@ -33,13 +33,11 @@ import {readSubagentSessionMetadata} from "../../domain/subagents/session-metada
 import {requireIdentityId} from "./daemon-shared.js";
 import type {SessionCompactionService} from "./session-compaction-service.js";
 
-export const UNSUPPORTED_CREATE_WORKER_SESSION_REQUEST_ERROR = "Unsupported runtime request create_worker_session after subagent hard cut.";
-
 export interface DaemonRequestProcessorContext {
   runtime: {
     coordinator: Pick<
       ThreadRuntimeCoordinator,
-      "abort" | "resolveThreadRunConfig" | "runExclusively" | "submitInput"
+      "abort" | "resolveThreadRunConfig" | "runExclusively" | "submitInput" | "submitSessionInput"
     >;
     identityStore: Pick<IdentityStore, "getIdentity" | "resolveIdentityBinding">;
     sessionStore: Pick<SessionStore, "getSession" | "updateSessionRuntimeConfig">;
@@ -53,7 +51,7 @@ export interface DaemonRequestProcessorContext {
 
 type DaemonRequestStore = Pick<
   ThreadRuntimeStore,
-  "appendRuntimeMessage" | "getThread" | "hasRunnableInputs" | "loadTranscript" | "updateThread"
+  "commitCompaction" | "getThread" | "hasRunnableInputs" | "loadActiveTranscript"
 >;
 
 export type DaemonRequestThreadHelpers = Pick<
@@ -72,9 +70,10 @@ export type DaemonRequestThreadHelpers = Pick<
 export function createDaemonRequestProcessor(
   context: DaemonRequestProcessorContext,
   threads: DaemonRequestThreadHelpers,
-): (request: RuntimeRequestRecord) => Promise<unknown> {
+): (request: RuntimeRequestRecord, signal?: AbortSignal) => Promise<unknown> {
   const handleTuiInput = async (
     payload: TuiInputRequestPayload,
+    inputId: string,
   ): Promise<Record<string, unknown>> => {
     const identityId = requireIdentityId(payload.identityId, "tui_input");
     const thread = payload.threadId
@@ -85,8 +84,8 @@ export function createDaemonRequestProcessor(
 
     return handleTuiInputRequest(payload, identityId, thread, {
       coordinator: context.runtime.coordinator,
+      enqueueOptions: {inputId},
       routes: context.sessionRoutes,
-      sessions: context.runtime.sessionStore,
     });
   };
 
@@ -97,6 +96,7 @@ export function createDaemonRequestProcessor(
     const thread = await threads.createBranchSession({
       identity,
       sessionId: payload.sessionId,
+      threadId: payload.threadId,
       agentKey: payload.agentKey,
       model: payload.model,
       thinking: payload.thinking,
@@ -149,21 +149,24 @@ export function createDaemonRequestProcessor(
 
   const handleAbortThread = async (
     payload: AbortThreadRequestPayload,
+    requestId: string,
   ): Promise<Record<string, unknown>> => {
-    const aborted = await context.runtime.coordinator.abort(payload.threadId, payload.reason);
+    const aborted = await context.runtime.coordinator.abort(payload.threadId, payload.reason, requestId);
     return {aborted};
   };
 
   const handleCompactThread = async (
     payload: CompactThreadRequestPayload,
+    requestId: string,
   ): Promise<Record<string, unknown>> => {
-    return {...await context.runtime.sessionCompaction.compactThread(payload.threadId, payload.customInstructions)};
+    return {...await context.runtime.sessionCompaction.compactThread(payload.threadId, payload.customInstructions, requestId)};
   };
 
   const handleCompactSession = async (
     payload: CompactSessionRequestPayload,
+    requestId: string,
   ): Promise<Record<string, unknown>> => {
-    return {...await context.runtime.sessionCompaction.compactSession(payload.sessionId, payload.customInstructions)};
+    return {...await context.runtime.sessionCompaction.compactSession(payload.sessionId, payload.customInstructions, requestId)};
   };
 
   const handleResolveThreadRunConfig = async (
@@ -180,47 +183,39 @@ export function createDaemonRequestProcessor(
   const handleUpdateThread = async (
     payload: UpdateThreadRequestPayload,
   ): Promise<Record<string, unknown>> => {
-    const {model, thinking, inferenceProjection, pendingWakeAt, runtimeState} = payload.update;
-    const threadUpdate = {
-      ...(runtimeState !== undefined ? {runtimeState} : {}),
-    };
     const existingThread = await context.runtime.store.getThread(payload.threadId);
-    if (model !== undefined || thinking !== undefined || inferenceProjection !== undefined || pendingWakeAt !== undefined) {
+    if (Object.keys(payload.update).length > 0) {
       await context.runtime.sessionStore.updateSessionRuntimeConfig({
         sessionId: existingThread.sessionId,
-        ...(model !== undefined ? {model} : {}),
-        ...(thinking !== undefined ? {thinking} : {}),
-        ...(inferenceProjection !== undefined ? {inferenceProjection} : {}),
-        ...(pendingWakeAt !== undefined ? {pendingWakeAt} : {}),
+        ...payload.update,
       });
     }
-
-    const thread = Object.keys(threadUpdate).length > 0
-      ? await context.runtime.store.updateThread(payload.threadId, threadUpdate)
-      : existingThread;
-    return {threadId: thread.id};
+    return {threadId: existingThread.id};
   };
 
-  return async (request: RuntimeRequestRecord): Promise<unknown> => {
+  const processRequest = async (request: RuntimeRequestRecord): Promise<unknown> => {
+    const enqueueOptions = {inputId: request.id};
     switch (request.kind) {
       case "a2a_message":
         return handleA2AMessageRequest(request.payload, {
           bindings: context.a2aBindings,
           coordinator: context.runtime.coordinator,
+          enqueueOptions,
           sessions: context.runtime.sessionStore,
         });
       case "discord_message":
         return handleDiscordMessageRequest(request.payload, {
           coordinator: context.runtime.coordinator,
+          enqueueOptions,
           identityStore: context.runtime.identityStore,
           routes: context.sessionRoutes,
-          sessions: context.runtime.sessionStore,
           threads,
         });
       case "live_voice_delegation":
         return handleLiveVoiceDelegationRequest(request.payload, {
           voice: context.liveVoice,
           coordinator: context.runtime.coordinator,
+          enqueueOptions,
           sessions: context.runtime.sessionStore,
           identityStore: context.runtime.identityStore,
           renderDelegation: renderDiscordLiveVoiceDelegation,
@@ -228,43 +223,41 @@ export function createDaemonRequestProcessor(
       case "telegram_message":
         return handleTelegramRuntimeMessageRequest(request.payload, {
           coordinator: context.runtime.coordinator,
+          enqueueOptions,
           identityStore: context.runtime.identityStore,
           routes: context.sessionRoutes,
-          sessions: context.runtime.sessionStore,
           threads,
         });
       case "telegram_reaction":
         return handleTelegramReactionRequest(request.payload, {
           coordinator: context.runtime.coordinator,
+          enqueueOptions,
           identityStore: context.runtime.identityStore,
           routes: context.sessionRoutes,
-          sessions: context.runtime.sessionStore,
           threads,
         });
       case "whatsapp_message":
         return handleWhatsAppMessageRequest(request.payload, {
           coordinator: context.runtime.coordinator,
+          enqueueOptions,
           identityStore: context.runtime.identityStore,
           routes: context.sessionRoutes,
-          sessions: context.runtime.sessionStore,
           threads,
         });
       case "whatsapp_reaction":
         return handleWhatsAppReactionRequest(request.payload, {
           coordinator: context.runtime.coordinator,
+          enqueueOptions,
           identityStore: context.runtime.identityStore,
           routes: context.sessionRoutes,
-          sessions: context.runtime.sessionStore,
           threads,
         });
       case "tui_input":
-        return handleTuiInput(request.payload);
+        return handleTuiInput(request.payload, request.id);
       case "create_branch_session":
         return handleCreateBranchSession(request.payload);
       case "create_subagent_session":
         return handleCreateSubagentSession(request.payload);
-      case "create_worker_session":
-        throw new Error(UNSUPPORTED_CREATE_WORKER_SESSION_REQUEST_ERROR);
       case "resolve_main_session_thread": {
         const thread = await threads.openMainSession(
           request.payload,
@@ -274,17 +267,26 @@ export function createDaemonRequestProcessor(
       case "resolve_thread_run_config":
         return handleResolveThreadRunConfig(request.payload);
       case "reset_session":
-        return threads.handleResetSession(request.payload);
+        return threads.handleResetSession(request.payload, request.id);
       case "abort_thread":
-        return handleAbortThread(request.payload);
+        return handleAbortThread(request.payload, request.id);
       case "compact_thread":
-        return handleCompactThread(request.payload);
+        return handleCompactThread(request.payload, request.id);
       case "compact_session":
-        return handleCompactSession(request.payload);
+        return handleCompactSession(request.payload, request.id);
       case "update_thread":
         return handleUpdateThread(request.payload);
       default:
         throw new Error(`Unsupported runtime request ${(request as {kind: string}).kind}.`);
     }
+  };
+
+  return async (request, signal): Promise<unknown> => {
+    signal?.throwIfAborted();
+    const result = await processRequest(request);
+    // Shutdown releases, rather than settles, the claim. Every mutating
+    // handler above is replay-safe at its durable operation seam.
+    signal?.throwIfAborted();
+    return result;
   };
 }

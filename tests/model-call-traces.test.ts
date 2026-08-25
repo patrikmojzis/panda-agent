@@ -1,25 +1,30 @@
 import {DataType, newDb} from "pg-mem";
 import {afterEach, describe, expect, it, vi} from "vitest";
-import {createAssistantMessageEventStream, type AssistantMessage, type AssistantMessageEventStream} from "@earendil-works/pi-ai";
+import type {AssistantMessage} from "@earendil-works/pi-ai";
 import {z} from "zod";
 
+import {PostgresModelCallTraceStore} from "../src/domain/model-call-traces/postgres.js";
+import {ensurePostgresModelCallTraceSchema} from "../src/domain/model-call-traces/postgres-schema.js";
+import {
+  BufferedModelCallRecorder,
+  type ModelCallAttemptSink,
+} from "../src/domain/model-call-traces/recorder.js";
+import {buildSanitizedModelCallSnapshot} from "../src/domain/model-call-traces/redaction.js";
+import type {ModelCallAttemptWrite} from "../src/domain/model-call-traces/types.js";
+import {ensureReadonlySessionQuerySchema} from "../src/domain/threads/runtime/postgres-readonly.js";
 import {Agent} from "../src/kernel/agent/agent.js";
 import {ProviderRuntimeError} from "../src/kernel/agent/exceptions.js";
 import {LlmContext} from "../src/kernel/agent/llm-context.js";
-import type {LlmRuntime, LlmRuntimeRequest} from "../src/kernel/agent/runtime.js";
+import type {
+  LlmModelCallObservation,
+  LlmModelCallObserver,
+  LlmRuntime,
+  LlmRuntimeRequest,
+} from "../src/kernel/agent/runtime.js";
 import {Thread} from "../src/kernel/agent/thread.js";
 import {Tool} from "../src/kernel/agent/tool.js";
-import {PostgresModelCallTraceStore} from "../src/domain/model-call-traces/postgres.js";
-import {ensureReadonlySessionQuerySchema} from "../src/domain/threads/runtime/postgres-readonly.js";
 
 const pools: Array<{end(): Promise<void>}> = [];
-const PROMPT_CACHE_KEY_REDACTION_PATTERN = /^\[redacted:prompt-cache-key:sha256:[a-f0-9]{16}\]$/;
-const TRACE_CONTEXT_CONTENT = "llm context section with trace-context-value";
-const TRACE_CONTEXT_CACHE_PART = "trace-context-cache-raw-secret";
-const FUTURE_CONTEXT_CONTENT = "future llm context section with auto-display-value";
-const PROVIDER_CREDENTIAL_SENTINEL = "sk-retry247credential987654321";
-const PROVIDER_REQUEST_ID_SENTINEL = "req-retry247request987654321";
-const PROVIDER_PAYLOAD_SENTINEL = "RETRY247_PROVIDER_PAYLOAD_SENTINEL";
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -27,18 +32,7 @@ afterEach(async () => {
   while (pools.length > 0) await pools.pop()?.end();
 });
 
-async function createStore() {
-  const db = newDb({noAstCoverageCheck: true});
-  db.public.registerFunction({name: "current_setting", args: [DataType.text, DataType.bool], returns: DataType.text, implementation: () => "session-panda"});
-  const adapter = db.adapters.createPg();
-  const pool = new adapter.Pool();
-  pools.push(pool);
-  const store = new PostgresModelCallTraceStore({pool});
-  await store.ensureSchema();
-  return {pool, store};
-}
-
-function assistant(text: string, overrides: Partial<AssistantMessage> = {}): AssistantMessage {
+function assistant(text = "done"): AssistantMessage {
   return {
     role: "assistant",
     content: [{type: "text", text}],
@@ -54,20 +48,16 @@ function assistant(text: string, overrides: Partial<AssistantMessage> = {}): Ass
     },
     stopReason: "stop",
     timestamp: Date.UTC(2040, 0, 1),
-    ...overrides,
   };
 }
 
 class SecretTool extends Tool {
   name = "secret_tool";
-  description = "Tool used by trace redaction tests.";
+  description = "Tool used by recorder redaction tests.";
   schema = z.object({value: z.string().optional(), imageData: z.string().optional()});
 
   override redactCallArguments(args: Record<string, unknown>): Record<string, unknown> {
-    return {
-      ...args,
-      value: "[tool arg redacted]",
-    };
+    return {...args, value: "[tool arg redacted]"};
   }
 
   override redactResultMessage(message: Parameters<Tool["redactResultMessage"]>[0]): Parameters<Tool["redactResultMessage"]>[0] {
@@ -86,363 +76,532 @@ class SecretTool extends Tool {
 class TraceContext extends LlmContext {
   override name = "TraceContext";
   override source = "test-context-source";
-  override label = "Trace context label";
+
+  constructor(private readonly value = "trace context value") {
+    super();
+  }
 
   async getSnapshot() {
     return {
-      content: TRACE_CONTEXT_CONTENT,
-      promptCacheKeyPart: TRACE_CONTEXT_CACHE_PART,
-      label: this.label,
+      content: this.value,
       source: this.source,
+      promptCacheKeyPart: "context-cache-secret",
     };
   }
 
   async getContent(): Promise<string> {
-    return TRACE_CONTEXT_CONTENT;
+    return this.value;
   }
 }
 
+class CapturingSink implements ModelCallAttemptSink {
+  readonly attempts: ModelCallAttemptWrite[] = [];
+  purged = 0;
 
-class FutureTraceContext extends LlmContext {
-  override name = "FutureTraceContext";
-  override source = "future-context-source";
-  override label = "Future context label";
-
-  async getSnapshot() {
-    return {
-      content: FUTURE_CONTEXT_CONTENT,
-      label: this.label,
-      source: this.source,
-    };
+  async insertAttempts(attempts: readonly ModelCallAttemptWrite[]): Promise<void> {
+    this.attempts.push(...attempts);
   }
 
-  async getContent(): Promise<string> {
-    return FUTURE_CONTEXT_CONTENT;
+  async purgeExpiredBatch(): Promise<number> {
+    return this.purged;
   }
 }
 
 class CompleteRuntime implements LlmRuntime {
-  readonly complete = vi.fn(async (_request: LlmRuntimeRequest) => assistant("done"));
+  readonly complete = vi.fn(async () => assistant());
   readonly stream = vi.fn(() => {
     throw new Error("stream not used");
   });
-}
-
-function sensitiveTerminalErrorStream(): AssistantMessageEventStream {
-  const response = assistant("", {
-    stopReason: "error",
-    errorMessage: JSON.stringify({
-      error: {
-        message: `The server had an error. Bearer ${PROVIDER_CREDENTIAL_SENTINEL} requestId=${PROVIDER_REQUEST_ID_SENTINEL} payload={${PROVIDER_PAYLOAD_SENTINEL}}`,
-        type: "server_error",
-        code: "server_error",
-      },
-      status: 503,
-      request_id: PROVIDER_REQUEST_ID_SENTINEL,
-      debug: {payload: PROVIDER_PAYLOAD_SENTINEL},
-    }),
-  });
-  const stream = createAssistantMessageEventStream();
-  stream.push({type: "error", reason: "error", error: response});
-  return stream;
-}
-
-class SensitiveTerminalErrorRuntime implements LlmRuntime {
-  readonly complete = vi.fn(async () => sensitiveTerminalErrorStream().result());
-  readonly stream = vi.fn(() => sensitiveTerminalErrorStream());
-}
-
-function streamFor(result: AssistantMessage): AssistantMessageEventStream {
-  return {
-    async *[Symbol.asyncIterator]() {},
-    result: async () => result,
-  } as AssistantMessageEventStream;
 }
 
 class RecoveringRuntime implements LlmRuntime {
   readonly complete = vi.fn()
-    .mockRejectedValueOnce(new ProviderRuntimeError(
-      "Provider runtime failed; detail=try again later {\"messages\":[{\"content\":\"raw retry payload\"}]}",
-      {
-        providerName: "openai",
-        modelId: "gpt-test",
-        failureKind: "provider_server_error",
-        providerMessage: "try again later {\"messages\":[{\"content\":\"raw retry payload\"}]}",
-        status: 503,
-        retryable: true,
-      },
-    ))
-    .mockResolvedValue(assistant("recovered"));
+    .mockRejectedValueOnce(new ProviderRuntimeError("temporary provider failure", {
+      providerName: "openai",
+      modelId: "gpt-test",
+      status: 503,
+      retryable: true,
+      failureKind: "provider_server_error",
+      providerMessage: "temporary provider failure requestId=req-sensitive-value",
+    }))
+    .mockResolvedValue(assistant());
+
   readonly stream = vi.fn(() => {
     throw new Error("stream not used");
   });
 }
 
-class StreamRuntime implements LlmRuntime {
-  readonly complete = vi.fn(async () => assistant("not used"));
-  readonly stream = vi.fn((_request: LlmRuntimeRequest) => streamFor(assistant("streamed")));
+function createObservation(overrides: Partial<LlmModelCallObservation> = {}): LlmModelCallObservation {
+  const contextValue = "structured context";
+  return {
+    mode: "complete",
+    attempt: 1,
+    startedAt: Date.UTC(2040, 0, 1),
+    finishedAt: Date.UTC(2040, 0, 1) + 50,
+    tools: [new SecretTool()],
+    request: {
+      providerName: "openai",
+      modelId: "gpt-test",
+      promptCacheKey: "trace-cache:raw-secret",
+      metadata: {
+        runId: "00000000-0000-0000-0000-000000000101",
+        threadId: "thread-panda",
+        sessionId: "session-panda",
+        agentKey: "panda",
+        turn: 4,
+      },
+      context: {
+        systemPrompt: `base instructions\n\n${contextValue}`,
+        messages: [{role: "user", content: "hello"}],
+        tools: [],
+      },
+      trace: {
+        llmContextSections: [{
+          name: "TraceContext",
+          source: "test-context-source",
+          contentPreview: contextValue,
+          contentChars: contextValue.length,
+          estimatedTokens: 4,
+          dumpChars: contextValue.length + 20,
+        }],
+      },
+    },
+    response: assistant(),
+    ...overrides,
+  };
 }
 
-async function drainThread(thread: Thread): Promise<void> {
-  for await (const _event of thread.run()) {
-    // Drain the generator so the model call completes.
-  }
-}
-
-async function drainStream(thread: Thread): Promise<void> {
-  for await (const _event of thread.stream()) {
-    // Drain the generator so the stream result is observed once.
-  }
-}
-
-function createThread(input: {runtime: LlmRuntime; store: PostgresModelCallTraceStore; messages?: LlmRuntimeRequest["context"]["messages"]; promptCacheKey?: string; llmContexts?: LlmContext[]}) {
+function createThread(runtime: LlmRuntime, observer: LlmModelCallObserver): Thread {
   return new Thread({
     agent: new Agent({name: "panda", instructions: "base instructions", tools: [new SecretTool()]}),
-    messages: input.messages ?? [{role: "user", content: "hello"}],
+    messages: [{role: "user", content: "hello"}],
     context: {
       runId: "00000000-0000-0000-0000-000000000101",
       threadId: "thread-panda",
       sessionId: "session-panda",
       agentKey: "panda",
     },
-    llmContexts: input.llmContexts ?? [new TraceContext()],
-    promptCacheKey: input.promptCacheKey ?? "thread:trace-test",
+    llmContexts: [new TraceContext()],
+    promptCacheKey: "thread:trace-test",
     model: "openai/gpt-test",
-    runtime: input.runtime,
-    modelCallTracer: input.store,
+    runtime,
+    modelCallObserver: observer,
   });
 }
 
-describe("model call traces", () => {
-  it("writes one completed trace for a successful non-stream model call with context snapshots", async () => {
-    const {store} = await createStore();
+async function drainThread(thread: Thread): Promise<void> {
+  for await (const _event of thread.run()) {
+    // Drain the public generator exactly as runtime callers do.
+  }
+}
+
+async function createStore() {
+  const db = newDb({noAstCoverageCheck: true});
+  db.public.registerFunction({
+    name: "current_setting",
+    args: [DataType.text, DataType.bool],
+    returns: DataType.text,
+    implementation: () => "session-panda",
+  });
+  db.public.registerFunction({
+    name: "floor",
+    args: [DataType.float],
+    returns: DataType.float,
+    implementation: Math.floor,
+  });
+  const adapter = db.adapters.createPg();
+  const pool = new adapter.Pool();
+  pools.push(pool);
+  const store = new PostgresModelCallTraceStore({pool});
+  await ensurePostgresModelCallTraceSchema(pool);
+  return {pool, store};
+}
+
+describe("model call flight recorder", () => {
+  it("rejects a snapshot cap larger than the recorder queue budget", () => {
+    expect(() => new BufferedModelCallRecorder({
+      sink: new CapturingSink(),
+      snapshotMaxBytes: 128 * 1024,
+      maxQueueBytes: 64 * 1024,
+    })).toThrow("snapshot max bytes cannot exceed");
+  });
+
+  it("cannot change a successful model-call outcome when observation fails", async () => {
     const runtime = new CompleteRuntime();
+    const observer: LlmModelCallObserver = {
+      observeModelCall: () => {
+        throw new Error("trace database unavailable");
+      },
+    };
+    vi.spyOn(console, "error").mockImplementation(() => {});
 
-    await drainThread(createThread({runtime, store}));
+    await expect(drainThread(createThread(runtime, observer))).resolves.toBeUndefined();
+    expect(runtime.complete).toHaveBeenCalledOnce();
+  });
 
-    const traces = await store.listTraces();
-    expect(traces.data).toHaveLength(1);
-    const trace = traces.data[0]!;
-    expect(trace).toMatchObject({
-      runId: "00000000-0000-0000-0000-000000000101",
-      threadId: "thread-panda",
-      sessionId: "session-panda",
-      agentKey: "panda",
-      provider: "openai",
-      model: "gpt-test",
-      mode: "complete",
+  it("records lightweight metadata for successful calls without retaining request objects", async () => {
+    const sink = new CapturingSink();
+    const recorder = new BufferedModelCallRecorder({sink, successSnapshotSampleRate: 0});
+
+    recorder.observeModelCall(createObservation());
+    expect(sink.attempts).toHaveLength(0);
+    await recorder.flush();
+
+    expect(sink.attempts).toHaveLength(1);
+    expect(sink.attempts[0]).toMatchObject({
+      attempt: 1,
       status: "completed",
-      promptCacheKey: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
-      usageJson: expect.objectContaining({input: 11, output: 7, totalTokens: 23}),
+      snapshotStatus: "not_captured",
+      usage: {totalTokens: 23},
+      requestShape: {messageCount: 1, contextSectionCount: 1},
     });
-    expect(trace.durationMs).toBeGreaterThanOrEqual(0);
-    expect(trace.expiresAt).toBeGreaterThan(trace.finishedAt);
-    expect(trace.requestJson.promptCacheKey).toEqual(expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN));
-    expect(JSON.stringify(trace)).not.toContain("thread:trace-test");
-    expect(trace.requestJson.systemPrompt).toEqual(expect.stringContaining("base instructions"));
-    expect(trace.requestJson.systemPrompt).toEqual(expect.stringContaining("trace-context-value"));
-    expect(trace.requestJson.messages).toEqual([expect.objectContaining({role: "user", content: "hello"})]);
-    expect(trace.requestJson.tools).toEqual([expect.objectContaining({name: "secret_tool"})]);
-    expect(trace.requestJson.llmContextDump).toEqual(expect.stringContaining("TraceContext"));
-    expect(trace.requestJson.llmContextSections).toEqual([
-      expect.objectContaining({
-        name: "TraceContext",
-        source: "test-context-source",
-        label: "Trace context label",
-        content: expect.stringContaining("trace-context-value"),
-        contentPreview: TRACE_CONTEXT_CONTENT,
-        contentChars: TRACE_CONTEXT_CONTENT.length,
-        estimatedTokens: Math.ceil(TRACE_CONTEXT_CONTENT.length / 4),
-        dump: expect.stringContaining("TraceContext"),
-        dumpChars: expect.any(Number),
-        promptCacheKeyPart: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
-      }),
-    ]);
-    expect(JSON.stringify(trace.requestJson.llmContextSections)).not.toContain(TRACE_CONTEXT_CACHE_PART);
+    expect(sink.attempts[0]?.snapshot).toBeUndefined();
   });
 
-  it("records future LlmContext sections through the runtime dump pipeline", async () => {
-    const {store} = await createStore();
-    const runtime = new CompleteRuntime();
-
-    await drainThread(createThread({
-      runtime,
-      store,
-      llmContexts: [new TraceContext(), new FutureTraceContext()],
-    }));
-
-    const traces = await store.listTraces();
-    const sections = traces.data[0]?.requestJson.llmContextSections;
-    expect(sections).toEqual([
-      expect.objectContaining({name: "TraceContext"}),
-      expect.objectContaining({
-        name: "FutureTraceContext",
-        source: "future-context-source",
-        label: "Future context label",
-        contentPreview: FUTURE_CONTEXT_CONTENT,
-      }),
-    ]);
-    expect(JSON.stringify(sections)).toContain("auto-display-value");
-  });
-
-  it.each(["complete", "stream"] as const)(
-    "sanitizes installed terminal assistant errors in every exhausted %s trace",
-    async (mode) => {
-      vi.spyOn(Math, "random").mockReturnValue(0);
-      vi.spyOn(console, "warn").mockImplementation(() => {});
-      const {store} = await createStore();
-      const runtime = new SensitiveTerminalErrorRuntime();
-      const thread = createThread({runtime, store});
-
-      await expect(mode === "complete" ? drainThread(thread) : drainStream(thread)).rejects.toThrow(
-        "attempts=3; maxAttempts=3; retryExhausted=true",
-      );
-
-      const traces = await store.listTraces();
-      expect(traces.data).toHaveLength(3);
-      expect(traces.data.map((trace) => trace.status)).toEqual(["failed", "failed", "failed"]);
-      expect(traces.data.every((trace) => trace.callIndex === 1)).toBe(true);
-      expect(mode === "complete" ? runtime.complete : runtime.stream).toHaveBeenCalledTimes(3);
-      for (const trace of traces.data) {
-        expect(trace).toMatchObject({
-          runId: "00000000-0000-0000-0000-000000000101",
-          threadId: "thread-panda",
-          mode,
-          turn: 1,
-        });
-        expect(trace.errorJson).toMatchObject({category: "provider_server_error", status: 503});
-        expect(trace.responseJson).not.toHaveProperty("errorMessage");
-      }
-      const serializedTraces = JSON.stringify(traces.data);
-      for (const sentinel of [
-        PROVIDER_CREDENTIAL_SENTINEL,
-        PROVIDER_REQUEST_ID_SENTINEL,
-        PROVIDER_PAYLOAD_SENTINEL,
-      ]) expect(serializedTraces).not.toContain(sentinel);
-      expect(serializedTraces).toContain("[redacted:credential]");
-      expect(serializedTraces).toContain("[redacted:request-id]");
-    },
-  );
-
-  it("records failed and completed traces with common attribution for a successful retry", async () => {
+  it("assigns distinct attempt ordinals across a successful provider retry", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0);
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    const {store} = await createStore();
+    const sink = new CapturingSink();
+    const recorder = new BufferedModelCallRecorder({sink, successSnapshotSampleRate: 0});
     const runtime = new RecoveringRuntime();
 
-    await drainThread(createThread({runtime, store}));
+    await drainThread(createThread(runtime, recorder));
+    await recorder.flush();
 
-    const traces = await store.listTraces();
-    expect(traces.data).toHaveLength(2);
-    expect(traces.data.map((trace) => trace.status).sort()).toEqual(["completed", "failed"]);
-    expect(traces.data.every((trace) => trace.callIndex === 1)).toBe(true);
-    expect(traces.data.every((trace) => trace.runId === "00000000-0000-0000-0000-000000000101")).toBe(true);
-    expect(traces.data.every((trace) => trace.threadId === "thread-panda")).toBe(true);
-    expect(traces.data.every((trace) => trace.turn === 1)).toBe(true);
-    expect(JSON.stringify(traces.data)).not.toContain("raw retry payload");
+    expect(sink.attempts.map((attempt) => attempt.attempt)).toEqual([1, 2]);
+    expect(sink.attempts.map((attempt) => attempt.status)).toEqual(["failed", "completed"]);
+    expect(sink.attempts[0]?.snapshot).toBeDefined();
+    expect(sink.attempts[1]?.snapshot).toBeUndefined();
+    expect(JSON.stringify(sink.attempts[0]?.failure)).not.toContain("req-sensitive-value");
+    const providerRequest = runtime.complete.mock.calls[0]?.[0];
+    expect(providerRequest?.trace).not.toHaveProperty("llmContextDump");
+    expect(providerRequest?.trace?.llmContextSections?.[0]).not.toHaveProperty("content");
+    expect(providerRequest?.trace?.llmContextSections?.[0]).not.toHaveProperty("dump");
+    expect(providerRequest?.trace?.llmContextSections?.[0]).not.toHaveProperty("promptCacheKeyPart");
   });
 
-  it("writes one final trace for streaming after the stream result resolves", async () => {
+  it("bounds malformed failure metadata before it reaches indexed columns", async () => {
+    const sink = new CapturingSink();
+    const recorder = new BufferedModelCallRecorder({sink});
+    const error = new Error("provider failed");
+    error.name = `token=secret-value-${"x".repeat(5_000)}`;
+
+    recorder.observeModelCall(createObservation({
+      error,
+      response: undefined,
+    }));
+    await recorder.flush();
+
+    expect(sink.attempts[0]?.failure?.category.length).toBeLessThanOrEqual(128);
+    expect(sink.attempts[0]?.failure?.category).not.toContain("secret-value");
+  });
+
+  it("defers snapshot sanitization until the background drain", async () => {
+    const sink = new CapturingSink();
+    const tool = new SecretTool();
+    const redact = vi.spyOn(tool, "redactCallArguments");
+    const recorder = new BufferedModelCallRecorder({sink, batchSize: 1});
+    const observation = createObservation({
+      tools: [tool],
+      error: new Error("provider failed"),
+      response: undefined,
+      request: {
+        ...createObservation().request,
+        context: {
+          ...createObservation().request.context,
+          messages: [{
+            role: "assistant",
+            content: [{type: "toolCall", id: "tool-1", name: "secret_tool", arguments: {value: "secret"}}],
+            api: "openai-responses",
+            model: "openai/gpt-test",
+            usage: assistant().usage,
+            stopReason: "toolUse",
+            timestamp: Date.UTC(2040, 0, 1),
+          }],
+        },
+      },
+    });
+
+    recorder.observeModelCall(observation);
+    expect(redact).not.toHaveBeenCalled();
+    await recorder.flush();
+    expect(redact).toHaveBeenCalledOnce();
+    const serialized = JSON.stringify(sink.attempts[0]?.snapshot);
+    expect(serialized).toContain("[tool arg redacted]");
+    expect(serialized).not.toContain('"value":"secret"');
+    expect(serialized).not.toContain("trace-cache:raw-secret");
+    expect(serialized).not.toContain("context-cache-secret");
+  });
+
+  it("prepares new snapshots while an earlier database batch is blocked", async () => {
+    let releaseFirstWrite!: () => void;
+    const firstWriteBlocked = new Promise<void>((resolve) => {
+      releaseFirstWrite = resolve;
+    });
+    const attempts: ModelCallAttemptWrite[] = [];
+    let writes = 0;
+    const sink: ModelCallAttemptSink = {
+      insertAttempts: async (batch) => {
+        writes += 1;
+        if (writes === 1) await firstWriteBlocked;
+        attempts.push(...batch);
+      },
+      purgeExpiredBatch: async () => 0,
+    };
+    const firstTool = new SecretTool();
+    const secondTool = new SecretTool();
+    const firstRedactor = vi.spyOn(firstTool, "redactCallArguments");
+    const secondRedactor = vi.spyOn(secondTool, "redactCallArguments");
+    const withToolCall = (tool: SecretTool, attempt: number): LlmModelCallObservation => createObservation({
+      attempt,
+      tools: [tool],
+      error: new Error("provider failed"),
+      response: undefined,
+      request: {
+        ...createObservation().request,
+        context: {
+          ...createObservation().request.context,
+          messages: [{
+            role: "assistant",
+            content: [{type: "toolCall", id: `tool-${attempt}`, name: "secret_tool", arguments: {value: "secret"}}],
+            api: "openai-responses",
+            model: "openai/gpt-test",
+            usage: assistant().usage,
+            stopReason: "toolUse",
+            timestamp: Date.UTC(2040, 0, 1),
+          }],
+        },
+      },
+    });
+    const recorder = new BufferedModelCallRecorder({sink, batchSize: 1});
+
+    recorder.observeModelCall(withToolCall(firstTool, 1));
+    await vi.waitFor(() => expect(writes).toBe(1));
+    expect(firstRedactor).toHaveBeenCalledOnce();
+
+    recorder.observeModelCall(withToolCall(secondTool, 2));
+    await vi.waitFor(() => expect(secondRedactor).toHaveBeenCalledOnce());
+    expect(attempts).toHaveLength(0);
+
+    releaseFirstWrite();
+    await recorder.flush();
+    expect(attempts.map((attempt) => attempt.attempt)).toEqual([1, 2]);
+  });
+
+  it("drains once on close and rejects later observations without throwing", async () => {
+    const sink = new CapturingSink();
+    const recorder = new BufferedModelCallRecorder({sink});
+    recorder.observeModelCall(createObservation());
+
+    await Promise.all([recorder.close(), recorder.close()]);
+    expect(sink.attempts).toHaveLength(1);
+
+    recorder.observeModelCall(createObservation({attempt: 2}));
+    expect(recorder.snapshotStats()).toMatchObject({
+      queuedItems: 0,
+      droppedAttempts: 1,
+      writtenAttempts: 1,
+    });
+  });
+
+  it("drops oversized tool payloads before invoking tool-owned redactors", () => {
+    const tool = new SecretTool();
+    const redact = vi.spyOn(tool, "redactCallArguments");
+    const observation = createObservation({
+      tools: [tool],
+      request: {
+        ...createObservation().request,
+        context: {
+          ...createObservation().request.context,
+          messages: [{
+            role: "assistant",
+            content: [{
+              type: "toolCall",
+              id: "tool-large",
+              name: "secret_tool",
+              arguments: {value: "x".repeat(128 * 1024)},
+            }],
+            api: "openai-responses",
+            model: "openai/gpt-test",
+            usage: assistant().usage,
+            stopReason: "toolUse",
+            timestamp: Date.UTC(2040, 0, 1),
+          }],
+        },
+      },
+    });
+
+    const snapshot = buildSanitizedModelCallSnapshot(observation, 64 * 1024);
+    expect(redact).not.toHaveBeenCalled();
+    expect(JSON.stringify(snapshot.requestJson)).toContain("tool_arguments_capture_budget");
+    expect(snapshot.bytes).toBeLessThanOrEqual(64 * 1024);
+  });
+
+  it("deduplicates context and hard-caps forensic snapshots", () => {
+    const contextValue = "context value with punctuation. ".repeat(20_000);
+    const userValue = "large user message with punctuation. ".repeat(20_000);
+    const observation = createObservation({
+      request: {
+        ...createObservation().request,
+        context: {
+          ...createObservation().request.context,
+          systemPrompt: `base\n\n${contextValue}`,
+          messages: [{role: "user", content: userValue}],
+        },
+        trace: {
+          llmContextSections: [{
+            name: "LargeContext",
+            contentPreview: contextValue.slice(0, 500),
+            contentChars: contextValue.length,
+            estimatedTokens: Math.ceil(contextValue.length / 4),
+            dumpChars: contextValue.length,
+          }],
+        },
+      },
+    });
+
+    const snapshot = buildSanitizedModelCallSnapshot(observation, 64 * 1024);
+    const serialized = JSON.stringify(snapshot.requestJson);
+
+    expect(snapshot.bytes).toBeLessThanOrEqual(64 * 1024);
+    expect(snapshot.truncated).toBe(true);
+    expect(snapshot.requestJson).not.toHaveProperty("llmContextDump");
+    expect(serialized).not.toContain('"content":"context value');
+    expect(serialized).not.toContain('"dump":"context value');
+    expect(snapshot.requestJson.llmContextSections).toEqual([
+      expect.objectContaining({name: "LargeContext", contentChars: contextValue.length}),
+    ]);
+  });
+
+  it("enforces the queue byte budget by dropping snapshots before attempt metadata", async () => {
+    const sink = new CapturingSink();
+    const snapshotMaxBytes = 64 * 1024;
+    const recorder = new BufferedModelCallRecorder({
+      sink,
+      snapshotMaxBytes,
+      maxQueueBytes: snapshotMaxBytes + 512,
+      maxQueueItems: 10,
+      batchSize: 10,
+    });
+    const failure = new Error("provider failed");
+
+    recorder.observeModelCall(createObservation({error: failure, response: undefined}));
+    recorder.observeModelCall(createObservation({attempt: 2, error: failure, response: undefined}));
+
+    expect(recorder.snapshotStats()).toMatchObject({
+      queuedItems: 2,
+      droppedAttempts: 0,
+      droppedSnapshots: 1,
+    });
+    await recorder.flush();
+    expect(sink.attempts.map((attempt) => attempt.snapshotStatus).sort()).toEqual(["captured", "dropped"]);
+  });
+
+  it("stores narrow list rows and loads snapshots only for detail", async () => {
+    const {pool, store} = await createStore();
+    const recorder = new BufferedModelCallRecorder({sink: store, successSnapshotSampleRate: 1});
+    recorder.observeModelCall(createObservation());
+    await recorder.flush();
+
+    const querySpy = vi.spyOn(pool, "query");
+    const listed = await store.listTraces();
+    const listSql = querySpy.mock.calls.map(([sql]) => String(sql)).join("\n");
+    expect(listed.data).toHaveLength(1);
+    expect(listed.data[0]?.snapshot).toBeUndefined();
+    expect(listSql).not.toContain("request_json");
+    expect(listSql).not.toContain("model_call_snapshots");
+
+    const detail = await store.getTrace(listed.data[0]!.id);
+    expect(detail?.snapshot).toMatchObject({truncated: false});
+    expect(detail?.snapshot?.requestJson).not.toHaveProperty("llmContextDump");
+  });
+
+  it("groups failures with a fixed query count and keeps snapshot payloads out of the path", async () => {
+    const {pool, store} = await createStore();
+    const recorder = new BufferedModelCallRecorder({sink: store});
+    for (const [attempt, errorName] of [[1, "provider_timeout"], [2, "provider_timeout"], [3, "tool_schema"]] as const) {
+      const error = new Error(`${errorName} ${attempt}`);
+      error.name = errorName;
+      recorder.observeModelCall(createObservation({
+        attempt,
+        startedAt: Date.UTC(2040, 0, 1, 0, attempt),
+        finishedAt: Date.UTC(2040, 0, 1, 0, attempt) + 50,
+        error,
+        response: undefined,
+      }));
+    }
+    await recorder.flush();
+
+    const querySpy = vi.spyOn(pool, "query");
+    await expect(store.listFailureGroups({}, 3)).resolves.toMatchObject([
+      {count: 2, label: "provider_timeout", summary: "provider_timeout 2"},
+      {count: 1, label: "tool_schema", summary: "tool_schema 3"},
+    ]);
+    expect(querySpy).toHaveBeenCalledTimes(2);
+    expect(querySpy.mock.calls.map(([sql]) => String(sql)).join("\n")).not.toContain("model_call_snapshots");
+  });
+
+  it("aggregates usage into bounded database buckets", async () => {
     const {store} = await createStore();
-    const runtime = new StreamRuntime();
-
-    await drainStream(createThread({runtime, store}));
-
-    const traces = await store.listTraces();
-    expect(traces.data).toHaveLength(1);
-    expect(traces.data[0]).toMatchObject({mode: "stream", status: "completed"});
-    expect(runtime.stream).toHaveBeenCalledTimes(1);
-  });
-
-  it("preserves token-shaped request prose while redacting tool payloads and blobs before persistence", async () => {
-    const {pool, store} = await createStore();
-    const base64Blob = Buffer.from("private image bytes".repeat(20)).toString("base64");
-    const toolCall = {
-      role: "assistant" as const,
-      content: [{type: "toolCall", id: "call-1", name: "secret_tool", arguments: {value: "unsafe tool secret", imageData: base64Blob}}],
-      stopReason: "toolUse" as const,
-      api: "openai-responses",
-      model: "openai/gpt-test",
-      usage: {input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0}},
-      timestamp: Date.now(),
-    };
-    const toolResult = {
-      role: "toolResult" as const,
-      toolCallId: "call-1",
-      toolName: "secret_tool",
-      content: [{type: "image", data: base64Blob, mimeType: "image/png"}],
-      details: {apiKey: "secret-key-value", token: "secret-token-value"},
-      isError: false,
-      timestamp: Date.now(),
-    };
-
-    await drainThread(createThread({
-      runtime: new CompleteRuntime(),
-      store,
-      messages: [
-        {role: "user", content: `Bearer seededBearerSecret token=sk-seededOpenAiSecret cookie sessionid=seeded-cookie-value https://panda.patrikmojzis.com/apps/open?token=pal_launch-token`},
-        toolCall,
-        toolResult,
-      ],
+    const recorder = new BufferedModelCallRecorder({sink: store});
+    const from = Date.UTC(2040, 0, 1);
+    recorder.observeModelCall(createObservation({
+      attempt: 1,
+      startedAt: from + 10 * 60_000,
+      finishedAt: from + 10 * 60_000 + 50,
     }));
-
-    const rows = await pool.query(`SELECT request_json, response_json, error_json, usage_json FROM "runtime"."model_call_traces"`);
-    const persisted = JSON.stringify(rows.rows);
-    for (const sentinel of [
-      "seededBearerSecret",
-      "sk-seededOpenAiSecret",
-      "seeded-cookie-value",
-      "https://panda.patrikmojzis.com/apps/open?token=pal_launch-token",
-    ]) expect(persisted).toContain(sentinel);
-    for (const sentinel of [
-      "unsafe tool secret",
-      base64Blob,
-      "secret-key-value",
-      "secret-token-value",
-    ]) expect(persisted).not.toContain(sentinel);
-    expect(persisted).toContain("[tool arg redacted]");
-    expect(persisted).toContain("large_blob");
-  });
-
-  it("redacts unadorned prompt cache keys in both trace columns", async () => {
-    const {pool, store} = await createStore();
-    const rawSecret = "promptCacheKeySecretForTrace";
-    const rawPromptCacheKey = `trace-cache:${rawSecret}`;
-
-    await drainThread(createThread({
-      runtime: new CompleteRuntime(),
-      store,
-      promptCacheKey: rawPromptCacheKey,
+    recorder.observeModelCall(createObservation({
+      attempt: 2,
+      startedAt: from + 70 * 60_000,
+      finishedAt: from + 70 * 60_000 + 50,
     }));
+    await recorder.flush();
 
-    const rows = await pool.query(`SELECT prompt_cache_key, request_json FROM "runtime"."model_call_traces"`);
-    expect(rows.rows).toHaveLength(1);
-    const row = rows.rows[0] as {prompt_cache_key: string | null; request_json: {promptCacheKey?: unknown}};
-    expect(row.prompt_cache_key).toEqual(expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN));
-    expect(row.prompt_cache_key).not.toContain(rawSecret);
-    expect(row.prompt_cache_key).not.toContain(rawPromptCacheKey);
-    expect(row.request_json.promptCacheKey).toBe(row.prompt_cache_key);
-    expect(JSON.stringify(row.request_json)).not.toContain(rawSecret);
-    expect(JSON.stringify(row.request_json)).not.toContain(rawPromptCacheKey);
+    await expect(store.listUsageBuckets({from, to: from + 2 * 60 * 60_000, bucketMs: 60 * 60_000}))
+      .resolves.toEqual([
+        expect.objectContaining({startedAt: from, calls: 1, usageCalls: 1, totalTokens: 23}),
+        expect.objectContaining({startedAt: from + 60 * 60_000, calls: 1, usageCalls: 1, totalTokens: 23}),
+      ]);
   });
 
-  it("purges expired traces and leaves unexpired traces in place", async () => {
-    const {pool, store} = await createStore();
-    await pool.query(`
-      INSERT INTO "runtime"."model_call_traces" (
-        id, provider, model, mode, status, started_at, finished_at, duration_ms, request_json, expires_at
-      ) VALUES
-        ('00000000-0000-0000-0000-000000000201', 'openai', 'gpt-test', 'complete', 'completed', '2040-01-01', '2040-01-01', 1, '{}'::jsonb, '2040-01-02'),
-        ('00000000-0000-0000-0000-000000000202', 'openai', 'gpt-test', 'complete', 'completed', '2040-01-03', '2040-01-03', 1, '{}'::jsonb, '2040-01-10')
-    `);
+  it("purges snapshots and metadata in bounded batches", async () => {
+    const {store} = await createStore();
+    const expired = Date.UTC(2039, 0, 1);
+    const observation = createObservation({finishedAt: expired - 100});
+    const sink = new BufferedModelCallRecorder({
+      sink: store,
+      now: () => expired,
+      successSnapshotSampleRate: 1,
+      attemptRetentionDays: 1,
+      snapshotRetentionDays: 1,
+    });
+    sink.observeModelCall(observation);
+    await sink.flush();
 
-    await expect(store.purgeExpired(Date.parse("2040-01-05T00:00:00.000Z"))).resolves.toBe(1);
-
-    const remaining = await store.listTraces();
-    expect(remaining.data.map((trace) => trace.id)).toEqual(["00000000-0000-0000-0000-000000000202"]);
+    await store.purgeExpiredBatch(expired + 2 * 24 * 60 * 60 * 1_000, 10);
+    await expect(store.listTraces()).resolves.toMatchObject({data: []});
   });
 
-  it("does not add model-call traces to session readonly SQL surfaces", async () => {
+  it("preserves the capture outcome after the short-lived snapshot expires", async () => {
+    const {store} = await createStore();
+    const finishedAt = Date.UTC(2040, 0, 1);
+    const recorder = new BufferedModelCallRecorder({
+      sink: store,
+      successSnapshotSampleRate: 1,
+      attemptRetentionDays: 90,
+      snapshotRetentionDays: 1,
+    });
+    recorder.observeModelCall(createObservation({finishedAt}));
+    await recorder.flush();
+    const [attempt] = (await store.listTraces()).data;
+
+    await store.purgeExpiredBatch(finishedAt + 2 * 24 * 60 * 60 * 1_000, 10);
+    const detail = await store.getTrace(attempt!.id);
+    expect(detail?.snapshotStatus).toBe("captured");
+    expect(detail?.snapshot).toBeUndefined();
+  });
+
+  it("does not expose model-call telemetry through session readonly SQL", async () => {
     const queries: string[] = [];
     const views = await ensureReadonlySessionQuerySchema({
       queryable: {
@@ -454,6 +613,7 @@ describe("model call traces", () => {
     });
 
     expect(Object.values(views).join(" ")).not.toContain("model_call");
-    expect(queries.join("\n")).not.toContain("model_call_traces");
+    expect(queries.join("\n")).not.toContain("model_call_attempt");
+    expect(queries.join("\n")).not.toContain("model_call_snapshot");
   });
 });

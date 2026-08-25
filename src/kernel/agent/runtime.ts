@@ -7,17 +7,13 @@ export interface LlmRuntimeRequestTraceSection {
   name: string;
   source?: string;
   label?: string;
-  content: string;
   contentPreview?: string;
   contentChars?: number;
   estimatedTokens?: number;
-  dump: string;
   dumpChars?: number;
-  promptCacheKeyPart?: string;
 }
 
 export interface LlmRuntimeRequestTraceContext {
-  llmContextDump?: string;
   llmContextSections?: readonly LlmRuntimeRequestTraceSection[];
 }
 
@@ -42,8 +38,9 @@ export interface LlmRuntimeRequest {
   context: Context;
 }
 
-export interface LlmModelCallTraceInput {
+export interface LlmModelCallObservation {
   mode: "complete" | "stream";
+  attempt: number;
   request: LlmRuntimeRequest;
   tools: readonly Tool[];
   startedAt: number;
@@ -52,8 +49,12 @@ export interface LlmModelCallTraceInput {
   error?: unknown;
 }
 
-export interface LlmModelCallTracer {
-  recordModelCallTrace(input: LlmModelCallTraceInput): Promise<void>;
+/**
+ * A best-effort observability seam. Implementations must only enqueue bounded
+ * work: model-call telemetry is never allowed to participate in run outcome.
+ */
+export interface LlmModelCallObserver {
+  observeModelCall(input: LlmModelCallObservation): void;
 }
 
 export interface LlmRuntime {

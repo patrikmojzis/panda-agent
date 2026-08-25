@@ -23,7 +23,7 @@ export type CompactAttemptDiagnostics = JsonObject & {
   activeTranscriptTokens: number;
   summaryRecordCount?: number;
   preservedTailRecordCount?: number;
-  compactedUpToSequence?: number;
+  compactedThroughSequence?: number;
   compactionInputChars?: number;
   preservedTailTokens?: number;
   summaryTokenBudget?: number;
@@ -32,6 +32,25 @@ export type CompactAttemptDiagnostics = JsonObject & {
   rawTextChars?: number;
   parsedSummaryChars?: number;
   error?: string;
+};
+
+export type CompactBoundaryMetadata = JsonObject & {
+  kind: "compact_boundary";
+  compactedThroughSequence: number;
+  preservedTailUserTurns: number;
+  trigger: "manual" | "auto";
+  tokensBefore: number | null;
+  tokensAfter: number | null;
+  diagnostics?: CompactAttemptDiagnostics;
+};
+
+export type CompactFailureNoticeMetadata = JsonObject & {
+  kind: "compact_failure_notice";
+  trigger: "auto";
+  reason: string;
+  consecutiveFailures: number;
+  cooldownUntil: number | null;
+  diagnostics?: CompactAttemptDiagnostics;
 };
 
 export interface AutoCompactionRuntimeState {
@@ -79,6 +98,7 @@ export interface ThreadMessageRecord extends ThreadMessageMetadata {
   threadId: string;
   sequence: number;
   origin: ThreadMessageOrigin;
+  inputId?: string;
   message: Message;
   metadata?: JsonValue;
   runId?: string;
@@ -89,6 +109,41 @@ export interface ThreadRuntimeMessagePayload extends ThreadMessageMetadata {
   origin?: ThreadMessageOrigin;
   message: Message;
   metadata?: JsonValue;
+  runId?: string;
+  createdAt?: number;
+}
+
+export interface ThreadTranscriptSnapshot {
+  checkpointId: string | null;
+  records: readonly ThreadMessageRecord[];
+}
+
+export type ThreadTranscriptPageOptions =
+  | {
+    /** Read older history, returned in ascending replay order. */
+    beforeSequence?: number;
+    afterSequence?: never;
+    limit?: number;
+  }
+  | {
+    /** Seek only records appended after an already observed sequence. */
+    afterSequence: number;
+    beforeSequence?: never;
+    limit?: number;
+  };
+
+export interface ThreadTranscriptPage {
+  records: readonly ThreadMessageRecord[];
+  nextBeforeSequence?: number;
+  nextAfterSequence?: number;
+}
+
+export interface ThreadCompactionCommit {
+  /** Stable durable-operation id; a replay returns the already committed checkpoint. */
+  id?: string;
+  expectedCheckpointId: string | null;
+  message: Message;
+  metadata: CompactBoundaryMetadata;
   runId?: string;
   createdAt?: number;
 }

@@ -1,15 +1,106 @@
 import {CREATE_RUNTIME_SCHEMA_SQL, quoteIdentifier} from "../../lib/postgres-relations.js";
 
-import {addConstraint, assertIntegrityChecks} from "../../lib/postgres-integrity.js";
+import {addConstraint, assertIntegrityChecks, type IntegrityCheckGroup} from "../../lib/postgres-integrity.js";
 import {buildIdentityTableNames} from "../identity/postgres-shared.js";
-import type {PgPoolLike} from "../../lib/postgres-query.js";
+import type {PgQueryable} from "../../lib/postgres-query.js";
 import {
     buildThreadRuntimeTableNames} from "../threads/runtime/postgres-shared.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import {buildWatchTableNames} from "./postgres-shared.js";
 
+export function buildWatchIntegrityChecks(): IntegrityCheckGroup {
+  const tables = buildWatchTableNames();
+  const threadTableName = buildThreadRuntimeTableNames().threads;
+  return {
+    scope: "Watch schema",
+    checks: [
+      {
+        label: "watch_runs.watch_id orphaned from watches.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.watchRuns} AS run
+          LEFT JOIN ${tables.watches} AS watch ON watch.id = run.watch_id
+          WHERE watch.id IS NULL
+        `,
+      },
+      {
+        label: "watch_runs watch/session mismatch",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.watchRuns} AS run
+          INNER JOIN ${tables.watches} AS watch ON watch.id = run.watch_id
+          WHERE watch.session_id <> run.session_id
+        `,
+      },
+      {
+        label: "watch_runs.resolved_thread_id orphaned from threads.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.watchRuns} AS run
+          LEFT JOIN ${threadTableName} AS thread ON thread.id = run.resolved_thread_id
+          WHERE run.resolved_thread_id IS NOT NULL AND thread.id IS NULL
+        `,
+      },
+      {
+        label: "watch_runs.resolved_thread_id bound to another session",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.watchRuns} AS run
+          INNER JOIN ${threadTableName} AS thread ON thread.id = run.resolved_thread_id
+          WHERE run.resolved_thread_id IS NOT NULL AND thread.session_id <> run.session_id
+        `,
+      },
+      {
+        label: "watch_runs.emitted_event_id orphaned from watch_events.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.watchRuns} AS run
+          LEFT JOIN ${tables.watchEvents} AS event ON event.id = run.emitted_event_id
+          WHERE run.emitted_event_id IS NOT NULL AND event.id IS NULL
+        `,
+      },
+      {
+        label: "watch_runs.emitted_event_id bound to another watch",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.watchRuns} AS run
+          INNER JOIN ${tables.watchEvents} AS event ON event.id = run.emitted_event_id
+          WHERE run.emitted_event_id IS NOT NULL AND event.watch_id <> run.watch_id
+        `,
+      },
+      {
+        label: "watch_events watch/session mismatch",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.watchEvents} AS event
+          INNER JOIN ${tables.watches} AS watch ON watch.id = event.watch_id
+          WHERE watch.session_id <> event.session_id
+        `,
+      },
+      {
+        label: "watch_events.resolved_thread_id orphaned from threads.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.watchEvents} AS event
+          LEFT JOIN ${threadTableName} AS thread ON thread.id = event.resolved_thread_id
+          WHERE event.resolved_thread_id IS NOT NULL AND thread.id IS NULL
+        `,
+      },
+      {
+        label: "watch_events.resolved_thread_id bound to another session",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.watchEvents} AS event
+          INNER JOIN ${threadTableName} AS thread ON thread.id = event.resolved_thread_id
+          WHERE event.resolved_thread_id IS NOT NULL AND thread.session_id <> event.session_id
+        `,
+      },
+    ],
+  };
+}
+
 /** Ensures watch storage schema, migrations, and cross-table integrity constraints. */
-export async function ensurePostgresWatchSchema(pool: PgPoolLike): Promise<void> {
+export async function ensurePostgresWatchSchema(pool: PgQueryable): Promise<void> {
   const tables = buildWatchTableNames();
   const identityTableName = buildIdentityTableNames().identities;
   const sessionTableName = buildSessionTableNames().sessions;
@@ -115,104 +206,8 @@ export async function ensurePostgresWatchSchema(pool: PgPoolLike): Promise<void>
     ALTER TABLE ${tables.watchEvents}
     ALTER COLUMN resolved_thread_id DROP NOT NULL
   `);
-  await assertIntegrityChecks(pool, "Watch schema", [
-    {
-      label: "watch_runs.watch_id orphaned from watches.id",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.watchRuns} AS run
-        LEFT JOIN ${tables.watches} AS watch
-          ON watch.id = run.watch_id
-        WHERE watch.id IS NULL
-      `,
-    },
-    {
-      label: "watch_runs watch/session mismatch",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.watchRuns} AS run
-        INNER JOIN ${tables.watches} AS watch
-          ON watch.id = run.watch_id
-        WHERE watch.session_id <> run.session_id
-      `,
-    },
-    {
-      label: "watch_runs.resolved_thread_id orphaned from threads.id",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.watchRuns} AS run
-        LEFT JOIN ${threadTableName} AS thread
-          ON thread.id = run.resolved_thread_id
-        WHERE run.resolved_thread_id IS NOT NULL
-          AND thread.id IS NULL
-      `,
-    },
-    {
-      label: "watch_runs.resolved_thread_id bound to another session",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.watchRuns} AS run
-        INNER JOIN ${threadTableName} AS thread
-          ON thread.id = run.resolved_thread_id
-        WHERE run.resolved_thread_id IS NOT NULL
-          AND thread.session_id <> run.session_id
-      `,
-    },
-    {
-      label: "watch_runs.emitted_event_id orphaned from watch_events.id",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.watchRuns} AS run
-        LEFT JOIN ${tables.watchEvents} AS event
-          ON event.id = run.emitted_event_id
-        WHERE run.emitted_event_id IS NOT NULL
-          AND event.id IS NULL
-      `,
-    },
-    {
-      label: "watch_runs.emitted_event_id bound to another watch",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.watchRuns} AS run
-        INNER JOIN ${tables.watchEvents} AS event
-          ON event.id = run.emitted_event_id
-        WHERE run.emitted_event_id IS NOT NULL
-          AND event.watch_id <> run.watch_id
-      `,
-    },
-    {
-      label: "watch_events watch/session mismatch",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.watchEvents} AS event
-        INNER JOIN ${tables.watches} AS watch
-          ON watch.id = event.watch_id
-        WHERE watch.session_id <> event.session_id
-      `,
-    },
-    {
-      label: "watch_events.resolved_thread_id orphaned from threads.id",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.watchEvents} AS event
-        LEFT JOIN ${threadTableName} AS thread
-          ON thread.id = event.resolved_thread_id
-        WHERE event.resolved_thread_id IS NOT NULL
-          AND thread.id IS NULL
-      `,
-    },
-    {
-      label: "watch_events.resolved_thread_id bound to another session",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.watchEvents} AS event
-        INNER JOIN ${threadTableName} AS thread
-          ON thread.id = event.resolved_thread_id
-        WHERE event.resolved_thread_id IS NOT NULL
-          AND thread.session_id <> event.session_id
-      `,
-    },
-  ]);
+  const integrity = buildWatchIntegrityChecks();
+  await assertIntegrityChecks(pool, integrity.scope, integrity.checks);
   await pool.query(`
     UPDATE ${tables.watchRuns}
     SET resolved_thread_session_id = NULL

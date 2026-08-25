@@ -1,10 +1,52 @@
 import {quoteIdentifier, CREATE_RUNTIME_SCHEMA_SQL} from "../../lib/postgres-relations.js";
 
-import {addConstraint, assertIntegrityChecks} from "../../lib/postgres-integrity.js";
+import {addConstraint, assertIntegrityChecks, type IntegrityCheckGroup} from "../../lib/postgres-integrity.js";
 import {buildAgentTableNames} from "../agents/postgres-shared.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import type {PgQueryable} from "../../lib/postgres-query.js";
 import {buildEmailTableNames} from "./postgres-shared.js";
+
+export function buildEmailIntegrityChecks(): IntegrityCheckGroup {
+  const tables = buildEmailTableNames();
+  const agentTableName = buildAgentTableNames().agents;
+  const sessionTableName = buildSessionTableNames().sessions;
+  return {
+    scope: "Email schema",
+    checks: [
+      {
+        label: "email_routes.session_id orphaned from agent_sessions.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.emailRoutes} AS route
+          LEFT JOIN ${sessionTableName} AS session
+            ON session.id = route.session_id
+          WHERE session.id IS NULL
+        `,
+      },
+      {
+        label: "email_messages.session_id orphaned from agent_sessions.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.emailMessages} AS message
+          LEFT JOIN ${sessionTableName} AS session
+            ON session.id = message.session_id
+          WHERE message.session_id IS NOT NULL
+            AND session.id IS NULL
+        `,
+      },
+      {
+        label: "email_accounts.agent_key orphaned from agents.agent_key",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.emailAccounts} AS account
+          LEFT JOIN ${agentTableName} AS agent
+            ON agent.agent_key = account.agent_key
+          WHERE agent.agent_key IS NULL
+        `,
+      },
+    ],
+  };
+}
 
 export async function ensurePostgresEmailSchema(pool: PgQueryable): Promise<void> {
   const tables = buildEmailTableNames();
@@ -191,39 +233,8 @@ export async function ensurePostgresEmailSchema(pool: PgQueryable): Promise<void
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_email_recipients_message_idx`)}
     ON ${tables.emailMessageRecipients} (message_id, role)
   `);
-  await assertIntegrityChecks(pool, "Email schema", [
-    {
-      label: "email_routes.session_id orphaned from agent_sessions.id",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.emailRoutes} AS route
-        LEFT JOIN ${sessionTableName} AS session
-          ON session.id = route.session_id
-        WHERE session.id IS NULL
-      `,
-    },
-    {
-      label: "email_messages.session_id orphaned from agent_sessions.id",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.emailMessages} AS message
-        LEFT JOIN ${sessionTableName} AS session
-          ON session.id = message.session_id
-        WHERE message.session_id IS NOT NULL
-          AND session.id IS NULL
-      `,
-    },
-    {
-      label: "email_accounts.agent_key orphaned from agents.agent_key",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.emailAccounts} AS account
-        LEFT JOIN ${agentTableName} AS agent
-          ON agent.agent_key = account.agent_key
-        WHERE agent.agent_key IS NULL
-      `,
-    },
-  ]);
+  const integrity = buildEmailIntegrityChecks();
+  await assertIntegrityChecks(pool, integrity.scope, integrity.checks);
   await addConstraint(pool, `
     ALTER TABLE ${tables.emailAccounts}
     ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_email_accounts_agent_fk`)}

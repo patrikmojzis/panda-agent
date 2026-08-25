@@ -7,7 +7,7 @@ import type {ThreadRecord} from "../../domain/threads/runtime/types.js";
 import type {ChatRuntimeServices} from "./runtime.js";
 import {buildChatHelpText, describeUnknownCommand, runChatCommandLine} from "./chat-commands.js";
 import {resolveStoredThreadDisplayConfig} from "../shared/stored-thread.js";
-import {collectThreadUsageSnapshot, formatThreadUsageSnapshot,} from "./usage-summary.js";
+import {collectThreadUsageSnapshot, formatThreadUsageSnapshot, scanStoredThreadUsage,} from "./usage-summary.js";
 import {
     type EntryRole,
     formatThinkingLevel,
@@ -162,9 +162,10 @@ async function handleUsageCommand(host: ChatCommandHost): Promise<boolean> {
   try {
     const services = host.requireServices();
     const threadId = host.getCurrentThreadId();
-    const [thread, transcript] = await Promise.all([
+    const [thread, activeTranscript, storedUsage] = await Promise.all([
       services.getThread(threadId),
-      services.store.loadTranscript(threadId),
+      services.store.loadActiveTranscript(threadId),
+      scanStoredThreadUsage(services.store, threadId),
     ]);
     const fallbackRunConfig = {
       model: host.getModel(),
@@ -176,7 +177,8 @@ async function handleUsageCommand(host: ChatCommandHost): Promise<boolean> {
       : fallbackRunConfig;
     const summary = formatThreadUsageSnapshot(collectThreadUsageSnapshot({
       thread,
-      transcript,
+      activeTranscript: activeTranscript.records,
+      storedUsage,
       model: runConfig.model,
       thinking: runConfig.thinking,
       inferenceProjection: runConfig.inferenceProjection,

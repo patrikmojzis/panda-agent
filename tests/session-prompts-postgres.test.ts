@@ -1,7 +1,8 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
-import {PostgresSessionStore, resetSessionCurrentThread} from "../src/domain/sessions/index.js";
+import {PostgresSessionStore} from "../src/domain/sessions/index.js";
+import {ensurePostgresSessionSchema} from "../src/domain/sessions/postgres-schema.js";
 
 class DropViewRecordingPool {
   readonly droppedViews: string[] = [];
@@ -207,7 +208,7 @@ describe("session prompts in Postgres", () => {
 
     const migrationPool = new DropViewRecordingPool(pool);
     const migrationSessionStore = new PostgresSessionStore({pool: migrationPool});
-    await migrationSessionStore.ensureSchema();
+    await ensurePostgresSessionSchema(migrationPool);
 
     expect(migrationPool.droppedViews).toHaveLength(1);
     await expect(migrationSessionStore.readSessionPrompt("panda-main", "brief")).resolves.toMatchObject({
@@ -431,23 +432,20 @@ describe("session prompts in Postgres", () => {
       kind: "branch",
       currentThreadId: "thread-before",
     });
+    await threadStore.createThread({id: "thread-before", sessionId: "session-reset"});
     await sessionStore.setSessionPrompt({
       sessionId: "session-reset",
       content: "Reset must not erase this.",
     });
 
-    await resetSessionCurrentThread({
-      pool,
-      sessionStore,
-      threadStore,
-      thread: {
-        id: "thread-after",
-        sessionId: "session-reset",
-      },
-      session: {
-        sessionId: "session-reset",
-        currentThreadId: "thread-after",
-      },
+    await threadStore.createThread({
+      id: "thread-after",
+      sessionId: "session-reset",
+      replacesThreadId: "thread-before",
+    });
+    await sessionStore.updateCurrentThread({
+      sessionId: "session-reset",
+      currentThreadId: "thread-after",
     });
 
     await expect(sessionStore.getSession("session-reset")).resolves.toMatchObject({

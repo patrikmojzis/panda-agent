@@ -65,7 +65,7 @@ function readableContextValue(value: unknown): string | null {
   const record = asRecord(value)
   if (!record) return null
 
-  for (const key of ["content", "systemPrompt", "llmContextDump", "text", "dump", "contentPreview"]) {
+  for (const key of ["systemPrompt", "text", "contentPreview"]) {
     const readable = readableContextValue(record[key])
     if (readable !== null) return readable
   }
@@ -354,9 +354,11 @@ export function buildDebugReport(
     `session: ${trace.sessionId ?? "-"}`,
     `thread: ${trace.threadId ?? "-"}`,
     `run: ${trace.runId ?? "-"}`,
-    `turn/call: ${trace.turn ?? "-"}/${trace.callIndex ?? "-"}`,
+    `turn/attempt: ${trace.turn ?? "-"}/${trace.attempt}`,
     `spans: ${viewModel.spans.length} total, ${viewModel.summary.toolCalls} tools, ${viewModel.summary.messageCount} messages`,
-    `capture: ${findings.length > 0 ? findings.map((finding) => finding.label).join(", ") : "complete"}`,
+    `snapshot: ${trace.snapshotStatus}`,
+    `snapshot available: ${trace.snapshotAvailable ? "yes" : "no"}`,
+    `capture findings: ${findings.length > 0 ? findings.map((finding) => finding.label).join(", ") : "none"}`,
   ]
   if (viewModel.summary.triageItems.length > 0) {
     lines.push(

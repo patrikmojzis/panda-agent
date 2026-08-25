@@ -2,6 +2,7 @@ import type {A2AMessageRequestPayload} from "../../../domain/threads/requests/ty
 import type {SessionStore} from "../../../domain/sessions/store.js";
 import {submitCurrentSessionInput} from "../../../domain/sessions/current-thread.js";
 import type {ThreadRuntimeCoordinator} from "../../../domain/threads/runtime/coordinator.js";
+import type {ThreadEnqueueOptions} from "../../../domain/threads/runtime/types.js";
 import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
 import {A2A_SOURCE} from "../../../domain/a2a/constants.js";
 import {buildA2AInboundPersistence, buildA2AInboundText} from "./helpers.js";
@@ -20,7 +21,8 @@ export interface A2AInboundRequestBindings {
 
 export interface A2AInboundRequestHandlerOptions {
   bindings: A2AInboundRequestBindings;
-  coordinator: Pick<ThreadRuntimeCoordinator, "submitInput">;
+  coordinator: Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
+  enqueueOptions?: ThreadEnqueueOptions;
   sessions: Pick<SessionStore, "getSession">;
 }
 
@@ -51,9 +53,9 @@ export async function handleA2AMessageRequest(
 
   const persistence = buildA2AInboundPersistence(payload);
   const {threadId} = await submitCurrentSessionInput({
-    sessions: options.sessions,
     sessionId: session.id,
     coordinator: options.coordinator,
+    ...(options.enqueueOptions === undefined ? {} : {options: options.enqueueOptions}),
     payload: {
       source: A2A_SOURCE,
       channelId: payload.fromSessionId,

@@ -152,7 +152,7 @@ export async function deliverGatewayEventToThread(input: {
   sessionStore: GatewayDeliverySessionStore;
   source: GatewaySourceRecord;
   store: GatewayDeliveryStore;
-  threadStore: Pick<ThreadRuntimeStore, "enqueueInput">;
+  threadStore: Pick<ThreadRuntimeStore, "enqueueSessionInput">;
 }): Promise<void> {
   const attachments = await resolveEventAttachments({
     attachments: input.attachments,
@@ -209,7 +209,6 @@ export async function deliverGatewayEventToThread(input: {
   let target;
   try {
     target = await enqueueCurrentSessionInput({
-      sessions: input.sessionStore,
       sessionId,
       threads: input.threadStore,
       mode: input.event.deliveryEffective,

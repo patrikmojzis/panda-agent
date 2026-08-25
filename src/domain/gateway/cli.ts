@@ -6,7 +6,7 @@ import {Command, InvalidArgumentError} from "commander";
 import {DB_URL_OPTION_DESCRIPTION, parsePositiveIntegerOption} from "../../lib/cli.js";
 import {requireJsonValue, type JsonValue} from "../../lib/json.js";
 import {generateOpaqueToken, hashOpaqueToken} from "../../lib/opaque-tokens.js";
-import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
+import {withPostgresPool} from "../../lib/postgres-database.js";
 import {parseAgentKey, ensureAgent} from "../agents/cli.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
 import {parseIdentityHandle} from "../identity/cli.js";
@@ -154,13 +154,6 @@ async function withGatewayStores<T>(
       sessionStore: new PostgresSessionStore({pool}),
       threadStore: new PostgresThreadRuntimeStore({pool}),
     };
-    await ensureSchemas([
-      stores.identityStore,
-      stores.agentStore,
-      stores.sessionStore,
-      stores.threadStore,
-      stores.gatewayStore,
-    ]);
     return fn(stores);
   });
 }

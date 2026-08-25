@@ -14,7 +14,11 @@ describe("web research command", () => {
       id: "thread-1",
       sessionId: "session-main",
     });
-    const jobService = new BackgroundToolJobService({store});
+    const run = await store.createRun("thread-1");
+    const jobService = new BackgroundToolJobService({
+      store,
+      owner: {source: "test", connectorKey: "web-research", holderId: "web-research-owner"},
+    });
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       id: "resp_123",
       status: "completed",
@@ -51,6 +55,7 @@ describe("web research command", () => {
         agentKey: "panda",
         sessionId: "session-main",
         threadId: "thread-1",
+        runId: run.id,
       },
     });
 
@@ -66,6 +71,7 @@ describe("web research command", () => {
     const jobId = String(result.output.jobId);
     const record = await jobService.wait("thread-1", jobId, 1_000);
     expect(record).toMatchObject({
+      runId: run.id,
       status: "completed",
       result: {
         contentText: expect.stringContaining("TypeScript shipped a release."),
@@ -86,7 +92,10 @@ describe("web research command", () => {
       id: "thread-1",
       sessionId: "session-main",
     });
-    const jobService = new BackgroundToolJobService({store});
+    const jobService = new BackgroundToolJobService({
+      store,
+      owner: {source: "test", connectorKey: "web-research", holderId: "web-research-owner"},
+    });
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
       id: "resp_456",
       status: "completed",

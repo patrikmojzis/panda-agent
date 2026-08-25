@@ -26,58 +26,51 @@ describe("current session thread delivery", () => {
     );
   });
 
-  it("submits to the current thread resolved at delivery time", async () => {
-    let currentThreadId = "thread-before-reset";
+  it("submits by session so the store resolves the current thread atomically", async () => {
     const payload = {
       source: "test",
       message: stringToUserMessage("hello"),
     };
-    const sessions = {
-      getSession: vi.fn(async () => createSession(currentThreadId)),
-    };
     const coordinator = {
-      submitInput: vi.fn(async () => {}),
+      submitSessionInput: vi.fn(async () => ({
+        input: {id: "input-1", threadId: "thread-after-reset"},
+        disposition: "inserted" as const,
+      })),
     };
-
-    currentThreadId = "thread-after-reset";
 
     const target = await submitCurrentSessionInput({
       sessionId: "session-1",
-      sessions,
       coordinator,
       mode: "queue",
       payload,
     });
 
     expect(target.threadId).toBe("thread-after-reset");
-    expect(coordinator.submitInput).toHaveBeenCalledWith("thread-after-reset", payload, "queue");
+    expect(coordinator.submitSessionInput).toHaveBeenCalledWith("session-1", payload, "queue", undefined);
   });
 
   it("queues to the current thread and defaults to wake delivery", async () => {
-    let currentThreadId = "thread-before-reset";
     const payload = {
       source: "test",
       message: stringToUserMessage("hello"),
     };
-    const sessions = {
-      getSession: vi.fn(async () => createSession(currentThreadId)),
-    };
     const threads = {
-      enqueueInput: vi.fn(async () => ({
-        id: "input-1",
+      enqueueSessionInput: vi.fn(async () => ({
+        input: {
+          id: "input-1",
+          threadId: "thread-after-reset",
+        },
+        disposition: "inserted" as const,
       })),
     };
 
-    currentThreadId = "thread-after-reset";
-
     const target = await enqueueCurrentSessionInput({
       sessionId: "session-1",
-      sessions,
       threads,
       payload,
     });
 
     expect(target.threadId).toBe("thread-after-reset");
-    expect(threads.enqueueInput).toHaveBeenCalledWith("thread-after-reset", payload, "wake");
+    expect(threads.enqueueSessionInput).toHaveBeenCalledWith("session-1", payload, "wake", undefined);
   });
 });

@@ -67,7 +67,7 @@ function resolveRelativeImport(fromFile, specifier) {
 
 function isDomainCliAppImportAllowed(fromPath, toPath) {
   return /^src\/domain\/.+\/cli\.ts$/.test(fromPath)
-    && (toPath.startsWith("src/app/cli") || toPath.startsWith("src/app/runtime/postgres-bootstrap"));
+    && toPath.startsWith("src/app/cli");
 }
 
 function isKernelProviderSharedImportAllowed(toPath) {

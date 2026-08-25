@@ -100,27 +100,24 @@ describe("agent app HTTP runtime", () => {
       createdAt: 1,
       updatedAt: 1,
     };
-    const submitInput = vi.fn(async () => undefined);
+    const submitSessionInput = vi.fn(async () => ({
+      input: {id: "input-1", threadId: "thread-after-reset"},
+      disposition: "inserted" as const,
+    }));
     const wake = buildAgentAppWakeHandler({
       agentKey: "panda",
       appSlug: "period-tracker",
       actionName: "log_period",
       sessionId: session.id,
-      sessionStore: {
-        getSession: async (sessionId) => {
-          expect(sessionId).toBe(session.id);
-          return session;
-        },
-      },
       coordinator: {
-        submitInput,
+        submitSessionInput,
       },
     });
 
     session.currentThreadId = "thread-after-reset";
     await wake("Period tracker logged a new entry.");
 
-    expect(submitInput).toHaveBeenCalledWith("thread-after-reset", expect.objectContaining({
+    expect(submitSessionInput).toHaveBeenCalledWith("session-main", expect.objectContaining({
       source: "app_http",
       channelId: "period-tracker",
       metadata: expect.objectContaining({
@@ -129,6 +126,6 @@ describe("agent app HTTP runtime", () => {
         appSlug: "period-tracker",
         actionName: "log_period",
       }),
-    }), "wake");
+    }), "wake", undefined);
   });
 });

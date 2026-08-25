@@ -5,8 +5,8 @@ import {
   ensureReadonlySessionQuerySchema,
   READONLY_SESSION_VIEW_BASENAMES,
 } from "../src/domain/threads/runtime/index.js";
-import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/index.js";
-import {PostgresWatchStore} from "../src/domain/watches/index.js";
+import {ensurePostgresScheduledTaskSchema} from "../src/domain/scheduling/tasks/postgres-schema.js";
+import {ensurePostgresWatchSchema} from "../src/domain/watches/postgres-schema.js";
 import {createSessionWithInitialThread} from "../src/domain/sessions/lifecycle.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
@@ -165,83 +165,6 @@ class PgMemReadonlySchemaQueryable {
   }
 }
 
-class PgMemPoolWithDropViewIfExistsSupport {
-  private readonlyThreadsViewDropped = false;
-  private threadRuntimeSchemaEnsured = false;
-  private threadRuntimeMigrationsTableEnsured = false;
-
-  constructor(
-    private readonly pool: {
-      connect(): Promise<any>;
-      end(): Promise<void>;
-      query(text: string, values?: readonly unknown[]): Promise<any>;
-    },
-  ) {}
-
-  async connect(): Promise<any> {
-    return this.pool.connect();
-  }
-
-  async end(): Promise<void> {
-    await this.pool.end();
-  }
-
-  async query(text: string, values?: readonly unknown[]): Promise<any> {
-    const normalized = text.trim().replace(/;$/, "");
-    if (/^DROP VIEW IF EXISTS "session"\."threads"$/i.test(normalized)) {
-      this.readonlyThreadsViewDropped = true;
-      return { rows: [] };
-    }
-
-    if (/^CREATE VIEW "session"\."threads"(?:\s|$)/i.test(normalized)) {
-      this.readonlyThreadsViewDropped = false;
-    }
-
-    if (
-      this.readonlyThreadsViewDropped
-      && /\bFROM\s+"session"\."threads"(?:\s|$)/i.test(text)
-    ) {
-      throw new Error('relation "session.threads" does not exist');
-    }
-
-    if (
-      this.threadRuntimeMigrationsTableEnsured
-      && text.includes('CREATE TABLE IF NOT EXISTS "runtime"."thread_runtime_migrations"')
-    ) {
-      return { rows: [] };
-    }
-
-    if (
-      this.threadRuntimeSchemaEnsured
-      && text.includes('CREATE TABLE IF NOT EXISTS "runtime"."messages"')
-    ) {
-      const statements = text
-        .split(";")
-        .map((statement) => statement.trim())
-        .filter(Boolean);
-
-      for (const statement of statements) {
-        if (/^CREATE TABLE IF NOT EXISTS "runtime"\."(messages|inputs|runs|tool_jobs|bash_jobs|shell_states)"(?:\s|\()/i.test(statement)) {
-          continue;
-        }
-
-        await this.query(statement);
-      }
-
-      return { rows: [] };
-    }
-
-    const result = await this.pool.query(text, values);
-    if (text.includes('CREATE TABLE IF NOT EXISTS "runtime"."messages"')) {
-      this.threadRuntimeSchemaEnsured = true;
-    }
-    if (text.includes('CREATE TABLE IF NOT EXISTS "runtime"."thread_runtime_migrations"')) {
-      this.threadRuntimeMigrationsTableEnsured = true;
-    }
-    return result;
-  }
-}
-
 function createScopedPool() {
   const db = newDb();
   const scope = new Map<string, string | null>();
@@ -319,13 +242,10 @@ describe("ensureReadonlySessionQuerySchema", () => {
     }
   });
 
-  it("creates split session views and grants access to them", async () => {
+  it("creates split session views without embedding deployment-specific grants", async () => {
     const queryable = new RecordingQueryable();
 
-    const views = await ensureReadonlySessionQuerySchema({
-      queryable,
-      readonlyRole: "readonly_user",
-    });
+    const views = await ensureReadonlySessionQuerySchema({queryable});
 
     expect(views).toEqual({
       agentSessions: "\"session\".\"agent_sessions\"",
@@ -357,7 +277,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
       READONLY_SESSION_VIEW_BASENAMES.map((name) => `"session"."${name}"`),
     );
 
-    expect(queryable.queries).toHaveLength(2);
+    expect(queryable.queries).toHaveLength(1);
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"agent_sessions\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"todos\"");
     expect(queryable.queries[0]).toContain("jsonb_array_length(todo.items)");
@@ -393,19 +313,13 @@ describe("ensureReadonlySessionQuerySchema", () => {
     expect(queryable.queries[0]).toContain("active_session.id = prompt.session_id");
     expect(queryable.queries[0]).toContain("pairing.agent_key = current_setting('runtime.agent_key', true)");
     expect(queryable.queries[0]).toContain("skill.agent_key = current_setting('runtime.agent_key', true)");
-    expect(queryable.queries[1]).toContain("GRANT SELECT ON \"session\".\"agent_sessions\", \"session\".\"todos\", \"session\".\"runtime_config\", \"session\".\"threads\", \"session\".\"messages\", \"session\".\"messages_raw\", \"session\".\"tool_results\", \"session\".\"inputs\", \"session\".\"runs\", \"session\".\"prompts\", \"session\".\"agent_pairings\", \"session\".\"agent_skills\", \"session\".\"subagent_history\", \"session\".\"scheduled_tasks\", \"session\".\"scheduled_task_runs\", \"session\".\"watches\", \"session\".\"watch_runs\", \"session\".\"watch_events\"");
-    for (const name of READONLY_SESSION_VIEW_BASENAMES) {
-      expect(queryable.queries[1]).toContain(`\"session\".\"${name}\"`);
-    }
+    expect(queryable.queries[0]).not.toContain("GRANT ");
   });
 
   it("keeps readonly subagent history scoped and bounded", async () => {
     const queryable = new RecordingQueryable();
 
-    await ensureReadonlySessionQuerySchema({
-      queryable,
-      readonlyRole: "readonly_user",
-    });
+    await ensureReadonlySessionQuerySchema({queryable});
 
     const subagentHistorySql = extractViewSql(queryable.queries[0], "subagent_history", "scheduled_tasks");
     expect(subagentHistorySql).toContain("subagent.kind = 'subagent'");
@@ -424,8 +338,8 @@ describe("ensureReadonlySessionQuerySchema", () => {
     pools.push(pool);
 
     const {agentStore, identityStore, sessionStore, threadStore: store} = await createRuntimeStores(pool);
-    await new PostgresScheduledTaskStore({ pool }).ensureSchema();
-    await new PostgresWatchStore({ pool }).ensureSchema();
+    await ensurePostgresScheduledTaskSchema(pool);
+    await ensurePostgresWatchSchema(pool);
 
     const alice = await identityStore.createIdentity({
       id: "alice-id",
@@ -501,61 +415,13 @@ describe("ensureReadonlySessionQuerySchema", () => {
     });
   }, 10_000);
 
-  it("preserves readonly threads view when thread runtime schema ensure reruns on a clean schema", async () => {
-    const scoped = createScopedPool();
-    const pool = new PgMemPoolWithDropViewIfExistsSupport(scoped.pool);
-    const { setScope } = scoped;
-    pools.push(pool);
-
-    const {sessionStore, threadStore} = await createRuntimeStores(pool);
-    await new PostgresScheduledTaskStore({ pool }).ensureSchema();
-    await new PostgresWatchStore({ pool }).ensureSchema();
-
-    await sessionStore.createSession({
-      id: "schema-rerun-session",
-      agentKey: "panda",
-      kind: "main",
-      currentThreadId: "schema-rerun-thread",
-    });
-    await threadStore.createThread({
-      id: "schema-rerun-thread",
-      sessionId: "schema-rerun-session",
-    });
-
-    setScope({
-      sessionId: "schema-rerun-session",
-      agentKey: "panda",
-    });
-    const queryable = new PgMemReadonlySchemaQueryable(pool);
-    await ensureReadonlySessionQuerySchema({ queryable });
-
-    const expectedRows = [
-      {
-        id: "schema-rerun-thread",
-        session_id: "schema-rerun-session",
-        agent_key: "panda",
-      },
-    ];
-    const before = await pool.query(
-      "SELECT id, session_id, agent_key FROM \"session\".\"threads\" ORDER BY id",
-    );
-    expect(before.rows).toEqual(expectedRows);
-
-    await threadStore.ensureSchema();
-
-    const after = await pool.query(
-      "SELECT id, session_id, agent_key FROM \"session\".\"threads\" ORDER BY id",
-    );
-    expect(after.rows).toEqual(expectedRows);
-  }, 10_000);
-
   it("filters readonly threads by agent when one identity has multiple agents", async () => {
     const { pool, setScope } = createScopedPool();
     pools.push(pool);
 
     const {agentStore, identityStore, sessionStore, threadStore: store} = await createRuntimeStores(pool);
-    await new PostgresScheduledTaskStore({ pool }).ensureSchema();
-    await new PostgresWatchStore({ pool }).ensureSchema();
+    await ensurePostgresScheduledTaskSchema(pool);
+    await ensurePostgresWatchSchema(pool);
 
     const alice = await identityStore.createIdentity({
       id: "alice-id",
@@ -615,8 +481,8 @@ describe("ensureReadonlySessionQuerySchema", () => {
     pools.push(pool);
 
     const {agentStore} = await createRuntimeStores(pool);
-    await new PostgresScheduledTaskStore({ pool }).ensureSchema();
-    await new PostgresWatchStore({ pool }).ensureSchema();
+    await ensurePostgresScheduledTaskSchema(pool);
+    await ensurePostgresWatchSchema(pool);
     await agentStore.bootstrapAgent({
       agentKey: "ops",
       displayName: "Ops",
@@ -654,8 +520,8 @@ describe("ensureReadonlySessionQuerySchema", () => {
     pools.push(pool);
 
     const {agentStore} = await createRuntimeStores(pool);
-    await new PostgresScheduledTaskStore({ pool }).ensureSchema();
-    await new PostgresWatchStore({ pool }).ensureSchema();
+    await ensurePostgresScheduledTaskSchema(pool);
+    await ensurePostgresWatchSchema(pool);
     await agentStore.setAgentSkill("panda", "calendar", "Panda calendar skill.", "# Panda");
     await agentStore.setAgentSkill("panda", "finance", "Panda finance skill.", "# Finance");
     await agentStore.setAgentSkill("panda", "foo_bar", "Underscore skill.", "# Foo");
@@ -685,8 +551,8 @@ describe("ensureReadonlySessionQuerySchema", () => {
     pools.push(pool);
 
     const {agentStore, sessionStore} = await createRuntimeStores(pool);
-    await new PostgresScheduledTaskStore({ pool }).ensureSchema();
-    await new PostgresWatchStore({ pool }).ensureSchema();
+    await ensurePostgresScheduledTaskSchema(pool);
+    await ensurePostgresWatchSchema(pool);
     await agentStore.bootstrapAgent({
       agentKey: "ops",
       displayName: "Ops",
@@ -751,8 +617,8 @@ describe("ensureReadonlySessionQuerySchema", () => {
     pools.push(pool);
 
     const {agentStore, identityStore} = await createRuntimeStores(pool);
-    await new PostgresScheduledTaskStore({ pool }).ensureSchema();
-    await new PostgresWatchStore({ pool }).ensureSchema();
+    await ensurePostgresScheduledTaskSchema(pool);
+    await ensurePostgresWatchSchema(pool);
     const alice = await identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
@@ -793,8 +659,8 @@ describe("ensureReadonlySessionQuerySchema", () => {
     pools.push(pool);
 
     const {agentStore, emailStore, sessionStore, threadStore} = await createRuntimeStores(pool);
-    await new PostgresScheduledTaskStore({ pool }).ensureSchema();
-    await new PostgresWatchStore({ pool }).ensureSchema();
+    await ensurePostgresScheduledTaskSchema(pool);
+    await ensurePostgresWatchSchema(pool);
     await agentStore.bootstrapAgent({
       agentKey: "ops",
       displayName: "Ops",

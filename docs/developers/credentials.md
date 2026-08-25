@@ -52,7 +52,7 @@ Blocked names include runtime-owned or dangerous keys such as:
 
 `createRuntime()` does the setup:
 
-- ensures the credentials schema
+- verifies the global database migration revision before constructing stores
 - builds a `CredentialResolver` for bash and credential-using adapters
 - builds a `CredentialService` only when `CREDENTIALS_MASTER_KEY` exists
 - grants `panda env set` and `panda env clear` only when decryption is actually possible

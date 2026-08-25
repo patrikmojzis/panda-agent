@@ -580,7 +580,6 @@ export type ControlWhatsAppLinkAttempt = {
 };
 
 type ControlWhatsAppAuthStore = {
-  ensureSchema(): Promise<void>;
   hasAuthState(accountId: string): Promise<boolean>;
   deleteAuthState(accountId: string): Promise<void>;
 };
@@ -2508,7 +2507,6 @@ export class ControlOperatorService {
     if (!this.connectorCrypto || !this.whatsappAuth) {
       throw new Error("CREDENTIALS_MASTER_KEY is required to create WhatsApp accounts.");
     }
-    await this.whatsappAuth.ensureSchema();
     const accountKey = requireNonEmptyString(input.accountKey, "WhatsApp account key is required.");
     if (await this.connectorAccounts.getAccountByKey(CONTROL_WHATSAPP_SOURCE, accountKey)) {
       throw new Error(`WhatsApp account ${accountKey} already exists.`);

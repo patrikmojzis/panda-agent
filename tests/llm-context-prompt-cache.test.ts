@@ -2,6 +2,7 @@ import {describe, expect, it} from "vitest";
 import type {AssistantMessage} from "@earendil-works/pi-ai";
 
 import {Agent, LlmContext, Thread} from "../src/index.js";
+import {gatherContextsForRuntime} from "../src/kernel/agent/llm-context.js";
 import type {LlmRuntime, LlmRuntimeRequest} from "../src/kernel/agent/runtime.js";
 
 function assistant(text: string): AssistantMessage {
@@ -57,6 +58,16 @@ class CapturingRuntime implements LlmRuntime {
 }
 
 describe("LLM context prompt-cache parts", () => {
+  it("bounds trace descriptors without changing provider context or cache parts", async () => {
+    const contexts = Array.from({length: 300}, (_, index) => new VersionedContext(() => String(index)));
+
+    const gathered = await gatherContextsForRuntime(contexts);
+
+    expect(gathered.sections).toHaveLength(256);
+    expect(gathered.promptCacheKeyParts).toHaveLength(300);
+    expect(gathered.dump).toContain("version 299");
+  });
+
   it("changes the provider prompt-cache key when a context cache part changes", async () => {
     let version = "one";
     const runtime = new CapturingRuntime();
@@ -82,6 +93,7 @@ describe("LLM context prompt-cache parts", () => {
     expect(runtime.requests[0]?.promptCacheKey).not.toBe(runtime.requests[1]?.promptCacheKey);
     expect(runtime.requests[0]?.promptCacheKey?.length).toBeLessThanOrEqual(64);
     expect(runtime.requests[1]?.promptCacheKey?.length).toBeLessThanOrEqual(64);
+    expect(runtime.requests[0]?.trace?.llmContextSections?.[0]).not.toHaveProperty("promptCacheKeyPart");
     expect(runtime.requests[0]?.context.systemPrompt).toContain("version one");
     expect(runtime.requests[1]?.context.systemPrompt).toContain("version two");
   });

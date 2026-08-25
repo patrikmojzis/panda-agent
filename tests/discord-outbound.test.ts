@@ -7,6 +7,7 @@ import {DataType, newDb} from "pg-mem";
 
 import {ChannelOutboundDeliveryWorker} from "../src/domain/channels/deliveries/worker.js";
 import {PostgresOutboundDeliveryStore} from "../src/domain/channels/deliveries/postgres.js";
+import {ensurePostgresOutboundDeliverySchema} from "../src/domain/channels/deliveries/postgres-schema.js";
 import type {OutboundRequest} from "../src/domain/channels/types.js";
 import {DISCORD_MESSAGE_CONTENT_LIMIT} from "../src/integrations/channels/discord/config.js";
 import {createDiscordOutboundAdapter} from "../src/integrations/channels/discord/outbound.js";
@@ -434,7 +435,7 @@ describe("Discord outbound adapter", () => {
     pools.push(pool);
     await createRuntimeStores(pool);
     const store = new PostgresOutboundDeliveryStore({pool});
-    await store.ensureSchema();
+    await ensurePostgresOutboundDeliverySchema(pool);
 
     const discordA = await store.enqueueDelivery({
       channel: "discord",

@@ -27,7 +27,9 @@ import {
     type ThreadDefinitionResolver,
     type ThreadMessageRecord,
     type ThreadRecord,
+    type ThreadRunOwner,
     ThreadRuntimeCoordinator,
+    type ThreadRuntimeCoordinatorOptions,
 } from "../src/domain/threads/runtime/index.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
@@ -50,6 +52,35 @@ const TEST_MODELS = vi.hoisted(() => ({
     ["openai/panda-test-window-6000", 6_000],
   ]),
 }));
+
+const TEST_RUN_OWNER: ThreadRunOwner = {
+  source: "panda-core",
+  connectorKey: "test",
+  holderId: "thread-runtime-test",
+};
+const activeTestCoordinators = new Set<ThreadRuntimeCoordinator>();
+
+async function createTestCoordinator(
+  options: Omit<ThreadRuntimeCoordinatorOptions, "maxConcurrentRuns">,
+): Promise<ThreadRuntimeCoordinator> {
+  const coordinator = new ThreadRuntimeCoordinator({
+    ...options,
+    maxConcurrentRuns: 1,
+  });
+  await coordinator.handleStoreNotificationStatus("listening");
+  await coordinator.start(TEST_RUN_OWNER);
+  activeTestCoordinators.add(coordinator);
+  return coordinator;
+}
+
+async function startTestRun(store: TestThreadRuntimeStore, threadId: string) {
+  await store.requestWake(threadId);
+  const run = await store.tryStartRun(threadId, TEST_RUN_OWNER);
+  if (!run) {
+    throw new Error(`Could not start test run for ${threadId}.`);
+  }
+  return run;
+}
 
 vi.mock("../src/kernel/models/model-context-policy.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/kernel/models/model-context-policy.js")>();
@@ -112,7 +143,11 @@ function createDeferred<T>() {
   };
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.allSettled(
+    [...activeTestCoordinators].map((coordinator) => coordinator.stop()),
+  );
+  activeTestCoordinators.clear();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.useRealTimers();
@@ -266,18 +301,64 @@ class CompleteRunBlockingStore extends TestThreadRuntimeStore {
   }
 }
 
-class FailRunBlockingStore extends TestThreadRuntimeStore {
-  constructor(
-    private readonly entered: ReturnType<typeof createDeferred<void>>,
-    private readonly release: ReturnType<typeof createDeferred<void>>,
-  ) {
-    super();
+class CompletionReconciliationFailureStore extends CompleteRunBlockingStore {
+  failNextExactRunnableRead = false;
+  exactRunnableReads = 0;
+
+  override async isThreadRunnable(threadId: string): Promise<boolean> {
+    this.exactRunnableReads += 1;
+    if (this.failNextExactRunnableRead) {
+      this.failNextExactRunnableRead = false;
+      throw new Error("transient exact runnable read failure");
+    }
+    return super.isThreadRunnable(threadId);
   }
 
-  override async failRunIfRunning(runId: string, error?: string) {
-    this.entered.resolve();
-    await this.release.promise;
-    return super.failRunIfRunning(runId, error);
+}
+
+class TransientRunnableReadFailureStore extends TestThreadRuntimeStore {
+  failNextExactRunnableRead = false;
+  exactRunnableReads = 0;
+
+  override async isThreadRunnable(threadId: string): Promise<boolean> {
+    this.exactRunnableReads += 1;
+    if (this.failNextExactRunnableRead) {
+      this.failNextExactRunnableRead = false;
+      throw new Error("transient exact runnable read failure");
+    }
+    return super.isThreadRunnable(threadId);
+  }
+}
+
+class AmbiguousTerminalStore extends TestThreadRuntimeStore {
+  completeCalls = 0;
+  failCalls = 0;
+  failNextTerminalRead = false;
+
+  override async completeRun(runId: string) {
+    this.completeCalls += 1;
+    const completed = await super.completeRun(runId);
+    if (this.completeCalls === 1) {
+      throw new Error("connection dropped after completion commit");
+    }
+    return completed;
+  }
+
+  override async failRun(runId: string, error?: string) {
+    this.failCalls += 1;
+    if (this.failCalls === 1) {
+      this.failNextTerminalRead = true;
+      throw new Error("connection dropped before failure commit");
+    }
+    return super.failRun(runId, error);
+  }
+
+  override async getRun(runId: string) {
+    if (this.failNextTerminalRead) {
+      this.failNextTerminalRead = false;
+      throw new Error("database temporarily unavailable");
+    }
+    return super.getRun(runId);
   }
 }
 
@@ -298,25 +379,6 @@ class DeferredRuntime implements LlmRuntime {
 
   queue(response: AssistantMessage | Promise<AssistantMessage>): void {
     this.responses.push(Promise.resolve(response));
-  }
-}
-
-class SelectiveLeaseManager {
-  private readonly blockedThreads: ReadonlySet<string>;
-
-  constructor(blockedThreads: readonly string[] = []) {
-    this.blockedThreads = new Set(blockedThreads);
-  }
-
-  async tryAcquire(threadId: string) {
-    if (this.blockedThreads.has(threadId)) {
-      return null;
-    }
-
-    return {
-      threadId,
-      release: async () => {},
-    };
   }
 }
 
@@ -369,30 +431,18 @@ class OutboundTestTool extends Tool<typeof OutboundTestTool.schema, DefaultAgent
   }
 }
 
-class SharedLeaseManager {
-  private readonly activeThreads = new Set<string>();
-
-  async tryAcquire(threadId: string) {
-    if (this.activeThreads.has(threadId)) {
-      return null;
-    }
-
-    this.activeThreads.add(threadId);
-    return {
-      threadId,
-      release: async () => {
-        this.activeThreads.delete(threadId);
-      },
-    };
-  }
-}
-
-class BlockedCountingLeaseManager {
+class BlockedClaimStore extends TestThreadRuntimeStore {
   attempts = 0;
 
-  async tryAcquire() {
+  override async tryStartRun(): Promise<null> {
     this.attempts += 1;
     return null;
+  }
+
+  override async isThreadRunnable(): Promise<boolean> {
+    // Models a competing durable running row. The input is still pending, but
+    // the exact claimability check must not spin while another owner runs it.
+    return false;
   }
 }
 
@@ -440,11 +490,12 @@ async function createRuntimeThread(
 }
 
 async function seedAutoCompactionTranscript(store: TestThreadRuntimeStore, threadId: string): Promise<void> {
+  const run = await startTestRun(store, threadId);
   await store.enqueueInput(threadId, {
     message: stringToUserMessage("old request " + "a".repeat(2_400)),
     source: "telegram",
   });
-  await store.applyPendingInputs(threadId);
+  await store.applyPendingInputs(threadId, run.id);
   await store.appendRuntimeMessage(threadId, {
     message: message("old reply"),
     source: "assistant",
@@ -453,7 +504,7 @@ async function seedAutoCompactionTranscript(store: TestThreadRuntimeStore, threa
     message: stringToUserMessage("keep one"),
     source: "telegram",
   });
-  await store.applyPendingInputs(threadId);
+  await store.applyPendingInputs(threadId, run.id);
   await store.appendRuntimeMessage(threadId, {
     message: message("reply one"),
     source: "assistant",
@@ -462,7 +513,7 @@ async function seedAutoCompactionTranscript(store: TestThreadRuntimeStore, threa
     message: stringToUserMessage("keep two"),
     source: "telegram",
   });
-  await store.applyPendingInputs(threadId);
+  await store.applyPendingInputs(threadId, run.id);
   await store.appendRuntimeMessage(threadId, {
     message: message("reply two"),
     source: "assistant",
@@ -471,7 +522,7 @@ async function seedAutoCompactionTranscript(store: TestThreadRuntimeStore, threa
     message: stringToUserMessage("keep three"),
     source: "telegram",
   });
-  await store.applyPendingInputs(threadId);
+  await store.applyPendingInputs(threadId, run.id);
   await store.appendRuntimeMessage(threadId, {
     message: message("reply three"),
     source: "assistant",
@@ -480,7 +531,7 @@ async function seedAutoCompactionTranscript(store: TestThreadRuntimeStore, threa
     message: stringToUserMessage("keep four"),
     source: "telegram",
   });
-  await store.applyPendingInputs(threadId);
+  await store.applyPendingInputs(threadId, run.id);
   await store.appendRuntimeMessage(threadId, {
     message: message("reply four"),
     source: "assistant",
@@ -489,11 +540,12 @@ async function seedAutoCompactionTranscript(store: TestThreadRuntimeStore, threa
     message: stringToUserMessage("keep five"),
     source: "telegram",
   });
-  await store.applyPendingInputs(threadId);
+  await store.applyPendingInputs(threadId, run.id);
   await store.appendRuntimeMessage(threadId, {
     message: message("reply five"),
     source: "assistant",
   });
+  await store.completeRun(run.id);
 }
 
 describe("ThreadRuntimeCoordinator", () => {
@@ -537,12 +589,10 @@ describe("ThreadRuntimeCoordinator", () => {
       id: "thread-input-message-context",
       agentKey: "input-message-context",
     });
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
-
     await coordinator.submitInput("thread-input-message-context", {
       message: stringToUserMessage("capture this input"),
       source: "heartbeat",
@@ -550,7 +600,7 @@ describe("ThreadRuntimeCoordinator", () => {
     });
     await coordinator.waitForIdle("thread-input-message-context");
 
-    const input = (await store.loadTranscript("thread-input-message-context"))
+    const input = (await store.loadTranscriptHistory("thread-input-message-context"))
       .find((entry) => entry.origin === "input");
     const inputId = input?.id;
     expect(inputId).toEqual(expect.any(String));
@@ -600,9 +650,8 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "idle-reroll",
     });
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -619,7 +668,7 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(String(runtime.complete.mock.calls[1]?.[0].context.messages.at(-1)?.content ?? "")).toContain("<runtime-autonomy-context>");
     expect(String(runtime.complete.mock.calls[1]?.[0].context.messages.at(-1)?.content ?? "")).toContain("new_external_input: no");
 
-    const transcript = await store.loadTranscript("thread-idle-reroll");
+    const transcript = await store.loadTranscriptHistory("thread-idle-reroll");
     expect(transcript.map((entry) => entry.source)).toEqual([
       "tui",
       "assistant",
@@ -644,9 +693,8 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "heartbeat-no-reroll",
     });
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -664,7 +712,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     expect(runtime.complete).toHaveBeenCalledTimes(1);
 
-    const transcript = await store.loadTranscript("thread-heartbeat-no-reroll");
+    const transcript = await store.loadTranscriptHistory("thread-heartbeat-no-reroll");
     expect(transcript.map((entry) => entry.source)).toEqual([
       "heartbeat",
       "assistant",
@@ -693,9 +741,8 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "idle-reroll-reset",
     });
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -724,7 +771,7 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(String(runtime.complete.mock.calls[2]?.[0].context.messages.at(-1)?.content ?? "")).toContain("second wave");
     expect(String(runtime.complete.mock.calls[3]?.[0].context.messages.at(-1)?.content ?? "")).toContain("<runtime-autonomy-context>");
 
-    const transcript = await store.loadTranscript("thread-idle-reroll-reset");
+    const transcript = await store.loadTranscriptHistory("thread-idle-reroll-reset");
     expect(transcript.map((entry) => entry.source)).toEqual([
       "tui",
       "assistant",
@@ -752,6 +799,7 @@ describe("ThreadRuntimeCoordinator", () => {
       });
       const wait = new BackgroundJobWaitTool({ service });
       const status = new BackgroundJobStatusTool({ service });
+      const firstRun = await startTestRun(store, "thread-bg-runtime");
 
       const runContext = (context: Record<string, unknown>) => new RunContext({
         agent: new Agent({
@@ -766,7 +814,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
       const firstRunContext = {
         threadId: "thread-bg-runtime",
-        runId: "run-1",
+        runId: firstRun.id,
         cwd: workspace,
         shell: {
           cwd: workspace,
@@ -785,10 +833,12 @@ describe("ThreadRuntimeCoordinator", () => {
         runContext(firstRunContext),
       );
       expect((finished as {status: string; stdout: string}).status).toBe("completed");
+      await store.completeRun(firstRun.id);
 
+      const secondRun = await startTestRun(store, "thread-bg-runtime");
       const secondRunContext = {
         ...firstRunContext,
-        runId: "run-2",
+        runId: secondRun.id,
       };
       const completedLater = await status.run(
         { jobId },
@@ -798,7 +848,7 @@ describe("ThreadRuntimeCoordinator", () => {
       expect((completedLater as {status: string; stdout: string}).status).toBe("completed");
       expect((completedLater as {stdout: string}).stdout).toBe("hello");
       expect(await store.listToolJobs("thread-bg-runtime")).toHaveLength(1);
-      expect((await store.getToolJob(jobId)).runId).toBe("run-1");
+      expect((await store.getToolJob(jobId)).runId).toBe(firstRun.id);
 
       const orphan = await bash.run(
         { command: "sleep 10", background: true },
@@ -806,7 +856,11 @@ describe("ThreadRuntimeCoordinator", () => {
       );
       const orphanJobId = String((orphan as {jobId: string}).jobId);
 
-      expect(await store.markRunningToolJobsLost("runtime restarted")).toBe(1);
+      expect(await store.markOrphanedToolJobsLost({
+        source: "panda-core",
+        connectorKey: "test",
+        holderId: "replacement-runtime",
+      }, "runtime restarted", 100)).toBe(1);
 
       const lost = await status.run(
         { jobId: orphanJobId },
@@ -814,9 +868,168 @@ describe("ThreadRuntimeCoordinator", () => {
       );
       expect((lost as {status: string; reason?: string}).status).toBe("lost");
       expect((lost as {reason?: string}).reason).toBe("runtime restarted");
+      await service.close();
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
+  });
+
+  it("settles cooperative standalone background jobs before shutdown releases ownership", async () => {
+    const store = new TestThreadRuntimeStore();
+    await createRuntimeThread(store, {
+      id: "thread-background-shutdown",
+      agentKey: "panda",
+    });
+    const service = new BackgroundToolJobService({
+      store,
+      owner: TEST_RUN_OWNER,
+      shutdownSettleTimeoutMs: 100,
+    });
+    const cancelled = vi.fn(() => ({
+      status: "cancelled" as const,
+      statusReason: "Runtime shutdown.",
+    }));
+    const never = createDeferred<void>();
+
+    const record = await service.start({
+      threadId: "thread-background-shutdown",
+      kind: "web_research",
+      summary: "long research",
+      start: () => ({
+        done: never.promise,
+        cancel: cancelled,
+      }),
+    });
+
+    await service.close();
+
+    expect(cancelled).toHaveBeenCalledWith("Runtime shutdown.");
+    await expect(store.getToolJob(record.id)).resolves.toMatchObject({
+      owner: TEST_RUN_OWNER,
+      status: "cancelled",
+      statusReason: "Runtime shutdown.",
+    });
+  });
+
+  it("cancels and settles background work that is still starting", async () => {
+    const store = new TestThreadRuntimeStore();
+    await createRuntimeThread(store, {
+      id: "thread-background-starting-shutdown",
+      agentKey: "panda",
+    });
+    const service = new BackgroundToolJobService({
+      store,
+      owner: TEST_RUN_OWNER,
+      shutdownSettleTimeoutMs: 100,
+    });
+    const entered = createDeferred<void>();
+    const starting = service.start({
+      threadId: "thread-background-starting-shutdown",
+      kind: "web_research",
+      summary: "starting research",
+      start: ({signal}) => new Promise((_, reject) => {
+        entered.resolve();
+        signal.addEventListener("abort", () => reject(signal.reason), {once: true});
+      }),
+    });
+    await entered.promise;
+    const rejectedStart = expect(starting).rejects.toThrow("Runtime shutdown.");
+
+    await service.close();
+    await rejectedStart;
+
+    await expect(store.listToolJobs("thread-background-starting-shutdown")).resolves.toEqual([
+      expect.objectContaining({status: "cancelled", statusReason: "Runtime shutdown."}),
+    ]);
+  });
+
+  it("waits for a delayed startup handle and cancels it before shutdown completes", async () => {
+    const store = new TestThreadRuntimeStore();
+    await createRuntimeThread(store, {
+      id: "thread-background-delayed-handle-shutdown",
+      agentKey: "panda",
+    });
+    const service = new BackgroundToolJobService({
+      store,
+      owner: TEST_RUN_OWNER,
+      shutdownSettleTimeoutMs: 250,
+    });
+    const entered = createDeferred<void>();
+    const releaseHandle = createDeferred<void>();
+    const cancelled = vi.fn(() => ({
+      status: "cancelled" as const,
+      statusReason: "Runtime shutdown.",
+    }));
+    const starting = service.start({
+      threadId: "thread-background-delayed-handle-shutdown",
+      kind: "web_research",
+      summary: "delayed external handle",
+      start: async () => {
+        entered.resolve();
+        await releaseHandle.promise;
+        return {done: Promise.resolve(), cancel: cancelled};
+      },
+    });
+    await entered.promise;
+
+    let closed = false;
+    const closing = service.close().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+
+    releaseHandle.resolve();
+    await closing;
+    await expect(starting).resolves.toMatchObject({
+      status: "cancelled",
+      statusReason: "Runtime shutdown.",
+    });
+    expect(cancelled).toHaveBeenCalledWith("Runtime shutdown.");
+  });
+
+  it("does not start external work when shutdown begins during durable job reservation", async () => {
+    const store = new TestThreadRuntimeStore();
+    await createRuntimeThread(store, {
+      id: "thread-background-reservation-shutdown",
+      agentKey: "panda",
+    });
+    const service = new BackgroundToolJobService({
+      store,
+      owner: TEST_RUN_OWNER,
+      shutdownSettleTimeoutMs: 100,
+    });
+    const reservationEntered = createDeferred<void>();
+    const releaseReservation = createDeferred<void>();
+    const createToolJob = store.createToolJob.bind(store);
+    vi.spyOn(store, "createToolJob").mockImplementation(async (input) => {
+      reservationEntered.resolve();
+      await releaseReservation.promise;
+      return createToolJob(input);
+    });
+    const startExternalWork = vi.fn(() => ({done: Promise.resolve()}));
+
+    const starting = service.start({
+      threadId: "thread-background-reservation-shutdown",
+      kind: "web_research",
+      summary: "delayed reservation",
+      start: startExternalWork,
+    });
+    await reservationEntered.promise;
+    let closed = false;
+    const closing = service.close().then(() => {
+      closed = true;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+
+    releaseReservation.resolve();
+    await closing;
+    await expect(starting).resolves.toMatchObject({
+      status: "cancelled",
+      statusReason: "Runtime shutdown.",
+    });
+    expect(startExternalWork).not.toHaveBeenCalled();
   });
 
   it("surfaces background wake inputs before the next model turn when watcher-owned background jobs finish during an active run", async () => {
@@ -914,9 +1127,8 @@ describe("ThreadRuntimeCoordinator", () => {
         },
       });
 
-      const coordinator = new ThreadRuntimeCoordinator({
+      const coordinator = await createTestCoordinator({
         store,
-        leaseManager: new SelectiveLeaseManager(),
         resolveDefinition: (thread) => registry.resolve(thread),
       });
       service.setBackgroundCompletionHandler(async (record) => {
@@ -933,12 +1145,12 @@ describe("ThreadRuntimeCoordinator", () => {
         const pendingInputs = await store.listPendingInputs("thread-bg-autowake");
         return pendingInputs.filter((entry) => entry.source === "background_tool").length === 2;
       });
-      expect(await store.hasPendingWake("thread-bg-autowake")).toBe(false);
+      expect(await store.hasPendingWake("thread-bg-autowake")).toBe(true);
 
       release.resolve({ done: "released" });
       await coordinator.waitForIdle("thread-bg-autowake");
 
-      const transcript = await store.loadTranscript("thread-bg-autowake");
+      const transcript = await store.loadTranscriptHistory("thread-bg-autowake");
       expect(transcript.filter((entry) => entry.source === "background_tool")).toHaveLength(2);
       expect(transcript.filter((entry) => entry.source === "background_tool").every((entry) => entry.origin === "input")).toBe(true);
       expect(runtime.complete).toHaveBeenCalledTimes(5);
@@ -951,7 +1163,7 @@ describe("ThreadRuntimeCoordinator", () => {
     }
   });
 
-  it("preserves queued background bash input when another coordinator owns the thread lease", async () => {
+  it("preserves queued background input while another coordinator owns the durable run", async () => {
     const started = createDeferred<void>();
     const release = createDeferred<{ done: string }>();
     const store = new TestThreadRuntimeStore();
@@ -970,7 +1182,7 @@ describe("ThreadRuntimeCoordinator", () => {
             id: "call_slow",
             name: "slow",
             arguments: {
-              message: "hold the lease",
+              message: "hold the run",
             },
           }]);
         }
@@ -1003,15 +1215,12 @@ describe("ThreadRuntimeCoordinator", () => {
       }),
       runtime,
     });
-    const leaseManager = new SharedLeaseManager();
-    const ownerCoordinator = new ThreadRuntimeCoordinator({
+    const ownerCoordinator = await createTestCoordinator({
       store,
-      leaseManager,
       resolveDefinition: (thread) => registry.resolve(thread),
     });
-    const otherCoordinator = new ThreadRuntimeCoordinator({
+    const otherCoordinator = await createTestCoordinator({
       store,
-      leaseManager,
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -1041,7 +1250,7 @@ describe("ThreadRuntimeCoordinator", () => {
     await ownerCoordinator.waitForIdle("thread-cross-process-wake");
 
     expect(runtime.complete).toHaveBeenCalledTimes(3);
-    const transcript = await store.loadTranscript("thread-cross-process-wake");
+    const transcript = await store.loadTranscriptHistory("thread-cross-process-wake");
     expect(transcript.some((entry) => {
       return entry.message.role === "assistant"
         && entry.message.content.some((block) => block.type === "text" && block.text === "noticed wake from another coordinator");
@@ -1058,7 +1267,6 @@ describe("ThreadRuntimeCoordinator", () => {
     const runtime = createMockRuntime(
       message("processed pending wake"),
       message("settled after pending wake"),
-      message("Nothing else to do."),
     );
     const registry = new TestThreadDefinitionRegistry().register("pending-wake-agent", {
       agent: new Agent({
@@ -1068,9 +1276,8 @@ describe("ThreadRuntimeCoordinator", () => {
       }),
       runtime,
     });
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -1092,8 +1299,8 @@ describe("ThreadRuntimeCoordinator", () => {
 
     await coordinator.waitForIdle("thread-pending-wake-idle");
 
-    expect(runtime.complete).toHaveBeenCalledTimes(3);
-    const transcript = await store.loadTranscript("thread-pending-wake-idle");
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
+    const transcript = await store.loadTranscriptHistory("thread-pending-wake-idle");
     expect(transcript.some((entry) => entry.origin === "input" && entry.source === "background_tool")).toBe(true);
     expect(transcript.some((entry) => {
       return entry.message.role === "assistant"
@@ -1103,6 +1310,108 @@ describe("ThreadRuntimeCoordinator", () => {
       return entry.message.role === "assistant"
         && entry.message.content.some((block) => block.type === "text" && block.text === "settled after pending wake");
     })).toBe(true);
+  });
+
+  it("drains more than one page of queued inputs admitted by an explicit wake", async () => {
+    const store = new TestThreadRuntimeStore();
+    await createRuntimeThread(store, {
+      id: "thread-paged-admission",
+      agentKey: "paged-admission-agent",
+    });
+    const inputIds: string[] = [];
+    for (let index = 0; index < 501; index += 1) {
+      const enqueued = await store.enqueueInput("thread-paged-admission", {
+        message: stringToUserMessage(`input ${index}`),
+        source: "gateway",
+      }, "queue");
+      inputIds.push(enqueued.input.id);
+    }
+    await store.requestWake("thread-paged-admission");
+    const runtime = createMockRuntime(
+      message("processed first page"),
+      message("processed final page"),
+      message("Nothing else to do."),
+    );
+    const registry = new TestThreadDefinitionRegistry().register("paged-admission-agent", {
+      agent: new Agent({
+        name: "paged-admission-agent",
+        instructions: "Process every admitted input.",
+        tools: [],
+      }),
+      runtime,
+    });
+    const coordinator = await createTestCoordinator({
+      store,
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.waitForIdle("thread-paged-admission");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(3);
+    const inputs = await Promise.all(inputIds.map((inputId) => store.getInput(inputId)));
+    expect(inputs).toHaveLength(501);
+    expect(inputs.every((input) => input.status === "applied")).toBe(true);
+  });
+
+  it("re-arms an explicitly woken queue set when its run fails before applying", async () => {
+    const store = new TestThreadRuntimeStore();
+    await createRuntimeThread(store, {
+      id: "thread-queued-fail-before-apply",
+      agentKey: "queued-failure-agent",
+    });
+    const queued = await store.enqueueInput("thread-queued-fail-before-apply", {
+      message: stringToUserMessage("queued work"),
+      source: "gateway",
+    }, "queue");
+    await store.requestWake("thread-queued-fail-before-apply");
+
+    const run = await store.tryStartRun("thread-queued-fail-before-apply", TEST_RUN_OWNER);
+    expect(run).not.toBeNull();
+    await expect(store.getInput(queued.input.id)).resolves.toMatchObject({
+      deliveryMode: "queue",
+      admittedRunId: run!.id,
+    });
+
+    await store.failRun(run!.id, "provider failed before apply");
+    await expect(store.getInput(queued.input.id)).resolves.toMatchObject({
+      deliveryMode: "wake",
+      admittedRunId: undefined,
+    });
+    await expect(store.hasPendingWake("thread-queued-fail-before-apply")).resolves.toBe(true);
+  });
+
+  it("admits the FIFO queue snapshot when a wake races an active run boundary", async () => {
+    const store = new TestThreadRuntimeStore();
+    await createRuntimeThread(store, {
+      id: "thread-boundary-admission",
+      agentKey: "boundary-admission-agent",
+    });
+    await store.enqueueInput("thread-boundary-admission", {
+      message: stringToUserMessage("initial wake"),
+      source: "gateway",
+    });
+    const run = await store.tryStartRun("thread-boundary-admission", TEST_RUN_OWNER);
+    await store.applyPendingInputs("thread-boundary-admission", run!.id);
+
+    const queuedBeforeWake = await store.enqueueInput("thread-boundary-admission", {
+      message: stringToUserMessage("queued before wake"),
+      source: "gateway",
+    }, "queue");
+    const wake = await store.enqueueInput("thread-boundary-admission", {
+      message: stringToUserMessage("later wake"),
+      source: "gateway",
+    });
+    const boundary = await store.takeRunBoundary("thread-boundary-admission", run!.id);
+    expect(boundary).toEqual({
+      hasRunnableInputs: false,
+      hasAdmittedInputs: true,
+      hadPendingWake: true,
+    });
+    const applied = await store.applyPendingInputs("thread-boundary-admission", run!.id);
+    expect(applied.map((message) => message.inputId)).toEqual([
+      queuedBeforeWake.input.id,
+      wake.input.id,
+    ]);
   });
 
   it("pokes externally enqueued wake inputs", async () => {
@@ -1124,9 +1433,8 @@ describe("ThreadRuntimeCoordinator", () => {
       }),
       runtime,
     });
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -1143,7 +1451,7 @@ describe("ThreadRuntimeCoordinator", () => {
     await coordinator.waitForIdle("thread-external-poke");
 
     expect(runtime.complete).toHaveBeenCalledTimes(2);
-    const transcript = await store.loadTranscript("thread-external-poke");
+    const transcript = await store.loadTranscriptHistory("thread-external-poke");
     expect(transcript.some((entry) => entry.origin === "input" && entry.source === "gateway")).toBe(true);
     expect(transcript.some((entry) => {
       return entry.message.role === "assistant"
@@ -1151,19 +1459,16 @@ describe("ThreadRuntimeCoordinator", () => {
     })).toBe(true);
   });
 
-  it("backs off a poke when another coordinator owns the lease", async () => {
-    const store = new TestThreadRuntimeStore();
+  it("leaves durable wake input pending when the database run claim is unavailable", async () => {
+    const store = new BlockedClaimStore();
     await createRuntimeThread(store, {
       id: "thread-poke-held-lease",
       agentKey: "held-lease-agent",
     });
-
-    const leaseManager = new BlockedCountingLeaseManager();
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager,
       resolveDefinition: async () => {
-        throw new Error("resolveDefinition should not be called without a lease");
+        throw new Error("resolveDefinition should not be called without a run claim");
       },
     });
 
@@ -1178,7 +1483,8 @@ describe("ThreadRuntimeCoordinator", () => {
 
     await coordinator.poke("thread-poke-held-lease");
 
-    expect(leaseManager.attempts).toBeLessThanOrEqual(2);
+    await coordinator.waitForCurrentRun("thread-poke-held-lease");
+    expect(store.attempts).toBeLessThanOrEqual(2);
     expect(await store.hasRunnableInputs("thread-poke-held-lease")).toBe(true);
   });
 
@@ -1189,9 +1495,8 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "busy-agent",
     });
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: async () => {
         throw new Error("resolveDefinition should not be called");
       },
@@ -1223,9 +1528,8 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "queued-agent",
     });
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -1247,7 +1551,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     expect(runtime.complete).toHaveBeenCalledTimes(2);
 
-    const transcript = await store.loadTranscript("thread-queued");
+    const transcript = await store.loadTranscriptHistory("thread-queued");
     expect(transcript.map((entry) => entry.source)).toEqual([
       "telegram",
       "assistant",
@@ -1289,9 +1593,8 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "queued-during-run",
     });
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -1318,7 +1621,7 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(await store.hasPendingInputs("thread-queued-during-run")).toBe(true);
     expect(await store.hasRunnableInputs("thread-queued-during-run")).toBe(false);
 
-    let transcript = await store.loadTranscript("thread-queued-during-run");
+    let transcript = await store.loadTranscriptHistory("thread-queued-during-run");
     expect(transcript.map((entry) => entry.source)).toEqual([
       "telegram",
       "assistant",
@@ -1332,7 +1635,7 @@ describe("ThreadRuntimeCoordinator", () => {
     await coordinator.waitForIdle("thread-queued-during-run");
 
     expect(runtime.complete).toHaveBeenCalledTimes(5);
-    transcript = await store.loadTranscript("thread-queued-during-run");
+    transcript = await store.loadTranscriptHistory("thread-queued-during-run");
     expect(transcript.map((entry) => entry.source)).toEqual([
       "telegram",
       "assistant",
@@ -1347,12 +1650,12 @@ describe("ThreadRuntimeCoordinator", () => {
     ]);
   });
 
-  it("restarts wake inputs that arrive during exclusive work once the lease is released", async () => {
+  it("restarts wake inputs that arrive during exclusive work once the lane is released", async () => {
     const runtime = createMockRuntime(
       message("processed after exclusive work"),
       message("Nothing else to do."),
     );
-    const store = new TestThreadRuntimeStore();
+    const store = new TransientRunnableReadFailureStore();
     const registry = new TestThreadDefinitionRegistry().register("exclusive-agent", {
       agent: new Agent({
         name: "exclusive-agent",
@@ -1366,11 +1669,11 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "exclusive-agent",
     });
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
+    store.failNextExactRunnableRead = true;
 
     await coordinator.runExclusively("thread-exclusive", async () => {
       await coordinator.submitInput("thread-exclusive", {
@@ -1384,8 +1687,9 @@ describe("ThreadRuntimeCoordinator", () => {
 
     await coordinator.waitForIdle("thread-exclusive");
 
+    expect(store.exactRunnableReads).toBeGreaterThanOrEqual(2);
     expect(runtime.complete).toHaveBeenCalledTimes(2);
-    expect((await store.loadTranscript("thread-exclusive")).map((entry) => entry.source)).toEqual([
+    expect((await store.loadTranscriptHistory("thread-exclusive")).map((entry) => entry.source)).toEqual([
       "tui",
       "assistant",
       "runtime",
@@ -1430,9 +1734,8 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "runtime-agent",
     });
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -1464,7 +1767,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     expect(runtime.complete).toHaveBeenCalledTimes(3);
 
-    const transcript = await store.loadTranscript("thread-replan");
+    const transcript = await store.loadTranscriptHistory("thread-replan");
     expect(transcript.map((entry) => entry.source)).toEqual([
       "telegram",
       "assistant",
@@ -1519,9 +1822,8 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "assistant-checkpoint",
     });
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -1550,7 +1852,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     expect(slowHandle).toHaveBeenCalledTimes(1);
 
-    const transcript = await store.loadTranscript("thread-after-assistant");
+    const transcript = await store.loadTranscriptHistory("thread-after-assistant");
     expect(transcript.map((entry) => entry.source)).toEqual([
       "telegram",
       "assistant",
@@ -1614,9 +1916,8 @@ describe("ThreadRuntimeCoordinator", () => {
       },
     });
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -1680,7 +1981,7 @@ describe("ThreadRuntimeCoordinator", () => {
       items: [{ type: "text", text: "first reply still goes out" }],
     }));
 
-    const transcript = await store.loadTranscript("thread-outbound-drain");
+    const transcript = await store.loadTranscriptHistory("thread-outbound-drain");
     expect(transcript.map((entry) => entry.source)).toEqual([
       "telegram",
       "assistant",
@@ -1760,9 +2061,8 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "background-outbound-agent",
       sessionId: "thread-background-outbound-session",
     });
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -1815,7 +2115,7 @@ describe("ThreadRuntimeCoordinator", () => {
       externalActorId: "user-99",
     }), {identityId: "identity-patrik"});
 
-    const transcript = await store.loadTranscript("thread-background-outbound");
+    const transcript = await store.loadTranscriptHistory("thread-background-outbound");
     const outboundResult = transcript.find((entry) => entry.source === "tool:outbound")?.message;
     expect(JSON.stringify(outboundResult)).not.toContain("bot-main");
     expect(JSON.stringify(outboundResult)).not.toContain("chat-99");
@@ -1884,9 +2184,8 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "projected-idle-outbound-agent",
       sessionId: "thread-projected-idle-outbound-session",
     });
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -1965,9 +2264,8 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "a2a-turn-boundary-agent",
     });
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -1991,7 +2289,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     expect(runtime.complete).toHaveBeenCalledTimes(3);
 
-    const transcript = await store.loadTranscript("thread-a2a-turn-boundary");
+    const transcript = await store.loadTranscriptHistory("thread-a2a-turn-boundary");
     expect(transcript.map((entry) => entry.source)).toEqual([
       "tui",
       "assistant",
@@ -2062,9 +2360,8 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "boundary-race",
     });
 
-    coordinator = new ThreadRuntimeCoordinator({
+    coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -2083,7 +2380,7 @@ describe("ThreadRuntimeCoordinator", () => {
       return entry.role === "user" && entry.content === "late ping";
     })).toBe(true);
 
-    const transcript = await store.loadTranscript("thread-boundary-race");
+    const transcript = await store.loadTranscriptHistory("thread-boundary-race");
     expect(transcript.map((entry) => entry.source)).toEqual([
       "telegram",
       "assistant",
@@ -2126,9 +2423,8 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "wake-drain",
     });
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -2156,7 +2452,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     expect(runtime.complete).toHaveBeenCalledTimes(3);
 
-    const transcript = await store.loadTranscript("thread-wake-drain");
+    const transcript = await store.loadTranscriptHistory("thread-wake-drain");
     expect(transcript.map((entry) => entry.source)).toEqual([
       "telegram",
       "assistant",
@@ -2195,7 +2491,8 @@ describe("ThreadRuntimeCoordinator", () => {
       message: stringToUserMessage("old request"),
       source: "telegram",
     });
-    await store.applyPendingInputs("thread-compact-context");
+    const seedRun = await startTestRun(store, "thread-compact-context");
+    await store.applyPendingInputs("thread-compact-context", seedRun.id);
     await store.appendRuntimeMessage("thread-compact-context", {
       message: message("old reply"),
       source: "assistant",
@@ -2204,25 +2501,26 @@ describe("ThreadRuntimeCoordinator", () => {
       message: stringToUserMessage("recent request"),
       source: "telegram",
     });
-    await store.applyPendingInputs("thread-compact-context");
+    await store.applyPendingInputs("thread-compact-context", seedRun.id);
     await store.appendRuntimeMessage("thread-compact-context", {
       message: message("recent reply"),
       source: "assistant",
     });
-    await store.appendRuntimeMessage("thread-compact-context", {
+    await store.commitCompaction("thread-compact-context", {
+      expectedCheckpointId: null,
       message: createCompactBoundaryMessage("Intent:\n- continue the recent work"),
-      source: "compact",
       metadata: {
         kind: "compact_boundary",
-        compactedUpToSequence: 2,
+        compactedThroughSequence: 2,
         preservedTailUserTurns: 3,
         trigger: "manual",
       },
+      runId: seedRun.id,
     });
+    await store.completeRun(seedRun.id);
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -2276,9 +2574,8 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "small-agent",
     });
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -2318,9 +2615,8 @@ describe("ThreadRuntimeCoordinator", () => {
     });
     await seedAutoCompactionTranscript(store, "thread-auto-compact");
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -2346,7 +2642,7 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(combinedUserText).toContain("keep one");
     expect(combinedUserText).toContain("new request");
 
-    const transcript = await store.loadTranscript("thread-auto-compact");
+    const transcript = await store.loadTranscriptHistory("thread-auto-compact");
     expect(transcript.some((entry) => entry.source === "compact")).toBe(true);
     expect(transcript.findLast((entry) => entry.source === "compact")?.metadata).toMatchObject({
       kind: "compact_boundary",
@@ -2382,9 +2678,8 @@ describe("ThreadRuntimeCoordinator", () => {
     });
     await seedAutoCompactionTranscript(store, "thread-overflow-recovery");
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -2402,7 +2697,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     const [run] = await store.listRuns("thread-overflow-recovery");
     expect(run).toMatchObject({status: "completed", error: undefined});
-    const transcript = await store.loadTranscript("thread-overflow-recovery");
+    const transcript = await store.loadTranscriptHistory("thread-overflow-recovery");
     expect(transcript.findLast((entry) => entry.source === "compact")?.metadata).toMatchObject({
       kind: "compact_boundary",
       trigger: "auto",
@@ -2433,9 +2728,8 @@ describe("ThreadRuntimeCoordinator", () => {
     });
     await seedAutoCompactionTranscript(store, "thread-repeated-overflow");
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -2449,7 +2743,7 @@ describe("ThreadRuntimeCoordinator", () => {
 
     expect(compactRuntime).toHaveBeenCalledTimes(1);
     expect(runtime.complete).toHaveBeenCalledTimes(2);
-    const [run] = await store.listRuns("thread-repeated-overflow");
+    const run = (await store.listRuns("thread-repeated-overflow")).at(-1);
     expect(run?.status).toBe("failed");
   });
 
@@ -2476,9 +2770,8 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "overflow-nosplit-agent",
     });
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -2525,9 +2818,8 @@ describe("ThreadRuntimeCoordinator", () => {
     });
     await seedAutoCompactionTranscript(store, "thread-auto-compact-fail");
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -2557,7 +2849,7 @@ describe("ThreadRuntimeCoordinator", () => {
       }),
     });
 
-    const transcript = await store.loadTranscript("thread-auto-compact-fail");
+    const transcript = await store.loadTranscriptHistory("thread-auto-compact-fail");
     expect(transcript.some((entry) => {
       return entry.message.role === "assistant"
         && entry.message.content.some((block) => block.type === "text" && block.text === "continued after compaction failure");
@@ -2609,11 +2901,12 @@ describe("ThreadRuntimeCoordinator", () => {
       message: stringToUserMessage("single oversized request " + "x".repeat(3_000)),
       source: "telegram",
     });
-    await store.applyPendingInputs("thread-auto-compact-nosplit");
+    const seedRun = await startTestRun(store, "thread-auto-compact-nosplit");
+    await store.applyPendingInputs("thread-auto-compact-nosplit", seedRun.id);
+    await store.completeRun(seedRun.id);
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -2626,7 +2919,7 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(compactRuntime).not.toHaveBeenCalled();
     expect(runtime.complete).not.toHaveBeenCalled();
 
-    const [run] = await store.listRuns("thread-auto-compact-nosplit");
+    const run = (await store.listRuns("thread-auto-compact-nosplit")).at(-1);
     expect(run?.status).toBe("failed");
     expect(run?.error).toContain("Active transcript exceeds the model context window");
     expect(run?.error).toContain("Start a fresh thread");
@@ -2642,7 +2935,7 @@ describe("ThreadRuntimeCoordinator", () => {
       }),
     });
 
-    const transcript = await store.loadTranscript("thread-auto-compact-nosplit");
+    const transcript = await store.loadTranscriptHistory("thread-auto-compact-nosplit");
     const notice = transcript.find((entry) => {
       return entry.metadata && typeof entry.metadata === "object" && entry.metadata !== null
         && "kind" in entry.metadata && entry.metadata.kind === "compact_failure_notice";
@@ -2691,9 +2984,8 @@ describe("ThreadRuntimeCoordinator", () => {
     });
     await seedAutoCompactionTranscript(store, "thread-auto-compact-retry");
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -2715,9 +3007,9 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(runtime.complete).toHaveBeenCalledTimes(4);
 
     const runs = await store.listRuns("thread-auto-compact-retry");
-    expect(runs.map((run) => run.status)).toEqual(["completed", "completed"]);
+    expect(runs.slice(1).map((run) => run.status)).toEqual(["completed", "completed"]);
 
-    const transcript = await store.loadTranscript("thread-auto-compact-retry");
+    const transcript = await store.loadTranscriptHistory("thread-auto-compact-retry");
     expect(transcript.some((entry) => entry.origin === "input" && entry.source === "telegram")).toBe(true);
     expect(transcript.some((entry) => {
       return entry.message.role === "assistant"
@@ -2759,11 +3051,12 @@ describe("ThreadRuntimeCoordinator", () => {
       message: stringToUserMessage("extra old context " + "q".repeat(18_000)),
       source: "telegram",
     });
-    await store.applyPendingInputs("thread-auto-compact-breaker");
+    const seedRun = await startTestRun(store, "thread-auto-compact-breaker");
+    await store.applyPendingInputs("thread-auto-compact-breaker", seedRun.id);
+    await store.completeRun(seedRun.id);
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -2791,7 +3084,7 @@ describe("ThreadRuntimeCoordinator", () => {
     thread = await store.getThread("thread-auto-compact-breaker");
     expect(thread.runtimeState?.autoCompaction?.consecutiveFailures).toBe(2);
     expect(thread.runtimeState?.autoCompaction?.cooldownUntil).toBeGreaterThan(Date.now());
-    let transcript = await store.loadTranscript("thread-auto-compact-breaker");
+    let transcript = await store.loadTranscriptHistory("thread-auto-compact-breaker");
     const failureNoticesBeforeCooldown = transcript.filter((entry) => {
       return entry.metadata && typeof entry.metadata === "object" && entry.metadata !== null
         && "kind" in entry.metadata && entry.metadata.kind === "compact_failure_notice";
@@ -2812,7 +3105,7 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(runsBeforeCooldown.at(-1)?.error).toBeUndefined();
     thread = await store.getThread("thread-auto-compact-breaker");
     expect(thread.runtimeState?.autoCompaction?.lastFailureAt).toBe(failureAtBeforeCooldown);
-    transcript = await store.loadTranscript("thread-auto-compact-breaker");
+    transcript = await store.loadTranscriptHistory("thread-auto-compact-breaker");
     const failureNoticesDuringCooldown = transcript.filter((entry) => {
       return entry.metadata && typeof entry.metadata === "object" && entry.metadata !== null
         && "kind" in entry.metadata && entry.metadata.kind === "compact_failure_notice";
@@ -2834,20 +3127,22 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(thread.runtimeState?.autoCompaction?.lastFailureAt).toBeGreaterThan(failureAtBeforeCooldown ?? 0);
   });
 
-  it("recovers only orphaned runs that are not currently leased", async () => {
+  it("recovers only runs whose durable daemon owner is no longer current", async () => {
     const store = new TestThreadRuntimeStore();
     await createRuntimeThread(store, { id: "thread-free", agentKey: "panda" });
     await createRuntimeThread(store, { id: "thread-held", agentKey: "panda" });
-    const freeRun = await store.createRun("thread-free");
-    const heldRun = await store.createRun("thread-held");
-
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
       resolveDefinition: async () => {
         throw new Error("Not used in this test");
       },
-      leaseManager: new SelectiveLeaseManager(["thread-held"]),
     });
+    const freeRun = await store.createRun("thread-free");
+    await store.requestWake("thread-held");
+    const heldRun = await store.tryStartRun("thread-held", TEST_RUN_OWNER);
+    if (!heldRun) {
+      throw new Error("Expected a run owned by the current daemon.");
+    }
 
     const recovered = await coordinator.recoverOrphanedRuns("recover");
 
@@ -2865,22 +3160,24 @@ describe("ThreadRuntimeCoordinator", () => {
       const store = new TestThreadRuntimeStore();
       await createRuntimeThread(store, { id: "thread-free-default", agentKey: "panda" });
       await createRuntimeThread(store, { id: "thread-held-default", agentKey: "panda" });
-      const freeRun = await store.createRun("thread-free-default");
-      const heldRun = await store.createRun("thread-held-default");
-
-      const coordinator = new ThreadRuntimeCoordinator({
+      const coordinator = await createTestCoordinator({
         store,
         resolveDefinition: async () => {
           throw new Error("Not used in this test");
         },
-        leaseManager: new SelectiveLeaseManager(["thread-held-default"]),
       });
+      const freeRun = await store.createRun("thread-free-default");
+      await store.requestWake("thread-held-default");
+      const heldRun = await store.tryStartRun("thread-held-default", TEST_RUN_OWNER);
+      if (!heldRun) {
+        throw new Error("Expected a run owned by the current daemon.");
+      }
 
       const recovered = await coordinator.recoverOrphanedRuns();
 
       expect(recovered.map((run) => run.id)).toEqual([freeRun.id]);
       expect((await store.getRun(freeRun.id)).error).toBe(
-        "Run marked failed during orphaned-run recovery; recoveryTrigger=coordinator_call; recoveryMechanism=thread_lease_gated_orphan_sweep; probableCause=unknown; recoveredAt=2026-05-20T01:10:00.000Z.",
+        "Run marked failed during orphaned-run recovery; recoveryTrigger=coordinator_call; recoveryMechanism=daemon_lease_fenced_run_claim_sweep; probableCause=unknown; recoveredAt=2026-05-20T01:10:00.000Z.",
       );
       expect((await store.getRun(heldRun.id)).status).toBe("running");
       expect((await store.getRun(heldRun.id)).error).toBeUndefined();
@@ -2918,14 +3215,12 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "abort-agent",
     });
 
-    const owner = new ThreadRuntimeCoordinator({
+    const owner = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
-    const observer = new ThreadRuntimeCoordinator({
+    const observer = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -2936,7 +3231,14 @@ describe("ThreadRuntimeCoordinator", () => {
 
     await started.promise;
 
+    const [activeRun] = await store.listRuns("thread-abort");
+    expect(activeRun).toBeDefined();
     expect(await observer.abort("thread-abort", "Stop from observer")).toBe(true);
+    await owner.handleStoreNotification({
+      kind: "run_abort_requested",
+      threadId: "thread-abort",
+      runId: activeRun!.id,
+    });
     await new Promise((resolve) => setTimeout(resolve, 300));
     release.resolve({ done: "late" });
 
@@ -2945,6 +3247,7 @@ describe("ThreadRuntimeCoordinator", () => {
     const [run] = await store.listRuns("thread-abort");
     expect(run?.status).toBe("failed");
     expect(run?.error).toContain("Stop from observer");
+    await Promise.all([owner.stop(), observer.stop()]);
   });
 
   it("restarts after a new wake arrives during run completion", async () => {
@@ -2971,9 +3274,8 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "completion-race",
     });
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -2993,7 +3295,7 @@ describe("ThreadRuntimeCoordinator", () => {
     await coordinator.waitForIdle("thread-completion-race");
 
     expect(runtime.complete).toHaveBeenCalledTimes(4);
-    const transcript = await store.loadTranscript("thread-completion-race");
+    const transcript = await store.loadTranscriptHistory("thread-completion-race");
     expect(transcript.map((entry) => entry.source)).toEqual([
       "telegram",
       "assistant",
@@ -3003,6 +3305,112 @@ describe("ThreadRuntimeCoordinator", () => {
       "assistant",
       "runtime",
       "assistant",
+    ]);
+  });
+
+  it("reconciles final-boundary work when a run-finished observer fails", async () => {
+    const enteredCompleteRun = createDeferred<void>();
+    const releaseCompleteRun = createDeferred<void>();
+    const runtime = createMockRuntime(
+      message("first"),
+      message("Nothing else to do."),
+      message("second"),
+      message("Nothing else to do."),
+    );
+    const store = new CompleteRunBlockingStore(enteredCompleteRun, releaseCompleteRun);
+    const registry = new TestThreadDefinitionRegistry().register("finish-observer-race", {
+      agent: new Agent({
+        name: "finish-observer-race",
+        instructions: "Reply briefly",
+      }),
+      runtime,
+    });
+    await createRuntimeThread(store, {
+      id: "thread-finish-observer-race",
+      agentKey: "finish-observer-race",
+    });
+    let finishEvents = 0;
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const coordinator = await createTestCoordinator({
+      store,
+      resolveDefinition: (thread) => registry.resolve(thread),
+      onEvent(event) {
+        if (event.type === "run_finished") {
+          finishEvents += 1;
+          throw new Error("run-finished observer failed");
+        }
+      },
+    });
+
+    await coordinator.submitInput("thread-finish-observer-race", {
+      message: stringToUserMessage("first input"),
+      source: "telegram",
+    });
+    await enteredCompleteRun.promise;
+    await coordinator.submitInput("thread-finish-observer-race", {
+      message: stringToUserMessage("second input"),
+      source: "tui",
+    });
+
+    releaseCompleteRun.resolve();
+    await coordinator.waitForIdle("thread-finish-observer-race");
+
+    expect(runtime.complete).toHaveBeenCalledTimes(4);
+    expect(finishEvents).toBe(2);
+    expect((await store.listRuns("thread-finish-observer-race")).map((run) => run.status)).toEqual([
+      "completed",
+      "completed",
+    ]);
+  });
+
+  it("keeps final-boundary settlement pending until an exact runnable read succeeds", async () => {
+    const enteredCompleteRun = createDeferred<void>();
+    const releaseCompleteRun = createDeferred<void>();
+    const runtime = createMockRuntime(
+      message("first"),
+      message("Nothing else to do."),
+      message("second"),
+      message("Nothing else to do."),
+    );
+    const store = new CompletionReconciliationFailureStore(enteredCompleteRun, releaseCompleteRun);
+    const registry = new TestThreadDefinitionRegistry().register("completion-read-retry", {
+      agent: new Agent({
+        name: "completion-read-retry",
+        instructions: "Reply briefly",
+      }),
+      runtime,
+    });
+    await createRuntimeThread(store, {
+      id: "thread-completion-read-retry",
+      agentKey: "completion-read-retry",
+    });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const coordinator = await createTestCoordinator({
+      store,
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-completion-read-retry", {
+      message: stringToUserMessage("first input"),
+      source: "telegram",
+    });
+    await enteredCompleteRun.promise;
+    await coordinator.submitInput("thread-completion-read-retry", {
+      message: stringToUserMessage("second input"),
+      source: "tui",
+    });
+    const readsBeforeFailure = store.exactRunnableReads;
+    store.failNextExactRunnableRead = true;
+
+    releaseCompleteRun.resolve();
+    await waitFor(() => runtime.complete.mock.calls.length === 4);
+    await coordinator.waitForIdle("thread-completion-read-retry");
+
+    expect(store.failNextExactRunnableRead).toBe(false);
+    expect(store.exactRunnableReads).toBeGreaterThan(readsBeforeFailure + 1);
+    expect((await store.listRuns("thread-completion-read-retry")).map((run) => run.status)).toEqual([
+      "completed",
+      "completed",
     ]);
   });
 
@@ -3033,9 +3441,8 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "crash-agent",
     });
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -3049,6 +3456,73 @@ describe("ThreadRuntimeCoordinator", () => {
     const [run] = await store.listRuns("thread-crash");
     expect(run?.status).toBe("failed");
     expect(run?.error).toContain("crash-tool boom");
+  });
+
+  it("rereads an ambiguous completion instead of converting it into failure", async () => {
+    const runtime = createMockRuntime(message("heartbeat handled"));
+    const store = new AmbiguousTerminalStore();
+    const registry = new TestThreadDefinitionRegistry().register("ambiguous-complete", {
+      agent: new Agent({name: "ambiguous-complete", instructions: "Reply plainly."}),
+      runtime,
+    });
+    await createRuntimeThread(store, {
+      id: "thread-ambiguous-complete",
+      agentKey: "ambiguous-complete",
+    });
+    const coordinator = await createTestCoordinator({
+      store,
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-ambiguous-complete", {
+      message: stringToUserMessage("[Heartbeat]"),
+      source: "heartbeat",
+      metadata: {heartbeat: {kind: "interval"}},
+    });
+    await coordinator.waitForIdle("thread-ambiguous-complete");
+
+    expect(store.completeCalls).toBe(1);
+    expect(store.failCalls).toBe(0);
+    expect(await store.listRuns("thread-ambiguous-complete")).toEqual([
+      expect.objectContaining({status: "completed"}),
+    ]);
+  });
+
+  it("retries a transient failed-run settlement until the row is terminal", async () => {
+    const runtime = createMockRuntime(createAssistantMessage([{
+      type: "toolCall",
+      id: "call_ambiguous_crash",
+      name: "crash",
+      arguments: {},
+    }]));
+    const store = new AmbiguousTerminalStore();
+    const registry = new TestThreadDefinitionRegistry().register("ambiguous-fail", {
+      agent: new Agent({
+        name: "ambiguous-fail",
+        instructions: "Use the tool.",
+        tools: [new CrashTool()],
+      }),
+      runtime,
+    });
+    await createRuntimeThread(store, {
+      id: "thread-ambiguous-fail",
+      agentKey: "ambiguous-fail",
+    });
+    const coordinator = await createTestCoordinator({
+      store,
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-ambiguous-fail", {
+      message: stringToUserMessage("start"),
+      source: "telegram",
+    });
+    await expect(coordinator.waitForIdle("thread-ambiguous-fail")).rejects.toThrow("crash-tool boom");
+
+    expect(store.failCalls).toBe(2);
+    expect(await store.listRuns("thread-ambiguous-fail")).toEqual([
+      expect.objectContaining({status: "failed", error: "crash-tool boom"}),
+    ]);
   });
 
   it("exhausts bounded retries after a completed tool without replaying the tool", async () => {
@@ -3101,9 +3575,8 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "provider-error-agent",
     });
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -3135,7 +3608,7 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(toolSideEffect).toHaveBeenCalledTimes(1);
     expect(warning).toHaveBeenCalledTimes(2);
 
-    const transcript = await store.loadTranscript("thread-provider-error");
+    const transcript = await store.loadTranscriptHistory("thread-provider-error");
     expect(transcript.map((entry) => entry.source)).toEqual([
       "telegram",
       "assistant",
@@ -3195,9 +3668,8 @@ describe("ThreadRuntimeCoordinator", () => {
       model: "openai-codex/gpt-5.4",
     });
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SharedLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -3220,7 +3692,7 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(JSON.stringify(runtime.complete.mock.calls[1]?.[0].context.messages)).not.toContain("queued during retry");
     expect(JSON.stringify(runtime.complete.mock.calls[2]?.[0].context.messages)).toContain("queued during retry");
 
-    const transcript = await store.loadTranscript("thread-provider-server-error");
+    const transcript = await store.loadTranscriptHistory("thread-provider-server-error");
     expect(transcript.filter((entry) => entry.origin === "input" && entry.source === "worker")).toHaveLength(1);
     expect(transcript.filter((entry) => entry.origin === "input" && entry.source === "tui")).toHaveLength(1);
     expect(transcript.map((entry) => entry.source)).toEqual([
@@ -3264,9 +3736,8 @@ describe("ThreadRuntimeCoordinator", () => {
       agentKey: "provider-timeout-agent",
     });
 
-    const coordinator = new ThreadRuntimeCoordinator({
+    const coordinator = await createTestCoordinator({
       store,
-      leaseManager: new SelectiveLeaseManager(),
       resolveDefinition: (thread) => registry.resolve(thread),
     });
 
@@ -3296,7 +3767,7 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(runs.map((run) => run.status)).toEqual(["failed", "completed"]);
     expect(runtime.complete).toHaveBeenCalledTimes(5);
 
-    const transcript = await store.loadTranscript("thread-provider-timeout");
+    const transcript = await store.loadTranscriptHistory("thread-provider-timeout");
     expect(transcript.map((entry) => entry.source)).toEqual([
       "telegram",
       "tui",
@@ -3386,9 +3857,70 @@ describe("Thread runtime stores", () => {
       },
     });
 
-    expect((await enqueue("bot-1")).inserted).toBe(true);
-    expect((await enqueue("bot-1")).inserted).toBe(false);
-    expect((await enqueue("bot-2")).inserted).toBe(true);
+    expect((await enqueue("bot-1")).disposition).toBe("inserted");
+    expect((await enqueue("bot-1")).disposition).toBe("duplicate_pending");
+    expect((await enqueue("bot-2")).disposition).toBe("inserted");
+  });
+
+  it("resolves stable input retries across reset only within the owning session", async () => {
+    const store = new TestThreadRuntimeStore();
+    const inputId = "11111111-1111-4111-8111-111111111111";
+    await createRuntimeThread(store, {
+      id: "retry-before-reset",
+      sessionId: "retry-session",
+      agentKey: "panda",
+    });
+    await store.enqueueInput("retry-before-reset", {
+      message: stringToUserMessage("durable work"),
+      source: "runtime",
+    }, "queue", {inputId});
+    await store.discardPendingInputs("retry-before-reset");
+    await createRuntimeThread(store, {
+      id: "retry-after-reset",
+      sessionId: "retry-session",
+      agentKey: "panda",
+    });
+
+    await expect(store.enqueueSessionInput("retry-session", {
+      message: stringToUserMessage("retry"),
+      source: "runtime",
+    }, "wake", {inputId})).resolves.toMatchObject({
+      disposition: "duplicate_discarded",
+      input: {id: inputId, threadId: "retry-before-reset"},
+    });
+
+    await createRuntimeThread(store, {
+      id: "other-session-thread",
+      sessionId: "other-session",
+      agentKey: "panda",
+    });
+    await expect(store.enqueueSessionInput("other-session", {
+      message: stringToUserMessage("collision"),
+      source: "runtime",
+    }, "wake", {inputId})).rejects.toThrow("did not resolve to a durable input");
+  });
+
+  it("rejects direct mutations aimed at a retired thread", async () => {
+    const store = new TestThreadRuntimeStore();
+    await createRuntimeThread(store, {
+      id: "retired-thread",
+      sessionId: "retired-session",
+      agentKey: "panda",
+    });
+    await createRuntimeThread(store, {
+      id: "replacement-thread",
+      sessionId: "retired-session",
+      agentKey: "panda",
+    });
+
+    await expect(store.requestWake("retired-thread")).rejects.toThrow(
+      "Unknown thread retired-thread",
+    );
+    await expect(store.enqueueInput("retired-thread", {
+      message: stringToUserMessage("stale delivery"),
+      source: "runtime",
+    })).rejects.toThrow("Unknown thread retired-thread");
+    await expect(store.promoteQueuedInputs("retired-thread")).resolves.toEqual([]);
   });
 
   it("persists input metadata from pending inputs into the transcript", async () => {
@@ -3423,7 +3955,8 @@ describe("Thread runtime stores", () => {
       }),
     ]);
 
-    const applied = await store.applyPendingInputs("metadata-thread");
+    const run = await startTestRun(store, "metadata-thread");
+    const applied = await store.applyPendingInputs("metadata-thread", run.id);
     expect(applied).toEqual([
       expect.objectContaining({
         metadata: {
@@ -3436,7 +3969,7 @@ describe("Thread runtime stores", () => {
         },
       }),
     ]);
-    await expect(store.loadTranscript("metadata-thread")).resolves.toEqual([
+    await expect(store.loadActiveTranscript("metadata-thread")).resolves.toMatchObject({records: [
       expect.objectContaining({
         metadata: {
           media: [
@@ -3447,7 +3980,7 @@ describe("Thread runtime stores", () => {
           ],
         },
       }),
-    ]);
+    ]});
   });
 
   it("summarizes threads without loading transcripts for each thread", async () => {
@@ -3459,11 +3992,13 @@ describe("Thread runtime stores", () => {
       message: stringToUserMessage("hello"),
       source: "telegram",
     });
-    await store.applyPendingInputs("summary-a");
+    const run = await startTestRun(store, "summary-a");
+    await store.applyPendingInputs("summary-a", run.id);
     await store.appendRuntimeMessage("summary-a", {
       message: message("reply"),
       source: "assistant",
     });
+    await store.completeRun(run.id);
 
     await store.enqueueInput("summary-b", {
       message: stringToUserMessage("queued"),

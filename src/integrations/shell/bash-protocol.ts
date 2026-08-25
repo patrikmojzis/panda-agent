@@ -119,6 +119,8 @@ export interface BashRunnerJobWaitRequest extends BashRunnerJobQueryRequest {
 
 export interface BashRunnerJobCancelRequest extends BashRunnerJobQueryRequest {
   timeoutMs?: number;
+  /** Reserve cancellation when start acceptance is ambiguous or still pending. */
+  reserveIfMissing?: boolean;
 }
 
 export interface BashRunnerJobResponse extends BashJobSnapshot {

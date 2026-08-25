@@ -195,6 +195,9 @@ import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 const execFileAsync = promisify(execFile);
 const shimPath = path.resolve("scripts/agent-command-shim/panda");
+// These contract tests intentionally execute every generated help route. Under the
+// full suite, process scheduling can exceed Vitest's generic five-second timeout.
+const fullShimHelpContractTimeoutMs = 15_000;
 const defaultTestCommandScopeAllowedCommands = DEFAULT_AGENT_COMMAND_DESCRIPTORS.map((descriptor) => descriptor.name);
 const mcpManagementDescriptors = [
   mcpServerListCommandDescriptor,
@@ -508,6 +511,7 @@ describe("agent command shim", () => {
           resolvedThreadId: "thread-1",
           scheduledFor: Date.parse("2026-05-25T07:00:00.000Z"),
           status: "succeeded" as const,
+          threadInputId: "thread-input-1",
           threadRunId: "thread-run-1",
           createdAt: 1_799_999_999_000,
           startedAt: 1_800_000_000_001,
@@ -2064,6 +2068,7 @@ describe("agent command shim", () => {
           createOpenAIWebResearchCommand({
             jobService: new BackgroundToolJobService({
               store: backgroundStore,
+              owner: {source: "test", connectorKey: "command-shim", holderId: "command-shim-owner"},
             }),
             apiKey: "openai-test-key",
             fetchImpl: async () => new Response(JSON.stringify({
@@ -2086,6 +2091,7 @@ describe("agent command shim", () => {
           createImageGenerateCommand({
             jobService: new BackgroundToolJobService({
               store: backgroundStore,
+              owner: {source: "test", connectorKey: "command-shim", holderId: "command-shim-owner"},
             }),
             env: {
               ...process.env,
@@ -2537,7 +2543,7 @@ describe("agent command shim", () => {
       expect(payload.examples, route.command).toEqual([]);
       expect(payload.schemaCatalog, route.command).toBeUndefined();
     }
-  });
+  }, fullShimHelpContractTimeoutMs);
 
   it("executes time.now through the native no-argument form", async () => {
     const server = await startWatchServer();
@@ -3901,7 +3907,7 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     expect(subagentProfileUpsert.stdout).toContain("--thinking <low|medium|high|xhigh>");
     expect(subagentProfileUpsert.stdout).toContain("--enabled");
     expect(subagentProfileUpsert.stdout).toContain("--disabled");
-  });
+  }, fullShimHelpContractTimeoutMs);
 
   it("rejects removed watch.schema compatibility command", async () => {
     await expect(execFileAsync(shimPath, [
@@ -4451,8 +4457,25 @@ printf '{"ok":true,"output":%s}\\n' "$body"
       runs: [{
         runId: "task-run-1",
         status: "succeeded",
+        threadInputId: "thread-input-1",
         threadRunId: "thread-run-1",
       }],
+    });
+  });
+
+  it("rejects scheduled history reads above the bounded command limit", async () => {
+    const server = await startWatchServer();
+
+    await expect(execFileAsync(shimPath, [
+      "schedule",
+      "runs",
+      "task-1",
+      "--limit",
+      "101",
+    ], {
+      env: shimEnv(server),
+    })).rejects.toMatchObject({
+      stderr: expect.stringContaining("schedule.runs limit must not exceed 100"),
     });
   });
 

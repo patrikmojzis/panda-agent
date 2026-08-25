@@ -95,7 +95,7 @@ function labelForSession(row: VisibleSessionRow): string {
 function lifecycleStatus(row: TaskRow): string {
   if (row.cancelled_at) return "cancelled";
   if (row.completed_at) return "completed";
-  if (row.claimed_at) return "running";
+  if (row.has_active_run === true) return "running";
   if (row.enabled === false) return "disabled";
   return "scheduled";
 }
@@ -166,24 +166,50 @@ export class ControlHomeService {
     if (sessionIds.length > 0) {
       const [taskResult, runResult] = await Promise.all([
         this.pool.query(`
-          SELECT id, session_id, title, schedule_kind, enabled, claimed_at, next_fire_at, completed_at, cancelled_at, created_at
-          FROM ${this.scheduled.scheduledTasks}
-          WHERE session_id = ANY($1::text[])
-            AND (
-              (enabled = TRUE AND completed_at IS NULL AND cancelled_at IS NULL AND next_fire_at IS NOT NULL)
-              OR claimed_at IS NOT NULL
-              OR enabled = FALSE
-            )
-          ORDER BY next_fire_at ASC NULLS LAST, created_at DESC, id ASC
-          LIMIT $2
-        `, [sessionIds, sessionIds.length * TASK_ROWS_PER_SESSION_LIMIT]),
+          /* control_home_scheduled_tasks_by_session */
+          SELECT task.*
+          FROM UNNEST($1::text[]) AS requested_session(session_id)
+          CROSS JOIN LATERAL (
+            SELECT
+              candidate.id,
+              candidate.session_id,
+              candidate.title,
+              candidate.schedule_kind,
+              candidate.enabled,
+              candidate.next_fire_at,
+              candidate.completed_at,
+              candidate.cancelled_at,
+              candidate.created_at,
+              EXISTS (
+                SELECT 1
+                FROM ${this.scheduled.scheduledTaskRuns} AS active_run
+                WHERE active_run.task_id = candidate.id
+                  AND active_run.status IN ('pending', 'claimed', 'running')
+              ) AS has_active_run
+            FROM ${this.scheduled.scheduledTasks} AS candidate
+            WHERE candidate.session_id = requested_session.session_id
+              AND candidate.enabled = TRUE
+              AND candidate.completed_at IS NULL
+              AND candidate.cancelled_at IS NULL
+              AND candidate.next_fire_at IS NOT NULL
+            ORDER BY candidate.next_fire_at ASC NULLS LAST, candidate.created_at DESC, candidate.id ASC
+            LIMIT ${TASK_ROWS_PER_SESSION_LIMIT}
+          ) AS task
+          ORDER BY task.session_id ASC, task.next_fire_at ASC NULLS LAST, task.created_at DESC, task.id ASC
+        `, [sessionIds]),
         this.pool.query(`
-          SELECT id, task_id, session_id, status, scheduled_for, created_at, finished_at
-          FROM ${this.scheduled.scheduledTaskRuns}
-          WHERE session_id = ANY($1::text[])
-          ORDER BY created_at DESC, id ASC
-          LIMIT $2
-        `, [sessionIds, sessionIds.length * (TASK_ROWS_PER_SESSION_LIMIT + 1)]),
+          /* control_latest_scheduled_session_runs */
+          SELECT latest_run.*
+          FROM UNNEST($1::text[]) AS requested_session(session_id)
+          CROSS JOIN LATERAL (
+            SELECT id, task_id, session_id, status, scheduled_for, created_at, finished_at
+            FROM ${this.scheduled.scheduledTaskRuns} AS run
+            WHERE run.session_id = requested_session.session_id
+            ORDER BY run.created_at DESC, run.id ASC
+            LIMIT 1
+          ) AS latest_run
+          ORDER BY latest_run.session_id ASC
+        `, [sessionIds]),
       ]);
       for (const row of taskResult.rows as TaskRow[]) {
         const rows = tasksBySession.get(String(row.session_id)) ?? [];

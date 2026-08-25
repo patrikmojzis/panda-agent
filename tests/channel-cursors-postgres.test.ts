@@ -2,6 +2,7 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {ChannelCursorRepo} from "../src/domain/channels/cursors/repo.js";
+import {ensurePostgresChannelCursorSchema} from "../src/domain/channels/cursors/postgres-schema.js";
 
 describe("ChannelCursorRepo", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
@@ -30,7 +31,7 @@ describe("ChannelCursorRepo", () => {
     pools.push(pool);
 
     const store = new ChannelCursorRepo({ pool });
-    await store.ensureSchema();
+    await ensurePostgresChannelCursorSchema(pool);
 
     await expect(store.resolveChannelCursor({
       source: "telegram",
@@ -95,7 +96,7 @@ describe("ChannelCursorRepo", () => {
     pools.push(pool);
 
     const store = new ChannelCursorRepo({ pool });
-    await store.ensureSchema();
+    await ensurePostgresChannelCursorSchema(pool);
 
     await store.upsertChannelCursor({
       source: "telegram",
@@ -157,7 +158,7 @@ describe("ChannelCursorRepo", () => {
     pools.push(pool);
 
     const store = new ChannelCursorRepo({ pool });
-    await store.ensureSchema();
+    await ensurePostgresChannelCursorSchema(pool);
 
     await expect(store.upsertChannelCursor({
       source: "   ",
@@ -191,7 +192,7 @@ describe("ChannelCursorRepo", () => {
     pools.push(pool);
 
     const store = new ChannelCursorRepo({ pool });
-    await store.ensureSchema();
+    await ensurePostgresChannelCursorSchema(pool);
 
     await expect(store.upsertChannelCursor({
       source: "telegram",

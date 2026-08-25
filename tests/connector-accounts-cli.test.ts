@@ -113,7 +113,7 @@ vi.mock("../src/domain/connectors/postgres.js", () => ({
   PostgresConnectorAccountStore: connectorCliMocks.MockPostgresConnectorAccountStore,
 }));
 
-vi.mock("../src/lib/postgres-bootstrap.js", () => ({
+vi.mock("../src/lib/postgres-database.js", () => ({
   withPostgresPool: connectorCliMocks.withPostgresPool,
 }));
 
@@ -154,7 +154,6 @@ describe("Connector account CLI", () => {
     );
 
     const store = latestStore();
-    expect(store.ensureSchema).toHaveBeenCalledOnce();
     expect(store.listAccounts).toHaveBeenCalledWith({source: "discord"});
     expect(store.listSecretKeys).toHaveBeenCalledWith("account-1");
     expect(connectorCliMocks.withPostgresPool).toHaveBeenCalledWith(

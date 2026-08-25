@@ -6,9 +6,13 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {ensureAgent, PostgresAgentStore} from "../src/domain/agents/index.js";
+import {ensurePostgresAgentSchema} from "../src/domain/agents/postgres-schema.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
+import {ensurePostgresIdentitySchema} from "../src/domain/identity/postgres-schema.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
+import {ensurePostgresSessionSchema} from "../src/domain/sessions/postgres-schema.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js";
+import {ensurePostgresThreadRuntimeSchema} from "../src/domain/threads/runtime/postgres-schema.js";
 
 describe("ensureAgent", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
@@ -42,10 +46,10 @@ describe("ensureAgent", () => {
     const sessionStore = new PostgresSessionStore({pool});
     const threadStore = new PostgresThreadRuntimeStore({pool});
 
-    await identityStore.ensureSchema();
-    await agentStore.ensureSchema();
-    await sessionStore.ensureSchema();
-    await threadStore.ensureSchema();
+    await ensurePostgresIdentitySchema(pool);
+    await ensurePostgresAgentSchema(pool);
+    await ensurePostgresSessionSchema(pool);
+    await ensurePostgresThreadRuntimeSchema(pool);
 
     const dataDir = await mkdtemp(path.join(os.tmpdir(), "panda-agent-ensure-"));
     directories.push(dataDir);

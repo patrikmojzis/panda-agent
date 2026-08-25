@@ -1,5 +1,5 @@
 import type {PgListenClient, PgPoolLike} from "../../lib/postgres-query.js";
-import {listenPostgresChannel} from "../../lib/postgres-listen.js";
+import {listenPostgresChannel, type PostgresListenSnapshot} from "../../lib/postgres-listen.js";
 import {
   buildThreadRuntimeNotificationChannel,
   parseThreadRuntimeNotification,
@@ -11,6 +11,9 @@ type NotificationPool = PgPoolLike<PgListenClient>;
 export async function listenThreadRuntimeNotifications(options: {
   pool: NotificationPool;
   listener: (notification: ThreadRuntimeNotification) => Promise<void> | void;
+  onError?: (error: unknown) => Promise<void> | void;
+  onStateChange?: (snapshot: PostgresListenSnapshot) => Promise<void> | void;
+  reconnectDelayMs?: number;
 }): Promise<() => Promise<void>> {
   const channel = buildThreadRuntimeNotificationChannel();
   return listenPostgresChannel({
@@ -19,5 +22,8 @@ export async function listenThreadRuntimeNotifications(options: {
     label: "Thread runtime notification listener",
     parse: (payload) => typeof payload === "string" ? parseThreadRuntimeNotification(payload) : null,
     listener: options.listener,
+    ...(options.onError ? {onError: options.onError} : {}),
+    ...(options.onStateChange ? {onStateChange: options.onStateChange} : {}),
+    ...(options.reconnectDelayMs !== undefined ? {reconnectDelayMs: options.reconnectDelayMs} : {}),
   });
 }

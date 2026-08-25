@@ -2,8 +2,10 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
+import {ensurePostgresAgentTableSchema} from "../src/domain/agents/postgres-schema.js";
 import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
 import {PostgresCredentialStore} from "../src/domain/credentials/postgres.js";
+import {ensurePostgresCredentialSchema} from "../src/domain/credentials/postgres-schema.js";
 import {CredentialResolver, CredentialService} from "../src/domain/credentials/resolver.js";
 
 describe("PostgresCredentialStore", () => {
@@ -29,9 +31,9 @@ describe("PostgresCredentialStore", () => {
 
     const agentStore = new PostgresAgentStore({pool});
     const credentialStore = new PostgresCredentialStore({pool});
-    await agentStore.ensureAgentTableSchema();
+    await ensurePostgresAgentTableSchema(pool);
     if (options.ensureCredentialSchema !== false) {
-      await credentialStore.ensureSchema();
+      await ensurePostgresCredentialSchema(pool);
     }
 
     const crypto = new CredentialCrypto("test-master-key");
@@ -306,7 +308,7 @@ describe("PostgresCredentialStore", () => {
       encryptRelationshipOnly.keyVersion,
     ]);
 
-    await credentialStore.ensureSchema();
+    await ensurePostgresCredentialSchema(pool);
 
     const columns = await pool.query(`
       SELECT column_name

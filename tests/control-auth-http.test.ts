@@ -3,19 +3,28 @@ import {join} from "node:path";
 import {tmpdir} from "node:os";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
+import type {AssistantMessage} from "@earendil-works/pi-ai";
 
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
+import {ensurePostgresAgentSchema} from "../src/domain/agents/postgres-schema.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
+import {ensurePostgresIdentitySchema} from "../src/domain/identity/postgres-schema.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
+import {ensurePostgresSessionSchema} from "../src/domain/sessions/postgres-schema.js";
 import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/postgres.js";
+import {ensurePostgresExecutionEnvironmentSchema} from "../src/domain/execution-environments/postgres-schema.js";
 import {PostgresCredentialStore} from "../src/domain/credentials/postgres.js";
+import {ensurePostgresCredentialSchema} from "../src/domain/credentials/postgres-schema.js";
 import {CredentialService} from "../src/domain/credentials/resolver.js";
 import {PostgresMcpConfigStore} from "../src/domain/mcp/postgres.js";
+import {ensurePostgresMcpSchema} from "../src/domain/mcp/postgres-schema.js";
 import {ControlMcpService} from "../src/domain/control/mcp-service.js";
 import {McpManagementService, type McpOAuthManager} from "../src/domain/mcp/management-service.js";
 import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/postgres.js";
+import {ensurePostgresThreadRuntimeSchema} from "../src/domain/threads/runtime/postgres-schema.js";
 import {PostgresControlAuthService} from "../src/domain/control/auth.js";
+import {ensurePostgresControlSchema} from "../src/domain/control/postgres-schema.js";
 import {ControlReadService} from "../src/domain/control/read-service.js";
 import {ControlHomeService} from "../src/domain/control/home-service.js";
 import {
@@ -31,15 +40,25 @@ import {ControlRuntimeActivityService} from "../src/domain/control/runtime-activ
 import {ControlConnectorAccountsService} from "../src/domain/control/connector-accounts-service.js";
 import {ControlModelCallTraceService} from "../src/domain/control/model-call-trace-service.js";
 import {PostgresModelCallTraceStore} from "../src/domain/model-call-traces/postgres.js";
+import {ensurePostgresModelCallTraceSchema} from "../src/domain/model-call-traces/postgres-schema.js";
+import {BufferedModelCallRecorder} from "../src/domain/model-call-traces/recorder.js";
 import {A2ASessionBindingRepo} from "../src/domain/a2a/repo.js";
+import {ensurePostgresA2ASessionBindingSchema} from "../src/domain/a2a/postgres-schema.js";
 import {PostgresConnectorAccountStore} from "../src/domain/connectors/postgres.js";
+import {ensurePostgresConnectorAccountSchema} from "../src/domain/connectors/postgres-schema.js";
 import {PostgresEmailStore} from "../src/domain/email/postgres.js";
+import {ensurePostgresEmailSchema} from "../src/domain/email/postgres-schema.js";
 import {ConversationRepo} from "../src/domain/sessions/conversations/repo.js";
+import {ensurePostgresConversationSessionSchema} from "../src/domain/sessions/conversations/postgres-schema.js";
 import {PostgresGatewayStore} from "../src/domain/gateway/postgres.js";
+import {ensurePostgresGatewaySchema} from "../src/domain/gateway/postgres-schema.js";
 import {PostgresWikiBindingStore} from "../src/domain/wiki/postgres.js";
+import {ensurePostgresWikiBindingSchema} from "../src/domain/wiki/postgres-schema.js";
 import {WikiBindingService} from "../src/domain/wiki/service.js";
 import {PostgresWatchStore} from "../src/domain/watches/postgres.js";
+import {ensurePostgresWatchSchema} from "../src/domain/watches/postgres-schema.js";
 import {PostgresScheduledTaskStore} from "../src/domain/scheduling/tasks/postgres.js";
+import {ensurePostgresScheduledTaskSchema} from "../src/domain/scheduling/tasks/postgres-schema.js";
 import {
     CONTROL_CSRF_COOKIE,
     CONTROL_SESSION_COOKIE,
@@ -61,6 +80,178 @@ afterEach(async () => {
   while (tempDirs.length > 0) await rm(tempDirs.pop()!, {recursive: true, force: true});
 });
 
+function createPgMemControlReadQueryable(pool: {query(text: string, values?: readonly unknown[]): Promise<{rows: any[]}>}) {
+  const lifecycleStatuses = new Set(["scheduled", "disabled", "running", "completed", "failed", "cancelled"]);
+
+  async function scheduledTaskRows(text: string, values: readonly unknown[]) {
+    const sessionId = String(values[0]);
+    const [tasks, runs] = await Promise.all([
+      pool.query(`
+        SELECT id, title, schedule_kind, run_at, cron_expr, timezone, enabled,
+               next_fire_at, completed_at, cancelled_at, created_at, updated_at
+        FROM "runtime"."scheduled_tasks"
+        WHERE session_id = $1
+      `, [sessionId]),
+      pool.query(`
+        SELECT task_id, status, created_at, id
+        FROM "runtime"."scheduled_task_runs"
+        WHERE session_id = $1
+        ORDER BY task_id ASC, created_at DESC, id ASC
+      `, [sessionId]),
+    ]);
+    const runsByTask = new Map<string, any[]>();
+    for (const run of runs.rows) {
+      const taskRuns = runsByTask.get(String(run.task_id)) ?? [];
+      taskRuns.push(run);
+      runsByTask.set(String(run.task_id), taskRuns);
+    }
+    const statusOf = (task: any) => {
+      const taskRuns = runsByTask.get(String(task.id)) ?? [];
+      if (task.cancelled_at) return "cancelled";
+      if (task.completed_at && taskRuns[0]?.status === "failed") return "failed";
+      if (task.completed_at) return "completed";
+      if (taskRuns.some((run) => ["pending", "claimed", "running"].includes(run.status))) return "running";
+      if (task.enabled === false) return "disabled";
+      return "scheduled";
+    };
+    const filterValues = text.includes("control_scheduled_tasks_page") ? values.slice(1, -2) : values.slice(1);
+    const search = filterValues.find((value) => typeof value === "string" && value.startsWith("%"));
+    const lifecycle = filterValues.find((value) => typeof value === "string" && lifecycleStatuses.has(value));
+    const enabled = filterValues.find((value) => typeof value === "boolean");
+    const needle = typeof search === "string" ? search.slice(1, -1).toLowerCase() : undefined;
+    const decorated = tasks.rows.map((task) => {
+      const taskRuns = runsByTask.get(String(task.id)) ?? [];
+      return {
+        ...task,
+        latest_run_status: taskRuns[0]?.status ?? null,
+        has_active_run: taskRuns.some((run) => ["pending", "claimed", "running"].includes(run.status)),
+      };
+    }).filter((task) => {
+      const searchable = [task.id, task.title, task.schedule_kind, task.cron_expr, task.timezone]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return (needle === undefined || searchable.includes(needle))
+        && (lifecycle === undefined || statusOf(task) === lifecycle)
+        && (enabled === undefined || task.enabled === enabled);
+    });
+    return {decorated, statusOf};
+  }
+
+  return {
+    async query(text: string, values: readonly unknown[] = []) {
+      // pg-mem has no UNNEST/LATERAL support. Production executes one bounded
+      // index-probe statement; this adapter preserves its result contract only
+      // for the HTTP harness rather than weakening the production query.
+      if (text.includes("control_scheduled_tasks_count")) {
+        const {decorated} = await scheduledTaskRows(text, values);
+        return {rows: [{count: decorated.length}]};
+      }
+      if (text.includes("control_scheduled_tasks_page")) {
+        const {decorated, statusOf} = await scheduledTaskRows(text, values);
+        const direction = /\bDESC\s+NULLS LAST/.test(text) ? -1 : 1;
+        const valueOf = (row: any): unknown => {
+          if (text.includes("ORDER BY task_row.title")) return row.title;
+          if (text.includes("ORDER BY task_row.enabled")) return row.enabled;
+          if (text.includes("ORDER BY task_row.created_at")) return row.created_at;
+          if (text.includes("ORDER BY task_row.updated_at")) return row.updated_at;
+          if (text.includes("ORDER BY task_row.completed_at")) return row.completed_at;
+          if (text.includes("ORDER BY task_row.cancelled_at")) return row.cancelled_at;
+          if (text.includes("ORDER BY CASE")) {
+            return text.includes("cancelled_at IS NOT NULL")
+              ? statusOf(row)
+              : row.schedule_kind === "once"
+                ? row.run_at
+                : `${row.cron_expr ?? ""} ${row.timezone ?? ""}`;
+          }
+          return row.next_fire_at;
+        };
+        decorated.sort((left, right) => {
+          const leftValue = valueOf(left);
+          const rightValue = valueOf(right);
+          if (leftValue == null || rightValue == null) {
+            if (leftValue == null && rightValue == null) return String(left.id).localeCompare(String(right.id));
+            return leftValue == null ? 1 : -1;
+          }
+          const compared = leftValue instanceof Date || rightValue instanceof Date
+            ? new Date(leftValue as string | number | Date).getTime() - new Date(rightValue as string | number | Date).getTime()
+            : String(leftValue).localeCompare(String(rightValue));
+          return compared === 0 ? String(left.id).localeCompare(String(right.id)) : compared * direction;
+        });
+        const limit = Number(values.at(-2));
+        const offset = Number(values.at(-1));
+        return {rows: decorated.slice(offset, offset + limit)};
+      }
+      if (text.includes("control_home_scheduled_tasks_by_session")) {
+        const [sessionIds] = values as [string[]];
+        const results = await Promise.all(sessionIds.map(async (sessionId) => {
+          const [tasks, activeRuns] = await Promise.all([
+            pool.query(`
+              SELECT id, session_id, title, schedule_kind, enabled, next_fire_at,
+                     completed_at, cancelled_at, created_at
+              FROM "runtime"."scheduled_tasks"
+              WHERE session_id = $1
+            `, [sessionId]),
+            pool.query(`
+              SELECT task_id
+              FROM "runtime"."scheduled_task_runs"
+              WHERE session_id = $1
+                AND status IN ('pending', 'claimed', 'running')
+            `, [sessionId]),
+          ]);
+          const activeTaskIds = new Set(activeRuns.rows.map((run) => String(run.task_id)));
+          return tasks.rows
+            .map((task) => ({...task, has_active_run: activeTaskIds.has(String(task.id))}))
+            .filter((task) => (
+              (task.enabled === true && !task.completed_at && !task.cancelled_at && task.next_fire_at)
+            ))
+            .sort((left, right) => {
+              const leftFire = left.next_fire_at ? new Date(left.next_fire_at).getTime() : Number.POSITIVE_INFINITY;
+              const rightFire = right.next_fire_at ? new Date(right.next_fire_at).getTime() : Number.POSITIVE_INFINITY;
+              if (leftFire !== rightFire) return leftFire - rightFire;
+              const created = new Date(right.created_at).getTime() - new Date(left.created_at).getTime();
+              return created === 0 ? String(left.id).localeCompare(String(right.id)) : created;
+            })
+            .slice(0, 30);
+        }));
+        return {rows: results.flat()};
+      }
+      if (text.includes("control_recent_scheduled_task_runs")) {
+        const [sessionId, taskIds, limit] = values as [string, string[], number];
+        const result = await pool.query(`
+          SELECT id, task_id, status, scheduled_for, started_at, finished_at,
+                 resolved_thread_id, thread_input_id, thread_run_id, created_at
+          FROM "runtime"."scheduled_task_runs"
+          WHERE session_id = $1
+          ORDER BY task_id ASC, created_at DESC, id ASC
+        `, [sessionId]);
+        const requested = new Set(taskIds.map(String));
+        const counts = new Map<string, number>();
+        return {rows: result.rows.filter((run) => {
+          const taskId = String(run.task_id);
+          if (!requested.has(taskId)) return false;
+          const count = counts.get(taskId) ?? 0;
+          if (count >= limit) return false;
+          counts.set(taskId, count + 1);
+          return true;
+        })};
+      }
+      if (text.includes("control_latest_scheduled_session_runs")) {
+        const [sessionIds] = values as [string[]];
+        const results = await Promise.all(sessionIds.map((sessionId) => pool.query(`
+          SELECT id, task_id, session_id, status, scheduled_for, created_at, finished_at
+          FROM "runtime"."scheduled_task_runs"
+          WHERE session_id = $1
+          ORDER BY created_at DESC, id ASC
+          LIMIT 1
+        `, [sessionId])));
+        return {rows: results.flatMap((result) => result.rows)};
+      }
+      return pool.query(text, values);
+    },
+  };
+}
+
 async function createHarness(options: {
   telegramBotIdentityClient?: { getBotIdentity(token: string): Promise<{id: string; username?: string; displayName?: string}> };
   fetchImpl?: typeof fetch;
@@ -70,6 +261,17 @@ async function createHarness(options: {
 } = {}) {
   const db = newDb({noAstCoverageCheck: true});
   db.public.registerFunction({name: "pg_notify", args: [DataType.text, DataType.text], returns: DataType.text, implementation: () => ""});
+  db.public.registerFunction({name: "floor", args: [DataType.float], returns: DataType.float, implementation: Math.floor});
+  db.public.registerFunction({
+    name: "jsonb_typeof",
+    args: [DataType.jsonb],
+    returns: DataType.text,
+    implementation: (value: unknown) => value === null
+      ? "null"
+      : Array.isArray(value)
+        ? "array"
+        : typeof value,
+  });
   const adapter = db.adapters.createPg();
   const pool = new adapter.Pool();
   pools.push(pool);
@@ -83,18 +285,19 @@ async function createHarness(options: {
   const threads = new PostgresThreadRuntimeStore({pool});
   const auth = new PostgresControlAuthService({pool});
   const reads = new ControlReadService({pool});
-  const home = new ControlHomeService({pool, reads});
+  const controlReadPool = createPgMemControlReadQueryable(pool);
+  const home = new ControlHomeService({pool: controlReadPool, reads});
   const briefings = new ControlBriefingService({pool, sessions});
   const heartbeats = new ControlHeartbeatService({pool, sessions});
   const scheduledTaskStore = new PostgresScheduledTaskStore({pool});
   const watchStore = new PostgresWatchStore({pool});
-  const controlScheduledTasks = new ControlScheduledTasksService({pool, store: scheduledTaskStore});
+  const controlScheduledTasks = new ControlScheduledTasksService({pool: controlReadPool, store: scheduledTaskStore});
   const controlWatches = new ControlWatchesService({pool, store: watchStore});
   const controlRuntimeActivity = new ControlRuntimeActivityService({pool});
   const connectorAccountStore = new PostgresConnectorAccountStore({pool});
   const controlConnectorAccounts = new ControlConnectorAccountsService({pool});
   const modelCallTraces = new PostgresModelCallTraceStore({pool});
-  const controlModelCallTraces = new ControlModelCallTraceService({pool});
+  const controlModelCallTraces = new ControlModelCallTraceService({pool, store: modelCallTraces});
   const sessionCompaction = {
     compactSession: vi.fn(async (sessionId: string, _instructions = "") => ({
       compacted: true,
@@ -139,7 +342,6 @@ async function createHarness(options: {
     conversations,
     gateway: gatewayStore,
     subagents: {
-      ensureSchema: async () => {},
       seedBuiltinProfiles: async () => [],
       upsertProfile: async () => {
         throw new Error("not implemented");
@@ -161,23 +363,23 @@ async function createHarness(options: {
     fetchImpl: options.fetchImpl,
     env: options.env,
   });
-  await identities.ensureSchema();
-  await agents.ensureSchema();
-  await sessions.ensureSchema();
-  await executionEnvironments.ensureSchema();
-  await threads.ensureSchema();
-  await credentials.ensureSchema();
-  await mcpConfigs.ensureSchema();
-  await auth.ensureSchema();
-  await scheduledTaskStore.ensureSchema();
-  await watchStore.ensureSchema();
-  await connectorAccountStore.ensureSchema();
-  await modelCallTraces.ensureSchema();
-  await a2aBindings.ensureSchema();
-  await emailStore.ensureSchema();
-  await conversations.ensureSchema();
-  await gatewayStore.ensureSchema();
-  await wikiBindingStore.ensureSchema();
+  await ensurePostgresIdentitySchema(pool);
+  await ensurePostgresAgentSchema(pool);
+  await ensurePostgresSessionSchema(pool);
+  await ensurePostgresExecutionEnvironmentSchema(pool);
+  await ensurePostgresThreadRuntimeSchema(pool);
+  await ensurePostgresCredentialSchema(pool);
+  await ensurePostgresMcpSchema(pool);
+  await ensurePostgresControlSchema(pool);
+  await ensurePostgresScheduledTaskSchema(pool);
+  await ensurePostgresWatchSchema(pool);
+  await ensurePostgresConnectorAccountSchema(pool);
+  await ensurePostgresModelCallTraceSchema(pool);
+  await ensurePostgresA2ASessionBindingSchema(pool);
+  await ensurePostgresEmailSchema(pool);
+  await ensurePostgresConversationSessionSchema(pool);
+  await ensurePostgresGatewaySchema(pool);
+  await ensurePostgresWikiBindingSchema(pool);
 
   await identities.createIdentity({id: "identity-patrik", handle: "patrik", displayName: "Patrik"});
   await agents.bootstrapAgent({agentKey: "panda", displayName: "Panda"});
@@ -688,9 +890,11 @@ describe("Control auth HTTP", () => {
         ('thread-running-luna', 'session-luna')
     `);
     await harness.pool.query(`
-      INSERT INTO "runtime"."runs" (id, thread_id, status, started_at) VALUES
-        ('00000000-0000-0000-0000-000000000201', 'thread-running-panda', 'running', NOW()),
-        ('00000000-0000-0000-0000-000000000202', 'thread-running-luna', 'running', NOW())
+      INSERT INTO "runtime"."runs" (
+        id, thread_id, owner_source, owner_key, owner_holder_id, status, started_at
+      ) VALUES
+        ('00000000-0000-0000-0000-000000000201', 'thread-running-panda', 'test', 'control', 'panda', 'running', NOW()),
+        ('00000000-0000-0000-0000-000000000202', 'thread-running-luna', 'test', 'control', 'luna', 'running', NOW())
     `);
 
     await expect(harness.reads.getOverview(scopedSession)).resolves.toMatchObject({runningRuns: 1});
@@ -3437,12 +3641,18 @@ describe("Control scheduled tasks HTTP", () => {
       schedule: {kind: "recurring", cron: "5 12 * * *", timezone: "Europe/Bratislava"},
     });
     await harness.pool.query(`
-      INSERT INTO "runtime"."scheduled_task_runs" (id, task_id, session_id, scheduled_for, status, error, created_at, started_at, finished_at)
+      INSERT INTO "runtime"."scheduled_task_runs" (id, task_id, session_id, scheduled_for, status, error, lineage_recorded_at, created_at, started_at, finished_at)
       VALUES
-        ('00000000-0000-0000-0000-000000000101', $1, 'session-panda', '2039-12-31T10:00:00.000Z', 'failed', 'RAW_ERROR_MUST_NOT_LEAK', '2039-12-31T10:01:00.000Z', '2039-12-31T10:01:00.000Z', '2039-12-31T10:02:00.000Z'),
-        ('00000000-0000-0000-0000-000000000102', $1, 'session-panda', '2039-12-30T10:00:00.000Z', 'succeeded', NULL, '2039-12-30T10:01:00.000Z', '2039-12-30T10:01:00.000Z', '2039-12-30T10:02:00.000Z'),
-        ('00000000-0000-0000-0000-000000000103', $1, 'session-panda', '2039-12-29T10:00:00.000Z', 'cancelled', NULL, '2039-12-29T10:01:00.000Z', NULL, '2039-12-29T10:02:00.000Z'),
-        ('00000000-0000-0000-0000-000000000104', $1, 'session-panda', '2039-12-28T10:00:00.000Z', 'succeeded', NULL, '2039-12-28T10:01:00.000Z', NULL, '2039-12-28T10:02:00.000Z')
+        ('00000000-0000-0000-0000-000000000101', $1, 'session-panda', '2039-12-31T10:00:00.000Z', 'failed', 'RAW_ERROR_MUST_NOT_LEAK', NULL, '2039-12-31T10:01:00.000Z', '2039-12-31T10:01:00.000Z', '2039-12-31T10:02:00.000Z'),
+        ('00000000-0000-0000-0000-000000000102', $1, 'session-panda', '2039-12-30T10:00:00.000Z', 'succeeded', NULL, '2039-12-30T10:01:00.000Z', '2039-12-30T10:01:00.000Z', '2039-12-30T10:01:00.000Z', '2039-12-30T10:02:00.000Z'),
+        ('00000000-0000-0000-0000-000000000103', $1, 'session-panda', '2039-12-29T10:00:00.000Z', 'cancelled', NULL, NULL, '2039-12-29T10:01:00.000Z', NULL, '2039-12-29T10:02:00.000Z'),
+        ('00000000-0000-0000-0000-000000000104', $1, 'session-panda', '2039-12-28T10:00:00.000Z', 'succeeded', NULL, '2039-12-28T10:01:00.000Z', '2039-12-28T10:01:00.000Z', '2039-12-28T10:01:00.000Z', '2039-12-28T10:02:00.000Z')
+    `, [once.id]);
+    await harness.pool.query(`
+      UPDATE "runtime"."scheduled_tasks"
+      SET completed_at = '2039-12-31T10:02:00.000Z',
+          next_fire_at = NULL
+      WHERE id = $1
     `, [once.id]);
     const base = await startHarnessServer(harness);
     const auth = await login(base, harness);
@@ -3466,9 +3676,9 @@ describe("Control scheduled tasks HTTP", () => {
       title: "Once task with a long but safe visible title",
       schedule: {kind: "once", runAt: "2040-01-01T10:00:00.000Z"},
       enabled: true,
-      lifecycleStatus: "scheduled",
-      nextFireAt: "2040-01-01T10:00:00.000Z",
-      completedAt: null,
+      lifecycleStatus: "failed",
+      nextFireAt: null,
+      completedAt: "2039-12-31T10:02:00.000Z",
       cancelledAt: null,
     });
     expect(recurringTask).toMatchObject({
@@ -3493,6 +3703,18 @@ describe("Control scheduled tasks HTTP", () => {
     expect(text).not.toContain("createdFromMessageId");
     expect(text).not.toContain("claimedBy");
     expect(text).not.toContain("error");
+
+    const failedResponse = await fetch(
+      `${base}/api/control/agents/panda/sessions/session-panda/scheduled-tasks?lifecycleStatus=failed`,
+      {headers: {cookie: auth.cookies}},
+    );
+    expect(failedResponse.status).toBe(200);
+    await expect(failedResponse.json()).resolves.toMatchObject({
+      scheduledTasks: {
+        data: [{id: once.id, lifecycleStatus: "failed"}],
+        meta: {total: 1},
+      },
+    });
   });
 
   it("does not leak distinctive cross-agent scheduled task title or instruction", async () => {
@@ -3564,7 +3786,6 @@ describe("Control Model Call Traces HTTP", () => {
   const CONTROL_RESPONSE_CACHE_PART_SECRET = "controlResponseCachePartSecret";
   const CONTROL_RESPONSE_FINGERPRINT_SECRET = "controlResponseFingerprintSecret";
   const CONTROL_ERROR_CACHE_SECRET = "controlErrorCacheSecret";
-  const CONTROL_USAGE_CACHE_SECRET = "controlUsageCacheSecret";
   const PROMPT_CACHE_KEY_REDACTION_PATTERN = /^\[redacted:prompt-cache-key:sha256:[a-f0-9]{16}\]$/;
 
   async function login(base: string, harness: Awaited<ReturnType<typeof createHarness>>, role: "admin" | "scoped" = "admin", agentKey = "panda") {
@@ -3576,8 +3797,13 @@ describe("Control Model Call Traces HTTP", () => {
 
   async function seedTrace(harness: Awaited<ReturnType<typeof createHarness>>) {
     const base64Blob = Buffer.from("private blob".repeat(30)).toString("base64");
-    await harness.modelCallTraces.recordModelCallTrace({
+    const recorder = new BufferedModelCallRecorder({
+      sink: harness.modelCallTraces,
+      successSnapshotSampleRate: 1,
+    });
+    recorder.observeModelCall({
       mode: "complete",
+      attempt: 1,
       tools: [],
       startedAt: Date.parse("2040-02-01T10:00:00.000Z"),
       finishedAt: Date.parse("2040-02-01T10:00:01.250Z"),
@@ -3593,22 +3819,18 @@ describe("Control Model Call Traces HTTP", () => {
           turn: 3,
         },
         trace: {
-          llmContextDump: "<context>PRIVATE_TOKEN_CONTEXT token=sk-controlTraceSecret https://panda.patrikmojzis.com/apps/open?token=pal_launch-token</context>",
           llmContextSections: [{
             name: "ControlTraceContext",
             source: "control-test-source",
             label: "Control trace context",
-            content: "context content",
             contentPreview: "context content",
             contentChars: 15,
             estimatedTokens: 4,
-            dump: "dump content",
             dumpChars: 12,
-            promptCacheKeyPart: `context-cache:${CONTROL_CONTEXT_CACHE_PART_SECRET}`,
           }],
         },
         context: {
-          systemPrompt: "system prompt with Bearer controlBearerSecret",
+          systemPrompt: "system prompt with Bearer controlBearerSecret token=sk-controlTraceSecret https://panda.patrikmojzis.com/apps/open?token=pal_launch-token",
           messages: [
             {role: "user", content: "hello api_key=controlApiKeySecret"},
             {role: "assistant", content: [{type: "toolCall", id: "call-1", name: "unknown_tool", arguments: {token: "tool-token-secret", imageData: base64Blob}}]},
@@ -3626,8 +3848,14 @@ describe("Control Model Call Traces HTTP", () => {
         timestamp: Date.parse("2040-02-01T10:00:01.250Z"),
       },
     });
-    const result = await harness.pool.query(`SELECT id, prompt_cache_key, request_json, response_json, usage_json FROM "runtime"."model_call_traces" LIMIT 1`);
-    return result.rows[0] as {id: string; prompt_cache_key: string | null; request_json: unknown; response_json: unknown; usage_json: unknown};
+    await recorder.flush();
+    const result = await harness.pool.query(`
+      SELECT a.id, a.prompt_cache_key, s.request_json, s.response_json
+      FROM "runtime"."model_call_attempts" a
+      JOIN "runtime"."model_call_snapshots" s ON s.attempt_id = a.id
+      LIMIT 1
+    `);
+    return result.rows[0] as {id: string; prompt_cache_key: string | null; request_json: unknown; response_json: unknown};
   }
 
   async function seedFailedTrace(
@@ -3643,8 +3871,10 @@ describe("Control Model Call Traces HTTP", () => {
   ) {
     const error = new Error(input.message);
     error.name = input.category;
-    await harness.modelCallTraces.recordModelCallTrace({
+    const recorder = new BufferedModelCallRecorder({sink: harness.modelCallTraces});
+    recorder.observeModelCall({
       mode: "complete",
+      attempt: 1,
       tools: [],
       startedAt: Date.parse(input.startedAt),
       finishedAt: Date.parse(input.finishedAt),
@@ -3665,6 +3895,7 @@ describe("Control Model Call Traces HTTP", () => {
         },
       },
     });
+    await recorder.flush();
   }
 
   it("requires admin for list/detail and returns sanitized allowlisted DTOs", async () => {
@@ -3697,18 +3928,18 @@ describe("Control Model Call Traces HTTP", () => {
     const rawContextCachePart = `context-cache:${CONTROL_CONTEXT_CACHE_PART_SECRET}`;
     const rawResponseCachePart = `response-cache:${CONTROL_RESPONSE_CACHE_PART_SECRET}`;
     const rawResponseFingerprint = `response-fingerprint:${CONTROL_RESPONSE_FINGERPRINT_SECRET}`;
-    const rawErrorCacheKey = `error-cache:${CONTROL_ERROR_CACHE_SECRET}`;
-    const rawUsageFingerprint = `usage-fingerprint:${CONTROL_USAGE_CACHE_SECRET}`;
     await harness.pool.query(
-      `UPDATE "runtime"."model_call_traces"
-       SET prompt_cache_key = $1,
-           request_json = $2::jsonb,
-           response_json = $3::jsonb,
-           error_json = $4::jsonb,
-           usage_json = $5::jsonb
-       WHERE id = $6`,
+      `UPDATE "runtime"."model_call_attempts"
+       SET prompt_cache_key = $1
+       WHERE id = $2`,
+      [rawPromptCacheKey, row.id],
+    );
+    await harness.pool.query(
+      `UPDATE "runtime"."model_call_snapshots"
+       SET request_json = $1::jsonb,
+           response_json = $2::jsonb
+       WHERE attempt_id = $3`,
       [
-        rawPromptCacheKey,
         JSON.stringify({
           ...(row.request_json as Record<string, unknown>),
           promptCacheKey: rawPromptCacheKey,
@@ -3716,11 +3947,9 @@ describe("Control Model Call Traces HTTP", () => {
             name: "ControlTraceContext",
             source: "control-test-source",
             label: "Control trace context",
-            content: "context content",
             contentPreview: "context content",
             contentChars: 15,
             estimatedTokens: 4,
-            dump: "dump content",
             dumpChars: 12,
             promptCacheKeyPart: {raw: rawContextCachePart},
           }],
@@ -3732,17 +3961,6 @@ describe("Control Model Call Traces HTTP", () => {
             promptCacheKeyPart: rawResponseCachePart,
             nested: {promptCacheKeyFingerprint: rawResponseFingerprint},
           },
-        }),
-        JSON.stringify({
-          category: "legacy_provider_error",
-          message: "legacy failed",
-          promptCacheKey: rawErrorCacheKey,
-        }),
-        JSON.stringify({
-          input: 10,
-          output: 4,
-          totalTokens: 17,
-          promptCacheKeyFingerprint: rawUsageFingerprint,
         }),
         row.id,
       ],
@@ -3771,7 +3989,7 @@ describe("Control Model Call Traces HTTP", () => {
       sessionAlias: "discord-main",
       sessionKind: "main",
       turn: 3,
-      callIndex: 3,
+      attempt: 1,
       provider: "openai",
       model: "gpt-test",
       mode: "complete",
@@ -3782,14 +4000,12 @@ describe("Control Model Call Traces HTTP", () => {
         input: 10,
         output: 4,
         totalTokens: 17,
-        promptCacheKeyFingerprint: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
       }),
-      error: expect.objectContaining({
-        category: "legacy_provider_error",
-        promptCacheKey: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
-      }),
+      error: null,
+      snapshotStatus: "captured",
+      requestShape: expect.objectContaining({messageCount: 2, contextSectionCount: 1}),
     });
-    expect(Object.keys(listBody.modelCallTraces.data[0]!).sort()).toEqual(["agentKey", "callIndex", "durationMs", "error", "expiresAt", "finishedAt", "id", "mode", "model", "promptCacheKey", "provider", "runId", "sessionAlias", "sessionDisplayName", "sessionId", "sessionKind", "sessionLabel", "startedAt", "status", "threadId", "turn", "usage"]);
+    expect(Object.keys(listBody.modelCallTraces.data[0]!).sort()).toEqual(["agentKey", "attempt", "durationMs", "error", "expiresAt", "finishedAt", "id", "mode", "model", "promptCacheKey", "provider", "requestShape", "runId", "sessionAlias", "sessionDisplayName", "sessionId", "sessionKind", "sessionLabel", "snapshotStatus", "startedAt", "status", "threadId", "turn", "usage"]);
     expect(JSON.stringify(listBody)).not.toContain(CONTROL_PROMPT_CACHE_KEY_SECRET);
     expect(JSON.stringify(listBody)).not.toContain(rawPromptCacheKey);
 
@@ -3802,6 +4018,7 @@ describe("Control Model Call Traces HTTP", () => {
       sessionDisplayName: "Patrik Discord main",
       sessionAlias: "discord-main",
       sessionKind: "main",
+      snapshotAvailable: true,
       promptCacheKey: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
       request: expect.objectContaining({
         promptCacheKey: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
@@ -3829,11 +4046,8 @@ describe("Control Model Call Traces HTTP", () => {
       }),
       usage: expect.objectContaining({
         totalTokens: 17,
-        promptCacheKeyFingerprint: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
       }),
-      error: expect.objectContaining({
-        promptCacheKey: expect.stringMatching(PROMPT_CACHE_KEY_REDACTION_PATTERN),
-      }),
+      error: null,
     });
     const apiText = JSON.stringify(detailBody);
     for (const sentinel of [
@@ -3844,12 +4058,8 @@ describe("Control Model Call Traces HTTP", () => {
       rawContextCachePart,
       CONTROL_RESPONSE_CACHE_PART_SECRET,
       CONTROL_RESPONSE_FINGERPRINT_SECRET,
-      CONTROL_ERROR_CACHE_SECRET,
-      CONTROL_USAGE_CACHE_SECRET,
       rawResponseCachePart,
       rawResponseFingerprint,
-      rawErrorCacheKey,
-      rawUsageFingerprint,
     ]) expect(apiText).not.toContain(sentinel);
     for (const sentinel of [
       "controlBearerSecret",
@@ -3862,25 +4072,41 @@ describe("Control Model Call Traces HTTP", () => {
   it("serves gap-free model usage analytics only to admins", async () => {
     const harness = await createHarness();
     const now = Date.now();
-    await harness.pool.query(`
-      INSERT INTO "runtime"."model_call_traces" (
-        id, provider, model, mode, status, started_at, finished_at,
-        duration_ms, request_json, usage_json, expires_at
-      ) VALUES
-        ($1, 'openai', 'gpt-test', 'complete', 'completed', $2, $3, 100, '{}'::jsonb, $4::jsonb, $5),
-        ($6, 'openai', 'gpt-test', 'complete', 'completed', $7, $8, 100, '{}'::jsonb, $9::jsonb, $10)
-    `, [
-      "00000000-0000-0000-0000-000000000721",
-      new Date(now - 45 * 60_000),
-      new Date(now - 45 * 60_000 + 100),
-      JSON.stringify({input: 10, output: 4, cacheRead: 30, cacheWrite: 5, totalTokens: 49, cost: {input: 0.01, output: 0.02, cacheRead: 0.003, cacheWrite: 0.004, total: 0.037}}),
-      new Date(now + 7 * 24 * 60 * 60_000),
-      "00000000-0000-0000-0000-000000000722",
-      new Date(now - 15 * 60_000),
-      new Date(now - 15 * 60_000 + 100),
-      JSON.stringify({input: 20, output: 6, cacheRead: 0, cacheWrite: 0, totalTokens: 26, cost: {input: 0.02, output: 0.03, cacheRead: 0, cacheWrite: 0, total: 0.05}}),
-      new Date(now + 7 * 24 * 60 * 60_000),
-    ]);
+    const recorder = new BufferedModelCallRecorder({sink: harness.modelCallTraces});
+    const observeUsage = (input: {attempt: number; startedAt: number; usage: AssistantMessage["usage"]}) => {
+      recorder.observeModelCall({
+        mode: "complete",
+        attempt: input.attempt,
+        startedAt: input.startedAt,
+        finishedAt: input.startedAt + 100,
+        tools: [],
+        request: {
+          providerName: "openai",
+          modelId: "gpt-test",
+          context: {messages: [], tools: []},
+        },
+        response: {
+          role: "assistant",
+          content: [{type: "text", text: "ok"}],
+          api: "openai-responses",
+          model: "openai/gpt-test",
+          usage: input.usage,
+          stopReason: "stop",
+          timestamp: input.startedAt + 100,
+        },
+      });
+    };
+    observeUsage({
+      attempt: 1,
+      startedAt: now - 45 * 60_000,
+      usage: {input: 10, output: 4, cacheRead: 30, cacheWrite: 5, totalTokens: 49, cost: {input: 0.01, output: 0.02, cacheRead: 0.003, cacheWrite: 0.004, total: 0.037}},
+    });
+    observeUsage({
+      attempt: 2,
+      startedAt: now - 15 * 60_000,
+      usage: {input: 20, output: 6, cacheRead: 0, cacheWrite: 0, totalTokens: 26, cost: {input: 0.02, output: 0.03, cacheRead: 0, cacheWrite: 0, total: 0.05}},
+    });
+    await recorder.flush();
 
     const base = await startHarnessServer(harness);
     const admin = await login(base, harness, "admin");
@@ -3981,7 +4207,7 @@ describe("Control Model Call Traces HTTP", () => {
     expect(JSON.stringify(listBody)).toContain(CONTROL_ERROR_CACHE_SECRET);
   });
 
-  it("omits session label metadata when legacy trace agent and session owner mismatch", async () => {
+  it("omits session label metadata when attempt agent and session owner mismatch", async () => {
     const harness = await createHarness();
     await harness.sessions.updateSessionLabel({
       sessionId: "session-luna",
@@ -3989,45 +4215,43 @@ describe("Control Model Call Traces HTTP", () => {
       displayName: "Luna private model-call session",
     });
     const traceId = "00000000-0000-0000-0000-000000000709";
-    await harness.pool.query(`
-      INSERT INTO "runtime"."model_call_traces" (
-        id,
-        run_id,
-        thread_id,
-        session_id,
-        agent_key,
-        turn,
-        call_index,
-        provider,
-        model,
-        mode,
-        status,
-        started_at,
-        finished_at,
-        duration_ms,
-        request_json,
-        usage_json,
-        expires_at
-      ) VALUES (
-        $1,
-        '00000000-0000-0000-0000-000000000709',
-        'thread-mismatched',
-        'session-luna',
-        'panda',
-        1,
-        1,
-        'openai',
-        'gpt-test',
-        'complete',
-        'completed',
-        '2040-02-01T10:00:00.000Z',
-        '2040-02-01T10:00:00.100Z',
-        100,
-        $2::jsonb,
-        $3::jsonb,
-        '2040-02-08T10:00:00.100Z'
-      )
-    `, [traceId, JSON.stringify({messages: []}), JSON.stringify({totalTokens: 1})]);
+    await harness.modelCallTraces.insertAttempts([{
+      id: traceId,
+      runId: "00000000-0000-0000-0000-000000000709",
+      threadId: "thread-mismatched",
+      sessionId: "session-luna",
+      agentKey: "panda",
+      turn: 1,
+      attempt: 1,
+      provider: "openai",
+      model: "gpt-test",
+      mode: "complete",
+      status: "completed",
+      startedAt: Date.parse("2040-02-01T10:00:00.000Z"),
+      finishedAt: Date.parse("2040-02-01T10:00:00.100Z"),
+      durationMs: 100,
+      usage: {
+        inputTokens: 1,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        totalTokens: 1,
+        inputCost: 0,
+        outputCost: 0,
+        cacheReadCost: 0,
+        cacheWriteCost: 0,
+        totalCost: 0,
+      },
+      requestShape: {
+        systemPromptChars: 0,
+        messageCount: 0,
+        toolCount: 0,
+        contextSectionCount: 0,
+        contextChars: 0,
+      },
+      snapshotStatus: "not_captured",
+      expiresAt: Date.parse("2040-05-01T10:00:00.100Z"),
+    }]);
 
     const base = await startHarnessServer(harness);
     const admin = await login(base, harness, "admin");
@@ -4160,19 +4384,33 @@ describe("Control Runtime Activity HTTP", () => {
     await harness.agents.ensurePairing("panda", "identity-patrik");
     const failedRuntimeError = `Command web.fetch is not allowed by the current session command lease. token=sk-abcdefghijklmnopqrstuvwxyz detail=Bad request {"messages":[{"content":"lowercase patient diagnosis should not leak"}],"stdout":"lowercase shell output"} failureKind=provider_timeout PRIVATE_RAW_RUN_ERROR_MUST_NOT_LEAK`;
     await harness.pool.query(`
-      INSERT INTO "runtime"."runs" (id, thread_id, status, started_at, finished_at, abort_requested_at, abort_reason, error) VALUES
-        ('00000000-0000-0000-0000-000000000401', 'thread-panda', 'failed', '2040-01-02T10:00:00.000Z', '2040-01-02T10:00:05.000Z', '2040-01-02T10:00:02.000Z', 'PRIVATE_ABORT_REASON_MUST_NOT_LEAK', $1),
-        ('00000000-0000-0000-0000-000000000402', 'thread-panda', 'completed', '2040-01-01T10:00:00.000Z', '2040-01-01T10:00:01.500Z', NULL, NULL, NULL),
-        ('00000000-0000-0000-0000-000000000403', 'thread-panda', 'running', '2040-01-03T10:00:00.000Z', NULL, NULL, NULL, 'PRIVATE_RUNNING_ERROR_MUST_NOT_LEAK'),
-        ('00000000-0000-0000-0000-000000000404', 'thread-luna', 'failed', '2040-01-04T10:00:00.000Z', '2040-01-04T10:00:01.000Z', NULL, NULL, 'LUNA_PRIVATE_RAW_RUN_ERROR')
+      INSERT INTO "runtime"."runs" (
+        id, thread_id, owner_source, owner_key, owner_holder_id, status,
+        started_at, finished_at, abort_requested_at, abort_reason, error
+      ) VALUES
+        ('00000000-0000-0000-0000-000000000401', 'thread-panda', NULL, NULL, NULL, 'failed', '2040-01-02T10:00:00.000Z', '2040-01-02T10:00:05.000Z', '2040-01-02T10:00:02.000Z', 'PRIVATE_ABORT_REASON_MUST_NOT_LEAK', $1),
+        ('00000000-0000-0000-0000-000000000402', 'thread-panda', NULL, NULL, NULL, 'completed', '2040-01-01T10:00:00.000Z', '2040-01-01T10:00:01.500Z', NULL, NULL, NULL),
+        ('00000000-0000-0000-0000-000000000403', 'thread-panda', 'test', 'control', 'running', 'running', '2040-01-03T10:00:00.000Z', NULL, NULL, NULL, 'PRIVATE_RUNNING_ERROR_MUST_NOT_LEAK'),
+        ('00000000-0000-0000-0000-000000000404', 'thread-luna', NULL, NULL, NULL, 'failed', '2040-01-04T10:00:00.000Z', '2040-01-04T10:00:01.000Z', NULL, NULL, 'LUNA_PRIVATE_RAW_RUN_ERROR')
     `, [failedRuntimeError]);
     await harness.pool.query(`
       INSERT INTO "runtime"."messages" (id, thread_id, origin, source, run_id, run_thread_id, created_at, message, metadata)
       VALUES ('00000000-0000-0000-0000-000000000501', 'thread-panda', 'assistant', 'assistant', '00000000-0000-0000-0000-000000000401', 'thread-panda', '2040-01-02T10:00:03.000Z', '{"role":"assistant","content":"PRIVATE_TRANSCRIPT_MESSAGE_MUST_NOT_LEAK"}'::jsonb, '{"private":"PRIVATE_MESSAGE_METADATA_MUST_NOT_LEAK"}'::jsonb)
     `);
     await harness.pool.query(`
-      INSERT INTO "runtime"."inputs" (id, thread_id, source, input_order, applied_at, created_at, message, metadata)
-      VALUES ('00000000-0000-0000-0000-000000000502', 'thread-panda', 'runtime', 1, '2040-01-02T10:00:00.000Z', '2040-01-02T10:00:00.000Z', '{"content":"PRIVATE_INPUT_MESSAGE_MUST_NOT_LEAK"}'::jsonb, '{"private":"PRIVATE_INPUT_METADATA_MUST_NOT_LEAK"}'::jsonb)
+      INSERT INTO "runtime"."inputs" (
+        id, thread_id, source, input_order, applied_at, applied_run_id, created_at, message, metadata
+      ) VALUES (
+        '00000000-0000-0000-0000-000000000502',
+        'thread-panda',
+        'runtime',
+        1,
+        '2040-01-02T10:00:00.000Z',
+        '00000000-0000-0000-0000-000000000401',
+        '2040-01-02T10:00:00.000Z',
+        NULL,
+        NULL
+      )
     `);
     await harness.pool.query(`
       INSERT INTO "runtime"."tool_jobs" (id, thread_id, run_id, run_thread_id, kind, status, summary, started_at, finished_at, result, error, progress)

@@ -2,12 +2,10 @@ import process from "node:process";
 
 import {Command} from "commander";
 
-import {PostgresAgentStore} from "../../domain/agents/postgres.js";
 import {
   registerGatewayManagementCommands,
 } from "../../domain/gateway/cli.js";
 import {PostgresGatewayStore} from "../../domain/gateway/postgres.js";
-import {PostgresIdentityStore} from "../../domain/identity/postgres.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import {createGatewayGuardFromEnv} from "../../integrations/gateway/guard.js";
@@ -20,7 +18,7 @@ import {
 import {startGatewayWorker} from "../../integrations/gateway/worker.js";
 import {DB_URL_OPTION_DESCRIPTION, parsePortOption} from "../../lib/cli.js";
 import {createPostgresPool, requireDatabaseUrl} from "../../lib/postgres-database.js";
-import {ensureSchemas} from "../../lib/postgres-bootstrap.js";
+import {createPandaSchemaVerifier} from "../../integrations/postgres/schema-version.js";
 
 interface GatewayRunOptions {
   dbUrl?: string;
@@ -48,11 +46,9 @@ async function runGateway(options: GatewayRunOptions): Promise<void> {
   });
   try {
     const gatewayStore = new PostgresGatewayStore({pool});
-    const identityStore = new PostgresIdentityStore({pool});
-    const agentStore = new PostgresAgentStore({pool});
     const sessionStore = new PostgresSessionStore({pool});
     const threadStore = new PostgresThreadRuntimeStore({pool});
-    await ensureSchemas([identityStore, agentStore, sessionStore, threadStore, gatewayStore]);
+    await createPandaSchemaVerifier(pool).assertCurrent();
 
     const guardTimeoutMs = readOptionalPositiveIntegerEnv("GATEWAY_GUARD_TIMEOUT_MS");
     const maxDeviceCommandWaiters = readOptionalPositiveIntegerEnv("GATEWAY_DEVICE_COMMAND_MAX_WAITERS")

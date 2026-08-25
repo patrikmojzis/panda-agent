@@ -90,7 +90,8 @@ Rules:
 - rendering caps completed-heavy lists; done items are not auto-deleted
 - no due dates, reminders, priorities, owners, global/project todos, or auto-spawn behavior in V1
 
-Session runtime config is stored per session in `session_runtime_config`. It holds runtime knobs such as `model`, `thinking`, `thinking_configured`, `inference_projection`, and `pending_wake_at`. These values follow the session across `/reset`; thread rows no longer own those scalar runtime settings.
+Session runtime config is stored per session in `session_runtime_config`. Runtime knobs such as `model`, `thinking`, `thinking_configured`, and `inference_projection` follow the session across `/reset`; thread rows no longer own those scalar settings. `pending_wake_at` and `pending_wake_generation` share the table but are owned exclusively by runtime wake/admission operations, not by the generic config update API.
+`pending_wake_at` is a durable admission edge, not a second work queue. Every wake advances `pending_wake_generation`; a consumer compare-and-clears only the generation visible to its PostgreSQL snapshot. A concurrent newer wake therefore survives a row-lock wait even though the statement still uses its older snapshot. A run claim records `admitted_run_id` on the exact visible input set and demotes those inputs to `queue`. That identity carries admission across bounded input pages without absorbing later queue-only deliveries. Abort leaves its admitted set dormant until a genuinely new wake re-admits it; non-abort failure and orphan recovery atomically re-arm only that set. The durable input ledger remains the payload source of truth.
 
 `/reset`:
 
@@ -98,10 +99,13 @@ Session runtime config is stored per session in `session_runtime_config`. It hol
 - aborts the old thread if needed
 - cancels old-thread background jobs
 - drops old-thread pending inputs
+- clears the old thread's pending wake while holding the session lock
 - creates a fresh thread
+- records the replaced thread in `threads.replaces_thread_id`
 - updates `session.current_thread_id`
 
-That indirection is the whole point.
+That lineage lets a replayed reset return its original result even after a newer
+reset has superseded it. The session indirection is the whole point.
 
 ## Routing
 
@@ -175,12 +179,22 @@ Long-lived automation follows the session:
 - scheduled tasks may store `created_from_message_id` so the agent can query `session.messages` for origin context
 - scheduled task schema and cross-table integrity checks live in `src/domain/scheduling/tasks/postgres-schema.ts`
 - scheduled reminder context shows active scheduled tasks for the current session
-- runners resolve `session.current_thread_id` at fire time; if they wait for old thread work to finish, they re-resolve before delivery
+- `scheduled_tasks` is only the mutable schedule definition; each `(task_id, scheduled_for)` fire becomes exactly one durable `scheduled_task_runs` occurrence before execution
+- due definitions are advanced and materialized in one atomic batch, while runners claim occurrences with renewable, token-fenced leases
+- each definition may have at most one pending, claimed, or running occurrence; recurring catch-up is sequential per task while unrelated tasks still run concurrently
+- claimed occurrences are supervised with bounded concurrency, so one long thread run cannot stop unrelated schedules from being claimed or materialized
+- scheduled input submission locks the session, resolves `session.current_thread_id`, and inserts a stable input UUID in one database statement; retries therefore find the same input without racing `/reset`
+- `runtime.inputs.applied_run_id` records the run that consumed an input, and the scheduled occurrence links that exact input and run
+- runners wait for that input's run receipt; they never infer causality by loading or comparing thread history
+- cancellation removes pending occurrences and future fires; an occurrence already claimed by a runner remains owned work and must settle with its claim token
+- completed and cancelled definitions are immutable history; rearming means creating a new task, never recycling an old occurrence key
+- scheduled-task list/history reads are capped at 100 rows; Control uses bounded per-task/session index probes, and execution never reads terminal occurrence history
 
 So:
 
 - reset does not destroy automation
-- reset does move automation onto the new thread automatically
+- work not yet submitted resolves onto the new current thread automatically
+- a submitted input keeps its durable outcome, including a discarded tombstone, so crash recovery cannot duplicate it on another thread
 
 ## Boundaries
 

@@ -48,11 +48,11 @@ describe("gateway delivery", () => {
       createdAt: 1,
       updatedAt: 1,
     };
-    const enqueueInput = vi.fn(async (threadId, payload, deliveryMode) => ({
-      inserted: true,
+    const enqueueSessionInput = vi.fn(async (_sessionId, payload, deliveryMode) => ({
+      disposition: "inserted" as const,
       input: {
         id: "input-1",
-        threadId,
+        threadId: session.currentThreadId,
         order: 1,
         deliveryMode: deliveryMode ?? "wake",
         source: payload.source,
@@ -83,14 +83,14 @@ describe("gateway delivery", () => {
         }),
       },
       threadStore: {
-        enqueueInput,
+        enqueueSessionInput,
       },
     });
 
-    expect(enqueueInput).toHaveBeenCalledWith("new-thread", expect.objectContaining({
+    expect(enqueueSessionInput).toHaveBeenCalledWith("session-1", expect.objectContaining({
       source: "gateway",
       externalMessageId: "event-1",
-    }), "wake");
+    }), "wake", undefined);
     expect(markEventDelivered).toHaveBeenCalledWith(expect.objectContaining({
       threadId: "new-thread",
     }));
@@ -105,11 +105,11 @@ describe("gateway delivery", () => {
       createdAt: 1,
       updatedAt: 1,
     };
-    const enqueueInput = vi.fn(async (threadId, payload, deliveryMode) => ({
-      inserted: true,
+    const enqueueSessionInput = vi.fn(async (_sessionId, payload, deliveryMode) => ({
+      disposition: "inserted" as const,
       input: {
         id: "input-1",
-        threadId,
+        threadId: mainSession.currentThreadId,
         order: 1,
         deliveryMode: deliveryMode ?? "wake",
         source: payload.source,
@@ -134,32 +134,23 @@ describe("gateway delivery", () => {
         reserveEventDelivery: vi.fn(async () => gatewayEvent({status: "delivering"})),
       },
       threadStore: {
-        enqueueInput,
+        enqueueSessionInput,
       },
     });
 
-    expect(enqueueInput).toHaveBeenCalledWith("main-thread", expect.objectContaining({
+    expect(enqueueSessionInput).toHaveBeenCalledWith("main-session", expect.objectContaining({
       source: "gateway",
       externalMessageId: "event-1",
-    }), "wake");
+    }), "wake", undefined);
     expect(markEventDelivered).toHaveBeenCalledWith(expect.objectContaining({
       threadId: "main-thread",
     }));
   });
 
-  it("quarantines reserved delivery when no current thread exists before enqueue", async () => {
-    const enqueueInput = vi.fn(async () => ({
-      inserted: true,
-      input: {
-        id: "input-1",
-        threadId: "missing",
-        order: 1,
-        deliveryMode: "wake",
-        source: "gateway",
-        message: {role: "user" as const, content: ""},
-        createdAt: 1,
-      },
-    }));
+  it("quarantines reserved delivery when atomic session enqueue rejects the target", async () => {
+    const enqueueSessionInput = vi.fn(async () => {
+      throw new Error("Unknown session session-1.");
+    });
     const markEventDelivered = vi.fn(async () => undefined);
     const markEventQuarantined = vi.fn(async () => undefined);
 
@@ -184,17 +175,17 @@ describe("gateway delivery", () => {
         reserveEventDelivery: vi.fn(async () => gatewayEvent({status: "delivering"})),
       },
       threadStore: {
-        enqueueInput,
+        enqueueSessionInput,
       },
     });
 
-    expect(enqueueInput).not.toHaveBeenCalled();
+    expect(enqueueSessionInput).toHaveBeenCalledOnce();
     expect(markEventDelivered).not.toHaveBeenCalled();
     expect(markEventQuarantined).toHaveBeenCalledWith(expect.objectContaining({
       eventId: "event-1",
       claimId: "claim-1",
       riskScore: 1,
-      reason: "Session session-1 has no current thread.",
+      reason: "Unknown session session-1.",
     }));
   });
 
@@ -218,11 +209,11 @@ describe("gateway delivery", () => {
       createdAt: 1,
       expiresAt: Date.now() + 60_000,
     };
-    const enqueueInput = vi.fn(async (threadId, payload, deliveryMode) => ({
-      inserted: true,
+    const enqueueSessionInput = vi.fn(async (_sessionId, payload, deliveryMode) => ({
+      disposition: "inserted" as const,
       input: {
         id: "input-1",
-        threadId,
+        threadId: "thread-1",
         order: 1,
         deliveryMode: deliveryMode ?? "wake",
         source: payload.source,
@@ -255,10 +246,10 @@ describe("gateway delivery", () => {
         markEventQuarantined: vi.fn(async () => undefined),
         reserveEventDelivery: vi.fn(async () => gatewayEvent({status: "delivering"})),
       },
-      threadStore: {enqueueInput},
+      threadStore: {enqueueSessionInput},
     });
 
-    const payload = enqueueInput.mock.calls[0]?.[1];
+    const payload = enqueueSessionInput.mock.calls[0]?.[1];
     expect(JSON.stringify(payload?.message)).toContain("attachments:");
     expect(JSON.stringify(payload?.message)).toContain(attachment.localPath);
     expect(payload?.metadata).toMatchObject({
@@ -303,11 +294,11 @@ describe("gateway delivery", () => {
       createdAt: 1,
       expiresAt: Date.now() + 60_000,
     };
-    const enqueueInput = vi.fn(async (threadId, payload, deliveryMode) => ({
-      inserted: true,
+    const enqueueSessionInput = vi.fn(async (_sessionId, payload, deliveryMode) => ({
+      disposition: "inserted" as const,
       input: {
         id: "input-1",
-        threadId,
+        threadId: "thread-1",
         order: 1,
         deliveryMode: deliveryMode ?? "wake",
         source: payload.source,
@@ -340,10 +331,10 @@ describe("gateway delivery", () => {
         markEventQuarantined: vi.fn(async () => undefined),
         reserveEventDelivery,
       },
-      threadStore: {enqueueInput},
+      threadStore: {enqueueSessionInput},
     });
 
-    const payload = enqueueInput.mock.calls[0]?.[1];
+    const payload = enqueueSessionInput.mock.calls[0]?.[1];
     const rendered = JSON.stringify(payload?.message);
     expect(rendered).toContain("Trusted gateway event");
     expect(rendered).toContain("guard_status: bypassed");

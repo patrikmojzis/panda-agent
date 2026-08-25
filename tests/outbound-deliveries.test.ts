@@ -6,6 +6,7 @@ import {
     ChannelOutboundDeliveryWorker,
     PostgresOutboundDeliveryStore,
 } from "../src/domain/channels/deliveries/index.js";
+import {ensurePostgresOutboundDeliverySchema} from "../src/domain/channels/deliveries/postgres-schema.js";
 import type {
     CompleteDeliveryInput,
     DeliveryNotification,
@@ -126,7 +127,7 @@ describe("PostgresOutboundDeliveryStore", () => {
 
     const {sessionStore, threadStore} = await createRuntimeStores(pool);
     const store = new PostgresOutboundDeliveryStore({ pool });
-    await store.ensureSchema();
+    await ensurePostgresOutboundDeliverySchema(pool);
     await sessionStore.createSession({
       id: "session-1",
       agentKey: "panda",
@@ -138,7 +139,8 @@ describe("PostgresOutboundDeliveryStore", () => {
       sessionId: "session-1",
     });
 
-    const delivery = await store.enqueueDelivery({
+    const input = {
+      idempotencyKey: "runtime-request:request-1:system-reply",
       threadId: "thread-1",
       channel: "telegram",
       target: {
@@ -146,8 +148,9 @@ describe("PostgresOutboundDeliveryStore", () => {
         connectorKey: "bot-1",
         externalConversationId: "chat-1",
       },
-      items: [{ type: "text", text: "hello" }],
-    });
+      items: [{type: "text" as const, text: "hello"}],
+    };
+    const delivery = await store.enqueueDelivery(input);
 
     expect(delivery.status).toBe("pending");
 
@@ -171,6 +174,17 @@ describe("PostgresOutboundDeliveryStore", () => {
       status: "sent",
       sent: [{ type: "text", externalMessageId: "101" }],
     });
+    await expect(store.enqueueDelivery(input)).resolves.toMatchObject({
+      id: delivery.id,
+      idempotencyKey: input.idempotencyKey,
+      status: "sent",
+    });
+    await expect(store.enqueueDelivery({
+      ...input,
+      items: [{type: "text", text: "different"}],
+    })).rejects.toThrow("already bound to a different delivery");
+    await expect(pool.query(`SELECT COUNT(*)::INTEGER AS count FROM "runtime"."outbound_deliveries"`))
+      .resolves.toMatchObject({rows: [{count: 1}]});
   });
 
   it("lists target deliveries scoped to one session", async () => {
@@ -187,7 +201,7 @@ describe("PostgresOutboundDeliveryStore", () => {
 
     const {agentStore, sessionStore, threadStore} = await createRuntimeStores(pool);
     const store = new PostgresOutboundDeliveryStore({ pool });
-    await store.ensureSchema();
+    await ensurePostgresOutboundDeliverySchema(pool);
     await agentStore.bootstrapAgent({
       agentKey: "other-agent",
       displayName: "Other Agent",
@@ -275,7 +289,7 @@ describe("PostgresOutboundDeliveryStore", () => {
 
     await createRuntimeStores(pool);
     const store = new PostgresOutboundDeliveryStore({ pool });
-    await store.ensureSchema();
+    await ensurePostgresOutboundDeliverySchema(pool);
     const deliveryContext = {
       discord: {
         channelId: "thread-1",
@@ -328,7 +342,7 @@ describe("PostgresOutboundDeliveryStore", () => {
 
     await createRuntimeStores(pool);
     const store = new PostgresOutboundDeliveryStore({ pool });
-    await store.ensureSchema();
+    await ensurePostgresOutboundDeliverySchema(pool);
 
     await expect(store.enqueueDelivery({
       channel: "discord",
@@ -368,7 +382,7 @@ describe("PostgresOutboundDeliveryStore", () => {
 
     await createRuntimeStores(pool);
     const store = new PostgresOutboundDeliveryStore({ pool });
-    await store.ensureSchema();
+    await ensurePostgresOutboundDeliverySchema(pool);
 
     await expect(store.enqueueDelivery({
       channel: "telegram",
@@ -396,7 +410,7 @@ describe("PostgresOutboundDeliveryStore", () => {
 
     await createRuntimeStores(pool);
     const store = new PostgresOutboundDeliveryStore({ pool });
-    await store.ensureSchema();
+    await ensurePostgresOutboundDeliverySchema(pool);
     await pool.query(`
       INSERT INTO "runtime"."outbound_deliveries" (
         id,
@@ -486,7 +500,7 @@ describe("PostgresOutboundDeliveryStore", () => {
 
     const {sessionStore, threadStore} = await createRuntimeStores(pool);
     const store = new PostgresOutboundDeliveryStore({ pool });
-    await store.ensureSchema();
+    await ensurePostgresOutboundDeliverySchema(pool);
     await sessionStore.createSession({
       id: "session-1",
       agentKey: "panda",
@@ -530,8 +544,6 @@ class MemoryDeliveryStore {
   deliveries: OutboundDeliveryRecord[] = [];
   listener: ((notification: DeliveryNotification) => Promise<void> | void) | null = null;
   counter = 0;
-
-  async ensureSchema(): Promise<void> {}
 
   async enqueueDelivery(input: OutboundDeliveryInput): Promise<OutboundDeliveryRecord> {
     this.counter += 1;

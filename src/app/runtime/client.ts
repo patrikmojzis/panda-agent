@@ -19,8 +19,8 @@ import type {SessionRecord} from "../../domain/sessions/types.js";
 import {resolveCurrentSessionThread} from "../../domain/sessions/current-thread.js";
 import {DAEMON_REQUEST_TIMEOUT_MS, DAEMON_STALE_AFTER_MS, DEFAULT_DAEMON_KEY,} from "./daemon.js";
 import {createPostgresPool, requireDatabaseUrl} from "./create-runtime.js";
-import {ensureSchemas} from "./postgres-bootstrap.js";
 import {listenThreadRuntimeNotifications} from "./store-notifications.js";
+import {createPandaSchemaVerifier} from "../../integrations/postgres/schema-version.js";
 
 function requireRuntimeIdentityHandle(value: string | null | undefined): string {
   const trimmed = trimToNull(value);
@@ -160,14 +160,7 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
   let unsubscribe: (() => Promise<void>) | null = null;
 
   try {
-    await ensureSchemas([
-      identityStore,
-      agentStore,
-      sessionStore,
-      store,
-      requests,
-      daemonState,
-    ]);
+    await createPandaSchemaVerifier(pool).assertCurrent();
 
     const identity = await identityStore.getIdentityByHandle(requireRuntimeIdentityHandle(options.identity));
 
@@ -205,11 +198,14 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
     };
 
     const createBranchSession = async (sessionOptions: RuntimeClientSessionOptions = {}): Promise<ThreadRecord> => {
+      const sessionId = trimToUndefined(sessionOptions.sessionId) ?? randomUUID();
+      const threadId = randomUUID();
       const result = await enqueueDaemonRequest<{threadId: string}>({
         kind: "create_branch_session",
         payload: {
           identityId: identity.id,
-          sessionId: sessionOptions.sessionId,
+          sessionId,
+          threadId,
           agentKey: trimToUndefined(sessionOptions.agentKey),
           model: sessionOptions.model,
           thinking: sessionOptions.thinking,
@@ -357,8 +353,8 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
     const waitForCurrentRun = async (threadId: string, timeoutMs = DAEMON_REQUEST_TIMEOUT_MS): Promise<void> => {
       const deadline = Date.now() + timeoutMs;
       while (Date.now() <= deadline) {
-        const runs = await store.listRuns(threadId);
-        if (!runs.some((run) => run.status === "running")) {
+        const latestRun = await store.getLatestRun(threadId);
+        if (latestRun?.status !== "running") {
           return;
         }
 

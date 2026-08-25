@@ -61,7 +61,10 @@ describe("LiveVoiceCall", () => {
     harness.call.endUtterance(utterance.utteranceId);
     harness.callbacks.onTurnDone({role: "user", transcript: "check status"});
     await harness.callbacks.onDelegation({id: "delegation-1", prompt: "check status"});
-    expect(harness.requests.enqueueRequest).toHaveBeenCalledWith({kind: "live_voice_delegation", payload: {liveVoiceTurnId: expect.any(String)}}, {idempotencyKey: expect.stringContaining("live_voice_delegation:")});
+    expect(harness.requests.enqueueRequest).toHaveBeenCalledWith({kind: "live_voice_delegation", payload: {
+      liveVoiceTurnId: expect.any(String),
+      sessionId: "session-1",
+    }}, {idempotencyKey: expect.stringContaining("live_voice_delegation:")});
     const turnId = String(harness.voice.createOrGetTurn.mock.calls[0]![0].id);
     harness.turns.set(turnId, {...harness.turns.get(turnId), status: "running"});
     await expect(harness.call.deliver({controlId: "progress", text: "Working.", mode: "progress", liveVoiceTurnId: turnId})).resolves.toMatchObject({delivery: "delegation"});

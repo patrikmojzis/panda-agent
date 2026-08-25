@@ -5,11 +5,14 @@ import {optionalNonEmptyString, requireNonEmptyString} from "../../../lib/string
 import {optionalTimestampMillis, requireTimestampMillis} from "../../../lib/postgres-values.js";
 import type {
     ThreadInputDeliveryMode,
+    ThreadInputStatus,
+    ThreadPendingInputRecord,
     ThreadMessageOrigin,
     ThreadInputRecord,
     ThreadMessageRecord,
     ThreadRecord,
     ThreadRunRecord,
+    ThreadRunOwner,
     ThreadRunStatus,
     ThreadToolJobKind,
     ThreadToolJobRecord,
@@ -34,6 +37,13 @@ function parseRequiredString(value: unknown, label: string): string {
 
 function parseOptionalString(value: unknown): string | undefined {
   return optionalNonEmptyString(value, "Thread runtime optional string must not be empty.");
+}
+
+function parseString(value: unknown, label: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`Thread runtime ${label} must be a string.`);
+  }
+  return value;
 }
 
 function parseRequiredBigintNumber(value: unknown, label: string): number {
@@ -89,6 +99,43 @@ function parseOptionalJsonObject(value: unknown, label: string): JsonObject | un
   }
 
   return parseJsonObject(value, label);
+}
+
+function parseMessageMetadata(row: Record<string, unknown>, source: string): JsonValue | undefined {
+  const metadata = parseOptionalJsonValue(row.metadata, "message metadata");
+  const compactedThroughSequence = parseOptionalBigintNumber(
+    row.compacted_through_sequence,
+    "compacted-through sequence",
+  );
+  if (compactedThroughSequence === undefined) {
+    if (
+      metadata
+      && typeof metadata === "object"
+      && !Array.isArray(metadata)
+      && metadata.kind === "compact_boundary"
+    ) {
+      throw new Error("Thread runtime compact boundary is missing its typed checkpoint sequence.");
+    }
+    return metadata;
+  }
+
+  if (
+    source !== "compact"
+    || !metadata
+    || typeof metadata !== "object"
+    || Array.isArray(metadata)
+    || metadata.kind !== "compact_boundary"
+  ) {
+    throw new Error("Thread runtime typed checkpoint must belong to a compact boundary message.");
+  }
+  if ("compactedThroughSequence" in metadata || "compactedUpToSequence" in metadata) {
+    throw new Error("Thread runtime compact checkpoint sequence must not be duplicated in metadata.");
+  }
+
+  return {
+    ...metadata,
+    compactedThroughSequence,
+  };
 }
 
 function isMessageRole(value: unknown): value is Message["role"] {
@@ -170,6 +217,7 @@ export function parseThreadRow(row: Record<string, unknown>): ThreadRecord {
   return {
     id: parseRequiredString(row.id, "thread id"),
     sessionId: parseRequiredString(row.session_id, "session id"),
+    replacesThreadId: parseOptionalString(row.replaces_thread_id),
     runtimeState: parseOptionalJsonObject(row.runtime_state, "runtime state") as ThreadRecord["runtimeState"],
     createdAt: requireTimestampMillis(row.created_at, "Thread runtime created_at must be a valid timestamp."),
     updatedAt: requireTimestampMillis(row.updated_at, "Thread runtime updated_at must be a valid timestamp."),
@@ -177,14 +225,16 @@ export function parseThreadRow(row: Record<string, unknown>): ThreadRecord {
 }
 
 export function parseMessageRow(row: Record<string, unknown>): ThreadMessageRecord {
+  const source = parseRequiredString(row.source, "message source");
   return {
     id: parseRequiredString(row.id, "message id"),
     threadId: parseRequiredString(row.thread_id, "thread id"),
     sequence: parseRequiredBigintNumber(row.sequence, "message sequence"),
     origin: parseOrigin(row.origin),
+    inputId: parseOptionalString(row.input_id),
     message: parseMessage(row.message, "message"),
-    metadata: parseOptionalJsonValue(row.metadata, "message metadata"),
-    source: parseRequiredString(row.source, "message source"),
+    metadata: parseMessageMetadata(row, source),
+    source,
     channelId: parseOptionalString(row.channel_id),
     externalMessageId: parseOptionalString(row.external_message_id),
     actorId: parseOptionalString(row.actor_id),
@@ -195,20 +245,58 @@ export function parseMessageRow(row: Record<string, unknown>): ThreadMessageReco
 }
 
 export function parseInputRow(row: Record<string, unknown>): ThreadInputRecord {
+  const appliedAt = optionalTimestampMillis(row.applied_at, "Thread runtime input applied_at must be a valid timestamp.");
+  const discardedAt = optionalTimestampMillis(
+    row.discarded_at,
+    "Thread runtime input discarded_at must be a valid timestamp.",
+  );
+  if (appliedAt !== undefined && discardedAt !== undefined) {
+    throw new Error("Thread runtime input cannot be both applied and discarded.");
+  }
+  const status: ThreadInputStatus = appliedAt !== undefined
+    ? "applied"
+    : discardedAt !== undefined
+      ? "discarded"
+      : "pending";
+  const appliedRunId = parseOptionalString(row.applied_run_id);
+  const admittedRunId = parseOptionalString(row.admitted_run_id);
+  if (status !== "applied" && appliedRunId !== undefined) {
+    throw new Error("Thread runtime unapplied input cannot reference an applied run.");
+  }
+  if (status !== "pending" && admittedRunId !== undefined) {
+    throw new Error("Thread runtime terminal input cannot reference an admitting run.");
+  }
+
   return {
     id: parseRequiredString(row.id, "input id"),
     threadId: parseRequiredString(row.thread_id, "thread id"),
     order: parseRequiredBigintNumber(row.input_order, "input order"),
     deliveryMode: parseDeliveryMode(row.delivery_mode),
-    message: parseMessage(row.message, "input message"),
-    metadata: parseOptionalJsonValue(row.metadata, "input metadata"),
+    status,
+    connectorKey: parseString(row.connector_key, "input connector key"),
     source: parseRequiredString(row.source, "input source"),
     channelId: parseOptionalString(row.channel_id),
     externalMessageId: parseOptionalString(row.external_message_id),
     actorId: parseOptionalString(row.actor_id),
     identityId: parseOptionalString(row.identity_id),
     createdAt: requireTimestampMillis(row.created_at, "Thread runtime input created_at must be a valid timestamp."),
-    appliedAt: optionalTimestampMillis(row.applied_at, "Thread runtime input applied_at must be a valid timestamp."),
+    admittedRunId,
+    appliedAt,
+    appliedRunId,
+    discardedAt,
+  };
+}
+
+export function parsePendingInputRow(row: Record<string, unknown>): ThreadPendingInputRecord {
+  const input = parseInputRow(row);
+  if (input.status !== "pending") {
+    throw new Error(`Thread runtime input ${input.id} is not pending.`);
+  }
+  return {
+    ...input,
+    status: "pending",
+    message: parseMessage(row.message, "input message"),
+    metadata: parseOptionalJsonValue(row.metadata, "input metadata"),
   };
 }
 
@@ -217,9 +305,19 @@ export function parseInputThreadIdRow(row: Record<string, unknown>): string {
 }
 
 export function parseRunRow(row: Record<string, unknown>): ThreadRunRecord {
+  const ownerValues = [row.owner_source, row.owner_key, row.owner_holder_id];
+  const hasOwner = ownerValues.some((value) => value !== null && value !== undefined);
+  const owner: ThreadRunOwner | undefined = hasOwner
+    ? {
+      source: parseRequiredString(row.owner_source, "run owner source"),
+      connectorKey: parseRequiredString(row.owner_key, "run owner key"),
+      holderId: parseRequiredString(row.owner_holder_id, "run owner holder id"),
+    }
+    : undefined;
   return {
     id: parseRequiredString(row.id, "run id"),
     threadId: parseRequiredString(row.thread_id, "thread id"),
+    ...(owner ? {owner} : {}),
     status: parseRunStatus(row.status),
     startedAt: requireTimestampMillis(row.started_at, "Thread runtime run started_at must be a valid timestamp."),
     finishedAt: optionalTimestampMillis(row.finished_at, "Thread runtime run finished_at must be a valid timestamp."),
@@ -230,10 +328,17 @@ export function parseRunRow(row: Record<string, unknown>): ThreadRunRecord {
 }
 
 export function parseToolJobRow(row: Record<string, unknown>): ThreadToolJobRecord {
+  const ownerSource = parseOptionalString(row.owner_source);
+  const ownerKey = parseOptionalString(row.owner_key);
+  const ownerHolderId = parseOptionalString(row.owner_holder_id);
+  const owner = ownerSource && ownerKey && ownerHolderId
+    ? {source: ownerSource, connectorKey: ownerKey, holderId: ownerHolderId}
+    : undefined;
   return {
     id: parseRequiredString(row.id, "tool job id"),
     threadId: parseRequiredString(row.thread_id, "thread id"),
     runId: parseOptionalString(row.run_id),
+    ...(owner ? {owner} : {}),
     parentToolCallId: parseOptionalString(row.parent_tool_call_id),
     commandOrdinal: parseOptionalBigintNumber(row.command_ordinal, "command ordinal"),
     kind: parseToolJobKind(row.kind),

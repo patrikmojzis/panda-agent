@@ -1,7 +1,6 @@
 export {
   ThreadRuntimeCoordinator,
-  type ThreadLease,
-  type ThreadLeaseManager,
+  type ThreadExclusiveAccess,
   type ThreadRuntimeCoordinatorOptions,
   type ThreadRuntimeEvent,
   type ThreadWakeMode,
@@ -9,9 +8,6 @@ export {
 export {
   PostgresThreadRuntimeStore,
 } from "./postgres.js";
-export {
-  PostgresThreadLeaseManager,
-} from "./postgres-lease.js";
 export {
   ensureReadonlySessionQuerySchema,
   READONLY_SESSION_VIEW_BASENAMES,
@@ -55,23 +51,31 @@ export {
   type ThreadChannelMediaFilter,
   type ThreadChannelMediaRecord,
   type ThreadChannelMessageFilter,
+  type ThreadCompactionCommit,
   type ThreadDefinitionResolver,
+  type ThreadEnqueueOptions,
   type ThreadInputPayload,
   type ThreadInputDeliveryMode,
   type ThreadInputRecord,
+  type ThreadInputStatus,
+  type ThreadPendingInputRecord,
   type ThreadMessageMetadata,
   type ThreadMessageOrigin,
   type ThreadMessageRecord,
   type ThreadRecord,
   type ThreadSummaryRecord,
+  type ThreadTranscriptPage,
+  type ThreadTranscriptPageOptions,
+  type ThreadTranscriptSnapshot,
   type ThreadRunRecord,
+  type ThreadRunOwner,
   type ThreadRunStatus,
   type ThreadToolJobKind,
   type ThreadToolJobRecord,
   type ThreadToolJobStatus,
   type ThreadToolJobUpdate,
   type ThreadRuntimeMessagePayload,
-  type ThreadUpdate,
+  type ThreadRuntimeStateUpdate,
 } from "./types.js";
 export {
   BackgroundToolJobService,

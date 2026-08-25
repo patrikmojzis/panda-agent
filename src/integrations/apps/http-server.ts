@@ -43,7 +43,7 @@ export interface AgentAppServerOptions extends AgentAppServerBinding {
   sessionTtlMs?: number;
   identityStore?: Pick<IdentityStore, "getIdentityByHandle">;
   sessionStore?: AgentAppSessionContextStore;
-  coordinator?: Pick<ThreadRuntimeCoordinator, "submitInput">;
+  coordinator?: Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
 }
 
 export interface AgentAppHttpService {

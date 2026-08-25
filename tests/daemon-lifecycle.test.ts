@@ -29,6 +29,8 @@ function requestRecord(id: string): RuntimeRequestRecord {
       externalMessageId: `message-${id}`,
       text: "hello",
     },
+    claimToken: `claim-${id}`,
+    claimExpiresAt: now + 300_000,
     createdAt: now,
     updatedAt: now,
   };
@@ -71,9 +73,18 @@ function createDaemonLifecycleContext(overrides: DaemonLifecycleContextOverrides
   const baseRuntime: DaemonLifecycleRuntime = {
     close: vi.fn(async () => undefined),
     apps: createUnusedAppService(),
+    backgroundJobService: {
+      close: vi.fn(async () => undefined),
+      setOwner: vi.fn(),
+    } as DaemonLifecycleRuntime["backgroundJobService"],
+    commandExecutor: {
+      setOwner: vi.fn(),
+    } as DaemonLifecycleRuntime["commandExecutor"],
     coordinator: {
-      recoverOrphanedRuns: vi.fn(async () => undefined),
-      submitInput: vi.fn(async () => undefined),
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      submitInput: vi.fn(async () => failUnusedDependency("runtime.coordinator.submitInput")),
+      submitSessionInput: vi.fn(async () => failUnusedDependency("runtime.coordinator.submitSessionInput")),
     },
     pool: {waitingCount: 0},
   };
@@ -111,8 +122,11 @@ function createDaemonLifecycleContext(overrides: DaemonLifecycleContextOverrides
     },
     requests: {
       claimNextPendingRequest: vi.fn(async () => null),
+      renewRequestClaim: vi.fn(async () => true),
+      releaseRequestClaim: vi.fn(async () => true),
       completeRequest: vi.fn(async () => undefined),
       failRequest: vi.fn(async () => undefined),
+      pruneSettledRequests: vi.fn(async () => 0),
       listenPendingRequests: vi.fn(async () => async () => undefined),
     },
     a2aOutboundWorker: createStartStopService(),
@@ -262,7 +276,9 @@ describe("createDaemonLifecycle", () => {
       sessionHeartbeatRunner: {
         start: vi.fn(async () => {
           order.push("heartbeat-start");
-          await lifecycle.stop();
+          queueMicrotask(() => {
+            void lifecycle.stop();
+          });
         }),
         stop: vi.fn(async () => {
           order.push("heartbeat-stop");
@@ -273,9 +289,18 @@ describe("createDaemonLifecycle", () => {
         close: vi.fn(async () => {
           order.push("runtime-close");
         }),
+        backgroundJobService: {
+          close: vi.fn(async () => {
+            order.push("background-jobs-close");
+          }),
+          setOwner: vi.fn(),
+        } as DaemonLifecycleRuntime["backgroundJobService"],
         coordinator: {
-          recoverOrphanedRuns: vi.fn(async () => {
-            order.push("recover");
+          start: vi.fn(async () => {
+            order.push("coordinator-start");
+          }),
+          stop: vi.fn(async () => {
+            order.push("coordinator-stop");
           }),
         },
       },
@@ -291,9 +316,9 @@ describe("createDaemonLifecycle", () => {
 
       expect(order).toEqual([
         "lease",
+        "coordinator-start",
         "heartbeat",
         "listen",
-        "recover",
         "a2a-start",
         "email-outbound-start",
         "email-sync-start",
@@ -307,13 +332,20 @@ describe("createDaemonLifecycle", () => {
         "tasks-stop",
         "watch-stop",
         "heartbeat-stop",
-        "release",
         "voice-store-close",
+        "coordinator-stop",
+        "background-jobs-close",
+        "release",
         "runtime-close",
       ]);
-      expect(context.runtime.coordinator.recoverOrphanedRuns).toHaveBeenCalledWith(
+      expect(context.runtime.coordinator.start).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: "daemon",
+          connectorKey: "primary",
+          holderId: expect.any(String),
+        }),
         expect.stringMatching(
-          /^Run marked failed during orphaned-run recovery; recoveryTrigger=daemon_startup_or_restart; recoveryMechanism=thread_lease_gated_orphan_sweep; probableCause=previous_runtime_stopped_before_run_completed; recoveredAt=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\.$/,
+          /^Run marked failed during orphaned-run recovery; recoveryTrigger=daemon_startup_or_restart; recoveryMechanism=daemon_lease_fenced_run_claim_sweep; probableCause=previous_runtime_stopped_before_run_completed; recoveredAt=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\.$/,
         ),
       );
       expect(processRequest).not.toHaveBeenCalled();
@@ -324,6 +356,305 @@ describe("createDaemonLifecycle", () => {
         process.env.PANDA_APPS_PORT = previousAppsPort;
       }
 
+      if (previousHealthPort === undefined) {
+        delete process.env.PANDA_CORE_HEALTH_PORT;
+      } else {
+        process.env.PANDA_CORE_HEALTH_PORT = previousHealthPort;
+      }
+    }
+  });
+
+  it("waits for coordinator startup before releasing ownership and closing runtime", async () => {
+    const coordinatorStartEntered = deferred();
+    const finishCoordinatorStart = deferred();
+    const order: string[] = [];
+    const context = createDaemonLifecycleContext({
+      connectorLeases: {
+        release: vi.fn(async () => {
+          order.push("lease-release");
+          return true;
+        }),
+      },
+      runtime: {
+        close: vi.fn(async () => {
+          order.push("runtime-close");
+        }),
+        backgroundJobService: {
+          close: vi.fn(async () => {
+            order.push("background-jobs-close");
+          }),
+          setOwner: vi.fn(),
+        } as DaemonLifecycleRuntime["backgroundJobService"],
+        coordinator: {
+          start: vi.fn(async () => {
+            order.push("coordinator-start");
+            coordinatorStartEntered.resolve();
+            await finishCoordinatorStart.promise;
+            order.push("coordinator-start-settled");
+          }),
+          stop: vi.fn(async () => {
+            order.push("coordinator-stop");
+          }),
+        },
+      },
+    });
+    const lifecycle = createDaemonLifecycle({
+      context,
+      processRequest: vi.fn(async () => undefined),
+    });
+
+    const runPromise = lifecycle.run();
+    await coordinatorStartEntered.promise;
+    const stopPromise = lifecycle.stop();
+    let stopSettled = false;
+    void stopPromise.then(() => {
+      stopSettled = true;
+    });
+    await Promise.resolve();
+
+    expect(stopSettled).toBe(false);
+    expect(order).toEqual(["coordinator-start"]);
+    expect(context.runtime.close).not.toHaveBeenCalled();
+    expect(context.connectorLeases.release).not.toHaveBeenCalled();
+
+    finishCoordinatorStart.resolve();
+    await Promise.all([runPromise, stopPromise]);
+
+    expect(order).toEqual([
+      "coordinator-start",
+      "coordinator-start-settled",
+      "coordinator-stop",
+      "background-jobs-close",
+      "lease-release",
+      "runtime-close",
+    ]);
+    expect(context.a2aOutboundWorker.start).not.toHaveBeenCalled();
+    expect(context.emailOutboundWorker.start).not.toHaveBeenCalled();
+    expect(context.emailSyncRunner.start).not.toHaveBeenCalled();
+    expect(context.scheduledTaskRunner.start).not.toHaveBeenCalled();
+    expect(context.watchRunner.start).not.toHaveBeenCalled();
+    expect(context.sessionHeartbeatRunner.start).not.toHaveBeenCalled();
+  });
+
+  it("stops receipt-producing runners concurrently with their coordinator", async () => {
+    const previousAppsPort = process.env.PANDA_APPS_PORT;
+    const previousHealthPort = process.env.PANDA_CORE_HEALTH_PORT;
+    process.env.PANDA_APPS_PORT = "0";
+    delete process.env.PANDA_CORE_HEALTH_PORT;
+
+    const allRunnersStarted = deferred();
+    const coordinatorStopEntered = deferred();
+    const order: string[] = [];
+    const context = createDaemonLifecycleContext({
+      scheduledTaskRunner: {
+        start: vi.fn(async () => undefined),
+        stop: vi.fn(async () => {
+          order.push("tasks-stop-entered");
+          await coordinatorStopEntered.promise;
+          order.push("tasks-stop-settled");
+        }),
+      },
+      sessionHeartbeatRunner: {
+        start: vi.fn(async () => {
+          allRunnersStarted.resolve();
+        }),
+        stop: vi.fn(async () => undefined),
+      },
+      runtime: {
+        coordinator: {
+          stop: vi.fn(async () => {
+            order.push("coordinator-stop");
+            coordinatorStopEntered.resolve();
+          }),
+        },
+      },
+    });
+    const lifecycle = createDaemonLifecycle({
+      context,
+      processRequest: vi.fn(async () => undefined),
+    });
+
+    try {
+      const runPromise = lifecycle.run();
+      await allRunnersStarted.promise;
+      const stopPromise = lifecycle.stop();
+      await Promise.race([
+        stopPromise,
+        sleep(1_000).then(() => {
+          throw new Error("Daemon shutdown deadlocked behind a receipt-producing runner.");
+        }),
+      ]);
+      await runPromise;
+
+      expect(order).toEqual([
+        "tasks-stop-entered",
+        "coordinator-stop",
+        "tasks-stop-settled",
+      ]);
+    } finally {
+      await lifecycle.stop();
+      if (previousAppsPort === undefined) {
+        delete process.env.PANDA_APPS_PORT;
+      } else {
+        process.env.PANDA_APPS_PORT = previousAppsPort;
+      }
+      if (previousHealthPort === undefined) {
+        delete process.env.PANDA_CORE_HEALTH_PORT;
+      } else {
+        process.env.PANDA_CORE_HEALTH_PORT = previousHealthPort;
+      }
+    }
+  });
+
+  it("waits for request-listener startup and then closes the acquired listener", async () => {
+    const previousAppsPort = process.env.PANDA_APPS_PORT;
+    const previousHealthPort = process.env.PANDA_CORE_HEALTH_PORT;
+    process.env.PANDA_APPS_PORT = "0";
+    delete process.env.PANDA_CORE_HEALTH_PORT;
+
+    const listenerStartEntered = deferred();
+    const finishListenerStart = deferred();
+    const order: string[] = [];
+    const context = createDaemonLifecycleContext({
+      connectorLeases: {
+        release: vi.fn(async () => {
+          order.push("lease-release");
+          return true;
+        }),
+      },
+      requests: {
+        listenPendingRequests: vi.fn(async () => {
+          order.push("listener-start");
+          listenerStartEntered.resolve();
+          await finishListenerStart.promise;
+          order.push("listener-start-settled");
+          return async () => {
+            order.push("listener-stop");
+          };
+        }),
+      },
+      runtime: {
+        close: vi.fn(async () => {
+          order.push("runtime-close");
+        }),
+        coordinator: {
+          stop: vi.fn(async () => {
+            order.push("coordinator-stop");
+          }),
+        },
+      },
+    });
+    const lifecycle = createDaemonLifecycle({
+      context,
+      processRequest: vi.fn(async () => undefined),
+    });
+
+    try {
+      const runPromise = lifecycle.run();
+      await listenerStartEntered.promise;
+      const stopPromise = lifecycle.stop();
+      await Promise.resolve();
+
+      expect(order).toEqual(["listener-start"]);
+      expect(context.runtime.close).not.toHaveBeenCalled();
+      expect(context.connectorLeases.release).not.toHaveBeenCalled();
+
+      finishListenerStart.resolve();
+      await Promise.all([runPromise, stopPromise]);
+
+      expect(order).toEqual([
+        "listener-start",
+        "listener-start-settled",
+        "listener-stop",
+        "coordinator-stop",
+        "lease-release",
+        "runtime-close",
+      ]);
+      expect(context.a2aOutboundWorker.start).not.toHaveBeenCalled();
+    } finally {
+      if (previousAppsPort === undefined) {
+        delete process.env.PANDA_APPS_PORT;
+      } else {
+        process.env.PANDA_APPS_PORT = previousAppsPort;
+      }
+      if (previousHealthPort === undefined) {
+        delete process.env.PANDA_CORE_HEALTH_PORT;
+      } else {
+        process.env.PANDA_CORE_HEALTH_PORT = previousHealthPort;
+      }
+    }
+  });
+
+  it("waits for an in-flight heartbeat before closing runtime pools", async () => {
+    vi.useFakeTimers();
+    const previousAppsPort = process.env.PANDA_APPS_PORT;
+    const previousHealthPort = process.env.PANDA_CORE_HEALTH_PORT;
+    process.env.PANDA_APPS_PORT = "0";
+    delete process.env.PANDA_CORE_HEALTH_PORT;
+
+    const daemonStarted = deferred();
+    const secondHeartbeatEntered = deferred();
+    const finishSecondHeartbeat = deferred();
+    let heartbeatCalls = 0;
+    const order: string[] = [];
+    const context = createDaemonLifecycleContext({
+      daemonState: {
+        heartbeat: vi.fn(async () => {
+          heartbeatCalls += 1;
+          if (heartbeatCalls === 2) {
+            order.push("heartbeat-start");
+            secondHeartbeatEntered.resolve();
+            await finishSecondHeartbeat.promise;
+            order.push("heartbeat-settled");
+          }
+          return {
+            daemonKey: "primary",
+            heartbeatAt: Date.now(),
+            startedAt: Date.now(),
+            updatedAt: Date.now(),
+          };
+        }),
+      },
+      sessionHeartbeatRunner: {
+        start: vi.fn(async () => {
+          daemonStarted.resolve();
+        }),
+        stop: vi.fn(async () => undefined),
+      },
+      runtime: {
+        close: vi.fn(async () => {
+          order.push("runtime-close");
+        }),
+      },
+    });
+    const lifecycle = createDaemonLifecycle({
+      context,
+      processRequest: vi.fn(async () => undefined),
+    });
+
+    try {
+      const runPromise = lifecycle.run();
+      await daemonStarted.promise;
+      await vi.advanceTimersByTimeAsync(5_000);
+      await secondHeartbeatEntered.promise;
+      const stopPromise = lifecycle.stop();
+      await Promise.resolve();
+
+      expect(order).toEqual(["heartbeat-start"]);
+      expect(context.runtime.close).not.toHaveBeenCalled();
+
+      finishSecondHeartbeat.resolve();
+      await Promise.all([runPromise, stopPromise]);
+      expect(order).toEqual(["heartbeat-start", "heartbeat-settled", "runtime-close"]);
+    } finally {
+      finishSecondHeartbeat.resolve();
+      await lifecycle.stop();
+      vi.useRealTimers();
+      if (previousAppsPort === undefined) {
+        delete process.env.PANDA_APPS_PORT;
+      } else {
+        process.env.PANDA_APPS_PORT = previousAppsPort;
+      }
       if (previousHealthPort === undefined) {
         delete process.env.PANDA_CORE_HEALTH_PORT;
       } else {
@@ -413,9 +744,17 @@ describe("createDaemonLifecycle", () => {
         close: vi.fn(async () => {
           order.push("runtime-close");
         }),
+        backgroundJobService: {
+          close: vi.fn(async () => {
+            order.push("background-jobs-close");
+          }),
+          setOwner: vi.fn(),
+        } as DaemonLifecycleRuntime["backgroundJobService"],
         coordinator: {
-          recoverOrphanedRuns: vi.fn(async () => {
-            await lifecycle.stop();
+          start: vi.fn(async () => {
+            queueMicrotask(() => {
+              void lifecycle.stop();
+            });
           }),
         },
       },
@@ -429,13 +768,13 @@ describe("createDaemonLifecycle", () => {
     try {
       await lifecycle.run();
       expect(order).toEqual([
-        "unlisten",
         "a2a-stop",
         "email-outbound-stop",
         "email-sync-stop",
         "tasks-stop",
         "watch-stop",
         "heartbeat-stop",
+        "background-jobs-close",
         "release",
         "runtime-close",
       ]);
@@ -457,10 +796,11 @@ describe("createDaemonLifecycle", () => {
   it("waits for an active runtime request before closing runtime", async () => {
     const previousAppsPort = process.env.PANDA_APPS_PORT;
     const previousHealthPort = process.env.PANDA_CORE_HEALTH_PORT;
+    const previousRequestConcurrency = process.env.PANDA_RUNTIME_REQUEST_CONCURRENCY;
     process.env.PANDA_APPS_PORT = "0";
+    process.env.PANDA_RUNTIME_REQUEST_CONCURRENCY = "1";
     delete process.env.PANDA_CORE_HEALTH_PORT;
 
-    const activeRequest = deferred();
     const order: string[] = [];
     const pendingRequests = [requestRecord("request-1"), requestRecord("request-2")];
     const context = createDaemonLifecycleContext({
@@ -487,6 +827,10 @@ describe("createDaemonLifecycle", () => {
       },
       requests: {
         claimNextPendingRequest: vi.fn(async () => pendingRequests.shift() ?? null),
+        releaseRequestClaim: vi.fn(async (id: string) => {
+          order.push(`release-${id}`);
+          return true;
+        }),
         completeRequest: vi.fn(async (id: string) => {
           order.push(`complete-${id}`);
         }),
@@ -505,18 +849,21 @@ describe("createDaemonLifecycle", () => {
         }),
         pool: {waitingCount: 0},
         coordinator: {
-          recoverOrphanedRuns: vi.fn(async () => undefined),
+          start: vi.fn(async () => undefined),
         },
       },
     });
     const lifecycle = createDaemonLifecycle({
       context,
-      processRequest: vi.fn(async (request) => {
+      processRequest: vi.fn(async (request, signal) => {
         order.push(`process-start-${request.id}`);
-        if (request.id === "request-1") {
-          await activeRequest.promise;
-        }
-        order.push(`process-end-${request.id}`);
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => {
+            order.push(`process-abort-${request.id}`);
+            resolve();
+          }, {once: true});
+        });
+        signal.throwIfAborted();
         return request.id;
       }),
     });
@@ -527,24 +874,19 @@ describe("createDaemonLifecycle", () => {
         expect(order).toEqual(["process-start-request-1"]);
       });
 
-      const stopPromise = lifecycle.stop();
-      await sleep(20);
-      expect(order).toEqual(["process-start-request-1"]);
-
-      activeRequest.resolve();
-      await stopPromise;
+      await lifecycle.stop();
       await runPromise;
 
       expect(order).toEqual([
         "process-start-request-1",
-        "process-end-request-1",
-        "complete-request-1",
+        "process-abort-request-1",
+        "release-request-1",
         "runtime-close",
       ]);
       expect(context.requests.claimNextPendingRequest).toHaveBeenCalledTimes(1);
       expect(context.requests.failRequest).not.toHaveBeenCalled();
+      expect(context.requests.completeRequest).not.toHaveBeenCalled();
     } finally {
-      activeRequest.resolve();
       await lifecycle.stop();
       await runPromise;
       if (previousAppsPort === undefined) {
@@ -557,6 +899,11 @@ describe("createDaemonLifecycle", () => {
         delete process.env.PANDA_CORE_HEALTH_PORT;
       } else {
         process.env.PANDA_CORE_HEALTH_PORT = previousHealthPort;
+      }
+      if (previousRequestConcurrency === undefined) {
+        delete process.env.PANDA_RUNTIME_REQUEST_CONCURRENCY;
+      } else {
+        process.env.PANDA_RUNTIME_REQUEST_CONCURRENCY = previousRequestConcurrency;
       }
     }
   });
@@ -641,7 +988,11 @@ describe("createDaemonLifecycle", () => {
           order.push("runtime-close");
         }),
         coordinator: {
-          recoverOrphanedRuns: vi.fn(async () => undefined),
+          start: vi.fn(async () => undefined),
+          stop: vi.fn(async () => {
+            order.push("coordinator-stop");
+            throw new Error("coordinator stop blew up");
+          }),
         },
       },
     });
@@ -675,6 +1026,7 @@ describe("createDaemonLifecycle", () => {
       "tasks-stop",
       "watch-stop",
       "heartbeat-stop",
+      "coordinator-stop",
       "release",
       "runtime-close",
     ]);
@@ -731,7 +1083,7 @@ describe("createDaemonLifecycle", () => {
         close: vi.fn(async () => {}),
         pool,
         coordinator: {
-          recoverOrphanedRuns: vi.fn(async () => {
+          start: vi.fn(async () => {
             resolveRecovered();
           }),
         },
@@ -819,7 +1171,7 @@ describe("createDaemonLifecycle", () => {
         close: vi.fn(async () => {}),
         pool: {waitingCount: 0},
         coordinator: {
-          recoverOrphanedRuns: vi.fn(async () => {
+          start: vi.fn(async () => {
             resolveRecovered();
           }),
         },

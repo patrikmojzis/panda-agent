@@ -3,13 +3,55 @@ import {CREATE_RUNTIME_SCHEMA_SQL, postgresRelationExists, quoteIdentifier, quot
 import {buildAgentTableNames} from "../agents/postgres-shared.js";
 import {buildIdentityTableNames} from "../identity/postgres-shared.js";
 import type {PgQueryable} from "../../lib/postgres-query.js";
-import {addConstraint, assertIntegrityChecks} from "../../lib/postgres-integrity.js";
+import {addConstraint, assertIntegrityChecks, type IntegrityCheckGroup} from "../../lib/postgres-integrity.js";
 import {buildSessionTableNames} from "./postgres-shared.js";
 import {
   DEFAULT_SESSION_HEARTBEAT_EVERY_MINUTES,
   SESSION_BRIEF_PROMPT_SLUG,
   SESSION_HEARTBEAT_PROMPT_SLUG,
 } from "./types.js";
+
+export function buildSessionIntegrityChecks(): IntegrityCheckGroup {
+  const tables = buildSessionTableNames();
+  const agentTableName = buildAgentTableNames().agents;
+  const identityTableName = buildIdentityTableNames().identities;
+  return {
+    scope: "Session schema",
+    checks: [
+      {
+        label: "agent_sessions.agent_key orphaned from agents.agent_key",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.sessions} AS session
+          LEFT JOIN ${agentTableName} AS agent
+            ON agent.agent_key = session.agent_key
+          WHERE agent.agent_key IS NULL
+        `,
+      },
+      {
+        label: "agent_sessions.created_by_identity_id orphaned from identities.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.sessions} AS session
+          LEFT JOIN ${identityTableName} AS identity
+            ON identity.id = session.created_by_identity_id
+          WHERE session.created_by_identity_id IS NOT NULL
+            AND identity.id IS NULL
+        `,
+      },
+      {
+        label: "session_runtime_config.session_id orphaned from agent_sessions.id",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM ${tables.sessionRuntimeConfig} AS config
+          LEFT JOIN ${tables.sessions} AS session
+            ON session.id = config.session_id
+          WHERE session.id IS NULL
+        `,
+      },
+    ],
+  };
+}
 
 async function migrateLegacyPromptStorage(pool: PgQueryable): Promise<void> {
   const tables = buildSessionTableNames();
@@ -129,6 +171,7 @@ export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<vo
       thinking_configured BOOLEAN NOT NULL DEFAULT FALSE,
       inference_projection JSONB,
       pending_wake_at TIMESTAMPTZ,
+      pending_wake_generation BIGINT NOT NULL DEFAULT 0,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
@@ -148,6 +191,10 @@ export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<vo
   await pool.query(`
     ALTER TABLE ${tables.sessionRuntimeConfig}
     ADD COLUMN IF NOT EXISTS pending_wake_at TIMESTAMPTZ
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.sessionRuntimeConfig}
+    ADD COLUMN IF NOT EXISTS pending_wake_generation BIGINT NOT NULL DEFAULT 0
   `);
 
   await pool.query(`
@@ -196,39 +243,8 @@ export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<vo
     )
   `);
 
-  await assertIntegrityChecks(pool, "Session schema", [
-    {
-      label: "agent_sessions.agent_key orphaned from agents.agent_key",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.sessions} AS session
-        LEFT JOIN ${agentTableName} AS agent
-          ON agent.agent_key = session.agent_key
-        WHERE agent.agent_key IS NULL
-      `,
-    },
-    {
-      label: "agent_sessions.created_by_identity_id orphaned from identities.id",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.sessions} AS session
-        LEFT JOIN ${identityTableName} AS identity
-          ON identity.id = session.created_by_identity_id
-        WHERE session.created_by_identity_id IS NOT NULL
-          AND identity.id IS NULL
-      `,
-    },
-    {
-      label: "session_runtime_config.session_id orphaned from agent_sessions.id",
-      sql: `
-        SELECT COUNT(*)::INTEGER AS count
-        FROM ${tables.sessionRuntimeConfig} AS config
-        LEFT JOIN ${tables.sessions} AS session
-          ON session.id = config.session_id
-        WHERE session.id IS NULL
-      `,
-    },
-  ]);
+  const integrity = buildSessionIntegrityChecks();
+  await assertIntegrityChecks(pool, integrity.scope, integrity.checks);
   await addConstraint(pool, `
     ALTER TABLE ${tables.sessions}
     ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_agent_sessions_agent_fk`)}

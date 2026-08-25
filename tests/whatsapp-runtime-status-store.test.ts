@@ -4,6 +4,7 @@ import {newDb} from "pg-mem";
 import {PostgresAgentStore} from "../src/domain/agents/postgres.js";
 import {PostgresConnectorAccountStore} from "../src/domain/connectors/postgres.js";
 import {PostgresWhatsAppRuntimeStatusStore} from "../src/integrations/channels/whatsapp/runtime-status-store.js";
+import {ensurePostgresWhatsAppAuthSchema} from "../src/integrations/channels/whatsapp/auth-schema.js";
 
 describe("PostgresWhatsAppRuntimeStatusStore", () => {
   const pools: Array<{end(): Promise<void>}> = [];
@@ -18,7 +19,7 @@ describe("PostgresWhatsAppRuntimeStatusStore", () => {
     const pool = new adapter.Pool();
     pools.push(pool);
     const runtime = new PostgresWhatsAppRuntimeStatusStore({pool});
-    await runtime.ensureSchema();
+    await ensurePostgresWhatsAppAuthSchema(pool);
     const agents = new PostgresAgentStore({pool});
     await agents.bootstrapAgent({agentKey: "panda", displayName: "Panda"});
     const accounts = new PostgresConnectorAccountStore({pool});

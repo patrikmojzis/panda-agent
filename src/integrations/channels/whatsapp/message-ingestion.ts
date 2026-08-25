@@ -4,6 +4,7 @@ import {normalizeMessageContent} from "baileys/lib/Utils/messages.js";
 
 import type {MediaDescriptor} from "../../../domain/channels/types.js";
 import type {CreateRuntimeRequestInput, RuntimeRequestKind} from "../../../domain/threads/requests/types.js";
+import {deriveRuntimeRequestIngressIdempotencyKey} from "../../../domain/threads/requests/ordering-key.js";
 import {
   describeWhatsAppMessageShape,
   extractWhatsAppMessageText,
@@ -18,6 +19,7 @@ type WhatsAppIngestedRequestKind = Extract<RuntimeRequestKind, "whatsapp_message
 export interface WhatsAppMessageRequestQueue {
   enqueueRequest(
     input: CreateRuntimeRequestInput<WhatsAppIngestedRequestKind>,
+    options?: {idempotencyKey?: string},
   ): Promise<{id: string}>;
 }
 
@@ -110,7 +112,12 @@ async function ingestWhatsAppMessage(
         emoji: reaction.emoji,
         pushName: message.pushName ?? undefined,
       },
-    });
+    }, {idempotencyKey: deriveRuntimeRequestIngressIdempotencyKey({
+      kind: "whatsapp_reaction",
+      connectorKey: options.connectorKey,
+      externalEventScope: envelope.externalConversationId,
+      externalEventId: envelope.externalMessageId,
+    })});
 
     options.log("reaction_ingested", {
       connectorKey: options.connectorKey,
@@ -167,7 +174,12 @@ async function ingestWhatsAppMessage(
       quotedMessageId,
       media,
     },
-  });
+  }, {idempotencyKey: deriveRuntimeRequestIngressIdempotencyKey({
+    kind: "whatsapp_message",
+    connectorKey: options.connectorKey,
+    externalEventScope: envelope.externalConversationId,
+    externalEventId: envelope.externalMessageId,
+  })});
 
   options.log("message_ingested", {
     connectorKey: options.connectorKey,

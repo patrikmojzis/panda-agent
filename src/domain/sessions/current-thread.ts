@@ -1,13 +1,15 @@
 import type {SessionStore} from "./store.js";
 import type {SessionRecord} from "./types.js";
 import type {ThreadRuntimeCoordinator, ThreadWakeMode} from "../threads/runtime/coordinator.js";
-import type {ThreadRuntimeStore} from "../threads/runtime/store.js";
-import type {ThreadInputPayload} from "../threads/runtime/types.js";
+import type {ThreadEnqueueResult, ThreadRuntimeStore} from "../threads/runtime/store.js";
+import type {ThreadEnqueueOptions, ThreadInputPayload} from "../threads/runtime/types.js";
 
 export interface CurrentSessionThread {
   session: SessionRecord;
   threadId: string;
 }
+
+export type SessionInputDeliveryResult = ThreadEnqueueResult & {threadId: string};
 
 /**
  * Resolves the thread that should receive session-owned runtime work right now.
@@ -35,20 +37,19 @@ export async function resolveCurrentSessionThread(
 export async function submitCurrentSessionInput(
   input: {
     sessionId: string;
-    sessions: Pick<SessionStore, "getSession">;
-    coordinator: Pick<ThreadRuntimeCoordinator, "submitInput">;
+    coordinator: Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
     mode?: ThreadWakeMode;
     payload: ThreadInputPayload;
+    options?: ThreadEnqueueOptions;
   },
-): Promise<CurrentSessionThread> {
-  const target = await resolveCurrentSessionThread(input.sessions, input.sessionId);
-  if (input.mode === undefined) {
-    await input.coordinator.submitInput(target.threadId, input.payload);
-    return target;
-  }
-
-  await input.coordinator.submitInput(target.threadId, input.payload, input.mode);
-  return target;
+): Promise<SessionInputDeliveryResult> {
+  const result = await input.coordinator.submitSessionInput(
+    input.sessionId,
+    input.payload,
+    input.mode ?? "wake",
+    input.options,
+  );
+  return {...result, threadId: result.input.threadId};
 }
 
 /**
@@ -59,13 +60,17 @@ export async function submitCurrentSessionInput(
 export async function enqueueCurrentSessionInput(
   input: {
     sessionId: string;
-    sessions: Pick<SessionStore, "getSession">;
-    threads: Pick<ThreadRuntimeStore, "enqueueInput">;
+    threads: Pick<ThreadRuntimeStore, "enqueueSessionInput">;
     mode?: ThreadWakeMode;
     payload: ThreadInputPayload;
+    options?: ThreadEnqueueOptions;
   },
-): Promise<CurrentSessionThread> {
-  const target = await resolveCurrentSessionThread(input.sessions, input.sessionId);
-  await input.threads.enqueueInput(target.threadId, input.payload, input.mode ?? "wake");
-  return target;
+): Promise<SessionInputDeliveryResult> {
+  const result = await input.threads.enqueueSessionInput(
+    input.sessionId,
+    input.payload,
+    input.mode ?? "wake",
+    input.options,
+  );
+  return {...result, threadId: result.input.threadId};
 }

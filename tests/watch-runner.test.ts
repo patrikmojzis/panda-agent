@@ -10,7 +10,9 @@ import {
   type WatchEvaluator,
   WatchRunner,
 } from "../src/domain/watches/index.js";
+import {ensurePostgresWatchSchema} from "../src/domain/watches/postgres-schema.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
+import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 import {waitFor} from "./helpers/wait-for.js";
 
 function createAssistantMessage(text: string): AssistantMessage {
@@ -48,15 +50,6 @@ function createMockRuntime(...responses: AssistantMessage[]) {
   };
 }
 
-class LeaseManager {
-  async tryAcquire(threadId: string) {
-    return {
-      threadId,
-      release: async () => {},
-    };
-  }
-}
-
 async function createHarness(evaluateWatch: WatchEvaluator) {
   const db = newDb();
   db.public.registerFunction({
@@ -68,9 +61,10 @@ async function createHarness(evaluateWatch: WatchEvaluator) {
   const adapter = db.adapters.createPg();
   const pool = new adapter.Pool();
 
-  const {identityStore, sessionStore, threadStore} = await createRuntimeStores(pool);
+  const {identityStore, sessionStore, threadStore: postgresThreadStore} = await createRuntimeStores(pool);
+  const threadStore = new TestThreadRuntimeStore();
   const watchStore = new PostgresWatchStore({pool});
-  await watchStore.ensureSchema();
+  await ensurePostgresWatchSchema(pool);
 
   const alice = await identityStore.createIdentity({
     id: "alice-id",
@@ -83,6 +77,10 @@ async function createHarness(evaluateWatch: WatchEvaluator) {
     kind: "main",
     currentThreadId: "session-thread",
     createdByIdentityId: alice.id,
+  });
+  await postgresThreadStore.createThread({
+    id: "session-thread",
+    sessionId: "session-main",
   });
   await threadStore.createThread({
     id: "session-thread",
@@ -97,7 +95,7 @@ async function createHarness(evaluateWatch: WatchEvaluator) {
   );
   const coordinator = new ThreadRuntimeCoordinator({
     store: threadStore,
-    leaseManager: new LeaseManager(),
+    maxConcurrentRuns: 1,
     resolveDefinition: async () => ({
       agent: new Agent({
         name: "panda",
@@ -106,6 +104,8 @@ async function createHarness(evaluateWatch: WatchEvaluator) {
       runtime,
     }),
   });
+  await coordinator.handleStoreNotificationStatus("listening");
+  await coordinator.start({source: "panda-core", connectorKey: "test", holderId: "watch-runner-test"});
 
   const watchRunner = new WatchRunner({
     watches: watchStore,
@@ -119,6 +119,7 @@ async function createHarness(evaluateWatch: WatchEvaluator) {
     pool,
     runtime,
     threadStore,
+    postgresThreadStore,
     sessionStore,
     watchStore,
     coordinator,
@@ -134,16 +135,17 @@ async function forceWatchDue(pool: {query(text: string, values?: unknown[]): Pro
 }
 
 describe("WatchRunner", () => {
-  const pools: Array<{end(): Promise<void>}> = [];
+  const harnesses: Array<Awaited<ReturnType<typeof createHarness>>> = [];
 
   afterEach(async () => {
-    while (pools.length > 0) {
-      const pool = pools.pop();
-      if (!pool) {
+    while (harnesses.length > 0) {
+      const harness = harnesses.pop();
+      if (!harness) {
         continue;
       }
 
-      await pool.end();
+      await harness.coordinator.stop();
+      await harness.pool.end();
     }
   });
 
@@ -178,7 +180,7 @@ describe("WatchRunner", () => {
         },
       });
     const harness = await createHarness(evaluateWatch);
-    pools.push(harness.pool);
+    harnesses.push(harness);
 
     const watch = await harness.watchStore.createWatch({
       sessionId: "session-main",
@@ -210,6 +212,10 @@ describe("WatchRunner", () => {
 
     await forceWatchDue(harness.pool, watch.id);
     const resetThreadId = "session-thread-after-reset";
+    await harness.postgresThreadStore.createThread({
+      id: resetThreadId,
+      sessionId: "session-main",
+    });
     await harness.threadStore.createThread({
       id: resetThreadId,
       sessionId: "session-main",
@@ -239,10 +245,10 @@ describe("WatchRunner", () => {
       },
     );
 
-    const oldTranscript = await harness.threadStore.loadTranscript("session-thread");
+    const oldTranscript = await harness.threadStore.loadTranscriptHistory("session-thread");
     expect(oldTranscript.some((entry) => entry.origin === "input" && entry.source === "watch_event")).toBe(false);
 
-    const transcript = await harness.threadStore.loadTranscript(resetThreadId);
+    const transcript = await harness.threadStore.loadTranscriptHistory(resetThreadId);
     const input = transcript.find((entry) => entry.origin === "input" && entry.source === "watch_event");
     expect(input?.identityId).toBe(harness.alice.id);
     expect(input?.message.role).toBe("user");
@@ -262,6 +268,10 @@ describe("WatchRunner", () => {
         },
       } satisfies WatchEvaluationResult)
       .mockImplementationOnce(async () => {
+        await harness.postgresThreadStore.createThread({
+          id: resetThreadId,
+          sessionId: "session-main",
+        });
         await harness.threadStore.createThread({
           id: resetThreadId,
           sessionId: "session-main",
@@ -284,7 +294,7 @@ describe("WatchRunner", () => {
         };
       });
     harness = await createHarness(evaluateWatch);
-    pools.push(harness.pool);
+    harnesses.push(harness);
 
     const watch = await harness.watchStore.createWatch({
       sessionId: "session-main",
@@ -319,9 +329,9 @@ describe("WatchRunner", () => {
 
     const latestRun = await harness.watchStore.getLatestWatchRun(watch.id);
     expect(latestRun?.resolvedThreadId).toBe(resetThreadId);
-    const oldTranscript = await harness.threadStore.loadTranscript("session-thread");
+    const oldTranscript = await harness.threadStore.loadTranscriptHistory("session-thread");
     expect(oldTranscript.some((entry) => entry.origin === "input" && entry.source === "watch_event")).toBe(false);
-    const transcript = await harness.threadStore.loadTranscript(resetThreadId);
+    const transcript = await harness.threadStore.loadTranscriptHistory(resetThreadId);
     expect(transcript.some((entry) => entry.origin === "input" && entry.source === "watch_event")).toBe(true);
   });
 
@@ -353,7 +363,7 @@ describe("WatchRunner", () => {
         },
       });
     const harness = await createHarness(evaluateWatch);
-    pools.push(harness.pool);
+    harnesses.push(harness);
 
     const watch = await harness.watchStore.createWatch({
       sessionId: "session-main",
@@ -419,7 +429,7 @@ describe("WatchRunner", () => {
         },
       });
     const harness = await createHarness(evaluateWatch);
-    pools.push(harness.pool);
+    harnesses.push(harness);
 
     const watch = await harness.watchStore.createWatch({
       sessionId: "session-main",
@@ -483,7 +493,7 @@ describe("WatchRunner", () => {
         },
       });
     const harness = await createHarness(evaluateWatch);
-    pools.push(harness.pool);
+    harnesses.push(harness);
 
     const watch = await harness.watchStore.createWatch({
       sessionId: "session-main",

@@ -5,7 +5,7 @@ import type {Pool} from "pg";
 
 import {DB_URL_OPTION_DESCRIPTION} from "../../lib/cli.js";
 import {normalizeAgentKey} from "../../domain/agents/types.js";
-import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
+import {withPostgresPool} from "../../lib/postgres-database.js";
 import {PostgresAgentStore} from "../../domain/agents/postgres.js";
 import {
   type SessionCliOptions,
@@ -59,15 +59,6 @@ async function withSessionResetStores<T>(
 ): Promise<T> {
   return withPostgresPool(options.dbUrl, async (pool) => {
     const stores = createSessionResetStores(pool);
-    await ensureSchemas([
-      stores.identityStore,
-      stores.agentStore,
-      stores.sessionStore,
-      stores.threadStore,
-      stores.requests,
-      stores.daemonState,
-      stores.conversations,
-    ]);
     return fn(stores);
   });
 }

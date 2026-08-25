@@ -21,7 +21,6 @@ import type {
 } from "./types.js";
 
 export interface SessionStore {
-  ensureSchema(): Promise<void>;
   createSession(input: CreateSessionInput): Promise<SessionRecord>;
   getSession(sessionId: string): Promise<SessionRecord>;
   getSessionByAlias(agentKey: string, alias: string): Promise<SessionRecord | null>;

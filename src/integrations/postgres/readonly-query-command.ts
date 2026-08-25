@@ -531,10 +531,12 @@ function assertNoRuntimeScopeMutation(tokens: readonly SqlGuardToken[]): void {
   }
 }
 
-function assertNoModelCallTraceTableAccess(tokens: readonly SqlGuardToken[]): void {
+const MODEL_CALL_TELEMETRY_TABLES = new Set(["model_call_attempts", "model_call_snapshots"]);
+
+function assertNoModelCallTelemetryTableAccess(tokens: readonly SqlGuardToken[]): void {
   for (const token of tokens) {
-    if (token.kind === "identifier" && token.value === "model_call_traces") {
-      throw new ToolError("Model call traces are not exposed through readonly SQL. Use the admin-only Control model-call trace viewer instead.");
+    if (token.kind === "identifier" && MODEL_CALL_TELEMETRY_TABLES.has(token.value)) {
+      throw new ToolError("Model call telemetry is not exposed through readonly SQL. Use the admin-only Control model-call viewer instead.");
     }
   }
 }
@@ -564,7 +566,7 @@ function assertReadonlySql(sql: string): string {
   const guardTokens = tokenizeSqlForGuard(normalized);
   assertNoRuntimeScopeMutation(guardTokens);
   assertNoDangerousReadonlyFunctions(guardTokens);
-  assertNoModelCallTraceTableAccess(guardTokens);
+  assertNoModelCallTelemetryTableAccess(guardTokens);
 
   return normalized;
 }

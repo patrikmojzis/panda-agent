@@ -2,6 +2,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
+import {ensurePostgresAgentTableSchema} from "../src/domain/agents/postgres-schema.js";
 import type {
     DisposableEnvironmentCreateRequest,
     DisposableEnvironmentCreateResult,
@@ -9,8 +10,11 @@ import type {
     ExecutionEnvironmentManager,
 } from "../src/domain/execution-environments/types.js";
 import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/postgres.js";
+import {ensurePostgresExecutionEnvironmentSchema} from "../src/domain/execution-environments/postgres-schema.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
+import {ensurePostgresIdentitySchema} from "../src/domain/identity/postgres-schema.js";
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
+import {ensurePostgresSessionSchema} from "../src/domain/sessions/postgres-schema.js";
 import {ExecutionEnvironmentResolver} from "../src/app/runtime/execution-environment-resolver.js";
 import {ExecutionEnvironmentLifecycleService} from "../src/app/runtime/execution-environment-service.js";
 import {RuntimeCommandLeaseService} from "../src/app/runtime/command-leases.js";
@@ -159,10 +163,10 @@ describe("PostgresExecutionEnvironmentStore", () => {
     const agentStore = new PostgresAgentStore({pool});
     const sessionStore = new PostgresSessionStore({pool});
     const environmentStore = new PostgresExecutionEnvironmentStore({pool});
-    await identityStore.ensureSchema();
-    await agentStore.ensureAgentTableSchema();
-    await sessionStore.ensureSchema();
-    await environmentStore.ensureSchema();
+    await ensurePostgresIdentitySchema(pool);
+    await ensurePostgresAgentTableSchema(pool);
+    await ensurePostgresSessionSchema(pool);
+    await ensurePostgresExecutionEnvironmentSchema(pool);
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",

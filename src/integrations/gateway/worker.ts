@@ -41,7 +41,7 @@ export interface GatewayWorkerOptions {
   pollMs?: number;
   store: GatewayWorkerStore;
   sessionStore: GatewayDeliverySessionStore;
-  threadStore: Pick<ThreadRuntimeStore, "enqueueInput">;
+  threadStore: Pick<ThreadRuntimeStore, "enqueueSessionInput">;
   workerConcurrency?: number;
 }
 

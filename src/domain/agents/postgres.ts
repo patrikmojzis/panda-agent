@@ -5,10 +5,6 @@ import type {PgPoolLike} from "../../lib/postgres-query.js";
 import {requireNonEmptyString} from "../../lib/strings.js";
 import {optionalTimestampMillis, requireTimestampMillis} from "../../lib/postgres-values.js";
 import {buildAgentTableNames, type AgentTableNames} from "./postgres-shared.js";
-import {
-  ensurePostgresAgentSchema,
-  ensurePostgresAgentTableSchema,
-} from "./postgres-schema.js";
 import type {AgentStore} from "./store.js";
 import type {
   AgentPairingRecord,
@@ -127,14 +123,6 @@ export class PostgresAgentStore implements AgentStore {
   constructor(options: PostgresAgentStoreOptions) {
     this.pool = options.pool;
     this.tables = buildAgentTableNames();
-  }
-
-  async ensureAgentTableSchema(): Promise<void> {
-    await ensurePostgresAgentTableSchema(this.pool);
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresAgentSchema(this.pool);
   }
 
   async bootstrapAgent(input: BootstrapAgentInput): Promise<AgentRecord> {

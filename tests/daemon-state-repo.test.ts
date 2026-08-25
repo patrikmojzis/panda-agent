@@ -1,6 +1,7 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {newDb} from "pg-mem";
 
+import {installPreLedgerDaemonStateSchema} from "../src/app/database/migrations/pre-ledger/daemon-state.js";
 import {DaemonStateRepo} from "../src/app/runtime/state/repo.js";
 
 describe("DaemonStateRepo", () => {
@@ -18,7 +19,7 @@ describe("DaemonStateRepo", () => {
     pools.push(pool);
 
     const repo = new DaemonStateRepo({pool});
-    await repo.ensureSchema();
+    await installPreLedgerDaemonStateSchema(pool);
 
     const heartbeat = await repo.heartbeat(" daemon-main ");
 

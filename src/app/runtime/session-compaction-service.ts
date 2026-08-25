@@ -7,6 +7,7 @@ import {
   type CompactThreadOptions,
   type CompactThreadResult,
 } from "../../kernel/transcript/compaction.js";
+import {isCompactBoundaryRecord} from "../../kernel/transcript/checkpoint.js";
 import {readMissingApiKeyMessageForModel} from "../../integrations/providers/shared/missing-api-key.js";
 
 type CompactOperation = (options: CompactThreadOptions) => Promise<CompactThreadResult | null>;
@@ -23,7 +24,7 @@ export interface SessionCompactionServiceOptions {
   sessions: Pick<SessionStore, "getSession">;
   threads: Pick<
     ThreadRuntimeStore,
-    "appendRuntimeMessage" | "getThread" | "hasRunnableInputs" | "loadTranscript"
+    "commitCompactionExclusively" | "getMessage" | "getThread" | "hasRunnableInputs" | "loadActiveTranscript"
   >;
   coordinator: Pick<ThreadRuntimeCoordinator, "resolveThreadRunConfig" | "runExclusively">;
   compact?: CompactOperation;
@@ -40,10 +41,12 @@ export class SessionCompactionService {
     this.readMissingApiKeyMessage = options.readMissingApiKeyMessage ?? readMissingApiKeyMessageForModel;
   }
 
-  async compactSession(sessionId: string, customInstructions = ""): Promise<SessionCompactionResult> {
+  async compactSession(sessionId: string, customInstructions = "", operationId?: string): Promise<SessionCompactionResult> {
+    const replay = await this.readCommittedOperation(operationId, {sessionId});
+    if (replay) return replay;
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const target = await resolveCurrentSessionThread(this.options.sessions, sessionId);
-      const result = await this.compactResolvedThread(target.session.id, target.threadId, customInstructions, true);
+      const result = await this.compactResolvedThread(target.session.id, target.threadId, customInstructions, true, operationId);
       if (result) {
         return result;
       }
@@ -52,9 +55,11 @@ export class SessionCompactionService {
     throw new Error(`Session ${sessionId} kept changing threads while compaction was starting. Try again.`);
   }
 
-  async compactThread(threadId: string, customInstructions = ""): Promise<SessionCompactionResult> {
+  async compactThread(threadId: string, customInstructions = "", operationId?: string): Promise<SessionCompactionResult> {
+    const replay = await this.readCommittedOperation(operationId, {threadId});
+    if (replay) return replay;
     const thread = await this.options.threads.getThread(threadId);
-    const result = await this.compactResolvedThread(thread.sessionId, thread.id, customInstructions, false);
+    const result = await this.compactResolvedThread(thread.sessionId, thread.id, customInstructions, false, operationId);
     if (!result) {
       throw new Error(`Thread ${threadId} could not be compacted.`);
     }
@@ -66,8 +71,10 @@ export class SessionCompactionService {
     threadId: string,
     customInstructions: string,
     verifyCurrentThread: boolean,
+    operationId?: string,
   ): Promise<SessionCompactionResult | null> {
-    return this.options.coordinator.runExclusively(threadId, async () => {
+    return this.options.coordinator.runExclusively(threadId, async (access) => {
+      access.signal.throwIfAborted();
       if (verifyCurrentThread) {
         const current = await resolveCurrentSessionThread(this.options.sessions, sessionId);
         if (current.threadId !== threadId) {
@@ -84,12 +91,24 @@ export class SessionCompactionService {
       }
 
       const compacted = await this.compact({
-        store: this.options.threads,
+        store: {
+          loadActiveTranscript: (targetThreadId) => {
+            return this.options.threads.loadActiveTranscript(targetThreadId);
+          },
+          commitCompaction: (targetThreadId, commit) => {
+            return this.options.threads.commitCompactionExclusively(
+              targetThreadId,
+              commit,
+              access.owner,
+            );
+          },
+        },
         thread,
         model: runConfig.model,
         thinking: runConfig.thinking,
         customInstructions,
         trigger: "manual",
+        operationId,
       });
 
       return {
@@ -111,5 +130,31 @@ export class SessionCompactionService {
     if (message) {
       throw new Error(message);
     }
+  }
+
+  private async readCommittedOperation(
+    operationId: string | undefined,
+    expected: {sessionId?: string; threadId?: string},
+  ): Promise<SessionCompactionResult | null> {
+    if (!operationId) return null;
+    const record = await this.options.threads.getMessage(operationId);
+    if (!record) return null;
+    if (!isCompactBoundaryRecord(record)) {
+      throw new Error(`Compaction operation ${operationId} conflicts with another message.`);
+    }
+    const thread = await this.options.threads.getThread(record.threadId);
+    if (
+      (expected.sessionId && thread.sessionId !== expected.sessionId)
+      || (expected.threadId && thread.id !== expected.threadId)
+    ) {
+      throw new Error(`Compaction operation ${operationId} conflicts with another target.`);
+    }
+    return {
+      compacted: true,
+      sessionId: thread.sessionId,
+      threadId: thread.id,
+      ...(typeof record.metadata.tokensBefore === "number" ? {tokensBefore: record.metadata.tokensBefore} : {}),
+      ...(typeof record.metadata.tokensAfter === "number" ? {tokensAfter: record.metadata.tokensAfter} : {}),
+    };
   }
 }

@@ -8,7 +8,6 @@ import {toDateOrNull} from "../../lib/dates.js";
 import {optionalNonEmptyString, requireNonEmptyString} from "../../lib/strings.js";
 import type {PgClientLike, PgPoolLike} from "../../lib/postgres-query.js";
 import {parseWatchDetectorConfig, parseWatchSourceConfig} from "./config.js";
-import {ensurePostgresWatchSchema} from "./postgres-schema.js";
 import {buildWatchTableNames, type WatchTableNames} from "./postgres-shared.js";
 import type {RecordWatchEventResult, WatchStore} from "./store.js";
 import type {
@@ -237,10 +236,6 @@ export class PostgresWatchStore implements WatchStore {
   constructor(options: PostgresWatchStoreOptions) {
     this.pool = options.pool;
     this.tables = buildWatchTableNames();
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresWatchSchema(this.pool);
   }
 
   async createWatch(input: CreateWatchInput): Promise<WatchRecord> {

@@ -36,8 +36,17 @@ const scheduledTaskStatusFilterOptions = [
   { label: "Disabled", value: "disabled" },
   { label: "Running", value: "running" },
   { label: "Completed", value: "completed" },
+  { label: "Failed", value: "failed" },
   { label: "Cancelled", value: "cancelled" },
 ]
+
+function isTerminalScheduledTask(task: ScheduledTask): boolean {
+  return (
+    task.lifecycleStatus === "completed" ||
+    task.lifecycleStatus === "failed" ||
+    task.lifecycleStatus === "cancelled"
+  )
+}
 
 export function AutomationsPanel({
   agentKey,
@@ -206,38 +215,42 @@ function ScheduledTasksTable({
       enableSorting: false,
       enableHiding: false,
       meta: { linkEnabled: false, align: "right" },
-      cell: ({ row }) => (
-        <RowActionsMenu
-          triggerLabel={`Open actions for automation ${row.original.title}`}
-          actions={[
-            {
-              label: "Edit",
-              icon: <Pencil className="size-4" />,
-              onSelect: () =>
-                scheduledTaskSheet.setOpen(true, {
-                  context: { agentKey, sessionId },
-                  defaultData: scheduledTaskToFormValues(row.original),
-                  entity: row.original,
-                }),
-            },
-            {
-              label: "Cancel",
-              icon: <Trash2 className="size-4" />,
-              destructive: true,
-              disabled: row.original.lifecycleStatus === "cancelled",
-              pending: cancel.isPending,
-              confirm: {
-                title: "Cancel automation",
-                description: `Cancel ${row.original.title}? Future wakeups for this automation will stop.`,
-                confirmLabel: "Cancel automation",
-                entityLabel: "Automation",
-                itemLabel: row.original.title,
+      cell: ({ row }) => {
+        const terminal = isTerminalScheduledTask(row.original)
+        return (
+          <RowActionsMenu
+            triggerLabel={`Open actions for automation ${row.original.title}`}
+            actions={[
+              {
+                label: "Edit",
+                icon: <Pencil className="size-4" />,
+                disabled: terminal,
+                onSelect: () =>
+                  scheduledTaskSheet.setOpen(true, {
+                    context: { agentKey, sessionId },
+                    defaultData: scheduledTaskToFormValues(row.original),
+                    entity: row.original,
+                  }),
               },
-              onSelect: () => cancel.mutateAsync(row.original),
-            },
-          ]}
-        />
-      ),
+              {
+                label: "Cancel",
+                icon: <Trash2 className="size-4" />,
+                destructive: true,
+                disabled: terminal,
+                pending: cancel.isPending,
+                confirm: {
+                  title: "Cancel automation",
+                  description: `Cancel ${row.original.title}? Future wakeups for this automation will stop.`,
+                  confirmLabel: "Cancel automation",
+                  entityLabel: "Automation",
+                  itemLabel: row.original.title,
+                },
+                onSelect: () => cancel.mutateAsync(row.original),
+              },
+            ]}
+          />
+        )
+      },
     },
   ]
 

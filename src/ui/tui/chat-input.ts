@@ -44,6 +44,7 @@ export interface ChatInterruptHost {
 export interface ChatTranscriptNavigationHost {
   buildView(): ViewModel;
   scrollTranscript(delta: number): void;
+  loadEarlierTranscript(): Promise<void>;
 }
 
 export interface ChatSessionPickerKeypressHost {
@@ -140,17 +141,23 @@ export async function handleChatInterruptKeypress(
   return true;
 }
 
-export function handleChatTranscriptNavigationKeypress(
+export async function handleChatTranscriptNavigationKeypress(
   host: ChatTranscriptNavigationHost,
   key: KeyLike,
-): boolean {
+): Promise<boolean> {
   if (key.name === "pageup" || key.name === "pagedown") {
+    if (key.name === "pageup" && host.buildView().resolvedScrollTop === 0) {
+      await host.loadEarlierTranscript();
+    }
     const delta = Math.max(1, host.buildView().transcriptHeight - 2);
     host.scrollTranscript(key.name === "pageup" ? -delta : delta);
     return true;
   }
 
   if (key.meta && key.name === "up") {
+    if (host.buildView().resolvedScrollTop === 0) {
+      await host.loadEarlierTranscript();
+    }
     host.scrollTranscript(-1);
     return true;
   }

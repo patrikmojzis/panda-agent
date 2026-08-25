@@ -1,5 +1,6 @@
 import {optionalTimestampMillis, requireTimestampMillis, toJson} from "../../../lib/postgres-values.js";
 import {randomUUID} from "node:crypto";
+import {isDeepStrictEqual} from "node:util";
 
 import {isJsonObject, readOptionalJsonValue, type JsonValue} from "../../../lib/json.js";
 import {listenPostgresChannel} from "../../../lib/postgres-listen.js";
@@ -15,7 +16,6 @@ import {
     type OutboundDeliveryTableNames,
 } from "./postgres-shared.js";
 import {buildThreadRuntimeTableNames, type ThreadRuntimeTableNames} from "../../threads/runtime/postgres-shared.js";
-import {ensurePostgresOutboundDeliverySchema} from "./postgres-schema.js";
 import type {
     CompleteDeliveryInput,
     DeliveryNotification,
@@ -110,6 +110,7 @@ function normalizeDeliveryInput(input: OutboundDeliveryInput): OutboundDeliveryI
 
   return {
     ...input,
+    idempotencyKey: trimToUndefined(input.idempotencyKey),
     threadId: trimToUndefined(input.threadId),
     channel,
     target: normalizedTarget,
@@ -245,6 +246,7 @@ function parseOutboundDeliveryRow(row: Record<string, unknown>): OutboundDeliver
 
   return {
     id: requireNonEmptyString(row.id, "Outbound delivery id must not be empty."),
+    idempotencyKey: readOptionalString(row.idempotency_key, "idempotency key"),
     threadId: readOptionalString(row.thread_id, "thread id"),
     channel: requireNonEmptyString(row.channel, "Outbound delivery channel must not be empty."),
     target: parseTarget(row, metadata),
@@ -278,51 +280,59 @@ export class PostgresOutboundDeliveryStore {
     this.notificationChannel = buildDeliveryNotificationChannel();
   }
 
-  private async notifyPendingDelivery(target: Pick<OutboundTarget, "connectorKey"> & { source: string }): Promise<void> {
-    await this.pool.query("SELECT pg_notify($1, $2)", [
-      this.notificationChannel,
-      JSON.stringify({
-        channel: target.source,
-        connectorKey: target.connectorKey,
-      } satisfies DeliveryNotification),
-    ]);
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresOutboundDeliverySchema(this.pool);
+  private async notifyPendingDelivery(notification: string): Promise<void> {
+    await this.pool.query("SELECT pg_notify($1, $2)", [this.notificationChannel, notification]);
   }
 
   async enqueueDelivery(input: OutboundDeliveryInput): Promise<OutboundDeliveryRecord> {
     const normalizedInput = normalizeDeliveryInput(input);
+    const deliveryId = randomUUID();
+    const idempotencyKey = normalizedInput.idempotencyKey ?? null;
+    const notification = JSON.stringify({
+      channel: normalizedInput.channel,
+      connectorKey: normalizedInput.target.connectorKey,
+    } satisfies DeliveryNotification);
     const result = await this.pool.query(
       `
-        INSERT INTO ${this.tables.outboundDeliveries} (
-          id,
-          thread_id,
-          channel,
-          connector_key,
-          external_conversation_id,
-          external_actor_id,
-          reply_to_message_id,
-          items,
-          metadata,
-          status
-        ) VALUES (
-          $1,
-          $2,
-          $3,
-          $4,
-          $5,
-          $6,
-          $7,
-          $8::jsonb,
-          $9::jsonb,
-          'pending'
+        WITH inserted AS (
+          INSERT INTO ${this.tables.outboundDeliveries} (
+            id,
+            idempotency_key,
+            thread_id,
+            channel,
+            connector_key,
+            external_conversation_id,
+            external_actor_id,
+            reply_to_message_id,
+            items,
+            metadata,
+            status
+          ) VALUES (
+            $1,
+            $2,
+            $3,
+            $4,
+            $5,
+            $6,
+            $7,
+            $8,
+            $9::jsonb,
+            $10::jsonb,
+            'pending'
+          )
+          ON CONFLICT (idempotency_key) DO NOTHING
+          RETURNING *
+        ), notified AS (
+          SELECT pg_notify($11, $12) AS notification
+          FROM inserted
         )
-        RETURNING *
+        SELECT inserted.*, notified.notification
+        FROM inserted
+        INNER JOIN notified ON TRUE
       `,
       [
-        randomUUID(),
+        deliveryId,
+        idempotencyKey,
         normalizedInput.threadId ?? null,
         normalizedInput.channel,
         normalizedInput.target.connectorKey,
@@ -331,12 +341,48 @@ export class PostgresOutboundDeliveryStore {
         normalizedInput.target.replyToMessageId ?? null,
         JSON.stringify(normalizedInput.items),
         toJson(normalizedInput.metadata),
+        this.notificationChannel,
+        notification,
       ],
     );
 
-    const delivery = parseOutboundDeliveryRow(result.rows[0] as Record<string, unknown>);
-    await this.notifyPendingDelivery(delivery.target);
-    return delivery;
+    const inserted = result.rows[0] as Record<string, unknown> | undefined;
+    if (inserted?.id === deliveryId) {
+      return parseOutboundDeliveryRow(inserted);
+    }
+    if (!idempotencyKey) {
+      throw new Error("Outbound delivery insert returned no row without an idempotency conflict.");
+    }
+
+    // pg-mem returns the conflicting row from DO NOTHING; PostgreSQL correctly
+    // returns no row. Accept either shape so the behavioral test stays useful.
+    let existingRow = inserted;
+    if (!existingRow) {
+      const existing = await this.pool.query(`
+        SELECT *
+        FROM ${this.tables.outboundDeliveries}
+        WHERE idempotency_key = $1
+      `, [idempotencyKey]);
+      existingRow = existing.rows[0] as Record<string, unknown> | undefined;
+    }
+    if (!existingRow) {
+      throw new Error(`Outbound delivery idempotency conflict ${idempotencyKey} could not be resolved.`);
+    }
+    const existingDelivery = parseOutboundDeliveryRow(existingRow);
+    const sameDelivery = existingDelivery.threadId === normalizedInput.threadId
+      && existingDelivery.channel === normalizedInput.channel
+      && isDeepStrictEqual(existingDelivery.target, normalizedInput.target)
+      && isDeepStrictEqual(existingDelivery.items, normalizedInput.items)
+      && isDeepStrictEqual(existingDelivery.metadata, normalizedInput.metadata);
+    if (!sameDelivery) {
+      throw new Error(
+        `Outbound delivery idempotency key ${idempotencyKey} is already bound to a different delivery.`,
+      );
+    }
+    if (existingDelivery.status === "pending") {
+      await this.notifyPendingDelivery(notification);
+    }
+    return existingDelivery;
   }
 
   async getDelivery(id: string): Promise<OutboundDeliveryRecord> {

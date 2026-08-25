@@ -1,5 +1,5 @@
 import {addConstraint} from "../../../lib/postgres-integrity.js";
-import type {PgPoolLike} from "../../../lib/postgres-query.js";
+import type {PgQueryable} from "../../../lib/postgres-query.js";
 import {CREATE_RUNTIME_SCHEMA_SQL, postgresRelationExists, quoteIdentifier, buildRuntimeRelationNames} from "../../../lib/postgres-relations.js";
 import {ensurePostgresConnectorAccountSchema} from "../../../domain/connectors/postgres-schema.js";
 import {buildConnectorAccountTableNames} from "../../../domain/connectors/postgres-shared.js";
@@ -26,68 +26,63 @@ export function buildWhatsAppAuthTableNames(): WhatsAppAuthTableNames {
   });
 }
 
-async function applyWhatsAppConnectorAccountHardCut(pool: PgPoolLike): Promise<void> {
+async function applyWhatsAppConnectorAccountHardCut(queryable: PgQueryable): Promise<void> {
   const tables = buildWhatsAppAuthTableNames();
   const identities = buildIdentityTableNames();
   const conversations = buildConversationSessionTableNames();
   const connectors = buildConnectorAccountTableNames();
 
-  await pool.query(`
+  await queryable.query(`
     CREATE TABLE IF NOT EXISTS ${tables.migrations} (
       migration_key TEXT PRIMARY KEY,
       applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    // The permanent sentinel gives concurrent initializers a row to serialize on,
-    // including the first run where the hard-cut marker does not exist yet.
-    await client.query(`
-      INSERT INTO ${tables.migrations} (migration_key)
-      VALUES ($1)
-      ON CONFLICT (migration_key) DO NOTHING
-    `, [WHATSAPP_MIGRATION_LOCK]);
-    await client.query(`
-      SELECT migration_key
-      FROM ${tables.migrations}
-      WHERE migration_key = $1
-      FOR UPDATE
-    `, [WHATSAPP_MIGRATION_LOCK]);
-    const applied = await client.query(`
-      SELECT migration_key
-      FROM ${tables.migrations}
-      WHERE migration_key = $1
-    `, [WHATSAPP_CONNECTOR_ACCOUNT_HARD_CUT]);
-    if (applied.rows.length > 0) {
-      await client.query("COMMIT");
-      return;
-    }
-
-    // Intentional hard cut: old connector-key auth cannot identify an owned account.
-    await client.query(`DROP TABLE IF EXISTS "runtime"."whatsapp_auth_keys"`);
-    await client.query(`DROP TABLE IF EXISTS "runtime"."whatsapp_auth_creds"`);
-    if (await postgresRelationExists(client, "runtime", "identity_bindings")) {
-      await client.query(`DELETE FROM ${identities.identityBindings} WHERE source = 'whatsapp'`);
-    }
-    if (await postgresRelationExists(client, "runtime", "conversation_sessions")) {
-      await client.query(`DELETE FROM ${conversations.conversationSessions} WHERE source = 'whatsapp'`);
-    }
-    await client.query(`DELETE FROM ${connectors.connectorAccounts} WHERE source = 'whatsapp'`);
-    await client.query(`
-      INSERT INTO ${tables.migrations} (migration_key)
-      VALUES ($1)
-    `, [WHATSAPP_CONNECTOR_ACCOUNT_HARD_CUT]);
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
+  // This local marker predates the global migration ledger. The global
+  // migrator now owns the surrounding transaction and advisory lock.
+  await queryable.query(`
+    INSERT INTO ${tables.migrations} (migration_key)
+    VALUES ($1)
+    ON CONFLICT (migration_key) DO NOTHING
+  `, [WHATSAPP_MIGRATION_LOCK]);
+  await queryable.query(`
+    SELECT migration_key
+    FROM ${tables.migrations}
+    WHERE migration_key = $1
+    FOR UPDATE
+  `, [WHATSAPP_MIGRATION_LOCK]);
+  const applied = await queryable.query(`
+    SELECT migration_key
+    FROM ${tables.migrations}
+    WHERE migration_key = $1
+  `, [WHATSAPP_CONNECTOR_ACCOUNT_HARD_CUT]);
+  if (applied.rows.length > 0) {
+    return;
   }
+
+  const hasLegacyCreds = await postgresRelationExists(queryable, "runtime", "whatsapp_auth_creds");
+  const hasLegacyKeys = await postgresRelationExists(queryable, "runtime", "whatsapp_auth_keys");
+  // Intentional hard cut: old connector-key auth cannot identify an owned
+  // account. Absence of the old tables means the database is already on the
+  // account-id shape even if its historical marker was lost; preserve it.
+  await queryable.query(`DROP TABLE IF EXISTS "runtime"."whatsapp_auth_keys"`);
+  await queryable.query(`DROP TABLE IF EXISTS "runtime"."whatsapp_auth_creds"`);
+  if (hasLegacyCreds || hasLegacyKeys) {
+    if (await postgresRelationExists(queryable, "runtime", "identity_bindings")) {
+      await queryable.query(`DELETE FROM ${identities.identityBindings} WHERE source = 'whatsapp'`);
+    }
+    if (await postgresRelationExists(queryable, "runtime", "conversation_sessions")) {
+      await queryable.query(`DELETE FROM ${conversations.conversationSessions} WHERE source = 'whatsapp'`);
+    }
+    await queryable.query(`DELETE FROM ${connectors.connectorAccounts} WHERE source = 'whatsapp'`);
+  }
+  await queryable.query(`
+    INSERT INTO ${tables.migrations} (migration_key)
+    VALUES ($1)
+  `, [WHATSAPP_CONNECTOR_ACCOUNT_HARD_CUT]);
 }
 
-export async function ensurePostgresWhatsAppAuthSchema(pool: PgPoolLike): Promise<void> {
+export async function ensurePostgresWhatsAppAuthSchema(pool: PgQueryable): Promise<void> {
   const tables = buildWhatsAppAuthTableNames();
   const connectors = buildConnectorAccountTableNames();
 

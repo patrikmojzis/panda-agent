@@ -6,8 +6,10 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/postgres.js";
+import {ensurePostgresAgentTableSchema} from "../src/domain/agents/postgres-schema.js";
 import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
 import {PostgresMcpOAuthStore} from "../src/domain/mcp/oauth-postgres.js";
+import {ensurePostgresMcpSchema} from "../src/domain/mcp/postgres-schema.js";
 import {McpOAuthService} from "../src/domain/mcp/oauth-service.js";
 import type {McpHttpOAuthAuth} from "../src/domain/mcp/types.js";
 import {SdkMcpRunner} from "../src/integrations/mcp/client.js";
@@ -53,8 +55,8 @@ async function serviceHarness(): Promise<McpOAuthService> {
   pools.push(pool);
   const agents = new PostgresAgentStore({pool});
   const store = new PostgresMcpOAuthStore(pool);
-  await agents.ensureAgentTableSchema();
-  await store.ensureSchema();
+  await ensurePostgresAgentTableSchema(pool);
+  await ensurePostgresMcpSchema(pool);
   await agents.bootstrapAgent({agentKey: "panda", displayName: "Panda"});
   return new McpOAuthService({store, crypto: new CredentialCrypto("oauth-flow-test-master-key")});
 }

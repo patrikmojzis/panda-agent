@@ -7,7 +7,7 @@ import type {Pool} from "pg";
 import {DB_URL_OPTION_DESCRIPTION, parsePositiveIntegerOption} from "../../lib/cli.js";
 import {writeCommandDescriptorHelp} from "../commands/cli.js";
 import type {CommandDescriptor} from "../commands/types.js";
-import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
+import {withPostgresPool} from "../../lib/postgres-database.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
 import {normalizeAgentKey} from "../agents/types.js";
 import {ConversationRepo} from "./conversations/repo.js";
@@ -113,14 +113,6 @@ export async function withSessionStores<T>(
 ): Promise<T> {
   return withPostgresPool(options.dbUrl, async (pool) => {
     const stores = createSessionCliStores(pool);
-    await ensureSchemas([
-      stores.identityStore,
-      stores.agentStore,
-      stores.sessionStore,
-      stores.threadStore,
-      stores.executionEnvironmentStore,
-      stores.conversations,
-    ]);
     return fn(stores);
   });
 }

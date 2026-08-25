@@ -1,36 +1,41 @@
+import {randomUUID} from "node:crypto";
+
 import type {RuntimeRequestRecord} from "../../domain/threads/requests/types.js";
 import {
-    acquireManagedConnectorLease,
-    type ConnectorLeaseRepository,
-    type ManagedConnectorLease,
+  acquireManagedConnectorLease,
+  type ConnectorLeaseRepository,
+  type ManagedConnectorLease,
 } from "../../domain/connector-leases/repo.js";
 import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../health/server.js";
 import {
-    type AgentAppHttpService,
-    type AgentAppServer,
-    type AgentAppServerOptions,
-    startAgentAppServer,
+  type AgentAppHttpService,
+  type AgentAppServer,
+  type AgentAppServerOptions,
+  startAgentAppServer,
 } from "../../integrations/apps/http-server.js";
 import {
-    DEFAULT_APPS_PORT,
-    resolveAgentAppAuthMode,
-    resolveOptionalAgentAppServerBinding,
+  DEFAULT_APPS_PORT,
+  resolveAgentAppAuthMode,
+  resolveOptionalAgentAppServerBinding,
 } from "../../integrations/apps/http-config.js";
 import {resolveOptionalControlServerBinding} from "../../integrations/control/config.js";
 import {type ControlHttpServer, startControlServer} from "../../integrations/control/http-server.js";
 import {resolveOptionalCommandServerBinding} from "../../integrations/commands/config.js";
-import {
-    type CommandHttpServer,
-    startCommandHttpServer,
-} from "../../integrations/commands/http-server.js";
+import {type CommandHttpServer, startCommandHttpServer} from "../../integrations/commands/http-server.js";
 import {runCleanupSteps} from "../../lib/cleanup.js";
 import type {PostgresListenSnapshot} from "../../lib/postgres-listen.js";
 import {readPositiveIntegerEnv} from "./database.js";
 import {DAEMON_HEARTBEAT_INTERVAL_MS, type DaemonServices} from "./daemon-shared.js";
-import {RuntimeRequestDrain, type RuntimeRequestDrainStore} from "./request-drain.js";
+import {
+  DEFAULT_RUNTIME_REQUEST_CONCURRENCY,
+  DEFAULT_RUNTIME_REQUEST_SHUTDOWN_DRAIN_TIMEOUT_MS,
+  RuntimeRequestDrain,
+  type RuntimeRequestDrainStore,
+} from "./request-drain.js";
 import type {RuntimeServices} from "./create-runtime.js";
 import {formatOrphanedRunRecoveryReason} from "../../domain/threads/runtime/coordinator.js";
 import {FileSystemCommandUploadStore} from "../../integrations/commands/file-uploads.js";
+import type {ThreadRunOwner} from "../../domain/threads/runtime/types.js";
 
 const DAEMON_HEALTH_STALE_AFTER_MS = DAEMON_HEARTBEAT_INTERVAL_MS * 3;
 const DAEMON_HEALTH_POOL_WAITING_STALE_AFTER_MS = 60_000;
@@ -70,8 +75,9 @@ export interface DaemonLifecycleRuntime {
   controlModelCallTraces: RuntimeServices["controlModelCallTraces"];
   sessionCompaction: RuntimeServices["sessionCompaction"];
   commandExecutor: RuntimeServices["commandExecutor"];
+  backgroundJobService: Pick<RuntimeServices["backgroundJobService"], "close" | "setOwner">;
   commandLeases: RuntimeServices["commandLeases"];
-  coordinator: Pick<RuntimeServices["coordinator"], "recoverOrphanedRuns" | "submitInput">;
+  coordinator: Pick<RuntimeServices["coordinator"], "start" | "stop" | "submitInput" | "submitSessionInput">;
   executionEnvironmentService?: Pick<RuntimeServices["executionEnvironmentService"], "sweepExpiredEnvironments">;
   pool: Pick<RuntimeServices["pool"], "waitingCount">;
 }
@@ -95,7 +101,7 @@ export interface DaemonLifecycleContext {
 
 export function createDaemonLifecycle(input: {
   context: DaemonLifecycleContext;
-  processRequest: (request: RuntimeRequestRecord) => Promise<unknown>;
+  processRequest: (request: RuntimeRequestRecord, signal: AbortSignal) => Promise<unknown>;
 }): DaemonServices {
   let requestUnsubscribe: (() => Promise<void>) | null = null;
   let heartbeatTimer: NodeJS.Timeout | null = null;
@@ -104,11 +110,15 @@ export function createDaemonLifecycle(input: {
   let controlServer: ControlHttpServer | null = null;
   let commandServer: CommandHttpServer | null = null;
   let lease: ManagedConnectorLease | null = null;
+  let runOwner: ThreadRunOwner | null = null;
   let lastHeartbeatAt = 0;
   let running = false;
   let shuttingDown = false;
   let stopped = false;
   let stopPromise: Promise<void> | null = null;
+  let requestDrainStopPromise: Promise<void> | null = null;
+  let startupPromise: Promise<void> | null = null;
+  let heartbeatInFlight: Promise<void> | null = null;
   let queryPoolWaitingSince: number | null = null;
   let wakeRunLoop: (() => void) | null = null;
   let requestListenerStarted = false;
@@ -121,6 +131,11 @@ export function createDaemonLifecycle(input: {
     requests: input.context.requests,
     processRequest: input.processRequest,
     label: "daemon runtime request drain",
+    maxConcurrency: readPositiveIntegerEnv("PANDA_RUNTIME_REQUEST_CONCURRENCY", DEFAULT_RUNTIME_REQUEST_CONCURRENCY),
+    shutdownDrainTimeoutMs: readPositiveIntegerEnv(
+      "PANDA_RUNTIME_REQUEST_DRAIN_TIMEOUT_MS",
+      DEFAULT_RUNTIME_REQUEST_SHUTDOWN_DRAIN_TIMEOUT_MS,
+    ),
     onError: (error) => {
       console.error("Daemon request drain failed", {
         daemonKey: input.context.daemonKey,
@@ -136,7 +151,13 @@ export function createDaemonLifecycle(input: {
 
     const handle = lease;
     lease = null;
-    await handle.release();
+    try {
+      await handle.release();
+    } finally {
+      runOwner = null;
+      input.context.runtime.backgroundJobService.setOwner(null);
+      input.context.runtime.commandExecutor.setOwner(null);
+    }
   };
 
   const stop = async (): Promise<void> => {
@@ -150,15 +171,21 @@ export function createDaemonLifecycle(input: {
     if (requestListenerStarted) {
       requestListenerSnapshot = requestListenerSnapshot
         ? {
-          ...requestListenerSnapshot,
-          status: "closed",
-          listening: false,
-        }
+            ...requestListenerSnapshot,
+            status: "closed",
+            listening: false,
+          }
         : null;
     }
     wakeRunLoop?.();
     wakeRunLoop = null;
     stopPromise = (async () => {
+      // Startup owns the daemon lease and may still be reconciling durable run
+      // state. Do not release that lease or close its pools underneath it.
+      if (startupPromise) {
+        await Promise.allSettled([startupPromise]);
+      }
+
       const unsubscribe = requestUnsubscribe;
       requestUnsubscribe = null;
       const resolvedHealthServer = healthServer;
@@ -175,112 +202,139 @@ export function createDaemonLifecycle(input: {
         heartbeatTimer = null;
       }
 
-      await runCleanupSteps([
-        {
-          label: "request-unsubscribe",
-          run: async () => {
-            await unsubscribe?.();
+      await runCleanupSteps(
+        [
+          {
+            label: "request-unsubscribe",
+            run: async () => {
+              await unsubscribe?.();
+            },
           },
-        },
-        {
-          label: "request-drain",
-          run: async () => {
-            await requestDrain.stop();
+          {
+            label: "daemon-heartbeat",
+            run: async () => {
+              await heartbeatInFlight;
+            },
           },
-        },
-        {
-          label: "a2a-outbound-worker",
-          run: async () => {
-            await input.context.a2aOutboundWorker.stop();
+          {
+            label: "app-server",
+            run: async () => {
+              await resolvedAppServer?.close();
+            },
           },
-        },
-        {
-          label: "email-outbound-worker",
-          run: async () => {
-            await input.context.emailOutboundWorker.stop();
+          {
+            label: "control-server",
+            run: async () => {
+              await resolvedControlServer?.close();
+            },
           },
-        },
-        {
-          label: "email-sync-runner",
-          run: async () => {
-            await input.context.emailSyncRunner.stop();
+          {
+            label: "command-server",
+            run: async () => {
+              await resolvedCommandServer?.close();
+            },
           },
-        },
-        {
-          label: "scheduled-task-runner",
-          run: async () => {
-            await input.context.scheduledTaskRunner.stop();
+          {
+            label: "request-drain-cancel",
+            run: async () => {
+              requestDrainStopPromise ??= requestDrain.stop();
+              // Settlement is joined with coordinator shutdown below. Starting
+              // cancellation here stops new claims before workers wind down.
+              void requestDrainStopPromise.catch(() => undefined);
+            },
           },
-        },
-        {
-          label: "watch-runner",
-          run: async () => {
-            await input.context.watchRunner.stop();
+          {
+            label: "a2a-outbound-worker",
+            run: async () => {
+              await input.context.a2aOutboundWorker.stop();
+            },
           },
-        },
-        {
-          label: "session-heartbeat-runner",
-          run: async () => {
-            await input.context.sessionHeartbeatRunner.stop();
+          {
+            label: "email-outbound-worker",
+            run: async () => {
+              await input.context.emailOutboundWorker.stop();
+            },
           },
-        },
-        {
-          label: "daemon-lease",
-          run: releaseLease,
-        },
-        {
-          label: "discord-voice-store",
-          run: async () => {
-            await input.context.discordVoice.close();
+          {
+            label: "email-sync-runner",
+            run: async () => {
+              await input.context.emailSyncRunner.stop();
+            },
           },
-        },
-        {
-          label: "runtime",
-          run: async () => {
-            await input.context.runtime.close();
+          {
+            label: "request-and-runtime-work",
+            run: async () => {
+              // A claimed reset can be waiting on the coordinator while the
+              // coordinator is waiting for its active run to settle. Begin all
+              // stops together, then await them, so shutdown cannot deadlock.
+              const steps = [
+                {label: "request-drain", run: () => requestDrainStopPromise ?? requestDrain.stop()},
+                {label: "scheduled-task-runner", run: () => input.context.scheduledTaskRunner.stop()},
+                {label: "watch-runner", run: () => input.context.watchRunner.stop()},
+                {label: "session-heartbeat-runner", run: () => input.context.sessionHeartbeatRunner.stop()},
+                {label: "discord-voice-store", run: () => input.context.discordVoice.close()},
+                {label: "thread-runtime", run: () => input.context.runtime.coordinator.stop()},
+              ];
+              await Promise.all(steps.map(async (step) => {
+                try {
+                  await step.run();
+                } catch (error) {
+                  console.error("Daemon cleanup failed", {
+                    daemonKey: input.context.daemonKey,
+                    step: step.label,
+                    error: error instanceof Error ? error.message : String(error),
+                  });
+                }
+              }));
+            },
           },
-        },
-        {
-          label: "health-server",
-          run: async () => {
-            await resolvedHealthServer?.close();
+          {
+            label: "background-job-service",
+            run: async () => {
+              await input.context.runtime.backgroundJobService.close();
+            },
           },
-        },
-        {
-          label: "app-server",
-          run: async () => {
-            await resolvedAppServer?.close();
+          {
+            label: "daemon-lease",
+            run: releaseLease,
           },
-        },
-        {
-          label: "control-server",
-          run: async () => {
-            await resolvedControlServer?.close();
+          {
+            label: "runtime",
+            run: async () => {
+              await input.context.runtime.close();
+            },
           },
-        },
-        {
-          label: "command-server",
-          run: async () => {
-            await resolvedCommandServer?.close();
+          {
+            label: "health-server",
+            run: async () => {
+              await resolvedHealthServer?.close();
+            },
           },
+        ],
+        (step, error) => {
+          console.error("Daemon cleanup failed", {
+            daemonKey: input.context.daemonKey,
+            step: step.label,
+            error: error instanceof Error ? error.message : String(error),
+          });
         },
-      ], (step, error) => {
-        console.error("Daemon cleanup failed", {
-          daemonKey: input.context.daemonKey,
-          step: step.label,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
+      );
     })();
 
     return stopPromise;
   };
 
   const acquireLease = async (): Promise<void> => {
-    lease = await acquireManagedConnectorLease({
-      repo: input.context.connectorLeases,
+    const owner: ThreadRunOwner = {
       source: "daemon",
       connectorKey: input.context.daemonKey,
+      holderId: randomUUID(),
+    };
+    lease = await acquireManagedConnectorLease({
+      repo: input.context.connectorLeases,
+      source: owner.source,
+      connectorKey: owner.connectorKey,
+      holderId: owner.holderId,
       alreadyHeldMessage: `panda run (${input.context.daemonKey}) is already active.`,
       onError: async (error) => {
         console.error("Daemon lease renew failed", {
@@ -296,6 +350,9 @@ export function createDaemonLifecycle(input: {
         await stop();
       },
     });
+    runOwner = owner;
+    input.context.runtime.backgroundJobService.setOwner(owner);
+    input.context.runtime.commandExecutor.setOwner(owner);
   };
 
   const heartbeat = async (): Promise<void> => {
@@ -309,6 +366,19 @@ export function createDaemonLifecycle(input: {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  };
+
+  const runHeartbeat = (): Promise<void> => {
+    if (heartbeatInFlight) {
+      return heartbeatInFlight;
+    }
+    const current = heartbeat().finally(() => {
+      if (heartbeatInFlight === current) {
+        heartbeatInFlight = null;
+      }
+    });
+    heartbeatInFlight = current;
+    return current;
   };
 
   const getQueryPoolHealth = (): {
@@ -343,158 +413,220 @@ export function createDaemonLifecycle(input: {
       requestListenerStarted = false;
       requestListenerSnapshot = null;
       try {
-        await acquireLease();
-        healthServer = await (async () => {
-          const binding = resolveOptionalHealthServerBinding({
-            hostEnvKey: "PANDA_CORE_HEALTH_HOST",
-            portEnvKey: "PANDA_CORE_HEALTH_PORT",
-          });
-          if (!binding) {
-            return null;
+        const startup = (async () => {
+          await acquireLease();
+          if (stopped) {
+            return;
           }
+          if (!runOwner) {
+            throw new Error("Daemon run ownership was not established.");
+          }
+          await input.context.runtime.coordinator.start(
+            runOwner,
+            formatOrphanedRunRecoveryReason({
+              recoveryTrigger: "daemon_startup_or_restart",
+              probableCause: "previous_runtime_stopped_before_run_completed",
+              recoveredAt: Date.now(),
+            }),
+          );
+          if (stopped) {
+            return;
+          }
+          healthServer = await (async () => {
+            const binding = resolveOptionalHealthServerBinding({
+              hostEnvKey: "PANDA_CORE_HEALTH_HOST",
+              portEnvKey: "PANDA_CORE_HEALTH_PORT",
+            });
+            if (!binding) {
+              return null;
+            }
 
-          return startHealthServer({
-            ...binding,
-            getSnapshot: () => {
-              const queryPool = getQueryPoolHealth();
-              const heartbeatAgeMs = lastHeartbeatAt ? Date.now() - lastHeartbeatAt : null;
-              const requestListenerActive = requestListenerSnapshot?.listening ?? false;
-              return {
-                ok: running
-                  && !shuttingDown
-                  && heartbeatAgeMs !== null
-                  && heartbeatAgeMs <= DAEMON_HEALTH_STALE_AFTER_MS
-                  && queryPool.ok
-                  && (!requestListenerStarted || requestListenerActive),
+            return startHealthServer({
+              ...binding,
+              getSnapshot: () => {
+                const queryPool = getQueryPoolHealth();
+                const heartbeatAgeMs = lastHeartbeatAt ? Date.now() - lastHeartbeatAt : null;
+                const requestListenerActive = requestListenerSnapshot?.listening ?? false;
+                return {
+                  ok:
+                    running &&
+                    !shuttingDown &&
+                    heartbeatAgeMs !== null &&
+                    heartbeatAgeMs <= DAEMON_HEALTH_STALE_AFTER_MS &&
+                    queryPool.ok &&
+                    (!requestListenerStarted || requestListenerActive),
+                  daemonKey: input.context.daemonKey,
+                  running,
+                  shuttingDown,
+                  lastHeartbeatAt: lastHeartbeatAt || null,
+                  heartbeatAgeMs,
+                  queryPoolWaitingCount: queryPool.waitingCount,
+                  queryPoolWaitingForMs: queryPool.waitingForMs,
+                  requestListenerStatus: requestListenerSnapshot?.status ?? null,
+                  requestListenerActive,
+                  requestListenerLastErrorAt: requestListenerSnapshot?.lastErrorAt ?? null,
+                  requestListenerLastError: requestListenerSnapshot?.lastError ?? null,
+                };
+              },
+            });
+          })();
+          if (stopped) {
+            return;
+          }
+          appServer = await (async () => {
+            const binding = resolveOptionalAgentAppServerBinding({
+              hostEnvKey: "PANDA_APPS_HOST",
+              portEnvKey: "PANDA_APPS_PORT",
+              defaultPort: DEFAULT_APPS_PORT,
+            });
+            if (!binding) {
+              throw new Error("App server binding resolution failed.");
+            }
+            return startAgentAppServer({
+              ...binding,
+              service: input.context.runtime.apps,
+              auth: input.context.runtime.appAuth,
+              authMode: resolveAgentAppAuthMode(process.env),
+              identityStore: input.context.runtime.identityStore,
+              sessionStore: input.context.runtime.sessionStore,
+              coordinator: input.context.runtime.coordinator,
+            });
+          })();
+          if (stopped) {
+            return;
+          }
+          controlServer = await (async () => {
+            const binding = resolveOptionalControlServerBinding(process.env);
+            if (!binding) {
+              return null;
+            }
+            if (!input.context.runtime.identityStore) {
+              throw new Error("Control server requires an identity store.");
+            }
+            return startControlServer({
+              host: binding.host,
+              port: binding.port,
+              auth: input.context.runtime.controlAuth,
+              reads: input.context.runtime.controlReads,
+              home: input.context.runtime.controlHome,
+              operator: input.context.runtime.controlOperator,
+              mcp: input.context.runtime.controlMcp,
+              briefings: input.context.runtime.controlBriefings,
+              heartbeats: input.context.runtime.controlHeartbeats,
+              scheduledTasks: input.context.runtime.controlScheduledTasks,
+              watches: input.context.runtime.controlWatches,
+              runtimeActivity: input.context.runtime.controlRuntimeActivity,
+              connectorAccounts: input.context.runtime.controlConnectorAccounts,
+              modelCallTraces: input.context.runtime.controlModelCallTraces,
+              sessionCompaction: input.context.runtime.sessionCompaction,
+              identityStore: input.context.runtime.identityStore,
+              env: process.env,
+              uiStaticDir: binding.uiStaticDir,
+            });
+          })();
+          if (stopped) {
+            return;
+          }
+          commandServer = await (async () => {
+            const binding = resolveOptionalCommandServerBinding(process.env);
+            if (!binding) {
+              return null;
+            }
+
+            return startCommandHttpServer({
+              host: binding.host,
+              port: binding.port,
+              socketPath: binding.socketPath,
+              executor: input.context.runtime.commandExecutor,
+              leaseVerifier: input.context.runtime.commandLeases,
+              fileUploads: new FileSystemCommandUploadStore(),
+            });
+          })();
+          if (stopped) {
+            return;
+          }
+          await runHeartbeat();
+          if (stopped) {
+            return;
+          }
+          heartbeatTimer = setInterval(() => {
+            void runHeartbeat().catch((error) => {
+              console.error("Daemon heartbeat failed", {
                 daemonKey: input.context.daemonKey,
-                running,
-                shuttingDown,
-                lastHeartbeatAt: lastHeartbeatAt || null,
-                heartbeatAgeMs,
-                queryPoolWaitingCount: queryPool.waitingCount,
-                queryPoolWaitingForMs: queryPool.waitingForMs,
-                requestListenerStatus: requestListenerSnapshot?.status ?? null,
-                requestListenerActive,
-                requestListenerLastErrorAt: requestListenerSnapshot?.lastErrorAt ?? null,
-                requestListenerLastError: requestListenerSnapshot?.lastError ?? null,
-              };
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+          }, DAEMON_HEARTBEAT_INTERVAL_MS);
+          requestUnsubscribe = await input.context.requests.listenPendingRequests(
+            () => {
+              requestDrain.kick();
             },
-          });
-        })();
-        appServer = await (async () => {
-          const binding = resolveOptionalAgentAppServerBinding({
-            hostEnvKey: "PANDA_APPS_HOST",
-            portEnvKey: "PANDA_APPS_PORT",
-            defaultPort: DEFAULT_APPS_PORT,
-          });
-          if (!binding) {
-            throw new Error("App server binding resolution failed.");
+            {
+              onStateChange: (snapshot) => {
+                requestListenerSnapshot = snapshot;
+              },
+              onError: (error) => {
+                console.error("Daemon request listener failed", {
+                  daemonKey: input.context.daemonKey,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              },
+            },
+          );
+          if (stopped) {
+            return;
           }
-          return startAgentAppServer({
-            ...binding,
-            service: input.context.runtime.apps,
-            auth: input.context.runtime.appAuth,
-            authMode: resolveAgentAppAuthMode(process.env),
-            identityStore: input.context.runtime.identityStore,
-            sessionStore: input.context.runtime.sessionStore,
-            coordinator: input.context.runtime.coordinator,
-          });
-        })();
-        controlServer = await (async () => {
-          const binding = resolveOptionalControlServerBinding(process.env);
-          if (!binding) {
-            return null;
+          requestListenerStarted = true;
+          requestListenerSnapshot ??= {
+            status: "listening",
+            listening: true,
+            channels: [],
+            lastConnectedAt: Date.now(),
+            lastErrorAt: null,
+            lastError: null,
+          };
+          if (stopped) {
+            return;
           }
-          if (!input.context.runtime.identityStore) {
-            throw new Error("Control server requires an identity store.");
+          await input.context.a2aOutboundWorker.start();
+          if (stopped) {
+            return;
           }
-          return startControlServer({
-            host: binding.host,
-            port: binding.port,
-            auth: input.context.runtime.controlAuth,
-            reads: input.context.runtime.controlReads,
-            home: input.context.runtime.controlHome,
-            operator: input.context.runtime.controlOperator,
-            mcp: input.context.runtime.controlMcp,
-            briefings: input.context.runtime.controlBriefings,
-            heartbeats: input.context.runtime.controlHeartbeats,
-            scheduledTasks: input.context.runtime.controlScheduledTasks,
-            watches: input.context.runtime.controlWatches,
-            runtimeActivity: input.context.runtime.controlRuntimeActivity,
-            connectorAccounts: input.context.runtime.controlConnectorAccounts,
-            modelCallTraces: input.context.runtime.controlModelCallTraces,
-            sessionCompaction: input.context.runtime.sessionCompaction,
-            identityStore: input.context.runtime.identityStore,
-            env: process.env,
-            uiStaticDir: binding.uiStaticDir,
-          });
-        })();
-        commandServer = await (async () => {
-          const binding = resolveOptionalCommandServerBinding(process.env);
-          if (!binding) {
-            return null;
+          await input.context.emailOutboundWorker.start();
+          if (stopped) {
+            return;
           }
-
-          return startCommandHttpServer({
-            host: binding.host,
-            port: binding.port,
-            socketPath: binding.socketPath,
-            executor: input.context.runtime.commandExecutor,
-            leaseVerifier: input.context.runtime.commandLeases,
-            fileUploads: new FileSystemCommandUploadStore(),
-          });
+          await input.context.emailSyncRunner.start();
+          if (stopped) {
+            return;
+          }
+          await input.context.scheduledTaskRunner.start();
+          if (stopped) {
+            return;
+          }
+          await input.context.watchRunner.start();
+          if (stopped) {
+            return;
+          }
+          await input.context.sessionHeartbeatRunner.start();
+          if (stopped) {
+            return;
+          }
+          running = true;
+          requestDrain.start();
         })();
-        await heartbeat();
-        heartbeatTimer = setInterval(() => {
-          void heartbeat().catch((error) => {
-            console.error("Daemon heartbeat failed", {
-              daemonKey: input.context.daemonKey,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          });
-        }, DAEMON_HEARTBEAT_INTERVAL_MS);
-        requestUnsubscribe = await input.context.requests.listenPendingRequests(() => {
-          requestDrain.kick();
-        }, {
-          onStateChange: (snapshot) => {
-            requestListenerSnapshot = snapshot;
-          },
-          onError: (error) => {
-            console.error("Daemon request listener failed", {
-              daemonKey: input.context.daemonKey,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          },
-        });
-        requestListenerStarted = true;
-        requestListenerSnapshot ??= {
-          status: "listening",
-          listening: true,
-          channels: [],
-          lastConnectedAt: Date.now(),
-          lastErrorAt: null,
-          lastError: null,
-        };
-        const recoveredAt = Date.now();
-        await input.context.runtime.coordinator.recoverOrphanedRuns(formatOrphanedRunRecoveryReason({
-          recoveryTrigger: "daemon_startup_or_restart",
-          probableCause: "previous_runtime_stopped_before_run_completed",
-          recoveredAt,
-        }));
+        startupPromise = startup;
+        try {
+          await startup;
+        } finally {
+          if (startupPromise === startup) {
+            startupPromise = null;
+          }
+        }
         if (stopped) {
+          await stopPromise;
           return;
         }
-        await input.context.a2aOutboundWorker.start();
-        await input.context.emailOutboundWorker.start();
-        await input.context.emailSyncRunner.start();
-        await input.context.scheduledTaskRunner.start();
-        await input.context.watchRunner.start();
-        await input.context.sessionHeartbeatRunner.start();
-        if (stopped) {
-          return;
-        }
-        running = true;
-        requestDrain.start();
       } catch (error) {
         try {
           await stop();

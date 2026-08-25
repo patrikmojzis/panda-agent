@@ -415,6 +415,7 @@ export function createImageGenerateCommand(options: {
       };
       const record = await options.jobService.start({
         threadId: request.scope.threadId,
+        runId: request.scope.runId,
         kind: "image_generate",
         summary: args.prompt,
         start: ({signal, emitProgress}) => ({

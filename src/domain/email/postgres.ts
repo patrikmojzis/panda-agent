@@ -13,7 +13,6 @@ import {
     normalizeEmailMailbox,
 } from "./shared.js";
 import {normalizeEmailMessageInput, type NormalizedEmailAttachmentInput} from "./message-input.js";
-import {ensurePostgresEmailSchema} from "./postgres-schema.js";
 import {buildEmailTableNames, type EmailTableNames} from "./postgres-shared.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import type {
@@ -350,10 +349,6 @@ export class PostgresEmailStore implements EmailStore {
     this.pool = options.pool;
     this.tables = buildEmailTableNames();
     this.sessionTableName = buildSessionTableNames().sessions;
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresEmailSchema(this.pool);
   }
 
   async upsertAccount(input: UpsertEmailAccountInput): Promise<EmailAccountRecord> {

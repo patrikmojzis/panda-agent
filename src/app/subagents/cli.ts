@@ -4,7 +4,7 @@ import {readFile} from "node:fs/promises";
 import {Command, InvalidArgumentError} from "commander";
 
 import {DB_URL_OPTION_DESCRIPTION} from "../cli-shared.js";
-import {ensureSchemas, withPostgresPool} from "../runtime/postgres-bootstrap.js";
+import {withPostgresPool} from "../../lib/postgres-database.js";
 import {
   summarizeSubagentPurgeCounts,
   type SubagentPurgeCandidate,
@@ -12,14 +12,7 @@ import {
   type SubagentPurgePlan,
   SubagentPurgeService,
 } from "../runtime/subagent-purge-service.js";
-import {A2ASessionBindingRepo} from "../../domain/a2a/repo.js";
-import {PostgresOutboundDeliveryStore} from "../../domain/channels/deliveries/postgres.js";
 import {PostgresExecutionEnvironmentStore} from "../../domain/execution-environments/postgres.js";
-import {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
-import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
-import {PostgresAgentStore} from "../../domain/agents/postgres.js";
-import {PostgresIdentityStore} from "../../domain/identity/postgres.js";
-import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import {PostgresSubagentProfileStore} from "../../domain/subagents/postgres.js";
 import type {SubagentProfileRecord} from "../../domain/subagents/types.js";
 import {createExecutionEnvironmentManagerClientFromEnv} from "../../integrations/shell/execution-environment-manager-client.js";
@@ -174,27 +167,7 @@ export function buildPurgeInput(options: SubagentPurgeCliOptions): SubagentPurge
 async function runSubagentPurgeCommand(options: SubagentPurgeCliOptions): Promise<void> {
   const input = buildPurgeInput(options);
   return withPostgresPool(options.dbUrl, async (pool) => {
-    const agentStore = new PostgresAgentStore({pool});
-    const identityStore = new PostgresIdentityStore({pool});
-    const sessionStore = new PostgresSessionStore({pool});
-    const threadStore = new PostgresThreadRuntimeStore({pool});
     const environmentStore = new PostgresExecutionEnvironmentStore({pool});
-    const a2a = new A2ASessionBindingRepo({pool});
-    const outbound = new PostgresOutboundDeliveryStore({pool});
-    const requests = new RuntimeRequestRepo({pool});
-    if (input.execute) {
-      await ensureSchemas([
-        identityStore,
-        agentStore,
-        sessionStore,
-        threadStore,
-        environmentStore,
-        a2a,
-        outbound,
-        requests,
-      ]);
-    }
-
     const service = new SubagentPurgeService({
       pool,
       environmentStore,
@@ -306,7 +279,6 @@ async function withSubagentProfileStore<T>(
 ): Promise<T> {
   return withPostgresPool(dbUrl, async (pool) => {
     const store = new PostgresSubagentProfileStore({pool});
-    await ensureSchemas([store]);
     return run(store);
   });
 }

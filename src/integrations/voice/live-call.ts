@@ -468,7 +468,7 @@ export class LiveVoiceCall {
       }
       binding.creating = false;
       await this.options.requests.enqueueRequest(
-        {kind: "live_voice_delegation", payload: {liveVoiceTurnId: turn.id}},
+        {kind: "live_voice_delegation", payload: {liveVoiceTurnId: turn.id, sessionId: turn.sessionId}},
         {idempotencyKey: `live_voice_delegation:${turn.id}`},
       );
       this.liveVoiceTurnId = turn.id;

@@ -18,10 +18,10 @@ import {resolveCredentialCrypto, type CredentialCrypto} from "../../../domain/cr
 import {ConversationRepo} from "../../../domain/sessions/conversations/repo.js";
 import {PostgresSessionStore} from "../../../domain/sessions/postgres.js";
 import {RuntimeRequestRepo} from "../../../domain/threads/requests/repo.js";
+import {deriveRuntimeRequestIngressIdempotencyKey} from "../../../domain/threads/requests/ordering-key.js";
 import {LiveVoiceRepo} from "../../../domain/live-voice/repo.js";
 import {PostgresThreadRuntimeStore} from "../../../domain/threads/runtime/postgres.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
-import {ensureSchemas} from "../../../lib/postgres-bootstrap.js";
 import type {PgListenClient, PgPoolLike} from "../../../lib/postgres-query.js";
 import {createDiscordRestClient, type DiscordCurrentUser, type DiscordWorkerRestClient} from "./api.js";
 import {DISCORD_BOT_TOKEN_SECRET_KEY, DISCORD_SOURCE} from "./config.js";
@@ -183,22 +183,6 @@ export function createDiscordWorkerStores(pool: DiscordPostgresPool, dataDir: st
   };
 }
 
-export async function initializeDiscordWorkerSchemas(pool: DiscordPostgresPool): Promise<void> {
-  const stores = createDiscordWorkerStores(pool, ".");
-  await ensureSchemas([
-    stores.connectorStore,
-    stores.sessionStore,
-    stores.threadStore,
-    stores.conversationRepo,
-    stores.channelActions,
-    stores.outboundDeliveries,
-    stores.runtimeRequests,
-    stores.connectorLeases,
-    ...(stores.voiceControls ? [stores.voiceControls] : []),
-    ...(stores.liveVoice ? [stores.liveVoice] : []),
-  ]);
-}
-
 function createDefaultOutboundWorker(options: {
   adapter: ChannelOutboundAdapter;
   connectorKey: string;
@@ -245,7 +229,12 @@ function createRuntimeRequestDiscordBoundMessageHandler(input: {
     const request = await input.requests.enqueueRequest({
       kind: "discord_message",
       payload: message.requestPayload,
-    });
+    }, {idempotencyKey: deriveRuntimeRequestIngressIdempotencyKey({
+      kind: "discord_message",
+      connectorKey: message.requestPayload.connectorKey,
+      externalEventScope: message.requestPayload.externalConversationId,
+      externalEventId: message.requestPayload.externalMessageId,
+    })});
     input.log("message_queued", {
       kind: request.kind,
       requestId: request.id,

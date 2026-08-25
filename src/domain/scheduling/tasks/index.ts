@@ -30,7 +30,8 @@ export {
 export type {ScheduledTaskStore} from "./store.js";
 export {
   type CancelScheduledTaskInput,
-  type ClaimScheduledTaskInput,
+  type ClaimedScheduledTaskRunRecord,
+  type ClaimScheduledTaskRunInput,
   type ClaimScheduledTaskResult,
   type CompleteScheduledTaskRunInput,
   type CreateScheduledTaskInput,
@@ -38,6 +39,9 @@ export {
   type ListActiveScheduledTasksInput,
   type ListDueScheduledTasksInput,
   type ListScheduledTaskRunsInput,
+  type MaterializeScheduledTaskRunInput,
+  type MaterializeScheduledTaskRunsInput,
+  type RenewScheduledTaskRunClaimInput,
   type ScheduledTaskRecord,
   type ScheduledTaskRecurringSchedule,
   type ScheduledTaskRunRecord,

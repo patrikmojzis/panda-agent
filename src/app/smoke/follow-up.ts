@@ -38,6 +38,26 @@ function trimCommand(line: string): string {
   return line.trim().toLowerCase();
 }
 
+async function loadEntriesAfter(
+  store: Awaited<ReturnType<typeof createRuntimeClient>>["store"],
+  threadId: string,
+  sequence: number,
+): Promise<readonly ThreadMessageRecord[]> {
+  const pages: ThreadMessageRecord[][] = [];
+  let afterSequence: number | undefined = sequence;
+
+  while (afterSequence !== undefined) {
+    const page = await store.listTranscriptPage(threadId, {
+      afterSequence,
+      limit: 500,
+    });
+    pages.push([...page.records]);
+    afterSequence = page.nextAfterSequence;
+  }
+
+  return pages.flat();
+}
+
 function renderAssistantEntry(entry: ThreadMessageRecord): string[] {
   if (entry.message.role !== "assistant") {
     return [];
@@ -216,8 +236,8 @@ export async function startSmokeFollowUpRepl(options: SmokeFollowUpOptions): Pro
           continue;
         }
 
-        const transcriptBefore = await client.store.loadTranscript(thread.id);
-        const lastSequence = transcriptBefore.at(-1)?.sequence ?? 0;
+        const transcriptBefore = await client.store.listTranscriptPage(thread.id, {limit: 1});
+        const lastSequence = transcriptBefore.records.at(-1)?.sequence ?? 0;
         const submission = await client.submitTextInput({
           actorId: client.identity.handle,
           externalMessageId: randomUUID(),
@@ -232,8 +252,7 @@ export async function startSmokeFollowUpRepl(options: SmokeFollowUpOptions): Pro
           timeoutMs: options.timeoutMs,
         });
 
-        const transcriptAfter = await client.store.loadTranscript(thread.id);
-        const newEntries = transcriptAfter.filter((entry) => entry.sequence > lastSequence);
+        const newEntries = await loadEntriesAfter(client.store, thread.id, lastSequence);
         const rendered = renderFollowUpEntries(newEntries);
         if (rendered.length === 0) {
           writeLine(output, "(no new runtime output)");

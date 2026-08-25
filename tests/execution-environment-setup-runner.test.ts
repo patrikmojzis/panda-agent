@@ -428,7 +428,7 @@ describe("RemoteExecutionEnvironmentSetupRunner", () => {
         {mode: 0o755},
       );
 
-      await expect(execFileAsync("bash", ["-lc", TOOLCHAIN_PROBE_COMMAND], {
+      await expect(execFileAsync("bash", ["-c", TOOLCHAIN_PROBE_COMMAND], {
         env: {PATH: `${bin}:${process.env.PATH ?? ""}`},
         timeout: 30_000,
       })).rejects.toMatchObject({

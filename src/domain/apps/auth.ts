@@ -4,7 +4,6 @@ import {generateOpaqueToken, hashOpaqueToken, opaqueTokenMatches} from "../../li
 import type {PgQueryable} from "../../lib/postgres-query.js";
 import {requireTimestampMillis} from "../../lib/postgres-values.js";
 import {optionalNonEmptyString, requireNonEmptyString} from "../../lib/strings.js";
-import {ensurePostgresAgentAppAuthSchema} from "./auth-schema.js";
 import {buildAgentAppAuthTableNames} from "./auth-shared.js";
 
 const APP_CSRF_COOKIE_PREFIX = "panda_app_csrf_";
@@ -118,10 +117,6 @@ export class PostgresAgentAppAuthService implements AgentAppAuthService {
 
   constructor(options: {pool: PgQueryable}) {
     this.pool = options.pool;
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresAgentAppAuthSchema(this.pool);
   }
 
   async createLaunchToken(input: CreateAgentAppLaunchTokenInput): Promise<AgentAppLaunchTokenResult> {

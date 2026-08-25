@@ -6,8 +6,10 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {A2ASessionBindingRepo} from "../src/domain/a2a/repo.js";
+import {ensurePostgresA2ASessionBindingSchema} from "../src/domain/a2a/postgres-schema.js";
 import {A2AMessagingService} from "../src/domain/a2a/service.js";
 import {FileSystemMediaStore, PostgresOutboundDeliveryStore,} from "../src/domain/channels/index.js";
+import {ensurePostgresOutboundDeliverySchema} from "../src/domain/channels/deliveries/postgres-schema.js";
 import {stringToUserMessage} from "../src/kernel/agent/index.js";
 import {buildA2AInboundPersistence, buildA2AInboundText} from "../src/integrations/channels/a2a/helpers.js";
 import {
@@ -17,6 +19,7 @@ import {
 import {handleA2AMessageRequest} from "../src/integrations/channels/a2a/request-handler.js";
 import type {SessionRecord} from "../src/domain/sessions/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
+import {seedPendingThreadInput} from "./helpers/thread-runtime-fixtures.js";
 import {FileSystemCommandUploadStore} from "../src/integrations/commands/file-uploads.js";
 
 function createDisposableSenderEnvironment(id = "worker:session-a") {
@@ -101,8 +104,8 @@ describe("A2ASessionBindingRepo", () => {
 
     const bindings = new A2ASessionBindingRepo({pool});
     const deliveries = new PostgresOutboundDeliveryStore({pool});
-    await bindings.ensureSchema();
-    await deliveries.ensureSchema();
+    await ensurePostgresA2ASessionBindingSchema(pool);
+    await ensurePostgresOutboundDeliverySchema(pool);
 
     await bindings.bindSession({
       senderSessionId: "session-a",
@@ -220,8 +223,8 @@ describe("A2ASessionBindingRepo", () => {
 
     const bindings = new A2ASessionBindingRepo({pool});
     const deliveries = new PostgresOutboundDeliveryStore({pool});
-    await bindings.ensureSchema();
-    await deliveries.ensureSchema();
+    await ensurePostgresA2ASessionBindingSchema(pool);
+    await ensurePostgresOutboundDeliverySchema(pool);
 
     const outbound = await deliveries.enqueueDelivery({
       threadId: "thread-a",
@@ -409,8 +412,9 @@ describe("A2ASessionBindingRepo", () => {
     }));
 
     const bindings = new A2ASessionBindingRepo({pool});
-    await bindings.ensureSchema();
-    await threadStore.enqueueInput("thread-b", {
+    await ensurePostgresA2ASessionBindingSchema(pool);
+    await seedPendingThreadInput(pool, {
+      threadId: "thread-b",
       source: "a2a",
       channelId: "session-a",
       externalMessageId: "a2a:dedupe",
@@ -718,7 +722,7 @@ describe("createA2AOutboundAdapter", () => {
         toSessionId: "session-b",
         senderEnvironment: createDisposableSenderEnvironment(),
       }),
-    });
+    }, expect.objectContaining({idempotencyKey: expect.stringMatching(/^ingress:v1:/)}));
     expect(payload).not.toHaveProperty("externalConversationId");
     expect(payload).not.toHaveProperty("externalActorId");
     expect(payload.items[0]).toEqual({
@@ -840,7 +844,19 @@ describe("handleA2AMessageRequest", () => {
       createdAt: 0,
       updatedAt: 0,
     };
-    const submitInput = vi.fn(async () => undefined);
+    const submitSessionInput = vi.fn(async (sessionId: string, payload: {source: string}) => ({
+      input: {
+        id: "input-1",
+        threadId: recipient.currentThreadId,
+        order: 1,
+        deliveryMode: "wake" as const,
+        status: "pending" as const,
+        connectorKey: "",
+        source: payload.source,
+        createdAt: 1,
+      },
+      disposition: "inserted" as const,
+    }));
 
     const result = await handleA2AMessageRequest({
       connectorKey: "local",
@@ -860,7 +876,7 @@ describe("handleA2AMessageRequest", () => {
           return false;
         },
       },
-      coordinator: {submitInput},
+      coordinator: {submitSessionInput},
       sessions: {
         getSession: async (sessionId) => {
           expect(sessionId).toBe("session-b");
@@ -873,12 +889,12 @@ describe("handleA2AMessageRequest", () => {
       status: "queued",
       threadId: "thread-after-reset",
     });
-    expect(submitInput).toHaveBeenCalledWith("thread-after-reset", expect.objectContaining({
+    expect(submitSessionInput).toHaveBeenCalledWith("session-b", expect.objectContaining({
       source: "a2a",
       channelId: "session-a",
       externalMessageId: "a2a:after-reset",
       actorId: "panda",
-    }));
+    }), "wake", undefined);
   });
 });
 

@@ -42,7 +42,6 @@ const mocks = vi.hoisted(() => {
   };
   const auth = {
     deleteAuthState: vi.fn(),
-    ensureSchema: vi.fn(),
   };
   const identities = {
     deleteIdentityBinding: vi.fn(async () => true),
@@ -52,8 +51,7 @@ const mocks = vi.hoisted(() => {
   return {account, accounts, agents, auth, identities};
 });
 
-vi.mock("../src/lib/postgres-bootstrap.js", () => ({
-  ensureSchemas: vi.fn(async () => {}),
+vi.mock("../src/lib/postgres-database.js", () => ({
   withPostgresPool: vi.fn(async (_dbUrl: string | undefined, fn: (pool: unknown) => Promise<unknown>) => fn({})),
 }));
 vi.mock("../src/domain/connectors/postgres.js", () => ({

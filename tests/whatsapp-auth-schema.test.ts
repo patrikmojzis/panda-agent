@@ -84,4 +84,26 @@ describe("WhatsApp auth schema hard cut", () => {
     await expect(accounts.getAccountByKey("whatsapp", "replacement"))
       .resolves.toMatchObject({id: replacement.id});
   });
+
+  it("preserves account-id connector data when only the old marker is missing", async () => {
+    const db = newDb({noAstCoverageCheck: true});
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    await ensurePostgresConnectorAccountSchema(pool);
+    const accounts = new PostgresConnectorAccountStore({pool});
+    const current = await accounts.upsertAccount({
+      id: "00000000-0000-4000-8000-000000000003",
+      source: "whatsapp",
+      accountKey: "current",
+      connectorKey: "00000000-0000-4000-8000-000000000003",
+      status: "disabled",
+    });
+
+    await ensurePostgresWhatsAppAuthSchema(pool);
+
+    await expect(accounts.getAccountByKey("whatsapp", "current"))
+      .resolves.toMatchObject({id: current.id});
+  });
 });

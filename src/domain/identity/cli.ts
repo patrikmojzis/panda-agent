@@ -4,7 +4,7 @@ import process from "node:process";
 import {Command, InvalidArgumentError} from "commander";
 
 import {DB_URL_OPTION_DESCRIPTION} from "../../lib/cli.js";
-import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
+import {withPostgresPool} from "../../lib/postgres-database.js";
 import {PostgresIdentityStore} from "./postgres.js";
 import {normalizeIdentityHandle} from "./types.js";
 
@@ -22,7 +22,6 @@ async function withIdentityStore<T>(
 ): Promise<T> {
   return withPostgresPool(options.dbUrl, async (pool) => {
     const store = new PostgresIdentityStore({pool});
-    await ensureSchemas([store]);
     return fn(store);
   });
 }

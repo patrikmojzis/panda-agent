@@ -112,7 +112,7 @@ describe("Telegram message ingestion", () => {
         replyToMessageId: undefined,
         media: [],
       },
-    });
+    }, expect.objectContaining({idempotencyKey: expect.stringMatching(/^ingress:v1:/)}));
   });
 
   it("merges unavailable Telegram media notices into inbound text", async () => {
@@ -152,7 +152,7 @@ describe("Telegram message ingestion", () => {
         media: [],
         text: expect.stringContaining("Telegram attachment unavailable:"),
       }),
-    });
+    }, expect.objectContaining({idempotencyKey: expect.stringMatching(/^ingress:v1:/)}));
     const request = options.requests.enqueueRequest.mock.calls[0]?.[0];
     expect(request?.payload.text).toContain("filename: archive.zip");
     expect(request?.payload.text).toContain("size_bytes: 36700160");
@@ -218,7 +218,7 @@ describe("Telegram message ingestion", () => {
           media: [],
           text: expect.any(String),
         }),
-      }));
+      }), expect.objectContaining({idempotencyKey: expect.stringMatching(/^ingress:v1:/)}));
       const request = options.requests.enqueueRequest.mock.calls[0]?.[0];
       for (const snippet of testCase.snippets) {
         expect(request?.payload.text).toContain(snippet);
@@ -271,7 +271,7 @@ describe("Telegram message ingestion", () => {
         text: "watch this",
         media,
       }),
-    }));
+    }), expect.objectContaining({idempotencyKey: expect.stringMatching(/^ingress:v1:/)}));
   });
 
   it("logs unsupported Telegram message shapes before dropping", async () => {
@@ -352,7 +352,7 @@ describe("Telegram message ingestion", () => {
         firstName: "Alice",
         lastName: "Liddell",
       },
-    });
+    }, expect.objectContaining({idempotencyKey: expect.stringMatching(/^ingress:v1:/)}));
   });
 
   it("ignores reaction removals, bot actors, and non-private chats", async () => {

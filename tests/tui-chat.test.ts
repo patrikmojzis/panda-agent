@@ -11,7 +11,12 @@ import * as tuiRuntime from "../src/ui/tui/runtime.js";
 import {stripAnsi} from "../src/ui/tui/theme.js";
 import {createComposerState, setComposerValue, type ComposerState} from "../src/ui/tui/composer.js";
 import {ChatApp, runChatCli} from "../src/ui/tui/chat.js";
-import {collectThreadUsageSnapshot, formatThreadUsageSnapshot,} from "../src/ui/tui/usage-summary.js";
+import {
+  collectStoredThreadUsage,
+  collectThreadUsageSnapshot,
+  formatThreadUsageSnapshot,
+  scanStoredThreadUsage,
+} from "../src/ui/tui/usage-summary.js";
 
 type AppHarness = {
   closed: boolean;
@@ -37,6 +42,8 @@ type AppHarness = {
   model: string;
   thinking?: ThinkingLevel;
   nextEntryId: number;
+  transcriptBeforeSequence: number | null;
+  scrollTop: number;
   runPhase: "idle" | "thinking";
   services: ChatRuntimeServices;
   transcript: Array<{ id?: number; role?: string; title: string; body: string }>;
@@ -61,6 +68,7 @@ type AppHarness = {
   selectSessionPickerEntry(): Promise<void>;
   refreshToolCatalog(): void;
   reloadVisibleTranscript(): Promise<void>;
+  loadEarlierTranscript(): Promise<void>;
   syncStoredThreadState(force?: boolean): Promise<void>;
   scheduleSyncStoredThreadState(delayMs?: number): void;
   initializeRuntime(): Promise<void>;
@@ -859,9 +867,9 @@ describe("ChatApp compact command", () => {
     app.services = {
       compactThread,
       store: {
-        loadTranscript: vi.fn(async () => []),
+        listTranscriptPage: vi.fn(async () => ({records: []})),
         getThread: vi.fn(async () => app.currentThread),
-        listRuns: vi.fn(async () => []),
+        getLatestRun: vi.fn(async () => null),
       },
     } as ChatRuntimeServices;
 
@@ -904,6 +912,39 @@ describe("ChatApp compact command", () => {
 });
 
 describe("thread usage snapshots", () => {
+  it("aggregates complete stored usage through bounded pages", async () => {
+    const older = {
+      id: "message-1",
+      threadId: "thread-paged-usage",
+      sequence: 1,
+      origin: "input" as const,
+      source: "tui",
+      message: stringToUserMessage("hello"),
+      createdAt: 1,
+    };
+    const latest = {
+      id: "message-2",
+      threadId: "thread-paged-usage",
+      sequence: 2,
+      origin: "runtime" as const,
+      source: "assistant",
+      message: assistantWithUsage("hi"),
+      createdAt: 2,
+    };
+    const listTranscriptPage = vi.fn(async (_threadId: string, options: {beforeSequence?: number}) => {
+      return options.beforeSequence === undefined
+        ? {records: [latest], nextBeforeSequence: 2}
+        : {records: [older]};
+    });
+
+    const usage = await scanStoredThreadUsage({listTranscriptPage}, "thread-paged-usage");
+
+    expect(usage.messages).toBe(2);
+    expect(usage.totalUsage.responses).toBe(1);
+    expect(usage.lastUsage?.sequence).toBe(2);
+    expect(listTranscriptPage).toHaveBeenCalledTimes(2);
+  });
+
   it("separates stored transcript bloat from the current model-visible context", () => {
     const compactBoundary = createCompactBoundaryMessage("Intent:\n- keep going");
     const thread = {
@@ -952,7 +993,7 @@ describe("thread usage snapshots", () => {
         message: compactBoundary,
         metadata: {
           kind: "compact_boundary",
-          compactedUpToSequence: 3,
+          compactedThroughSequence: 3,
           preservedTailUserTurns: 2,
           trigger: "manual",
           tokensBefore: 1_200,
@@ -997,7 +1038,8 @@ describe("thread usage snapshots", () => {
 
     const snapshot = collectThreadUsageSnapshot({
       thread,
-      transcript,
+      activeTranscript: transcript,
+      storedUsage: collectStoredThreadUsage(transcript),
       model: thread.model,
       thinking: thread.thinking,
       isRunning: false,
@@ -1092,7 +1134,8 @@ describe("thread usage snapshots", () => {
 
     const snapshot = collectThreadUsageSnapshot({
       thread,
-      transcript,
+      activeTranscript: transcript,
+      storedUsage: collectStoredThreadUsage(transcript),
       model: thread.model,
       thinking: thread.thinking,
       inferenceProjection: sessionProjection,
@@ -1122,7 +1165,7 @@ describe("ChatApp usage command", () => {
       updatedAt: 2,
     };
     const getThread = vi.fn(async () => thread);
-    const loadTranscript = vi.fn(async () => [
+    const transcript = [
       {
         id: "message-1",
         threadId: "thread-usage",
@@ -1150,7 +1193,9 @@ describe("ChatApp usage command", () => {
         message: stringToUserMessage("latest"),
         createdAt: 3,
       },
-    ]);
+    ];
+    const loadActiveTranscript = vi.fn(async () => ({checkpointId: null, records: transcript}));
+    const listTranscriptPage = vi.fn(async () => ({records: transcript}));
     const resolveThreadRunConfig = vi.fn(async () => ({
       model: "openai/gpt-5.4",
       thinking: "medium" as const,
@@ -1166,13 +1211,18 @@ describe("ChatApp usage command", () => {
       getThread,
       resolveThreadRunConfig,
       store: {
-        loadTranscript,
+        loadActiveTranscript,
+        listTranscriptPage,
       },
     } as ChatRuntimeServices;
 
     await expect(app.handleCommand("/usage")).resolves.toBe(true);
     expect(getThread).toHaveBeenCalledWith("thread-usage");
-    expect(loadTranscript).toHaveBeenCalledWith("thread-usage");
+    expect(loadActiveTranscript).toHaveBeenCalledWith("thread-usage");
+    expect(listTranscriptPage).toHaveBeenCalledWith("thread-usage", {
+      beforeSequence: undefined,
+      limit: 500,
+    });
     expect(resolveThreadRunConfig).toHaveBeenCalledWith("thread-usage");
     expect(app.transcript.at(-1)).toMatchObject({
       role: "meta",
@@ -1195,7 +1245,7 @@ describe("ChatApp usage command", () => {
       updatedAt: 2,
     };
     const getThread = vi.fn(async () => thread);
-    const loadTranscript = vi.fn(async () => [
+    const transcript = [
       {
         id: "message-1",
         threadId: "thread-usage",
@@ -1214,7 +1264,9 @@ describe("ChatApp usage command", () => {
         message: assistantWithUsage("hi"),
         createdAt: 2,
       },
-    ]);
+    ];
+    const loadActiveTranscript = vi.fn(async () => ({checkpointId: null, records: transcript}));
+    const listTranscriptPage = vi.fn(async () => ({records: transcript}));
     const resolveThreadRunConfig = vi.fn(async () => {
       throw new Error("daemon offline");
     });
@@ -1228,13 +1280,15 @@ describe("ChatApp usage command", () => {
       getThread,
       resolveThreadRunConfig,
       store: {
-        loadTranscript,
+        loadActiveTranscript,
+        listTranscriptPage,
       },
     } as ChatRuntimeServices;
 
     await expect(app.handleCommand("/usage")).resolves.toBe(true);
     expect(getThread).toHaveBeenCalledWith("thread-usage");
-    expect(loadTranscript).toHaveBeenCalledWith("thread-usage");
+    expect(loadActiveTranscript).toHaveBeenCalledWith("thread-usage");
+    expect(listTranscriptPage).toHaveBeenCalledTimes(1);
     expect(resolveThreadRunConfig).toHaveBeenCalledWith("thread-usage");
     expect(app.transcript.at(-1)?.body).toContain("`anthropic/claude-opus-4-7`");
     expect(app.transcript.at(-1)?.body).toContain("thinking `high`");
@@ -1320,6 +1374,41 @@ describe("ChatApp performance helpers", () => {
     expect(app.transcript).toHaveLength(2);
   });
 
+  it("loads older transcript pages on demand and preserves the visible position", async () => {
+    const listTranscriptPage = vi.fn(async () => ({
+      records: [{
+        id: "message-old",
+        threadId: "thread-pages",
+        sequence: 1,
+        origin: "input" as const,
+        message: stringToUserMessage("older"),
+        source: "tui",
+        createdAt: 1,
+      }],
+    }));
+    const app = createAppHarness();
+    app.currentThreadId = "thread-pages";
+    app.services = {store: {listTranscriptPage}} as ChatRuntimeServices;
+    app.appendStoredMessages([{
+      id: "message-new",
+      threadId: "thread-pages",
+      sequence: 2,
+      origin: "input",
+      message: stringToUserMessage("newer"),
+      source: "tui",
+      createdAt: 2,
+    }]);
+    app.transcriptBeforeSequence = 2;
+    const previousScrollTop = app.scrollTop;
+
+    await app.loadEarlierTranscript();
+
+    expect(listTranscriptPage).toHaveBeenCalledWith("thread-pages", {beforeSequence: 2});
+    expect(app.transcript.map((entry) => entry.body)).toEqual(["older", "newer"]);
+    expect(app.scrollTop).toBeGreaterThan(previousScrollTop);
+    expect(app.transcriptBeforeSequence).toBeNull();
+  });
+
   it("loads thread, transcript, and runs during a forced sync", async () => {
     const getThread = vi.fn(async () => ({
       id: "thread-sync",
@@ -1328,8 +1417,8 @@ describe("ChatApp performance helpers", () => {
       createdAt: 1,
       updatedAt: 2,
     }));
-    const loadTranscript = vi.fn(async () => []);
-    const listRuns = vi.fn(async () => []);
+    const listTranscriptPage = vi.fn(async () => ({records: []}));
+    const getLatestRun = vi.fn(async () => null);
     const app = createAppHarness();
 
     app.currentThreadId = "thread-sync";
@@ -1337,16 +1426,19 @@ describe("ChatApp performance helpers", () => {
       extraTools: [],
       store: {
         getThread,
-        loadTranscript,
-        listRuns,
+        listTranscriptPage,
+        getLatestRun,
       },
     } as ChatRuntimeServices;
 
     await app.syncStoredThreadState(true);
 
     expect(getThread).toHaveBeenCalledWith("thread-sync");
-    expect(loadTranscript).toHaveBeenCalledWith("thread-sync");
-    expect(listRuns).toHaveBeenCalledWith("thread-sync");
+    expect(listTranscriptPage).toHaveBeenCalledWith("thread-sync", {
+      afterSequence: 0,
+      limit: 500,
+    });
+    expect(getLatestRun).toHaveBeenCalledWith("thread-sync");
   });
 
   it("debounces scheduled syncs into a single stored refresh", async () => {
@@ -1360,8 +1452,8 @@ describe("ChatApp performance helpers", () => {
         createdAt: 1,
         updatedAt: 2,
       }));
-      const loadTranscript = vi.fn(async () => []);
-      const listRuns = vi.fn(async () => []);
+      const listTranscriptPage = vi.fn(async () => ({records: []}));
+      const getLatestRun = vi.fn(async () => null);
       const app = createAppHarness();
 
       app.currentThreadId = "thread-sync";
@@ -1369,8 +1461,8 @@ describe("ChatApp performance helpers", () => {
         extraTools: [],
         store: {
           getThread,
-          loadTranscript,
-          listRuns,
+          listTranscriptPage,
+          getLatestRun,
         },
       } as ChatRuntimeServices;
 
@@ -1378,12 +1470,12 @@ describe("ChatApp performance helpers", () => {
       app.scheduleSyncStoredThreadState();
 
       await vi.advanceTimersByTimeAsync(149);
-      expect(loadTranscript).not.toHaveBeenCalled();
+      expect(listTranscriptPage).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(1);
-      expect(loadTranscript).toHaveBeenCalledTimes(1);
+      expect(listTranscriptPage).toHaveBeenCalledTimes(1);
       expect(getThread).toHaveBeenCalledTimes(1);
-      expect(listRuns).toHaveBeenCalledTimes(1);
+      expect(getLatestRun).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
@@ -1391,15 +1483,15 @@ describe("ChatApp performance helpers", () => {
 
   it("queues follow-up sync work instead of running concurrent syncs", async () => {
     let resolveTranscript: (() => void) | null = null;
-    const firstTranscript = new Promise<[]>(resolve => {
-      resolveTranscript = () => resolve([]);
+    const firstTranscript = new Promise<{records: []}>(resolve => {
+      resolveTranscript = () => resolve({records: []});
     });
-    const loadTranscript = vi.fn(async () => {
-      if (loadTranscript.mock.calls.length === 1) {
+    const listTranscriptPage = vi.fn(async () => {
+      if (listTranscriptPage.mock.calls.length === 1) {
         return firstTranscript;
       }
 
-      return [];
+      return {records: []};
     });
     const getThread = vi.fn(async () => ({
       id: "thread-sync",
@@ -1408,7 +1500,7 @@ describe("ChatApp performance helpers", () => {
       createdAt: 1,
       updatedAt: 2,
     }));
-    const listRuns = vi.fn(async () => []);
+    const getLatestRun = vi.fn(async () => null);
     const app = createAppHarness();
 
     app.currentThreadId = "thread-sync";
@@ -1416,8 +1508,8 @@ describe("ChatApp performance helpers", () => {
       extraTools: [],
       store: {
         getThread,
-        loadTranscript,
-        listRuns,
+        listTranscriptPage,
+        getLatestRun,
       },
     } as ChatRuntimeServices;
 
@@ -1427,17 +1519,17 @@ describe("ChatApp performance helpers", () => {
 
     await app.syncStoredThreadState(true);
 
-    expect(loadTranscript).toHaveBeenCalledTimes(1);
+    expect(listTranscriptPage).toHaveBeenCalledTimes(1);
     expect(getThread).toHaveBeenCalledTimes(1);
-    expect(listRuns).toHaveBeenCalledTimes(1);
+    expect(getLatestRun).toHaveBeenCalledTimes(1);
 
     resolveTranscript?.();
     await first;
     await flushTimers();
 
-    expect(loadTranscript).toHaveBeenCalledTimes(2);
+    expect(listTranscriptPage).toHaveBeenCalledTimes(2);
     expect(getThread).toHaveBeenCalledTimes(2);
-    expect(listRuns).toHaveBeenCalledTimes(2);
+    expect(getLatestRun).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -1667,9 +1759,9 @@ describe("ChatApp explicit session id", () => {
         updatedAt: 1,
       })),
       store: {
-        loadTranscript: vi.fn(async () => []),
+        listTranscriptPage: vi.fn(async () => ({records: []})),
         getThread: vi.fn(async () => thread),
-        listRuns: vi.fn(async () => []),
+        getLatestRun: vi.fn(async () => null),
       },
     } as unknown as ChatRuntimeServices);
 

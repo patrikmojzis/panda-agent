@@ -15,7 +15,7 @@ import {PostgresIdentityStore} from "../../../domain/identity/postgres.js";
 import {DB_URL_OPTION_DESCRIPTION} from "../../../lib/cli.js";
 import {resolveMediaDir} from "../../../lib/data-dir.js";
 import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../../../lib/health-server.js";
-import {ensureSchemas, withPostgresPool} from "../../../lib/postgres-bootstrap.js";
+import {withPostgresPool} from "../../../lib/postgres-database.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
 import {PostgresWhatsAppAuthStore} from "./auth-store.js";
 import {whatsappChatListCommandDescriptor, whatsappHistoryCommandDescriptor, whatsappSendCommandDescriptor} from "./commands.js";
@@ -25,7 +25,7 @@ import {
   requireWhatsAppConnectorAccount,
   resetWhatsAppConnectorAccount,
 } from "./connector-account.js";
-import {WhatsAppService, initializeWhatsAppWorkerSchemas, type WhatsAppServiceOptions} from "./service.js";
+import {WhatsAppService, type WhatsAppServiceOptions} from "./service.js";
 import {ConnectorAccountSupervisor, type ConnectorAccountSupervisorWorker} from "../account-supervisor.js";
 import {startConnectorDaemonRuntime, type ConnectorDaemonRuntimeHandle} from "../worker-runtime.js";
 
@@ -132,7 +132,6 @@ async function withWhatsAppAccountStores<T>(
       auth: new PostgresWhatsAppAuthStore({pool, crypto: requireWhatsAppCrypto(dependencies)}),
       identities: new PostgresIdentityStore({pool}),
     };
-    await ensureSchemas([stores.auth, stores.agents, stores.identities]);
     return fn(stores);
   });
 }
@@ -170,7 +169,6 @@ export async function whatsappAccountCreateCommand(
       agentKey: options.agent,
       displayName: options.displayName,
       accounts: stores.accounts,
-      auth: stores.auth,
     });
     process.stdout.write(`Created disabled WhatsApp account ${account.accountKey}.\nconnector ${account.connectorKey}\n`);
   });
@@ -302,7 +300,6 @@ async function startWhatsAppDaemonRuntime(
     dbUrl: options.dbUrl,
     poolMaxEnvKey: "PANDA_WHATSAPP_DB_POOL_MAX",
     log: logRunEvent,
-    initialize: async (pool) => initializeWhatsAppWorkerSchemas(pool, crypto),
   });
 }
 

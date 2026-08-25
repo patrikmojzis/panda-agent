@@ -14,7 +14,6 @@ import {
   PostgresConnectorLeaseRepo
 } from "../../../domain/connector-leases/repo.js";
 import {FileSystemMediaStore} from "../../../domain/channels/media-store.js";
-import {ensureSchemas} from "../../../lib/postgres-bootstrap.js";
 import {RuntimeRequestRepo} from "../../../domain/threads/requests/repo.js";
 import {PostgresChannelActionStore} from "../../../domain/channels/actions/postgres.js";
 import {
@@ -74,18 +73,6 @@ interface WhatsAppWorkerStores {
   connectorLeases: PostgresConnectorLeaseRepo;
   requests: RuntimeRequestRepo;
   mediaStore: FileSystemMediaStore;
-}
-
-export async function initializeWhatsAppWorkerSchemas(pool: Pool, crypto: CredentialCrypto): Promise<void> {
-  await ensureSchemas([
-    new PostgresWhatsAppAuthStore({pool, crypto}),
-    new PostgresConnectorAccountStore({pool}),
-    new PostgresWhatsAppRuntimeStatusStore({pool}),
-    new PostgresOutboundDeliveryStore({pool}),
-    new PostgresChannelActionStore({pool}),
-    new PostgresConnectorLeaseRepo({pool}),
-    new RuntimeRequestRepo({pool}),
-  ]);
 }
 
 export class WhatsAppService {

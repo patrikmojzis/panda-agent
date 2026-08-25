@@ -76,7 +76,7 @@ const controlCliMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("../src/app/runtime/postgres-bootstrap.js", () => ({
+vi.mock("../src/lib/postgres-database.js", () => ({
   withPostgresPool: controlCliMocks.withPostgresPool,
 }));
 
@@ -131,8 +131,6 @@ describe("Control CLI", () => {
       {from: "user"},
     );
 
-    expect(latestIdentityStore().ensureSchema).toHaveBeenCalledOnce();
-    expect(latestControlAuth().ensureSchema).toHaveBeenCalledOnce();
     expect(latestIdentityStore().getIdentityByHandle).toHaveBeenCalledWith("patrik");
     expect(latestControlAuth().createGrant).toHaveBeenCalledWith({
       identityId: "identity-patrik-id",

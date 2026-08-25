@@ -24,7 +24,10 @@ export interface CreateChatSessionOptions {
   inferenceProjection?: InferenceProjection;
 }
 
-export type ChatRuntimeThreadStore = Pick<ThreadRuntimeStore, "getThread" | "listRuns" | "loadTranscript">;
+export type ChatRuntimeThreadStore = Pick<
+  ThreadRuntimeStore,
+  "getThread" | "getLatestRun" | "loadActiveTranscript" | "listTranscriptPage"
+>;
 
 export interface ChatRuntimeServices {
   identity: IdentityRecord;

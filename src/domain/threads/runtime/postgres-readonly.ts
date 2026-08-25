@@ -67,7 +67,6 @@ export const READONLY_SESSION_VIEW_BASENAMES = Object.freeze(Object.values(READO
 
 export interface EnsureReadonlySessionQuerySchemaOptions {
   queryable: PgQueryable;
-  readonlyRole?: string | null;
 }
 
 export function readDatabaseUsername(databaseUrl: string): string | null {
@@ -212,6 +211,7 @@ export async function ensureReadonlySessionQuerySchema(
     SELECT
       t.id,
       t.session_id,
+      t.replaces_thread_id,
       session.agent_key,
       session.kind AS session_kind,
       t.created_at,
@@ -224,7 +224,9 @@ export async function ensureReadonlySessionQuerySchema(
       COALESCE((
         SELECT COUNT(*)::INTEGER
         FROM ${tables.inputs} AS i
-        WHERE i.thread_id = t.id AND i.applied_at IS NULL
+        WHERE i.thread_id = t.id
+          AND i.applied_at IS NULL
+          AND i.discarded_at IS NULL
       ), 0) AS pending_input_count,
       (
         SELECT MAX(m.created_at)
@@ -330,7 +332,6 @@ export async function ensureReadonlySessionQuerySchema(
       i.identity_id,
       speaker.handle AS identity_handle,
       i.created_at,
-      i.applied_at,
       i.message,
       i.message->>'role' AS role,
       ${inputTextSql} AS text,
@@ -345,7 +346,9 @@ export async function ensureReadonlySessionQuerySchema(
     FROM ${tables.inputs} AS i
     INNER JOIN ${tables.threads} AS t ON t.id = i.thread_id
     LEFT JOIN ${identityTables.identities} AS speaker ON speaker.id = i.identity_id
-    WHERE ${sessionScopeSql};
+    WHERE ${sessionScopeSql}
+      AND i.applied_at IS NULL
+      AND i.discarded_at IS NULL;
 
     CREATE VIEW ${views.runs}
     WITH (security_barrier = true) AS
@@ -476,6 +479,7 @@ export async function ensureReadonlySessionQuerySchema(
           INNER JOIN ${tables.threads} AS t ON t.id = i.thread_id
           WHERE t.session_id = subagent.id
             AND i.applied_at IS NULL
+            AND i.discarded_at IS NULL
         ) AS pending_input_count
     ) AS thread_summary ON TRUE
     WHERE subagent.kind = 'subagent'
@@ -500,21 +504,23 @@ export async function ensureReadonlySessionQuerySchema(
       st.enabled,
       CASE
         WHEN st.cancelled_at IS NOT NULL THEN 'cancelled'
-        WHEN st.claimed_at IS NOT NULL AND (st.claim_expires_at IS NULL OR st.claim_expires_at > NOW()) THEN 'running'
+        WHEN EXISTS (
+          SELECT 1
+          FROM ${scheduledTaskTables.scheduledTaskRuns} AS active_run
+          WHERE active_run.task_id = st.id
+            AND active_run.status IN ('pending', 'claimed', 'running')
+        ) THEN 'running'
         WHEN st.completed_at IS NOT NULL AND (
           SELECT task_run.status
           FROM ${scheduledTaskTables.scheduledTaskRuns} AS task_run
           WHERE task_run.task_id = st.id
-          ORDER BY task_run.created_at DESC
+          ORDER BY task_run.created_at DESC, task_run.id ASC
           LIMIT 1
         ) = 'failed' THEN 'failed'
         WHEN st.completed_at IS NOT NULL THEN 'completed'
         ELSE 'scheduled'
       END AS status,
       st.next_fire_at,
-      st.claimed_at,
-      st.claimed_by,
-      st.claim_expires_at,
       st.completed_at,
       st.cancelled_at,
       st.created_at,
@@ -534,6 +540,7 @@ export async function ensureReadonlySessionQuerySchema(
       run.resolved_thread_id,
       run.scheduled_for,
       run.status,
+      run.thread_input_id,
       run.thread_run_id,
       run.error,
       run.created_at,
@@ -749,14 +756,6 @@ export async function ensureReadonlySessionQuerySchema(
     WHERE message.session_id = active_session.id
       OR (message.session_id IS NULL AND active_session.kind = 'main');
   `);
-
-  if (options.readonlyRole) {
-    const readonlyRole = quoteIdentifier(options.readonlyRole);
-    await options.queryable.query(`
-      GRANT USAGE ON SCHEMA ${quoteIdentifier(SESSION_SCHEMA)} TO ${readonlyRole};
-      GRANT SELECT ON ${Object.values(views).join(", ")} TO ${readonlyRole};
-    `);
-  }
 
   return views;
 }

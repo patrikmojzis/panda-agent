@@ -1,6 +1,6 @@
 import {isJsonObject, type JsonObject} from "../../lib/json.js";
-import {buildRuntimeRelationNames, CREATE_RUNTIME_SCHEMA_SQL, postgresRelationExists, quoteIdentifier} from "../../lib/postgres-relations.js";
-import type {PgListenClient, PgPoolLike, PgQueryable} from "../../lib/postgres-query.js";
+import {buildRuntimeRelationNames} from "../../lib/postgres-relations.js";
+import type {PgListenClient, PgPoolLike} from "../../lib/postgres-query.js";
 import {optionalTimestampMillis, requireTimestampMillis} from "../../lib/postgres-values.js";
 import {requireNonEmptyString, trimToUndefined} from "../../lib/strings.js";
 import type {
@@ -109,36 +109,6 @@ function parseTurn(row: Record<string, unknown>): LiveVoiceTurnRecord {
   };
 }
 
-export async function ensureLiveVoiceSchema(pool: PgQueryable): Promise<void> {
-  await pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS ${tables.sessions} (
-      id UUID PRIMARY KEY, source TEXT NOT NULL, connector_key TEXT NOT NULL,
-      scope_key TEXT NOT NULL, room_key TEXT NOT NULL, session_id TEXT NOT NULL,
-      agent_key TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
-      state TEXT NOT NULL, transport_context JSONB, last_error TEXT,
-      health_state TEXT, health_reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
-      health_observed_at TIMESTAMPTZ, diagnostics JSONB,
-      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `);
-  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_live_voice_sessions_active_scope_idx`)} ON ${tables.sessions} (source,connector_key,scope_key) WHERE state IN ('connecting','connected')`);
-  await pool.query(`CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_live_voice_sessions_owner_idx`)} ON ${tables.sessions} (session_id,source,connector_key,state)`);
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS ${tables.turns} (
-      id UUID PRIMARY KEY, live_voice_session_id UUID NOT NULL REFERENCES ${tables.sessions}(id),
-      provider_delegation_id TEXT NOT NULL, source_utterance_id UUID NOT NULL,
-      session_id TEXT NOT NULL, agent_key TEXT NOT NULL, external_actor_id TEXT, identity_id TEXT,
-      prompt TEXT NOT NULL, status TEXT NOT NULL, thread_id UUID, run_id UUID,
-      result_text TEXT, final_control_id UUID, final_text TEXT, error TEXT, completed_at TIMESTAMPTZ,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE (live_voice_session_id, provider_delegation_id),
-      UNIQUE (live_voice_session_id, source_utterance_id)
-    )
-  `);
-  await pool.query(`CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_live_voice_turns_run_idx`)} ON ${tables.turns} (run_id,status)`);
-}
-
 export interface LiveVoiceRepoOptions {pool: PgPoolLike<PgListenClient>}
 
 /** Owns channel-neutral live-call ownership, health, and delegated turn state. */
@@ -146,59 +116,6 @@ export class LiveVoiceRepo {
   private readonly pool: PgPoolLike<PgListenClient>;
 
   constructor(options: LiveVoiceRepoOptions) { this.pool = options.pool; }
-
-  ensureSchema(): Promise<void> { return ensureLiveVoiceSchema(this.pool); }
-
-  /** Migrates the experimental Discord-only mailbox once, then removes its obsolete tables. */
-  async hardCutLegacyDiscordTables(): Promise<void> {
-    const client = await this.pool.connect();
-    try {
-      await client.query("BEGIN");
-      const hasSessions = await postgresRelationExists(client, "runtime", "discord_voice_sessions");
-      const hasTurns = await postgresRelationExists(client, "runtime", "discord_voice_turns");
-      const hasRuntimeRequests = await postgresRelationExists(client, "runtime", "runtime_requests");
-      if (hasRuntimeRequests) await client.query("DELETE FROM runtime.runtime_requests WHERE kind='discord_voice_delegation'");
-      if (hasSessions) {
-        await client.query(`
-          INSERT INTO ${tables.sessions} (id,source,connector_key,scope_key,room_key,session_id,agent_key,provider,model,state,transport_context,last_error,started_at,updated_at)
-          SELECT voice_session_id,'discord',connector_key,guild_id,channel_id,session_id,agent_key,'openai-live',model,'disconnected',
-            '{}'::jsonb,COALESCE(last_error,'legacy_schema_migrated'),started_at,updated_at
-          FROM runtime.discord_voice_sessions ON CONFLICT (id) DO NOTHING
-        `);
-      }
-      if (hasTurns) {
-        // The original experimental table predates utterance attribution and
-        // explicit final delivery. Normalize every shipped variant before the
-        // one-way copy so a skipped intermediate deploy cannot block startup.
-        await client.query("ALTER TABLE runtime.discord_voice_turns ADD COLUMN IF NOT EXISTS source_utterance_id UUID");
-        await client.query("ALTER TABLE runtime.discord_voice_turns ADD COLUMN IF NOT EXISTS final_control_id UUID");
-        await client.query("ALTER TABLE runtime.discord_voice_turns ADD COLUMN IF NOT EXISTS final_text TEXT");
-        await client.query(`
-          INSERT INTO ${tables.sessions} (id,source,connector_key,scope_key,room_key,session_id,agent_key,provider,model,state,transport_context,last_error,started_at,updated_at)
-          SELECT DISTINCT ON (legacy.voice_session_id) legacy.voice_session_id,'discord',legacy.connector_key,legacy.guild_id,legacy.channel_id,
-            legacy.session_id,legacy.agent_key,'openai-live','gpt-live-1-codex','disconnected',
-            '{}'::jsonb,'legacy_schema_migrated',legacy.created_at,legacy.updated_at
-          FROM runtime.discord_voice_turns AS legacy
-          ORDER BY legacy.voice_session_id,legacy.created_at
-          ON CONFLICT (id) DO NOTHING
-        `);
-        await client.query(`
-          INSERT INTO ${tables.turns} (id,live_voice_session_id,provider_delegation_id,source_utterance_id,session_id,agent_key,external_actor_id,identity_id,prompt,status,thread_id,run_id,result_text,final_control_id,final_text,error,completed_at,created_at,updated_at)
-          SELECT id,voice_session_id,delegation_id || CASE WHEN source_utterance_id IS NULL THEN ':' || id::text ELSE '' END,COALESCE(source_utterance_id,id),session_id,agent_key,external_actor_id,identity_id,prompt,
-            CASE WHEN status IN ('completed','failed') THEN status ELSE 'failed' END,thread_id,run_id,result_text,final_control_id,final_text,
-            CASE WHEN status IN ('completed','failed') THEN error ELSE COALESCE(error,'Live voice turn interrupted by schema migration.') END,
-            CASE WHEN status IN ('completed','failed') THEN completed_at ELSE NOW() END,created_at,updated_at
-          FROM runtime.discord_voice_turns ON CONFLICT DO NOTHING
-        `);
-        await client.query("DROP TABLE runtime.discord_voice_turns");
-      }
-      if (hasSessions) await client.query("DROP TABLE runtime.discord_voice_sessions");
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK").catch(() => undefined);
-      throw error;
-    } finally { client.release(); }
-  }
 
   async upsertSession(input: LiveVoiceSessionInput): Promise<LiveVoiceSessionRecord> {
     const result = await this.pool.query(`

@@ -26,6 +26,7 @@ export interface ChatSyncHost {
   setSyncRequestedWhileBusy(enabled: boolean): void;
   getLastStoredSyncAt(): number;
   setLastStoredSyncAt(value: number): void;
+  getLastStoredSequence(): number;
   applyLoadedSnapshot(
     thread: ThreadRecord,
     session: SessionRecord,
@@ -92,6 +93,9 @@ export async function syncChatStoredThreadState(
     const snapshot = await loadStoredThreadSnapshot({
       store: services.store,
       threadId,
+      // Zero is a real forward cursor: after an initially empty transcript,
+      // falling back to the newest page could permanently skip a large burst.
+      afterSequence: host.getLastStoredSequence(),
     });
 
     if (threadId !== host.getCurrentThreadId()) {

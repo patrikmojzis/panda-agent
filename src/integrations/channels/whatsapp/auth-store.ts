@@ -13,7 +13,7 @@ import {buildConnectorAccountTableNames} from "../../../domain/connectors/postgr
 import type {PgPoolLike, PgQueryable} from "../../../lib/postgres-query.js";
 import {requireTimestampMillis} from "../../../lib/postgres-values.js";
 import {requireNonEmptyString, uniqueTrimmedStrings} from "../../../lib/strings.js";
-import {buildWhatsAppAuthTableNames, ensurePostgresWhatsAppAuthSchema} from "./auth-schema.js";
+import {buildWhatsAppAuthTableNames} from "./auth-schema.js";
 
 export interface PostgresWhatsAppAuthStoreOptions {
   pool: PgPoolLike;
@@ -94,10 +94,6 @@ export class PostgresWhatsAppAuthStore {
   constructor(options: PostgresWhatsAppAuthStoreOptions) {
     this.pool = options.pool;
     this.crypto = options.crypto;
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresWhatsAppAuthSchema(this.pool);
   }
 
   async hasAuthState(accountId: string): Promise<boolean> {

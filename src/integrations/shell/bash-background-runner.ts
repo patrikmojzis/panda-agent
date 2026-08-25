@@ -39,6 +39,7 @@ const DEFAULT_REMOTE_TIMEOUT_BUFFER_MS = 5_000;
 
 export interface StartBashBackgroundJobOptions<TContext extends ShellExecutionContext = ShellExecutionContext> {
   jobId: string;
+  signal?: AbortSignal;
   command: string;
   cwd: string;
   maxRuntimeMs: number;
@@ -149,9 +150,33 @@ async function parseJobResponse(response: Response): Promise<BashRunnerJobRespon
   }
 }
 
+async function compensateAmbiguousRemoteStart(input: {
+  fetchImpl: typeof fetch;
+  runnerUrl: string;
+  headers: Record<string, string>;
+  jobId: string;
+}): Promise<void> {
+  const response = await input.fetchImpl(buildRunnerEndpoint(input.runnerUrl, "jobs/cancel"), {
+    method: "POST",
+    headers: input.headers,
+    body: JSON.stringify({
+      jobId: input.jobId,
+      timeoutMs: DEFAULT_REMOTE_CANCEL_WAIT_TIMEOUT_MS,
+      reserveIfMissing: true,
+    } satisfies BashRunnerJobCancelRequest),
+    // The startup signal is already aborted. Compensation needs an independent
+    // bounded request or it would be cancelled before reaching the runner.
+    signal: makeNetworkTimeoutSignal(DEFAULT_REMOTE_TIMEOUT_BUFFER_MS),
+  });
+  if (!response.ok) {
+    await readRunnerError(response);
+  }
+}
+
 export async function startBashBackgroundJob<TContext extends ShellExecutionContext>(
   options: StartBashBackgroundJobOptions<TContext>,
 ): Promise<BackgroundToolJobHandle> {
+  options.signal?.throwIfAborted();
   const processEnv = options.processEnv ?? process.env;
   const shell = options.shell ?? processEnv.SHELL ?? SAFE_SHELL;
   const fetchImpl = options.fetchImpl ?? fetch;
@@ -186,6 +211,7 @@ export async function startBashBackgroundJob<TContext extends ShellExecutionCont
       persistOutputThresholdChars: options.persistOutputThresholdChars,
       persistOutputFiles: options.persistOutputFiles,
       outputDirectory: options.outputDirectory,
+      signal: options.signal,
     });
     const initial = sanitizeSnapshot(job.snapshot(), options);
 
@@ -241,17 +267,59 @@ export async function startBashBackgroundJob<TContext extends ShellExecutionCont
       : undefined,
   };
 
-  const response = await fetchImpl(buildRunnerEndpoint(runnerUrl, "jobs/start"), {
-    method: "POST",
-    headers,
-    body: JSON.stringify(request),
-    signal: makeNetworkTimeoutSignal(DEFAULT_REMOTE_TIMEOUT_BUFFER_MS),
-  });
+  let response: Response;
+  try {
+    response = await fetchImpl(buildRunnerEndpoint(runnerUrl, "jobs/start"), {
+      method: "POST",
+      headers,
+      body: JSON.stringify(request),
+      signal: options.signal
+        ? AbortSignal.any([options.signal, makeNetworkTimeoutSignal(DEFAULT_REMOTE_TIMEOUT_BUFFER_MS)])
+        : makeNetworkTimeoutSignal(DEFAULT_REMOTE_TIMEOUT_BUFFER_MS),
+    });
+  } catch (error) {
+    try {
+      await compensateAmbiguousRemoteStart({fetchImpl, runnerUrl, headers, jobId: options.jobId});
+    } catch (compensationError) {
+      throw new AggregateError(
+        [error, compensationError],
+        `Remote background job ${options.jobId} start was ambiguous and compensation failed.`,
+      );
+    }
+    throw error;
+  }
   if (!response.ok) {
-    await readRunnerError(response);
+    let startError: unknown;
+    try {
+      await readRunnerError(response);
+    } catch (error) {
+      startError = error;
+    }
+    try {
+      await compensateAmbiguousRemoteStart({fetchImpl, runnerUrl, headers, jobId: options.jobId});
+    } catch (compensationError) {
+      throw new AggregateError(
+        [startError, compensationError],
+        `Remote background job ${options.jobId} was rejected ambiguously and compensation failed.`,
+      );
+    }
+    throw startError;
   }
 
-  const initial = sanitizeSnapshot(await parseJobResponse(response), options);
+  let initial: BashJobSnapshot;
+  try {
+    initial = sanitizeSnapshot(await parseJobResponse(response), options);
+  } catch (error) {
+    try {
+      await compensateAmbiguousRemoteStart({fetchImpl, runnerUrl, headers, jobId: options.jobId});
+    } catch (compensationError) {
+      throw new AggregateError(
+        [error, compensationError],
+        `Remote background job ${options.jobId} returned an ambiguous response and compensation failed.`,
+      );
+    }
+    throw error;
+  }
 
   const readRemoteSnapshot = async (
     requestMode: "status" | "wait",

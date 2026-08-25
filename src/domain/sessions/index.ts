@@ -12,6 +12,7 @@ export {
 } from "./routes/repo.js";
 export {
   createSessionWithInitialThread,
+  repairMissingSessionCurrentThread,
   resetSessionCurrentThread,
 } from "./lifecycle.js";
 export {resolveSessionRef} from "./refs.js";

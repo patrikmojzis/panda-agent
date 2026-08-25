@@ -1,63 +1,123 @@
 import type {
     CreateThreadInput,
     CreateThreadToolJobInput,
+    ThreadCompactionCommit,
     ThreadChannelMediaFilter,
     ThreadChannelMediaRecord,
     ThreadChannelMessageFilter,
     ThreadInputDeliveryMode,
+    ThreadEnqueueOptions,
     ThreadInputPayload,
+    ThreadPendingInputRecord,
     ThreadInputRecord,
     ThreadMessageRecord,
     ThreadRecord,
     ThreadRunRecord,
+    ThreadRunOwner,
     ThreadRuntimeMessagePayload,
     ThreadSummaryRecord,
+    ThreadTranscriptPage,
+    ThreadTranscriptPageOptions,
+    ThreadTranscriptSnapshot,
     ThreadToolJobRecord,
     ThreadToolJobUpdate,
-    ThreadUpdate,
+    ThreadRuntimeStateUpdate,
 } from "./types.js";
 
 export interface ThreadEnqueueResult {
   input: ThreadInputRecord;
-  inserted: boolean;
+  disposition: "inserted" | "duplicate_pending" | "duplicate_applied" | "duplicate_discarded";
 }
 
-export type ThreadInputApplyScope = "all" | "runnable";
+export class StaleThreadCompactionError extends Error {
+  constructor(threadId: string) {
+    super(`Thread ${threadId} changed while compaction was running. Retry from the latest checkpoint.`);
+    this.name = "StaleThreadCompactionError";
+  }
+}
+
+export class ThreadRunClaimLostError extends Error {
+  constructor(runId: string) {
+    super(`Thread run ${runId} is no longer owned by this daemon.`);
+    this.name = "ThreadRunClaimLostError";
+  }
+}
+
+export class ThreadToolJobOwnershipLostError extends Error {
+  constructor(jobId: string) {
+    super(`Background tool job ${jobId} is no longer owned by this daemon.`);
+    this.name = "ThreadToolJobOwnershipLostError";
+  }
+}
 
 export interface ThreadRuntimeStore {
   createThread(input: CreateThreadInput): Promise<ThreadRecord>;
   getThread(threadId: string): Promise<ThreadRecord>;
+  getMessage(messageId: string): Promise<ThreadMessageRecord | null>;
   listThreadSummaries(limit?: number, sessionId?: string): Promise<readonly ThreadSummaryRecord[]>;
-  updateThread(threadId: string, update: ThreadUpdate): Promise<ThreadRecord>;
-  loadTranscript(threadId: string): Promise<readonly ThreadMessageRecord[]>;
+  loadActiveTranscript(threadId: string): Promise<ThreadTranscriptSnapshot>;
+  listTranscriptPage(
+    threadId: string,
+    options?: ThreadTranscriptPageOptions,
+  ): Promise<ThreadTranscriptPage>;
+  commitCompaction(
+    threadId: string,
+    commit: ThreadCompactionCommit,
+  ): Promise<ThreadMessageRecord>;
+  commitCompactionExclusively(
+    threadId: string,
+    commit: ThreadCompactionCommit,
+    owner: ThreadRunOwner,
+  ): Promise<ThreadMessageRecord>;
   listChannelMessages(filter: ThreadChannelMessageFilter): Promise<readonly ThreadMessageRecord[]>;
   findChannelMedia(filter: ThreadChannelMediaFilter): Promise<ThreadChannelMediaRecord | null>;
   enqueueInput(
     threadId: string,
     payload: ThreadInputPayload,
     deliveryMode?: ThreadInputDeliveryMode,
+    options?: ThreadEnqueueOptions,
+  ): Promise<ThreadEnqueueResult>;
+  enqueueSessionInput(
+    sessionId: string,
+    payload: ThreadInputPayload,
+    deliveryMode?: ThreadInputDeliveryMode,
+    options?: ThreadEnqueueOptions,
   ): Promise<ThreadEnqueueResult>;
   applyPendingInputs(
     threadId: string,
-    scope?: ThreadInputApplyScope,
+    runId: string,
   ): Promise<readonly ThreadMessageRecord[]>;
+  getInput(inputId: string): Promise<ThreadInputRecord>;
   discardPendingInputs(threadId: string): Promise<number>;
   hasPendingInputs(threadId: string): Promise<boolean>;
   hasRunnableInputs(threadId: string): Promise<boolean>;
   hasPendingWake(threadId: string): Promise<boolean>;
+  isThreadRunnable(threadId: string): Promise<boolean>;
   promoteQueuedInputs(threadId?: string): Promise<readonly string[]>;
   requestWake(threadId: string): Promise<void>;
-  consumePendingWake(threadId: string): Promise<boolean>;
   appendRuntimeMessage(
     threadId: string,
     payload: ThreadRuntimeMessagePayload,
   ): Promise<ThreadMessageRecord>;
-  createRun(threadId: string): Promise<ThreadRunRecord>;
+  tryStartRun(threadId: string, owner: ThreadRunOwner): Promise<ThreadRunRecord | null>;
+  assertRunActive(runId: string): Promise<void>;
+  updateThreadForRun(threadId: string, runId: string, update: ThreadRuntimeStateUpdate): Promise<ThreadRecord>;
   getRun(runId: string): Promise<ThreadRunRecord>;
+  listAbortRequestedRuns(runIds: readonly string[]): Promise<readonly ThreadRunRecord[]>;
   completeRun(runId: string): Promise<ThreadRunRecord>;
-  failRunIfRunning(runId: string, error?: string): Promise<ThreadRunRecord | null>;
+  failRun(runId: string, error?: string): Promise<ThreadRunRecord>;
+  failOrphanedRuns(
+    owner: ThreadRunOwner,
+    error: string,
+    limit: number,
+  ): Promise<readonly ThreadRunRecord[]>;
+  listRunnableThreadIds(limit: number): Promise<readonly string[]>;
+  takeRunBoundary(
+    threadId: string,
+    runId: string,
+  ): Promise<{hasRunnableInputs: boolean; hasAdmittedInputs: boolean; hadPendingWake: boolean}>;
+  getLatestRun(threadId: string): Promise<ThreadRunRecord | null>;
   listRuns(threadId: string): Promise<readonly ThreadRunRecord[]>;
-  listRunningRuns(): Promise<readonly ThreadRunRecord[]>;
   createToolJob(input: CreateThreadToolJobInput): Promise<ThreadToolJobRecord>;
   getToolJob(jobId: string): Promise<ThreadToolJobRecord>;
   listToolJobs(threadId: string): Promise<readonly ThreadToolJobRecord[]>;
@@ -67,7 +127,11 @@ export interface ThreadRuntimeStore {
     parentToolCallId: string,
   ): Promise<readonly ThreadToolJobRecord[]>;
   updateToolJob(jobId: string, update: ThreadToolJobUpdate): Promise<ThreadToolJobRecord>;
-  markRunningToolJobsLost(reason?: string): Promise<number>;
-  listPendingInputs(threadId: string): Promise<readonly ThreadInputRecord[]>;
-  requestRunAbort(threadId: string, reason?: string): Promise<ThreadRunRecord | null>;
+  markOrphanedToolJobsLost(
+    owner: ThreadRunOwner,
+    reason: string,
+    limit: number,
+  ): Promise<number>;
+  listPendingInputs(threadId: string): Promise<readonly ThreadPendingInputRecord[]>;
+  requestRunAbort(threadId: string, reason?: string, operationId?: string): Promise<ThreadRunRecord | null>;
 }

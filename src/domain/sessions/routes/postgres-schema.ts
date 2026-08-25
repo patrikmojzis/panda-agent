@@ -1,6 +1,6 @@
 import {quoteIdentifier, quoteQualifiedIdentifier, CREATE_RUNTIME_SCHEMA_SQL} from "../../../lib/postgres-relations.js";
 
-import {addConstraint, assertIntegrityChecks} from "../../../lib/postgres-integrity.js";
+import {addConstraint, alterIfSupported, assertIntegrityChecks, type IntegrityCheckGroup} from "../../../lib/postgres-integrity.js";
 import type {PgQueryable} from "../../../lib/postgres-query.js";
 import {buildIdentityTableNames} from "../../identity/postgres-shared.js";
 import {buildSessionTableNames} from "../postgres-shared.js";
@@ -50,20 +50,19 @@ async function createSessionRoutesTable(
   `);
 }
 
-async function assertSessionRouteIntegrity(
-  pool: PgQueryable,
-  tables: SessionRouteTableNames,
+export function buildSessionRouteIntegrityChecks(
+  tables: SessionRouteTableNames = buildSessionRouteTableNames(),
   options: {
     trimIdentityId: boolean;
-  },
-): Promise<void> {
+  } = {trimIdentityId: false},
+): IntegrityCheckGroup {
   const identityTableName = buildIdentityTableNames().identities;
   const sessionTableName = buildSessionTableNames().sessions;
   const identityReference = options.trimIdentityId
     ? "NULLIF(BTRIM(route.identity_id), '')"
     : "route.identity_id";
 
-  await assertIntegrityChecks(pool, "Session route schema", [
+  return {scope: "Session route schema", checks: [
     {
       label: "session_routes.session_id orphaned from agent_sessions.id",
       sql: `
@@ -85,7 +84,16 @@ async function assertSessionRouteIntegrity(
           AND identity.id IS NULL
       `,
     },
-  ]);
+  ]};
+}
+
+async function assertSessionRouteIntegrity(
+  pool: PgQueryable,
+  tables: SessionRouteTableNames,
+  options: {trimIdentityId: boolean},
+): Promise<void> {
+  const group = buildSessionRouteIntegrityChecks(tables, options);
+  await assertIntegrityChecks(pool, group.scope, group.checks);
 }
 
 async function rebuildLegacySessionRoutesTable(
@@ -125,6 +133,16 @@ async function rebuildLegacySessionRoutesTable(
   `);
   await pool.query(`DROP TABLE ${tables.sessionRoutes}`);
   await pool.query(`ALTER TABLE ${replacementTable} RENAME TO session_routes`);
+  // PostgreSQL does not rename SERIAL-owned sequences or indexes with their
+  // table. Normalize legacy rebuild names so fresh and upgraded schemas have
+  // one checkable object identity.
+  await pool.query(`ALTER SEQUENCE IF EXISTS "runtime"."session_routes_rebuild_id_seq" RENAME TO session_routes_id_seq`);
+  // pg-mem cannot rename constraints; PostgreSQL must normalize the name so
+  // fresh and upgraded databases converge on the same manifest.
+  await alterIfSupported(
+    pool,
+    `ALTER TABLE ${tables.sessionRoutes} RENAME CONSTRAINT session_routes_rebuild_pkey TO session_routes_pkey`,
+  );
 }
 
 export async function ensurePostgresSessionRouteSchema(pool: PgQueryable): Promise<void> {

@@ -12,6 +12,7 @@ import {
     type ThreadMessageRecord,
     type ThreadRecord,
 } from "../../domain/threads/runtime/types.js";
+import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import {resolveModelRuntimeBudget} from "../../kernel/models/model-context-policy.js";
 import {mergeInferenceProjection} from "../../kernel/transcript/inference-projection.js";
 import {isRecord} from "../../lib/records.js";
@@ -51,6 +52,16 @@ interface UsageSnapshot {
 interface ImageStats {
   count: number;
   dataBytes: number;
+}
+
+export interface StoredThreadUsage {
+  messages: number;
+  estimatedTokens: number;
+  jsonBytes: number;
+  images: ImageStats;
+  totalUsage: UsageTotals;
+  lastUsage: UsageSnapshot | null;
+  latestCompaction?: ThreadUsageSnapshot["latestCompaction"];
 }
 
 export interface ThreadUsageSnapshot {
@@ -186,6 +197,20 @@ function collectUsageTotals(transcript: readonly ThreadMessageRecord[]): {
   return {total, last};
 }
 
+function mergeUsageTotals(target: UsageTotals, addition: UsageTotals): void {
+  target.responses += addition.responses;
+  target.input += addition.input;
+  target.output += addition.output;
+  target.cacheRead += addition.cacheRead;
+  target.cacheWrite += addition.cacheWrite;
+  target.totalTokens += addition.totalTokens;
+  target.cost.input += addition.cost.input;
+  target.cost.output += addition.cost.output;
+  target.cost.cacheRead += addition.cost.cacheRead;
+  target.cost.cacheWrite += addition.cost.cacheWrite;
+  target.cost.total += addition.cost.total;
+}
+
 function measureStoredJsonBytes(transcript: readonly ThreadMessageRecord[]): number {
   return transcript.reduce((sum, record) => {
     return sum + Buffer.byteLength(JSON.stringify(record.message));
@@ -231,6 +256,51 @@ function findLatestCompaction(transcript: readonly ThreadMessageRecord[]) {
   return undefined;
 }
 
+export function collectStoredThreadUsage(
+  transcript: readonly ThreadMessageRecord[],
+): StoredThreadUsage {
+  const {total, last} = collectUsageTotals(transcript);
+  return {
+    messages: transcript.length,
+    estimatedTokens: estimateTranscriptTokens(transcript),
+    jsonBytes: measureStoredJsonBytes(transcript),
+    images: measureInlineImages(transcript),
+    totalUsage: total,
+    lastUsage: last,
+    latestCompaction: findLatestCompaction(transcript),
+  };
+}
+
+export async function scanStoredThreadUsage(
+  store: Pick<ThreadRuntimeStore, "listTranscriptPage">,
+  threadId: string,
+): Promise<StoredThreadUsage> {
+  const result = collectStoredThreadUsage([]);
+  let beforeSequence: number | undefined;
+
+  do {
+    const page = await store.listTranscriptPage(threadId, {
+      beforeSequence,
+      limit: 500,
+    });
+    const pageUsage = collectStoredThreadUsage(page.records);
+    result.messages += pageUsage.messages;
+    result.estimatedTokens += pageUsage.estimatedTokens;
+    result.jsonBytes += pageUsage.jsonBytes;
+    result.images.count += pageUsage.images.count;
+    result.images.dataBytes += pageUsage.images.dataBytes;
+    mergeUsageTotals(result.totalUsage, pageUsage.totalUsage);
+
+    // Pages are scanned newest-first. Keep the first persisted last-usage and
+    // compaction observations rather than letting older pages replace them.
+    result.lastUsage ??= pageUsage.lastUsage;
+    result.latestCompaction ??= pageUsage.latestCompaction;
+    beforeSequence = page.nextBeforeSequence;
+  } while (beforeSequence !== undefined);
+
+  return result;
+}
+
 function formatInt(value: number): string {
   return Math.round(value).toLocaleString("en-US");
 }
@@ -258,7 +328,8 @@ function formatBytes(value: number): string {
 
 export function collectThreadUsageSnapshot(options: {
   thread: ThreadRecord;
-  transcript: readonly ThreadMessageRecord[];
+  activeTranscript: readonly ThreadMessageRecord[];
+  storedUsage: StoredThreadUsage;
   model: string;
   thinking?: ThinkingLevel;
   inferenceProjection?: InferenceProjection;
@@ -272,14 +343,13 @@ export function collectThreadUsageSnapshot(options: {
     DEFAULT_INFERENCE_PROJECTION,
     options.inferenceProjection,
   );
-  const runTranscript = projectTranscriptForRun(options.transcript);
+  const runTranscript = projectTranscriptForRun(options.activeTranscript);
   const visibleTranscript = projectTranscriptForInference(
     runTranscript,
     effectiveProjection,
     options.now ?? Date.now(),
   );
   const replayVisibleArtifacts = effectiveProjection?.dropImages === undefined;
-  const {total, last} = collectUsageTotals(options.transcript);
   const model = options.model;
   const budget = resolveModelRuntimeBudget(model);
 
@@ -289,26 +359,26 @@ export function collectThreadUsageSnapshot(options: {
     model,
     thinking: options.thinking,
     runState: options.isRunning ? "thinking" : "idle",
-    storedMessages: options.transcript.length,
+    storedMessages: options.storedUsage.messages,
     runMessages: runTranscript.length,
     visibleMessages: visibleTranscript.length,
-    storedEstimatedTokens: estimateTranscriptTokens(options.transcript),
+    storedEstimatedTokens: options.storedUsage.estimatedTokens,
     runEstimatedTokens: estimateTranscriptTokens(runTranscript, {
       replayToolArtifacts: true,
     }),
     visibleEstimatedTokens: estimateTranscriptTokens(visibleTranscript, {
       replayToolArtifacts: replayVisibleArtifacts,
     }),
-    storedJsonBytes: measureStoredJsonBytes(options.transcript),
+    storedJsonBytes: options.storedUsage.jsonBytes,
     hardWindow: budget.hardWindow,
     operatingWindow: budget.operatingWindow,
     compactAtPercent: budget.compactAtPercent,
     compactTriggerTokens: budget.compactTriggerTokens,
-    storedImages: measureInlineImages(options.transcript),
+    storedImages: options.storedUsage.images,
     visibleImages: measureInlineImages(visibleTranscript),
-    totalUsage: total,
-    lastUsage: last,
-    latestCompaction: findLatestCompaction(options.transcript),
+    totalUsage: options.storedUsage.totalUsage,
+    lastUsage: options.storedUsage.lastUsage,
+    latestCompaction: options.storedUsage.latestCompaction,
   };
 }
 

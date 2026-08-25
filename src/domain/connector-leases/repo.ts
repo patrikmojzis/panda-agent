@@ -1,10 +1,7 @@
 import {randomUUID} from "node:crypto";
 
 import type {PgPoolLike} from "../../lib/postgres-query.js";
-import {
-  ensurePostgresConnectorLeaseSchema,
-  POSTGRES_CONNECTOR_LEASE_TABLE,
-} from "./postgres-schema.js";
+import {POSTGRES_CONNECTOR_LEASE_TABLE} from "./postgres-schema.js";
 import {requireTimestampMillis} from "../../lib/postgres-values.js";
 import {requireNonEmptyString} from "../../lib/strings.js";
 
@@ -22,7 +19,7 @@ export interface ConnectorLeaseRecord extends ConnectorLeaseLookup {
 
 export interface ConnectorLeaseMutationInput extends ConnectorLeaseLookup {
   holderId: string;
-  leasedUntil: number;
+  ttlMs: number;
 }
 
 export interface PostgresConnectorLeaseRepoOptions {
@@ -78,7 +75,7 @@ function normalizeMutation(input: ConnectorLeaseMutationInput): ConnectorLeaseMu
   return {
     ...lookup,
     holderId: requireConnectorLeaseString("holder id", input.holderId),
-    leasedUntil: requirePositiveInteger("leasedUntil", input.leasedUntil),
+    ttlMs: requirePositiveInteger("ttlMs", input.ttlMs),
   };
 }
 
@@ -93,10 +90,6 @@ function parseRecord(row: Record<string, unknown>): ConnectorLeaseRecord {
   };
 }
 
-function toTimestamp(value: number): Date {
-  return new Date(value);
-}
-
 export class PostgresConnectorLeaseRepo {
   private readonly pool: PgPoolLike;
   private readonly tableName = POSTGRES_CONNECTOR_LEASE_TABLE;
@@ -105,108 +98,68 @@ export class PostgresConnectorLeaseRepo {
     this.pool = options.pool;
   }
 
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresConnectorLeaseSchema(this.pool);
-  }
-
   async tryAcquire(input: ConnectorLeaseMutationInput): Promise<ConnectorLeaseRecord | null> {
     const normalized = normalizeMutation(input);
-    const client = await this.pool.connect();
-    let inTransaction = false;
-
-    try {
-      await client.query("BEGIN");
-      inTransaction = true;
-
-      const existing = await client.query(`
-        SELECT *
-        FROM ${this.tableName}
-        WHERE source = $1
-          AND connector_key = $2
-        FOR UPDATE
-      `, [
-        normalized.source,
-        normalized.connectorKey,
-      ]);
-      const row = existing.rows[0] as Record<string, unknown> | undefined;
-      const now = Date.now();
-      if (!row) {
-        const inserted = await client.query(`
-          INSERT INTO ${this.tableName} (
-            source,
-            connector_key,
-            holder_id,
-            leased_until
-          ) VALUES (
-            $1,
-            $2,
-            $3,
-            $4
-          )
-          RETURNING *
-        `, [
-          normalized.source,
-          normalized.connectorKey,
-          normalized.holderId,
-          toTimestamp(normalized.leasedUntil),
-        ]);
-        await client.query("COMMIT");
-        return parseRecord(inserted.rows[0] as Record<string, unknown>);
-      }
-
-      const existingLease = parseRecord(row);
-      if (existingLease.holderId !== normalized.holderId && existingLease.leasedUntil > now) {
-        await client.query("COMMIT");
-        return null;
-      }
-
-      const updated = await client.query(`
-        UPDATE ${this.tableName}
-        SET holder_id = $3,
-            leased_until = $4,
-            updated_at = NOW()
-        WHERE source = $1
-          AND connector_key = $2
-        RETURNING *
-      `, [
-        normalized.source,
-        normalized.connectorKey,
-        normalized.holderId,
-        toTimestamp(normalized.leasedUntil),
-      ]);
-      await client.query("COMMIT");
-      return parseRecord(updated.rows[0] as Record<string, unknown>);
-    } catch (error) {
-      if (inTransaction) {
-        await client.query("ROLLBACK");
-      }
-      throw error;
-    } finally {
-      client.release();
+    // PostgreSQL is the lease clock. An absolute timestamp supplied by a host
+    // would let a fast machine steal a valid lease from a slower one.
+    const result = await this.pool.query(`
+      INSERT INTO ${this.tableName} (
+        source,
+        connector_key,
+        holder_id,
+        leased_until
+      ) VALUES (
+        $1,
+        $2,
+        $3,
+        NOW() + (($4::text || ' milliseconds')::interval)
+      )
+      ON CONFLICT (source, connector_key) DO UPDATE
+      SET holder_id = EXCLUDED.holder_id,
+          leased_until = NOW() + (($4::text || ' milliseconds')::interval),
+          updated_at = NOW()
+      WHERE ${this.tableName}.holder_id = EXCLUDED.holder_id
+         OR ${this.tableName}.leased_until <= NOW()
+      RETURNING *
+    `, [
+      normalized.source,
+      normalized.connectorKey,
+      normalized.holderId,
+      normalized.ttlMs,
+    ]);
+    const row = result.rows[0];
+    if (!row) {
+      return null;
     }
+    const lease = parseRecord(row as Record<string, unknown>);
+    // PostgreSQL returns no row when the conflict predicate rejects takeover.
+    // Keeping this holder check also makes the repository fail closed for
+    // compatible test adapters that return the untouched conflicting row.
+    return lease.holderId === normalized.holderId ? lease : null;
   }
 
   async renew(input: ConnectorLeaseMutationInput): Promise<ConnectorLeaseRecord | null> {
     const normalized = normalizeMutation(input);
     const result = await this.pool.query(`
       UPDATE ${this.tableName}
-      SET leased_until = $4,
+      SET leased_until = NOW() + (($4::text || ' milliseconds')::interval),
           updated_at = NOW()
       WHERE source = $1
         AND connector_key = $2
         AND holder_id = $3
+        AND leased_until > NOW()
       RETURNING *
     `, [
       normalized.source,
       normalized.connectorKey,
       normalized.holderId,
-      toTimestamp(normalized.leasedUntil),
+      normalized.ttlMs,
     ]);
     const row = result.rows[0];
     return row ? parseRecord(row as Record<string, unknown>) : null;
   }
 
-  async release(input: Omit<ConnectorLeaseMutationInput, "leasedUntil">): Promise<boolean> {
+  async release(input: ConnectorLeaseLookup & {holderId: string}): Promise<boolean> {
     const normalized = {
       ...normalizeLookup(input),
       holderId: requireConnectorLeaseString("holder id", input.holderId),
@@ -237,11 +190,12 @@ export async function acquireManagedConnectorLease(
   const connectorKey = requireConnectorLeaseString("connector key", options.connectorKey);
   const holderId = options.holderId?.trim() || randomUUID();
 
+  const acquireStartedAt = performance.now();
   const acquired = await options.repo.tryAcquire({
     source,
     connectorKey,
     holderId,
-    leasedUntil: Date.now() + ttlMs,
+    ttlMs,
   });
   if (!acquired) {
     throw new Error(options.alreadyHeldMessage);
@@ -249,7 +203,10 @@ export async function acquireManagedConnectorLease(
 
   let released = false;
   let lost = false;
-  let expiresAt = acquired.leasedUntil;
+  // This monotonic deadline starts before the DB mutation, making it a safe
+  // lower bound for the DB-side expiry even when clocks differ or the response
+  // is delayed in transit.
+  let renewalDeadline = acquireStartedAt + ttlMs;
   let renewTimer: NodeJS.Timeout | null = null;
 
   const scheduleRenew = () => {
@@ -257,9 +214,13 @@ export async function acquireManagedConnectorLease(
       return;
     }
 
+    const delayMs = Math.min(
+      renewIntervalMs,
+      Math.max(0, renewalDeadline - performance.now()),
+    );
     renewTimer = setTimeout(() => {
       void renewLease();
-    }, renewIntervalMs);
+    }, delayMs);
   };
 
   const markLost = async (error: Error): Promise<void> => {
@@ -281,11 +242,12 @@ export async function acquireManagedConnectorLease(
     }
 
     try {
+      const renewalStartedAt = performance.now();
       const renewed = await options.repo.renew({
         source,
         connectorKey,
         holderId,
-        leasedUntil: Date.now() + ttlMs,
+        ttlMs,
       });
       if (released || lost) {
         return;
@@ -295,13 +257,13 @@ export async function acquireManagedConnectorLease(
         return;
       }
 
-      expiresAt = renewed.leasedUntil;
+      renewalDeadline = renewalStartedAt + ttlMs;
     } catch (error) {
       await options.onError?.(error);
       if (released || lost) {
         return;
       }
-      if (Date.now() >= expiresAt) {
+      if (performance.now() >= renewalDeadline) {
         await markLost(error instanceof Error ? error : new Error(String(error)));
         return;
       }

@@ -8,9 +8,11 @@ import path from "node:path";
 import {Agent, BashTool, stringToUserMessage, Tool, ToolError, z,} from "../src/index.js";
 import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
+import {ensurePostgresAgentTableSchema} from "../src/domain/agents/postgres-schema.js";
 import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
 import {createClearEnvValueCommand, createSetEnvValueCommand} from "../src/domain/credentials/commands.js";
 import {PostgresCredentialStore} from "../src/domain/credentials/postgres.js";
+import {ensurePostgresCredentialSchema} from "../src/domain/credentials/postgres-schema.js";
 import {CredentialResolver, CredentialService} from "../src/domain/credentials/resolver.js";
 import {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/index.js";
 import type {CommandExecutor} from "../src/domain/commands/types.js";
@@ -45,8 +47,8 @@ describe("credentials end-to-end", () => {
 
     const agentStore = new PostgresAgentStore({pool});
     const credentialStore = new PostgresCredentialStore({pool});
-    await agentStore.ensureAgentTableSchema();
-    await credentialStore.ensureSchema();
+    await ensurePostgresAgentTableSchema(pool);
+    await ensurePostgresCredentialSchema(pool);
 
     await agentStore.bootstrapAgent({
       agentKey: "panda",
@@ -208,15 +210,6 @@ describe("credentials end-to-end", () => {
     };
   }
 
-  class LeaseManager {
-    async tryAcquire(threadId: string) {
-      return {
-        threadId,
-        release: async () => {},
-      };
-    }
-  }
-
   it("stores a credential and injects it into a later bash call in the same thread", async () => {
     const {credentialStore, resolver, service, workspace} = await createHarness();
     const commandExecutor = createEnvCommandExecutor(service);
@@ -249,7 +242,7 @@ describe("credentials end-to-end", () => {
 
     const coordinator = new ThreadRuntimeCoordinator({
       store,
-      leaseManager: new LeaseManager(),
+      maxConcurrentRuns: 1,
       resolveDefinition: async () => ({
         agent: new Agent({
           name: "panda",
@@ -275,6 +268,8 @@ describe("credentials end-to-end", () => {
         runtime,
       }),
     });
+    await coordinator.handleStoreNotificationStatus("listening");
+    await coordinator.start({source: "panda-core", connectorKey: "test", holderId: "credentials-e2e-test"});
 
     await coordinator.submitInput("thread-credentials-e2e", {
       message: stringToUserMessage("Store my Notion key and make sure bash sees it."),
@@ -289,7 +284,7 @@ describe("credentials end-to-end", () => {
       agentKey: "panda",
     });
 
-    const transcript = await store.loadTranscript("thread-credentials-e2e");
+    const transcript = await store.loadTranscriptHistory("thread-credentials-e2e");
     expect(transcript.map((entry) => entry.source)).toEqual([
       "tui",
       "assistant",
@@ -354,7 +349,7 @@ describe("credentials end-to-end", () => {
 
     const coordinator = new ThreadRuntimeCoordinator({
       store,
-      leaseManager: new LeaseManager(),
+      maxConcurrentRuns: 1,
       resolveDefinition: async () => ({
         agent: new Agent({
           name: "panda",
@@ -380,6 +375,8 @@ describe("credentials end-to-end", () => {
         runtime,
       }),
     });
+    await coordinator.handleStoreNotificationStatus("listening");
+    await coordinator.start({source: "panda-core", connectorKey: "test", holderId: "credentials-redaction-test"});
 
     await coordinator.submitInput("thread-credentials-redacted-bash", {
       message: stringToUserMessage("Save my key and print it"),
@@ -388,7 +385,7 @@ describe("credentials end-to-end", () => {
     });
     await coordinator.waitForIdle("thread-credentials-redacted-bash");
 
-    const transcript = await store.loadTranscript("thread-credentials-redacted-bash");
+    const transcript = await store.loadTranscriptHistory("thread-credentials-redacted-bash");
     expect(transcript[1]?.message).toMatchObject({
       role: "assistant",
       content: [{

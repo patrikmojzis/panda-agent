@@ -5,7 +5,6 @@ import type {PgPoolLike} from "../../lib/postgres-query.js";
 import {optionalTimestampMillis, requireTimestampMillis} from "../../lib/postgres-values.js";
 import {requireNonEmptyString} from "../../lib/strings.js";
 import {normalizeAgentKey} from "../agents/types.js";
-import {ensurePostgresControlSchema} from "./postgres-schema.js";
 import {buildControlTableNames} from "./postgres-shared.js";
 import type {ControlGrantRecord, ControlGrantRole, ControlLoginResult, ControlSessionRecord} from "./types.js";
 
@@ -52,10 +51,6 @@ export class PostgresControlAuthService {
 
   constructor(options: {pool: PgPoolLike}) {
     this.pool = options.pool;
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresControlSchema(this.pool);
   }
 
   async createGrant(input: {identityId: string; role: ControlGrantRole; agentKey?: string; label?: string; loginTokenTtlMs?: number}): Promise<{grant: ControlGrantRecord; loginToken: string}> {

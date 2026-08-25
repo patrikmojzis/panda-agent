@@ -4,6 +4,7 @@ import {DataType, newDb} from "pg-mem";
 import {WatchMutationService} from "../src/domain/watches/mutation-service.js";
 import type {WatchEvaluator} from "../src/domain/watches/runner.js";
 import {PostgresWatchStore, type WatchRecord} from "../src/domain/watches/index.js";
+import {ensurePostgresWatchSchema} from "../src/domain/watches/postgres-schema.js";
 import {evaluateWatch} from "../src/integrations/watches/evaluator.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
@@ -74,7 +75,7 @@ describe("WatchMutationService", () => {
     });
 
     const watchStore = new PostgresWatchStore({pool});
-    await watchStore.ensureSchema();
+    await ensurePostgresWatchSchema(pool);
 
     const evaluator = evaluateWatchFn ?? vi.fn<WatchEvaluator>().mockResolvedValue({
       changed: false,

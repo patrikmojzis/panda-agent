@@ -5,6 +5,7 @@ import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {PostgresConnectorAccountStore} from "../src/domain/connectors/index.js";
+import {ensurePostgresConnectorAccountSchema} from "../src/domain/connectors/postgres-schema.js";
 import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 
@@ -32,7 +33,7 @@ describe("PostgresConnectorAccountStore", () => {
     const agentStore = new PostgresAgentStore({pool});
     const connectorStore = new PostgresConnectorAccountStore({pool});
     const identityStore = new PostgresIdentityStore({pool});
-    await connectorStore.ensureSchema();
+    await ensurePostgresConnectorAccountSchema(pool);
 
     return {
       agentStore,

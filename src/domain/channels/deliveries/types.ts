@@ -14,6 +14,8 @@ export interface DeliveryWorkerLookup {
 }
 
 export interface OutboundDeliveryInput {
+  /** Stable producer operation key used to make enqueue replay-safe. */
+  idempotencyKey?: string;
   threadId?: string;
   channel: string;
   target: OutboundTarget;

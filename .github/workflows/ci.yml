@@ -95,3 +95,18 @@ jobs:
 
       - name: Verify paired identity directory query
         run: pnpm ci:paired-identity-directory-postgres
+
+      - name: Verify atomic runtime persistence
+        run: pnpm ci:runtime-persistence-postgres
+
+      - name: Verify durable thread abort operations
+        run: pnpm ci:thread-abort-operations-postgres
+
+      - name: Verify scheduled task lineage
+        run: pnpm ci:scheduled-task-lineage-postgres
+
+      - name: Verify transcript checkpoint queries
+        run: pnpm ci:thread-transcript-checkpoints-postgres
+
+      - name: Verify model-call observability persistence
+        run: pnpm ci:model-call-observability-postgres

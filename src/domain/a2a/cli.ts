@@ -4,7 +4,7 @@ import {Command} from "commander";
 import type {Pool} from "pg";
 
 import {DB_URL_OPTION_DESCRIPTION, parseSessionIdOption} from "../../lib/cli.js";
-import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
+import {withPostgresPool} from "../../lib/postgres-database.js";
 import {writeCommandDescriptorHelp} from "../commands/cli.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
 import {parseAgentKey} from "../agents/cli.js";
@@ -75,12 +75,6 @@ async function withA2AStores<T>(
 ): Promise<T> {
   return withPostgresPool(options.dbUrl, async (pool) => {
     const stores = createA2AStores(pool);
-    await ensureSchemas([
-      stores.identityStore,
-      stores.agentStore,
-      stores.sessionStore,
-      stores.bindings,
-    ]);
     return fn(stores);
   });
 }

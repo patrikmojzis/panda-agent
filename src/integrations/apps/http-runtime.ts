@@ -161,21 +161,14 @@ export function buildAgentAppWakeHandler(input: {
   actionName: string;
   identityId?: string;
   sessionId: string;
-  sessionStore?: AgentAppSessionLookupStore;
-  coordinator?: Pick<ThreadRuntimeCoordinator, "submitInput">;
+  coordinator?: Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
 }): (message: string) => Promise<void> {
   const coordinator = input.coordinator;
   if (!coordinator) {
     throw new Error("App actions with wake mode require a thread coordinator.");
   }
-  const sessionStore = input.sessionStore;
-  if (!sessionStore) {
-    throw new Error("App actions with wake mode require a session store.");
-  }
-
   return async (message: string): Promise<void> => {
     await submitCurrentSessionInput({
-      sessions: sessionStore,
       sessionId: input.sessionId,
       coordinator,
       mode: "wake",

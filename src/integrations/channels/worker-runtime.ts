@@ -11,6 +11,7 @@ import {
   type PostgresPoolObserver,
 } from "../../lib/postgres-database.js";
 import type {PostgresListenSnapshot} from "../../lib/postgres-listen.js";
+import {createPandaSchemaVerifier} from "../postgres/schema-version.js";
 import {
   startPostgresNotificationListener,
   type PostgresNotificationListenerHandle,
@@ -86,6 +87,7 @@ export interface ConnectorDaemonRuntimeDependencies {
   createPool?: typeof createPostgresPool;
   observePool?: (input: Parameters<typeof observePostgresPool>[0]) => PostgresPoolObserver;
   startNotificationListener?: typeof startPostgresNotificationListener;
+  verifySchema?: (pool: ReturnType<typeof createPostgresPool>) => Promise<void>;
 }
 
 function errorMessage(error: unknown): string {
@@ -126,7 +128,6 @@ export async function startConnectorDaemonRuntime(input: {
   additionalNotifications?: readonly ConnectorDaemonAdditionalNotification[];
   dbUrl?: string;
   dependencies?: ConnectorDaemonRuntimeDependencies;
-  initialize(pool: ReturnType<typeof createPostgresPool>): Promise<void>;
   log: ConnectorWorkerLogger;
   poolMaxEnvKey: string;
   reconnectDelayMs?: number;
@@ -199,7 +200,9 @@ export async function startConnectorDaemonRuntime(input: {
       waitingLogIntervalMs: poolConfig.waitingLogIntervalMs,
       log: input.log,
     });
-    await input.initialize(pool);
+    await (input.dependencies?.verifySchema ?? ((targetPool) => (
+      createPandaSchemaVerifier(targetPool).assertCurrent()
+    )))(pool);
     listener = await (input.dependencies?.startNotificationListener ?? startPostgresNotificationListener)({
       pool,
       additionalChannels,

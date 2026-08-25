@@ -132,7 +132,7 @@ Primary files:
 - `src/app/runtime/background-tool-thread-input.ts`
 - `src/app/runtime/data-dir.ts`
 - `src/app/runtime/database.ts`
-- `src/app/runtime/postgres-bootstrap.ts`
+- `src/app/database/migration-catalog.ts`
 - `src/app/health/server.ts`
 - `src/lib/data-dir.ts`
 - `src/lib/health-server.ts`
@@ -163,9 +163,9 @@ Intent: DDL, row parsing, and store mutations have separate homes with migration
 
 Primary files:
 
-- `src/lib/postgres-bootstrap.ts`
 - `src/lib/postgres-database.ts`
 - `src/lib/postgres-integrity.ts`
+- `src/lib/postgres-migrations.ts`
 - `src/lib/postgres-listen.ts`
 - `src/lib/postgres-query.ts`
 - `src/lib/postgres-relations.ts`
@@ -175,9 +175,8 @@ Primary files:
 - all changed `src/domain/**/postgres-shared.ts`
 - all changed Postgres stores under `src/domain/**/postgres.ts`, `src/domain/**/repo.ts`, and `src/domain/**/postgres-rows.ts`
 - `src/domain/gateway/postgres-rows.ts`
-- `src/domain/threads/runtime/postgres-lease.ts`
 - `src/domain/threads/runtime/postgres-notifications.ts`
-- tests: `tests/agents-postgres.test.ts`, `tests/app-auth-postgres.test.ts`, `tests/channel-cursors-postgres.test.ts`, `tests/conversation-sessions-postgres.test.ts`, `tests/credentials-postgres.test.ts`, `tests/email-postgres.test.ts`, `tests/execution-environments-postgres.test.ts`, `tests/gateway.test.ts`, `tests/identity-postgres.test.ts`, `tests/runtime-requests.test.ts`, `tests/scheduled-tasks-postgres.test.ts`, `tests/session-routes-postgres.test.ts`, `tests/sessions-postgres.test.ts`, `tests/thread-runtime-postgres.test.ts`, `tests/thread-lease-postgres.test.ts`, `tests/watches-postgres.test.ts`, `tests/wiki-bindings-postgres.test.ts`, `tests/db-integrity-postgres.test.ts`
+- tests: `tests/agents-postgres.test.ts`, `tests/app-auth-postgres.test.ts`, `tests/channel-cursors-postgres.test.ts`, `tests/conversation-sessions-postgres.test.ts`, `tests/credentials-postgres.test.ts`, `tests/email-postgres.test.ts`, `tests/execution-environments-postgres.test.ts`, `tests/gateway.test.ts`, `tests/identity-postgres.test.ts`, `tests/runtime-requests.test.ts`, `tests/scheduled-tasks-postgres.test.ts`, `tests/session-routes-postgres.test.ts`, `tests/sessions-postgres.test.ts`, `tests/thread-runtime-postgres.test.ts`, `tests/watches-postgres.test.ts`, `tests/wiki-bindings-postgres.test.ts`, `tests/db-integrity-postgres.test.ts`
 
 Review for:
 
@@ -194,7 +193,7 @@ Keep out:
 Checks:
 
 ```sh
-pnpm vitest run tests/db-integrity-postgres.test.ts tests/scheduled-tasks-postgres.test.ts tests/watches-postgres.test.ts tests/thread-runtime-postgres.test.ts tests/thread-lease-postgres.test.ts tests/runtime-requests.test.ts tests/gateway.test.ts tests/credentials-postgres.test.ts tests/app-auth-postgres.test.ts tests/wiki-bindings-postgres.test.ts tests/email-postgres.test.ts tests/session-routes-postgres.test.ts tests/sessions-postgres.test.ts
+pnpm vitest run tests/db-integrity-postgres.test.ts tests/scheduled-tasks-postgres.test.ts tests/watches-postgres.test.ts tests/thread-runtime-postgres.test.ts tests/runtime-requests.test.ts tests/gateway.test.ts tests/credentials-postgres.test.ts tests/app-auth-postgres.test.ts tests/wiki-bindings-postgres.test.ts tests/email-postgres.test.ts tests/session-routes-postgres.test.ts tests/sessions-postgres.test.ts
 ```
 
 

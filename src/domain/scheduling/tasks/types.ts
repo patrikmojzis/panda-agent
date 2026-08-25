@@ -1,7 +1,7 @@
 import type {JsonObject} from "../../../lib/json.js";
 
 export type ScheduledTaskScheduleKind = "once" | "recurring";
-export type ScheduledTaskRunStatus = "claimed" | "running" | "succeeded" | "failed" | "cancelled";
+export type ScheduledTaskRunStatus = "pending" | "claimed" | "running" | "succeeded" | "failed" | "cancelled";
 
 export interface ScheduledTaskOnceSchedule {
   kind: "once";
@@ -28,9 +28,6 @@ export interface ScheduledTaskRecord {
   schedule: ScheduledTaskSchedule;
   enabled: boolean;
   nextFireAt?: number;
-  claimedAt?: number;
-  claimedBy?: string;
-  claimExpiresAt?: number;
   completedAt?: number;
   cancelledAt?: number;
   createdAt: number;
@@ -45,11 +42,23 @@ export interface ScheduledTaskRunRecord {
   resolvedThreadId?: string;
   scheduledFor: number;
   status: ScheduledTaskRunStatus;
+  threadInputId?: string;
   threadRunId?: string;
+  claimToken?: string;
+  claimedAt?: number;
+  claimedBy?: string;
+  claimExpiresAt?: number;
   error?: string;
   createdAt: number;
   startedAt?: number;
   finishedAt?: number;
+}
+
+export interface ClaimedScheduledTaskRunRecord extends ScheduledTaskRunRecord {
+  claimToken: string;
+  claimedAt: number;
+  claimedBy: string;
+  claimExpiresAt: number;
 }
 
 export interface CreateScheduledTaskInput {
@@ -106,38 +115,53 @@ export interface ListScheduledTaskRunsInput {
   limit?: number;
 }
 
-export interface ClaimScheduledTaskInput {
+export interface MaterializeScheduledTaskRunInput {
   taskId: string;
-  claimedBy: string;
-  claimExpiresAt: number;
+  scheduledFor: number;
   nextFireAt?: number;
+}
+
+export interface MaterializeScheduledTaskRunsInput {
+  runs: readonly MaterializeScheduledTaskRunInput[];
+}
+
+export interface ClaimScheduledTaskRunInput {
+  claimedBy: string;
+  claimTtlMs: number;
 }
 
 export interface ClaimScheduledTaskResult {
   task: ScheduledTaskRecord;
-  run: ScheduledTaskRunRecord;
+  run: ClaimedScheduledTaskRunRecord;
 }
 
 export interface StartScheduledTaskRunInput {
   runId: string;
-  resolvedThreadId?: string;
+  claimToken: string;
+}
+
+export interface RenewScheduledTaskRunClaimInput {
+  runId: string;
+  claimToken: string;
+  claimTtlMs: number;
 }
 
 export interface CompleteScheduledTaskRunInput {
   runId: string;
-  resolvedThreadId?: string;
-  threadRunId?: string;
+  claimToken: string;
+  threadRunId: string;
 }
 
 export interface FailScheduledTaskRunInput {
   runId: string;
-  resolvedThreadId?: string;
+  claimToken: string;
   threadRunId?: string;
   error: string;
 }
 
 export interface ScheduledTaskThreadInputMetadataValue extends JsonObject {
   taskId: string;
+  taskRunId: string;
   title: string;
   runAt: string;
 }

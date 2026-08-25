@@ -13,7 +13,6 @@ import {
     buildChannelActionTableNames,
     type ChannelActionTableNames,
 } from "./postgres-shared.js";
-import {ensurePostgresChannelActionSchema} from "./postgres-schema.js";
 import type {
     ActionNotification,
     ActionWorkerLookup,
@@ -371,10 +370,6 @@ export class PostgresChannelActionStore {
       this.notificationChannel,
       JSON.stringify(input),
     ]);
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresChannelActionSchema(this.pool);
   }
 
   async enqueueAction<K extends ChannelActionKind>(input: ChannelActionInput<K>): Promise<ChannelActionRecord<K>> {

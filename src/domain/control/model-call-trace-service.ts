@@ -2,13 +2,15 @@ import {isJsonObject, type JsonObject, type JsonValue} from "../../lib/json.js";
 import type {PgQueryable} from "../../lib/postgres-query.js";
 import {
   PostgresModelCallTraceStore,
+  modelCallFailureJson,
+  modelCallUsageJson,
   type ModelCallTraceFailureGroupRecord,
   type ModelCallTraceListInput,
-  type ModelCallUsageSample,
+  type ModelCallUsageBucketRecord,
 } from "../model-call-traces/postgres.js";
 import {buildSessionTableNames, type SessionTableNames} from "../sessions/postgres-shared.js";
 import {sanitizePromptCacheKey, sanitizeTraceJson, sanitizeTraceRequestJson} from "../model-call-traces/redaction.js";
-import type {ModelCallTraceMode, ModelCallTraceRecord, ModelCallTraceStatus} from "../model-call-traces/types.js";
+import type {ModelCallAttemptRecord, ModelCallSnapshotStatus, ModelCallTraceMode, ModelCallTraceStatus} from "../model-call-traces/types.js";
 import type {ControlSessionRecord} from "./types.js";
 
 export interface ControlModelCallTraceListInput extends ModelCallTraceListInput {
@@ -36,7 +38,7 @@ export interface ControlModelCallTraceSummary {
   sessionAlias?: string;
   sessionKind?: string;
   turn: number | null;
-  callIndex: number | null;
+  attempt: number;
   provider: string;
   model: string;
   mode: ModelCallTraceMode;
@@ -47,11 +49,20 @@ export interface ControlModelCallTraceSummary {
   promptCacheKey: string | null;
   usage: JsonValue | null;
   error: JsonObject | null;
+  snapshotStatus: ModelCallSnapshotStatus;
+  requestShape: {
+    systemPromptChars: number;
+    messageCount: number;
+    toolCount: number;
+    contextSectionCount: number;
+    contextChars: number;
+  };
   expiresAt: string;
 }
 
 export interface ControlModelCallTraceDetail extends ControlModelCallTraceSummary {
-  request: JsonObject;
+  snapshotAvailable: boolean;
+  request: JsonObject | null;
   response: JsonValue | null;
 }
 
@@ -124,11 +135,12 @@ function publicPromptCacheKey(value: string | undefined): string | null {
   return value === undefined ? null : sanitizePromptCacheKey(value);
 }
 
-function publicRequestJson(trace: ModelCallTraceRecord): JsonObject {
+function publicRequestJson(trace: ModelCallAttemptRecord): JsonObject | null {
+  if (!trace.snapshot) return null;
   return sanitizeTraceRequestJson({
-    ...trace.requestJson,
-    ...(Object.hasOwn(trace.requestJson, "promptCacheKey")
-      ? {promptCacheKey: sanitizePromptCacheKey(trace.requestJson.promptCacheKey)}
+    ...trace.snapshot.requestJson,
+    ...(Object.hasOwn(trace.snapshot.requestJson, "promptCacheKey")
+      ? {promptCacheKey: sanitizePromptCacheKey(trace.snapshot.requestJson.promptCacheKey)}
       : {}),
   });
 }
@@ -179,7 +191,7 @@ function publicSessionMetadata(row: Record<string, unknown>): {key: SessionMetad
   };
 }
 
-function publicSummary(trace: ModelCallTraceRecord, metadata?: ControlModelCallSessionMetadata): ControlModelCallTraceSummary {
+function publicSummary(trace: ModelCallAttemptRecord, metadata?: ControlModelCallSessionMetadata): ControlModelCallTraceSummary {
   return {
     id: trace.id,
     runId: trace.runId ?? null,
@@ -188,7 +200,7 @@ function publicSummary(trace: ModelCallTraceRecord, metadata?: ControlModelCallS
     agentKey: trace.agentKey ?? null,
     ...(metadata ?? {}),
     turn: trace.turn ?? null,
-    callIndex: trace.callIndex ?? null,
+    attempt: trace.attempt,
     provider: trace.provider,
     model: trace.model,
     mode: trace.mode,
@@ -197,17 +209,20 @@ function publicSummary(trace: ModelCallTraceRecord, metadata?: ControlModelCallS
     finishedAt: iso(trace.finishedAt),
     durationMs: trace.durationMs,
     promptCacheKey: publicPromptCacheKey(trace.promptCacheKey),
-    usage: publicJsonValue(trace.usageJson),
-    error: publicJsonObject(trace.errorJson),
+    usage: publicJsonValue(modelCallUsageJson(trace)),
+    error: publicJsonObject(modelCallFailureJson(trace)),
+    snapshotStatus: trace.snapshotStatus,
+    requestShape: trace.requestShape,
     expiresAt: iso(trace.expiresAt),
   };
 }
 
-function publicDetail(trace: ModelCallTraceRecord, metadata?: ControlModelCallSessionMetadata): ControlModelCallTraceDetail {
+function publicDetail(trace: ModelCallAttemptRecord, metadata?: ControlModelCallSessionMetadata): ControlModelCallTraceDetail {
   return {
     ...publicSummary(trace, metadata),
+    snapshotAvailable: trace.snapshot !== undefined,
     request: publicRequestJson(trace),
-    response: publicJsonValue(trace.responseJson),
+    response: publicJsonValue(trace.snapshot?.responseJson),
   };
 }
 
@@ -240,38 +255,18 @@ function emptyUsageTotals(): MutableUsageTotals {
   };
 }
 
-function usageNumber(value: JsonObject, key: string): number {
-  const entry = value[key];
-  return typeof entry === "number" && Number.isFinite(entry) && entry >= 0 ? entry : 0;
-}
-
-function addUsageSample(total: MutableUsageTotals, sample: ModelCallUsageSample): void {
-  total.calls += 1;
-  if (sample.status === "failed") total.failures += 1;
-  if (!isJsonObject(sample.usageJson)) return;
-
-  const usage = sample.usageJson;
-  const inputTokens = usageNumber(usage, "input");
-  const outputTokens = usageNumber(usage, "output");
-  const cacheReadTokens = usageNumber(usage, "cacheRead");
-  const cacheWriteTokens = usageNumber(usage, "cacheWrite");
-  const summedTokens = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
-  const totalTokens = usageNumber(usage, "totalTokens") || summedTokens;
-  const cost = isJsonObject(usage.cost) ? usage.cost : {};
-  const componentCost = usageNumber(cost, "input")
-    + usageNumber(cost, "output")
-    + usageNumber(cost, "cacheRead")
-    + usageNumber(cost, "cacheWrite");
-
-  total.usageCalls += 1;
-  if (cacheReadTokens > 0) total.cacheHits += 1;
-  total.inputTokens += inputTokens;
-  total.outputTokens += outputTokens;
-  total.cacheReadTokens += cacheReadTokens;
-  total.cacheWriteTokens += cacheWriteTokens;
-  total.totalTokens += totalTokens;
-  total.totalCost += usageNumber(cost, "total") || componentCost;
-  total.cacheReadCost += usageNumber(cost, "cacheRead");
+function addUsageBucket(total: MutableUsageTotals, bucket: ModelCallUsageBucketRecord): void {
+  total.calls += bucket.calls;
+  total.cacheHits += bucket.cacheHits;
+  total.usageCalls += bucket.usageCalls;
+  total.failures += bucket.failures;
+  total.inputTokens += bucket.inputTokens;
+  total.outputTokens += bucket.outputTokens;
+  total.cacheReadTokens += bucket.cacheReadTokens;
+  total.cacheWriteTokens += bucket.cacheWriteTokens;
+  total.totalTokens += bucket.totalTokens;
+  total.totalCost += bucket.totalCost;
+  total.cacheReadCost += bucket.cacheReadCost;
 }
 
 function publicUsageTotals(total: MutableUsageTotals): ControlModelCallUsageTotals {
@@ -292,22 +287,25 @@ function usageWindow(input: ControlModelCallUsageInput, now: number) {
   if (!Number.isInteger(bucketMinutes) || bucketMinutes < 5 || bucketMinutes > 24 * 60) {
     throw new Error("Control model call usage bucket_minutes must be between 5 and 1440.");
   }
-  const bucketCount = Math.ceil((rangeHours * 60) / bucketMinutes);
+  const bucketMs = bucketMinutes * 60_000;
+  const from = now - rangeHours * 60 * 60_000;
+  const firstBucket = Math.floor(from / bucketMs) * bucketMs;
+  const lastBucket = Math.floor((now - 1) / bucketMs) * bucketMs;
+  const bucketCount = Math.floor((lastBucket - firstBucket) / bucketMs) + 1;
   if (bucketCount > MAX_USAGE_BUCKETS) {
     throw new Error(`Control model call usage range may contain at most ${MAX_USAGE_BUCKETS} buckets.`);
   }
-  const bucketMs = bucketMinutes * 60_000;
   return {
     bucketMinutes,
     bucketMs,
-    from: now - rangeHours * 60 * 60_000,
+    from,
     to: now,
   };
 }
 
 /** Builds gap-free usage buckets for the Control analytics charts. */
 export function buildModelCallUsageAnalytics(
-  samples: readonly ModelCallUsageSample[],
+  aggregates: readonly ModelCallUsageBucketRecord[],
   input: ControlModelCallUsageInput = {},
   now = Date.now(),
 ): ControlModelCallUsageResult {
@@ -321,13 +319,11 @@ export function buildModelCallUsageAnalytics(
   for (let startedAt = firstBucket; startedAt <= lastBucket; startedAt += window.bucketMs) {
     bucketTotals.set(startedAt, emptyUsageTotals());
   }
-  for (const sample of samples) {
-    if (sample.startedAt < window.from || sample.startedAt >= window.to) continue;
-    const bucketStartedAt = Math.floor(sample.startedAt / window.bucketMs) * window.bucketMs;
-    const bucket = bucketTotals.get(bucketStartedAt);
+  for (const aggregate of aggregates) {
+    const bucket = bucketTotals.get(aggregate.startedAt);
     if (!bucket) continue;
-    addUsageSample(bucket, sample);
-    addUsageSample(totals, sample);
+    addUsageBucket(bucket, aggregate);
+    addUsageBucket(totals, aggregate);
   }
 
   return {
@@ -349,9 +345,9 @@ export class ControlModelCallTraceService {
   private readonly store: PostgresModelCallTraceStore;
   private readonly sessionTables: SessionTableNames;
 
-  constructor(options: {pool: PgQueryable}) {
+  constructor(options: {pool: PgQueryable; store: PostgresModelCallTraceStore}) {
     this.pool = options.pool;
-    this.store = new PostgresModelCallTraceStore({pool: options.pool});
+    this.store = options.store;
     this.sessionTables = buildSessionTableNames();
   }
 
@@ -361,7 +357,7 @@ export class ControlModelCallTraceService {
     }
   }
 
-  private async readSessionMetadata(traces: readonly ModelCallTraceRecord[]): Promise<Map<SessionMetadataKey, ControlModelCallSessionMetadata>> {
+  private async readSessionMetadata(traces: readonly ModelCallAttemptRecord[]): Promise<Map<SessionMetadataKey, ControlModelCallSessionMetadata>> {
     const pairs = Array.from(new Map(
       traces
         .filter((trace) => trace.sessionId && trace.agentKey)
@@ -426,7 +422,11 @@ export class ControlModelCallTraceService {
   ): Promise<ControlModelCallUsageResult> {
     this.assertAdmin(session);
     const window = usageWindow(input, now);
-    const samples = await this.store.listUsageSamples({from: window.from, to: window.to});
-    return buildModelCallUsageAnalytics(samples, input, now);
+    const aggregates = await this.store.listUsageBuckets({
+      from: window.from,
+      to: window.to,
+      bucketMs: window.bucketMs,
+    });
+    return buildModelCallUsageAnalytics(aggregates, input, now);
   }
 }

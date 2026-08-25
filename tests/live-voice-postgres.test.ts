@@ -1,6 +1,10 @@
 import {afterEach, describe, expect, it} from "vitest";
 import {newDb} from "pg-mem";
 
+import {
+  installPreLedgerLiveVoiceSchema,
+  migratePreLedgerDiscordVoiceSchema,
+} from "../src/app/database/migrations/pre-ledger/live-voice.js";
 import {LiveVoiceRepo} from "../src/domain/live-voice/repo.js";
 
 const liveVoiceSessionId = "22222222-2222-4222-8222-222222222222";
@@ -22,8 +26,8 @@ describe("LiveVoiceRepo", () => {
   }
 
   it("owns channel-neutral session health and exact-once delegated turns", async () => {
-    const {repo} = createRepo();
-    await repo.ensureSchema();
+    const {pool, repo} = createRepo();
+    await installPreLedgerLiveVoiceSchema(pool);
     await createSession(repo);
     await repo.updateSessionHealth({id: liveVoiceSessionId, health: "ready", reasons: [], observedAt: 1, diagnostics: {version: 1, transport: {voice: {state: "ready"}}}});
     await expect(repo.listSessions({source: "discord", sessionId: "session-1", activeOnly: true})).resolves.toEqual([
@@ -43,8 +47,8 @@ describe("LiveVoiceRepo", () => {
   });
 
   it("fails only active turns owned by one source and connector", async () => {
-    const {repo} = createRepo();
-    await repo.ensureSchema();
+    const {pool, repo} = createRepo();
+    await installPreLedgerLiveVoiceSchema(pool);
     await createSession(repo);
     const first = (await repo.createOrGetTurn({id: "11111111-1111-4111-8111-111111111111", liveVoiceSessionId, providerDelegationId: "one", sourceUtteranceId: "31111111-1111-4111-8111-111111111111", sessionId: "session-1", agentKey: "panda", prompt: "one"})).turn;
     const second = (await repo.createOrGetTurn({id: "21111111-1111-4111-8111-111111111111", liveVoiceSessionId, providerDelegationId: "two", sourceUtteranceId: "41111111-1111-4111-8111-111111111111", sessionId: "session-1", agentKey: "panda", prompt: "two"})).turn;
@@ -70,8 +74,8 @@ describe("LiveVoiceRepo", () => {
     await pool.query("CREATE TABLE runtime.runtime_requests (id UUID PRIMARY KEY, kind TEXT NOT NULL)");
     await pool.query("INSERT INTO runtime.runtime_requests (id,kind) VALUES ('99999999-9999-4999-8999-999999999999','discord_voice_delegation')");
     await pool.query(`INSERT INTO runtime.discord_voice_turns (id,voice_session_id,delegation_id,connector_key,guild_id,channel_id,session_id,agent_key,prompt,status) VALUES ('11111111-1111-4111-8111-111111111111',$1,'legacy-delegation','bot-1','guild-1','12345','session-1','panda','legacy task','running')`, [liveVoiceSessionId]);
-    await repo.ensureSchema();
-    await repo.hardCutLegacyDiscordTables();
+    await installPreLedgerLiveVoiceSchema(pool);
+    await migratePreLedgerDiscordVoiceSchema(pool);
     await expect(repo.getSession(liveVoiceSessionId)).resolves.toMatchObject({source: "discord", scopeKey: "guild-1", roomKey: "12345", state: "disconnected"});
     await expect(repo.getTurn("11111111-1111-4111-8111-111111111111")).resolves.toMatchObject({providerDelegationId: "legacy-delegation:11111111-1111-4111-8111-111111111111", status: "failed", error: "Live voice turn interrupted by schema migration."});
     const legacy = await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema='runtime' AND table_name='discord_voice_turns'");

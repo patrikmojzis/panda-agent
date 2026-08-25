@@ -2,9 +2,12 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
+import {ensurePostgresAgentSchema} from "../src/domain/agents/postgres-schema.js";
 import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
+import {ensurePostgresIdentitySchema} from "../src/domain/identity/postgres-schema.js";
 import {PostgresWikiBindingStore} from "../src/domain/wiki/postgres.js";
+import {ensurePostgresWikiBindingSchema} from "../src/domain/wiki/postgres-schema.js";
 import {WikiBindingService} from "../src/domain/wiki/service.js";
 
 describe("PostgresWikiBindingStore", () => {
@@ -31,9 +34,9 @@ describe("PostgresWikiBindingStore", () => {
     const agentStore = new PostgresAgentStore({pool});
     const identityStore = new PostgresIdentityStore({pool});
     const wikiBindingStore = new PostgresWikiBindingStore({pool});
-    await identityStore.ensureSchema();
-    await agentStore.ensureSchema();
-    await wikiBindingStore.ensureSchema();
+    await ensurePostgresIdentitySchema(pool);
+    await ensurePostgresAgentSchema(pool);
+    await ensurePostgresWikiBindingSchema(pool);
 
     return {
       agentStore,

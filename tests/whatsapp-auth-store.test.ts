@@ -8,6 +8,7 @@ import {PostgresConnectorAccountStore} from "../src/domain/connectors/postgres.j
 import {PostgresAgentStore} from "../src/domain/agents/postgres.js";
 import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
 import {PostgresWhatsAppAuthStore} from "../src/integrations/channels/whatsapp/auth-store.js";
+import {ensurePostgresWhatsAppAuthSchema} from "../src/integrations/channels/whatsapp/auth-schema.js";
 
 describe("PostgresWhatsAppAuthStore", () => {
   const pools: Array<{end(): Promise<void>}> = [];
@@ -23,7 +24,7 @@ describe("PostgresWhatsAppAuthStore", () => {
     pools.push(pool);
     const crypto = new CredentialCrypto(masterKey);
     const auth = new PostgresWhatsAppAuthStore({pool, crypto});
-    await auth.ensureSchema();
+    await ensurePostgresWhatsAppAuthSchema(pool);
     const agents = new PostgresAgentStore({pool});
     await agents.bootstrapAgent({agentKey: "panda", displayName: "Panda"});
     const accounts = new PostgresConnectorAccountStore({pool});

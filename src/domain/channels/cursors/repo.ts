@@ -3,9 +3,6 @@ import {readOptionalJsonValue} from "../../../lib/json.js";
 import type {PgQueryable} from "../../../lib/postgres-query.js";
 import {requireTrimmedString} from "../../../lib/strings.js";
 import {buildChannelCursorTableNames, type ChannelCursorTableNames} from "./postgres-shared.js";
-import {
-  ensurePostgresChannelCursorSchema,
-} from "./postgres-schema.js";
 import type {ChannelCursorInput, ChannelCursorLookup, ChannelCursorRecord,} from "./types.js";
 
 export interface ChannelCursorRepoOptions {
@@ -57,10 +54,6 @@ export class ChannelCursorRepo {
   constructor(options: ChannelCursorRepoOptions) {
     this.pool = options.pool;
     this.tables = buildChannelCursorTableNames();
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresChannelCursorSchema(this.pool);
   }
 
   async resolveChannelCursor(lookup: ChannelCursorLookup): Promise<ChannelCursorRecord | null> {

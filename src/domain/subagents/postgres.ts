@@ -8,7 +8,6 @@ import {optionalTrimmedString, requireNonEmptyString} from "../../lib/strings.js
 import {requireBoolean} from "../../lib/booleans.js";
 import {normalizeAgentKey} from "../agents/types.js";
 import {BUILTIN_SUBAGENT_PROFILES} from "./builtins.js";
-import {ensurePostgresSubagentSchema} from "./postgres-schema.js";
 import {buildSubagentTableNames, type SubagentTableNames} from "./postgres-shared.js";
 import type {SubagentProfileStore} from "./store.js";
 import {
@@ -99,10 +98,6 @@ export class PostgresSubagentProfileStore implements SubagentProfileStore {
   constructor(options: PostgresSubagentProfileStoreOptions) {
     this.pool = options.pool;
     this.tables = buildSubagentTableNames();
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresSubagentSchema(this.pool);
   }
 
   async seedBuiltinProfiles(

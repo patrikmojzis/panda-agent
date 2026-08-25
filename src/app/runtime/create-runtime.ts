@@ -11,11 +11,9 @@ import type {RuntimeCommandDispatcher} from "./command-dispatcher.js";
 import type {RuntimeCommandFileResolver} from "./command-files.js";
 import type {EmailStore} from "../../domain/email/types.js";
 import {ThreadRuntimeCoordinator, type ThreadRuntimeEvent} from "../../domain/threads/runtime/coordinator.js";
-import {PostgresThreadLeaseManager} from "../../domain/threads/runtime/postgres-lease.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {ThreadShellStateStore} from "../../domain/threads/runtime/shell-state-store.js";
 import type {ResolvedThreadDefinition, ThreadRecord,} from "../../domain/threads/runtime/types.js";
-import type {ThreadRuntimeNotification} from "../../domain/threads/runtime/postgres-notifications.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
 import type {WikiBindingService} from "../../domain/wiki/service.js";
 import type {Tool} from "../../kernel/agent/tool.js";
@@ -38,7 +36,12 @@ import type {ControlRuntimeActivityService} from "../../domain/control/runtime-a
 import type {ControlConnectorAccountsService} from "../../domain/control/connector-accounts-service.js";
 import type {ControlModelCallTraceService} from "../../domain/control/model-call-trace-service.js";
 import type {PostgresModelCallTraceStore} from "../../domain/model-call-traces/postgres.js";
-import {createPostgresPool, requireDatabaseUrl, resolveDatabaseUrl,} from "./database.js";
+import {
+  createPostgresPool,
+  readPositiveIntegerEnv,
+  requireDatabaseUrl,
+  resolveDatabaseUrl,
+} from "./database.js";
 import {bootstrapRuntime,} from "./runtime-bootstrap.js";
 import {buildBackgroundToolThreadInput} from "./background-tool-thread-input.js";
 import {
@@ -54,10 +57,15 @@ import type {CommandCatalog} from "../../domain/commands/modules.js";
 import type {CommandCatalogModule} from "../../domain/commands/types.js";
 import {buildSubagentCommandDependencies} from "./command-dependencies.js";
 import {SessionCompactionService} from "./session-compaction-service.js";
+import {listenThreadRuntimeNotifications} from "./store-notifications.js";
+import {runCleanupSteps} from "../../lib/cleanup.js";
 import {
   PostgresPairedIdentityDirectory,
   type PairedIdentityDirectoryReader,
 } from "../../domain/agents/paired-identity-directory.js";
+
+const DEFAULT_THREAD_RUN_CONCURRENCY = 4;
+const DEFAULT_THREAD_RUN_DRAIN_TIMEOUT_MS = 30_000;
 
 export {
   createPostgresPool,
@@ -117,7 +125,6 @@ export interface RuntimeOptions {
   /** @deprecated Prefer commandCatalog. */
   commandModules?: readonly CommandCatalogModule<any>[];
   onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
-  onStoreNotification?: (notification: ThreadRuntimeNotification) => Promise<void> | void;
   resolveDefinition: (
     thread: ThreadRecord,
     context: DefinitionResolverContext,
@@ -203,8 +210,15 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
 
   const coordinator = new ThreadRuntimeCoordinator({
     store: runtime.store,
-    leaseManager: new PostgresThreadLeaseManager(runtime.threadLeasePool),
-    modelCallTracer: runtime.modelCallTraces,
+    maxConcurrentRuns: readPositiveIntegerEnv(
+      "PANDA_CORE_THREAD_RUN_CONCURRENCY",
+      DEFAULT_THREAD_RUN_CONCURRENCY,
+    ),
+    shutdownDrainTimeoutMs: readPositiveIntegerEnv(
+      "PANDA_CORE_THREAD_RUN_DRAIN_TIMEOUT_MS",
+      DEFAULT_THREAD_RUN_DRAIN_TIMEOUT_MS,
+    ),
+    modelCallObserver: runtime.modelCallRecorder,
     resolveDefinition: (thread) => options.resolveDefinition(thread, resolverContext),
     onEvent: options.onEvent,
   });
@@ -240,6 +254,42 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
   runtime.backgroundJobService.setBackgroundCompletionHandler(async (record) => {
     await coordinator.submitInput(record.threadId, buildBackgroundToolThreadInput(record), "wake");
   });
+
+  let notificationUnsubscribe: (() => Promise<void>) | null = null;
+  try {
+    notificationUnsubscribe = await listenThreadRuntimeNotifications({
+      pool: runtime.notificationPool,
+      listener: (notification) => coordinator.handleStoreNotification(notification),
+      onStateChange: (snapshot) => coordinator.handleStoreNotificationStatus(snapshot.status),
+      onError: (error) => {
+        console.error("Thread runtime notification listener failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
+  } catch (error) {
+    await runCleanupSteps([
+      {label: "thread-runtime-coordinator", run: () => coordinator.stop()},
+      {label: "runtime", run: () => runtime.close()},
+    ]);
+    throw error;
+  }
+
+  let closePromise: Promise<void> | null = null;
+  const close = (): Promise<void> => {
+    if (closePromise) {
+      return closePromise;
+    }
+
+    const unsubscribe = notificationUnsubscribe;
+    notificationUnsubscribe = null;
+    closePromise = runCleanupSteps([
+      {label: "thread-runtime-listener", run: async () => unsubscribe?.()},
+      {label: "thread-runtime-coordinator", run: () => coordinator.stop()},
+      {label: "runtime", run: () => runtime.close()},
+    ], undefined, {rethrow: true});
+    return closePromise;
+  };
 
   return {
     agentStore: runtime.agentStore,
@@ -285,6 +335,6 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     subagentTools,
     pool: runtime.pool,
     notificationPool: runtime.notificationPool,
-    close: runtime.close,
+    close,
   };
 }

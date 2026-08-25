@@ -2,7 +2,6 @@ import {describe, expect, it, vi} from "vitest";
 
 import {
   createDaemonRequestProcessor,
-  UNSUPPORTED_CREATE_WORKER_SESSION_REQUEST_ERROR,
   type DaemonRequestProcessorContext,
   type DaemonRequestThreadHelpers,
 } from "../src/app/runtime/daemon-requests.js";
@@ -160,7 +159,10 @@ function createSaveLastRouteMock() {
   }));
 }
 
-function createCoordinator(submitInput = vi.fn(async () => {})): DaemonRequestProcessorContext["runtime"]["coordinator"] {
+function createCoordinator(
+  submitInput = vi.fn(async () => {}),
+  getSession = vi.fn(async (sessionId: string) => createSession(sessionId, "thread-1")),
+): DaemonRequestProcessorContext["runtime"]["coordinator"] {
   return {
     abort: vi.fn(async () => true),
     resolveThreadRunConfig: vi.fn(async () => ({
@@ -168,6 +170,27 @@ function createCoordinator(submitInput = vi.fn(async () => {})): DaemonRequestPr
     })),
     runExclusively: vi.fn(async (_threadId, operation) => operation()),
     submitInput,
+    submitSessionInput: vi.fn(async (sessionId, payload, mode = "wake", options) => {
+      const session = await getSession(sessionId);
+      await submitInput(session.currentThreadId, payload);
+      return {
+        input: {
+          id: options?.inputId ?? "input-1",
+          threadId: session.currentThreadId,
+          order: 1,
+          deliveryMode: mode,
+          status: "pending" as const,
+          connectorKey: "",
+          source: payload.source,
+          channelId: payload.channelId,
+          externalMessageId: payload.externalMessageId,
+          actorId: payload.actorId,
+          identityId: payload.identityId,
+          createdAt: 1,
+        },
+        disposition: "inserted" as const,
+      };
+    }),
   };
 }
 
@@ -180,15 +203,16 @@ function createRequestContext(input: {
   submitInput?: ReturnType<typeof vi.fn>;
 } = {}): DaemonRequestProcessorContext {
   const currentThreadId = input.currentThreadId ?? "thread-1";
+  const getSession = input.getSession ?? vi.fn(async (sessionId: string) => createSession(sessionId, currentThreadId));
   return {
     runtime: {
-      coordinator: createCoordinator(input.submitInput),
+      coordinator: createCoordinator(input.submitInput, getSession),
       identityStore: {
         getIdentity: vi.fn(async () => createIdentity()),
         resolveIdentityBinding: vi.fn(async () => input.binding === undefined ? createIdentityBinding() : input.binding),
       },
       sessionStore: {
-        getSession: input.getSession ?? vi.fn(async (sessionId: string) => createSession(sessionId, currentThreadId)),
+        getSession,
       },
       sessionCompaction: {
         compactSession: vi.fn(async (sessionId: string) => ({
@@ -239,6 +263,7 @@ function createThreadHelpers(overrides: Partial<DaemonRequestThreadHelpers> = {}
 function createHarness(options: {
   binding?: {identityId: string} | null;
   currentThreadId?: string;
+  resetReplayed?: boolean;
   thread?: {id: string; sessionId: string} | null;
 } = {}) {
   const binding = options.binding === undefined
@@ -268,6 +293,7 @@ function createHarness(options: {
     threadId: "thread-reset",
     previousThreadId: "thread-before-reset",
     sessionId: "session-1",
+    ...(options.resetReplayed ? {replayed: true} : {}),
   }));
   const context = createRequestContext({
     binding,
@@ -334,6 +360,7 @@ describe("daemon request processor", () => {
     expect(context.runtime.sessionCompaction.compactSession).toHaveBeenCalledWith(
       "session-1",
       "Keep the incident timeline.",
+      "request-compact-session",
     );
   });
 
@@ -440,30 +467,6 @@ describe("daemon request processor", () => {
       profile: "workspace",
       execution: "agent_workspace",
     }));
-  });
-
-  it("fails legacy create_worker_session requests closed instead of parsing-sticking", async () => {
-    const createSubagentSession = vi.fn();
-    const processor = createDaemonRequestProcessor(
-      createRequestContext(),
-      createThreadHelpers({
-        ensureIdentity: vi.fn(async () => createIdentity()),
-        createSubagentSession,
-      }),
-    );
-
-    await expect(processor({
-      id: "request-legacy-worker",
-      kind: "create_worker_session",
-      status: "pending",
-      createdAt: 1,
-      updatedAt: 1,
-      payload: {
-        identityId: "identity-1",
-        sessionId: "stale-worker-session",
-      },
-    })).rejects.toThrow(UNSUPPORTED_CREATE_WORKER_SESSION_REQUEST_ERROR);
-    expect(createSubagentSession).not.toHaveBeenCalled();
   });
 
   it("queues bound A2A messages to the recipient session current thread", async () => {
@@ -800,6 +803,12 @@ describe("daemon request processor", () => {
         }),
       }),
     }));
+    expect(harness.context.runtime.coordinator.submitSessionInput).toHaveBeenCalledWith(
+      "session-1",
+      expect.objectContaining({source: "telegram", externalMessageId: "555"}),
+      "wake",
+      {inputId: "request-telegram"},
+    );
     expect(harness.saveLastRoute).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "session-1",
       identityId: "identity-1",
@@ -839,6 +848,7 @@ describe("daemon request processor", () => {
     });
 
     expect(harness.queueSystemReply).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: "runtime-request:request-telegram:system-reply",
       channel: "telegram",
       connectorKey: "main",
       externalConversationId: "777",
@@ -847,6 +857,21 @@ describe("daemon request processor", () => {
       text: expect.stringContaining("panda telegram pair --account <account-key> --identity <identity-handle> --actor 123"),
     }));
     expect(harness.submitInput).not.toHaveBeenCalled();
+  });
+
+  it("replies to paired Telegram /new through the replay-safe delivery seam", async () => {
+    const harness = createHarness();
+    const processor = createDaemonRequestProcessor(harness.context, harness.threads);
+
+    await expect(processor(telegramMessageRequest({text: "/new"}))).resolves.toEqual({
+      status: "replied",
+      reason: "new_is_tui_only",
+    });
+
+    expect(harness.queueSystemReply).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: "runtime-request:request-telegram:system-reply",
+      text: "/new is TUI-only. Use /reset here to start fresh.",
+    }));
   });
 
   it("resets paired Telegram conversations and replies on the new thread", async () => {
@@ -866,14 +891,31 @@ describe("daemon request processor", () => {
       externalConversationId: "777",
       externalActorId: "123",
       externalMessageId: "555",
-    }));
+    }), "request-telegram");
     expect(harness.queueSystemReply).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: "runtime-request:request-telegram:system-reply",
       channel: "telegram",
       connectorKey: "main",
       externalConversationId: "777",
       replyToMessageId: "555",
       threadId: "thread-reset",
       text: "Reset Panda. Fresh session started.",
+    }));
+  });
+
+  it("re-enqueues the same idempotent Telegram confirmation when the durable reset is replayed", async () => {
+    const harness = createHarness({resetReplayed: true});
+    const processor = createDaemonRequestProcessor(harness.context, harness.threads);
+
+    await expect(processor(telegramMessageRequest({text: "/reset"}))).resolves.toMatchObject({
+      threadId: "thread-reset",
+      replayed: true,
+    });
+
+    expect(harness.handleResetSession).toHaveBeenCalledWith(expect.any(Object), "request-telegram");
+    expect(harness.queueSystemReply).toHaveBeenCalledWith(expect.objectContaining({
+      idempotencyKey: "runtime-request:request-telegram:system-reply",
+      threadId: "thread-reset",
     }));
   });
 

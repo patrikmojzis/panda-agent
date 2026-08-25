@@ -8,6 +8,7 @@ import {buildWrappedCommand, createInvocationPaths, readPersistedCwd} from "./ba
 
 export interface ManagedBashJobOptions {
   jobId: string;
+  signal?: AbortSignal;
   command: string;
   cwd: string;
   childEnv: NodeJS.ProcessEnv;
@@ -48,7 +49,9 @@ function resolveTerminalStatus(options: {
 
 export class ManagedBashJob {
   static async start(options: ManagedBashJobOptions): Promise<ManagedBashJob> {
+    options.signal?.throwIfAborted();
     const invocationPaths = await createInvocationPaths(options.outputDirectory);
+    options.signal?.throwIfAborted();
     const stdoutCapture = createOutputCapture(invocationPaths.stdoutPath);
     const stderrCapture = createOutputCapture(invocationPaths.stderrPath);
     const wrappedCommand = buildWrappedCommand({
@@ -59,13 +62,31 @@ export class ManagedBashJob {
     });
 
     const job = new ManagedBashJob(options, invocationPaths, stdoutCapture, stderrCapture);
+    let abortCancellation = Promise.resolve();
+    let abortCancellationStarted = false;
+    const cancelFromAbort = () => {
+      if (!abortCancellationStarted) {
+        abortCancellationStarted = true;
+        abortCancellation = job.cancel().then(() => undefined);
+      }
+    };
+    options.signal?.addEventListener("abort", cancelFromAbort, {once: true});
     try {
       await job.spawn(wrappedCommand);
-      return job;
     } catch (error) {
+      options.signal?.removeEventListener("abort", cancelFromAbort);
+      await abortCancellation.catch(() => undefined);
       await job.cleanupFailedStart();
       throw error;
     }
+    if (options.signal?.aborted) {
+      cancelFromAbort();
+      await abortCancellation;
+      options.signal?.removeEventListener("abort", cancelFromAbort);
+      options.signal.throwIfAborted();
+    }
+    options.signal?.removeEventListener("abort", cancelFromAbort);
+    return job;
   }
 
   private readonly startedAt = Date.now();

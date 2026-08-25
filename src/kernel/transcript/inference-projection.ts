@@ -1,6 +1,6 @@
 import type {Message} from "@earendil-works/pi-ai";
 
-import {isCompactBoundaryRecord} from "./compaction.js";
+import {isCompactBoundaryRecord} from "./checkpoint.js";
 import {readPositiveInteger} from "../../lib/numbers.js";
 import type {
   InferenceProjection,

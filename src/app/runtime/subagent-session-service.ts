@@ -1,4 +1,5 @@
 import {randomUUID} from "node:crypto";
+import {isDeepStrictEqual} from "node:util";
 
 import type {ThinkingLevel} from "@earendil-works/pi-ai";
 
@@ -57,7 +58,7 @@ type SubagentSessionStore = Pick<
   "createSession" | "getSession" | "updateSessionRuntimeConfig"
 >;
 
-type SubagentThreadStore = Pick<ThreadRuntimeStore, "createThread" | "enqueueInput">;
+type SubagentThreadStore = Pick<ThreadRuntimeStore, "createThread" | "enqueueInput" | "getThread">;
 
 type SubagentEnvironmentAttacher = {
   attachReadySessionToDisposableEnvironment(input: {
@@ -292,7 +293,9 @@ export class SubagentSessionService {
         ...(attached ? {environment: attached.environment, binding: attached.binding} : {}),
       };
     } catch (error) {
-      await this.deleteCreatedSubagentSession(created.session.id, created.thread.id).catch(() => {});
+      if (created.createdNew) {
+        await this.deleteCreatedSubagentSession(created.session.id, created.thread.id).catch(() => {});
+      }
       throw error;
     }
   }
@@ -346,34 +349,77 @@ export class SubagentSessionService {
     session: CreateSessionInput,
     thread: CreateThreadInput,
     runtimeConfig: SubagentRuntimeConfig | undefined,
-  ): Promise<{session: SessionRecord; thread: ThreadRecord}> {
-    if (
-      this.pool
-      && this.sessions instanceof PostgresSessionStore
-      && this.threads instanceof PostgresThreadRuntimeStore
-    ) {
-      return createSessionWithInitialThread({
-        pool: this.pool,
-        sessionStore: this.sessions,
-        threadStore: this.threads,
-        session,
-        thread,
-        runtimeConfig,
-      });
+  ): Promise<{session: SessionRecord; thread: ThreadRecord; createdNew: boolean}> {
+    const readReplay = async (): Promise<{session: SessionRecord; thread: ThreadRecord; createdNew: false} | null> => {
+      let existingSession: SessionRecord;
+      try {
+        existingSession = await this.sessions.getSession(session.id);
+      } catch (error) {
+        if (error instanceof Error && error.message === `Unknown session ${session.id}`) {
+          return null;
+        }
+        throw error;
+      }
+      if (
+        existingSession.agentKey !== session.agentKey
+        || existingSession.kind !== "subagent"
+        || existingSession.currentThreadId !== thread.id
+        || existingSession.createdByIdentityId !== session.createdByIdentityId
+        || !isDeepStrictEqual(existingSession.metadata, session.metadata)
+      ) {
+        throw new Error(`Subagent session ${session.id} already exists with different creation parameters.`);
+      }
+      const existingThread = await this.threads.getThread(thread.id);
+      if (existingThread.sessionId !== session.id) {
+        throw new Error(`Subagent thread ${thread.id} belongs to another session.`);
+      }
+      // Creation replay is validation, not a configuration mutation. A later
+      // update_thread request owns the mutable runtime configuration.
+      return {session: existingSession, thread: existingThread, createdNew: false};
+    };
+
+    const replay = await readReplay();
+    if (replay) {
+      return replay;
     }
 
-    const createdSession = await this.sessions.createSession(session);
-    const createdThread = await this.threads.createThread(thread);
-    if (runtimeConfig) {
-      await this.sessions.updateSessionRuntimeConfig({
-        sessionId: createdSession.id,
-        ...runtimeConfig,
-      });
+    try {
+      if (
+        this.pool
+        && this.sessions instanceof PostgresSessionStore
+        && this.threads instanceof PostgresThreadRuntimeStore
+      ) {
+        const created = await createSessionWithInitialThread({
+          pool: this.pool,
+          sessionStore: this.sessions,
+          threadStore: this.threads,
+          session,
+          thread,
+          runtimeConfig,
+        });
+        return {...created, createdNew: true};
+      }
+
+      const createdSession = await this.sessions.createSession(session);
+      const createdThread = await this.threads.createThread(thread);
+      if (runtimeConfig) {
+        await this.sessions.updateSessionRuntimeConfig({
+          sessionId: createdSession.id,
+          ...runtimeConfig,
+        });
+      }
+      return {
+        session: createdSession,
+        thread: createdThread,
+        createdNew: true,
+      };
+    } catch (error) {
+      const racedReplay = await readReplay();
+      if (racedReplay) {
+        return racedReplay;
+      }
+      throw error;
     }
-    return {
-      session: createdSession,
-      thread: createdThread,
-    };
   }
 
   private async attachEnvironment(input: {

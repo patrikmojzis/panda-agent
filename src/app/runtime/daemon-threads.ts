@@ -20,7 +20,7 @@ import type {
 } from "../../domain/threads/requests/types.js";
 import type {ThreadRuntimeCoordinator} from "../../domain/threads/runtime/coordinator.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
-import type {ThreadRecord} from "../../domain/threads/runtime/types.js";
+import {isMissingThreadError, type ThreadRecord} from "../../domain/threads/runtime/types.js";
 import type {PgPoolLike} from "../../lib/postgres-query.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {JsonValue} from "../../lib/json.js";
@@ -45,7 +45,7 @@ export interface DaemonThreadHelperContext {
     backgroundJobService: {
       cancelThreadJobs(threadId: string): Promise<void>;
     };
-    coordinator: Pick<ThreadRuntimeCoordinator, "abort" | "waitForCurrentRun">;
+    coordinator: Pick<ThreadRuntimeCoordinator, "abort" | "runExclusively">;
     identityStore: Pick<IdentityStore, "getIdentity">;
     sessionStore: Pick<SessionStore, "createSession" | "getMainSession" | "getSession" | "updateCurrentThread" | "updateSessionRuntimeConfig">;
     store: Pick<ThreadRuntimeStore, "createThread" | "discardPendingInputs" | "getThread">;
@@ -67,8 +67,8 @@ export interface DaemonThreadHelpers {
   ensureIdentity(identityId: string): Promise<IdentityRecord>;
   createBranchSession(input: {
     identity: IdentityRecord;
-    sessionId?: string;
-    threadId?: string;
+    sessionId: string;
+    threadId: string;
     agentKey?: string;
     model?: string;
     thinking?: CreateBranchSessionRequestPayload["thinking"];
@@ -93,6 +93,7 @@ export interface DaemonThreadHelpers {
     externalConversationId: string;
   }): Promise<ThreadRecord | null>;
   queueSystemReply(input: {
+    idempotencyKey: string;
     channel: string;
     connectorKey: string;
     externalConversationId: string;
@@ -101,7 +102,7 @@ export interface DaemonThreadHelpers {
     replyToMessageId?: string;
     threadId?: string;
   }): Promise<void>;
-  handleResetSession(payload: ResetSessionRequestPayload): Promise<ResetSessionResult>;
+  handleResetSession(payload: ResetSessionRequestPayload, requestId: string): Promise<ResetSessionResult>;
 }
 
 function isChannelBoundReset(
@@ -259,52 +260,92 @@ export function createDaemonThreadHelpers(
 
   const createBranchSession = async (input: {
     identity: IdentityRecord;
-    sessionId?: string;
+    sessionId: string;
+    threadId: string;
     agentKey?: string;
     model?: string;
     thinking?: CreateBranchSessionRequestPayload["thinking"];
     inferenceProjection?: CreateBranchSessionRequestPayload["inferenceProjection"];
   }): Promise<ThreadRecord> => {
     const agentKey = await resolveAccessibleAgentKey(input.identity, input.agentKey);
-    const sessionId = input.sessionId ?? randomUUID();
-    const threadId = randomUUID();
+    const {sessionId, threadId} = input;
     const threadInput = buildInitialSessionThreadInput({
       sessionId,
       id: threadId,
     });
     const runtimeConfig = buildRuntimeConfigPatch(input);
-    if (
-      context.runtime.pool
-      && context.runtime.sessionStore instanceof PostgresSessionStore
-      && context.runtime.store instanceof PostgresThreadRuntimeStore
-    ) {
-      const created = await createSessionWithInitialThread({
-        pool: context.runtime.pool,
-        sessionStore: context.runtime.sessionStore,
-        threadStore: context.runtime.store,
-        session: {
-          id: sessionId,
-          agentKey,
-          kind: "branch",
-          currentThreadId: threadId,
-          createdByIdentityId: input.identity.id,
-        },
-        thread: threadInput,
-        runtimeConfig,
-      });
-      return created.thread;
+    const readExisting = async (): Promise<ThreadRecord | null> => {
+      let existing: SessionRecord;
+      try {
+        existing = await context.runtime.sessionStore.getSession(sessionId);
+      } catch (error) {
+        if (error instanceof Error && error.message === `Unknown session ${sessionId}`) {
+          return null;
+        }
+        throw error;
+      }
+      if (
+        existing.kind !== "branch"
+        || existing.agentKey !== agentKey
+        || existing.currentThreadId !== threadId
+        || existing.createdByIdentityId !== input.identity.id
+      ) {
+        throw new Error(`Branch session ${sessionId} already exists with different creation parameters.`);
+      }
+      const existingThread = await context.runtime.store.getThread(threadId);
+      if (existingThread.sessionId !== sessionId) {
+        throw new Error(`Branch thread ${threadId} belongs to another session.`);
+      }
+      // Creation replay validates the immutable identity only. Reapplying its
+      // original config would clobber a later explicit update_thread request.
+      return existingThread;
+    };
+
+    const replay = await readExisting();
+    if (replay) {
+      return replay;
     }
 
-    await context.runtime.sessionStore.createSession({
-      id: sessionId,
-      agentKey,
-      kind: "branch",
-      currentThreadId: threadId,
-      createdByIdentityId: input.identity.id,
-    });
-    const thread = await context.runtime.store.createThread(threadInput);
-    await updateSessionRuntimeConfig(sessionId, runtimeConfig);
-    return thread;
+    try {
+      if (
+        context.runtime.pool
+        && context.runtime.sessionStore instanceof PostgresSessionStore
+        && context.runtime.store instanceof PostgresThreadRuntimeStore
+      ) {
+        const created = await createSessionWithInitialThread({
+          pool: context.runtime.pool,
+          sessionStore: context.runtime.sessionStore,
+          threadStore: context.runtime.store,
+          session: {
+            id: sessionId,
+            agentKey,
+            kind: "branch",
+            currentThreadId: threadId,
+            createdByIdentityId: input.identity.id,
+          },
+          thread: threadInput,
+          runtimeConfig,
+        });
+        return created.thread;
+      }
+
+      await context.runtime.sessionStore.createSession({
+        id: sessionId,
+        agentKey,
+        kind: "branch",
+        currentThreadId: threadId,
+        createdByIdentityId: input.identity.id,
+      });
+      const thread = await context.runtime.store.createThread(threadInput);
+      await updateSessionRuntimeConfig(sessionId, runtimeConfig);
+      return thread;
+    } catch (error) {
+      const racedReplay = await readExisting();
+      if (racedReplay) {
+        return racedReplay;
+      }
+      throw error;
+    }
   };
 
   const createSubagentSession = createDaemonSubagentSessionCreator({
@@ -330,15 +371,13 @@ export function createDaemonThreadHelpers(
   ): Promise<ThreadRecord> => {
     const identity = await ensureIdentity(requireIdentityId(input.identityId, "resolve_main_session_thread"));
     const agentKey = await resolveAccessibleAgentKey(identity, input.agentKey);
-    const {created, session} = await ensureMainSession(agentKey, identity, {
+    const {session} = await ensureMainSession(agentKey, identity, {
       model: input.model,
       thinking: input.thinking,
       inferenceProjection: input.inferenceProjection,
     });
-    const runtimeConfig = buildRuntimeConfigPatch(input);
-    if (!created) {
-      await updateSessionRuntimeConfig(session.id, runtimeConfig);
-    }
+    // Resolving an existing main session is read-only. Runtime config has its
+    // own ordered update_thread command and must not be replayed by resolution.
     return resolveCurrentThread(session.id);
   };
 
@@ -393,6 +432,7 @@ export function createDaemonThreadHelpers(
   };
 
   const queueSystemReply = async (input: {
+    idempotencyKey: string;
     channel: string;
     connectorKey: string;
     externalConversationId: string;
@@ -402,6 +442,7 @@ export function createDaemonThreadHelpers(
     threadId?: string;
   }): Promise<void> => {
     await context.outboundDeliveries.enqueueDelivery({
+      idempotencyKey: input.idempotencyKey,
       threadId: input.threadId,
       channel: input.channel,
       target: {
@@ -421,60 +462,121 @@ export function createDaemonThreadHelpers(
   const resetSession = async (input: {
     sessionId: string;
     source: string;
+    requestId: string;
     model?: string;
     thinking?: ResetSessionRequestPayload["thinking"];
     inferenceProjection?: ResetSessionRequestPayload["inferenceProjection"];
-  }): Promise<{thread: ThreadRecord; previousThreadId: string}> => {
-    const {session, threadId} = await resolveCurrentSessionThread(context.runtime.sessionStore, input.sessionId);
-    const previousThread = await context.runtime.store.getThread(threadId);
-    await context.runtime.coordinator.abort(previousThread.id, `Reset requested from ${input.source}.`);
-    await context.runtime.coordinator.waitForCurrentRun(previousThread.id);
-    await context.runtime.backgroundJobService.cancelThreadJobs(previousThread.id);
-    await context.runtime.store.discardPendingInputs(previousThread.id);
+  }): Promise<{thread: ThreadRecord; previousThreadId: string; replayed: boolean}> => {
+    const resetThreadId = `reset:${input.requestId}`;
+    const readReplay = async (): Promise<{
+      thread: ThreadRecord;
+      previousThreadId: string;
+      replayed: true;
+    } | null> => {
+      let thread: ThreadRecord;
+      try {
+        thread = await context.runtime.store.getThread(resetThreadId);
+      } catch (error) {
+        if (isMissingThreadError(error, resetThreadId)) {
+          return null;
+        }
+        throw error;
+      }
+      if (thread.sessionId !== input.sessionId || !thread.replacesThreadId) {
+        throw new Error(`Reset operation ${input.requestId} conflicts with existing thread ${resetThreadId}.`);
+      }
+      return {
+        thread,
+        previousThreadId: thread.replacesThreadId,
+        replayed: true,
+      };
+    };
 
-    const nextThread = buildInitialSessionThreadInput({
-      sessionId: session.id,
-    });
-    const runtimeConfig = buildRuntimeConfigPatch(input);
-    const thread = (
-      context.runtime.pool
-      && context.runtime.sessionStore instanceof PostgresSessionStore
-      && context.runtime.store instanceof PostgresThreadRuntimeStore
-    )
-      ? await resetSessionCurrentThread({
-        pool: context.runtime.pool,
-        sessionStore: context.runtime.sessionStore,
-        threadStore: context.runtime.store,
-        thread: nextThread,
-        session: {
-          sessionId: session.id,
-          currentThreadId: nextThread.id,
-        },
-        runtimeConfig,
-      })
-      : await context.runtime.store.createThread(nextThread);
-    if (!(context.runtime.pool
-      && context.runtime.sessionStore instanceof PostgresSessionStore
-      && context.runtime.store instanceof PostgresThreadRuntimeStore)
-    ) {
-      await updateSessionRuntimeConfig(session.id, runtimeConfig);
-      await context.runtime.sessionStore.updateCurrentThread({
-        sessionId: session.id,
-        currentThreadId: nextThread.id,
-      });
+    const replay = await readReplay();
+    if (replay) {
+      return replay;
     }
 
-    return {
-      thread,
-      previousThreadId: previousThread.id,
-    };
+    const {session, threadId} = await resolveCurrentSessionThread(context.runtime.sessionStore, input.sessionId);
+    const previousThread = await context.runtime.store.getThread(threadId);
+    await context.runtime.coordinator.abort(
+      previousThread.id,
+      `Reset requested from ${input.source}.`,
+      input.requestId,
+    );
+    try {
+      return await context.runtime.coordinator.runExclusively(previousThread.id, async ({signal, owner}) => {
+        signal.throwIfAborted();
+        const current = await resolveCurrentSessionThread(context.runtime.sessionStore, session.id);
+        if (current.threadId === resetThreadId) {
+          const racedReplay = await readReplay();
+          if (racedReplay) return racedReplay;
+          throw new Error(`Reset thread ${resetThreadId} is current but missing its durable lineage.`);
+        }
+        if (current.threadId !== previousThread.id) {
+          throw new Error(`Session ${session.id} changed threads while reset was waiting to start.`);
+        }
+
+        await context.runtime.backgroundJobService.cancelThreadJobs(previousThread.id);
+        signal.throwIfAborted();
+
+        const nextThread = {
+          ...buildInitialSessionThreadInput({
+            sessionId: session.id,
+            id: resetThreadId,
+          }),
+          replacesThreadId: previousThread.id,
+        };
+        const runtimeConfig = buildRuntimeConfigPatch(input);
+        const postgresReset = Boolean(context.runtime.pool
+          && context.runtime.sessionStore instanceof PostgresSessionStore
+          && context.runtime.store instanceof PostgresThreadRuntimeStore);
+        let thread: ThreadRecord;
+        if (postgresReset) {
+          thread = await resetSessionCurrentThread({
+            pool: context.runtime.pool!,
+            sessionStore: context.runtime.sessionStore as PostgresSessionStore,
+            threadStore: context.runtime.store as PostgresThreadRuntimeStore,
+            thread: nextThread,
+            previousThreadId: previousThread.id,
+            owner,
+            session: {
+              sessionId: session.id,
+              currentThreadId: nextThread.id,
+            },
+            runtimeConfig,
+          });
+        } else {
+          await context.runtime.store.discardPendingInputs(previousThread.id);
+          thread = await context.runtime.store.createThread(nextThread);
+          await updateSessionRuntimeConfig(session.id, runtimeConfig);
+          await context.runtime.sessionStore.updateCurrentThread({
+            sessionId: session.id,
+            currentThreadId: nextThread.id,
+          });
+        }
+
+        return {
+          thread,
+          previousThreadId: previousThread.id,
+          replayed: false,
+        };
+      });
+    } catch (error) {
+      const racedReplay = await readReplay();
+      if (racedReplay) {
+        return racedReplay;
+      }
+      throw error;
+    }
   };
 
   const handleResetSession = async (
     payload: ResetSessionRequestPayload,
+    requestId: string,
   ): Promise<ResetSessionResult> => {
     if (isChannelBoundReset(payload)) {
-      const externalMessageId = payload.externalMessageId ?? payload.commandExternalMessageId;
+      const externalMessageId = payload.externalMessageId;
       const binding = await context.conversationBindings.getConversationBinding({
         source: payload.source,
         connectorKey: payload.connectorKey,
@@ -495,6 +597,7 @@ export function createDaemonThreadHelpers(
       const result = await resetSession({
         sessionId,
         source: payload.source,
+        requestId,
         model: payload.model,
         thinking: payload.thinking,
         inferenceProjection: payload.inferenceProjection,
@@ -529,6 +632,7 @@ export function createDaemonThreadHelpers(
         threadId: result.thread.id,
         previousThreadId: result.previousThreadId,
         sessionId,
+        ...(result.replayed ? {replayed: true} : {}),
       };
     }
 
@@ -545,6 +649,7 @@ export function createDaemonThreadHelpers(
       const result = await resetSession({
         sessionId: session.id,
         source: payload.source,
+        requestId,
         model: payload.model,
         thinking: payload.thinking,
         inferenceProjection: payload.inferenceProjection,
@@ -554,6 +659,7 @@ export function createDaemonThreadHelpers(
         threadId: result.thread.id,
         previousThreadId: result.previousThreadId,
         sessionId: session.id,
+        ...(result.replayed ? {replayed: true} : {}),
       };
     }
 
@@ -571,6 +677,7 @@ export function createDaemonThreadHelpers(
     const result = await resetSession({
       sessionId: session.id,
       source: payload.source,
+      requestId,
       model: payload.model,
       thinking: payload.thinking,
       inferenceProjection: payload.inferenceProjection,
@@ -580,6 +687,7 @@ export function createDaemonThreadHelpers(
       threadId: result.thread.id,
       previousThreadId: result.previousThreadId,
       sessionId: session.id,
+      ...(result.replayed ? {replayed: true} : {}),
     };
   };
 

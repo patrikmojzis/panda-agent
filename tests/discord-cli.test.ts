@@ -358,7 +358,7 @@ vi.mock("../src/domain/identity/postgres.js", () => ({
   PostgresIdentityStore: discordCliMocks.MockPostgresIdentityStore,
 }));
 
-vi.mock("../src/lib/postgres-bootstrap.js", () => ({
+vi.mock("../src/lib/postgres-database.js", () => ({
   withPostgresPool: discordCliMocks.withPostgresPool,
 }));
 
@@ -766,8 +766,6 @@ describe("Discord account CLI", () => {
       "postgres://discord-db",
     ], {from: "user"});
 
-    expect(latestConnectorStore().ensureSchema).toHaveBeenCalledOnce();
-    expect(latestIdentityStore().ensureSchema).toHaveBeenCalledOnce();
     expect(latestConnectorStore().getAccountByKey).toHaveBeenCalledWith("discord", "ops");
     expect(latestIdentityStore().getIdentityByHandle).toHaveBeenCalledWith("patrik");
     expect(latestIdentityStore().ensureIdentityBinding).toHaveBeenCalledWith({
@@ -1051,9 +1049,6 @@ describe("Discord account CLI", () => {
       "postgres://discord-db",
     ], {from: "user"});
 
-    expect(latestConnectorStore().ensureSchema).toHaveBeenCalledOnce();
-    expect(latestSessionStore().ensureSchema).toHaveBeenCalledOnce();
-    expect(latestConversationRepo().ensureSchema).toHaveBeenCalledOnce();
     expect(latestConnectorStore().getAccountByKey).toHaveBeenCalledWith("discord", "ops");
     expect(latestSessionStore().getSession).toHaveBeenCalledWith("session-a");
     expect(latestConversationRepo().getConversationBinding).toHaveBeenCalledWith({
@@ -1300,7 +1295,6 @@ describe("Discord account CLI", () => {
       "postgres://discord-db",
     ], {from: "user"});
 
-    expect(latestConnectorStore().ensureSchema).toHaveBeenCalledOnce();
     expect(latestIdentityStore().getIdentityByHandle).toHaveBeenCalledWith("alice");
     expect(latestConnectorStore().upsertAccount).toHaveBeenCalledWith(expect.objectContaining({
       source: "discord",

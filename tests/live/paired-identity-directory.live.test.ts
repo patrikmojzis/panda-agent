@@ -23,7 +23,14 @@ class SchemaScopedQuery implements PgQueryable {
     const scopedSql = sql
       .replaceAll('CREATE SCHEMA IF NOT EXISTS "runtime"', `CREATE SCHEMA IF NOT EXISTS ${quoteIdentifier(this.schema)}`)
       .replaceAll('"runtime".', `${quoteIdentifier(this.schema)}.`)
-      .replaceAll("'runtime'", `'${this.schema}'`);
+      .replaceAll("'runtime'", `'${this.schema}'`)
+      // Schema installers inspect information_schema without a schema clause
+      // for pg-mem compatibility. Keep this live fixture isolated from the
+      // disposable database's intentionally unsafe startup-rehearsal residue.
+      .replace(
+        "WHERE table_name = 'session_routes'",
+        `WHERE table_schema = '${this.schema}' AND table_name = 'session_routes'`,
+      );
     const scopedParams = params.map((value) => value === "runtime" ? this.schema : value);
     const result = await this.pool.query(scopedSql, scopedParams);
     return {rows: result.rows, rowCount: result.rowCount};

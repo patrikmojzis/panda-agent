@@ -2,8 +2,11 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
+import {ensurePostgresAgentSchema} from "../src/domain/agents/postgres-schema.js";
 import {PostgresTelegramStickerStore} from "../src/domain/agents/telegram-stickers/postgres.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
+import {ensurePostgresIdentitySchema} from "../src/domain/identity/postgres-schema.js";
+import {ensurePostgresTelegramStickerSchema} from "../src/domain/agents/telegram-stickers/postgres-schema.js";
 
 describe("PostgresTelegramStickerStore", () => {
   const pools: Array<{end(): Promise<void>}> = [];
@@ -40,9 +43,9 @@ describe("PostgresTelegramStickerStore", () => {
     const identities = new PostgresIdentityStore({pool});
     const agents = new PostgresAgentStore({pool});
     const stickers = new PostgresTelegramStickerStore({pool});
-    await identities.ensureSchema();
-    await agents.ensureSchema();
-    await stickers.ensureSchema();
+    await ensurePostgresIdentitySchema(pool);
+    await ensurePostgresAgentSchema(pool);
+    await ensurePostgresTelegramStickerSchema(pool);
     await agents.bootstrapAgent({agentKey: "panda", displayName: "Panda"});
     await agents.bootstrapAgent({agentKey: "other", displayName: "Other"});
     return {stickers};

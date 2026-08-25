@@ -7,7 +7,6 @@ import type {
 } from "./types.js";
 
 export interface SubagentProfileStore {
-  ensureSchema(): Promise<void>;
   seedBuiltinProfiles(profiles?: readonly UpsertSubagentProfileInput[]): Promise<readonly SubagentProfileRecord[]>;
   upsertProfile(input: UpsertSubagentProfileInput): Promise<SubagentProfileRecord>;
   getProfile(input: GetSubagentProfileInput): Promise<SubagentProfileRecord | null>;

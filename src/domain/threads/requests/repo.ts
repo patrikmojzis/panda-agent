@@ -10,53 +10,27 @@ import {
     buildRuntimeRequestNotificationChannel,
     type RuntimeRequestTableNames,
 } from "./postgres-shared.js";
-import {ensurePostgresRuntimeRequestSchema} from "./postgres-schema.js";
-import type {
-    CreateRuntimeRequestInput,
-    RuntimeRequestKind,
-    RuntimeRequestPayloadByKind,
-    RuntimeRequestRecord,
-    RuntimeRequestStatus,
+import {
+    RUNTIME_REQUEST_KINDS,
+    RUNTIME_REQUEST_STATUSES,
+    type CreateRuntimeRequestInput,
+    type RuntimeRequestKind,
+    type RuntimeRequestPayloadByKind,
+    type RuntimeRequestRecord,
+    type RuntimeRequestStatus,
 } from "./types.js";
+import {deriveRuntimeRequestOrderingKey} from "./ordering-key.js";
 
 export interface RuntimeRequestRepoOptions {
   pool: PgPoolLike<PgListenClient>;
   notificationPool?: PgPoolLike<PgListenClient>;
-  staleRunningRequestMs?: number;
+  claimLeaseMs?: number;
 }
 
-export const DEFAULT_RUNTIME_REQUEST_CLAIM_TIMEOUT_MS = 300_000;
-
-const runtimeRequestKinds = [
-  "a2a_message",
-  "telegram_message",
-  "telegram_reaction",
-  "whatsapp_message",
-  "whatsapp_reaction",
-  "discord_message",
-  "live_voice_delegation",
-  "tui_input",
-  "create_branch_session",
-  "create_subagent_session",
-  "create_worker_session",
-  "resolve_main_session_thread",
-  "resolve_thread_run_config",
-  "reset_session",
-  "abort_thread",
-  "compact_thread",
-  "compact_session",
-  "update_thread",
-] as const satisfies readonly RuntimeRequestKind[];
-
-const runtimeRequestStatuses = [
-  "pending",
-  "running",
-  "completed",
-  "failed",
-] as const satisfies readonly RuntimeRequestStatus[];
+export const DEFAULT_RUNTIME_REQUEST_CLAIM_LEASE_MS = 300_000;
 
 function parseKind(value: unknown): RuntimeRequestKind {
-  if (typeof value !== "string" || !runtimeRequestKinds.includes(value as RuntimeRequestKind)) {
+  if (typeof value !== "string" || !RUNTIME_REQUEST_KINDS.includes(value as RuntimeRequestKind)) {
     throw new Error(`Unsupported runtime request kind ${String(value)}`);
   }
 
@@ -64,11 +38,19 @@ function parseKind(value: unknown): RuntimeRequestKind {
 }
 
 function parseStatus(value: unknown): RuntimeRequestStatus {
-  if (typeof value !== "string" || !runtimeRequestStatuses.includes(value as RuntimeRequestStatus)) {
+  if (typeof value !== "string" || !RUNTIME_REQUEST_STATUSES.includes(value as RuntimeRequestStatus)) {
     throw new Error(`Unsupported runtime request status ${String(value)}`);
   }
 
   return value as RuntimeRequestStatus;
+}
+
+function parseOrderingKey(value: unknown): string {
+  const orderingKey = parseRequiredString(value, "ordering key");
+  if (!/^v1:[0-9a-f]{64}$/.test(orderingKey)) {
+    throw new Error(`Runtime request ordering key ${orderingKey} is invalid.`);
+  }
+  return orderingKey;
 }
 
 function parseJsonValue(value: unknown, label: string): JsonValue {
@@ -603,6 +585,7 @@ function parsePayload<K extends RuntimeRequestKind>(
       return {
         identityId,
         liveVoiceTurnId: parseRequiredString(payload.liveVoiceTurnId, "Live voice turn id"),
+        sessionId: parseRequiredString(payload.sessionId, "Live voice session target id"),
       } as RuntimeRequestPayloadByKind[K];
 
     case "tui_input":
@@ -619,7 +602,8 @@ function parsePayload<K extends RuntimeRequestKind>(
     case "create_branch_session":
       return {
         identityId,
-        sessionId: parseOptionalString(payload.sessionId),
+        sessionId: parseRequiredString(payload.sessionId, "branch session id"),
+        threadId: parseRequiredString(payload.threadId, "branch thread id"),
         agentKey: parseOptionalString(payload.agentKey),
         model: parseOptionalString(payload.model),
         thinking: parseThinking(payload.thinking),
@@ -629,8 +613,8 @@ function parsePayload<K extends RuntimeRequestKind>(
     case "create_subagent_session":
       return {
         identityId,
-        sessionId: parseOptionalString(payload.sessionId),
-        threadId: parseOptionalString(payload.threadId),
+        sessionId: parseRequiredString(payload.sessionId, "subagent session id"),
+        threadId: parseRequiredString(payload.threadId, "subagent thread id"),
         agentKey: parseOptionalString(payload.agentKey),
         parentSessionId: parseRequiredString(payload.parentSessionId, "subagent parent session id"),
         prompt: parseRequiredString(payload.prompt, "subagent prompt"),
@@ -644,12 +628,6 @@ function parsePayload<K extends RuntimeRequestKind>(
         model: parseOptionalString(payload.model),
         thinking: parseThinking(payload.thinking),
         inferenceProjection: parseInferenceProjection(payload.inferenceProjection, "subagent session inference projection"),
-      } as RuntimeRequestPayloadByKind[K];
-
-    case "create_worker_session":
-      return {
-        ...payload,
-        identityId,
       } as RuntimeRequestPayloadByKind[K];
 
     case "resolve_main_session_thread":
@@ -676,8 +654,7 @@ function parsePayload<K extends RuntimeRequestKind>(
         connectorKey: parseOptionalString(payload.connectorKey),
         externalConversationId: parseOptionalString(payload.externalConversationId),
         externalActorId: parseOptionalString(payload.externalActorId),
-        externalMessageId: parseOptionalString(payload.externalMessageId)
-          ?? parseOptionalString(payload.commandExternalMessageId),
+        externalMessageId: parseOptionalString(payload.externalMessageId),
         agentKey: parseOptionalString(payload.agentKey),
         model: parseOptionalString(payload.model),
         thinking: parseThinking(payload.thinking),
@@ -733,31 +710,46 @@ function serializePayload<K extends RuntimeRequestKind>(
   };
 }
 
-function buildClaimNextPendingRequestQuery(tableName: string, useSkipLocked: boolean): string {
+function buildClaimNextPendingRequestQuery(tableName: string): string {
   return `
-    SELECT *
-    FROM ${tableName}
-    WHERE status = 'pending'
-       OR (
-         status = 'running'
-         AND claimed_at IS NOT NULL
-         AND claimed_at < $1
-       )
-    ORDER BY created_at ASC, id ASC
-    LIMIT 1
-    FOR UPDATE${useSkipLocked ? " SKIP LOCKED" : ""}
+    WITH candidate AS MATERIALIZED (
+      SELECT request.id
+      FROM ${tableName} AS request
+      WHERE (
+        request.status = 'pending'
+        OR (
+          request.status = 'running'
+          AND request.claim_expires_at <= NOW()
+        )
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ${tableName} AS predecessor
+        WHERE predecessor.ordering_key = request.ordering_key
+          AND predecessor.status IN ('pending', 'running')
+          AND (predecessor.created_at, predecessor.id) < (request.created_at, request.id)
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ${tableName} AS owner
+        WHERE owner.ordering_key = request.ordering_key
+          AND owner.status = 'running'
+          AND owner.id <> request.id
+      )
+      ORDER BY request.created_at, request.id
+      LIMIT 1
+      FOR UPDATE OF request SKIP LOCKED
+    )
+    UPDATE ${tableName} AS request
+    SET status = 'running',
+        claimed_at = NOW(),
+        claim_token = $1,
+        claim_expires_at = NOW() + ($2::bigint * INTERVAL '1 millisecond'),
+        updated_at = NOW()
+    FROM candidate
+    WHERE request.id = candidate.id
+    RETURNING request.*
   `;
-}
-
-function isSkipLockedSyntaxUnsupported(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-
-  const message = error.message.toLowerCase();
-  return message.includes("skip locked")
-    || message.includes("kw_skip")
-    || message.includes("syntax error");
 }
 
 function parseRecord<K extends RuntimeRequestKind = RuntimeRequestKind>(
@@ -769,9 +761,15 @@ function parseRecord<K extends RuntimeRequestKind = RuntimeRequestKind>(
     kind,
     status: parseStatus(row.status),
     payload: parsePayload(kind, row.payload),
+    orderingKey: parseOrderingKey(row.ordering_key),
     result: row.result === null ? undefined : parseJsonValue(row.result, "result"),
     error: typeof row.error === "string" ? row.error : undefined,
     claimedAt: optionalTimestampMillis(row.claimed_at, "Runtime request claimed_at must be a valid timestamp."),
+    claimToken: parseOptionalString(row.claim_token),
+    claimExpiresAt: optionalTimestampMillis(
+      row.claim_expires_at,
+      "Runtime request claim_expires_at must be a valid timestamp.",
+    ),
     createdAt: requireTimestampMillis(row.created_at, "Runtime request created_at must be a valid timestamp."),
     updatedAt: requireTimestampMillis(row.updated_at, "Runtime request updated_at must be a valid timestamp."),
     finishedAt: optionalTimestampMillis(row.finished_at, "Runtime request finished_at must be a valid timestamp."),
@@ -790,144 +788,232 @@ function requireTrimmedRequestId(id: string): string {
 export class RuntimeRequestRepo {
   private readonly pool: PgPoolLike<PgListenClient>;
   private readonly notificationPool: PgPoolLike<PgListenClient>;
-  private readonly staleRunningRequestMs: number;
+  private readonly claimLeaseMs: number;
   private readonly tables: RuntimeRequestTableNames;
   private readonly notificationChannel: string;
 
   constructor(options: RuntimeRequestRepoOptions) {
     this.pool = options.pool;
     this.notificationPool = options.notificationPool ?? options.pool;
-    this.staleRunningRequestMs = options.staleRunningRequestMs ?? DEFAULT_RUNTIME_REQUEST_CLAIM_TIMEOUT_MS;
+    this.claimLeaseMs = options.claimLeaseMs ?? DEFAULT_RUNTIME_REQUEST_CLAIM_LEASE_MS;
+    if (!Number.isSafeInteger(this.claimLeaseMs) || this.claimLeaseMs <= 0) {
+      throw new Error("Runtime request claim lease must be a positive integer.");
+    }
     this.tables = buildRuntimeRequestTableNames();
     this.notificationChannel = buildRuntimeRequestNotificationChannel();
-  }
-
-  private async notifyPendingRequest(): Promise<void> {
-    await this.pool.query("SELECT pg_notify($1, $2)", [this.notificationChannel, "pending"]);
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresRuntimeRequestSchema(this.pool);
   }
 
   async enqueueRequest<K extends RuntimeRequestKind>(
     input: CreateRuntimeRequestInput<K>,
     options: {idempotencyKey?: string} = {},
   ): Promise<RuntimeRequestRecord<K>> {
-    const {kind, serialized} = serializePayload(input);
+    const {kind, payload, serialized} = serializePayload(input);
+    const orderingKey = deriveRuntimeRequestOrderingKey({kind, payload});
+    const idempotencyKey = options.idempotencyKey?.trim() || null;
     const result = await this.pool.query(`
       INSERT INTO ${this.tables.runtimeRequests} (
         id,
         kind,
         status,
         payload,
+        ordering_key,
         idempotency_key
       ) VALUES (
         $1,
         $2,
         'pending',
         $3::jsonb,
-        $4
+        $4,
+        $5
       )
-      ON CONFLICT (idempotency_key) DO UPDATE SET idempotency_key=EXCLUDED.idempotency_key
-      RETURNING *
+      ON CONFLICT (idempotency_key) DO NOTHING
+      RETURNING *, pg_notify($6, 'pending') AS notification
     `, [
       randomUUID(),
       kind,
       serialized,
-      options.idempotencyKey ?? null,
+      orderingKey,
+      idempotencyKey,
+      this.notificationChannel,
     ]);
 
-    const record = parseRecord<K>(result.rows[0] as Record<string, unknown>);
-    await this.notifyPendingRequest();
-    return record;
+    const inserted = result.rows[0] as Record<string, unknown> | undefined;
+    if (inserted) {
+      return parseRecord<K>(inserted);
+    }
+
+    if (!idempotencyKey) {
+      throw new Error("Runtime request insert returned no row without an idempotency conflict.");
+    }
+
+    const existing = await this.pool.query(`
+      SELECT *
+      FROM ${this.tables.runtimeRequests}
+      WHERE idempotency_key = $1
+        AND kind = $2
+        AND payload = $3::jsonb
+    `, [idempotencyKey, kind, serialized]);
+    const existingRow = existing.rows[0] as Record<string, unknown> | undefined;
+    if (!existingRow) {
+      throw new Error(
+        `Runtime request idempotency key ${idempotencyKey} is already bound to a different request.`,
+      );
+    }
+    return parseRecord<K>(existingRow);
   }
 
   async claimNextPendingRequest(): Promise<RuntimeRequestRecord | null> {
-    const client = await this.pool.connect();
+    const claimToken = randomUUID();
+    const claimed = await this.pool.query(
+      buildClaimNextPendingRequestQuery(this.tables.runtimeRequests),
+      [claimToken, this.claimLeaseMs],
+    );
+
+    const row = claimed.rows[0] as Record<string, unknown> | undefined;
+    if (!row) {
+      return null;
+    }
 
     try {
-      for (const useSkipLocked of [true, false] as const) {
-        let inTransaction = false;
-        try {
-          await client.query("BEGIN");
-          inTransaction = true;
-
-          const selected = await client.query(
-            buildClaimNextPendingRequestQuery(this.tables.runtimeRequests, useSkipLocked),
-            [new Date(Date.now() - this.staleRunningRequestMs)],
-          );
-          const row = selected.rows[0] as Record<string, unknown> | undefined;
-          if (!row) {
-            await client.query("COMMIT");
-            return null;
-          }
-
-          const record = parseRecord(row);
-          const updated = await client.query(`
-            UPDATE ${this.tables.runtimeRequests}
-            SET status = 'running',
-                claimed_at = NOW(),
-                updated_at = NOW()
-            WHERE id = $1
-            RETURNING *
-          `, [
-            record.id,
-          ]);
-
-          await client.query("COMMIT");
-          const updatedRow = updated.rows[0] as Record<string, unknown> | undefined;
-          return updatedRow ? parseRecord(updatedRow) : null;
-        } catch (error) {
-          if (inTransaction) {
-            await client.query("ROLLBACK");
-          }
-
-          if (useSkipLocked && isSkipLockedSyntaxUnsupported(error)) {
-            continue;
-          }
-
-          throw error;
-        }
+      return parseRecord(row);
+    } catch (error) {
+      const requestId = typeof row.id === "string" ? row.id : null;
+      if (requestId) {
+        await this.pool.query(`
+          UPDATE ${this.tables.runtimeRequests}
+          SET status = 'failed',
+              error = $2,
+              finished_at = NOW(),
+              claim_token = NULL,
+              claim_expires_at = NULL,
+              updated_at = NOW()
+          WHERE id = $1 AND claim_token = $3
+          RETURNING pg_notify($4, 'settled') AS notification
+        `, [
+          requestId,
+          `Persisted runtime request is invalid: ${error instanceof Error ? error.message : String(error)}`,
+          claimToken,
+          this.notificationChannel,
+        ]);
       }
-
-      return null;
-    } finally {
-      client.release();
+      throw error;
     }
   }
 
-  async completeRequest(id: string, resultValue?: unknown): Promise<RuntimeRequestRecord> {
+  async renewRequestClaim(id: string, claimToken: string): Promise<boolean> {
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.runtimeRequests}
+      SET claim_expires_at = NOW() + ($3::bigint * INTERVAL '1 millisecond'),
+          updated_at = NOW()
+      WHERE id = $1
+        AND claim_token = $2
+        AND status = 'running'
+      RETURNING id
+    `, [
+      requireTrimmedRequestId(id),
+      requireNonEmptyString(claimToken, "Runtime request claim token must not be empty."),
+      this.claimLeaseMs,
+    ]);
+    return result.rows.length > 0;
+  }
+
+  /** Returns unfinished work to the durable queue during cooperative shutdown. */
+  async releaseRequestClaim(id: string, claimToken: string): Promise<boolean> {
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.runtimeRequests}
+      SET status = 'pending',
+          claimed_at = NULL,
+          claim_token = NULL,
+          claim_expires_at = NULL,
+          updated_at = NOW()
+      WHERE id = $1
+        AND claim_token = $2
+        AND status = 'running'
+      RETURNING id, pg_notify($3, 'pending') AS notification
+    `, [
+      requireTrimmedRequestId(id),
+      requireNonEmptyString(claimToken, "Runtime request claim token must not be empty."),
+      this.notificationChannel,
+    ]);
+    return result.rows.length > 0;
+  }
+
+  async pruneSettledRequests(input: {
+    completedBefore: Date;
+    failedBefore: Date;
+    limit?: number;
+  }): Promise<number> {
+    const requestedLimit = input.limit ?? 500;
+    if (!Number.isSafeInteger(requestedLimit) || requestedLimit <= 0) {
+      throw new Error("Runtime request prune limit must be a positive integer.");
+    }
+    const limit = Math.min(requestedLimit, 5_000);
+    const result = await this.pool.query(`
+      DELETE FROM ${this.tables.runtimeRequests}
+      WHERE id IN (
+        SELECT id
+        FROM ${this.tables.runtimeRequests}
+        WHERE (status = 'completed' AND finished_at < $1)
+           OR (status = 'failed' AND finished_at < $2)
+        ORDER BY finished_at ASC, id ASC
+        LIMIT $3
+      )
+      RETURNING id
+    `, [input.completedBefore, input.failedBefore, limit]);
+    return result.rowCount ?? result.rows.length;
+  }
+
+  async completeRequest(id: string, claimToken: string, resultValue?: unknown): Promise<RuntimeRequestRecord> {
     const result = await this.pool.query(`
       UPDATE ${this.tables.runtimeRequests}
       SET status = 'completed',
           result = $2::jsonb,
           error = NULL,
           finished_at = NOW(),
+          claim_token = NULL,
+          claim_expires_at = NULL,
           updated_at = NOW()
       WHERE id = $1
-      RETURNING *
+        AND claim_token = $3
+        AND status = 'running'
+      RETURNING *, pg_notify($4, 'settled') AS notification
     `, [
       requireTrimmedRequestId(id),
       toJson(resultValue),
+      requireNonEmptyString(claimToken, "Runtime request claim token must not be empty."),
+      this.notificationChannel,
     ]);
-    return parseRecord(result.rows[0] as Record<string, unknown>);
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    if (!row) {
+      throw new Error(`Runtime request ${id} claim was lost before completion.`);
+    }
+    return parseRecord(row);
   }
 
-  async failRequest(id: string, error: string): Promise<RuntimeRequestRecord> {
+  async failRequest(id: string, claimToken: string, error: string): Promise<RuntimeRequestRecord> {
     const result = await this.pool.query(`
       UPDATE ${this.tables.runtimeRequests}
       SET status = 'failed',
           error = $2,
           finished_at = NOW(),
+          claim_token = NULL,
+          claim_expires_at = NULL,
           updated_at = NOW()
       WHERE id = $1
-      RETURNING *
+        AND claim_token = $3
+        AND status = 'running'
+      RETURNING *, pg_notify($4, 'settled') AS notification
     `, [
       requireTrimmedRequestId(id),
       error,
+      requireNonEmptyString(claimToken, "Runtime request claim token must not be empty."),
+      this.notificationChannel,
     ]);
-    return parseRecord(result.rows[0] as Record<string, unknown>);
+    const row = result.rows[0] as Record<string, unknown> | undefined;
+    if (!row) {
+      throw new Error(`Runtime request ${id} claim was lost before failure settlement.`);
+    }
+    return parseRecord(row);
   }
 
   async getRequest(id: string): Promise<RuntimeRequestRecord> {

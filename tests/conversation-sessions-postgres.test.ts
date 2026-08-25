@@ -3,6 +3,7 @@ import {DataType, newDb} from "pg-mem";
 
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 import {ConversationRepo} from "../src/domain/sessions/conversations/repo.js";
+import {ensurePostgresConversationSessionSchema} from "../src/domain/sessions/conversations/postgres-schema.js";
 
 describe("ConversationRepo", () => {
   const pools: Array<{ end(): Promise<void> }> = [];
@@ -32,7 +33,7 @@ describe("ConversationRepo", () => {
 
     const {sessionStore} = await createRuntimeStores(pool);
     const store = new ConversationRepo({ pool });
-    await store.ensureSchema();
+    await ensurePostgresConversationSessionSchema(pool);
     await sessionStore.createSession({
       id: "session-a",
       agentKey: "panda",
@@ -113,7 +114,7 @@ describe("ConversationRepo", () => {
 
     const {sessionStore} = await createRuntimeStores(pool);
     const store = new ConversationRepo({ pool });
-    await store.ensureSchema();
+    await ensurePostgresConversationSessionSchema(pool);
     await sessionStore.createSession({
       id: "session-a",
       agentKey: "panda",
@@ -167,7 +168,7 @@ describe("ConversationRepo", () => {
 
     const {sessionStore} = await createRuntimeStores(pool);
     const store = new ConversationRepo({ pool });
-    await store.ensureSchema();
+    await ensurePostgresConversationSessionSchema(pool);
     await sessionStore.createSession({
       id: "session-a",
       agentKey: "panda",
@@ -223,7 +224,7 @@ describe("ConversationRepo", () => {
 
     const {sessionStore} = await createRuntimeStores(pool);
     const store = new ConversationRepo({ pool });
-    await store.ensureSchema();
+    await ensurePostgresConversationSessionSchema(pool);
     await sessionStore.createSession({
       id: "session-telegram",
       agentKey: "panda",
@@ -299,7 +300,7 @@ describe("ConversationRepo", () => {
 
     const {sessionStore} = await createRuntimeStores(pool);
     const store = new ConversationRepo({ pool });
-    await store.ensureSchema();
+    await ensurePostgresConversationSessionSchema(pool);
     await sessionStore.createSession({
       id: "session-a",
       agentKey: "panda",
@@ -393,7 +394,7 @@ describe("ConversationRepo", () => {
 
     await createRuntimeStores(pool);
     const store = new ConversationRepo({ pool });
-    await store.ensureSchema();
+    await ensurePostgresConversationSessionSchema(pool);
 
     await expect(store.bindConversation({
       source: "   ",

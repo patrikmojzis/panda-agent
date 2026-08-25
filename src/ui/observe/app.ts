@@ -9,6 +9,7 @@ import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.
 import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord, ThreadToolJobRecord} from "../../domain/threads/runtime/types.js";
 import type {ThreadRuntimeNotification} from "../../domain/threads/runtime/postgres-notifications.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
+import {createPandaSchemaVerifier} from "../../integrations/postgres/schema-version.js";
 import {isRecord} from "../../lib/records.js";
 import {truncateText} from "../../lib/strings.js";
 import {buildDefaultAgentTools} from "../../panda/definition.js";
@@ -42,7 +43,7 @@ export interface ObserveRunOptions {
 
 export interface ObserveServices {
   sessionStore: Pick<SessionStore, "getMainSession" | "getSession" | "getSessionRuntimeConfig">;
-  store: Pick<ThreadRuntimeStore, "getThread" | "loadTranscript" | "listRuns" | "listToolJobs">;
+  store: Pick<ThreadRuntimeStore, "getThread" | "listTranscriptPage" | "getLatestRun" | "listToolJobs">;
   subscribe(
     listener: (notification: ThreadRuntimeNotification) => Promise<void> | void,
   ): Promise<() => Promise<void>>;
@@ -150,19 +151,25 @@ export async function createObserveServices(dbUrl?: string): Promise<ObserveServ
     applicationName: "panda/observe",
     max: 2,
   });
-  const sessionStore = new PostgresSessionStore({pool});
-  const store = new PostgresThreadRuntimeStore({pool});
+  try {
+    // Programmatic callers bypass the root CLI revision gate. Keep Observe a
+    // schema consumer and reject drift before constructing any stores.
+    await createPandaSchemaVerifier(pool).assertCurrent();
+    const sessionStore = new PostgresSessionStore({pool});
+    const store = new PostgresThreadRuntimeStore({pool});
 
-  return {
-    // Observe is intentionally read-only; it should inspect an initialized
-    // runtime, not try to create or mutate schema on the way in.
-    sessionStore,
-    store,
-    subscribe: (listener) => listenThreadRuntimeNotifications({pool, listener}),
-    close: async () => {
-      await pool.end();
-    },
-  };
+    return {
+      sessionStore,
+      store,
+      subscribe: (listener) => listenThreadRuntimeNotifications({pool, listener}),
+      close: async () => {
+        await pool.end();
+      },
+    };
+  } catch (error) {
+    await pool.end().catch(() => {});
+    throw error;
+  }
 }
 
 export async function runObserveApp(options: ObserveRunOptions): Promise<void> {
@@ -188,6 +195,7 @@ export class ObserveApp {
   private nextEntryId = 1;
   private lastObservedRunStatusKey: string | null = null;
   private currentRunStartedAt = 0;
+  private lastStoredSequence = 0;
   private syncDebounceTimer: NodeJS.Timeout | null = null;
   private syncInFlight = false;
   private syncRequestedWhileBusy = false;
@@ -366,6 +374,10 @@ export class ObserveApp {
         store: services.store,
         threadId: resolved.threadId,
         includeToolJobs: true,
+        transcriptLimit: Math.max(1, this.tail),
+        afterSequence: this.currentThread?.id === resolved.threadId
+          ? this.lastStoredSequence
+          : undefined,
       }),
       services.sessionStore.getSessionRuntimeConfig(resolved.sessionId),
     ]);
@@ -400,6 +412,10 @@ export class ObserveApp {
 
     const isInitial = !this.currentThread || threadSwitched;
     this.currentThread = snapshot.thread;
+    this.lastStoredSequence = Math.max(
+      this.lastStoredSequence,
+      snapshot.transcript.at(-1)?.sequence ?? 0,
+    );
 
     if (isInitial) {
       this.renderHeader(snapshot.thread, snapshot.resolved, snapshot.runs, snapshot.runtimeConfig);
@@ -431,6 +447,7 @@ export class ObserveApp {
     this.nextEntryId = 1;
     this.lastObservedRunStatusKey = null;
     this.currentRunStartedAt = 0;
+    this.lastStoredSequence = 0;
   }
 
   private seedRunState(runs: readonly ThreadRunRecord[]): void {

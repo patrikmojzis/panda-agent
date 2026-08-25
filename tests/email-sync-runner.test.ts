@@ -164,6 +164,22 @@ function attachmentMessageSource(options: {
   ].join("\r\n"));
 }
 
+function emailDeliveryResult(threadId: string) {
+  return {
+    input: {
+      id: "input-1",
+      threadId,
+      order: 1,
+      deliveryMode: "wake" as const,
+      status: "pending" as const,
+      connectorKey: "",
+      source: "email_event",
+      createdAt: 1,
+    },
+    disposition: "inserted" as const,
+  };
+}
+
 function createAttachmentSyncRunner(
   store: MemoryEmailStore,
   rootDir: string,
@@ -183,7 +199,7 @@ function createAttachmentSyncRunner(
       getMainSession: async () => session,
       getSession: async () => session,
     },
-    coordinator: {submitInput: async () => {}},
+    coordinator: {submitSessionInput: async () => emailDeliveryResult("thread-1")},
     credentialResolver: fakeCredentialResolver,
     createMediaWriter: () => new FileSystemMediaStore({rootDir}),
     pollIntervalMs: 60 * 60 * 1000,
@@ -228,8 +244,9 @@ describe("EmailSyncRunner", () => {
         getSession: async () => session,
       },
       coordinator: {
-        submitInput: async (threadId: string, input: unknown) => {
-          submitted.push({threadId, input});
+        submitSessionInput: async (sessionId: string, input: unknown) => {
+          submitted.push({sessionId, input});
+          return emailDeliveryResult(session.currentThreadId);
         },
       },
       credentialResolver: fakeCredentialResolver,
@@ -260,7 +277,7 @@ describe("EmailSyncRunner", () => {
     await runner.stop();
 
     expect(submitted).toEqual([{
-      threadId: "thread-1",
+      sessionId: "session-1",
       input: expect.objectContaining({
         source: "email_event",
         externalMessageId: "email-1",
@@ -326,7 +343,7 @@ describe("EmailSyncRunner", () => {
       createdAt: 1,
       updatedAt: 1,
     };
-    const submitted: Array<{threadId: string; input: {message: {content: string}}}> = [];
+    const submitted: Array<{sessionId: string; input: {message: {content: string}}}> = [];
     const runner = new EmailSyncRunner({
       store,
       sessions: {
@@ -339,8 +356,9 @@ describe("EmailSyncRunner", () => {
         },
       },
       coordinator: {
-        submitInput: async (threadId: string, input: unknown) => {
-          submitted.push({threadId, input: input as {message: {content: string}}});
+        submitSessionInput: async (sessionId: string, input: unknown) => {
+          submitted.push({sessionId, input: input as {message: {content: string}}});
+          return emailDeliveryResult(branchSession.currentThreadId);
         },
       },
       credentialResolver: fakeCredentialResolver,
@@ -365,7 +383,7 @@ describe("EmailSyncRunner", () => {
       authDmarc: "pass",
       authSummary: "unknown",
     });
-    expect(submitted[0]).toMatchObject({threadId: "branch-thread"});
+    expect(submitted[0]).toMatchObject({sessionId: "branch-session"});
     expect(submitted[0]?.input.message.content).toContain("SPF: \"pass\"");
     expect(submitted[0]?.input.message.content).toContain("DKIM: \"pass\"");
     expect(submitted[0]?.input.message.content).toContain("DMARC: \"pass\"");
@@ -373,7 +391,7 @@ describe("EmailSyncRunner", () => {
 
   it("wakes the routed message session before falling back to main", async () => {
     const store = new MemoryEmailStore();
-    const submitted: Array<{threadId: string}> = [];
+    const submitted: Array<{sessionId: string}> = [];
     const mainSession: SessionRecord = {
       id: "main-session",
       agentKey: "panda",
@@ -400,8 +418,9 @@ describe("EmailSyncRunner", () => {
         },
       },
       coordinator: {
-        submitInput: async (threadId: string) => {
-          submitted.push({threadId});
+        submitSessionInput: async (sessionId: string) => {
+          submitted.push({sessionId});
+          return emailDeliveryResult(branchSession.currentThreadId);
         },
       },
       credentialResolver: fakeCredentialResolver,
@@ -424,14 +443,14 @@ describe("EmailSyncRunner", () => {
 
     await runner.start();
     await waitFor(() => {
-      expect(submitted).toEqual([{threadId: "branch-thread"}]);
+      expect(submitted).toEqual([{sessionId: "branch-session"}]);
     });
     await runner.stop();
   });
 
-  it("re-resolves the main session current thread when waking for synced mail", async () => {
+  it("submits the main session by id so storage can resolve resets atomically", async () => {
     const store = new MemoryEmailStore();
-    const submitted: Array<{threadId: string}> = [];
+    const submitted: Array<{sessionId: string}> = [];
     const session: SessionRecord = {
       id: "session-1",
       agentKey: "panda",
@@ -444,15 +463,12 @@ describe("EmailSyncRunner", () => {
       store,
       sessions: {
         getMainSession: async () => session,
-        getSession: async (sessionId) => {
-          expect(sessionId).toBe(session.id);
-          session.currentThreadId = "thread-after-reset";
-          return session;
-        },
+        getSession: async () => session,
       },
       coordinator: {
-        submitInput: async (threadId: string) => {
-          submitted.push({threadId});
+        submitSessionInput: async (sessionId: string) => {
+          submitted.push({sessionId});
+          return emailDeliveryResult("thread-after-reset");
         },
       },
       credentialResolver: fakeCredentialResolver,
@@ -474,7 +490,7 @@ describe("EmailSyncRunner", () => {
 
     await runner.start();
     await waitFor(() => {
-      expect(submitted).toEqual([{threadId: "thread-after-reset"}]);
+      expect(submitted).toEqual([{sessionId: "session-1"}]);
     });
     await runner.stop();
   });
@@ -527,7 +543,7 @@ describe("EmailSyncRunner", () => {
         getMainSession: async () => session,
         getSession: async () => session,
       },
-      coordinator: {submitInput: async () => {}},
+      coordinator: {submitSessionInput: async () => emailDeliveryResult("thread-1")},
       credentialResolver: fakeCredentialResolver,
       createMediaWriter: () => new FileSystemMediaStore({rootDir}),
       pollIntervalMs: 60 * 60 * 1000,
@@ -570,7 +586,7 @@ describe("EmailSyncRunner", () => {
         getMainSession: async () => session,
         getSession: async () => session,
       },
-      coordinator: {submitInput: async () => {}},
+      coordinator: {submitSessionInput: async () => emailDeliveryResult("thread-1")},
       credentialResolver: fakeCredentialResolver,
       createMediaWriter: () => ({writeMedia}),
       pollIntervalMs: 60 * 60 * 1000,

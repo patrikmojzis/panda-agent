@@ -30,6 +30,14 @@ session.
 A **thread** is the current backing transcript/history for a session. `/reset`
 can replace the thread while the session stays the same.
 
+An **active transcript** is the bounded replay projection for a thread: its
+latest compact checkpoint followed by ordinary messages after that checkpoint's
+cutoff. It is not the thread's complete audit history.
+
+A **compact checkpoint** is an append-only summary boundary with a typed
+`compacted_through_sequence` marker. The newest checkpoint supersedes older
+checkpoints for replay; full history remains available through bounded pages.
+
 Target sessions in durable state. Resolve `session.current_thread_id` only at
 the last responsible moment for delivery or model execution. See
 [Sessions](./sessions.md).

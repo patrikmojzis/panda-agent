@@ -2,8 +2,10 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/postgres.js";
+import {ensurePostgresAgentTableSchema} from "../src/domain/agents/postgres-schema.js";
 import {normalizeMcpConfig} from "../src/domain/mcp/config.js";
 import {PostgresMcpConfigStore} from "../src/domain/mcp/postgres.js";
+import {ensurePostgresMcpSchema} from "../src/domain/mcp/postgres-schema.js";
 import {McpRegistryVersionConflictError} from "../src/domain/mcp/store.js";
 
 const stdio = (command = "node") => ({
@@ -34,8 +36,8 @@ describe("MCP config persistence", () => {
     pools.push(pool);
     const agents = new PostgresAgentStore({pool});
     const configs = new PostgresMcpConfigStore(pool);
-    await agents.ensureAgentTableSchema();
-    await configs.ensureSchema();
+    await ensurePostgresAgentTableSchema(pool);
+    await ensurePostgresMcpSchema(pool);
     await agents.bootstrapAgent({agentKey: "panda", displayName: "Panda"});
     await agents.bootstrapAgent({agentKey: "luna", displayName: "Luna"});
     return {agents, configs, pool};

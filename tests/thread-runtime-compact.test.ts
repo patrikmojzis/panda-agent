@@ -328,7 +328,7 @@ describe("thread compaction helpers", () => {
     expect(split).not.toBeNull();
     expect(split?.summaryRecords.map((record) => record.sequence)).toEqual([1, 2]);
     expect(split?.preservedTail.map((record) => record.sequence)).toEqual([3, 4, 5, 6, 7, 8]);
-    expect(split?.compactedUpToSequence).toBe(2);
+    expect(split?.compactedThroughSequence).toBe(2);
   });
 
   it("projects the latest compact boundary plus later messages", () => {
@@ -379,7 +379,7 @@ describe("thread compaction helpers", () => {
         message: boundaryMessage,
         metadata: {
           kind: "compact_boundary",
-          compactedUpToSequence: 2,
+          compactedThroughSequence: 2,
           preservedTailUserTurns: 3,
           trigger: "manual",
         },
@@ -416,19 +416,119 @@ describe("thread compaction helpers", () => {
     expect(projected[0]?.source).toBe("compact");
   });
 
+  it("supersedes older compact boundaries after repeated compaction", () => {
+    const projected = projectTranscriptForRun([
+      {
+        id: "1",
+        threadId: "thread-repeated-compact",
+        sequence: 1,
+        origin: "input",
+        source: "tui",
+        message: stringToUserMessage("old request"),
+        createdAt: 1,
+      },
+      {
+        id: "2",
+        threadId: "thread-repeated-compact",
+        sequence: 2,
+        origin: "runtime",
+        source: "assistant",
+        message: assistant("old reply"),
+        createdAt: 2,
+      },
+      {
+        id: "3",
+        threadId: "thread-repeated-compact",
+        sequence: 3,
+        origin: "input",
+        source: "tui",
+        message: stringToUserMessage("summarized by the second compact"),
+        createdAt: 3,
+      },
+      {
+        id: "4",
+        threadId: "thread-repeated-compact",
+        sequence: 4,
+        origin: "runtime",
+        source: "assistant",
+        message: assistant("also summarized by the second compact"),
+        createdAt: 4,
+      },
+      {
+        id: "5",
+        threadId: "thread-repeated-compact",
+        sequence: 5,
+        origin: "runtime",
+        source: "compact",
+        message: createCompactBoundaryMessage("Intent:\n- first summary"),
+        metadata: {
+          kind: "compact_boundary",
+          compactedThroughSequence: 2,
+          preservedTailUserTurns: 6,
+          trigger: "manual",
+        },
+        createdAt: 5,
+      },
+      {
+        id: "6",
+        threadId: "thread-repeated-compact",
+        sequence: 6,
+        origin: "input",
+        source: "tui",
+        message: stringToUserMessage("preserved tail"),
+        createdAt: 6,
+      },
+      {
+        id: "7",
+        threadId: "thread-repeated-compact",
+        sequence: 7,
+        origin: "runtime",
+        source: "assistant",
+        message: assistant("preserved reply"),
+        createdAt: 7,
+      },
+      {
+        id: "8",
+        threadId: "thread-repeated-compact",
+        sequence: 8,
+        origin: "runtime",
+        source: "compact",
+        message: createCompactBoundaryMessage("Intent:\n- second summary"),
+        metadata: {
+          kind: "compact_boundary",
+          compactedThroughSequence: 4,
+          preservedTailUserTurns: 6,
+          trigger: "auto",
+        },
+        createdAt: 8,
+      },
+      {
+        id: "9",
+        threadId: "thread-repeated-compact",
+        sequence: 9,
+        origin: "input",
+        source: "tui",
+        message: stringToUserMessage("after the second compact"),
+        createdAt: 9,
+      },
+    ]);
+
+    expect(projected.map((record) => record.sequence)).toEqual([8, 6, 7, 9]);
+  });
+
   it("reuses the shared helper for auto compaction boundaries", async () => {
     vi.stubEnv("OPENAI_API_KEY", "test-key");
 
     const transcript = buildCompactionTranscript();
-    const appendRuntimeMessage = vi.fn(async (_threadId: string, payload: any) => {
+    const commitCompaction = vi.fn(async (_threadId: string, commit: any) => {
       const record = {
         id: "compact-1",
         threadId: "thread-compact",
         sequence: 9,
         origin: "runtime" as const,
-        source: payload.source,
-        message: payload.message,
-        metadata: payload.metadata,
+        source: "compact",
+        message: commit.message,
+        metadata: commit.metadata,
         createdAt: 9,
       };
       transcript.push(record);
@@ -441,23 +541,25 @@ describe("thread compaction helpers", () => {
 
     const compacted = await compactThread({
       store: {
-        loadTranscript: vi.fn(async () => transcript),
-        appendRuntimeMessage,
+        loadActiveTranscript: vi.fn(async () => ({checkpointId: null, records: transcript})),
+        commitCompaction,
       },
       thread: {
         id: "thread-compact",
       },
       model: TEST_MODEL_WINDOW_600,
       trigger: "auto",
+      owningRunId: "run-compact",
     });
 
     expect(compacted).not.toBeNull();
-    expect(appendRuntimeMessage).toHaveBeenCalledWith("thread-compact", expect.objectContaining({
-      source: "compact",
+    expect(commitCompaction).toHaveBeenCalledWith("thread-compact", expect.objectContaining({
+      expectedCheckpointId: null,
+      runId: "run-compact",
       metadata: expect.objectContaining({
         kind: "compact_boundary",
         trigger: "auto",
-        compactedUpToSequence: 2,
+        compactedThroughSequence: 2,
       }),
     }));
     expect(compacted?.tokensAfter).toBeLessThan(compacted?.tokensBefore ?? Number.POSITIVE_INFINITY);
@@ -467,18 +569,18 @@ describe("thread compaction helpers", () => {
     vi.stubEnv("OPENAI_API_KEY", "test-key");
 
     const transcript = buildCompactionTranscript();
-    const loadTranscript = vi.fn(async () => {
+    const loadActiveTranscript = vi.fn(async () => {
       throw new Error("compactThread should reuse the provided transcript");
     });
-    const appendRuntimeMessage = vi.fn(async (_threadId: string, payload: any) => {
+    const commitCompaction = vi.fn(async (_threadId: string, commit: any) => {
       return {
         id: "compact-2",
         threadId: "thread-compact",
         sequence: 9,
         origin: "runtime" as const,
-        source: payload.source,
-        message: payload.message,
-        metadata: payload.metadata,
+        source: "compact",
+        message: commit.message,
+        metadata: commit.metadata,
         createdAt: 9,
       };
     });
@@ -489,18 +591,18 @@ describe("thread compaction helpers", () => {
 
     await expect(compactThread({
       store: {
-        loadTranscript,
-        appendRuntimeMessage,
+        loadActiveTranscript,
+        commitCompaction,
       },
       thread: {
         id: "thread-compact",
       },
-      transcript,
+      transcript: {checkpointId: null, records: transcript},
       model: TEST_MODEL_WINDOW_600,
       trigger: "auto",
     })).resolves.not.toBeNull();
 
-    expect(loadTranscript).not.toHaveBeenCalled();
+    expect(loadActiveTranscript).not.toHaveBeenCalled();
   });
 
   it("does not label compact failure notices as prior summaries", () => {
@@ -531,15 +633,15 @@ describe("thread compaction helpers", () => {
     vi.stubEnv("OPENAI_API_KEY", "test-key");
 
     const transcript = buildCompactionTranscript();
-    const appendRuntimeMessage = vi.fn();
+    const commitCompaction = vi.fn();
     vi.spyOn(PiAiRuntime.prototype, "complete").mockResolvedValue(
       assistant(`<summary>\nIntent:\n- ${"x".repeat(8_000)}\n</summary>`),
     );
 
     await expect(compactThread({
       store: {
-        loadTranscript: vi.fn(async () => transcript),
-        appendRuntimeMessage,
+        loadActiveTranscript: vi.fn(async () => ({checkpointId: null, records: transcript})),
+        commitCompaction,
       },
       thread: {
         id: "thread-compact",
@@ -548,7 +650,7 @@ describe("thread compaction helpers", () => {
       trigger: "auto",
     })).rejects.toThrow("too large");
 
-    expect(appendRuntimeMessage).not.toHaveBeenCalled();
+    expect(commitCompaction).not.toHaveBeenCalled();
   });
 });
 

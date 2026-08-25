@@ -12,7 +12,7 @@ import {
     isCommandAllowed,
 } from "../../domain/commands/registry.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
-import type {ThreadToolJobRecord} from "../../domain/threads/runtime/types.js";
+import type {ThreadRunOwner, ThreadToolJobRecord} from "../../domain/threads/runtime/types.js";
 import type {
     CommandAuditMetadata,
     CommandDescriptor,
@@ -48,6 +48,7 @@ export interface RuntimeCommandDispatcherOptions {
   auditStore?: CommandAuditStore;
   now?: () => Date;
   resolveScope?: CommandScopeResolver;
+  owner?: ThreadRunOwner;
 }
 
 function errorResult(command: CommandName, error: CommandError): CommandResult {
@@ -198,12 +199,18 @@ export class RuntimeCommandDispatcher implements CommandExecutor {
   private readonly auditStore?: CommandAuditStore;
   private readonly now: () => Date;
   private readonly resolveScope?: CommandScopeResolver;
+  private owner: ThreadRunOwner | null;
 
   constructor(options: RuntimeCommandDispatcherOptions) {
     this.auditStore = options.auditStore;
     this.now = options.now ?? (() => new Date());
     this.resolveScope = options.resolveScope;
+    this.owner = options.owner ? {...options.owner} : null;
     this.registerCommands(options.commands);
+  }
+
+  setOwner(owner: ThreadRunOwner | null): void {
+    this.owner = owner ? {...owner} : null;
   }
 
   registerCommands(commands: readonly RegisteredCommand[]): void {
@@ -305,6 +312,7 @@ export class RuntimeCommandDispatcher implements CommandExecutor {
       id: randomUUID(),
       threadId: request.scope.threadId,
       runId: request.scope.runId,
+      owner: request.scope.runId ? undefined : this.owner ?? undefined,
       parentToolCallId: request.scope.parentToolCallId,
       kind: "command",
       summary: request.command,

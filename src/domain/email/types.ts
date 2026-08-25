@@ -214,7 +214,6 @@ export interface EmailAttachmentRecord {
 }
 
 export interface EmailStore {
-  ensureSchema(): Promise<void>;
   upsertAccount(input: UpsertEmailAccountInput): Promise<EmailAccountRecord>;
   disableAccount(agentKey: string, accountKey: string): Promise<EmailAccountRecord>;
   getAccount(agentKey: string, accountKey: string): Promise<EmailAccountRecord>;

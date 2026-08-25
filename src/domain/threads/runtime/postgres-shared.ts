@@ -6,6 +6,7 @@ export interface ThreadRuntimeTableNames {
   messages: string;
   inputs: string;
   runs: string;
+  abortOperations: string;
   toolJobs: string;
   bashJobs: string;
   shellStates: string;
@@ -17,6 +18,7 @@ export function buildThreadRuntimeTableNames(): ThreadRuntimeTableNames {
     messages: "messages",
     inputs: "inputs",
     runs: "runs",
+    abortOperations: "thread_abort_operations",
     toolJobs: "tool_jobs",
     bashJobs: "bash_jobs",
     shellStates: "shell_states",

@@ -5,7 +5,6 @@ import {normalizeAgentKey} from "../agents/types.js";
 import type {EncryptedCredentialValue} from "../credentials/types.js";
 import {isSafeMcpServerName} from "./config.js";
 import type {McpOAuthAttemptRecord, McpOAuthConnectionRecord, McpOAuthInitiator} from "./oauth-types.js";
-import {ensurePostgresMcpSchema} from "./postgres-schema.js";
 import {buildMcpTableNames} from "./postgres-shared.js";
 
 function binary(value: unknown, label: string): Buffer {
@@ -89,10 +88,6 @@ export class PostgresMcpOAuthStore {
   private readonly tables = buildMcpTableNames();
 
   constructor(private readonly pool: PgPoolLike) {}
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresMcpSchema(this.pool);
-  }
 
   async getConnection(agentKey: string, name: string): Promise<McpOAuthConnectionRecord | null> {
     const result = await this.pool.query(`SELECT * FROM ${this.tables.oauthConnections} WHERE agent_key = $1 AND server_name = $2`, [normalizeAgentKey(agentKey), serverName(name)]);

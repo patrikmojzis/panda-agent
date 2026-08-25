@@ -1803,6 +1803,7 @@ function createWebResearchRegisteredCommand(options: {
       const reasoningEffort = input.reasoningEffort ?? options.reasoningEffort ?? DEFAULT_WEB_RESEARCH_REASONING_EFFORT;
       const record = await options.jobService.start({
         threadId: request.scope.threadId,
+        runId: request.scope.runId,
         kind: "web_research",
         summary: input.query,
         start: ({signal, emitProgress}) => ({

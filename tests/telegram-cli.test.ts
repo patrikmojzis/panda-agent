@@ -39,7 +39,6 @@ const telegramCliMocks = vi.hoisted(() => {
   }
 
   class MockPostgresIdentityStore {
-    readonly ensureSchema = vi.fn(async () => {});
     readonly ensureIdentity = vi.fn(async () => ({
       id: "identity-test-user",
     }));
@@ -87,7 +86,6 @@ const telegramCliMocks = vi.hoisted(() => {
   }
 
   class MockPostgresConnectorAccountStore {
-    readonly ensureSchema = vi.fn(async () => {});
     readonly upsertAccount = vi.fn(async (input: {accountKey: string; connectorKey: string; displayName?: string; externalAccountId?: string; externalUsername?: string; ownerAgentKey?: string; status?: string}) => ({
       id: "connector-account-1",
       source: TELEGRAM_SOURCE,
@@ -171,11 +169,6 @@ const telegramCliMocks = vi.hoisted(() => {
     MockPostgresConnectorAccountStore,
     MockTelegramService,
     botInstances,
-    ensureSchemas: vi.fn(async (resources: Array<{ ensureSchema(): Promise<void> }>) => {
-      for (const resource of resources) {
-        await resource.ensureSchema();
-      }
-    }),
     storeInstances,
     agentStoreInstances,
     connectorStoreInstances,
@@ -220,8 +213,7 @@ vi.mock("../src/domain/connectors/postgres.js", () => ({
   PostgresConnectorAccountStore: telegramCliMocks.MockPostgresConnectorAccountStore,
 }));
 
-vi.mock("../src/lib/postgres-bootstrap.js", () => ({
-  ensureSchemas: telegramCliMocks.ensureSchemas,
+vi.mock("../src/lib/postgres-database.js", () => ({
   withPostgresPool: telegramCliMocks.withPostgresPool,
 }));
 
@@ -264,7 +256,6 @@ describe("Telegram CLI", () => {
     telegramCliMocks.connectorStoreInstances.length = 0;
     telegramCliMocks.pool.end.mockClear();
     telegramCliMocks.serviceConstructor.mockClear();
-    telegramCliMocks.ensureSchemas.mockClear();
     telegramCliMocks.withPostgresPool.mockClear();
     telegramCliMocks.setDeleteIdentityBindingResult(true);
     telegramCliMocks.setConnectorAccountStatus("enabled");
@@ -322,7 +313,6 @@ describe("Telegram CLI", () => {
       "postgres://telegram-db",
       expect.any(Function),
     );
-    expect(store.ensureSchema).toHaveBeenCalledTimes(1);
     expect(store.ensureIdentity).not.toHaveBeenCalled();
     expect(store.getIdentityByHandle).toHaveBeenCalledWith("alice");
     expect(store.ensureIdentityBinding).toHaveBeenCalledWith({
@@ -431,7 +421,6 @@ describe("Telegram CLI", () => {
     });
 
     const store = telegramCliMocks.connectorStoreInstances.at(-1)!;
-    expect(store.ensureSchema).toHaveBeenCalledTimes(1);
     expect(store.upsertAccount).toHaveBeenCalledWith(expect.objectContaining({
       source: TELEGRAM_SOURCE,
       accountKey: "main",

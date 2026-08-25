@@ -146,7 +146,7 @@ describe("WhatsApp socket runtime cycle", () => {
         externalMessageId: "msg-1",
         text: "hello from whatsapp",
       }),
-    });
+    }, expect.objectContaining({idempotencyKey: expect.stringMatching(/^ingress:v1:/)}));
 
     const stopWaiter = options.setStopWaiter.mock.calls.find(([waiter]) => typeof waiter === "function")?.[0];
     expect(stopWaiter).toBeTypeOf("function");

@@ -4,7 +4,9 @@ import {DataType, newDb} from "pg-mem";
 import {buildDefaultAgentLlmContexts, gatherContexts,} from "../src/index.js";
 import type {CommandDescriptor} from "../src/domain/commands/index.js";
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
+import {ensurePostgresAgentSchema} from "../src/domain/agents/postgres-schema.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
+import {ensurePostgresIdentitySchema} from "../src/domain/identity/postgres-schema.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 const customCommandDescriptor: CommandDescriptor = {
@@ -41,8 +43,8 @@ describe("buildDefaultAgentLlmContexts", () => {
 
     const identityStore = new PostgresIdentityStore({ pool });
     const agentStore = new PostgresAgentStore({ pool });
-    await identityStore.ensureSchema();
-    await agentStore.ensureSchema();
+    await ensurePostgresIdentitySchema(pool);
+    await ensurePostgresAgentSchema(pool);
     await identityStore.createIdentity({
       id: "alice-id",
       handle: "alice",
@@ -303,6 +305,7 @@ describe("buildDefaultAgentLlmContexts", () => {
     await threadStore.createToolJob({
       id: "job-running",
       threadId: "thread-bg-context",
+      owner: {source: "test", connectorKey: "context", holderId: "context-owner"},
       kind: "bash",
       summary: "sleep 10 && printf running",
       startedAt: Date.now() - 1_500,

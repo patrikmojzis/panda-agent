@@ -1,6 +1,7 @@
 import {renderLlmContextDump} from "../../prompts/contexts/llm-context.js";
 
 const LLM_CONTEXT_SECTION_PREVIEW_CHARS = 500;
+const LLM_CONTEXT_TRACE_SECTION_LIMIT = 256;
 
 export interface LlmContextSnapshot {
   content: string;
@@ -13,13 +14,10 @@ export interface LlmContextRuntimeSection {
   name: string;
   source?: string;
   label?: string;
-  content: string;
   contentPreview: string;
   contentChars: number;
   estimatedTokens: number;
-  dump: string;
   dumpChars: number;
-  promptCacheKeyPart?: string;
 }
 
 export interface LlmContextRuntimeDump {
@@ -84,7 +82,6 @@ export async function gatherContextsForRuntime(contexts: LlmContext[]): Promise<
       name: context.name,
       source: metadataString(snapshot.source, context.source),
       label: metadataString(snapshot.label, context.label),
-      content,
       contentPreview: previewContent(content),
       contentChars: content.length,
       estimatedTokens: estimateTokens(content),
@@ -100,17 +97,15 @@ export async function gatherContextsForRuntime(contexts: LlmContext[]): Promise<
       .join("\n\n"),
     sections: results
       .filter((result) => result.dump.trim().length > 0)
+      .slice(0, LLM_CONTEXT_TRACE_SECTION_LIMIT)
       .map((result) => ({
         name: result.name,
         ...(result.source ? {source: result.source} : {}),
         ...(result.label ? {label: result.label} : {}),
-        content: result.content,
         contentPreview: result.contentPreview,
         contentChars: result.contentChars,
         estimatedTokens: result.estimatedTokens,
-        dump: result.dump,
         dumpChars: result.dumpChars,
-        ...(result.promptCacheKeyPart ? {promptCacheKeyPart: result.promptCacheKeyPart} : {}),
       })),
     promptCacheKeyParts: results
       .map((result) => result.promptCacheKeyPart)

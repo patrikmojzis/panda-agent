@@ -31,7 +31,7 @@ import {
 
 const DEFAULT_EMAIL_POLL_INTERVAL_MS = 60_000;
 const EMAIL_EVENT_SOURCE = "email_event";
-type EmailSyncCoordinator = Pick<ThreadRuntimeCoordinator, "submitInput">;
+type EmailSyncCoordinator = Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
 type EmailSyncStore = Pick<EmailStore, "listEnabledAccounts" | "recordMessage" | "resolveRoute" | "updateAccountSyncState">;
 type EmailSyncCredentialResolver = Pick<CredentialResolver, "resolveCredential">;
 
@@ -428,7 +428,6 @@ export class EmailSyncRunner {
       },
     };
     await submitCurrentSessionInput({
-      sessions: this.sessions,
       sessionId: session.id,
       coordinator: this.coordinator,
       payload: {

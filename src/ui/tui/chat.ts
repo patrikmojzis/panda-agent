@@ -146,6 +146,9 @@ export class ChatApp {
   private renderQueued = false;
   private lastSpinnerFrame = -1;
   private syncDebounceTimer: NodeJS.Timeout | null = null;
+  private transcriptBeforeSequence: number | null = null;
+  private transcriptHistoryLoading = false;
+  private lastStoredSequence = 0;
   private inBracketedPaste = false;
   private pendingExtendedKeySequence = "";
 
@@ -189,10 +192,13 @@ export class ChatApp {
         WELCOME_ENTRY_TEXT,
       );
     } else {
+      const historyHint = this.transcriptBeforeSequence === null
+        ? ""
+        : " PgUp loads older history.";
       this.pushEntry(
         "meta",
         "session",
-        `Opened session ${this.currentThread?.sessionId ?? "-"}. Loaded ${this.transcript.length} transcript entries.`,
+        `Opened session ${this.currentThread?.sessionId ?? "-"}. Loaded ${this.transcript.length} recent transcript entries.${historyHint}`,
       );
     }
     this.setNotice(`Ctrl-F find · Ctrl-R history · ${COMPOSER_NEWLINE_HINT} · Ctrl-C exit`, "info", 5_000);
@@ -336,6 +342,7 @@ export class ChatApp {
       setLastStoredSyncAt: (value) => {
         this.lastStoredSyncAt = value;
       },
+      getLastStoredSequence: () => this.lastStoredSequence,
       applyLoadedSnapshot: (thread, session, transcript, runs, displayConfig) => this.applyLoadedSnapshot(
         thread,
         session,
@@ -437,6 +444,10 @@ export class ChatApp {
   }
 
   private appendStoredMessages(records: Parameters<typeof appendStoredTranscriptMessages>[0]["records"]): void {
+    this.lastStoredSequence = Math.max(
+      this.lastStoredSequence,
+      records.at(-1)?.sequence ?? 0,
+    );
     const appended = appendStoredTranscriptMessages({
       records,
       visibleStoredMessageIds: this.visibleStoredMessageIds,
@@ -459,12 +470,53 @@ export class ChatApp {
 
   private async reloadVisibleTranscript(): Promise<void> {
     this.resetTranscriptView({ keepSeenMessages: false });
+    this.transcriptBeforeSequence = null;
+    this.lastStoredSequence = 0;
     if (!this.currentThreadId) {
       return;
     }
 
-    const transcript = await this.requireServices().store.loadTranscript(this.currentThreadId);
-    this.appendStoredMessages(transcript);
+    const page = await this.requireServices().store.listTranscriptPage(this.currentThreadId);
+    this.appendStoredMessages(page.records);
+    this.transcriptBeforeSequence = page.nextBeforeSequence ?? null;
+  }
+
+  private async loadEarlierTranscript(): Promise<void> {
+    if (this.transcriptHistoryLoading || this.transcriptBeforeSequence === null) {
+      return;
+    }
+
+    this.transcriptHistoryLoading = true;
+    try {
+      const page = await this.requireServices().store.listTranscriptPage(this.currentThreadId, {
+        beforeSequence: this.transcriptBeforeSequence,
+      });
+      const beforeLineCount = this.buildView().transcriptLines.length;
+      const appended = appendStoredTranscriptMessages({
+        records: page.records,
+        visibleStoredMessageIds: this.visibleStoredMessageIds,
+        currentTools: this.currentTools,
+        nextEntryId: this.nextEntryId,
+      });
+      this.nextEntryId = appended.nextEntryId;
+      for (const pendingInputId of appended.acknowledgedPendingInputIds) {
+        this.removePendingLocalInput(pendingInputId);
+      }
+      this.transcript.unshift(...appended.entries);
+      this.transcriptLineCache.clear();
+      const addedLineCount = this.buildView().transcriptLines.length - beforeLineCount;
+      this.scrollTop += Math.max(0, addedLineCount);
+      this.transcriptBeforeSequence = page.nextBeforeSequence ?? null;
+      this.markDirty();
+    } catch (error) {
+      this.setNotice(
+        `Could not load older history: ${error instanceof Error ? error.message : String(error)}`,
+        "error",
+        6_000,
+      );
+    } finally {
+      this.transcriptHistoryLoading = false;
+    }
   }
 
   private formatCompactTokenCount(tokens: number): string {
@@ -960,10 +1012,11 @@ export class ChatApp {
     }, key);
   }
 
-  private handleTranscriptNavigationKeypress(key: KeyLike): boolean {
-    return handleChatTranscriptNavigationKeypress({
+  private async handleTranscriptNavigationKeypress(key: KeyLike): Promise<boolean> {
+    return await handleChatTranscriptNavigationKeypress({
       buildView: () => this.buildView(),
       scrollTranscript: (delta) => this.scrollTranscript(delta),
+      loadEarlierTranscript: () => this.loadEarlierTranscript(),
     }, key);
   }
 
@@ -1009,7 +1062,7 @@ export class ChatApp {
 
     if (
       await this.handleInterruptKeypress(key) ||
-      this.handleTranscriptNavigationKeypress(key) ||
+      await this.handleTranscriptNavigationKeypress(key) ||
       await this.handleModalKeypress(normalizedSequence, key)
     ) {
       this.render();

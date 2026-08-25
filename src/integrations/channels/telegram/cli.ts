@@ -15,7 +15,7 @@ import {parseIdentityHandle} from "../../../domain/identity/cli.js";
 import {trimToUndefined} from "../../../lib/strings.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
 import {type HealthServer, type HealthSnapshot, resolveOptionalHealthServerBinding, startHealthServer} from "../../../lib/health-server.js";
-import {ensureSchemas, withPostgresPool} from "../../../lib/postgres-bootstrap.js";
+import {withPostgresPool} from "../../../lib/postgres-database.js";
 import {TELEGRAM_SOURCE} from "./config.js";
 import {
   telegramChatListCommandDescriptor,
@@ -45,7 +45,7 @@ import {
   validateStoredTelegramBotAccount,
   type TelegramBotIdentityClient,
 } from "./account.js";
-import {TelegramService, initializeTelegramWorkerSchemas} from "./service.js";
+import {TelegramService} from "./service.js";
 import {ConnectorAccountSupervisor} from "../account-supervisor.js";
 import {
   startConnectorDaemonRuntime,
@@ -255,7 +255,6 @@ async function withTelegramAccountStores<T>(
       agentStore: new PostgresAgentStore({pool}),
       connectorStore: new PostgresConnectorAccountStore({pool}),
     };
-    await stores.connectorStore.ensureSchema();
     return fn(stores);
   });
 }
@@ -286,7 +285,6 @@ async function resolveTelegramBotIdentity(options: TelegramIdentityCliOptions & 
 
   return withPostgresPool(options.dbUrl, async (pool) => {
     const store = new PostgresConnectorAccountStore({pool});
-    await store.ensureSchema();
     return resolveTelegramBotIdentityFromStore(options.account!, store, dependencies);
   });
 }
@@ -347,7 +345,6 @@ async function withTelegramIdentityStore<T>(
 ): Promise<T> {
   return withPostgresPool(options.dbUrl, async (pool) => {
     const store = new PostgresIdentityStore({pool});
-    await ensureSchemas([store]);
     return fn(store);
   });
 }
@@ -453,10 +450,6 @@ async function startTelegramDaemonRuntime(
     dbUrl: options.dbUrl,
     poolMaxEnvKey: "PANDA_TELEGRAM_DB_POOL_MAX",
     log: logTelegramRunEvent,
-    initialize: async (pool) => {
-      await initializeTelegramWorkerSchemas(pool);
-      await new PostgresConnectorAccountStore({pool}).ensureSchema();
-    },
   });
 }
 
@@ -651,7 +644,6 @@ export async function telegramAccountWhoamiCommand(accountKey: string, options: 
 export async function telegramAccountDisableCommand(accountKey: string, options: TelegramAccountCliOptions): Promise<void> {
   await withPostgresPool(options.dbUrl, async (pool) => {
     const store = new PostgresConnectorAccountStore({pool});
-    await store.ensureSchema();
     const result = await disableTelegramBotAccount({accountKey, store});
     process.stdout.write([
       `Disabled Telegram account ${result.account.accountKey}.`,

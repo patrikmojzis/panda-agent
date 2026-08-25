@@ -15,7 +15,7 @@ const DEFAULT_TASK_LIMIT = 25;
 const MAX_TASK_LIMIT = 100;
 const RECENT_RUN_LIMIT = 3;
 
-export type ControlScheduledTaskLifecycleStatus = "scheduled" | "disabled" | "running" | "completed" | "cancelled";
+export type ControlScheduledTaskLifecycleStatus = "scheduled" | "disabled" | "running" | "completed" | "failed" | "cancelled";
 export type ControlScheduledTaskSortDirection = "asc" | "desc";
 
 export interface ControlScheduledTaskRun {
@@ -25,6 +25,7 @@ export interface ControlScheduledTaskRun {
   startedAt: string | null;
   finishedAt: string | null;
   resolvedThreadId?: string;
+  threadInputId?: string;
   threadRunId?: string;
 }
 
@@ -117,8 +118,9 @@ function optionalString(value: unknown): string | undefined {
 
 function lifecycleStatus(row: TaskRow): ControlScheduledTaskLifecycleStatus {
   if (row.cancelled_at) return "cancelled";
+  if (row.completed_at && row.latest_run_status === "failed") return "failed";
   if (row.completed_at) return "completed";
-  if (row.claimed_at) return "running";
+  if (row.has_active_run === true) return "running";
   if (row.enabled === false) return "disabled";
   return "scheduled";
 }
@@ -150,13 +152,26 @@ function normalizeSearch(value: string | undefined): string {
   return value?.trim() ?? "";
 }
 
-function lifecycleStatusExpression(): string {
+function lifecycleStatusExpression(taskAlias = "task_row"): string {
+  const latestStatus = `(
+    SELECT latest_run.status
+    FROM ${buildScheduledTaskTableNames().scheduledTaskRuns} AS latest_run
+    WHERE latest_run.task_id = ${taskAlias}.id
+    ORDER BY latest_run.created_at DESC, latest_run.id ASC
+    LIMIT 1
+  )`;
   return `
     CASE
-      WHEN cancelled_at IS NOT NULL THEN 'cancelled'
-      WHEN completed_at IS NOT NULL THEN 'completed'
-      WHEN claimed_at IS NOT NULL THEN 'running'
-      WHEN enabled = FALSE THEN 'disabled'
+      WHEN ${taskAlias}.cancelled_at IS NOT NULL THEN 'cancelled'
+      WHEN ${taskAlias}.completed_at IS NOT NULL AND ${latestStatus} = 'failed' THEN 'failed'
+      WHEN ${taskAlias}.completed_at IS NOT NULL THEN 'completed'
+      WHEN EXISTS (
+        SELECT 1
+        FROM ${buildScheduledTaskTableNames().scheduledTaskRuns} AS active_run
+        WHERE active_run.task_id = ${taskAlias}.id
+          AND active_run.status IN ('pending', 'claimed', 'running')
+      ) THEN 'running'
+      WHEN ${taskAlias}.enabled = FALSE THEN 'disabled'
       ELSE 'scheduled'
     END
   `;
@@ -175,25 +190,25 @@ function scheduleSortExpression(): string {
 function sortExpression(sortBy: string | undefined): string {
   switch (sortBy) {
     case "title":
-      return "title";
+      return "task_row.title";
     case "enabled":
-      return "enabled";
+      return "task_row.enabled";
     case "lifecycleStatus":
-      return lifecycleStatusExpression();
+      return lifecycleStatusExpression("task_row");
     case "schedule":
       return scheduleSortExpression();
     case "nextFireAt":
-      return "next_fire_at";
+      return "task_row.next_fire_at";
     case "createdAt":
-      return "created_at";
+      return "task_row.created_at";
     case "updatedAt":
-      return "updated_at";
+      return "task_row.updated_at";
     case "completedAt":
-      return "completed_at";
+      return "task_row.completed_at";
     case "cancelledAt":
-      return "cancelled_at";
+      return "task_row.cancelled_at";
     default:
-      return "next_fire_at";
+      return "task_row.next_fire_at";
   }
 }
 
@@ -214,6 +229,7 @@ function publicRun(row: RunRow): ControlScheduledTaskRun {
     startedAt: optionalIso(row.started_at, "Scheduled task run started_at"),
     finishedAt: optionalIso(row.finished_at, "Scheduled task run finished_at"),
     ...(optionalString(row.resolved_thread_id) ? {resolvedThreadId: optionalString(row.resolved_thread_id)} : {}),
+    ...(optionalString(row.thread_input_id) ? {threadInputId: optionalString(row.thread_input_id)} : {}),
     ...(optionalString(row.thread_run_id) ? {threadRunId: optionalString(row.thread_run_id)} : {}),
   };
 }
@@ -237,7 +253,6 @@ function publicTask(row: TaskRow, runs: readonly ControlScheduledTaskRun[]): Con
 function lifecycleStatusFromRecord(record: ScheduledTaskRecord): ControlScheduledTaskLifecycleStatus {
   if (record.cancelledAt) return "cancelled";
   if (record.completedAt) return "completed";
-  if (record.claimedAt) return "running";
   if (!record.enabled) return "disabled";
   return "scheduled";
 }
@@ -341,31 +356,32 @@ export class ControlScheduledTasksService {
     await this.assertCanAccess(session, agentKey, targetSessionId);
     const normalizedAgentKey = requireNonEmptyString(agentKey, "Agent key is required.");
     const normalizedSessionId = requireNonEmptyString(targetSessionId, "Session id is required.");
-    const where = ["session_id = $1"];
+    const where = ["task_row.session_id = $1"];
     const values: unknown[] = [normalizedSessionId];
     if (search) {
       values.push(`%${search}%`);
       const searchParam = `$${values.length}`;
       where.push(`(
-        id::text ILIKE ${searchParam}
-        OR title ILIKE ${searchParam}
-        OR schedule_kind ILIKE ${searchParam}
-        OR COALESCE(cron_expr, '') ILIKE ${searchParam}
-        OR COALESCE(timezone, '') ILIKE ${searchParam}
+        task_row.id::text ILIKE ${searchParam}
+        OR task_row.title ILIKE ${searchParam}
+        OR task_row.schedule_kind ILIKE ${searchParam}
+        OR COALESCE(task_row.cron_expr, '') ILIKE ${searchParam}
+        OR COALESCE(task_row.timezone, '') ILIKE ${searchParam}
       )`);
     }
     if (input.lifecycleStatus) {
       values.push(input.lifecycleStatus);
-      where.push(`${lifecycleStatusExpression()} = $${values.length}`);
+      where.push(`${lifecycleStatusExpression("task_row")} = $${values.length}`);
     }
     if (input.enabled !== undefined) {
       values.push(input.enabled);
-      where.push(`enabled = $${values.length}`);
+      where.push(`task_row.enabled = $${values.length}`);
     }
     const whereClause = where.join("\n        AND ");
     const countResult = await this.pool.query(`
+      /* control_scheduled_tasks_count */
       SELECT COUNT(*)::INTEGER AS count
-      FROM ${this.scheduled.scheduledTasks}
+      FROM ${this.scheduled.scheduledTasks} AS task_row
       WHERE ${whereClause}
     `, values);
     const total = Number((countResult.rows[0] as Record<string, unknown> | undefined)?.count ?? 0);
@@ -373,47 +389,82 @@ export class ControlScheduledTasksService {
     const direction = input.sortDirection === "desc" ? "DESC" : "ASC";
 
     const taskResult = await this.pool.query(`
+      /* control_scheduled_tasks_page */
       SELECT
-        id,
-        title,
-        schedule_kind,
-        run_at,
-        cron_expr,
-        timezone,
-        enabled,
-        claimed_at,
-        next_fire_at,
-        completed_at,
-        cancelled_at,
-        created_at,
-        updated_at
-      FROM ${this.scheduled.scheduledTasks}
+        task_row.id,
+        task_row.title,
+        task_row.schedule_kind,
+        task_row.run_at,
+        task_row.cron_expr,
+        task_row.timezone,
+        task_row.enabled,
+        task_row.next_fire_at,
+        task_row.completed_at,
+        task_row.cancelled_at,
+        task_row.created_at,
+        task_row.updated_at,
+        (
+          SELECT latest_run.status
+          FROM ${this.scheduled.scheduledTaskRuns} AS latest_run
+          WHERE latest_run.task_id = task_row.id
+          ORDER BY latest_run.created_at DESC, latest_run.id ASC
+          LIMIT 1
+        ) AS latest_run_status,
+        EXISTS (
+          SELECT 1
+          FROM ${this.scheduled.scheduledTaskRuns} AS active_run
+          WHERE active_run.task_id = task_row.id
+            AND active_run.status IN ('pending', 'claimed', 'running')
+        ) AS has_active_run
+      FROM ${this.scheduled.scheduledTasks} AS task_row
       WHERE ${whereClause}
-      ORDER BY ${sortExpression(input.sortBy)} ${direction} NULLS LAST, id ASC
+      ORDER BY ${sortExpression(input.sortBy)} ${direction} NULLS LAST, task_row.id ASC
       LIMIT $${values.length - 1}
       OFFSET $${values.length}
     `, values);
 
     const taskIds = taskResult.rows.map((row) => requiredString((row as TaskRow).id, "Scheduled task id"));
     const runsByTaskId = new Map<string, ControlScheduledTaskRun[]>();
-    for (const taskId of taskIds) {
+    if (taskIds.length > 0) {
       const runResult = await this.pool.query(`
+        /* control_recent_scheduled_task_runs */
         SELECT
-          id,
-          task_id,
-          status,
-          scheduled_for,
-          started_at,
-          finished_at,
-          resolved_thread_id,
-          thread_run_id
-        FROM ${this.scheduled.scheduledTaskRuns}
-        WHERE session_id = $1
-          AND task_id = $2
-        ORDER BY created_at DESC, id ASC
-        LIMIT $3
-      `, [normalizedSessionId, taskId, RECENT_RUN_LIMIT]);
-      runsByTaskId.set(taskId, (runResult.rows as RunRow[]).map(publicRun));
+          recent_run.id,
+          recent_run.task_id,
+          recent_run.status,
+          recent_run.scheduled_for,
+          recent_run.started_at,
+          recent_run.finished_at,
+          recent_run.resolved_thread_id,
+          recent_run.thread_input_id,
+          recent_run.thread_run_id
+        FROM UNNEST($2::uuid[]) AS requested_task(task_id)
+        CROSS JOIN LATERAL (
+          SELECT
+            run.id,
+            run.task_id,
+            run.status,
+            run.scheduled_for,
+            run.started_at,
+            run.finished_at,
+            run.resolved_thread_id,
+            run.thread_input_id,
+            run.thread_run_id,
+            run.created_at
+          FROM ${this.scheduled.scheduledTaskRuns} AS run
+          WHERE run.session_id = $1
+            AND run.task_id = requested_task.task_id
+          ORDER BY run.created_at DESC, run.id ASC
+          LIMIT $3
+        ) AS recent_run
+        ORDER BY recent_run.task_id ASC, recent_run.created_at DESC, recent_run.id ASC
+      `, [normalizedSessionId, taskIds, RECENT_RUN_LIMIT]);
+      for (const row of runResult.rows as RunRow[]) {
+        const taskId = requiredString(row.task_id, "Scheduled task run task id");
+        const runs = runsByTaskId.get(taskId) ?? [];
+        runs.push(publicRun(row));
+        runsByTaskId.set(taskId, runs);
+      }
     }
 
     const data = (taskResult.rows as TaskRow[]).map((row) => publicTask(row, runsByTaskId.get(requiredString(row.id, "Scheduled task id")) ?? []));

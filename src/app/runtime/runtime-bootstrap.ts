@@ -34,10 +34,6 @@ import {PostgresWikiBindingStore} from "../../domain/wiki/postgres.js";
 import {WikiBindingService} from "../../domain/wiki/service.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import {type AgentAppAuthService, PostgresAgentAppAuthService} from "../../domain/apps/auth.js";
-import {
-    ensureReadonlySessionQuerySchema,
-    readDatabaseUsername,
-} from "../../domain/threads/runtime/postgres-readonly.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {ThreadShellStateStore} from "../../domain/threads/runtime/shell-state-store.js";
 import type {Tool} from "../../kernel/agent/tool.js";
@@ -62,11 +58,12 @@ import {
     buildObservedPoolConfig,
     createPostgresPool,
     observePostgresPool,
+    readPositiveIntegerEnv,
     type PostgresPoolObserver,
 } from "./database.js";
 import {runCleanupSteps} from "../../lib/cleanup.js";
 import {trimToNull} from "../../lib/strings.js";
-import {ensureSchemas} from "./postgres-bootstrap.js";
+import {createPandaSchemaVerifier} from "../../integrations/postgres/schema-version.js";
 import {RuntimeCommandDispatcher} from "./command-dispatcher.js";
 import {RuntimeCommandFileResolver} from "./command-files.js";
 import {RuntimeCommandLeaseService} from "./command-leases.js";
@@ -80,7 +77,6 @@ import {RemoteExecutionEnvironmentSetupRunner} from "./execution-environment-set
 import {
     createExecutionEnvironmentManagerClientFromEnv
 } from "../../integrations/shell/execution-environment-manager-client.js";
-import {listenThreadRuntimeNotifications} from "./store-notifications.js";
 import {A2ASessionBindingRepo} from "../../domain/a2a/repo.js";
 import {PostgresControlAuthService} from "../../domain/control/auth.js";
 import {ControlReadService} from "../../domain/control/read-service.js";
@@ -96,23 +92,29 @@ import {ControlRuntimeActivityService} from "../../domain/control/runtime-activi
 import {ControlConnectorAccountsService} from "../../domain/control/connector-accounts-service.js";
 import {ControlModelCallTraceService} from "../../domain/control/model-call-trace-service.js";
 import {PostgresConnectorAccountStore} from "../../domain/connectors/postgres.js";
-import {PostgresModelCallTraceStore, resolveModelCallTraceRetentionDays} from "../../domain/model-call-traces/postgres.js";
+import {PostgresModelCallTraceStore} from "../../domain/model-call-traces/postgres.js";
+import {
+  BufferedModelCallRecorder,
+  resolveModelCallRecorderConfig,
+} from "../../domain/model-call-traces/recorder.js";
 import {ConversationRepo} from "../../domain/sessions/conversations/repo.js";
 import {PostgresGatewayStore} from "../../domain/gateway/postgres.js";
 import {resolveMediaDir} from "../../lib/data-dir.js";
 import {PostgresWhatsAppAuthStore} from "../../integrations/channels/whatsapp/auth-store.js";
-import {ensurePostgresWhatsAppAuthSchema} from "../../integrations/channels/whatsapp/auth-schema.js";
 import {WhatsAppLinkManager} from "../../integrations/channels/whatsapp/link-manager.js";
 import {PostgresWhatsAppRuntimeStatusStore} from "../../integrations/channels/whatsapp/runtime-status-store.js";
 import {WhatsAppService} from "../../integrations/channels/whatsapp/service.js";
 
 const CORE_POSTGRES_APPLICATION_NAME = "panda/core";
 const CORE_NOTIFICATION_POSTGRES_APPLICATION_NAME = "panda/core-notify";
-const CORE_THREAD_LEASE_POSTGRES_APPLICATION_NAME = "panda/core-lease";
+const CORE_MODEL_CALL_TRACE_POSTGRES_APPLICATION_NAME = "panda/core-trace";
 const CORE_READONLY_POSTGRES_APPLICATION_NAME = "panda/core-ro";
+const DEFAULT_BACKGROUND_JOB_DRAIN_TIMEOUT_MS = 5_000;
 const CORE_POSTGRES_POOL_MAX_FALLBACK = 4;
 const CORE_NOTIFICATION_POSTGRES_POOL_MAX_FALLBACK = 4;
-const CORE_THREAD_LEASE_POSTGRES_POOL_MAX_FALLBACK = 4;
+const CORE_MODEL_CALL_TRACE_POSTGRES_POOL_MAX_FALLBACK = 1;
+const CORE_MODEL_CALL_TRACE_STATEMENT_TIMEOUT_MS = 5_000;
+const CORE_MODEL_CALL_TRACE_QUERY_TIMEOUT_MS = 7_500;
 const CORE_READONLY_POSTGRES_POOL_MAX_FALLBACK = 1;
 
 function logRuntimeEvent(event: string, payload: Record<string, unknown>): void {
@@ -160,6 +162,7 @@ interface RuntimeBootstrapResult {
   controlConnectorAccounts: ControlConnectorAccountsService;
   controlModelCallTraces: ControlModelCallTraceService;
   modelCallTraces: PostgresModelCallTraceStore;
+  modelCallRecorder: BufferedModelCallRecorder;
   backgroundJobService: BackgroundToolJobService;
   browserService: BrowserRunnerClient;
   credentialResolver: CredentialResolver;
@@ -186,7 +189,6 @@ interface RuntimeBootstrapResult {
   subagentTools: readonly Tool[];
   pool: Pool;
   notificationPool: Pool;
-  threadLeasePool: Pool;
   close(): Promise<void>;
 }
 
@@ -222,6 +224,8 @@ function createObservedPoolHandle(input: {
   applicationName: string;
   maxEnvKey: string;
   fallbackMax: number;
+  queryTimeoutMillis?: number;
+  statementTimeoutMillis?: number;
 }): ObservedPoolHandle {
   const config = buildObservedPoolConfig(
     input.applicationName,
@@ -234,6 +238,8 @@ function createObservedPoolHandle(input: {
     max: config.max,
     idleTimeoutMillis: config.idleTimeoutMillis,
     connectionTimeoutMillis: config.acquireTimeoutMillis,
+    ...(input.queryTimeoutMillis !== undefined ? {queryTimeoutMillis: input.queryTimeoutMillis} : {}),
+    ...(input.statementTimeoutMillis !== undefined ? {statementTimeoutMillis: input.statementTimeoutMillis} : {}),
   });
   const observer = observePostgresPool({
     pool,
@@ -261,10 +267,10 @@ function createCloseRuntime(options: {
   postgresPoolObserver: PostgresPoolObserver;
   notificationPool: Pool;
   notificationPoolObserver: PostgresPoolObserver;
-  threadLeasePool: Pool;
-  threadLeasePoolObserver: PostgresPoolObserver;
+  modelCallRecorder: BufferedModelCallRecorder | null;
+  modelCallTracePool: Pool;
+  modelCallTracePoolObserver: PostgresPoolObserver;
   readonlyPoolState: ObservedPoolState;
-  notificationUnsubscribe: (() => Promise<void>) | null;
   whatsappLinks?: Pick<WhatsAppLinkManager, "stop"> | null;
 }): () => Promise<void> {
   return async () => {
@@ -304,9 +310,9 @@ function createCloseRuntime(options: {
         },
       },
       {
-        label: "runtime-listener",
+        label: "model-call-recorder",
         run: async () => {
-          await options.notificationUnsubscribe?.();
+          await options.modelCallRecorder?.close();
         },
       },
       {
@@ -315,7 +321,7 @@ function createCloseRuntime(options: {
           await resolveReadonlyPool();
           options.postgresPoolObserver.stop();
           options.notificationPoolObserver.stop();
-          options.threadLeasePoolObserver.stop();
+          options.modelCallTracePoolObserver.stop();
           readonlyPoolObserver?.stop();
         },
       },
@@ -333,9 +339,9 @@ function createCloseRuntime(options: {
         },
       },
       {
-        label: "thread-lease-postgres-pool",
+        label: "model-call-trace-postgres-pool",
         run: async () => {
-          await options.threadLeasePool.end();
+          await options.modelCallTracePool.end();
         },
       },
       {
@@ -369,8 +375,9 @@ export async function bootstrapRuntime(
     observer: null,
     initializing: null,
   };
-  let notificationUnsubscribe: (() => Promise<void>) | null = null;
   let browserService: BrowserRunnerClient | null = null;
+  let backgroundJobService: BackgroundToolJobService | null = null;
+  let whatsappLinks: WhatsAppLinkManager | null = null;
   const postgresPoolHandle = createObservedPoolHandle({
     connectionString: options.dbUrl,
     applicationName: CORE_POSTGRES_APPLICATION_NAME,
@@ -383,18 +390,20 @@ export async function bootstrapRuntime(
     maxEnvKey: "PANDA_CORE_NOTIFICATION_DB_POOL_MAX",
     fallbackMax: CORE_NOTIFICATION_POSTGRES_POOL_MAX_FALLBACK,
   });
-  const threadLeasePoolHandle = createObservedPoolHandle({
+  const modelCallTracePoolHandle = createObservedPoolHandle({
     connectionString: options.dbUrl,
-    applicationName: CORE_THREAD_LEASE_POSTGRES_APPLICATION_NAME,
-    maxEnvKey: "PANDA_CORE_THREAD_LEASE_DB_POOL_MAX",
-    fallbackMax: CORE_THREAD_LEASE_POSTGRES_POOL_MAX_FALLBACK,
+    applicationName: CORE_MODEL_CALL_TRACE_POSTGRES_APPLICATION_NAME,
+    maxEnvKey: "PANDA_CORE_MODEL_CALL_DB_POOL_MAX",
+    fallbackMax: CORE_MODEL_CALL_TRACE_POSTGRES_POOL_MAX_FALLBACK,
+    queryTimeoutMillis: CORE_MODEL_CALL_TRACE_QUERY_TIMEOUT_MS,
+    statementTimeoutMillis: CORE_MODEL_CALL_TRACE_STATEMENT_TIMEOUT_MS,
   });
   const postgresPool = postgresPoolHandle.pool;
   const postgresPoolObserver = postgresPoolHandle.observer;
   const notificationPool = notificationPoolHandle.pool;
   const notificationPoolObserver = notificationPoolHandle.observer;
-  const threadLeasePool = threadLeasePoolHandle.pool;
-  const threadLeasePoolObserver = threadLeasePoolHandle.observer;
+  const modelCallTracePool = modelCallTracePoolHandle.pool;
+  const modelCallTracePoolObserver = modelCallTracePoolHandle.observer;
   const readonlyPoolConfig = readOnlyDbUrl
     ? buildObservedPoolConfig(
       CORE_READONLY_POSTGRES_APPLICATION_NAME,
@@ -445,7 +454,12 @@ export async function bootstrapRuntime(
     return readonlyPoolState.initializing;
   };
 
+  let modelCallRecorder: BufferedModelCallRecorder | null = null;
   try {
+    // Startup is deliberately read-only: deployment owns schema migration before
+    // any database-writing process starts, while every process rejects drift here.
+    await createPandaSchemaVerifier(postgresPool).assertCurrent();
+
     const identityStore = new PostgresIdentityStore({
       pool: postgresPool,
     });
@@ -474,21 +488,13 @@ export async function bootstrapRuntime(
     const store = new PostgresThreadRuntimeStore({
       pool: postgresPool,
     });
-    await ensureSchemas([
-      identityStore,
-      agentStore,
-      subagentProfiles,
-      sessionStore,
-      executionEnvironments,
-      a2aBindings,
-      conversationBindings,
-      gatewayStore,
-      store,
-    ]);
     await subagentProfiles.seedBuiltinProfiles();
-    await store.markRunningToolJobsLost();
-    const backgroundJobService = new BackgroundToolJobService({
+    backgroundJobService = new BackgroundToolJobService({
       store,
+      shutdownSettleTimeoutMs: readPositiveIntegerEnv(
+        "PANDA_CORE_BACKGROUND_JOB_DRAIN_TIMEOUT_MS",
+        DEFAULT_BACKGROUND_JOB_DRAIN_TIMEOUT_MS,
+      ),
     });
     browserService = new BrowserRunnerClient({
       env: process.env,
@@ -552,19 +558,26 @@ export async function bootstrapRuntime(
     });
     const modelCallTraces = new PostgresModelCallTraceStore({
       pool: postgresPool,
-      retentionDays: resolveModelCallTraceRetentionDays(process.env),
     });
+    const modelCallTraceWriter = new PostgresModelCallTraceStore({
+      pool: modelCallTracePool,
+    });
+    modelCallRecorder = new BufferedModelCallRecorder({
+      sink: modelCallTraceWriter,
+      ...resolveModelCallRecorderConfig(process.env),
+    });
+    modelCallRecorder.start();
     const controlModelCallTraces = new ControlModelCallTraceService({
       pool: postgresPool,
+      store: modelCallTraces,
     });
 
     const credentialCrypto = resolveCredentialCrypto();
-    await ensurePostgresWhatsAppAuthSchema(postgresPool);
     const whatsappAuth = credentialCrypto
       ? new PostgresWhatsAppAuthStore({pool: postgresPool, crypto: credentialCrypto})
       : null;
     const whatsappRuntime = new PostgresWhatsAppRuntimeStatusStore({pool: postgresPool});
-    const whatsappLinks = credentialCrypto && whatsappAuth
+    whatsappLinks = credentialCrypto && whatsappAuth
       ? new WhatsAppLinkManager({
         createService: (account) => new WhatsAppService({
           accountId: account.id,
@@ -726,24 +739,6 @@ export async function bootstrapRuntime(
         executionEnvironments,
       }),
     });
-    await ensureSchemas([
-      credentialStore,
-      mcpConfigs,
-      connectorAccountStore,
-      appAuth,
-      email,
-      scheduledTasks,
-      watches,
-      wikiBindingStore,
-      controlAuth,
-      modelCallTraces,
-    ]);
-
-    await ensureReadonlySessionQuerySchema({
-      queryable: postgresPool,
-      readonlyRole: readOnlyDbUrl ? readDatabaseUsername(readOnlyDbUrl) : null,
-    });
-
     const toolRegistry = createDefaultAgentToolRegistry({
       bash: {
         jobService: backgroundJobService,
@@ -789,13 +784,6 @@ export async function bootstrapRuntime(
       defaultToolsets.skill_maintainer,
     ]);
 
-    if (options.onStoreNotification) {
-      notificationUnsubscribe = await listenThreadRuntimeNotifications({
-        pool: notificationPool,
-        listener: options.onStoreNotification,
-      });
-    }
-
     return {
       agentStore,
       apps,
@@ -813,6 +801,7 @@ export async function bootstrapRuntime(
       controlConnectorAccounts,
       controlModelCallTraces,
       modelCallTraces,
+      modelCallRecorder,
       backgroundJobService,
       browserService: resolvedBrowserService,
       credentialResolver,
@@ -839,7 +828,6 @@ export async function bootstrapRuntime(
       subagentTools,
       pool: postgresPool,
       notificationPool,
-      threadLeasePool,
       close: createCloseRuntime({
         backgroundJobService,
         browserService: resolvedBrowserService,
@@ -847,26 +835,26 @@ export async function bootstrapRuntime(
         postgresPoolObserver,
         notificationPool,
         notificationPoolObserver,
-        threadLeasePool,
-        threadLeasePoolObserver,
+        modelCallRecorder,
+        modelCallTracePool,
+        modelCallTracePoolObserver,
         readonlyPoolState,
-        notificationUnsubscribe,
         whatsappLinks,
       }),
     };
   } catch (error) {
     await createCloseRuntime({
-      backgroundJobService: null,
+      backgroundJobService,
       browserService,
       postgresPool,
       postgresPoolObserver,
       notificationPool,
       notificationPoolObserver,
-      threadLeasePool,
-      threadLeasePoolObserver,
+      modelCallRecorder,
+      modelCallTracePool,
+      modelCallTracePoolObserver,
       readonlyPoolState,
-      notificationUnsubscribe,
-      whatsappLinks: null,
+      whatsappLinks,
     })().catch(() => undefined);
     throw error;
   }

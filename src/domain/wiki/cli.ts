@@ -3,7 +3,7 @@ import process from "node:process";
 import {Command, InvalidArgumentError} from "commander";
 
 import {DB_URL_OPTION_DESCRIPTION} from "../../lib/cli.js";
-import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
+import {withPostgresPool} from "../../lib/postgres-database.js";
 import {parseAgentKey} from "../agents/cli.js";
 import type {CommandDescriptor} from "../commands/types.js";
 import {writeCommandDescriptorHelp} from "../commands/cli.js";
@@ -97,7 +97,6 @@ async function withWikiBindingStores<T>(
   return withPostgresPool(options.dbUrl, async (pool) => {
     const agentStore = new PostgresAgentStore({pool});
     const wikiBindingStore = new PostgresWikiBindingStore({pool});
-    await ensureSchemas([agentStore, wikiBindingStore]);
     return fn({agentStore, wikiBindingStore});
   });
 }

@@ -7,7 +7,6 @@ import type {
 } from "./types.js";
 
 export interface ExecutionEnvironmentStore {
-  ensureSchema(): Promise<void>;
   createEnvironment(input: CreateExecutionEnvironmentInput): Promise<ExecutionEnvironmentRecord>;
   bindSession(input: BindSessionEnvironmentInput): Promise<SessionEnvironmentBindingRecord>;
   getEnvironment(environmentId: string): Promise<ExecutionEnvironmentRecord>;

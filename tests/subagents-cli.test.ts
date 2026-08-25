@@ -3,8 +3,11 @@ import {Command} from "commander";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
+import {ensurePostgresAgentSchema} from "../src/domain/agents/postgres-schema.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
+import {ensurePostgresIdentitySchema} from "../src/domain/identity/postgres-schema.js";
 import {buildSubagentTableNames} from "../src/domain/subagents/postgres-shared.js";
+import {ensurePostgresSubagentSchema} from "../src/domain/subagents/postgres-schema.js";
 import {registerSubagentCommands} from "../src/app/subagents/cli.js";
 
 const subagentCliMocks = vi.hoisted(() => {
@@ -29,8 +32,8 @@ const subagentCliMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("../src/app/runtime/postgres-bootstrap.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/app/runtime/postgres-bootstrap.js")>();
+vi.mock("../src/lib/postgres-database.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/postgres-database.js")>();
   return {
     ...actual,
     withPostgresPool: subagentCliMocks.withPostgresPool,
@@ -195,8 +198,9 @@ describe("subagents profiles CLI", () => {
 
     const identityStore = new PostgresIdentityStore({pool});
     const agentStore = new PostgresAgentStore({pool});
-    await identityStore.ensureSchema();
-    await agentStore.ensureSchema();
+    await ensurePostgresIdentitySchema(pool);
+    await ensurePostgresAgentSchema(pool);
+    await ensurePostgresSubagentSchema(pool);
     await agentStore.bootstrapAgent({
       agentKey: "panda",
       displayName: "Panda",

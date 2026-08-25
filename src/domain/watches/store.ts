@@ -23,7 +23,6 @@ export interface RecordWatchEventResult {
 }
 
 export interface WatchStore {
-  ensureSchema(): Promise<void>;
   createWatch(input: CreateWatchInput): Promise<WatchRecord>;
   updateWatch(input: UpdateWatchInput): Promise<WatchRecord>;
   disableWatch(input: DisableWatchInput): Promise<WatchRecord>;

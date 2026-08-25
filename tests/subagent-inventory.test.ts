@@ -3,12 +3,18 @@ import {DataType, newDb} from "pg-mem";
 
 import {stringToUserMessage} from "../src/index.js";
 import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/postgres.js";
+import {ensurePostgresExecutionEnvironmentSchema} from "../src/domain/execution-environments/postgres-schema.js";
 import type {JsonObject} from "../src/lib/json.js";
 import {PostgresSubagentInventory} from "../src/domain/subagents/inventory.js";
 import {buildSubagentSessionMetadata} from "../src/domain/subagents/session-metadata.js";
 import type {PostgresSessionStore} from "../src/domain/sessions/index.js";
 import type {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js";
 import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
+import {
+  seedAppliedThreadInput,
+  seedPendingThreadInput,
+  seedThreadRun,
+} from "./helpers/thread-runtime-fixtures.js";
 
 function filesystemMetadata(environmentId: string): JsonObject {
   return {
@@ -147,7 +153,7 @@ describe("PostgresSubagentInventory", () => {
     await pool.query('DROP INDEX IF EXISTS "runtime"."runtime_agent_sessions_main_idx"');
     await pool.query('DROP INDEX IF EXISTS "runtime"."runtime_agent_sessions_agent_alias_idx"');
     const environmentStore = new PostgresExecutionEnvironmentStore({pool});
-    await environmentStore.ensureSchema();
+    await ensurePostgresExecutionEnvironmentSchema(pool);
     await agentStore.bootstrapAgent({
       agentKey: "other-agent",
       displayName: "Other",
@@ -170,7 +176,7 @@ describe("PostgresSubagentInventory", () => {
       id: "running-child",
       parentSessionId: "parent-session",
     });
-    await threadStore.createRun(runningThread);
+    await seedThreadRun(pool, {threadId: runningThread, status: "running"});
 
     const failedCurrentThread = await createSession(sessionStore, threadStore, {
       id: "failed-child",
@@ -183,27 +189,28 @@ describe("PostgresSubagentInventory", () => {
       id: "failed-old-thread",
       sessionId: "failed-child",
     });
-    const failedRun = await threadStore.createRun("failed-old-thread");
-    await threadStore.failRunIfRunning(
-      failedRun.id,
-      "failureKind=provider_error Runner unavailable.\nrequest body: {\"token\":\"secret\"}",
-    );
-    await threadStore.enqueueInput("failed-old-thread", {
+    await seedThreadRun(pool, {
+      threadId: "failed-old-thread",
+      status: "failed",
+      error: "failureKind=provider_error Runner unavailable.\nrequest body: {\"token\":\"secret\"}",
+    });
+    await seedAppliedThreadInput(pool, {
+      threadId: "failed-old-thread",
       message: stringToUserMessage("old applied message"),
       source: "tui",
     });
-    await threadStore.applyPendingInputs("failed-old-thread");
-    await threadStore.enqueueInput(failedCurrentThread, {
+    await seedPendingThreadInput(pool, {
+      threadId: failedCurrentThread,
       message: stringToUserMessage("queued current input"),
       source: "tui",
-    }, "queue");
+      deliveryMode: "queue",
+    });
 
     const completedThread = await createSession(sessionStore, threadStore, {
       id: "completed-child",
       parentSessionId: "parent-session",
     });
-    const completedRun = await threadStore.createRun(completedThread);
-    await threadStore.completeRun(completedRun.id);
+    await seedThreadRun(pool, {threadId: completedThread, status: "completed"});
 
     await createSession(sessionStore, threadStore, {
       id: "missing-environment-child",

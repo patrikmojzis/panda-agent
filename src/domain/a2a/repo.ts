@@ -3,7 +3,6 @@ import type {PgQueryable} from "../../lib/postgres-query.js";
 import {buildOutboundDeliveryTableNames} from "../channels/deliveries/postgres-shared.js";
 import {optionalTimestampMillis, requireTimestampMillis} from "../../lib/postgres-values.js";
 import {buildThreadRuntimeTableNames} from "../threads/runtime/postgres-shared.js";
-import {ensurePostgresA2ASessionBindingSchema} from "./postgres-schema.js";
 import {type A2ATableNames, buildA2ATableNames} from "./postgres-shared.js";
 import {requireA2AString} from "./shared.js";
 import {isRecord} from "../../lib/records.js";
@@ -218,10 +217,6 @@ export class A2ASessionBindingRepo {
     this.threadTableName = threadTables.threads;
     this.inputTableName = threadTables.inputs;
     this.outboundDeliveriesTableName = buildOutboundDeliveryTableNames().outboundDeliveries;
-  }
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresA2ASessionBindingSchema(this.pool);
   }
 
   async bindSession(input: BindA2ASessionInput): Promise<A2ASessionBindingRecord> {

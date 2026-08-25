@@ -1,6 +1,7 @@
 import {quoteIdentifier, quoteQualifiedIdentifier, RUNTIME_SCHEMA, CREATE_RUNTIME_SCHEMA_SQL} from "../../lib/postgres-relations.js";
 
 import {buildAgentTableNames} from "../agents/postgres-shared.js";
+import {addConstraint, assertIntegrityChecks, type IntegrityCheckGroup} from "../../lib/postgres-integrity.js";
 import type {PgQueryable} from "../../lib/postgres-query.js";
 import {buildCredentialTableNames} from "./postgres-shared.js";
 
@@ -11,13 +12,21 @@ const OLD_CREDENTIAL_INDEXES = [
   "runtime_credentials_lookup_idx",
 ] as const;
 
-function isDuplicateTableError(error: unknown): boolean {
-  return typeof error === "object"
-    && error !== null
-    && (
-      (error as {code?: unknown}).code === "42P07"
-      || /relation ".+" already exists/i.test(String((error as {message?: unknown}).message ?? error))
-    );
+export function buildCredentialIntegrityChecks(): IntegrityCheckGroup {
+  const tables = buildCredentialTableNames();
+  const agentTables = buildAgentTableNames();
+  return {
+    scope: "Credential schema",
+    checks: [{
+      label: "credentials.agent_key orphaned from agents.agent_key",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.credentials} AS credential
+        LEFT JOIN ${agentTables.agents} AS agent ON agent.agent_key = credential.agent_key
+        WHERE agent.agent_key IS NULL
+      `,
+    }],
+  };
 }
 
 async function credentialTableExists(pool: PgQueryable): Promise<boolean> {
@@ -110,27 +119,28 @@ export async function ensurePostgresCredentialSchema(pool: PgQueryable): Promise
   const agentTables = buildAgentTableNames();
   await pool.query(CREATE_RUNTIME_SCHEMA_SQL);
   if (!(await credentialTableExists(pool))) {
-    try {
-      await pool.query(`
-        CREATE TABLE ${tables.credentials} (
-          id UUID PRIMARY KEY,
-          env_key TEXT NOT NULL,
-          agent_key TEXT NOT NULL REFERENCES ${agentTables.agents}(agent_key) ON DELETE CASCADE,
-          value_ciphertext BYTEA NOT NULL,
-          value_iv BYTEA NOT NULL,
-          value_tag BYTEA NOT NULL,
-          key_version SMALLINT NOT NULL,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )
-      `);
-    } catch (error) {
-      if (!isDuplicateTableError(error)) {
-        throw error;
-      }
-    }
+    await pool.query(`
+      CREATE TABLE ${tables.credentials} (
+        id UUID PRIMARY KEY,
+        env_key TEXT NOT NULL,
+        agent_key TEXT NOT NULL REFERENCES ${agentTables.agents}(agent_key) ON DELETE CASCADE,
+        value_ciphertext BYTEA NOT NULL,
+        value_iv BYTEA NOT NULL,
+        value_tag BYTEA NOT NULL,
+        key_version SMALLINT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
   }
   await migrateAgentOnlyCredentialSchema(pool);
+  const integrity = buildCredentialIntegrityChecks();
+  await assertIntegrityChecks(pool, integrity.scope, integrity.checks);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.credentials}
+    ADD CONSTRAINT ${quoteIdentifier("credentials_agent_key_fkey")}
+    FOREIGN KEY (agent_key) REFERENCES ${agentTables.agents}(agent_key) ON DELETE CASCADE
+  `);
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_credentials_agent_env_unique_idx`)}
     ON ${tables.credentials} (agent_key, env_key)

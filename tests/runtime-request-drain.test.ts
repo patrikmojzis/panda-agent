@@ -1,3 +1,5 @@
+import {createHash} from "node:crypto";
+
 import {describe, expect, it, vi} from "vitest";
 
 import type {RuntimeRequestRecord} from "../src/domain/threads/requests/index.js";
@@ -16,8 +18,10 @@ function requestRecord(id: string): RuntimeRequestRecord {
   const now = Date.now();
   return {
     id,
+    orderingKey: `v1:${createHash("sha256").update(id).digest("hex")}`,
     kind: "tui_input",
     status: "pending",
+    claimToken: `claim-${id}`,
     payload: {
       actorId: "operator",
       externalMessageId: `message-${id}`,
@@ -29,12 +33,48 @@ function requestRecord(id: string): RuntimeRequestRecord {
 }
 
 describe("RuntimeRequestDrain", () => {
+  it("does not let one slow request block an independent stream", async () => {
+    const slow = deferred();
+    const pending = [requestRecord("slow"), requestRecord("fast")];
+    const requests = {
+      claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
+      renewRequestClaim: vi.fn(async () => true),
+      releaseRequestClaim: vi.fn(async () => true),
+      completeRequest: vi.fn(async () => undefined),
+      failRequest: vi.fn(async () => undefined),
+      pruneSettledRequests: vi.fn(async () => 0),
+    };
+    const drain = new RuntimeRequestDrain({
+      requests,
+      maxConcurrency: 2,
+      processRequest: async (request) => {
+        if (request.id === "slow") await slow.promise;
+        return request.id;
+      },
+    });
+
+    drain.start();
+    await waitFor(() => {
+      expect(requests.completeRequest).toHaveBeenCalledWith("fast", "claim-fast", "fast");
+    });
+    expect(requests.completeRequest).not.toHaveBeenCalledWith("slow", "claim-slow", "slow");
+    slow.resolve();
+    await waitFor(() => {
+      expect(requests.completeRequest).toHaveBeenCalledWith("slow", "claim-slow", "slow");
+    });
+    await drain.stop();
+    expect(requests.completeRequest).toHaveBeenCalledWith("slow", "claim-slow", "slow");
+  });
+
   it("claims and completes pending runtime requests", async () => {
     const pending = [requestRecord("first"), requestRecord("second")];
     const requests = {
       claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
+      renewRequestClaim: vi.fn(async () => true),
+      releaseRequestClaim: vi.fn(async () => true),
       completeRequest: vi.fn(async () => undefined),
       failRequest: vi.fn(async () => undefined),
+      pruneSettledRequests: vi.fn(async () => 0),
     };
     const drain = new RuntimeRequestDrain({
       requests,
@@ -48,8 +88,77 @@ describe("RuntimeRequestDrain", () => {
     });
     await drain.stop();
 
-    expect(requests.completeRequest).toHaveBeenNthCalledWith(1, "first", {processed: "first"});
-    expect(requests.completeRequest).toHaveBeenNthCalledWith(2, "second", {processed: "second"});
+    expect(requests.completeRequest).toHaveBeenNthCalledWith(1, "first", "claim-first", {processed: "first"});
+    expect(requests.completeRequest).toHaveBeenNthCalledWith(2, "second", "claim-second", {processed: "second"});
+    expect(requests.failRequest).not.toHaveBeenCalled();
+  });
+
+  it("renews a claim while its request is still being processed", async () => {
+    const active = deferred();
+    const pending = [requestRecord("slow")];
+    const requests = {
+      claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
+      renewRequestClaim: vi.fn(async () => true),
+      releaseRequestClaim: vi.fn(async () => true),
+      completeRequest: vi.fn(async () => undefined),
+      failRequest: vi.fn(async () => undefined),
+      pruneSettledRequests: vi.fn(async () => 0),
+    };
+    const drain = new RuntimeRequestDrain({
+      requests,
+      claimRenewIntervalMs: 5,
+      processRequest: async () => {
+        await active.promise;
+        return "done";
+      },
+    });
+
+    drain.start();
+    await waitFor(() => {
+      expect(requests.renewRequestClaim).toHaveBeenCalledWith("slow", "claim-slow");
+    });
+    active.resolve();
+    await waitFor(() => {
+      expect(requests.completeRequest).toHaveBeenCalledWith("slow", "claim-slow", "done");
+    });
+    await drain.stop();
+  });
+
+  it("does not settle work after renewal proves the claim was lost", async () => {
+    const active = deferred();
+    const pending = [requestRecord("stolen")];
+    const onError = vi.fn();
+    const requests = {
+      claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
+      renewRequestClaim: vi.fn(async () => false),
+      releaseRequestClaim: vi.fn(async () => true),
+      completeRequest: vi.fn(async () => undefined),
+      failRequest: vi.fn(async () => undefined),
+      pruneSettledRequests: vi.fn(async () => 0),
+    };
+    const drain = new RuntimeRequestDrain({
+      requests,
+      claimRenewIntervalMs: 5,
+      onError,
+      processRequest: async () => {
+        await active.promise;
+        return "obsolete result";
+      },
+    });
+
+    drain.start();
+    await waitFor(() => {
+      expect(requests.renewRequestClaim).toHaveBeenCalled();
+    });
+    active.resolve();
+    await waitFor(() => {
+      expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+        message: "Runtime request stolen claim was lost while processing.",
+      }));
+    });
+    await drain.stop();
+
+    expect(requests.completeRequest).not.toHaveBeenCalled();
     expect(requests.failRequest).not.toHaveBeenCalled();
   });
 
@@ -57,8 +166,11 @@ describe("RuntimeRequestDrain", () => {
     const pending: RuntimeRequestRecord[] = [];
     const requests = {
       claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
+      renewRequestClaim: vi.fn(async () => true),
+      releaseRequestClaim: vi.fn(async () => true),
       completeRequest: vi.fn(async () => undefined),
       failRequest: vi.fn(async () => undefined),
+      pruneSettledRequests: vi.fn(async () => 0),
     };
     const drain = new RuntimeRequestDrain({
       requests,
@@ -73,7 +185,7 @@ describe("RuntimeRequestDrain", () => {
     pending.push(requestRecord("late"));
 
     await waitFor(() => {
-      expect(requests.completeRequest).toHaveBeenCalledWith("late", {processed: "late"});
+      expect(requests.completeRequest).toHaveBeenCalledWith("late", "claim-late", {processed: "late"});
     });
     await drain.stop();
   });
@@ -82,8 +194,11 @@ describe("RuntimeRequestDrain", () => {
     const pending = [requestRecord("bad"), requestRecord("good")];
     const requests = {
       claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
+      renewRequestClaim: vi.fn(async () => true),
+      releaseRequestClaim: vi.fn(async () => true),
       completeRequest: vi.fn(async () => undefined),
       failRequest: vi.fn(async () => undefined),
+      pruneSettledRequests: vi.fn(async () => 0),
     };
     const drain = new RuntimeRequestDrain({
       requests,
@@ -99,31 +214,40 @@ describe("RuntimeRequestDrain", () => {
     drain.start();
 
     await waitFor(() => {
-      expect(requests.failRequest).toHaveBeenCalledWith("bad", "bad request");
-      expect(requests.completeRequest).toHaveBeenCalledWith("good", "ok");
+      expect(requests.failRequest).toHaveBeenCalledWith("bad", "claim-bad", "bad request");
+      expect(requests.completeRequest).toHaveBeenCalledWith("good", "claim-good", "ok");
     });
     await drain.stop();
   });
 
-  it("waits for active work and does not claim more requests after stop", async () => {
-    const active = deferred();
+  it("cancels active work, releases its claim, and does not claim more after stop", async () => {
     const order: string[] = [];
     const pending = [requestRecord("first"), requestRecord("second")];
     const requests = {
       claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
+      renewRequestClaim: vi.fn(async () => true),
+      releaseRequestClaim: vi.fn(async (id: string) => {
+        order.push(`release-${id}`);
+        return true;
+      }),
       completeRequest: vi.fn(async (id: string) => {
         order.push(`complete-${id}`);
       }),
       failRequest: vi.fn(async () => undefined),
+      pruneSettledRequests: vi.fn(async () => 0),
     };
     const drain = new RuntimeRequestDrain({
       requests,
-      processRequest: vi.fn(async (request) => {
+      maxConcurrency: 1,
+      processRequest: vi.fn(async (request, signal) => {
         order.push(`process-start-${request.id}`);
-        if (request.id === "first") {
-          await active.promise;
-        }
-        order.push(`process-end-${request.id}`);
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => {
+            order.push(`process-abort-${request.id}`);
+            resolve();
+          }, {once: true});
+        });
+        signal.throwIfAborted();
         return request.id;
       }),
     });
@@ -133,20 +257,95 @@ describe("RuntimeRequestDrain", () => {
       expect(order).toEqual(["process-start-first"]);
     });
 
-    const stopPromise = drain.stop();
-    await sleep(20);
-    expect(order).toEqual(["process-start-first"]);
-
-    active.resolve();
-    await stopPromise;
+    await drain.stop();
     await sleep(20);
 
     expect(order).toEqual([
       "process-start-first",
-      "process-end-first",
-      "complete-first",
+      "process-abort-first",
+      "release-first",
     ]);
     expect(requests.claimNextPendingRequest).toHaveBeenCalledTimes(1);
     expect(requests.failRequest).not.toHaveBeenCalled();
+    expect(requests.completeRequest).not.toHaveBeenCalled();
+  });
+
+  it("bounds shutdown and stops renewing a non-cooperative request", async () => {
+    const active = deferred();
+    const pending = [requestRecord("stuck")];
+    const requests = {
+      claimNextPendingRequest: vi.fn(async () => pending.shift() ?? null),
+      renewRequestClaim: vi.fn(async () => true),
+      releaseRequestClaim: vi.fn(async () => true),
+      completeRequest: vi.fn(async () => undefined),
+      failRequest: vi.fn(async () => undefined),
+      pruneSettledRequests: vi.fn(async () => 0),
+    };
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const drain = new RuntimeRequestDrain({
+      requests,
+      claimRenewIntervalMs: 5,
+      shutdownDrainTimeoutMs: 20,
+      processRequest: async () => {
+        await active.promise;
+        return "late";
+      },
+    });
+
+    try {
+      drain.start();
+      await waitFor(() => {
+        expect(requests.renewRequestClaim).toHaveBeenCalled();
+      });
+
+      await drain.stop();
+      expect(consoleError).toHaveBeenCalledWith(
+        "Runtime request drain shutdown timed out",
+        {activeRequests: 1, timeoutMs: 20},
+      );
+      const renewalsAtStop = requests.renewRequestClaim.mock.calls.length;
+      await sleep(20);
+      expect(requests.renewRequestClaim).toHaveBeenCalledTimes(renewalsAtStop);
+      expect(requests.releaseRequestClaim).not.toHaveBeenCalled();
+      expect(requests.completeRequest).not.toHaveBeenCalled();
+
+      active.resolve();
+      await waitFor(() => {
+        expect(requests.releaseRequestClaim).toHaveBeenCalledWith("stuck", "claim-stuck");
+      });
+      expect(requests.completeRequest).not.toHaveBeenCalled();
+    } finally {
+      active.resolve();
+      consoleError.mockRestore();
+    }
+  });
+
+  it("prunes completed and failed requests with separate retention windows", async () => {
+    const requests = {
+      claimNextPendingRequest: vi.fn(async () => null),
+      renewRequestClaim: vi.fn(async () => true),
+      releaseRequestClaim: vi.fn(async () => true),
+      completeRequest: vi.fn(async () => undefined),
+      failRequest: vi.fn(async () => undefined),
+      pruneSettledRequests: vi.fn(async () => 0),
+    };
+    const drain = new RuntimeRequestDrain({
+      requests,
+      now: () => 100_000,
+      completedRetentionMs: 10_000,
+      failedRetentionMs: 20_000,
+      pruneBatchSize: 25,
+      processRequest: vi.fn(),
+    });
+
+    drain.start();
+    await waitFor(() => {
+      expect(requests.pruneSettledRequests).toHaveBeenCalledWith({
+        completedBefore: new Date(90_000),
+        failedBefore: new Date(80_000),
+        limit: 25,
+      });
+    });
+    await drain.stop();
   });
 });

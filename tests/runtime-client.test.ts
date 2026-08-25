@@ -116,7 +116,7 @@ const runtimeClientMocks = vi.hoisted(() => {
     MockSessionStore,
     MockThreadStore,
     createPostgresPool: vi.fn(() => pool),
-    ensureSchemas: vi.fn(async () => undefined),
+    assertSchemaCurrent: vi.fn(async () => undefined),
   };
 });
 
@@ -129,8 +129,8 @@ vi.mock("../src/app/runtime/create-runtime.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../src/app/runtime/postgres-bootstrap.js", () => ({
-  ensureSchemas: runtimeClientMocks.ensureSchemas,
+vi.mock("../src/integrations/postgres/schema-version.js", () => ({
+  createPandaSchemaVerifier: () => ({assertCurrent: runtimeClientMocks.assertSchemaCurrent}),
 }));
 
 vi.mock("../src/domain/identity/postgres.js", () => ({

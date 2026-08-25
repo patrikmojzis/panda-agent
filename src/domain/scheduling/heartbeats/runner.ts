@@ -33,7 +33,7 @@ function describeHeartbeatFailure(error: unknown): string {
 
 export interface HeartbeatRunnerOptions {
   sessions: HeartbeatRunnerSessionStore;
-  coordinator: Pick<ThreadRuntimeCoordinator, "isThreadBusy" | "submitInput">;
+  coordinator: Pick<ThreadRuntimeCoordinator, "isThreadBusy" | "submitSessionInput">;
   pollIntervalMs?: number;
   claimTtlMs?: number;
   resolveInstructions?: (session: SessionRecord) => Promise<string | null> | string | null;
@@ -42,7 +42,7 @@ export interface HeartbeatRunnerOptions {
 
 export class HeartbeatRunner {
   private readonly sessions: HeartbeatRunnerSessionStore;
-  private readonly coordinator: Pick<ThreadRuntimeCoordinator, "isThreadBusy" | "submitInput">;
+  private readonly coordinator: Pick<ThreadRuntimeCoordinator, "isThreadBusy" | "submitSessionInput">;
   private readonly claimTtlMs: number;
   private readonly resolveInstructions?: (session: SessionRecord) => Promise<string | null> | string | null;
   private readonly onError?: (error: unknown, sessionId?: string) => Promise<void> | void;
@@ -144,7 +144,7 @@ export class HeartbeatRunner {
         return;
       }
 
-      await this.coordinator.submitInput(deliveryTarget.threadId, {
+      await this.coordinator.submitSessionInput(heartbeat.sessionId, {
         message: stringToUserMessage(buildHeartbeatPrompt(heartbeat.nextFireAt, guidance)),
         source: HEARTBEAT_SOURCE,
         identityId: deliveryTarget.session.createdByIdentityId,

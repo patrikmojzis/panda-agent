@@ -4,7 +4,6 @@ import {withTransaction} from "../../lib/postgres-transaction.js";
 import {requireNonEmptyString} from "../../lib/strings.js";
 import {buildAgentTableNames} from "../agents/postgres-shared.js";
 import {normalizeMcpConfig, normalizeMcpServerConfig} from "./config.js";
-import {ensurePostgresMcpSchema} from "./postgres-schema.js";
 import {buildMcpTableNames} from "./postgres-shared.js";
 import type {McpConfigStore} from "./store.js";
 import {McpRegistryVersionConflictError, type McpServerMutationOptions, type McpServerMutationResult, type McpServerDeleteResult} from "./store.js";
@@ -27,10 +26,6 @@ export class PostgresMcpConfigStore implements McpConfigStore {
   private readonly agents = buildAgentTableNames();
 
   constructor(private readonly pool: PgPoolLike) {}
-
-  async ensureSchema(): Promise<void> {
-    await ensurePostgresMcpSchema(this.pool);
-  }
 
   async getAgentConfig(agentKey: string): Promise<McpAgentConfigRecord> {
     const normalizedAgentKey = requireNonEmptyString(agentKey, "MCP config agent key is required.");

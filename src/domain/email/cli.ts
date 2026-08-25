@@ -3,11 +3,9 @@ import process from "node:process";
 import {Command} from "commander";
 
 import {DB_URL_OPTION_DESCRIPTION} from "../../lib/cli.js";
-import {ensureSchemas, withPostgresPool} from "../../lib/postgres-bootstrap.js";
+import {withPostgresPool} from "../../lib/postgres-database.js";
 import {writeCommandDescriptorHelp} from "../commands/cli.js";
 import {parseAgentKey} from "../agents/cli.js";
-import {PostgresAgentStore} from "../agents/postgres.js";
-import {PostgresIdentityStore} from "../identity/postgres.js";
 import {PostgresSessionStore} from "../sessions/postgres.js";
 import {parseLabeledPortOption} from "../../lib/cli.js";
 import {DEFAULT_EMAIL_MAILBOXES, normalizeEmailAddress, normalizeEmailMailbox} from "./shared.js";
@@ -101,11 +99,8 @@ async function withEmailStores<T>(
   fn: (stores: {email: PostgresEmailStore; sessions: PostgresSessionStore}) => Promise<T>,
 ): Promise<T> {
   return withPostgresPool(options.dbUrl, async (pool) => {
-    const identities = new PostgresIdentityStore({pool});
-    const agents = new PostgresAgentStore({pool});
     const sessions = new PostgresSessionStore({pool});
     const email = new PostgresEmailStore({pool});
-    await ensureSchemas([identities, agents, sessions, email]);
     return fn({email, sessions});
   });
 }

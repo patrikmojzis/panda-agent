@@ -10,68 +10,58 @@ import {resolveModelRuntimeBudget} from "../models/model-context-policy.js";
 import {resolveModelSelector} from "../models/model-selector.js";
 import {renderCompactionPrompt} from "../../prompts/runtime/compaction.js";
 import {readMissingApiKeyMessage} from "../../integrations/providers/shared/missing-api-key.js";
-import type {JsonObject, JsonValue} from "../agent/types.js";
 import type {LlmRuntime} from "../agent/runtime.js";
 import {estimateReplayMessageTokens, estimateVisibleMessageTokens} from "./token-estimation.js";
+import {isCompactBoundaryRecord} from "./checkpoint.js";
 import type {
   AutoCompactionRuntimeState,
+  CompactBoundaryMetadata,
   CompactAttemptDiagnostics,
   CompactAttemptOutcome,
+  CompactFailureNoticeMetadata,
+  ThreadCompactionCommit,
   ThreadMessageRecord,
   ThreadRuntimeMessagePayload,
   ThreadRuntimeState,
+  ThreadTranscriptSnapshot,
   TranscriptThreadState,
 } from "./types.js";
 
 export type {
+  CompactBoundaryMetadata,
   CompactAttemptDiagnostics,
   CompactAttemptOutcome,
+  CompactFailureNoticeMetadata,
 } from "./types.js";
+export {isCompactBoundaryRecord, projectTranscriptForRun} from "./checkpoint.js";
 
 export const DEFAULT_COMPACT_PRESERVED_USER_TURNS = 6;
 export const AUTO_COMPACT_BREAKER_FAILURE_THRESHOLD = 2;
 export const AUTO_COMPACT_BREAKER_COOLDOWN_MS = 5 * 60_000;
 const TOOL_TEXT_LIMIT = 4_000;
 
-export type CompactBoundaryMetadata = JsonObject & {
-  kind: "compact_boundary";
-  compactedUpToSequence: number;
-  preservedTailUserTurns: number;
-  trigger: "manual" | "auto";
-  tokensBefore: number | null;
-  tokensAfter: number | null;
-  diagnostics?: CompactAttemptDiagnostics;
-};
-
 export interface CompactTranscriptSplit {
   summaryRecords: readonly ThreadMessageRecord[];
   preservedTail: readonly ThreadMessageRecord[];
-  compactedUpToSequence: number;
+  compactedThroughSequence: number;
 }
-
-export type CompactFailureNoticeMetadata = JsonObject & {
-  kind: "compact_failure_notice";
-  trigger: "auto";
-  reason: string;
-  consecutiveFailures: number;
-  cooldownUntil: number | null;
-  diagnostics?: CompactAttemptDiagnostics;
-};
 
 export interface CompactThreadOptions {
   store: Pick<{
-    loadTranscript(threadId: string): Promise<readonly ThreadMessageRecord[]>;
-    appendRuntimeMessage(
+    loadActiveTranscript(threadId: string): Promise<ThreadTranscriptSnapshot>;
+    commitCompaction(
       threadId: string,
-      payload: ThreadRuntimeMessagePayload,
+      commit: ThreadCompactionCommit,
     ): Promise<ThreadMessageRecord>;
-  }, "loadTranscript" | "appendRuntimeMessage">;
+  }, "loadActiveTranscript" | "commitCompaction">;
   thread: Pick<TranscriptThreadState, "id">;
-  transcript?: readonly ThreadMessageRecord[];
+  transcript?: ThreadTranscriptSnapshot;
   model: string;
   thinking?: ThinkingLevel;
   customInstructions?: string;
   trigger: CompactBoundaryMetadata["trigger"];
+  operationId?: string;
+  owningRunId?: string;
   runtime?: Pick<LlmRuntime, "complete">;
 }
 
@@ -80,7 +70,7 @@ export interface CompactThreadResult {
   summary: string;
   tokensBefore: number;
   tokensAfter: number;
-  compactedUpToSequence: number;
+  compactedThroughSequence: number;
   diagnostics: CompactAttemptDiagnostics;
 }
 
@@ -110,65 +100,6 @@ function truncateText(text: string, maxChars: number): string {
   }
 
   return `${text.slice(0, Math.max(0, maxChars - 12)).trimEnd()}\n[truncated]`;
-}
-
-function isCompactBoundaryMetadata(value: JsonValue | undefined): value is CompactBoundaryMetadata {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
-
-  const record = value as Record<string, unknown>;
-  return record.kind === "compact_boundary"
-    && typeof record.compactedUpToSequence === "number"
-    && typeof record.preservedTailUserTurns === "number"
-    && (record.trigger === "manual" || record.trigger === "auto");
-}
-
-function isCompactFailureNoticeMetadata(value: JsonValue | undefined): value is CompactFailureNoticeMetadata {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
-
-  const record = value as Record<string, unknown>;
-  return record.kind === "compact_failure_notice"
-    && record.trigger === "auto"
-    && typeof record.reason === "string"
-    && typeof record.consecutiveFailures === "number";
-}
-
-export function isCompactBoundaryRecord(
-  record: ThreadMessageRecord,
-): record is ThreadMessageRecord & { metadata: CompactBoundaryMetadata } {
-  return record.source === "compact" && isCompactBoundaryMetadata(record.metadata);
-}
-
-function isCompactFailureNoticeRecord(
-  record: ThreadMessageRecord,
-): record is ThreadMessageRecord & { metadata: CompactFailureNoticeMetadata } {
-  return record.source === "compact" && isCompactFailureNoticeMetadata(record.metadata);
-}
-
-export function projectTranscriptForRun(
-  transcript: readonly ThreadMessageRecord[],
-): readonly ThreadMessageRecord[] {
-  const modelVisibleTranscript = transcript.filter((record) => !isCompactFailureNoticeRecord(record));
-
-  for (let index = modelVisibleTranscript.length - 1; index >= 0; index -= 1) {
-    const record = modelVisibleTranscript[index];
-    if (!record || !isCompactBoundaryRecord(record)) {
-      continue;
-    }
-
-    const boundary = record;
-    const tail = modelVisibleTranscript.filter((record) => {
-      return record.id !== boundary.id
-        && record.sequence > boundary.metadata.compactedUpToSequence;
-    });
-
-    return [boundary, ...tail];
-  }
-
-  return modelVisibleTranscript;
 }
 
 export function splitTranscriptForCompaction(
@@ -207,7 +138,7 @@ export function splitTranscriptForCompaction(
   return {
     summaryRecords,
     preservedTail,
-    compactedUpToSequence: lastSummarized.sequence,
+    compactedThroughSequence: lastSummarized.sequence,
   };
 }
 
@@ -494,8 +425,8 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
     throw new Error(apiKeyMessage);
   }
 
-  const transcript = options.transcript ?? await options.store.loadTranscript(options.thread.id);
-  const activeTranscript = projectTranscriptForRun(transcript);
+  const transcript = options.transcript ?? await options.store.loadActiveTranscript(options.thread.id);
+  const activeTranscript = transcript.records;
   const tokensBefore = estimateTranscriptTokens(activeTranscript, {
     replayToolArtifacts: true,
   });
@@ -528,7 +459,7 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
         outcome: "empty_input",
         summaryRecordCount: split.summaryRecords.length,
         preservedTailRecordCount: split.preservedTail.length,
-        compactedUpToSequence: split.compactedUpToSequence,
+        compactedThroughSequence: split.compactedThroughSequence,
         compactionInputChars: 0,
         error: "Compaction input was empty.",
       });
@@ -546,7 +477,7 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
     ...baseDiagnostics,
     summaryRecordCount: split.summaryRecords.length,
     preservedTailRecordCount: split.preservedTail.length,
-    compactedUpToSequence: split.compactedUpToSequence,
+    compactedThroughSequence: split.compactedThroughSequence,
     compactionInputChars: compactionInput.length,
     preservedTailTokens,
     summaryTokenBudget,
@@ -593,7 +524,7 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
   };
   const metadata: CompactBoundaryMetadata = {
     kind: "compact_boundary",
-    compactedUpToSequence: split.compactedUpToSequence,
+    compactedThroughSequence: split.compactedThroughSequence,
     preservedTailUserTurns: DEFAULT_COMPACT_PRESERVED_USER_TURNS,
     trigger: options.trigger,
     tokensBefore,
@@ -601,10 +532,12 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
     diagnostics,
   };
 
-  const record = await options.store.appendRuntimeMessage(options.thread.id, {
+  const record = await options.store.commitCompaction(options.thread.id, {
+    id: options.operationId,
+    expectedCheckpointId: transcript.checkpointId,
     message: compactMessage,
-    source: "compact",
     metadata,
+    runId: options.owningRunId,
   });
 
   return {
@@ -612,7 +545,7 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
     summary,
     tokensBefore,
     tokensAfter,
-    compactedUpToSequence: split.compactedUpToSequence,
+    compactedThroughSequence: split.compactedThroughSequence,
     diagnostics,
   };
 }

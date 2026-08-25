@@ -298,6 +298,7 @@ export class PostgresSubagentInventory implements SubagentInventoryReader {
         FROM ${threadTables.inputs} AS input
         INNER JOIN scoped_subagents ON scoped_subagents.current_thread_id = input.thread_id
         WHERE input.applied_at IS NULL
+          AND input.discarded_at IS NULL
         GROUP BY input.thread_id
       )
       SELECT

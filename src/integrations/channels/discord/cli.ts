@@ -15,7 +15,7 @@ import {PostgresIdentityStore} from "../../../domain/identity/postgres.js";
 import {normalizeIdentityHandle, type IdentityBindingRecord, type IdentityRecord} from "../../../domain/identity/types.js";
 import {DB_URL_OPTION_DESCRIPTION, parseRequiredOptionValue, parseSessionIdOption} from "../../../lib/cli.js";
 import {resolveMediaDir} from "../../../lib/data-dir.js";
-import {withPostgresPool} from "../../../lib/postgres-bootstrap.js";
+import {withPostgresPool} from "../../../lib/postgres-database.js";
 import {trimToUndefined} from "../../../lib/strings.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
 import {
@@ -34,7 +34,7 @@ import {
   discordStickerListCommandDescriptor,
   discordStickerSendCommandDescriptor,
 } from "./commands.js";
-import {DiscordService, initializeDiscordWorkerSchemas} from "./service.js";
+import {DiscordService} from "./service.js";
 import {ConnectorAccountSupervisor} from "../account-supervisor.js";
 import {
   startConnectorDaemonRuntime,
@@ -261,7 +261,6 @@ async function withDiscordAccountStores<T>(
       connectorStore: new PostgresConnectorAccountStore({pool}),
       identityStore: new PostgresIdentityStore({pool}),
     };
-    await stores.connectorStore.ensureSchema();
     return fn(stores);
   });
 }
@@ -276,9 +275,6 @@ async function withDiscordBindingStores<T>(
       conversations: new ConversationRepo({pool}),
       sessionStore: new PostgresSessionStore({pool}),
     };
-    await stores.connectorStore.ensureSchema();
-    await stores.sessionStore.ensureSchema();
-    await stores.conversations.ensureSchema();
     return fn(stores);
   });
 }
@@ -292,8 +288,6 @@ async function withDiscordActorPairingStores<T>(
       connectorStore: new PostgresConnectorAccountStore({pool}),
       identityStore: new PostgresIdentityStore({pool}),
     };
-    await stores.connectorStore.ensureSchema();
-    await stores.identityStore.ensureSchema();
     return fn(stores);
   });
 }
@@ -856,7 +850,6 @@ async function startDiscordDaemonRuntime(
         return typeof connectorKey === "string" ? connectorKey : null;
       },
     }],
-    initialize: async (pool) => initializeDiscordWorkerSchemas(pool),
   });
 }
 

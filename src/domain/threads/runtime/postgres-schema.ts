@@ -1,7 +1,7 @@
-import {addConstraint, alterIfSupported, assertIntegrityChecks} from "../../../lib/postgres-integrity.js";
+import {addConstraint, alterIfSupported, assertIntegrityChecks, type IntegrityCheckGroup} from "../../../lib/postgres-integrity.js";
 import {buildIdentityTableNames} from "../../identity/postgres-shared.js";
 import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
-import type {PgPoolLike} from "../../../lib/postgres-query.js";
+import type {PgQueryable} from "../../../lib/postgres-query.js";
 import {
   CREATE_RUNTIME_SCHEMA_SQL,
   postgresRelationExists,
@@ -17,6 +17,8 @@ const THREAD_RUNTIME_MIGRATIONS_TABLE =
   `${quoteIdentifier(RUNTIME_SCHEMA)}.${quoteIdentifier("thread_runtime_migrations")}`;
 const SET_ENV_VALUE_ARGUMENT_REDACTION_MIGRATION =
   "set_env_value_tool_call_argument_redaction_2026_05_22";
+const TYPED_COMPACTION_CHECKPOINT_MIGRATION =
+  "typed_compaction_checkpoints_2026_08_24";
 const LEGACY_THREAD_CONTEXT_COLUMN = "context";
 const LEGACY_THREAD_SCALAR_COLUMNS = ["system_prompt", "max_turns", "temperature"] as const;
 
@@ -70,7 +72,7 @@ function redactSetEnvValueToolCallsInMessage(message: unknown): {
   };
 }
 
-async function ensureThreadRuntimeMigrationTable(pool: PgPoolLike): Promise<void> {
+async function ensureThreadRuntimeMigrationTable(pool: PgQueryable): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${THREAD_RUNTIME_MIGRATIONS_TABLE} (
       migration_key TEXT PRIMARY KEY,
@@ -79,7 +81,7 @@ async function ensureThreadRuntimeMigrationTable(pool: PgPoolLike): Promise<void
   `);
 }
 
-async function hasThreadRuntimeMigration(pool: PgPoolLike, migrationKey: string): Promise<boolean> {
+async function hasThreadRuntimeMigration(pool: PgQueryable, migrationKey: string): Promise<boolean> {
   const result = await pool.query(`
     SELECT 1
     FROM ${THREAD_RUNTIME_MIGRATIONS_TABLE}
@@ -89,7 +91,7 @@ async function hasThreadRuntimeMigration(pool: PgPoolLike, migrationKey: string)
   return result.rows.length > 0;
 }
 
-async function markThreadRuntimeMigration(pool: PgPoolLike, migrationKey: string): Promise<void> {
+async function markThreadRuntimeMigration(pool: PgQueryable, migrationKey: string): Promise<void> {
   await pool.query(`
     INSERT INTO ${THREAD_RUNTIME_MIGRATIONS_TABLE} (migration_key)
     VALUES ($1)
@@ -98,11 +100,9 @@ async function markThreadRuntimeMigration(pool: PgPoolLike, migrationKey: string
 }
 
 async function redactLegacySetEnvValueToolCallArguments(
-  pool: PgPoolLike,
+  pool: PgQueryable,
   tables: ThreadRuntimeTableNames,
 ): Promise<void> {
-  await ensureThreadRuntimeMigrationTable(pool);
-
   if (await hasThreadRuntimeMigration(pool, SET_ENV_VALUE_ARGUMENT_REDACTION_MIGRATION)) {
     return;
   }
@@ -138,8 +138,108 @@ async function redactLegacySetEnvValueToolCallArguments(
   await markThreadRuntimeMigration(pool, SET_ENV_VALUE_ARGUMENT_REDACTION_MIGRATION);
 }
 
+async function migrateTypedCompactionCheckpoints(
+  pool: PgQueryable,
+  tables: ThreadRuntimeTableNames,
+): Promise<void> {
+  if (await hasThreadRuntimeMigration(pool, TYPED_COMPACTION_CHECKPOINT_MIGRATION)) {
+    return;
+  }
+
+  await pool.query(`
+    UPDATE ${tables.messages}
+    SET compacted_through_sequence = (metadata ->> 'compactedUpToSequence')::BIGINT,
+        metadata = metadata - 'compactedUpToSequence'
+    WHERE source = 'compact'
+      AND metadata ->> 'kind' = 'compact_boundary'
+      AND metadata ->> 'compactedUpToSequence' IS NOT NULL
+  `);
+  await markThreadRuntimeMigration(pool, TYPED_COMPACTION_CHECKPOINT_MIGRATION);
+}
+
+// This predicate is shared by the database constraint and integrity audit so a
+// row accepted as an indexed checkpoint is always recognizable by the kernel.
+function buildValidCompactionCheckpointSql(): string {
+  return `
+    compacted_through_sequence IS NOT NULL
+    AND compacted_through_sequence >= 0
+    AND compacted_through_sequence < sequence
+    AND origin = 'runtime'
+    AND source = 'compact'
+    AND COALESCE(metadata ->> 'kind', '') = 'compact_boundary'
+    AND (metadata -> 'compactedThroughSequence') IS NULL
+    AND (metadata -> 'compactedUpToSequence') IS NULL
+    AND COALESCE(metadata ->> 'trigger', '') IN ('manual', 'auto')
+    AND CASE
+      WHEN (metadata -> 'preservedTailUserTurns')::text IS NULL THEN FALSE
+      WHEN (metadata -> 'preservedTailUserTurns')::text LIKE '"%' THEN FALSE
+      WHEN (metadata -> 'preservedTailUserTurns')::text IN ('true', 'false', 'null') THEN FALSE
+      WHEN (metadata -> 'preservedTailUserTurns')::text LIKE '{%' THEN FALSE
+      WHEN (metadata -> 'preservedTailUserTurns')::text LIKE '[%' THEN FALSE
+      ELSE
+        (metadata ->> 'preservedTailUserTurns')::numeric BETWEEN 0 AND 9007199254740991
+        AND (metadata -> 'preservedTailUserTurns')::text NOT LIKE '%.%'
+        AND LOWER((metadata -> 'preservedTailUserTurns')::text) NOT LIKE '%e%'
+    END
+  `;
+}
+
+async function ensureSingleRunningRunPerThread(
+  pool: PgQueryable,
+  tables: ThreadRuntimeTableNames,
+): Promise<void> {
+  await pool.query(`
+    UPDATE ${tables.runs}
+    SET status = 'failed',
+        finished_at = COALESCE(finished_at, NOW()),
+        error = COALESCE(error, 'Legacy running run had no durable daemon owner during run-claim migration.')
+    WHERE status = 'running'
+      AND (owner_source IS NULL OR owner_key IS NULL OR owner_holder_id IS NULL)
+  `);
+  const runningRuns = await pool.query(`
+    SELECT id, thread_id
+    FROM ${tables.runs}
+    WHERE status = 'running'
+    ORDER BY thread_id, started_at DESC, id DESC
+  `);
+  const retainedThreads = new Set<string>();
+  const staleRunIds = runningRuns.rows.flatMap((row) => {
+    if (!isJsonRecord(row) || typeof row.id !== "string" || typeof row.thread_id !== "string") {
+      return [];
+    }
+    if (!retainedThreads.has(row.thread_id)) {
+      retainedThreads.add(row.thread_id);
+      return [];
+    }
+    return [row.id];
+  });
+  if (staleRunIds.length > 0) {
+    await pool.query(`
+      UPDATE ${tables.runs}
+      SET status = 'failed',
+          finished_at = COALESCE(finished_at, NOW()),
+          error = COALESCE(error, 'Superseded duplicate running run repaired by the durable run-claim migration.')
+      WHERE id = ANY($1::UUID[])
+    `, [staleRunIds]);
+  }
+  const versionResult = await pool.query("SHOW server_version");
+  const serverVersion = isJsonRecord(versionResult.rows[0])
+    ? versionResult.rows[0].server_version
+    : undefined;
+  // pg-mem parses partial indexes but enforces them as full-table indexes.
+  // Real PostgreSQL is the authority for this concurrency invariant.
+  if (typeof serverVersion === "string" && serverVersion.includes("pg-mem")) {
+    return;
+  }
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_runs_one_running_per_thread_idx`)}
+    ON ${tables.runs} (thread_id)
+    WHERE status = 'running'
+  `);
+}
+
 async function readExistingThreadColumns(
-  pool: PgPoolLike,
+  pool: PgQueryable,
   columns: readonly string[],
 ): Promise<ReadonlySet<string>> {
   if (columns.length === 0) {
@@ -173,7 +273,7 @@ async function readExistingThreadColumns(
 }
 
 async function dropReadonlyThreadsViewForColumnCleanup(
-  pool: PgPoolLike,
+  pool: PgQueryable,
   existingCleanupColumns: ReadonlySet<string>,
 ): Promise<void> {
   if (existingCleanupColumns.size === 0) {
@@ -194,7 +294,7 @@ async function dropReadonlyThreadsViewForColumnCleanup(
 }
 
 async function ensureThreadsTable(
-  pool: PgPoolLike,
+  pool: PgQueryable,
   tables: ThreadRuntimeTableNames,
 ): Promise<void> {
   if (await postgresRelationExists(pool, RUNTIME_SCHEMA, "threads")) {
@@ -205,6 +305,7 @@ async function ensureThreadsTable(
     CREATE TABLE ${tables.threads} (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
+      replaces_thread_id TEXT,
       runtime_state JSONB,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -213,7 +314,7 @@ async function ensureThreadsTable(
 }
 
 export async function backfillWorkerMetadataFromLegacyThreadContext(
-  pool: PgPoolLike,
+  pool: PgQueryable,
   tables: ThreadRuntimeTableNames,
   existingContextColumns: ReadonlySet<string>,
 ): Promise<void> {
@@ -236,7 +337,7 @@ export async function backfillWorkerMetadataFromLegacyThreadContext(
 }
 
 export async function migrateSessionRuntimeConfigFromThreadRows(
-  pool: PgPoolLike,
+  pool: PgQueryable,
   tables: ThreadRuntimeTableNames,
 ): Promise<void> {
   const sessionTables = buildSessionTableNames();
@@ -293,7 +394,8 @@ export async function migrateSessionRuntimeConfigFromThreadRows(
         thinking,
         thinking_configured,
         inference_projection,
-        pending_wake_at
+        pending_wake_at,
+        pending_wake_generation
       )
       SELECT
         s.id,
@@ -301,7 +403,8 @@ export async function migrateSessionRuntimeConfigFromThreadRows(
         ${thinkingExpression},
         ${thinkingConfiguredExpression},
         ${inferenceProjectionExpression},
-        ${pendingWakeExpression}
+        ${pendingWakeExpression},
+        CASE WHEN ${pendingWakeExpression} IS NULL THEN 0 ELSE 1 END
       FROM ${sessionTables.sessions} AS s
       INNER JOIN ${tables.threads} AS t
         ON t.id = s.current_thread_id
@@ -316,6 +419,11 @@ export async function migrateSessionRuntimeConfigFromThreadRows(
           thinking_configured = config.thinking_configured OR EXCLUDED.thinking_configured,
           inference_projection = COALESCE(config.inference_projection, EXCLUDED.inference_projection),
           pending_wake_at = COALESCE(config.pending_wake_at, EXCLUDED.pending_wake_at),
+          pending_wake_generation = CASE
+            WHEN config.pending_wake_at IS NULL AND EXCLUDED.pending_wake_at IS NOT NULL
+              THEN config.pending_wake_generation + 1
+            ELSE config.pending_wake_generation
+          END,
           updated_at = NOW()
       WHERE (config.model IS NULL AND EXCLUDED.model IS NOT NULL)
          OR (NOT config.thinking_configured AND EXCLUDED.thinking_configured)
@@ -340,6 +448,9 @@ export function buildThreadRuntimeSchemaSql(
     ADD COLUMN IF NOT EXISTS runtime_state JSONB;
 
     ALTER TABLE ${tables.threads}
+    ADD COLUMN IF NOT EXISTS replaces_thread_id TEXT;
+
+    ALTER TABLE ${tables.threads}
     DROP COLUMN IF EXISTS max_input_tokens;
 
     ALTER TABLE ${tables.threads}
@@ -359,6 +470,7 @@ export function buildThreadRuntimeSchemaSql(
 
     CREATE TABLE IF NOT EXISTS ${tables.messages} (
       id UUID PRIMARY KEY,
+      input_id UUID,
       thread_id TEXT NOT NULL REFERENCES ${tables.threads}(id) ON DELETE CASCADE,
       sequence BIGSERIAL NOT NULL,
       origin TEXT NOT NULL,
@@ -378,10 +490,24 @@ export function buildThreadRuntimeSchemaSql(
     ADD COLUMN IF NOT EXISTS metadata JSONB;
 
     ALTER TABLE ${tables.messages}
+    ADD COLUMN IF NOT EXISTS input_id UUID;
+
+    ALTER TABLE ${tables.messages}
     ADD COLUMN IF NOT EXISTS run_thread_id TEXT;
+
+    ALTER TABLE ${tables.messages}
+    ADD COLUMN IF NOT EXISTS compacted_through_sequence BIGINT;
 
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_messages_thread_sequence_idx`)}
     ON ${tables.messages} (thread_id, sequence);
+
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_messages_compact_checkpoint_idx`)}
+    ON ${tables.messages} (thread_id, sequence DESC)
+    WHERE compacted_through_sequence IS NOT NULL;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_messages_input_id_idx`)}
+    ON ${tables.messages} (input_id)
+    WHERE input_id IS NOT NULL;
 
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_threads_session_updated_idx`)}
     ON ${tables.threads} (session_id, updated_at DESC);
@@ -395,31 +521,87 @@ export function buildThreadRuntimeSchemaSql(
       input_order BIGSERIAL NOT NULL,
       delivery_mode TEXT NOT NULL DEFAULT 'wake',
       source TEXT NOT NULL,
+      connector_key TEXT NOT NULL DEFAULT '',
       channel_id TEXT,
       external_message_id TEXT,
       actor_id TEXT,
       identity_id TEXT REFERENCES ${identityTableName}(id) ON DELETE SET NULL,
       created_at TIMESTAMPTZ NOT NULL,
+      admitted_run_id UUID,
       applied_at TIMESTAMPTZ,
+      applied_run_id UUID,
+      discarded_at TIMESTAMPTZ,
       metadata JSONB,
-      message JSONB NOT NULL
+      message JSONB
     );
 
     ALTER TABLE ${tables.inputs}
     ADD COLUMN IF NOT EXISTS metadata JSONB;
 
-    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_inputs_thread_order_idx`)}
-    ON ${tables.inputs} (thread_id, applied_at, input_order);
+    ALTER TABLE ${tables.inputs}
+    ADD COLUMN IF NOT EXISTS connector_key TEXT;
 
-    CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_inputs_external_message_connector_idx`)}
+    UPDATE ${tables.inputs}
+    SET connector_key = COALESCE(metadata -> 'route' ->> 'connectorKey', '')
+    WHERE connector_key IS NULL;
+
+    ALTER TABLE ${tables.inputs}
+    ALTER COLUMN connector_key SET DEFAULT '';
+
+    ALTER TABLE ${tables.inputs}
+    ALTER COLUMN connector_key SET NOT NULL;
+
+    ALTER TABLE ${tables.inputs}
+    ADD COLUMN IF NOT EXISTS admitted_run_id UUID;
+
+    ALTER TABLE ${tables.inputs}
+    ADD COLUMN IF NOT EXISTS applied_run_id UUID;
+
+    ALTER TABLE ${tables.inputs}
+    ADD COLUMN IF NOT EXISTS discarded_at TIMESTAMPTZ;
+
+    ALTER TABLE ${tables.inputs}
+    ALTER COLUMN message DROP NOT NULL;
+
+    DROP INDEX IF EXISTS ${quoteQualifiedIdentifier(
+      RUNTIME_SCHEMA,
+      `${tables.prefix}_inputs_thread_order_idx`,
+    )};
+
+    DROP INDEX IF EXISTS ${quoteQualifiedIdentifier(
+      RUNTIME_SCHEMA,
+      `${tables.prefix}_inputs_pending_idx`,
+    )};
+
+    CREATE INDEX ${quoteIdentifier(`${tables.prefix}_inputs_pending_idx`)}
+    ON ${tables.inputs} (thread_id, input_order)
+    WHERE applied_at IS NULL AND discarded_at IS NULL;
+
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_inputs_runnable_idx`)}
+    ON ${tables.inputs} (thread_id, input_order)
+    WHERE applied_at IS NULL AND discarded_at IS NULL AND delivery_mode = 'wake';
+
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_inputs_admitted_idx`)}
+    ON ${tables.inputs} (thread_id, admitted_run_id, input_order)
+    WHERE applied_at IS NULL AND discarded_at IS NULL AND admitted_run_id IS NOT NULL;
+
+    CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_inputs_thread_id_id_idx`)}
+    ON ${tables.inputs} (thread_id, id);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_inputs_external_message_connector_key_idx`)}
     ON ${tables.inputs} (
       thread_id,
       source,
-      COALESCE(metadata -> 'route' ->> 'connectorKey', ''),
+      connector_key,
       COALESCE(channel_id, ''),
       external_message_id
     )
     WHERE external_message_id IS NOT NULL;
+
+    DROP INDEX IF EXISTS ${quoteQualifiedIdentifier(
+      RUNTIME_SCHEMA,
+      `${tables.prefix}_inputs_external_message_connector_idx`,
+    )};
 
     DROP INDEX IF EXISTS ${quoteQualifiedIdentifier(
       RUNTIME_SCHEMA,
@@ -429,6 +611,9 @@ export function buildThreadRuntimeSchemaSql(
     CREATE TABLE IF NOT EXISTS ${tables.runs} (
       id UUID PRIMARY KEY,
       thread_id TEXT NOT NULL REFERENCES ${tables.threads}(id) ON DELETE CASCADE,
+      owner_source TEXT,
+      owner_key TEXT,
+      owner_holder_id TEXT,
       status TEXT NOT NULL,
       started_at TIMESTAMPTZ NOT NULL,
       finished_at TIMESTAMPTZ,
@@ -437,17 +622,38 @@ export function buildThreadRuntimeSchemaSql(
       error TEXT
     );
 
+    ALTER TABLE ${tables.runs}
+    ADD COLUMN IF NOT EXISTS owner_source TEXT;
+
+    ALTER TABLE ${tables.runs}
+    ADD COLUMN IF NOT EXISTS owner_key TEXT;
+
+    ALTER TABLE ${tables.runs}
+    ADD COLUMN IF NOT EXISTS owner_holder_id TEXT;
+
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_runs_thread_started_idx`)}
     ON ${tables.runs} (thread_id, started_at);
 
     CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_runs_thread_id_id_idx`)}
     ON ${tables.runs} (thread_id, id);
 
+    CREATE TABLE IF NOT EXISTS ${tables.abortOperations} (
+      operation_id UUID PRIMARY KEY,
+      thread_id TEXT NOT NULL REFERENCES ${tables.threads}(id) ON DELETE CASCADE,
+      run_id UUID,
+      reason TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      FOREIGN KEY (thread_id, run_id) REFERENCES ${tables.runs}(thread_id, id)
+    );
+
     CREATE TABLE IF NOT EXISTS ${tables.toolJobs} (
       id UUID PRIMARY KEY,
       thread_id TEXT NOT NULL REFERENCES ${tables.threads}(id) ON DELETE CASCADE,
       run_id UUID REFERENCES ${tables.runs}(id) ON DELETE SET NULL,
       run_thread_id TEXT,
+      owner_source TEXT,
+      owner_key TEXT,
+      owner_holder_id TEXT,
       parent_tool_call_id TEXT,
       command_ordinal BIGINT,
       kind TEXT NOT NULL,
@@ -466,6 +672,15 @@ export function buildThreadRuntimeSchemaSql(
     ADD COLUMN IF NOT EXISTS run_thread_id TEXT;
 
     ALTER TABLE ${tables.toolJobs}
+    ADD COLUMN IF NOT EXISTS owner_source TEXT;
+
+    ALTER TABLE ${tables.toolJobs}
+    ADD COLUMN IF NOT EXISTS owner_key TEXT;
+
+    ALTER TABLE ${tables.toolJobs}
+    ADD COLUMN IF NOT EXISTS owner_holder_id TEXT;
+
+    ALTER TABLE ${tables.toolJobs}
     ADD COLUMN IF NOT EXISTS parent_tool_call_id TEXT;
 
     ALTER TABLE ${tables.toolJobs}
@@ -476,6 +691,10 @@ export function buildThreadRuntimeSchemaSql(
 
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_tool_jobs_status_idx`)}
     ON ${tables.toolJobs} (status, started_at);
+
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_tool_jobs_running_owner_idx`)}
+    ON ${tables.toolJobs} (owner_source, owner_key, owner_holder_id, started_at)
+    WHERE status = 'running';
 
     CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_tool_jobs_parent_ordinal_idx`)}
     ON ${tables.toolJobs} (thread_id, run_id, parent_tool_call_id, command_ordinal)
@@ -538,28 +757,10 @@ export function buildThreadRuntimeSchemaSql(
   `;
 }
 
-/** Ensures thread runtime storage schema, migrations, and cross-table integrity constraints. */
-export async function ensurePostgresThreadRuntimeSchema(pool: PgPoolLike): Promise<void> {
+export function buildThreadRuntimeIntegrityChecks(): IntegrityCheckGroup {
   const tables = buildThreadRuntimeTableNames();
-  const identityTableName = buildIdentityTableNames().identities;
   const sessionTableName = buildSessionTableNames().sessions;
-
-  await pool.query(CREATE_RUNTIME_SCHEMA_SQL);
-  await ensureThreadsTable(pool, tables);
-  const existingLegacyScalarColumns = await readExistingThreadColumns(
-    pool,
-    LEGACY_THREAD_SCALAR_COLUMNS,
-  );
-  const existingContextColumns = await readExistingThreadColumns(pool, [LEGACY_THREAD_CONTEXT_COLUMN]);
-  await dropReadonlyThreadsViewForColumnCleanup(
-    pool,
-    new Set([...existingLegacyScalarColumns, ...existingContextColumns]),
-  );
-  await backfillWorkerMetadataFromLegacyThreadContext(pool, tables, existingContextColumns);
-  await pool.query(buildThreadRuntimeSchemaSql(tables, identityTableName));
-  await migrateSessionRuntimeConfigFromThreadRows(pool, tables);
-  await redactLegacySetEnvValueToolCallArguments(pool, tables);
-  await assertIntegrityChecks(pool, "Thread runtime schema", [
+  return {scope: "Thread runtime schema", checks: [
     {
       label: "threads.session_id orphaned from agent_sessions.id",
       sql: `
@@ -568,6 +769,18 @@ export async function ensurePostgresThreadRuntimeSchema(pool: PgPoolLike): Promi
         LEFT JOIN ${sessionTableName} AS session
           ON session.id = thread.session_id
         WHERE session.id IS NULL
+      `,
+    },
+    {
+      label: "threads.replaces_thread_id points outside its session",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.threads} AS thread
+        LEFT JOIN ${tables.threads} AS replaced
+          ON replaced.id = thread.replaces_thread_id
+         AND replaced.session_id = thread.session_id
+        WHERE thread.replaces_thread_id IS NOT NULL
+          AND replaced.id IS NULL
       `,
     },
     {
@@ -588,6 +801,15 @@ export async function ensurePostgresThreadRuntimeSchema(pool: PgPoolLike): Promi
         INNER JOIN ${tables.threads} AS thread
           ON thread.id = session.current_thread_id
         WHERE thread.session_id <> session.id
+      `,
+    },
+    {
+      label: "running thread runs missing durable daemon ownership",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.runs}
+        WHERE status = 'running'
+          AND (owner_source IS NULL OR owner_key IS NULL OR owner_holder_id IS NULL)
       `,
     },
     {
@@ -613,6 +835,113 @@ export async function ensurePostgresThreadRuntimeSchema(pool: PgPoolLike): Promi
       `,
     },
     {
+      label: "messages contain malformed compaction checkpoints",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.messages}
+        WHERE (
+          compacted_through_sequence IS NULL
+          AND COALESCE(metadata ->> 'kind', '') = 'compact_boundary'
+        ) OR (
+          compacted_through_sequence IS NOT NULL
+          AND NOT (${buildValidCompactionCheckpointSql()})
+        )
+      `,
+    },
+    {
+      label: "inputs.admitted_run_id orphaned from runs.id",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.inputs} AS input
+        LEFT JOIN ${tables.runs} AS run
+          ON run.id = input.admitted_run_id
+        WHERE input.admitted_run_id IS NOT NULL
+          AND run.id IS NULL
+      `,
+    },
+    {
+      label: "inputs.admitted_run_id bound to a run from another thread",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.inputs} AS input
+        INNER JOIN ${tables.runs} AS run
+          ON run.id = input.admitted_run_id
+        WHERE run.thread_id <> input.thread_id
+      `,
+    },
+    {
+      label: "terminal inputs retain an admitting run",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.inputs} AS input
+        WHERE input.admitted_run_id IS NOT NULL
+          AND (input.applied_at IS NOT NULL OR input.discarded_at IS NOT NULL)
+      `,
+    },
+    {
+      label: "inputs.applied_run_id orphaned from runs.id",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.inputs} AS input
+        LEFT JOIN ${tables.runs} AS run
+          ON run.id = input.applied_run_id
+        WHERE input.applied_run_id IS NOT NULL
+          AND run.id IS NULL
+      `,
+    },
+    {
+      label: "inputs.applied_run_id bound to a run from another thread",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.inputs} AS input
+        INNER JOIN ${tables.runs} AS run
+          ON run.id = input.applied_run_id
+        WHERE run.thread_id <> input.thread_id
+      `,
+    },
+    {
+      label: "messages.input_id orphaned from inputs.id",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.messages} AS message
+        LEFT JOIN ${tables.inputs} AS input
+          ON input.id = message.input_id
+        WHERE message.input_id IS NOT NULL
+          AND input.id IS NULL
+      `,
+    },
+    {
+      label: "messages.input_id bound to an input from another thread",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.messages} AS message
+        INNER JOIN ${tables.inputs} AS input
+          ON input.id = message.input_id
+        WHERE input.thread_id <> message.thread_id
+      `,
+    },
+    {
+      label: "applied input missing canonical message link",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.inputs} AS input
+        LEFT JOIN ${tables.messages} AS message
+          ON message.input_id = input.id
+        WHERE input.applied_at IS NOT NULL
+          AND message.id IS NULL
+      `,
+    },
+    {
+      label: "non-applied input has a canonical message link",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.inputs} AS input
+        INNER JOIN ${tables.messages} AS message
+          ON message.input_id = input.id
+        WHERE input.applied_at IS NULL
+      `,
+    },
+    {
       label: "tool_jobs.run_id bound to a run from another thread",
       sql: `
         SELECT COUNT(*)::INTEGER AS count
@@ -621,6 +950,30 @@ export async function ensurePostgresThreadRuntimeSchema(pool: PgPoolLike): Promi
           ON run.id = job.run_id
         WHERE job.run_id IS NOT NULL
           AND run.thread_id <> job.thread_id
+      `,
+    },
+    {
+      label: "running tool_jobs missing durable daemon owner",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.toolJobs}
+        WHERE status = 'running'
+          AND (
+            owner_source IS NULL
+            OR owner_key IS NULL
+            OR owner_holder_id IS NULL
+          )
+      `,
+    },
+    {
+      label: "tool_jobs have partial daemon owner",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.toolJobs}
+        WHERE NOT (
+          (owner_source IS NULL AND owner_key IS NULL AND owner_holder_id IS NULL)
+          OR (owner_source IS NOT NULL AND owner_key IS NOT NULL AND owner_holder_id IS NOT NULL)
+        )
       `,
     },
     {
@@ -634,7 +987,201 @@ export async function ensurePostgresThreadRuntimeSchema(pool: PgPoolLike): Promi
           AND run.thread_id <> job.thread_id
       `,
     },
+  ]};
+}
+
+async function backfillLegacyAppliedInputMessageLinks(
+  pool: PgQueryable,
+  tables: ThreadRuntimeTableNames,
+): Promise<boolean> {
+  const appliedInput = await pool.query(`
+    SELECT 1
+    FROM ${tables.inputs}
+    WHERE applied_at IS NOT NULL
+    LIMIT 1
+  `);
+  if (appliedInput.rows.length === 0) {
+    return false;
+  }
+
+  const matchesLegacyInput = (messageAlias: string, inputAlias: string): string => `
+    ${messageAlias}.input_id IS NULL
+    AND ${messageAlias}.origin = 'input'
+    AND ${messageAlias}.thread_id = ${inputAlias}.thread_id
+    AND ${messageAlias}.source = ${inputAlias}.source
+    AND (${messageAlias}.channel_id = ${inputAlias}.channel_id
+      OR (${messageAlias}.channel_id IS NULL AND ${inputAlias}.channel_id IS NULL))
+    AND (${messageAlias}.external_message_id = ${inputAlias}.external_message_id
+      OR (${messageAlias}.external_message_id IS NULL AND ${inputAlias}.external_message_id IS NULL))
+    AND (${messageAlias}.actor_id = ${inputAlias}.actor_id
+      OR (${messageAlias}.actor_id IS NULL AND ${inputAlias}.actor_id IS NULL))
+    AND (${messageAlias}.identity_id = ${inputAlias}.identity_id
+      OR (${messageAlias}.identity_id IS NULL AND ${inputAlias}.identity_id IS NULL))
+    AND ${messageAlias}.created_at = ${inputAlias}.created_at
+    AND (${messageAlias}.metadata = ${inputAlias}.metadata
+      OR (${messageAlias}.metadata IS NULL AND ${inputAlias}.metadata IS NULL))
+    AND ${messageAlias}.message = ${inputAlias}.message
+  `;
+
+  // Old Panda applied each input and inserted its transcript message in one
+  // transaction, but stored no explicit link. Refuse to destroy the duplicate
+  // payload unless that historical canonical row is uniquely identifiable.
+  await assertIntegrityChecks(pool, "thread input lineage migration", [
+    {
+      label: "applied input has no unique canonical message",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM ${tables.inputs} AS input
+        WHERE input.applied_at IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM ${tables.messages} AS linked WHERE linked.input_id = input.id
+          )
+          AND (
+            SELECT COUNT(*)
+            FROM ${tables.messages} AS message
+            WHERE ${matchesLegacyInput("message", "input")}
+          ) <> 1
+      `,
+    },
+    {
+      label: "canonical message matches multiple applied inputs",
+      sql: `
+        SELECT COUNT(*)::INTEGER AS count
+        FROM (
+          SELECT message.id
+          FROM ${tables.messages} AS message
+          INNER JOIN ${tables.inputs} AS input
+            ON ${matchesLegacyInput("message", "input")}
+          WHERE input.applied_at IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM ${tables.messages} AS linked WHERE linked.input_id = input.id
+            )
+          GROUP BY message.id
+          HAVING COUNT(*) > 1
+        ) AS ambiguous
+      `,
+    },
   ]);
+
+  await pool.query(`
+    UPDATE ${tables.messages} AS message
+    SET input_id = input.id
+    FROM ${tables.inputs} AS input
+    WHERE input.applied_at IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM ${tables.messages} AS linked WHERE linked.input_id = input.id
+      )
+      AND ${matchesLegacyInput("message", "input")}
+  `);
+
+  await assertIntegrityChecks(pool, "thread input lineage migration", [{
+    label: "applied input remains without canonical message link",
+    sql: `
+      SELECT COUNT(*)::INTEGER AS count
+      FROM ${tables.inputs} AS input
+      WHERE input.applied_at IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM ${tables.messages} AS message WHERE message.input_id = input.id
+        )
+    `,
+  }]);
+  return true;
+}
+
+async function backfillToolJobOwners(pool: PgQueryable, tables: ThreadRuntimeTableNames): Promise<void> {
+  await pool.query(`
+    UPDATE ${tables.toolJobs}
+    SET owner_source = run.owner_source,
+        owner_key = run.owner_key,
+        owner_holder_id = run.owner_holder_id
+    FROM ${tables.runs} AS run
+    WHERE ${tables.toolJobs}.run_id = run.id
+      AND ${tables.toolJobs}.thread_id = run.thread_id
+      AND run.owner_source IS NOT NULL
+      AND run.owner_key IS NOT NULL
+      AND run.owner_holder_id IS NOT NULL
+      AND (
+        ${tables.toolJobs}.owner_source IS NULL
+        OR ${tables.toolJobs}.owner_source <> run.owner_source
+        OR ${tables.toolJobs}.owner_key IS NULL
+        OR ${tables.toolJobs}.owner_key <> run.owner_key
+        OR ${tables.toolJobs}.owner_holder_id IS NULL
+        OR ${tables.toolJobs}.owner_holder_id <> run.owner_holder_id
+      )
+  `);
+  // Old standalone rows never had a durable owner. They cannot safely be
+  // adopted because their external process may still be running elsewhere.
+  await pool.query(`
+    UPDATE ${tables.toolJobs}
+    SET status = 'lost',
+        finished_at = COALESCE(finished_at, NOW()),
+        duration_ms = COALESCE(duration_ms, 0),
+        status_reason = COALESCE(
+          status_reason,
+          'Background job had no durable daemon owner during schema upgrade.'
+        )
+    WHERE status = 'running'
+      AND (
+        owner_source IS NULL
+        OR owner_key IS NULL
+        OR owner_holder_id IS NULL
+      )
+  `);
+  await pool.query(`
+    UPDATE ${tables.toolJobs}
+    SET owner_source = NULL,
+        owner_key = NULL,
+        owner_holder_id = NULL
+    WHERE status <> 'running'
+      AND NOT (
+        (owner_source IS NULL AND owner_key IS NULL AND owner_holder_id IS NULL)
+        OR (owner_source IS NOT NULL AND owner_key IS NOT NULL AND owner_holder_id IS NOT NULL)
+      )
+  `);
+}
+
+/** Ensures thread runtime storage schema, migrations, and cross-table integrity constraints. */
+export async function ensurePostgresThreadRuntimeSchema(pool: PgQueryable): Promise<void> {
+  const tables = buildThreadRuntimeTableNames();
+  const identityTableName = buildIdentityTableNames().identities;
+  const sessionTableName = buildSessionTableNames().sessions;
+
+  await pool.query(CREATE_RUNTIME_SCHEMA_SQL);
+  await ensureThreadsTable(pool, tables);
+  const existingLegacyScalarColumns = await readExistingThreadColumns(
+    pool,
+    LEGACY_THREAD_SCALAR_COLUMNS,
+  );
+  const existingContextColumns = await readExistingThreadColumns(pool, [LEGACY_THREAD_CONTEXT_COLUMN]);
+  await dropReadonlyThreadsViewForColumnCleanup(
+    pool,
+    new Set([...existingLegacyScalarColumns, ...existingContextColumns]),
+  );
+  await backfillWorkerMetadataFromLegacyThreadContext(pool, tables, existingContextColumns);
+  await pool.query(buildThreadRuntimeSchemaSql(tables, identityTableName));
+  await ensureSingleRunningRunPerThread(pool, tables);
+  await backfillToolJobOwners(pool, tables);
+  const hasAppliedInputs = await backfillLegacyAppliedInputMessageLinks(pool, tables);
+  // Applied inputs have a canonical transcript message. Keep only their small
+  // idempotency/lineage tombstone instead of retaining a second payload copy.
+  if (hasAppliedInputs) {
+    await pool.query(`
+      UPDATE ${tables.inputs}
+      SET metadata = NULL,
+          message = NULL
+      WHERE applied_at IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM ${tables.messages} AS message WHERE message.input_id = ${tables.inputs}.id
+        )
+        AND (metadata IS NOT NULL OR message IS NOT NULL)
+    `);
+  }
+  await migrateSessionRuntimeConfigFromThreadRows(pool, tables);
+  await ensureThreadRuntimeMigrationTable(pool);
+  await migrateTypedCompactionCheckpoints(pool, tables);
+  await redactLegacySetEnvValueToolCallArguments(pool, tables);
+  const integrity = buildThreadRuntimeIntegrityChecks();
+  await assertIntegrityChecks(pool, integrity.scope, integrity.checks);
   await pool.query(`
     UPDATE ${tables.messages}
     SET run_thread_id = NULL
@@ -694,6 +1241,51 @@ export async function ensurePostgresThreadRuntimeSchema(pool: PgPoolLike): Promi
     ON DELETE CASCADE
   `);
   await addConstraint(pool, `
+    ALTER TABLE ${tables.threads}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_threads_replacement_fk`)}
+    FOREIGN KEY (session_id, replaces_thread_id)
+    REFERENCES ${tables.threads}(session_id, id)
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.runs}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_runs_owner_shape_check`)}
+    CHECK (
+      (
+        owner_source IS NULL
+        AND owner_key IS NULL
+        AND owner_holder_id IS NULL
+      ) OR (
+        owner_source IS NOT NULL
+        AND owner_key IS NOT NULL
+        AND owner_holder_id IS NOT NULL
+      )
+    )
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.runs}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_runs_running_owner_check`)}
+    CHECK (
+      status <> 'running'
+      OR (
+        owner_source IS NOT NULL
+        AND owner_key IS NOT NULL
+        AND owner_holder_id IS NOT NULL
+      )
+    )
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.messages}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_messages_compact_checkpoint_check`)}
+    CHECK (
+      (
+        compacted_through_sequence IS NULL
+        AND COALESCE(metadata ->> 'kind', '') <> 'compact_boundary'
+      ) OR (
+        ${buildValidCompactionCheckpointSql()}
+      )
+    )
+  `);
+  await addConstraint(pool, `
     ALTER TABLE ${tables.messages}
     ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_messages_run_fk`)}
     FOREIGN KEY (run_id)
@@ -719,6 +1311,58 @@ export async function ensurePostgresThreadRuntimeSchema(pool: PgPoolLike): Promi
     FOREIGN KEY (run_thread_id, run_id)
     REFERENCES ${tables.runs}(thread_id, id)
     ON DELETE SET NULL
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.inputs}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_inputs_lifecycle_check`)}
+    CHECK (
+      (
+        applied_at IS NULL
+        AND applied_run_id IS NULL
+        AND discarded_at IS NULL
+        AND message IS NOT NULL
+      ) OR (
+        applied_at IS NOT NULL
+        AND discarded_at IS NULL
+        AND message IS NULL
+      ) OR (
+        applied_at IS NULL
+        AND applied_run_id IS NULL
+        AND discarded_at IS NOT NULL
+        AND message IS NULL
+      )
+    )
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.inputs}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_inputs_admission_lifecycle_check`)}
+    CHECK (
+      admitted_run_id IS NULL
+      OR (applied_at IS NULL AND discarded_at IS NULL AND message IS NOT NULL)
+    )
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.inputs}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_inputs_admitted_run_scope_fk`)}
+    FOREIGN KEY (thread_id, admitted_run_id)
+    REFERENCES ${tables.runs}(thread_id, id)
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.inputs}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_inputs_applied_run_scope_fk`)}
+    FOREIGN KEY (thread_id, applied_run_id)
+    REFERENCES ${tables.runs}(thread_id, id)
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.messages}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_messages_input_scope_fk`)}
+    FOREIGN KEY (thread_id, input_id)
+    REFERENCES ${tables.inputs}(thread_id, id)
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.messages}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_messages_input_origin_check`)}
+    CHECK (input_id IS NULL OR origin = 'input')
   `);
   await addConstraint(pool, `
     ALTER TABLE ${tables.toolJobs}
@@ -755,6 +1399,19 @@ export async function ensurePostgresThreadRuntimeSchema(pool: PgPoolLike): Promi
         AND run_id IS NOT NULL
       )
     )
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.toolJobs}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_tool_jobs_owner_shape_check`)}
+    CHECK (
+      (owner_source IS NULL AND owner_key IS NULL AND owner_holder_id IS NULL)
+      OR (owner_source IS NOT NULL AND owner_key IS NOT NULL AND owner_holder_id IS NOT NULL)
+    )
+  `);
+  await addConstraint(pool, `
+    ALTER TABLE ${tables.toolJobs}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_tool_jobs_running_owner_check`)}
+    CHECK (status <> 'running' OR owner_source IS NOT NULL)
   `);
   await addConstraint(pool, `
     ALTER TABLE ${tables.bashJobs}
