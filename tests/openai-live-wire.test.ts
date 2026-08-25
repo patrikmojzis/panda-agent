@@ -69,10 +69,19 @@ describe("experimental OpenAI GPT-Live wire", () => {
     expect(parsed).toEqual({kind: "turn_done", role: "user", transcript: "hello there", transcriptChars: 11, transcriptBytes: 11, truncated: false});
   });
 
+  it("rejects incomplete provider turn boundaries", () => {
+    expect(parseOpenAILiveEvent(JSON.stringify({type: "turn.done", turn: {role: "user"}}))).toEqual({kind: "ignored", type: "turn.done"});
+    expect(parseOpenAILiveEvent(JSON.stringify({type: "turn.done", turn: {role: "tool", transcript: "done"}}))).toEqual({kind: "ignored", type: "turn.done"});
+  });
+
   it("reports malformed and transcript events without retaining transcript text", () => {
     expect(parseOpenAILiveEvent("not json")).toEqual({kind: "malformed", reason: "invalid_json"});
     expect(parseOpenAILiveEvent(JSON.stringify({type: "conversation.item.input_audio_transcription.completed", transcript: "čau panda"})))
       .toEqual({kind: "transcript_metadata", type: "conversation.item.input_audio_transcription.completed", role: "unknown", transcriptChars: 9, transcriptBytes: 10, truncated: false});
+    expect(parseOpenAILiveEvent(JSON.stringify({type: "output_audio.delta", audio: "AAE="})))
+      .toEqual({kind: "known_ignored", type: "output_audio.delta"});
+    expect(parseOpenAILiveEvent(JSON.stringify({type: "session.updated", session: {expires_at: 123}})))
+      .toEqual({kind: "session_started", expiresAt: 123});
   });
 
   it("never exposes the OAuth bearer through structured errors", () => {

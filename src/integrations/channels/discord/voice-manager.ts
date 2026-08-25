@@ -31,7 +31,7 @@ const VOICE_READY_TIMEOUT_MS = 15_000;
 const VOICE_RECONNECT_GRACE_MS = 15_000;
 const VOICE_SESSION_TTL_MS = 30 * 60_000;
 const MAX_PENDING_INPUT_BYTES = 64 * 1024;
-const LIVE_PCM_BYTES_PER_MS = 24_000 * 2 / 1_000;
+const DISCORD_INPUT_PACKET_MS = 20;
 const CAPTURE_SILENCE_MS = 500;
 const HEALTH_LOG_INTERVAL_MS = 10_000;
 const HEALTH_PERSIST_INTERVAL_MS = 30_000;
@@ -406,7 +406,9 @@ export class DiscordVoiceSessionManager {
       unknownEvents: 0,
     };
     const connectionState = (session.connection as VoiceConnection & {state?: {status?: string}}).state?.status ?? "unknown";
-    const providerState = call.recovering ? "recovering" : provider.state;
+    const providerState = call.recovering || (provider.state === "connected" && provider.sidebandState === "connecting")
+      ? "recovering"
+      : provider.state;
     const gatewayReady = !infrastructure.gateway || (infrastructure.gateway.state === "ready" && (infrastructure.gateway.heartbeatAckAgeMs ?? 0) <= 90_000);
     const health = deriveLiveVoiceHealth({
       connecting: !call.connected && !call.recovering,
@@ -438,14 +440,14 @@ export class DiscordVoiceSessionManager {
         responseEpoch: call.output.responseEpoch,
         queuedMs: call.output.queuedMs,
         droppedMs: call.outputDroppedMs,
-        suppressedMs: Math.round(call.live.suppressedOutputBytes / LIVE_PCM_BYTES_PER_MS),
+        providerClears: call.providerOutputClears,
         underruns: call.playbackUnderruns,
         lastAudioAt: call.lastOutputAt ?? null,
       },
       capture: {
-        state: call.captureUtteranceId ? "capturing" : "idle",
+        state: call.captureId ? "capturing" : "idle",
         actorId: call.captureActorId ?? null,
-        utteranceId: call.captureUtteranceId ?? null,
+        captureId: call.captureId ?? null,
         queuedMs: session.health.captureQueuedMs,
         droppedMs: call.captureDroppedMs + (media?.droppedInputMs ?? 0),
         droppedPackets: call.captureDroppedPackets,
@@ -467,7 +469,13 @@ export class DiscordVoiceSessionManager {
         poolIdle: infrastructure.pool?.idleCount ?? null,
         poolWaiting: infrastructure.pool?.waitingCount ?? null,
       },
-      transport: discordVoiceTransportDiagnostics({gateway: infrastructure.gateway, connectionState, playerState: session.health.playerState, stateAt: session.health.discordVoiceStateAt}),
+      transport: discordVoiceTransportDiagnostics({
+        gateway: infrastructure.gateway,
+        connectionState,
+        playerState: session.health.playerState,
+        playback: call.output.transport,
+        stateAt: session.health.discordVoiceStateAt,
+      }),
     };
     this.options.log("discord_voice_health", {transition, snapshot});
     const persistedKey = `${health.state}:${health.reasons.join(",")}`;
@@ -486,18 +494,18 @@ export class DiscordVoiceSessionManager {
   private attachReceiver(session: ActiveVoiceSession): void {
     session.connection.receiver.speaking.on("start", (userId) => {
       if (userId === this.options.connectorKey) return;
-      const decision = session.call.beginUtterance(userId);
+      const decision = session.call.beginCapture(userId);
       if (decision.status !== "accepted") {
         if (decision.status !== "continued") this.options.log("voice_utterance_dropped", {connectorKey: session.connectorKey, guildId: session.guildId, channelId: session.channelId, speakerId: userId, reason: decision.status});
         return;
       }
-      const utteranceId = decision.utteranceId;
+      const captureId = decision.captureId;
       void this.reportHealth(session, true);
       let stream: VoiceInputStream;
       try {
         stream = session.connection.receiver.subscribe(userId, {end: {behavior: EndBehaviorType.AfterSilence, duration: CAPTURE_SILENCE_MS}});
       } catch (error) {
-        session.call.endUtterance(utteranceId);
+        session.call.endCapture(captureId);
         this.options.log("voice_utterance_dropped", {connectorKey: session.connectorKey, guildId: session.guildId, channelId: session.channelId, speakerId: userId, reason: "subscribe_failed", message: safeFailureMessage(error)});
         return;
       }
@@ -513,7 +521,7 @@ export class DiscordVoiceSessionManager {
           if (session.closing || !decoder) return;
           const pcm = discordPcmToLive(decoder.decode(packet, {maxFrameSize: 5_760}));
           if (pcm.length === 0) return;
-          session.call.pushAudio(utteranceId, pcm);
+          session.call.pushAudio(captureId, pcm);
         }
         catch (error) { this.options.log("voice_decode_failed", {connectorKey: session.connectorKey, guildId: session.guildId, speakerId: userId, message: errorMessage(error)}); }
       };
@@ -523,11 +531,11 @@ export class DiscordVoiceSessionManager {
         if (decoder) { decode(copy); return; }
         while (pendingPackets.length > 0 && pendingBytes + copy.length > MAX_PENDING_INPUT_BYTES) {
           pendingBytes -= pendingPackets.shift()!.length;
-          session.call.noteCaptureDrop();
+          session.call.noteCaptureDrop(1, DISCORD_INPUT_PACKET_MS);
         }
         if (copy.length <= MAX_PENDING_INPUT_BYTES) { pendingPackets.push(copy); pendingBytes += copy.length; }
-        else session.call.noteCaptureDrop();
-        session.health.captureQueuedMs = Math.round(pendingBytes / LIVE_PCM_BYTES_PER_MS);
+        else session.call.noteCaptureDrop(1, DISCORD_INPUT_PACKET_MS);
+        session.health.captureQueuedMs = pendingPackets.length * DISCORD_INPUT_PACKET_MS;
       };
       const release = () => {
         if (released) return;
@@ -535,7 +543,7 @@ export class DiscordVoiceSessionManager {
         clearTimeout(timer);
         stream.off("data", onData);
         session.inputStreams.delete(stream);
-        session.call.endUtterance(utteranceId);
+        session.call.endCapture(captureId);
         session.health.captureQueuedMs = 0;
         pendingPackets = [];
         pendingBytes = 0;
@@ -556,6 +564,7 @@ export class DiscordVoiceSessionManager {
         const packets = pendingPackets;
         pendingPackets = [];
         pendingBytes = 0;
+        session.health.captureQueuedMs = 0;
         for (const packet of packets) decode(packet);
       }).catch((error: unknown) => stream.destroy(error instanceof Error ? error : new Error(String(error))));
     });
@@ -567,11 +576,9 @@ export class DiscordVoiceSessionManager {
       void this.reportHealth(session, true);
     });
     session.player.on("stateChange", (_oldState, newState) => {
-      const state = session.playback.getSnapshot().state;
-      const underrun = newState.status === AudioPlayerStatus.Idle && (state === "streaming" || state === "preroll");
       session.health.playerState = newState.status;
       if (newState.status === AudioPlayerStatus.Idle) {
-        session.playback.handlePlayerIdle();
+        const underrun = session.playback.handlePlayerIdle();
         session.call.noteOutputIdle(underrun);
       }
       void this.reportHealth(session, true);

@@ -10,12 +10,12 @@ const DISCORD_FRAME_SAMPLES = 960;
 const DEFAULT_PREROLL_FRAMES = 4;
 const DEFAULT_END_QUIET_MS = 300;
 const MAX_QUEUED_PACKETS = 250;
+const LIVE_FRAME_MS = 20;
 
 /** Bounded 20 ms Discord player misses tolerated while GPT-Live RTP catches up. */
 export const DISCORD_VOICE_MAX_MISSED_FRAMES = 16;
 
 export type DiscordVoicePlaybackState = "idle" | "preroll" | "streaming" | "ending" | "closed";
-
 export interface DiscordVoicePlaybackSnapshot {
   state: DiscordVoicePlaybackState;
   responseEpoch: number;
@@ -23,8 +23,8 @@ export interface DiscordVoicePlaybackSnapshot {
   queuedPackets: number;
   queuedMs: number;
   interrupts: number;
-  silentLeadingChunks: number;
   overruns: number;
+  transport: {providerSilenceDroppedMs: number; silentLeadingFrames: number};
 }
 
 interface DiscordVoicePlaybackOptions {
@@ -57,12 +57,14 @@ export class DiscordVoicePlayback {
   private responseEpoch = 0;
   private residual = Buffer.alloc(0);
   private packets: Buffer[] = [];
+  private consecutiveSilenceFrames = 0;
   private source?: Readable;
   private sourceEpoch?: number;
   private sealed = false;
   private endTimer?: NodeJS.Timeout;
   private interrupts = 0;
-  private silentLeadingChunks = 0;
+  private silentLeadingFrames = 0;
+  private droppedProviderSilenceMs = 0;
   private overruns = 0;
   private encoderFreed = false;
 
@@ -70,21 +72,15 @@ export class DiscordVoicePlayback {
 
   pushPcm(input: Buffer): void {
     if (this.state === "closed" || input.length === 0) return;
-    if (this.state === "idle" && input.length >= 2 && !hasAudiblePcm16(input)) {
-      this.silentLeadingChunks += 1;
-      this.changed();
-      return;
-    }
-    if (this.state === "idle") this.beginResponse();
-    if (this.sealed) this.sealed = false;
-    this.scheduleSeal();
     const pcm = this.residual.length > 0 ? Buffer.concat([this.residual, input]) : Buffer.from(input);
     let offset = 0;
     try {
       while (pcm.length - offset >= LIVE_FRAME_BYTES) {
-        this.enqueuePacket(this.encodeFrame(pcm.subarray(offset, offset + LIVE_FRAME_BYTES)));
+        if (!this.processFrame(pcm.subarray(offset, offset + LIVE_FRAME_BYTES))) {
+          this.residual = Buffer.alloc(0);
+          return;
+        }
         offset += LIVE_FRAME_BYTES;
-        if (this.state === "idle") return;
       }
       this.residual = Buffer.from(pcm.subarray(offset));
       if (!this.source && this.packets.length >= (this.options.prerollFrames ?? DEFAULT_PREROLL_FRAMES)) this.startPlayback();
@@ -102,18 +98,20 @@ export class DiscordVoicePlayback {
     this.changed();
   }
 
-  handlePlayerIdle(): void {
-    if (this.state === "closed") return;
+  handlePlayerIdle(): boolean {
+    if (this.state === "closed") return false;
+    const underrun = !this.sealed && (this.state === "streaming" || this.state === "preroll");
     const source = this.source;
     this.source = undefined;
     this.sourceEpoch = undefined;
     if (source && !source.destroyed) source.destroy();
     if (this.packets.length > 0) {
       this.startPlayback();
-      return;
+      return underrun;
     }
     if (this.sealed) this.finishResponseEpoch();
     this.changed();
+    return underrun;
   }
 
   reset(): void {
@@ -128,10 +126,13 @@ export class DiscordVoicePlayback {
       responseEpoch: this.responseEpoch,
       residualBytes: this.residual.length,
       queuedPackets: this.packets.length,
-      queuedMs: this.packets.length * 20,
+      queuedMs: this.packets.length * LIVE_FRAME_MS,
       interrupts: this.interrupts,
-      silentLeadingChunks: this.silentLeadingChunks,
       overruns: this.overruns,
+      transport: {
+        providerSilenceDroppedMs: this.droppedProviderSilenceMs,
+        silentLeadingFrames: this.silentLeadingFrames,
+      },
     };
   }
 
@@ -151,19 +152,47 @@ export class DiscordVoicePlayback {
     this.state = "preroll";
     this.residual = Buffer.alloc(0);
     this.sealed = false;
+    this.consecutiveSilenceFrames = 0;
+  }
+
+  private processFrame(frame: Buffer): boolean {
+    if (!hasAudiblePcm16(frame)) {
+      if (this.state === "idle") {
+        this.silentLeadingFrames += 1;
+        return true;
+      }
+      if (this.sealed) {
+        this.droppedProviderSilenceMs += LIVE_FRAME_MS;
+        return true;
+      }
+      if (!this.enqueuePacket(this.encodeFrame(frame))) return false;
+      this.consecutiveSilenceFrames += 1;
+      if (this.consecutiveSilenceFrames * LIVE_FRAME_MS >= (this.options.endQuietMs ?? DEFAULT_END_QUIET_MS)) this.sealResponse();
+      return true;
+    }
+    if (this.state === "idle") this.beginResponse();
+    if (this.sealed) {
+      this.sealed = false;
+      this.state = this.source ? "streaming" : "preroll";
+    }
+    this.consecutiveSilenceFrames = 0;
+    if (!this.enqueuePacket(this.encodeFrame(frame))) return false;
+    this.scheduleSeal();
+    return true;
   }
 
   private encodeFrame(frame: Buffer): Buffer {
     return Buffer.from(this.options.encoder.encode(livePcmToDiscord(frame), {frameSize: DISCORD_FRAME_SAMPLES}));
   }
 
-  private enqueuePacket(packet: Buffer): void {
+  private enqueuePacket(data: Buffer): boolean {
     if (this.packets.length >= MAX_QUEUED_PACKETS) {
       this.overruns += 1;
       this.resetResponse(true);
-      return;
+      return false;
     }
-    this.packets.push(packet);
+    this.packets.push(data);
+    return true;
   }
 
   private startPlayback(): void {
@@ -186,7 +215,7 @@ export class DiscordVoicePlayback {
       this.finishSource(epoch, source);
       this.options.onError(error);
     });
-    this.options.player.play(createAudioResource(source, {inputType: StreamType.Opus}));
+    this.options.player.play(createAudioResource(source, {inputType: StreamType.Opus, silencePaddingFrames: 0}));
     if (this.state !== "ending") this.state = "streaming";
     this.drainPackets();
   }
@@ -214,11 +243,17 @@ export class DiscordVoicePlayback {
   private sealResponse(): void {
     if (this.state === "idle" || this.state === "closed" || this.sealed) return;
     try {
+      if (this.endTimer) clearTimeout(this.endTimer);
+      this.endTimer = undefined;
       if (this.residual.length > 0) {
         const finalFrame = Buffer.alloc(LIVE_FRAME_BYTES);
         this.residual.copy(finalFrame);
         this.residual = Buffer.alloc(0);
-        this.enqueuePacket(this.encodeFrame(finalFrame));
+        if (hasAudiblePcm16(finalFrame)) {
+          if (!this.enqueuePacket(this.encodeFrame(finalFrame))) return;
+        } else {
+          this.droppedProviderSilenceMs += LIVE_FRAME_MS;
+        }
       }
       this.sealed = true;
       this.state = "ending";
@@ -243,6 +278,7 @@ export class DiscordVoicePlayback {
   private finishResponseEpoch(): void {
     this.residual = Buffer.alloc(0);
     this.packets = [];
+    this.consecutiveSilenceFrames = 0;
     this.sealed = false;
     if (this.state !== "closed") this.state = "idle";
   }
@@ -255,10 +291,11 @@ export class DiscordVoicePlayback {
     this.sourceEpoch = undefined;
     this.residual = Buffer.alloc(0);
     this.packets = [];
+    this.consecutiveSilenceFrames = 0;
     this.sealed = false;
     source?.destroy();
-    if (stopPlayer && this.options.player.state.status !== AudioPlayerStatus.Idle) this.options.player.stop(true);
     if (this.state !== "closed") this.state = "idle";
+    if (stopPlayer && this.options.player.state.status !== AudioPlayerStatus.Idle) this.options.player.stop(true);
   }
 
   private changed(): void { this.options.onStateChange?.(); }

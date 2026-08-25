@@ -39,9 +39,8 @@ export interface LiveVoiceProviderHealth {
 export interface LiveVoiceProviderSession {
   connect(signal?: AbortSignal): Promise<void>;
   sendAudio(pcm24kMono: Buffer): void;
-  interrupt(): void;
-  appendDelegationContext(delegationId: string, text: string, channel: LiveVoiceContextChannel): boolean;
-  appendSessionContext(text: string, channel: LiveVoiceContextChannel): boolean;
+  appendDelegationContext(delegationId: string, text: string, channel: LiveVoiceContextChannel): Promise<boolean>;
+  appendSessionContext(text: string, channel: LiveVoiceContextChannel): Promise<boolean>;
   getHealthSnapshot?(): LiveVoiceProviderHealth;
   close(): void;
 }
@@ -50,7 +49,7 @@ export interface LiveVoiceProviderCallbacks {
   initialItems: readonly LiveVoiceHistoryItem[];
   onAudio(audio: Buffer): void;
   onDelegation(delegation: {id: string; prompt: string}): Promise<void> | void;
-  onClearAudio(): void;
+  onOutputAudioCleared(): void;
   onTurnDone(input: {role: "user" | "assistant" | "unknown"; transcript?: string}): void;
   onFailure(failure: LiveVoiceProviderFailure): void;
 }

@@ -1,32 +1,26 @@
-import {afterEach, describe, expect, it, vi} from "vitest";
+import {describe, expect, it} from "vitest";
 
 import {LiveVoiceSession} from "../src/integrations/voice/live-voice-session.js";
 
-afterEach(() => vi.useRealTimers());
-
 describe("LiveVoiceSession", () => {
-  it("suppresses stale output until the provider confirms the user turn, even if Discord capture lingers", () => {
+  it("does not infer an interruption from local capture", () => {
     const session = new LiveVoiceSession();
-    expect(session.acceptOutput(960)).toBe(true);
+    expect(session.acceptOutput()).toBe(true);
 
     session.beginInput();
-    expect(session.acceptOutput(960)).toBe(false);
-    session.noteTurnDone({role: "user", transcript: "hello"});
-    expect(session.acceptOutput(960)).toBe(true);
+    expect(session.acceptOutput()).toBe(true);
     session.endInput();
 
-    expect(session.acceptOutput(960)).toBe(true);
-    expect(session.getSnapshot()).toMatchObject({phase: "playing", inputEpoch: 1, suppressedOutputChunks: 1, suppressedOutputBytes: 960});
+    expect(session.getSnapshot()).toMatchObject({phase: "playing", inputEpoch: 1, captureActive: false});
   });
 
-  it("releases output after a bounded fallback when the provider omits user turn completion", async () => {
-    vi.useFakeTimers();
-    const session = new LiveVoiceSession({outputReleaseTimeoutMs: 50});
-    session.beginInput();
-    session.endInput();
-    expect(session.acceptOutput(960)).toBe(false);
-    await vi.advanceTimersByTimeAsync(50);
-    expect(session.acceptOutput(960)).toBe(true);
+  it("mirrors a provider-owned output clear without blocking replacement media", () => {
+    const session = new LiveVoiceSession();
+    expect(session.acceptOutput()).toBe(true);
+    session.noteOutputAudioCleared();
+    expect(session.getSnapshot().phase).toBe("listening");
+    expect(session.acceptOutput()).toBe(true);
+    expect(session.getSnapshot().phase).toBe("playing");
   });
 
   it("keeps bounded completed turns only in transient role-bearing reconnect history", () => {
@@ -47,7 +41,7 @@ describe("LiveVoiceSession", () => {
     session.endInput();
     session.close();
     session.close();
-    expect(session.acceptOutput(960)).toBe(false);
-    expect(session.getSnapshot()).toMatchObject({phase: "closed", suppressedOutputChunks: 1});
+    expect(session.acceptOutput()).toBe(false);
+    expect(session.getSnapshot()).toMatchObject({phase: "closed"});
   });
 });

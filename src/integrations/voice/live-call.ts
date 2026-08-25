@@ -3,6 +3,7 @@ import {randomUUID} from "node:crypto";
 import type {LiveVoiceRepo} from "../../domain/live-voice/repo.js";
 import {isActiveLiveVoiceTurn, type LiveVoiceTurnRecord} from "../../domain/live-voice/types.js";
 import {isRetryableRuntimeInfrastructureError} from "../../domain/threads/requests/errors.js";
+import type {JsonObject} from "../../lib/json.js";
 import {hasAudiblePcm16} from "./pcm.js";
 import {LiveVoiceSession, type LiveVoiceSessionSnapshot} from "./live-voice-session.js";
 import type {
@@ -20,12 +21,15 @@ const MAX_PROVIDER_FAILURES_PER_WINDOW = 4;
 const PLAYBACK_FAILURE_WINDOW_MS = 60_000;
 const MAX_PLAYBACK_FAILURES_PER_WINDOW = 4;
 const DELEGATION_CLOSE_WAIT_MS = 5_000;
+const PROVIDER_TURN_TIMEOUT_MS = 10_000;
+const DELIVERY_RECOVERY_WAIT_MS = 45_000;
 
 export interface LiveVoiceOutputSnapshot {
   state: string;
   responseEpoch: number;
   queuedMs: number;
   overruns: number;
+  transport?: JsonObject;
 }
 
 export interface LiveVoiceOutput {
@@ -34,6 +38,11 @@ export interface LiveVoiceOutput {
   reset(): void;
   getSnapshot(): LiveVoiceOutputSnapshot;
 }
+
+/** Narrow persistence seam required by one transient live voice call. */
+export type LiveVoiceStore = Pick<LiveVoiceRepo,
+  "createOrGetTurnAndEnqueueDelegation" | "getTurn" | "reserveFinalDelivery" | "releaseFinalDelivery" | "completeReservedFinal" | "failTurn"
+>;
 
 interface LiveVoiceTurnBinding {
   liveVoiceTurnId: string;
@@ -49,14 +58,21 @@ interface LiveVoiceUtterance {
   startedAt: number;
   providerGeneration: number;
   committed: boolean;
-  ended: boolean;
   turnDone: boolean;
   delegated: boolean;
 }
 
-export type LiveVoiceUtteranceDecision =
-  | {status: "accepted"; utteranceId: string}
-  | {status: "continued"; utteranceId: string}
+interface LiveVoiceCapture {
+  id: string;
+  actorId: string;
+  providerGeneration: number;
+  audible: boolean;
+  utterance: LiveVoiceUtterance;
+}
+
+export type LiveVoiceCaptureDecision =
+  | {status: "accepted"; captureId: string}
+  | {status: "continued"; captureId: string}
   | {status: "overlap" | "rate_limit" | "provider_unavailable"};
 
 export interface LiveVoiceCallSnapshot {
@@ -70,10 +86,11 @@ export interface LiveVoiceCallSnapshot {
   output: LiveVoiceOutputSnapshot;
   playbackFailed: boolean;
   playbackUnderruns: number;
+  providerOutputClears: number;
   outputDroppedMs: number;
   lastOutputAt?: number;
   captureActorId?: string;
-  captureUtteranceId?: string;
+  captureId?: string;
   captureDroppedMs: number;
   captureDroppedPackets: number;
   lastInputAt?: number;
@@ -88,9 +105,7 @@ export interface LiveVoiceCallOptions {
   liveVoiceSessionId: string;
   sessionId: string;
   agentKey: string;
-  voice: Pick<LiveVoiceRepo,
-    "createOrGetTurnAndEnqueueDelegation" | "getTurn" | "reserveFinalDelivery" | "releaseFinalDelivery" | "completeReservedFinal" | "failTurn"
-  >;
+  voice: LiveVoiceStore;
   createProvider: LiveVoiceProviderFactory;
   output: LiveVoiceOutput;
   log(event: string, payload: Record<string, unknown>): void;
@@ -119,6 +134,17 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+function boundedWait<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    timer.unref?.();
+    void promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error: unknown) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
 function retryableStartupFailure(error: unknown): boolean {
   const status = typeof error === "object" && error !== null && "status" in error ? Number(error.status) : undefined;
   if (status === 429 || (status !== undefined && status >= 500)) return true;
@@ -137,7 +163,9 @@ export class LiveVoiceCall {
   private connected = false;
   private recovery?: Promise<void>;
   private closing = false;
-  private activeUtterance?: LiveVoiceUtterance;
+  private activeCapture?: LiveVoiceCapture;
+  private pendingUtterance?: LiveVoiceUtterance;
+  private providerTurnTimeout?: NodeJS.Timeout;
   private readonly utterances: LiveVoiceUtterance[] = [];
   private readonly acceptedAt: number[] = [];
   private readonly turnBindingsByUtterance = new Map<string, LiveVoiceTurnBinding>();
@@ -148,6 +176,7 @@ export class LiveVoiceCall {
   private providerReconnectCount = 0;
   private playbackFailed = false;
   private playbackUnderruns = 0;
+  private providerOutputClears = 0;
   private captureDroppedMs = 0;
   private captureDroppedPackets = 0;
   private lastInputAt?: number;
@@ -171,35 +200,50 @@ export class LiveVoiceCall {
     this.changed();
   }
 
-  beginUtterance(actorId: string, now = Date.now()): LiveVoiceUtteranceDecision {
+  beginCapture(actorId: string, now = Date.now()): LiveVoiceCaptureDecision {
     if (this.closing || !this.connected || !this.provider) return {status: "provider_unavailable"};
-    if (this.activeUtterance?.actorId === actorId) return {status: "continued", utteranceId: this.activeUtterance.id};
-    if (this.activeUtterance) return {status: "overlap"};
-    while (this.acceptedAt.length > 0 && this.acceptedAt[0]! <= now - 60_000) this.acceptedAt.shift();
-    if (this.acceptedAt.length >= MAX_UTTERANCES_PER_MINUTE) return {status: "rate_limit"};
-    this.acceptedAt.push(now);
-    const utterance: LiveVoiceUtterance = {
-      id: randomUUID(), actorId, startedAt: now, providerGeneration: this.providerGeneration,
-      committed: false, ended: false, turnDone: false, delegated: false,
+    if (this.activeCapture?.actorId === actorId) return {status: "continued", captureId: this.activeCapture.id};
+    if (this.activeCapture) return {status: "overlap"};
+    let utterance = this.pendingUtterance;
+    if (utterance && !utterance.turnDone) {
+      if (utterance.actorId !== actorId) return {status: "overlap"};
+      this.clearProviderTurnTimeout();
+    } else {
+      utterance = this.reserveUtterance(actorId, now);
+      if (!utterance) return {status: "rate_limit"};
+    }
+    const capture: LiveVoiceCapture = {
+      id: randomUUID(), actorId, providerGeneration: this.providerGeneration, audible: false, utterance,
     };
-    this.activeUtterance = utterance;
+    this.activeCapture = capture;
     this.changed();
-    return {status: "accepted", utteranceId: utterance.id};
+    return {status: "accepted", captureId: capture.id};
   }
 
-  pushAudio(utteranceId: string, pcm24kMono: Buffer): boolean {
-    const utterance = this.activeUtterance;
-    if (!utterance || utterance.id !== utteranceId || this.closing || !this.connected || !this.provider || utterance.providerGeneration !== this.providerGeneration) {
+  pushAudio(captureId: string, pcm24kMono: Buffer): boolean {
+    const capture = this.activeCapture;
+    if (!capture || capture.id !== captureId || this.closing || !this.connected || !this.provider || capture.providerGeneration !== this.providerGeneration) {
       this.captureDroppedMs += Math.round(pcm24kMono.length / (24_000 * 2) * 1_000);
       this.changed();
       return false;
     }
     this.lastInputAt = Date.now();
-    if (!utterance.committed) {
+    if (!capture.audible) {
       if (!hasAudiblePcm16(pcm24kMono)) return false;
-      utterance.committed = true;
+      capture.audible = true;
       this.live.beginInput();
-      this.provider.interrupt();
+    }
+    if (capture.utterance.turnDone) {
+      const continuation = this.reserveUtterance(capture.actorId, Date.now());
+      if (!continuation) {
+        this.noteCaptureDrop(1, Math.round(pcm24kMono.length / (24_000 * 2) * 1_000));
+        return false;
+      }
+      capture.utterance = continuation;
+    }
+    const utterance = capture.utterance;
+    if (!utterance.committed) {
+      utterance.committed = true;
       for (let index = this.utterances.length - 1; index >= 0; index -= 1) {
         const candidate = this.utterances[index]!;
         if (candidate.turnDone && !candidate.delegated) this.utterances.splice(index, 1);
@@ -212,12 +256,17 @@ export class LiveVoiceCall {
     return true;
   }
 
-  endUtterance(utteranceId: string): void {
-    const utterance = this.activeUtterance;
-    if (!utterance || utterance.id !== utteranceId) return;
-    utterance.ended = true;
-    this.activeUtterance = undefined;
-    if (utterance.committed) this.live.endInput();
+  endCapture(captureId: string): void {
+    const capture = this.activeCapture;
+    if (!capture || capture.id !== captureId) return;
+    const utterance = capture.utterance;
+    this.activeCapture = undefined;
+    if (capture.audible) this.live.endInput();
+    if (!utterance.committed) {
+      if (this.pendingUtterance === utterance) this.pendingUtterance = undefined;
+    } else if (!utterance.turnDone) {
+      this.scheduleProviderTurnTimeout(utterance);
+    }
     this.changed();
   }
 
@@ -247,25 +296,44 @@ export class LiveVoiceCall {
   }
 
   async deliver(input: {controlId: string; text: string; mode: "progress" | "final"; liveVoiceTurnId?: string}): Promise<{delivery: "delegation" | "session"; turn?: LiveVoiceTurnRecord}> {
+    if (!this.connected && this.recovery && !this.closing) {
+      await boundedWait(this.recovery, DELIVERY_RECOVERY_WAIT_MS, "Live voice provider recovery timed out during delivery.");
+    }
     if (!this.connected || !this.provider || this.closing) throw new Error("provider_unavailable");
     this.deliveryControlId = input.controlId;
     const channel: LiveVoiceContextChannel = input.mode === "progress" ? "commentary" : "speakable";
     let turn: LiveVoiceTurnRecord | undefined;
+    let binding: LiveVoiceTurnBinding | undefined;
     let reserved = false;
     let sent = false;
     if (input.liveVoiceTurnId) {
       turn = await this.options.voice.getTurn(input.liveVoiceTurnId);
       if (!isActiveLiveVoiceTurn(turn) || turn.liveVoiceSessionId !== this.options.liveVoiceSessionId || turn.sessionId !== this.options.sessionId || turn.agentKey !== this.options.agentKey) throw new Error("voice_turn_conflict");
-      const binding = this.turnBindingsById.get(turn.id);
-      if (!binding || binding.providerGeneration !== this.providerGeneration) throw new Error("provider_unavailable");
+      binding = this.turnBindingsById.get(turn.id);
+      if (!binding) throw new Error("provider_unavailable");
       if (input.mode === "final") {
         const reservation = await this.options.voice.reserveFinalDelivery(turn.id, input.controlId, input.text);
         if (!reservation.reserved) throw new Error("voice_turn_conflict");
         reserved = true;
       }
-      sent = this.provider.appendDelegationContext(binding.providerDelegationId, input.text, channel);
-    } else {
-      sent = this.provider.appendSessionContext(input.text, channel);
+    }
+    const append = async () => {
+      const provider = this.provider;
+      if (!this.connected || !provider || this.closing) return false;
+      return binding?.providerGeneration === this.providerGeneration
+        ? provider.appendDelegationContext(binding.providerDelegationId, input.text, channel)
+        : provider.appendSessionContext(input.text, channel);
+    };
+    try {
+      sent = await append();
+      if (!sent && !this.closing) {
+        const recovery = this.recovery;
+        if (recovery) await boundedWait(recovery, DELIVERY_RECOVERY_WAIT_MS, "Live voice provider recovery timed out during delivery.");
+        sent = await append();
+      }
+    } catch (error) {
+      if (turn && reserved) await this.options.voice.releaseFinalDelivery(turn.id, input.controlId);
+      throw error;
     }
     if (!sent) {
       if (turn && reserved) await this.options.voice.releaseFinalDelivery(turn.id, input.controlId);
@@ -294,9 +362,10 @@ export class LiveVoiceCall {
       output,
       playbackFailed: this.playbackFailed,
       playbackUnderruns: this.playbackUnderruns,
+      providerOutputClears: this.providerOutputClears,
       outputDroppedMs: output.overruns * 5_000,
       ...(this.lastOutputAt === undefined ? {} : {lastOutputAt: this.lastOutputAt}),
-      ...(this.activeUtterance ? {captureActorId: this.activeUtterance.actorId, captureUtteranceId: this.activeUtterance.id} : {}),
+      ...(this.activeCapture ? {captureActorId: this.activeCapture.actorId, captureId: this.activeCapture.id} : {}),
       captureDroppedMs: this.captureDroppedMs,
       captureDroppedPackets: this.captureDroppedPackets,
       ...(this.lastInputAt === undefined ? {} : {lastInputAt: this.lastInputAt}),
@@ -313,6 +382,7 @@ export class LiveVoiceCall {
     this.closing = true;
     this.abort.abort(new Error(`Live voice call closed: ${reason}.`));
     this.connected = false;
+    this.clearProviderTurnTimeout();
     this.provider?.close();
     this.provider = undefined;
     this.live.close();
@@ -338,23 +408,38 @@ export class LiveVoiceCall {
 
   private createProvider(): LiveVoiceProviderSession {
     const generation = ++this.providerGeneration;
+    this.clearProviderTurnTimeout();
+    const capture = this.activeCapture;
+    if (capture?.audible) this.live.endInput();
+    this.pendingUtterance = undefined;
     this.utterances.length = 0;
+    if (capture) {
+      capture.providerGeneration = generation;
+      capture.audible = false;
+      capture.utterance.providerGeneration = generation;
+      capture.utterance.committed = false;
+      capture.utterance.turnDone = false;
+      capture.utterance.delegated = false;
+      this.pendingUtterance = capture.utterance;
+    }
     return this.options.createProvider({
       initialItems: this.live.initialItems(),
       onAudio: (audio) => {
         if (!this.currentGeneration(generation)) return;
         this.lastOutputAt = Date.now();
-        if (this.live.acceptOutput(audio.length)) {
+        if (this.live.acceptOutput()) {
           this.options.output.pushPcm(audio);
           this.playbackFailed = false;
         }
         this.changed();
       },
       onDelegation: (delegation) => this.currentGeneration(generation) ? this.delegateCurrentUtterance(generation, delegation.id, delegation.prompt) : undefined,
-      onClearAudio: () => {
+      onOutputAudioCleared: () => {
         if (!this.currentGeneration(generation)) return;
+        this.providerOutputClears += 1;
+        const hadOutput = this.live.noteOutputAudioCleared();
         this.options.output.interrupt();
-        this.live.outputIdle();
+        this.options.log("live_voice_output_audio_cleared", {providerGeneration: generation, hadOutput});
         this.changed();
       },
       onTurnDone: ({role, transcript}) => {
@@ -364,6 +449,8 @@ export class LiveVoiceCall {
           const attribution = this.utterances.find((candidate) => candidate.providerGeneration === generation && !candidate.turnDone);
           if (attribution) {
             attribution.turnDone = true;
+            if (this.pendingUtterance === attribution) this.pendingUtterance = undefined;
+            this.clearProviderTurnTimeout();
             if (attribution.delegated) this.removeUtterance(attribution);
           }
         }
@@ -378,6 +465,37 @@ export class LiveVoiceCall {
 
   private currentGeneration(generation: number): boolean {
     return !this.closing && generation === this.providerGeneration;
+  }
+
+  private reserveUtterance(actorId: string, now: number): LiveVoiceUtterance | undefined {
+    while (this.acceptedAt.length > 0 && this.acceptedAt[0]! <= now - 60_000) this.acceptedAt.shift();
+    if (this.acceptedAt.length >= MAX_UTTERANCES_PER_MINUTE) return undefined;
+    this.acceptedAt.push(now);
+    const utterance: LiveVoiceUtterance = {
+      id: randomUUID(), actorId, startedAt: now, providerGeneration: this.providerGeneration,
+      committed: false, turnDone: false, delegated: false,
+    };
+    this.pendingUtterance = utterance;
+    return utterance;
+  }
+
+  private scheduleProviderTurnTimeout(utterance: LiveVoiceUtterance): void {
+    this.clearProviderTurnTimeout();
+    this.providerTurnTimeout = setTimeout(() => {
+      this.providerTurnTimeout = undefined;
+      if (this.closing || this.pendingUtterance !== utterance || utterance.turnDone || this.activeCapture?.utterance === utterance) return;
+      this.options.log("live_voice_provider_turn_timeout", {providerGeneration: utterance.providerGeneration});
+      this.handleProviderFailure(utterance.providerGeneration, {
+        source: "sideband", code: "transport_failed", retryable: true,
+        message: "GPT-Live omitted turn.done after an accepted capture.",
+      });
+    }, PROVIDER_TURN_TIMEOUT_MS);
+    this.providerTurnTimeout.unref?.();
+  }
+
+  private clearProviderTurnTimeout(): void {
+    if (this.providerTurnTimeout) clearTimeout(this.providerTurnTimeout);
+    this.providerTurnTimeout = undefined;
   }
 
   private handleProviderFailure(generation: number, failure: LiveVoiceProviderFailure): void {
@@ -432,7 +550,10 @@ export class LiveVoiceCall {
   }
 
   private delegateCurrentUtterance(providerGeneration: number, providerDelegationId: string, prompt: string): Promise<void> | undefined {
-    const attribution = this.utterances.find((candidate) => candidate.providerGeneration === providerGeneration && !candidate.delegated);
+    const pending = this.pendingUtterance;
+    const attribution = pending?.providerGeneration === providerGeneration && pending.committed && !pending.delegated
+      ? pending
+      : [...this.utterances].reverse().find((candidate) => candidate.providerGeneration === providerGeneration && candidate.turnDone && !candidate.delegated);
     if (!attribution) {
       this.options.log("live_voice_delegation_dropped", {reason: "actor_attribution_unavailable"});
       return;
@@ -454,6 +575,11 @@ export class LiveVoiceCall {
       if (existing.creating || isActiveLiveVoiceTurn(await this.options.voice.getTurn(existing.liveVoiceTurnId))) {
         existing.providerDelegationId = providerDelegationId;
         existing.providerGeneration = providerGeneration;
+        this.providerDelegationId = providerDelegationId;
+        this.liveVoiceTurnId = existing.liveVoiceTurnId;
+        this.delegationStatus = existing.creating ? "creating" : "queued";
+        this.delegationUpdatedAt = Date.now();
+        this.changed();
         this.options.log("live_voice_delegation_rebound", {liveVoiceTurnId: existing.liveVoiceTurnId});
         return;
       }
@@ -499,7 +625,7 @@ export class LiveVoiceCall {
           await abortableDelay(Math.min(2_000, retryAttempt * 250), this.abort.signal);
         }
       }
-      if (!this.currentGeneration(providerGeneration) || this.abort.signal.aborted) {
+      if (this.closing || this.abort.signal.aborted) {
         await this.options.voice.failTurn(turn.id, "Live voice session ended before delegation enqueue completed.");
         this.releaseTurnBinding(binding.liveVoiceTurnId);
         return;

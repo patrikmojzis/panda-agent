@@ -14,8 +14,8 @@ export interface LiveVoiceDiagnosticSnapshot {
   reasons: readonly LiveVoiceHealthReason[];
   identity: {source: string; connectorKey: string; scopeKey: string; roomKey: string; liveVoiceSessionId: string};
   provider: LiveVoiceProviderHealth & {generation: number; reconnectCount: number; rtpAgeMs: number | null; operationalState: string};
-  playback: {state: string; phase: string; responseEpoch: number; queuedMs: number; droppedMs: number; suppressedMs: number; underruns: number; lastAudioAt: number | null};
-  capture: {state: "idle" | "capturing"; actorId: string | null; utteranceId: string | null; queuedMs: number; droppedMs: number; droppedPackets: number; lastAudioAt: number | null};
+  playback: {state: string; phase: string; responseEpoch: number; queuedMs: number; droppedMs: number; providerClears: number; underruns: number; lastAudioAt: number | null};
+  capture: {state: "idle" | "capturing"; actorId: string | null; captureId: string | null; queuedMs: number; droppedMs: number; droppedPackets: number; lastAudioAt: number | null};
   delegation: {providerDelegationId: string | null; liveVoiceTurnId: string | null; deliveryControlId: string | null; status: string | null; updatedAt: number | null};
   postgres: {listenerStatus: "listening" | "reconnecting" | "closed" | null; listenerLastConnectedAt: number | null; listenerLastErrorAt: number | null; poolMax: number | null; poolTotal: number | null; poolIdle: number | null; poolWaiting: number | null};
   transport: JsonObject;

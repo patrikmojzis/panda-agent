@@ -13,6 +13,7 @@ const RTP_SEQUENCE_MOD = 0x1_0000;
 const RTP_SEQUENCE_HALF = 0x8000;
 const RTP_REORDER_DEPTH = 4;
 const RTP_REORDER_FLUSH_MS = 40;
+const RTP_CLEAR_QUARANTINE_MS = 200;
 
 type Werift = typeof import("werift");
 type Libopus = typeof import("libopus-wasm");
@@ -26,6 +27,7 @@ export interface OpenAILiveAudioPeer {
   applyAnswer(sdp: string): Promise<void>;
   waitUntilConnected(signal: AbortSignal): Promise<void>;
   sendAudio(pcm24kMono: Buffer): void;
+  discardPendingOutput?(): void;
   getHealthSnapshot?(): OpenAILiveAudioPeerHealth;
   close(): void;
 }
@@ -52,11 +54,16 @@ export type OpenAILiveRtpOutput<T> = {kind: "packet"; packet: T} | {kind: "loss"
 export class OpenAILiveRtpReorderBuffer<T> {
   private expected?: number;
   private readonly pending = new Map<number, T>();
+  private discardUntil = 0;
 
   get hasPending(): boolean { return this.pending.size > 0; }
 
-  push(sequence: number, packet: T): OpenAILiveRtpOutput<T>[] {
+  push(sequence: number, packet: T, now = Date.now()): OpenAILiveRtpOutput<T>[] {
     const normalized = sequence & 0xffff;
+    if (now < this.discardUntil) {
+      this.advancePast(normalized);
+      return [];
+    }
     this.expected ??= normalized;
     const distance = this.distance(normalized);
     if (distance >= RTP_SEQUENCE_HALF || this.pending.has(normalized)) return [];
@@ -82,6 +89,34 @@ export class OpenAILiveRtpReorderBuffer<T> {
   reset(): void {
     this.expected = undefined;
     this.pending.clear();
+    this.discardUntil = 0;
+  }
+
+  /** Drops queued packets while preserving a watermark that rejects late packets from the cleared output. */
+  discardPending(now = Date.now(), quarantineMs = 0): void {
+    if (this.expected !== undefined && this.pending.size > 0) {
+      let furthest = this.expected;
+      let furthestDistance = 0;
+      for (const sequence of this.pending.keys()) {
+        const distance = this.distance(sequence);
+        if (distance < RTP_SEQUENCE_HALF && distance >= furthestDistance) {
+          furthest = sequence;
+          furthestDistance = distance;
+        }
+      }
+      this.expected = (furthest + 1) & 0xffff;
+    }
+    this.pending.clear();
+    this.discardUntil = Math.max(this.discardUntil, now + Math.max(0, quarantineMs));
+  }
+
+  private advancePast(sequence: number): void {
+    if (this.expected === undefined) {
+      this.expected = (sequence + 1) & 0xffff;
+      return;
+    }
+    const distance = this.distance(sequence);
+    if (distance < RTP_SEQUENCE_HALF) this.expected = (sequence + 1) & 0xffff;
   }
 
   private distance(sequence: number): number {
@@ -280,6 +315,11 @@ export class WeriftOpenAILiveAudioPeer implements OpenAILiveAudioPeer {
     if (this.closed || audio.length < 2) return;
     const evenAudio = audio.subarray(0, audio.length - audio.length % 2);
     this.droppedInputBytes += this.pending.push(evenAudio);
+  }
+
+  discardPendingOutput(): void {
+    this.inboundReorder.discardPending(Date.now(), RTP_CLEAR_QUARANTINE_MS);
+    this.clearInboundFlushTimer();
   }
 
   getHealthSnapshot(): OpenAILiveAudioPeerHealth {

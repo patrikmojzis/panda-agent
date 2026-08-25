@@ -10,7 +10,7 @@ function fakePlayer() {
   return Object.assign(new EventEmitter(), {state: {status: "idle"}, play: vi.fn(), stop: vi.fn()});
 }
 
-function createHarness(options: {connectError?: Error} = {}) {
+function createHarness(options: {connectError?: Error; sidebandState?: "connecting" | "open"} = {}) {
   const streams: PassThrough[] = [];
   const player = fakePlayer();
   const connection = Object.assign(new EventEmitter(), {
@@ -22,10 +22,9 @@ function createHarness(options: {connectError?: Error} = {}) {
   const bridge = {
     connect: vi.fn(async () => { if (options.connectError) throw options.connectError; }),
     sendAudio: vi.fn(),
-    interrupt: vi.fn(() => bridgeOptions.onClearAudio()),
-    appendDelegationContext: vi.fn(() => true),
-    appendSessionContext: vi.fn(() => true),
-    getHealthSnapshot: vi.fn(() => ({state: "connected" as const, sidebandState: "open" as const, sidebandOpenedAt: 1, sidebandAgeMs: 0, lastPingAt: null, lastPongAt: null, pongAgeMs: null, lastCloseCode: null, lastCloseOpenForMs: null, malformedEvents: 0, unknownEvents: 0})),
+    appendDelegationContext: vi.fn(async () => true),
+    appendSessionContext: vi.fn(async () => true),
+    getHealthSnapshot: vi.fn(() => ({state: "connected" as const, sidebandState: options.sidebandState ?? "open" as const, sidebandOpenedAt: 1, sidebandAgeMs: 0, lastPingAt: null, lastPongAt: null, pongAgeMs: null, lastCloseCode: null, lastCloseOpenForMs: null, malformedEvents: 0, unknownEvents: 0})),
     close: vi.fn(),
   };
   const turns = new Map<string, Record<string, unknown>>();
@@ -95,6 +94,17 @@ describe("DiscordVoiceSessionManager", () => {
     await expect(harness.manager.handle({id: "join", connectorKey: "bot-1", operation: "join", sessionId: "session-1", agentKey: "panda", channelId: "12345", status: "running", createdAt: 1, updatedAt: 1}))
       .rejects.toThrow('"failureCode":"provider_startup_failed"');
     expect(harness.voice.markSessionDisconnected).toHaveBeenCalledWith(expect.any(String), "error", "provider_startup_failed");
+  });
+
+  it("reports same-call sideband reattachment as provider recovery", async () => {
+    const harness = createHarness({sidebandState: "connecting"});
+    await harness.manager.start();
+    await harness.manager.handle({id: "join", connectorKey: "bot-1", operation: "join", sessionId: "session-1", agentKey: "panda", channelId: "12345", status: "running", createdAt: 1, updatedAt: 1});
+    await vi.waitFor(() => expect(harness.voice.updateSessionHealth).toHaveBeenCalledWith(expect.objectContaining({
+      health: "recovering",
+      reasons: expect.arrayContaining(["provider_recovering"]),
+    })));
+    await harness.manager.stop();
   });
 
   it("ignores connector self-audio before opening a receiver stream", async () => {

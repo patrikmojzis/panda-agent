@@ -34,6 +34,7 @@ export type OpenAILiveEvent =
   | {kind: "transcript_metadata"; type: string; role: "user" | "assistant" | "unknown"; transcriptChars: number; transcriptBytes: number; truncated: boolean}
   | {kind: "error"; message: string; fatalAuth: boolean}
   | {kind: "malformed"; reason: "invalid_json" | "invalid_shape" | "oversized"}
+  | {kind: "known_ignored"; type: "output_audio.delta"}
   | {kind: "ignored"; type: string};
 
 export function createRequestIds(): OpenAILiveRequestIds {
@@ -153,14 +154,16 @@ export function parseOpenAILiveEvent(text: string): OpenAILiveEvent {
   let payload: unknown;
   try { payload = JSON.parse(text) as unknown; } catch { return {kind: "malformed", reason: "invalid_json"}; }
   if (!isRecord(payload) || typeof payload.type !== "string") return {kind: "malformed", reason: "invalid_shape"};
-  if (payload.type === "session.started") {
+  if (payload.type === "session.started" || payload.type === "session.updated") {
     const session = isRecord(payload.session) ? payload.session : undefined;
     return {kind: "session_started", ...(typeof session?.expires_at === "number" ? {expiresAt: session.expires_at} : {})};
   }
+  if (payload.type === "output_audio.delta") return {kind: "known_ignored", type: payload.type};
   if (payload.type === "output_audio_buffer.cleared") return {kind: "audio_cleared"};
   if (payload.type === "turn.done") {
-    const turn = isRecord(payload.turn) ? payload.turn : {};
-    return {kind: "turn_done", role: metadataRole(turn.role), ...transcriptMetadata(turn)};
+    const turn = isRecord(payload.turn) ? payload.turn : undefined;
+    if (!turn || (turn.role !== "user" && turn.role !== "assistant") || typeof turn.transcript !== "string") return {kind: "ignored", type: payload.type};
+    return {kind: "turn_done", role: turn.role, ...transcriptMetadata(turn)};
   }
   if (payload.type.toLowerCase().includes("transcript")) {
     const item = isRecord(payload.item) ? payload.item : isRecord(payload.delta) ? payload.delta : payload;

@@ -11,7 +11,7 @@ describeLive("experimental GPT-Live ChatGPT backend", () => {
       voice: "cove",
       onAudio: () => undefined,
       onDelegation: () => undefined,
-      onClearAudio: () => undefined,
+      onOutputAudioCleared: () => undefined,
       onFailure: (failure) => closeReasons.push(failure.code),
       log: () => undefined,
     });

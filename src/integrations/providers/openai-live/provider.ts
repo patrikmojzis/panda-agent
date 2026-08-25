@@ -19,7 +19,7 @@ export function createOpenAILiveVoiceProvider(options: OpenAILiveVoiceProviderOp
       initialItems: callbacks.initialItems,
       onAudio: callbacks.onAudio,
       onDelegation: callbacks.onDelegation,
-      onClearAudio: callbacks.onClearAudio,
+      onOutputAudioCleared: callbacks.onOutputAudioCleared,
       onTurnDone: callbacks.onTurnDone,
       onFailure: callbacks.onFailure,
       log: options.log,

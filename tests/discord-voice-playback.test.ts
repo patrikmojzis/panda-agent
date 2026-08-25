@@ -8,10 +8,10 @@ import {DiscordVoicePlayback} from "../src/integrations/channels/discord/discord
 function pcm(bytes: number): Buffer { return Buffer.alloc(bytes, 1); }
 
 function harness(overrides: {prerollFrames?: number; endQuietMs?: number} = {}) {
-  let resource: {playStream: Readable} | undefined;
+  let resource: {playStream: Readable; silencePaddingFrames: number} | undefined;
   const player = {
     state: {status: AudioPlayerStatus.Idle},
-    play: vi.fn((next: {playStream: Readable}) => { resource = next; player.state.status = AudioPlayerStatus.Playing; }),
+    play: vi.fn((next: {playStream: Readable; silencePaddingFrames: number}) => { resource = next; player.state.status = AudioPlayerStatus.Playing; }),
     stop: vi.fn(() => { player.state.status = AudioPlayerStatus.Idle; return true; }),
   };
   let encoded = 0;
@@ -60,6 +60,7 @@ describe("DiscordVoicePlayback", () => {
     const {playback, player, resource} = harness({prerollFrames: 1});
     playback.pushPcm(pcm(960));
     const first = resource()!.playStream;
+    expect(resource()!.silencePaddingFrames).toBe(0);
     player.state.status = AudioPlayerStatus.Idle;
     playback.handlePlayerIdle();
 
@@ -77,9 +78,9 @@ describe("DiscordVoicePlayback", () => {
     playback.pushPcm(pcm(1));
     playback.pushPcm(pcm(958));
     expect(encoder.encode).not.toHaveBeenCalled();
-    playback.pushPcm(pcm(2));
+    playback.pushPcm(pcm(3));
     expect(encoder.encode).toHaveBeenCalledOnce();
-    expect(playback.getSnapshot().residualBytes).toBe(1);
+    expect(playback.getSnapshot().residualBytes).toBe(2);
 
     await vi.advanceTimersByTimeAsync(300);
     expect(encoder.encode).toHaveBeenCalledTimes(2);
@@ -96,7 +97,7 @@ describe("DiscordVoicePlayback", () => {
     expect(resource()!.playStream.readableEnded).toBe(false);
     playback.pushPcm(pcm(960));
     expect(encoder.encode).toHaveBeenCalledTimes(3);
-    expect(playback.getSnapshot()).toMatchObject({state: "ending", responseEpoch: 1});
+    expect(playback.getSnapshot()).toMatchObject({state: "streaming", responseEpoch: 1});
   });
 
   it("clears staged audio on barge-in and accepts the next authorized response", () => {
@@ -137,7 +138,51 @@ describe("DiscordVoicePlayback", () => {
     playback.pushPcm(Buffer.alloc(960 * 3));
     expect(player.play).not.toHaveBeenCalled();
     expect(encoder.encode).not.toHaveBeenCalled();
-    expect(playback.getSnapshot()).toMatchObject({state: "idle", silentLeadingChunks: 1});
+    expect(playback.getSnapshot()).toMatchObject({state: "idle", transport: {silentLeadingFrames: 3}});
+  });
+
+  it("bounds trailing provider silence to one quiet-drain window", async () => {
+    vi.useFakeTimers();
+    const {playback, encoder} = harness({prerollFrames: 1, endQuietMs: 300});
+    playback.pushPcm(pcm(960));
+    await vi.advanceTimersByTimeAsync(100);
+    playback.pushPcm(Buffer.alloc(960 * 20));
+
+    expect(encoder.encode).toHaveBeenCalledTimes(16);
+    expect(playback.getSnapshot()).toMatchObject({state: "ending", transport: {providerSilenceDroppedMs: 100}});
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(encoder.encode).toHaveBeenCalledTimes(16);
+    expect(playback.getSnapshot()).toMatchObject({state: "ending", transport: {providerSilenceDroppedMs: 100}});
+  });
+
+  it("preserves a bounded internal pause when audible output resumes", async () => {
+    vi.useFakeTimers();
+    const {playback, encoder} = harness({prerollFrames: 1, endQuietMs: 300});
+    playback.pushPcm(pcm(960));
+    playback.pushPcm(Buffer.alloc(960 * 3));
+    await vi.advanceTimersByTimeAsync(100);
+    playback.pushPcm(pcm(960));
+
+    expect(encoder.encode).toHaveBeenCalledTimes(5);
+    const encodedPcm = encoder.encode.mock.calls.map(([samples]) => samples as Int16Array);
+    expect(encodedPcm.slice(1, 4)).toHaveLength(3);
+    expect(encodedPcm.slice(1, 4).every((samples) => samples.length === 1_920 && samples.every((sample) => sample === 0))).toBe(true);
+    expect(playback.getSnapshot()).toMatchObject({state: "streaming", transport: {providerSilenceDroppedMs: 0}});
+  });
+
+  it("classifies only an unsealed player drain as an underrun", async () => {
+    vi.useFakeTimers();
+    const first = harness({prerollFrames: 1, endQuietMs: 300});
+    first.playback.pushPcm(pcm(960));
+    first.player.state.status = AudioPlayerStatus.Idle;
+    expect(first.playback.handlePlayerIdle()).toBe(true);
+
+    const second = harness({prerollFrames: 1, endQuietMs: 300});
+    second.playback.pushPcm(pcm(960));
+    await vi.advanceTimersByTimeAsync(300);
+    second.player.state.status = AudioPlayerStatus.Idle;
+    expect(second.playback.handlePlayerIdle()).toBe(false);
   });
 
   it("does not create an empty speaking resource when media has already drained", async () => {

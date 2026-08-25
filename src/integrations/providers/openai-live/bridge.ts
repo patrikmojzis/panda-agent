@@ -27,6 +27,11 @@ const MAX_SIDEBAND_PAYLOAD_BYTES = 16 * 1024 * 1024;
 const MAX_EARLY_FRAMES = 32;
 const MAX_EARLY_FRAME_BYTES = 1024 * 1024;
 const MAX_SEEN_DELEGATIONS = 2_048;
+const SIDEBAND_RECONNECT_BASE_MS = 200;
+const SIDEBAND_RECONNECT_MAX_MS = 5_000;
+const SIDEBAND_STABLE_MS = 30_000;
+const SIDEBAND_SEND_WAIT_MS = 10_000;
+const MAX_SIDEBAND_RECONNECT_ATTEMPTS = 8;
 const activeOwners = new Set<object>();
 type SidebandTerminal = {kind: "error"; error: Error} | {kind: "close"; code: number; reason: string};
 
@@ -38,7 +43,7 @@ export interface OpenAILiveRealtimeVoiceBridgeOptions {
   connectTimeoutMs?: number;
   onAudio(audio: Buffer): void;
   onDelegation(delegation: {id: string; prompt: string}): Promise<void> | void;
-  onClearAudio(): void;
+  onOutputAudioCleared(): void;
   onTurnDone?(input: {role: "user" | "assistant" | "unknown"; transcript?: string}): void;
   onFailure(failure: LiveVoiceProviderFailure): void;
   log(event: string, payload: Record<string, unknown>): void;
@@ -89,6 +94,7 @@ function classifyRealtimeFailure(error: Error, source: LiveVoiceProviderFailureS
     return {source, code: "auth_unavailable", retryable: false, message, ...(status === undefined ? {} : {status})};
   }
   if (status === 403) return {source, code: "access_denied", retryable: false, message, status};
+  if (status === 404 || status === 410) return {source: "session", code: "session_expired", retryable: false, message, status};
   if (source === "session") return {source, code: "session_expired", retryable: false, message, ...(status === undefined ? {} : {status})};
   if (status === 429) return {source, code: "capacity", retryable: true, message, status};
   return {
@@ -114,12 +120,17 @@ function waitForOpen(socket: WebSocket, signal: AbortSignal): Promise<() => Side
       finish(error);
     };
     const onClose = (code: number, reason: Buffer) => {
-      if (opened) { terminal ??= {kind: "close", code, reason: reason.toString("utf8").slice(0, 200)}; return; }
+      if (opened) { terminal ??= {kind: "close", code, reason: reason?.toString("utf8").slice(0, 200) ?? ""}; return; }
       finish(new Error("GPT-Live sideband closed during startup."));
+    };
+    const onUnexpectedResponse = (_request: unknown, response: {statusCode?: number}) => {
+      const error = new Error(`GPT-Live sideband rejected the connection (${response.statusCode ?? "unknown"}).`);
+      if (response.statusCode !== undefined) Object.assign(error, {status: response.statusCode});
+      finish(error);
     };
     const onAbort = () => finish(signal.reason instanceof Error ? signal.reason : new Error("GPT-Live startup stopped."));
     const finish = (error?: Error) => {
-      socket.off("open", onOpen); signal.removeEventListener("abort", onAbort);
+      socket.off("open", onOpen); socket.off("unexpected-response", onUnexpectedResponse); signal.removeEventListener("abort", onAbort);
       if (error) { detachTerminal(); reject(error); }
       else resolve(detachTerminal);
     };
@@ -127,8 +138,64 @@ function waitForOpen(socket: WebSocket, signal: AbortSignal): Promise<() => Side
       finish(signal.reason instanceof Error ? signal.reason : new Error("GPT-Live startup stopped."));
       return;
     }
-    socket.once("open", onOpen); socket.on("error", onError); socket.on("close", onClose); signal.addEventListener("abort", onAbort, {once: true});
+    socket.once("open", onOpen); socket.once("unexpected-response", onUnexpectedResponse); socket.on("error", onError); socket.on("close", onClose); signal.addEventListener("abort", onAbort, {once: true});
   });
+}
+
+function delay(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => finish(signal.reason instanceof Error ? signal.reason : new Error("GPT-Live bridge stopped."));
+    const finish = (error?: Error) => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      error ? reject(error) : resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    timer.unref?.();
+    signal.addEventListener("abort", onAbort, {once: true});
+    if (signal.aborted) onAbort();
+  });
+}
+
+function abortAfter(ms: number, message: string): {signal: AbortSignal; dispose(): void} {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error(message)), ms);
+  timer.unref?.();
+  return {signal: controller.signal, dispose: () => clearTimeout(timer)};
+}
+
+function within<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    timer.unref?.();
+    void promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error: unknown) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
+function sendSidebandFrame(socket: WebSocket, message: string, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      error ? reject(error) : resolve();
+    };
+    const timer = setTimeout(() => finish(new Error("GPT-Live sideband send timed out.")), timeoutMs);
+    timer.unref?.();
+    try { socket.send(message, (error) => finish(error)); }
+    catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
+  });
+}
+
+function terminalSidebandReconnectFailure(error: Error): boolean {
+  const status = "status" in error && typeof error.status === "number" ? error.status : undefined;
+  if (status === 401 || status === 403 || status === 404 || status === 410) return true;
+  const message = error.message.toLowerCase();
+  return message.includes("oauth") || message.includes("token") || message.includes("account");
 }
 
 function abortFailure(signal: AbortSignal): {promise: Promise<never>; dispose(): void} {
@@ -145,6 +212,11 @@ export class OpenAILiveRealtimeVoiceBridge implements LiveVoiceProviderSession {
   private peer?: OpenAILiveAudioPeer;
   private socket?: WebSocket;
   private ids?: OpenAILiveRequestIds;
+  private sidebandUrl?: string;
+  private sidebandAccountId?: string;
+  private sidebandRecovery?: Promise<void>;
+  private sidebandRapidDisconnects = 0;
+  private sidebandDisconnectEpoch = 0;
   private readonly activeDelegationIds = new Set<string>();
   private readonly seenDelegationIds = new Set<string>();
   private expiry?: NodeJS.Timeout;
@@ -226,6 +298,8 @@ export class OpenAILiveRealtimeVoiceBridge implements LiveVoiceProviderSession {
         ?? optionalBoolean(this.options.env?.PANDA_DISCORD_VOICE_DELEGATION_ACK_FILLER),
       signal, fetchImpl: this.options.fetchImpl,
     });
+    this.sidebandUrl = call.sidebandUrl;
+    this.sidebandAccountId = auth.accountId;
     await this.peer.applyAnswer(call.answerSdp);
     await Promise.all([
       this.peer.waitUntilConnected(signal),
@@ -253,18 +327,14 @@ export class OpenAILiveRealtimeVoiceBridge implements LiveVoiceProviderSession {
     };
   }
 
-  interrupt(): void {
-    this.options.onClearAudio();
-  }
-
-  appendDelegationContext(delegationId: string, text: string, channel: LiveVoiceContextChannel): boolean {
-    if (!this.activeDelegationIds.has(delegationId) || this.socket?.readyState !== WebSocket.OPEN) return false;
-    const sent = this.sendMessages(delegationContextMessages(delegationId, text, channel));
+  async appendDelegationContext(delegationId: string, text: string, channel: LiveVoiceContextChannel): Promise<boolean> {
+    if (!this.activeDelegationIds.has(delegationId)) return false;
+    const sent = await this.sendMessages(delegationContextMessages(delegationId, text, channel));
     if (sent && channel === "speakable") this.activeDelegationIds.delete(delegationId);
     return sent;
   }
 
-  appendSessionContext(text: string, channel: LiveVoiceContextChannel): boolean {
+  async appendSessionContext(text: string, channel: LiveVoiceContextChannel): Promise<boolean> {
     return this.sendMessages(sessionContextMessages(text, channel));
   }
 
@@ -293,16 +363,15 @@ export class OpenAILiveRealtimeVoiceBridge implements LiveVoiceProviderSession {
       this.sidebandState = "open";
       this.startSidebandPing(socket);
       socket.on("message", (data, isBinary) => { if (isBinary) return this.fail(new Error("GPT-Live sideband sent binary data."), "sideband"); this.handleEvent(rawText(data)); });
-      socket.on("error", (error) => this.fail(error, "sideband"));
+      socket.on("error", (error) => this.handleSidebandLoss(socket, error));
       socket.on("close", (code, reason) => {
         const detail = reason?.length > 0 ? `: ${reason.toString("utf8").slice(0, 200)}` : ".";
         if (!this.closed) {
           const now = this.options.now?.() ?? Date.now();
           this.lastCloseCode = code;
           this.lastCloseOpenForMs = this.sidebandOpenedAt === undefined ? undefined : now - this.sidebandOpenedAt;
-          this.sidebandState = "failed";
           this.options.log("gpt_live_sideband_closed", {code, openForMs: this.lastCloseOpenForMs, hasReason: reason?.length > 0});
-          this.fail(new Error(`GPT-Live sideband closed (${code})${detail}`), "sideband");
+          this.handleSidebandLoss(socket, new Error(`GPT-Live sideband closed (${code})${detail}`));
         }
       });
       socket.off("message", bufferFrame);
@@ -335,6 +404,7 @@ export class OpenAILiveRealtimeVoiceBridge implements LiveVoiceProviderSession {
       if (this.unknownEvents <= 10 || this.unknownEvents % 100 === 0) this.options.log("gpt_live_sideband_event_ignored", {type: event.type, unknownEvents: this.unknownEvents});
       return;
     }
+    if (event.kind === "known_ignored") return;
     if (event.kind === "transcript_metadata") return;
     if (event.kind === "turn_done") {
       this.options.log("gpt_live_turn_done", {role: event.role, transcriptChars: event.transcriptChars, transcriptBytes: event.transcriptBytes, truncated: event.truncated});
@@ -349,7 +419,11 @@ export class OpenAILiveRealtimeVoiceBridge implements LiveVoiceProviderSession {
       }
       return;
     }
-    if (event.kind === "audio_cleared") { this.options.onClearAudio(); return; }
+    if (event.kind === "audio_cleared") {
+      this.peer?.discardPendingOutput?.();
+      this.options.onOutputAudioCleared();
+      return;
+    }
     if (event.kind === "error") {
       if (event.fatalAuth) this.fail(new Error("Codex OAuth became unavailable."), "sideband");
       else this.options.log("gpt_live_sideband_error", {message: safeErrorMessage(new Error(event.message))});
@@ -362,15 +436,92 @@ export class OpenAILiveRealtimeVoiceBridge implements LiveVoiceProviderSession {
     void Promise.resolve(this.options.onDelegation({id: event.id, prompt: event.prompt})).catch((error: unknown) => this.options.log("gpt_live_delegation_failed", {message: safeErrorMessage(error instanceof Error ? error : new Error(String(error)))}));
   }
 
-  private sendMessages(messages: readonly string[]): boolean {
-    const socket = this.socket;
-    if (socket?.readyState !== WebSocket.OPEN) return false;
-    try {
-      for (const message of messages) socket.send(message);
-      return true;
-    } catch (error) {
-      this.fail(error instanceof Error ? error : new Error(String(error)), "sideband");
-      return false;
+  private async sendMessages(messages: readonly string[]): Promise<boolean> {
+    const deadline = Date.now() + SIDEBAND_SEND_WAIT_MS;
+    for (const message of messages) {
+      while (!this.closed) {
+        const socket = this.socket;
+        if (socket?.readyState === WebSocket.OPEN) {
+          try {
+            await sendSidebandFrame(socket, message, Math.max(1, deadline - Date.now()));
+            break;
+          } catch (error) {
+            this.handleSidebandLoss(socket, error instanceof Error ? error : new Error(String(error)));
+          }
+        }
+        const recovery = this.sidebandRecovery;
+        const remaining = deadline - Date.now();
+        if (!recovery || remaining <= 0) return false;
+        try {
+          await within(recovery, remaining, "GPT-Live sideband send timed out.");
+        } catch {
+          if (this.closed || Date.now() >= deadline) return false;
+        }
+      }
+      if (this.closed) return false;
+    }
+    return true;
+  }
+
+  private handleSidebandLoss(socket: WebSocket, error: Error): void {
+    if (this.closed || this.socket !== socket) return;
+    if (this.sidebandPing) clearInterval(this.sidebandPing);
+    this.sidebandPing = undefined;
+    this.socket = undefined;
+    this.sidebandState = "connecting";
+    this.sidebandDisconnectEpoch += 1;
+    if (this.startup) {
+      this.fail(error, "sideband");
+      return;
+    }
+    if (socket.readyState < WebSocket.CLOSING) socket.close();
+    const now = this.options.now?.() ?? Date.now();
+    if (this.sidebandOpenedAt !== undefined && now - this.sidebandOpenedAt >= SIDEBAND_STABLE_MS) this.sidebandRapidDisconnects = 0;
+    this.sidebandRapidDisconnects += 1;
+    if (!this.sidebandRecovery) {
+      this.sidebandRecovery = this.reconnectSideband()
+        .catch((reconnectError: unknown) => {
+          if (!this.closed) this.fail(reconnectError instanceof Error ? reconnectError : new Error(String(reconnectError)), "sideband");
+        })
+        .finally(() => { this.sidebandRecovery = undefined; });
+    }
+  }
+
+  private async reconnectSideband(): Promise<void> {
+    const url = this.sidebandUrl;
+    const ids = this.ids;
+    const expectedAccountId = this.sidebandAccountId;
+    if (!url || !ids || !expectedAccountId) throw new Error("GPT-Live sideband reconnect state is unavailable.");
+    let attempt = 0;
+    while (!this.closed) {
+      const delayMs = Math.min(SIDEBAND_RECONNECT_MAX_MS, SIDEBAND_RECONNECT_BASE_MS * 2 ** Math.max(0, this.sidebandRapidDisconnects - 1));
+      await delay(delayMs, this.abort.signal);
+      attempt += 1;
+      const attemptTimeout = abortAfter(this.options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS, "GPT-Live sideband reconnect timed out.");
+      try {
+        const disconnectEpoch = this.sidebandDisconnectEpoch;
+        const auth = (this.options.resolveAuth ?? (() => resolveOpenAILiveAuth(this.options.env)))();
+        if (auth.accountId !== expectedAccountId) throw new Error("Codex OAuth account changed during GPT-Live sideband reconnect.");
+        const attemptSignal = AbortSignal.any([
+          this.abort.signal,
+          attemptTimeout.signal,
+        ]);
+        await this.connectSideband(url, auth, ids, attemptSignal);
+        if (this.sidebandDisconnectEpoch !== disconnectEpoch || this.socket?.readyState !== WebSocket.OPEN) {
+          if (attempt >= MAX_SIDEBAND_RECONNECT_ATTEMPTS) throw new Error("GPT-Live sideband remained unstable after bounded reconnect attempts.");
+          continue;
+        }
+        this.options.log("gpt_live_sideband_reconnected", {attempt});
+        return;
+      } catch (error) {
+        const reconnectError = sanitizedError(error);
+        this.options.log("gpt_live_sideband_reconnect_failed", {attempt, message: safeErrorMessage(reconnectError)});
+        if (terminalSidebandReconnectFailure(reconnectError)) throw reconnectError;
+        if (attempt >= MAX_SIDEBAND_RECONNECT_ATTEMPTS) throw reconnectError;
+        this.sidebandRapidDisconnects += 1;
+      } finally {
+        attemptTimeout.dispose();
+      }
     }
   }
 
@@ -426,6 +577,9 @@ export class OpenAILiveRealtimeVoiceBridge implements LiveVoiceProviderSession {
     this.activeDelegationIds.clear();
     this.seenDelegationIds.clear();
     this.sidebandOpenedAt = undefined;
+    this.sidebandRecovery = undefined;
+    this.sidebandUrl = undefined;
+    this.sidebandAccountId = undefined;
     const socket = this.socket; this.socket = undefined;
     if (socket?.readyState === WebSocket.OPEN) {
       try { socket.send(JSON.stringify({type: "session.close"})); } catch { /* Best-effort provider cleanup. */ }
@@ -444,7 +598,7 @@ export class OpenAILiveRealtimeVoiceBridge implements LiveVoiceProviderSession {
       if (socket.readyState !== WebSocket.OPEN) return;
       this.lastPingAt = this.options.now?.() ?? Date.now();
       try { socket.ping(); }
-      catch (error) { this.fail(error instanceof Error ? error : new Error(String(error)), "sideband"); }
+      catch (error) { this.handleSidebandLoss(socket, error instanceof Error ? error : new Error(String(error))); }
     }, configured);
     this.sidebandPing.unref?.();
   }

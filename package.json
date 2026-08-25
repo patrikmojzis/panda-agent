@@ -76,6 +76,14 @@
     "./integrations/shell": {
       "types": "./dist/integrations/shell/index.d.ts",
       "import": "./dist/integrations/shell/index.js"
+    },
+    "./integrations/live-voice": {
+      "types": "./dist/integrations/live-voice/index.d.ts",
+      "import": "./dist/integrations/live-voice/index.js"
+    },
+    "./integrations/openai-live": {
+      "types": "./dist/integrations/openai-live/index.d.ts",
+      "import": "./dist/integrations/openai-live/index.js"
     }
   },
   "scripts": {

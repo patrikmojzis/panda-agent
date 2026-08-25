@@ -19,12 +19,13 @@ describe("live voice diagnostics", () => {
     expect(discordVoiceTransportDiagnostics({
       connectionState: "ready",
       playerState: "idle",
+      playback: {providerSilenceDroppedMs: 100},
       stateAt: 10,
       gateway: {state: "ready", readyAt: 1, sequence: 2, lastHeartbeatSentAt: 3, lastHeartbeatAckAt: 4, heartbeatAckAgeMs: 5, reconnectCount: 0},
     })).toEqual({
       gateway: {state: "ready", readyAt: 1, sequence: 2, lastHeartbeatSentAt: 3, lastHeartbeatAckAt: 4, heartbeatAckAgeMs: 5, reconnectCount: 0},
       voice: {state: "ready", stateAt: 10, dave: "unknown"},
-      player: {state: "idle"},
+      player: {state: "idle", providerSilenceDroppedMs: 100},
     });
   });
 });

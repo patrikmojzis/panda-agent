@@ -16,22 +16,23 @@ function deferred(): {promise: Promise<void>; resolve(): void} {
 class FakeSocket extends EventEmitter {
   readyState = WebSocket.CONNECTING;
   readonly sent: string[] = [];
-  send(value: string): void { this.sent.push(value); }
+  send(value: string, callback?: (error?: Error) => void): void { this.sent.push(value); callback?.(); }
   close(): void { this.readyState = WebSocket.CLOSED; }
 }
 
 describe("OpenAI GPT-Live bridge", () => {
-  it("waits for sideband and WebRTC without requiring session.started, then clears local playback on barge-in", async () => {
+  it("waits for sideband and WebRTC, then applies provider-authoritative output clearing", async () => {
     const mediaReady = deferred();
     const socket = new FakeSocket();
     const waitUntilConnected = vi.fn(async () => mediaReady.promise);
-    const onClearAudio = vi.fn();
+    const discardPendingOutput = vi.fn();
+    const onOutputAudioCleared = vi.fn();
     const onFailure = vi.fn();
     const bridge = new OpenAILiveRealtimeVoiceBridge({
-      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio, onFailure, log: vi.fn(),
+      onAudio: vi.fn(), onDelegation: vi.fn(), onOutputAudioCleared, onFailure, log: vi.fn(),
       resolveAuth: () => ({token: "secret", accountId: "acct-1"}),
       fetchImpl: vi.fn(async () => new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}})),
-      createPeer: vi.fn(async () => ({createOffer: async () => "offer-sdp", applyAnswer: async () => undefined, waitUntilConnected, sendAudio: vi.fn(), close: vi.fn()})),
+      createPeer: vi.fn(async () => ({createOffer: async () => "offer-sdp", applyAnswer: async () => undefined, waitUntilConnected, sendAudio: vi.fn(), discardPendingOutput, close: vi.fn()})),
       createSocket: () => {
         queueMicrotask(() => {
           socket.readyState = WebSocket.OPEN;
@@ -49,8 +50,9 @@ describe("OpenAI GPT-Live bridge", () => {
     mediaReady.resolve();
     await connecting;
 
-    bridge.interrupt();
-    expect(onClearAudio).toHaveBeenCalledOnce();
+    socket.emit("message", Buffer.from(JSON.stringify({type: "output_audio_buffer.cleared"})), false);
+    expect(onOutputAudioCleared).toHaveBeenCalledOnce();
+    expect(discardPendingOutput).toHaveBeenCalledOnce();
     expect(socket.sent).toEqual([]);
     bridge.close();
     expect(socket.sent).toEqual([JSON.stringify({type: "session.close"})]);
@@ -61,7 +63,7 @@ describe("OpenAI GPT-Live bridge", () => {
     const socket = new FakeSocket();
     const onDelegation = vi.fn();
     const bridge = new OpenAILiveRealtimeVoiceBridge({
-      onAudio: vi.fn(), onDelegation, onClearAudio: vi.fn(), onFailure: vi.fn(), log: vi.fn(),
+      onAudio: vi.fn(), onDelegation, onOutputAudioCleared: vi.fn(), onFailure: vi.fn(), log: vi.fn(),
       resolveAuth: () => ({token: "secret", accountId: "acct-1"}),
       fetchImpl: vi.fn(async () => new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}})),
       createPeer: vi.fn(async () => ({createOffer: async () => "offer-sdp", applyAnswer: async () => undefined, waitUntilConnected: async () => undefined, sendAudio: vi.fn(), close: vi.fn()})),
@@ -80,16 +82,178 @@ describe("OpenAI GPT-Live bridge", () => {
     await bridge.connect();
     expect(onDelegation).toHaveBeenCalledOnce();
     expect(onDelegation).toHaveBeenCalledWith({id: "delegation-1", prompt: "check status"});
-    expect(bridge.appendDelegationContext("delegation-1", "still checking", "commentary")).toBe(true);
-    expect(bridge.appendDelegationContext("delegation-1", "healthy", "speakable")).toBe(true);
-    expect(bridge.appendDelegationContext("delegation-1", "duplicate", "speakable")).toBe(false);
+    await expect(bridge.appendDelegationContext("delegation-1", "still checking", "commentary")).resolves.toBe(true);
+    await expect(bridge.appendDelegationContext("delegation-1", "healthy", "speakable")).resolves.toBe(true);
+    await expect(bridge.appendDelegationContext("delegation-1", "duplicate", "speakable")).resolves.toBe(false);
     expect(socket.sent.slice(-2).map((message) => JSON.parse(message))).toEqual([
       expect.objectContaining({type: "delegation.context.append", delegation_item_id: "delegation-1", channel: "commentary"}),
       expect.objectContaining({type: "delegation.context.append", delegation_item_id: "delegation-1", channel: "speakable"}),
     ]);
-    expect(bridge.appendSessionContext("proactive update", "speakable")).toBe(true);
+    await expect(bridge.appendSessionContext("proactive update", "speakable")).resolves.toBe(true);
     expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({type: "session.context.append", channel: "speakable"});
     bridge.close();
+  });
+
+  it("reattaches the sideband to the same call and preserves a pending delegation", async () => {
+    const first = new FakeSocket();
+    const second = new FakeSocket();
+    const sockets = [first, second];
+    const closePeer = vi.fn();
+    const onFailure = vi.fn();
+    const resolveAuth = vi.fn()
+      .mockReturnValueOnce({token: "secret-1", accountId: "acct-1"})
+      .mockReturnValueOnce({token: "secret-2", accountId: "acct-1"});
+    const createSocket = vi.fn((url: string) => {
+      expect(url).toContain("/v1/live/rtc_test");
+      const socket = sockets.shift();
+      if (!socket) throw new Error("unexpected socket");
+      queueMicrotask(() => {
+        socket.readyState = WebSocket.OPEN;
+        socket.emit("open");
+      });
+      return socket as unknown as WebSocket;
+    });
+    const bridge = new OpenAILiveRealtimeVoiceBridge({
+      onAudio: vi.fn(), onDelegation: vi.fn(), onOutputAudioCleared: vi.fn(), onFailure, log: vi.fn(),
+      resolveAuth,
+      fetchImpl: vi.fn(async () => new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}})),
+      createPeer: vi.fn(async () => ({
+        createOffer: async () => "offer-sdp", applyAnswer: async () => undefined,
+        waitUntilConnected: async () => undefined, sendAudio: vi.fn(), close: closePeer,
+      })),
+      createSocket,
+    });
+
+    await bridge.connect();
+    first.emit("message", Buffer.from(JSON.stringify({
+      type: "delegation.created",
+      item: {type: "delegation", target: "client", id: "delegation-1", content: [{type: "input_text", text: "check status"}]},
+    })), false);
+    first.readyState = WebSocket.CLOSED;
+    first.emit("close", 1006, Buffer.alloc(0));
+
+    await expect(bridge.appendDelegationContext("delegation-1", "Recovered answer.", "speakable")).resolves.toBe(true);
+    expect(JSON.parse(second.sent.at(-1)!)).toMatchObject({
+      type: "delegation.context.append",
+      delegation_item_id: "delegation-1",
+      channel: "speakable",
+    });
+    expect(createSocket).toHaveBeenCalledTimes(2);
+    expect(resolveAuth).toHaveBeenCalledTimes(2);
+    expect(closePeer).not.toHaveBeenCalled();
+    expect(onFailure).not.toHaveBeenCalled();
+    bridge.close();
+  });
+
+  it("retries the exact sideband frame when the WebSocket send callback fails", async () => {
+    vi.useFakeTimers();
+    const first = new FakeSocket();
+    const second = new FakeSocket();
+    const sockets = [first, second];
+    first.send = (value: string, callback?: (error?: Error) => void) => {
+      first.sent.push(value);
+      callback?.(new Error("write failed"));
+    };
+    const bridge = new OpenAILiveRealtimeVoiceBridge({
+      onAudio: vi.fn(), onDelegation: vi.fn(), onOutputAudioCleared: vi.fn(), onFailure: vi.fn(), log: vi.fn(),
+      resolveAuth: () => ({token: "secret", accountId: "acct-1"}),
+      fetchImpl: vi.fn(async () => new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}})),
+      createPeer: vi.fn(async () => ({
+        createOffer: async () => "offer-sdp", applyAnswer: async () => undefined,
+        waitUntilConnected: async () => undefined, sendAudio: vi.fn(), close: vi.fn(),
+      })),
+      createSocket: () => {
+        const socket = sockets.shift();
+        if (!socket) throw new Error("unexpected socket");
+        queueMicrotask(() => {
+          socket.readyState = WebSocket.OPEN;
+          socket.emit("open");
+        });
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    await bridge.connect();
+    const appending = bridge.appendSessionContext("deliver once", "speakable");
+    await vi.advanceTimersByTimeAsync(200);
+    await expect(appending).resolves.toBe(true);
+    expect(first.sent).toHaveLength(1);
+    expect(second.sent).toEqual(first.sent);
+    bridge.close();
+  });
+
+  it("bounds a sideband reconnect whose socket never opens", async () => {
+    vi.useFakeTimers();
+    const first = new FakeSocket();
+    const stalled = Array.from({length: 8}, () => new FakeSocket());
+    const sockets = [first, ...stalled];
+    const onFailure = vi.fn();
+    const bridge = new OpenAILiveRealtimeVoiceBridge({
+      connectTimeoutMs: 5,
+      onAudio: vi.fn(), onDelegation: vi.fn(), onOutputAudioCleared: vi.fn(), onFailure, log: vi.fn(),
+      resolveAuth: () => ({token: "secret", accountId: "acct-1"}),
+      fetchImpl: vi.fn(async () => new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}})),
+      createPeer: vi.fn(async () => ({
+        createOffer: async () => "offer-sdp", applyAnswer: async () => undefined,
+        waitUntilConnected: async () => undefined, sendAudio: vi.fn(), close: vi.fn(),
+      })),
+      createSocket: () => {
+        const socket = sockets.shift();
+        if (!socket) throw new Error("unexpected socket");
+        if (socket === first) queueMicrotask(() => { socket.readyState = WebSocket.OPEN; socket.emit("open"); });
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    await bridge.connect();
+    first.readyState = WebSocket.CLOSED;
+    first.emit("close", 1006, Buffer.alloc(0));
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({source: "sideband", code: "transport_failed", retryable: true}));
+    expect(sockets).toHaveLength(0);
+  });
+
+  it("treats an ended call during sideband reattachment as terminal session expiry", async () => {
+    const first = new FakeSocket();
+    const second = new FakeSocket();
+    const sockets = [first, second];
+    const onFailure = vi.fn();
+    const closePeer = vi.fn();
+    const bridge = new OpenAILiveRealtimeVoiceBridge({
+      onAudio: vi.fn(), onDelegation: vi.fn(), onOutputAudioCleared: vi.fn(), onFailure, log: vi.fn(),
+      resolveAuth: () => ({token: "secret", accountId: "acct-1"}),
+      fetchImpl: vi.fn(async () => new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}})),
+      createPeer: vi.fn(async () => ({
+        createOffer: async () => "offer-sdp", applyAnswer: async () => undefined,
+        waitUntilConnected: async () => undefined, sendAudio: vi.fn(), close: closePeer,
+      })),
+      createSocket: () => {
+        const socket = sockets.shift();
+        if (!socket) throw new Error("unexpected socket");
+        queueMicrotask(() => {
+          if (socket === first) {
+            socket.readyState = WebSocket.OPEN;
+            socket.emit("open");
+          } else {
+            socket.emit("unexpected-response", {}, {statusCode: 410});
+          }
+        });
+        return socket as unknown as WebSocket;
+      },
+    });
+
+    await bridge.connect();
+    first.readyState = WebSocket.CLOSED;
+    first.emit("close", 1006, Buffer.alloc(0));
+
+    await vi.waitFor(() => expect(onFailure).toHaveBeenCalledWith(expect.objectContaining({
+      source: "session",
+      code: "session_expired",
+      retryable: false,
+      status: 410,
+    })));
+    expect(closePeer).toHaveBeenCalledOnce();
   });
 
   it("forwards completed turn text only through the transient callback without logging it", async () => {
@@ -97,7 +261,7 @@ describe("OpenAI GPT-Live bridge", () => {
     const onTurnDone = vi.fn();
     const log = vi.fn();
     const bridge = new OpenAILiveRealtimeVoiceBridge({
-      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio: vi.fn(), onFailure: vi.fn(), onTurnDone, log,
+      onAudio: vi.fn(), onDelegation: vi.fn(), onOutputAudioCleared: vi.fn(), onFailure: vi.fn(), onTurnDone, log,
       resolveAuth: () => ({token: "secret", accountId: "acct-1"}),
       fetchImpl: vi.fn(async () => new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}})),
       createPeer: vi.fn(async () => ({createOffer: async () => "offer-sdp", applyAnswer: async () => undefined, waitUntilConnected: async () => undefined, sendAudio: vi.fn(), close: vi.fn()})),
@@ -122,7 +286,7 @@ describe("OpenAI GPT-Live bridge", () => {
     const socket = new FakeSocket();
     const closePeer = vi.fn();
     const bridge = new OpenAILiveRealtimeVoiceBridge({
-      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio: vi.fn(), onFailure: vi.fn(), log: vi.fn(),
+      onAudio: vi.fn(), onDelegation: vi.fn(), onOutputAudioCleared: vi.fn(), onFailure: vi.fn(), log: vi.fn(),
       resolveAuth: () => ({token: "secret", accountId: "acct-1"}),
       fetchImpl: vi.fn(async () => new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}})),
       createPeer: vi.fn(async () => ({createOffer: async () => "offer-sdp", applyAnswer: async () => undefined, waitUntilConnected: async () => mediaReady.promise, sendAudio: vi.fn(), close: closePeer})),
@@ -144,7 +308,7 @@ describe("OpenAI GPT-Live bridge", () => {
     const closePeer = vi.fn();
     const bridge = new OpenAILiveRealtimeVoiceBridge({
       connectTimeoutMs: 5,
-      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio: vi.fn(), onFailure: vi.fn(), log: vi.fn(),
+      onAudio: vi.fn(), onDelegation: vi.fn(), onOutputAudioCleared: vi.fn(), onFailure: vi.fn(), log: vi.fn(),
       createPeer: vi.fn(async () => ({
         createOffer: () => new Promise<string>(() => undefined),
         applyAnswer: async () => undefined, waitUntilConnected: async () => undefined, sendAudio: vi.fn(), close: closePeer,
@@ -166,7 +330,7 @@ describe("OpenAI GPT-Live bridge", () => {
     }) => void;
     const bridge = new OpenAILiveRealtimeVoiceBridge({
       connectTimeoutMs: 5,
-      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio: vi.fn(), onFailure: vi.fn(), log: vi.fn(),
+      onAudio: vi.fn(), onDelegation: vi.fn(), onOutputAudioCleared: vi.fn(), onFailure: vi.fn(), log: vi.fn(),
       createPeer: vi.fn(() => new Promise((resolve) => { resolvePeer = resolve; })),
     });
 
@@ -182,7 +346,7 @@ describe("OpenAI GPT-Live bridge", () => {
     const onFailure = vi.fn();
     const controller = new AbortController();
     const bridge = new OpenAILiveRealtimeVoiceBridge({
-      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio: vi.fn(), onFailure, log: vi.fn(),
+      onAudio: vi.fn(), onDelegation: vi.fn(), onOutputAudioCleared: vi.fn(), onFailure, log: vi.fn(),
       createPeer: vi.fn(() => new Promise(() => undefined)),
     });
 
@@ -198,7 +362,7 @@ describe("OpenAI GPT-Live bridge", () => {
     const onFailure = vi.fn();
     let failMedia!: (error: Error) => void;
     const bridge = new OpenAILiveRealtimeVoiceBridge({
-      onAudio: vi.fn(), onDelegation: vi.fn(), onClearAudio: vi.fn(), onFailure, log,
+      onAudio: vi.fn(), onDelegation: vi.fn(), onOutputAudioCleared: vi.fn(), onFailure, log,
       resolveAuth: () => ({token: "secret", accountId: "acct-1"}),
       fetchImpl: vi.fn(async () => new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}})),
       createPeer: vi.fn(async (callbacks) => {
@@ -234,6 +398,22 @@ describe("OpenAI GPT-Live bridge", () => {
     expect(loss.push(20, "a")).toEqual([{kind: "packet", packet: "a"}]);
     expect(loss.push(22, "c")).toEqual([]);
     expect(loss.flush()).toEqual([{kind: "loss"}, {kind: "packet", packet: "c"}]);
+
+    const cleared = new OpenAILiveRtpReorderBuffer<string>();
+    expect(cleared.push(30, "played")).toEqual([{kind: "packet", packet: "played"}]);
+    expect(cleared.push(32, "queued-old")).toEqual([]);
+    cleared.discardPending();
+    expect(cleared.push(31, "late-old")).toEqual([]);
+    expect(cleared.push(32, "late-queued-old")).toEqual([]);
+    expect(cleared.push(33, "new")).toEqual([{kind: "packet", packet: "new"}]);
+
+    const quarantined = new OpenAILiveRtpReorderBuffer<string>();
+    expect(quarantined.push(40, "played", 1_000)).toEqual([{kind: "packet", packet: "played"}]);
+    quarantined.discardPending(1_010, 200);
+    expect(quarantined.push(41, "unseen-late-old", 1_100)).toEqual([]);
+    expect(quarantined.push(42, "another-late-old", 1_150)).toEqual([]);
+    expect(quarantined.push(41, "late-duplicate", 1_220)).toEqual([]);
+    expect(quarantined.push(43, "new", 1_220)).toEqual([{kind: "packet", packet: "new"}]);
 
     const wrapped = new OpenAILiveRtpReorderBuffer<string>();
     expect(wrapped.push(65_535, "last")).toHaveLength(1);

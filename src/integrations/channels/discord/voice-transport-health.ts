@@ -20,6 +20,7 @@ export function discordVoiceTransportDiagnostics(input: {
   gateway?: DiscordVoiceGatewayHealth;
   connectionState: string;
   playerState: string;
+  playback?: JsonObject;
   stateAt: number;
 }): JsonObject {
   const gateway: JsonObject | null = input.gateway ? {
@@ -34,6 +35,6 @@ export function discordVoiceTransportDiagnostics(input: {
   return {
     gateway,
     voice: {state: input.connectionState, stateAt: input.stateAt, dave: "unknown"},
-    player: {state: input.playerState},
+    player: {state: input.playerState, ...input.playback},
   };
 }

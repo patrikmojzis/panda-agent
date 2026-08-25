@@ -531,6 +531,8 @@ These are the source barrels that still deserve to exist:
 - `src/domain/scheduling/tasks/index.ts`
 - `src/domain/watches/index.ts`
 - `src/integrations/shell/index.ts`
+- `src/integrations/live-voice/index.ts`
+- `src/integrations/openai-live/index.ts`
 
 `src/index.ts` is the package root.
 Do not re-export domain repos, stores, channel integrations, or other internal plumbing from it unless we intentionally want that to become package API.
@@ -554,6 +556,8 @@ The supported package entrypoints are:
 - `panda/domain/scheduling/tasks`
 - `panda/domain/watches`
 - `panda/integrations/shell`
+- `panda/integrations/live-voice`
+- `panda/integrations/openai-live`
 
 Use the root for the normal public API.
 Use the subpath exports only when you intentionally need a secondary boundary.

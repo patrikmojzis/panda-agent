@@ -5,7 +5,7 @@ Discord is the first call transport, not the owner of live-call semantics.
 The reusable boundary has four parts:
 
 - `src/domain/live-voice` owns generic `runtime.live_voice_sessions` and `runtime.live_voice_turns` records. Sessions use opaque `source`, `connectorKey`, `scopeKey`, and `roomKey` transport identity. Turns reference the generic live session and provider delegation, never Discord columns.
-- `src/integrations/voice/live-call.ts` owns first-speaker arbitration, audible input admission, barge-in, provider replacement, output gating, exact-once delegation, and progress/final delivery.
+- `src/integrations/voice/live-call.ts` owns first-speaker arbitration, audible input admission, provider-authoritative output clearing, provider replacement, exact-once delegation, and progress/final delivery.
 - `src/integrations/voice/provider.ts` is the provider-session contract and provider-definition seam. `src/integrations/providers/openai-live/provider.ts` binds OpenAI configuration once; transports do not construct the bridge or map provider callbacks themselves. The OpenAI Live adapter owns private call creation, WebRTC, sideband parsing, authentication, and provider wire shape.
 - A call transport supplies decoded 24 kHz mono PCM and a `LiveVoiceOutput`. Discord owns guild joins, participant provenance, Discord Opus, Gateway/voice lifecycle, commands, and `discord_voice_controls`.
 
@@ -17,14 +17,18 @@ Delegation persistence is one PostgreSQL statement: it locks the connected live
 session, creates or resolves the turn, and enqueues its idempotent runtime
 request. Disconnect marks the session closed before transport teardown, so that
 lock is the shutdown fence. `LiveVoiceCall.close()` also joins in-flight
-persistence and terminalizes any turn returned after its provider generation
-closed; request handling rejects delegations for a disconnected live session.
+persistence and terminalizes any turn returned after the live call closed;
+request handling rejects delegations for a disconnected live session.
 
-On barge-in, Panda begins suppression only after the first audible decoded participant frame; leading digital silence cannot cancel an answer. Output remains suppressed until GPT-Live completes that user turn, or until a bounded fallback after Discord capture ends. Durable Panda work already in progress is not cancelled.
+Panda does not infer barge-in from decoded channel PCM. It keeps forwarding accepted input while GPT-Live decides whether that input interrupts the active answer. Only the provider's `output_audio_buffer.cleared` event clears queued playback and the WebRTC reorder buffer. The OpenAI media adapter then quarantines 200 milliseconds of in-flight RTP while advancing its sequence watermark, preventing pre-clear packets from leaking into the next response. This matches Codex's ownership boundary and prevents Discord noise, echo, or fragmented speaking events from cutting off a valid answer. Durable Panda work already in progress is not cancelled.
 
-Provider replacement keeps the call transport alive. Completed casual transcripts are retained only in process, bounded, and supplied to a fresh provider session as role-bearing `initial_items`; PCM and partial turns are discarded. Durable Panda work is not cancelled.
+Sideband recovery normally does not replace the provider call. The OpenAI adapter reconnects to the same call id with freshly resolved Codex OAuth and bounded exponential backoff, preserving provider transcript and delegation identity. Context delivery waits briefly for that reattachment instead of dropping an in-flight Panda result.
+
+Whole-provider replacement is reserved for media failure or provider desynchronization, including a missing `turn.done` after a completed capture. It keeps the call transport alive. Completed casual transcripts are retained only in process, bounded, and supplied to a fresh provider session as role-bearing `initial_items`. Already-sent PCM and uncommitted provider state are discarded, but an active transport capture remains valid and subsequent PCM continues into the new provider generation. A durable result bound to the old generation is delivered through standalone session context; durable Panda work is not cancelled.
 
 Diagnostics have the same split. Generic health, provider, capture, playback, delegation, and Postgres facts live in `src/integrations/voice/health.ts`. The snapshot's `transport` object carries Discord Gateway and voice-connection facts rendered by `voice-transport-health.ts`. Operator status therefore stays comparable across future transports without erasing native details.
+
+The supported `panda/integrations/live-voice` package entrypoint exposes the channel-neutral call/provider contracts for the standalone voice lab and future call transports. `panda/integrations/openai-live` exposes only the OpenAI provider definition. Discord internals and provider wire classes remain private.
 
 A future Telegram, WhatsApp, or custom call adapter should create a generic session record, feed `LiveVoiceCall` with participant-attributed PCM, implement `LiveVoiceOutput`, inject a `LiveVoiceProviderDefinition`, render its source-specific delegation instructions, and own its native control/join lifecycle. Do not move connector controls, guild/chat identifiers, codecs, or provider wire details into the reusable module. Add a broader transport interface only after a second real adapter proves the common shape.
 
