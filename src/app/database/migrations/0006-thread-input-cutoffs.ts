@@ -24,6 +24,15 @@ export const THREAD_INPUT_CUTOFFS_MIGRATION: PostgresMigration = {
       ) AS admitted
       WHERE run."id" = admitted.run_id;
 
+      UPDATE "runtime"."inputs"
+      SET "discarded_at" = NOW(),
+          "metadata" = NULL,
+          "message" = NULL
+      WHERE "applied_at" IS NULL
+        AND "discarded_at" IS NULL
+        AND "delivery_mode" = 'wake'
+        AND "source" IN ('subagent', 'a2a', 'worker', 'background_tool');
+
       INSERT INTO "runtime"."session_runtime_config" (
         "session_id",
         "pending_wake_at",

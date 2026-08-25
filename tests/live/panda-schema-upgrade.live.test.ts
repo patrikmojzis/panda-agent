@@ -190,23 +190,15 @@ describe("Panda schema hard-cut upgrade", () => {
       WHERE session_id = 'stale-inter-agent-session'
     `)).resolves.toMatchObject({rows: [{pending: false}]});
     await expect(pool.query(`
-      SELECT input.applied_at,
-             input.discarded_at IS NOT NULL AS discarded,
-             input.metadata,
-             input.message,
-             archived.resolution,
-             archived.message IS NOT NULL AS archived_message
-      FROM ${table.inputs} AS input
-      INNER JOIN "panda_legacy"."thread_input_cutover_quarantine" AS archived
-        ON archived.id = input.id
-      WHERE input.id = $1
+      SELECT applied_at,
+             discarded_at IS NOT NULL AS discarded,
+             message
+      FROM ${table.inputs}
+      WHERE id = $1
     `, [staleInterAgentId])).resolves.toMatchObject({rows: [{
       applied_at: null,
       discarded: true,
-      metadata: null,
       message: null,
-      resolution: "pending_quarantined",
-      archived_message: true,
     }]});
     await expect(pool.query(`
       SELECT operation_id FROM ${table.abortOperations} ORDER BY operation_id

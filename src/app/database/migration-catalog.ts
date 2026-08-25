@@ -9,7 +9,6 @@ import {RUNTIME_OPERATION_RECEIPTS_MIGRATION} from "./migrations/0005-runtime-op
 import {THREAD_INPUT_CUTOFFS_MIGRATION} from "./migrations/0006-thread-input-cutoffs.js";
 import {RESET_RUN_FENCES_MIGRATION} from "./migrations/0007-reset-run-fences.js";
 import {LEGACY_SCHEMA_RECONCILIATION_MIGRATION} from "./migrations/0008-legacy-schema-reconciliation.js";
-import {LEGACY_INPUT_BACKLOG_QUARANTINE_MIGRATION} from "./migrations/0009-legacy-input-backlog-quarantine.js";
 import {reconcileReadonlySessionRole} from "./readonly-role.js";
 
 export const PANDA_SCHEMA_MIGRATIONS = Object.freeze([
@@ -21,7 +20,6 @@ export const PANDA_SCHEMA_MIGRATIONS = Object.freeze([
   THREAD_INPUT_CUTOFFS_MIGRATION,
   RESET_RUN_FENCES_MIGRATION,
   LEGACY_SCHEMA_RECONCILIATION_MIGRATION,
-  LEGACY_INPUT_BACKLOG_QUARANTINE_MIGRATION,
 ]);
 
 /** Entry points bundled by CI to prove every persisted checksum matches code. */
@@ -34,7 +32,6 @@ export const PANDA_SCHEMA_MIGRATION_SOURCES: Readonly<Record<string, string>> = 
   "0006_thread_input_cutoffs": "src/app/database/migrations/0006-thread-input-cutoffs.ts",
   "0007_reset_run_fences": "src/app/database/migrations/0007-reset-run-fences.ts",
   "0008_legacy_schema_reconciliation": "src/app/database/migrations/0008-legacy-schema-reconciliation.ts",
-  "0009_legacy_input_backlog_quarantine": "src/app/database/migrations/0009-legacy-input-backlog-quarantine.ts",
 });
 
 export interface CreatePandaSchemaMigratorOptions {
