@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+umask 077
 
 usage() {
   cat <<'EOF'
@@ -103,9 +104,15 @@ check_deprecated_bash_server_env \
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd "$script_dir/.." && pwd -P)"
 env_loader="$script_dir/lib/load-env-file.sh"
+private_env_file_helper="$script_dir/lib/private-env-file.sh"
 env_file="${BASH_SERVER_ENV_FILE:-$repo_root/.env}"
 
 if [[ -f "$env_loader" && -f "$env_file" ]]; then
+  [[ -f "$private_env_file_helper" ]] || die "private env file helper not found: $private_env_file_helper"
+  env_file="$(cd "$(dirname "$env_file")" && pwd -P)/$(basename "$env_file")"
+  # shellcheck source=/dev/null
+  source "$private_env_file_helper"
+  require_private_env_file "$env_file" || exit "$?"
   # shellcheck source=/dev/null
   source "$env_loader"
   load_env_file "$env_file"

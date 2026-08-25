@@ -104,6 +104,8 @@ Then:
 ./scripts/docker-stack.sh logs wiki
 ```
 
+Auto-bootstrap passes the selected private stack env file directly to `wiki-local.sh` and forces compose transport for the Panda binding write. It does not generate a second host-side env copy. Both entrypoints reject env files with group or other permissions before loading them.
+
 `init` will:
 
 - start Wiki.js

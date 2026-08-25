@@ -1,5 +1,5 @@
 import {spawn} from "node:child_process";
-import {mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
+import {chmod, copyFile, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
@@ -8,6 +8,7 @@ import {afterEach, describe, expect, it} from "vitest";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const scriptPath = path.join(repoRoot, "scripts/docker-stack.sh");
+const privateEnvFileHelperPath = path.join(repoRoot, "scripts/lib/private-env-file.sh");
 const generatedComposePath = path.join(
   repoRoot,
   ".generated/docker-compose.remote-bash.external-db.runners.yml",
@@ -216,6 +217,7 @@ printf 'DATABASE_URL=%s\\n' "\${DATABASE_URL-}" >> "${logPath}"
 printf 'WIKI_DB_URL=%s\\n' "\${WIKI_DB_URL-}" >> "${logPath}"
 printf 'WIKI_DOCKER_BIN=%s\\n' "\${WIKI_DOCKER_BIN-}" >> "${logPath}"
 printf 'PANDA_WIKI_BINDING_TRANSPORT=%s\\n' "\${PANDA_WIKI_BINDING_TRANSPORT-}" >> "${logPath}"
+printf 'WIKI_ENV_FILE=%s\\n' "\${WIKI_ENV_FILE-}" >> "${logPath}"
 `, {mode: 0o755});
     return stubPath;
   }
@@ -232,8 +234,44 @@ exit 42
 
   async function createEnvFile(contents: string): Promise<string> {
     const envPath = path.join(await makeTempDir("panda-stack-env-"), ".env");
-    await writeFile(envPath, contents);
+    await writeFile(envPath, contents, {mode: 0o600});
     return envPath;
+  }
+
+  async function createPermissionsFixture(): Promise<{
+    envFile: string;
+    generatedDir: string;
+    scriptFile: string;
+  }> {
+    const fixtureRoot = await makeTempDir("panda-stack-permissions-");
+    const fixtureScripts = path.join(fixtureRoot, "scripts");
+    const fixtureLib = path.join(fixtureScripts, "lib");
+    const generatedDir = path.join(fixtureRoot, ".generated");
+    const generatedWikiDir = path.join(generatedDir, "wiki");
+    await mkdir(fixtureLib, {recursive: true});
+    await mkdir(generatedWikiDir, {recursive: true});
+    await chmod(generatedDir, 0o755);
+    await chmod(generatedWikiDir, 0o755);
+
+    const scriptFile = path.join(fixtureScripts, "docker-stack.sh");
+    await copyFile(scriptPath, scriptFile);
+    await copyFile(privateEnvFileHelperPath, path.join(fixtureLib, "private-env-file.sh"));
+
+    const envFile = path.join(fixtureRoot, ".env");
+    await writeFile(envFile, "DATABASE_URL=postgresql://example/panda\n", {mode: 0o600});
+    await chmod(envFile, 0o644);
+    for (const generatedFile of [
+      path.join(generatedDir, "docker-compose.remote-bash.external-db.runners.yml"),
+      path.join(generatedDir, "docker-compose.wiki.ssl.yml"),
+      path.join(generatedDir, "Caddyfile.public-edge"),
+      path.join(generatedWikiDir, "docker-compose.wiki.ssl.yml"),
+      path.join(generatedDir, "wiki-host.env"),
+    ]) {
+      await writeFile(generatedFile, "generated-secret-bearing-content\n", {mode: 0o600});
+      await chmod(generatedFile, 0o644);
+    }
+
+    return {envFile, generatedDir, scriptFile};
   }
 
   async function runScript(args: string[], options: {
@@ -241,13 +279,14 @@ exit 42
     dockerBin: string;
     homeDir?: string;
     wikiLocalScript?: string;
+    scriptFile?: string;
     env?: Record<string, string>;
   }): Promise<ScriptResult> {
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
 
     return await new Promise((resolve, reject) => {
-      const child = spawn("bash", [scriptPath, ...args], {
+      const child = spawn("bash", [options.scriptFile ?? scriptPath, ...args], {
         cwd: repoRoot,
         env: {
           ...process.env,
@@ -282,6 +321,10 @@ exit 42
     return match?.[1] ?? "";
   }
 
+  function permissionBits(mode: number): number {
+    return mode & 0o777;
+  }
+
   function expectTraceLabels(compose: string, service: string, sourceId: string, environment: string): void {
     expect(compose).toContain(`  ${service}:`);
     expect(compose).toContain('    labels:');
@@ -290,6 +333,75 @@ exit 42
     expect(compose).toContain(`      panda_trace.service: "${service}"`);
     expect(compose).toContain(`      panda_trace.environment: "${environment}"`);
   }
+
+  it("refuses to load an env file readable by group or other users", async () => {
+    const dockerLogPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(dockerLogPath);
+    const envFile = await createEnvFile("DATABASE_URL=postgresql://example/panda\n");
+    await chmod(envFile, 0o644);
+
+    const result = await runScript(["ps"], {envFile, dockerBin});
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("refusing to load secret-bearing env file");
+    expect(result.stderr).toContain("current mode: 0644");
+    expect(result.stderr).toContain(`chmod 600 ${await realpath(envFile)}`);
+    expect(result.stderr).toContain("./scripts/docker-stack.sh permissions-fix");
+    await expect(readFile(dockerLogPath, "utf8")).rejects.toMatchObject({code: "ENOENT"});
+  });
+
+  it("repairs only the selected env file and known Panda-managed paths", async () => {
+    const fixture = await createPermissionsFixture();
+    const obsoleteWikiEnv = path.join(fixture.generatedDir, "wiki-host.env");
+    const generatedCompose = path.join(
+      fixture.generatedDir,
+      "docker-compose.remote-bash.external-db.runners.yml",
+    );
+
+    const result = await runScript(["permissions-fix"], {
+      envFile: fixture.envFile,
+      dockerBin: "/docker-must-not-run",
+      scriptFile: fixture.scriptFile,
+    });
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(permissionBits((await stat(fixture.envFile)).mode)).toBe(0o600);
+    expect(permissionBits((await stat(fixture.generatedDir)).mode)).toBe(0o700);
+    expect(permissionBits((await stat(generatedCompose)).mode)).toBe(0o600);
+    expect(permissionBits((await stat(path.join(fixture.generatedDir, "wiki"))).mode)).toBe(0o700);
+    await expect(stat(obsoleteWikiEnv)).rejects.toMatchObject({code: "ENOENT"});
+    expect(result.stdout).toContain("Permissions are ready. Re-run your stack command.");
+    expect(result.stdout).toContain(
+      "Only the selected env file and known Panda-managed generated paths were changed.",
+    );
+    expect(result.stdout).toContain(
+      "Other host files were not scanned; secure manually created secret files separately.",
+    );
+  });
+
+  it("refuses to follow a symlink at a Panda-managed file path", async () => {
+    const fixture = await createPermissionsFixture();
+    const generatedCompose = path.join(
+      fixture.generatedDir,
+      "docker-compose.remote-bash.external-db.runners.yml",
+    );
+    const outsideFile = path.join(path.dirname(fixture.envFile), "outside-file");
+    await writeFile(outsideFile, "must-not-change\n", {mode: 0o600});
+    await chmod(outsideFile, 0o644);
+    await rm(generatedCompose);
+    await symlink(outsideFile, generatedCompose);
+
+    const result = await runScript(["permissions-fix"], {
+      envFile: fixture.envFile,
+      dockerBin: "/docker-must-not-run",
+      scriptFile: fixture.scriptFile,
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("refusing to use symlinked Panda-managed file");
+    expect(await readFile(outsideFile, "utf8")).toBe("must-not-change\n");
+    expect(permissionBits((await stat(outsideFile)).mode)).toBe(0o644);
+  });
 
   it("fails when PANDA_AGENTS contains duplicates after normalization", async () => {
     const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
@@ -329,6 +441,8 @@ exit 42
 
     expect(result.exitCode).toBe(0);
     expect(await readFile(generatedComposePath, "utf8")).toBe("services: {}\n");
+    expect(permissionBits((await stat(path.dirname(generatedComposePath))).mode)).toBe(0o700);
+    expect(permissionBits((await stat(generatedComposePath)).mode)).toBe(0o600);
     expect(await readFile(generatedWikiComposePath, "utf8")).not.toContain("ports:");
     const dockerLog = await readFile(logPath, "utf8");
     expect(dockerLog).not.toContain("panda agent ensure");
@@ -1837,6 +1951,8 @@ exit 42
     expect(wikiLog).toContain("bootstrap claw luna");
     expect(wikiLog).toContain(`WIKI_DOCKER_BIN=${dockerBin}`);
     expect(wikiLog).toContain("PANDA_WIKI_BINDING_TRANSPORT=compose");
+    expect(wikiLog).toContain(`WIKI_ENV_FILE=${await realpath(envFile)}`);
+    expect(wikiLog).not.toContain("wiki-host.env");
   });
 
   it("loads env files without shell-breaking URLs and passes them intact to wiki bootstrap", async () => {

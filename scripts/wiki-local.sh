@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+umask 077
 
 usage() {
   cat <<'EOF'
@@ -135,9 +136,19 @@ generated_compose="$generated_dir/docker-compose.wiki.ssl.yml"
 docker_bin="${WIKI_DOCKER_BIN:-docker}"
 project_name="${WIKI_PROJECT_NAME:-panda-wiki}"
 env_loader="$script_dir/lib/load-env-file.sh"
+private_env_file_helper="$script_dir/lib/private-env-file.sh"
 
 [[ -f "$compose_file" ]] || die "compose file not found: $compose_file"
 [[ -f "$env_loader" ]] || die "env loader not found: $env_loader"
+[[ -f "$private_env_file_helper" ]] || die "private env file helper not found: $private_env_file_helper"
+
+# shellcheck source=/dev/null
+source "$private_env_file_helper"
+if [[ -e "$env_file" || -L "$env_file" ]]; then
+  env_file="$(cd "$(dirname "$env_file")" && pwd -P)/$(basename "$env_file")"
+  require_private_env_file "$env_file" || exit "$?"
+fi
+
 command -v "$docker_bin" >/dev/null 2>&1 || die "$docker_bin is not installed or not on PATH."
 require_command curl
 require_command jq
@@ -214,7 +225,9 @@ resolve_wiki_ssl_cert_file() {
 
 render_generated_compose() {
   local wiki_db_ssl_cert_file wiki_publish_port
-  mkdir -p "$generated_dir"
+  ensure_private_managed_directory "$repo_root/.generated" || exit "$?"
+  ensure_private_managed_directory "$generated_dir" || exit "$?"
+  secure_private_managed_file "$generated_compose" 0 || exit "$?"
   wiki_db_ssl_cert_file="$(trim "${WIKI_DB_SSL_CERT_FILE:-}")"
   wiki_publish_port="$(trim "${WIKI_PUBLISH_PORT:-}")"
 

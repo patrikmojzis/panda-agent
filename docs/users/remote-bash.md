@@ -188,7 +188,18 @@ Normal deployment flow:
 
 1. Put your real `DATABASE_URL` and `BROWSER_RUNNER_SHARED_SECRET` in `.env`
 2. Set `PANDA_AGENTS=claw,luna`
-3. Run `./scripts/docker-stack.sh up --build`
+3. Make the file owner-only with `chmod 600 .env`
+4. Run `./scripts/docker-stack.sh up --build`
+
+The stack, Wiki, and standalone runner scripts refuse to load an env file that is readable or writable by group or other users. The error shows the exact `chmod` command for the selected file. For the main stack, you can instead run:
+
+```bash
+./scripts/docker-stack.sh permissions-fix
+```
+
+That explicit command changes only the selected env file and known Panda-managed paths under `.generated`. It also removes the obsolete `.generated/wiki-host.env` secret copy. Normal stack commands never change permissions on an env file you supplied; Panda-created generated files and directories are kept at `0600` and `0700` automatically.
+
+Panda does not guess which unrelated host files contain secrets. If you redirect a login token, recovery command, env backup, or another secret to a file yourself, create it under `umask 077` or run `chmod 600 <file>` immediately.
 
 That wrapper:
 

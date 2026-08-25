@@ -1,5 +1,5 @@
 import {spawn, spawnSync} from "node:child_process";
-import {mkdtemp, readFile, rm, symlink, writeFile} from "node:fs/promises";
+import {chmod, mkdtemp, readFile, realpath, rm, symlink, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
@@ -32,7 +32,7 @@ describe.sequential("wiki-local.sh", () => {
 
   async function createEnvFile(contents: string): Promise<string> {
     const envPath = path.join(await makeTempDir("panda-wiki-env-"), ".env");
-    await writeFile(envPath, contents);
+    await writeFile(envPath, contents, {mode: 0o600});
     return envPath;
   }
 
@@ -67,7 +67,9 @@ ${result.stderr}`).toBe(0);
     await Promise.all([
       "awk",
       "bash",
+      "basename",
       "cat",
+      "chmod",
       "date",
       "dirname",
       "grep",
@@ -75,6 +77,7 @@ ${result.stderr}`).toBe(0);
       "mkdir",
       "sed",
       "sleep",
+      "stat",
       "tr",
     ].map((command) => linkSystemCommand(binDir, command)));
 
@@ -187,6 +190,21 @@ exec "${jqPath}" "$@"
       });
     });
   }
+
+  it("refuses an env file readable by group or other users", async () => {
+    const logPath = path.join(await makeTempDir("panda-wiki-log-"), "commands.log");
+    const binDir = await createCommandStubs(logPath);
+    const envFile = await createEnvFile("WIKI_ADMIN_PASSWORD=secret\n");
+    await chmod(envFile, 0o644);
+
+    const result = await runScript(["ps"], {envFile, pathPrefix: binDir});
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("refusing to load secret-bearing env file");
+    expect(result.stderr).toContain("current mode: 0644");
+    expect(result.stderr).toContain(`chmod 600 ${await realpath(envFile)}`);
+    await expect(readFile(logPath, "utf8")).rejects.toMatchObject({code: "ENOENT"});
+  });
 
   it("stores bindings through panda-core when host pnpm is unavailable", async () => {
     const logPath = path.join(await makeTempDir("panda-wiki-log-"), "commands.log");
