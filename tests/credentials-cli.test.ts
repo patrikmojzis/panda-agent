@@ -11,19 +11,17 @@ const credentialCliMocks = vi.hoisted(() => {
     current: {
       id: "credential-2",
       envKey: "NOTION_API_KEY",
-      value: "secret-notion",
       valuePreview: "secr...tion",
       agentKey: "panda",
-      keyVersion: 1,
+      envelopeVersion: 2,
       createdAt: 1,
       updatedAt: 2,
     } as {
       id: string;
       envKey: string;
-      value: string;
       valuePreview: string;
       agentKey: string;
-      keyVersion: number;
+      envelopeVersion: number;
       createdAt: number;
       updatedAt: number;
     } | null,
@@ -61,22 +59,18 @@ const credentialCliMocks = vi.hoisted(() => {
     readonly setCredential = vi.fn(async (input: Record<string, unknown>) => ({
       id: "credential-1",
       envKey: String(input.envKey),
-      value: String(input.value),
-      valuePreview: "sk-l...8484",
       agentKey: input.agentKey,
-      keyVersion: 1,
+      envelopeVersion: 2,
       createdAt: 1,
       updatedAt: 2,
     }));
     readonly clearCredential = vi.fn(async () => true);
-    readonly listCredentials = vi.fn(async () => ([
+    readonly listCredentialMetadata = vi.fn(async () => ([
       {
         id: "credential-1",
         envKey: "OPENAI_API_KEY",
-        value: "sk-live-339398484",
-        valuePreview: "sk-l...8484",
         agentKey: "panda",
-        keyVersion: 1,
+        envelopeVersion: 2,
         createdAt: 1,
         updatedAt: 2,
       },
@@ -94,7 +88,7 @@ const credentialCliMocks = vi.hoisted(() => {
     credentialStoreInstances,
     pool,
     resolveCredentialResult,
-    resolveCredentialCrypto: vi.fn(() => ({kind: "crypto"})),
+    resolveSecretCrypto: vi.fn(() => ({kind: "crypto"})),
     MockCredentialService,
     MockPostgresAgentStore,
     MockPostgresCredentialStore,
@@ -120,8 +114,8 @@ vi.mock("../src/domain/credentials/resolver.js", () => ({
   CredentialService: credentialCliMocks.MockCredentialService,
 }));
 
-vi.mock("../src/domain/credentials/crypto.js", () => ({
-  resolveCredentialCrypto: credentialCliMocks.resolveCredentialCrypto,
+vi.mock("../src/domain/secrets/crypto.js", () => ({
+  resolveSecretCrypto: credentialCliMocks.resolveSecretCrypto,
 }));
 
 vi.mock("../src/lib/postgres-database.js", () => ({
@@ -158,15 +152,14 @@ describe("Credential CLI", () => {
     credentialCliMocks.credentialStoreInstances.length = 0;
     credentialCliMocks.credentialServiceInstances.length = 0;
     credentialCliMocks.pool.end.mockClear();
-    credentialCliMocks.resolveCredentialCrypto.mockReset();
-    credentialCliMocks.resolveCredentialCrypto.mockImplementation(() => ({kind: "crypto"}));
+    credentialCliMocks.resolveSecretCrypto.mockReset();
+    credentialCliMocks.resolveSecretCrypto.mockImplementation(() => ({kind: "crypto"}));
     credentialCliMocks.resolveCredentialResult.current = {
       id: "credential-2",
       envKey: "NOTION_API_KEY",
-      value: "secret-notion",
       valuePreview: "secr...tion",
       agentKey: "panda",
-      keyVersion: 1,
+      envelopeVersion: 2,
       createdAt: 1,
       updatedAt: 2,
     };
@@ -234,7 +227,7 @@ describe("Credential CLI", () => {
 
   it("clears credentials even when the master key is missing", async () => {
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    credentialCliMocks.resolveCredentialCrypto.mockReturnValueOnce(null);
+    credentialCliMocks.resolveSecretCrypto.mockReturnValueOnce(null);
 
     await createProgram().parseAsync(
       [
@@ -261,7 +254,7 @@ describe("Credential CLI", () => {
     );
   });
 
-  it("lists masked previews and resolves the winning stored credential", async () => {
+  it("lists metadata and resolves one masked stored credential", async () => {
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     await createProgram().parseAsync(
@@ -282,7 +275,7 @@ describe("Credential CLI", () => {
       {from: "user"},
     );
 
-    expect(listService.listCredentials).toHaveBeenCalledWith({});
+    expect(listService.listCredentialMetadata).toHaveBeenCalledWith({});
     expect(latestService().resolveCredential).toHaveBeenCalledWith("NOTION_API_KEY", {
       agentKey: "panda",
     });
@@ -290,7 +283,7 @@ describe("Credential CLI", () => {
       [
         "OPENAI_API_KEY",
         "  agent panda",
-        "  value sk-l...8484",
+        "  envelope version 2",
         "  updated 1970-01-01T00:00:00.002Z",
       ].join("\n") + "\n",
     );

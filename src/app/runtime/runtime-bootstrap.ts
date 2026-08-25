@@ -12,7 +12,7 @@ import {SdkMcpRunner} from "../../integrations/mcp/client.js";
 import {McpOAuthRuntime} from "../../integrations/mcp/oauth.js";
 import {McpOAuthControl} from "../../integrations/mcp/oauth-control.js";
 import {buildControlMcpOAuthCallbackUrl, resolveControlPublicUrl} from "../../integrations/control/config.js";
-import {resolveCredentialCrypto} from "../../domain/credentials/crypto.js";
+import {resolveSecretCrypto} from "../../domain/secrets/crypto.js";
 import {PostgresExecutionEnvironmentStore} from "../../domain/execution-environments/postgres.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import {PostgresIdentityStore} from "../../domain/identity/postgres.js";
@@ -572,7 +572,7 @@ export async function bootstrapRuntime(
       store: modelCallTraces,
     });
 
-    const credentialCrypto = resolveCredentialCrypto();
+    const credentialCrypto = resolveSecretCrypto();
     const whatsappAuth = credentialCrypto
       ? new PostgresWhatsAppAuthStore({pool: postgresPool, crypto: credentialCrypto})
       : null;

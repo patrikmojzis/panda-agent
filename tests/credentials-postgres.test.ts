@@ -3,7 +3,7 @@ import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {ensurePostgresAgentTableSchema} from "../src/domain/agents/postgres-schema.js";
-import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
+import {SecretCrypto} from "../src/domain/secrets/crypto.js";
 import {PostgresCredentialStore} from "../src/domain/credentials/postgres.js";
 import {ensurePostgresCredentialSchema} from "../src/domain/credentials/postgres-schema.js";
 import {CredentialResolver, CredentialService} from "../src/domain/credentials/resolver.js";
@@ -36,7 +36,7 @@ describe("PostgresCredentialStore", () => {
       await ensurePostgresCredentialSchema(pool);
     }
 
-    const crypto = new CredentialCrypto("test-master-key");
+    const crypto = new SecretCrypto("test-master-key");
     const credentialService = new CredentialService({
       store: credentialStore,
       crypto,
@@ -117,6 +117,27 @@ describe("PostgresCredentialStore", () => {
     expect(count.rows[0]?.count).toBe(1);
   });
 
+  it("rejects ciphertext tuples swapped between credential identities", async () => {
+    const {agentStore, credentialResolver, credentialService, pool} = await createHarness();
+    await agentStore.bootstrapAgent({agentKey: "panda", displayName: "Panda"});
+    await credentialService.setCredential({agentKey: "panda", envKey: "OPENAI_API_KEY", value: "openai-secret"});
+    await credentialService.setCredential({agentKey: "panda", envKey: "GITHUB_TOKEN", value: "github-secret"});
+
+    const source = await pool.query(`
+      SELECT value_ciphertext, value_iv, value_tag, envelope_version
+      FROM runtime.credentials
+      WHERE agent_key = 'panda' AND env_key = 'GITHUB_TOKEN'
+    `);
+    const swapped = source.rows[0]!;
+    await pool.query(`
+      UPDATE runtime.credentials
+      SET value_ciphertext = $1, value_iv = $2, value_tag = $3, envelope_version = $4
+      WHERE agent_key = 'panda' AND env_key = 'OPENAI_API_KEY'
+    `, [swapped.value_ciphertext, swapped.value_iv, swapped.value_tag, swapped.envelope_version]);
+
+    await expect(credentialResolver.resolveCredential("OPENAI_API_KEY", {agentKey: "panda"})).rejects.toThrow();
+  });
+
   it("rejects blocked env keys before storage", async () => {
     const {credentialService} = await createHarness();
 
@@ -133,7 +154,7 @@ describe("PostgresCredentialStore", () => {
     })).rejects.toThrow("reserved");
   });
 
-  it("encrypts values at rest and returns masked previews through the service", async () => {
+  it("encrypts values at rest and returns plaintext-free masked previews through the service", async () => {
     const {agentStore, credentialService, credentialStore} = await createHarness();
 
     await agentStore.bootstrapAgent({
@@ -141,11 +162,17 @@ describe("PostgresCredentialStore", () => {
       displayName: "Panda",
     });
 
-    await credentialService.setCredential({
+    const stored = await credentialService.setCredential({
       envKey: "OPENAI_API_KEY",
       value: "sk-live-339398484",
       agentKey: "panda",
     });
+    expect(stored).toMatchObject({
+      agentKey: "panda",
+      envKey: "OPENAI_API_KEY",
+      envelopeVersion: 2,
+    });
+    expect(stored).not.toHaveProperty("value");
 
     const raw = await credentialStore.getCredential("OPENAI_API_KEY", {
       agentKey: "panda",
@@ -153,13 +180,13 @@ describe("PostgresCredentialStore", () => {
     expect(raw).not.toBeNull();
     expect(raw?.valueCiphertext.equals(Buffer.from("sk-live-339398484", "utf8"))).toBe(false);
 
-    await expect(credentialService.listCredentials({
+    const preview = await credentialService.resolveCredential("OPENAI_API_KEY", {
       agentKey: "panda",
-    })).resolves.toEqual([
-      expect.objectContaining({
-        envKey: "OPENAI_API_KEY",
-        valuePreview: "sk-l...8484",
-      }),
+    });
+    expect(preview).toMatchObject({envKey: "OPENAI_API_KEY", valuePreview: "sk-l...8484"});
+    expect(preview).not.toHaveProperty("value");
+    await expect(credentialService.listCredentialMetadata({agentKey: "panda"})).resolves.toEqual([
+      expect.not.objectContaining({value: expect.anything()}),
     ]);
   });
 
@@ -172,7 +199,7 @@ describe("PostgresCredentialStore", () => {
         value_ciphertext: Buffer.from("ciphertext"),
         value_iv: Buffer.from("iv"),
         value_tag: Buffer.from("tag"),
-        key_version: 0,
+        envelope_version: 0,
         created_at: new Date(),
         updated_at: new Date(),
       }],
@@ -187,7 +214,7 @@ describe("PostgresCredentialStore", () => {
 
     await expect(credentialStore.getCredential("OPENAI_API_KEY", {
       agentKey: "panda",
-    })).rejects.toThrow("Credential key version must be a positive integer.");
+    })).rejects.toThrow("Credential envelope version must be a positive integer.");
   });
 
   it("rejects driver-shaped persisted key versions before credential resolution", async () => {
@@ -199,7 +226,7 @@ describe("PostgresCredentialStore", () => {
         value_ciphertext: Buffer.from("ciphertext"),
         value_iv: Buffer.from("iv"),
         value_tag: Buffer.from("tag"),
-        key_version: "1",
+        envelope_version: "2",
         created_at: new Date(),
         updated_at: new Date(),
       }],
@@ -214,7 +241,7 @@ describe("PostgresCredentialStore", () => {
 
     await expect(credentialStore.getCredential("OPENAI_API_KEY", {
       agentKey: "panda",
-    })).rejects.toThrow("Credential key version must be a positive integer.");
+    })).rejects.toThrow("Credential envelope version must be a positive integer.");
   });
 
   it("rejects stringified persisted credential timestamps before credential resolution", async () => {
@@ -226,7 +253,7 @@ describe("PostgresCredentialStore", () => {
         value_ciphertext: Buffer.from("ciphertext"),
         value_iv: Buffer.from("iv"),
         value_tag: Buffer.from("tag"),
-        key_version: 1,
+        envelope_version: 2,
         created_at: "2026-05-01T12:00:00.000Z",
         updated_at: new Date(),
       }],
@@ -251,10 +278,10 @@ describe("PostgresCredentialStore", () => {
       credentialStore,
       pool,
     } = await createHarness({ensureCredentialSchema: false});
-    const crypto = new CredentialCrypto("test-master-key");
-    const encryptAgent = crypto.encrypt("agent-token");
-    const encryptRelationship = crypto.encrypt("relationship-token");
-    const encryptRelationshipOnly = crypto.encrypt("relationship-only-token");
+    const crypto = new SecretCrypto("test-master-key");
+    const encryptAgent = crypto.seal("agent-token", {purpose: "agent-credential", identity: ["panda", "NOTION_API_KEY"]});
+    const encryptRelationship = crypto.seal("relationship-token", {purpose: "agent-credential", identity: ["panda", "NOTION_API_KEY"]});
+    const encryptRelationshipOnly = crypto.seal("relationship-only-token", {purpose: "agent-credential", identity: ["panda", "GOOGLE_MAPS_API_KEY"]});
 
     await agentStore.bootstrapAgent({
       agentKey: "panda",
@@ -270,7 +297,7 @@ describe("PostgresCredentialStore", () => {
         value_ciphertext BYTEA NOT NULL,
         value_iv BYTEA NOT NULL,
         value_tag BYTEA NOT NULL,
-        key_version SMALLINT NOT NULL,
+        envelope_version SMALLINT NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
@@ -285,7 +312,7 @@ describe("PostgresCredentialStore", () => {
         value_ciphertext,
         value_iv,
         value_tag,
-        key_version
+        envelope_version
       ) VALUES
         ($1, 'NOTION_API_KEY', 'relationship', 'panda', 'alice-id', $2, $3, $4, $5),
         ($6, 'NOTION_API_KEY', 'agent', 'panda', NULL, $7, $8, $9, $10),
@@ -295,17 +322,17 @@ describe("PostgresCredentialStore", () => {
       encryptRelationship.ciphertext,
       encryptRelationship.iv,
       encryptRelationship.tag,
-      encryptRelationship.keyVersion,
+      encryptRelationship.envelopeVersion,
       "00000000-0000-0000-0000-000000000002",
       encryptAgent.ciphertext,
       encryptAgent.iv,
       encryptAgent.tag,
-      encryptAgent.keyVersion,
+      encryptAgent.envelopeVersion,
       "00000000-0000-0000-0000-000000000003",
       encryptRelationshipOnly.ciphertext,
       encryptRelationshipOnly.iv,
       encryptRelationshipOnly.tag,
-      encryptRelationshipOnly.keyVersion,
+      encryptRelationshipOnly.envelopeVersion,
     ]);
 
     await ensurePostgresCredentialSchema(pool);

@@ -12,26 +12,34 @@ One Postgres table stores agent-owned env credentials:
 - `value_ciphertext BYTEA NOT NULL`
 - `value_iv BYTEA NOT NULL`
 - `value_tag BYTEA NOT NULL`
-- `key_version SMALLINT NOT NULL`
+- `envelope_version SMALLINT NOT NULL CHECK (envelope_version >= 2)`
 - `created_at`
 - `updated_at`
 
 There is one value per `(agent_key, env_key)`.
 
-## Migration
+## Schema Migration
 
-`src/domain/credentials/postgres-schema.ts` migrates the old table shape by keeping old agent-owned rows and deleting rows that cannot map to a single agent credential. The final schema has no owner dimension beyond `agent_key`; `PostgresCredentialStore` owns encrypted row lookup and mutation behavior.
+Migration `0009_bound_secret_envelopes` rewraps all persisted v1 secrets while database writers are stopped. A database with v1 rows must run the migration with the same `CREDENTIALS_MASTER_KEY` that encrypted them. Missing, wrong, or corrupted key material aborts the whole transaction and leaves the migration ledger untouched. Empty databases do not require the key.
+
+The migration covers agent credentials, connector secrets, WhatsApp auth state, Wiki tokens, and MCP OAuth state. Expired or consumed OAuth attempts are deleted before rewrapping.
+
+Deploy with the normal `docker-stack.sh up` ordering: build the new image, stop every Panda database writer, run migrations, then start the new processes. After `0009` commits, an old Panda build is not a rollback target; its schema verifier rejects the newer ledger before runtime construction.
 
 ## Encryption
 
 Values are encrypted in app code with `CREDENTIALS_MASTER_KEY`.
 
 - algorithm: AES-256-GCM
-- key derivation: SHA-256 of the configured master key string
+- root key: SHA-256 of the configured master key string
+- envelope key: HKDF-SHA-256 derived per secret purpose
+- associated data: envelope version, purpose, and the row's complete secret identity
 - storage: ciphertext, IV, and tag are stored separately
 - plaintext never goes to Postgres
 
-The store still uses `BYTEA`, but v1 base64-wraps the encrypted blobs before writing them there. That looks a little weird until you remember `pg-mem` mangles raw bytes and turns test data into soup.
+The store still uses `BYTEA`, but envelopes base64-wrap the encrypted blobs before writing them there. That looks a little weird until you remember `pg-mem` mangles raw bytes and turns test data into soup.
+
+The steady-state reader accepts v2 only. Moving a valid ciphertext tuple to another agent, key, connector account, WhatsApp key, Wiki binding, or MCP OAuth row fails authentication.
 
 ## Validation
 

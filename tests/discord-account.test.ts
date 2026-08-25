@@ -1,6 +1,6 @@
 import {describe, expect, it, vi} from "vitest";
 
-import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
+import {SecretCrypto} from "../src/domain/secrets/crypto.js";
 import {
   setDiscordBotAccount,
   validateStoredDiscordBotAccount,
@@ -111,7 +111,7 @@ describe("Discord account adapter", () => {
 
   it("derives connector account fields and stores the token only through the encrypted secret path", async () => {
     const store = makeStore();
-    const crypto = new CredentialCrypto("discord-account-test-master-key");
+    const crypto = new SecretCrypto("discord-account-test-master-key");
     const client = {
       getCurrentUser: vi.fn(async () => botUser),
     };
@@ -147,7 +147,7 @@ describe("Discord account adapter", () => {
 
   it("redacts token material if account setup dependencies fail unsafely", async () => {
     const store = makeStore();
-    const crypto = new CredentialCrypto("discord-account-test-master-key");
+    const crypto = new SecretCrypto("discord-account-test-master-key");
     const client = {
       getCurrentUser: vi.fn(async () => {
         throw new Error(`bad token ${privateToken} and fragment 12345678`);
@@ -173,7 +173,7 @@ describe("Discord account adapter", () => {
 
   it("validates stored accounts without exposing the decrypted token", async () => {
     const store = makeStore();
-    const crypto = new CredentialCrypto("discord-account-test-master-key");
+    const crypto = new SecretCrypto("discord-account-test-master-key");
     const client = {
       getCurrentUser: vi.fn(async () => botUser),
     };

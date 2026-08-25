@@ -17,6 +17,10 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../
 const fixtureDir = path.join(repoRoot, "scripts/ci/postgres-fixtures");
 const preLedgerBaseFixture = path.join(fixtureDir, "pre-ledger-base.sql");
 
+// legacy-minimal.sql contains a deterministic v1 envelope encrypted with this
+// test-only key so the rehearsal exercises the real decrypt-and-rewrap path.
+process.env.CREDENTIALS_MASTER_KEY = "panda-ci-legacy-secret-key";
+
 function requireTestDatabaseUrl(): string {
   const value = process.env.TEST_DATABASE_URL?.trim();
   if (!value) {

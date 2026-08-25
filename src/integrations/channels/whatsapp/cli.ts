@@ -9,7 +9,7 @@ import {writeCommandDescriptorHelp} from "../../../domain/commands/cli.js";
 import {PostgresConnectorAccountStore} from "../../../domain/connectors/postgres.js";
 import type {ConnectorAccountRecord} from "../../../domain/connectors/types.js";
 import {normalizeConnectorAccountKey} from "../../../domain/connectors/types.js";
-import {resolveCredentialCrypto, type CredentialCrypto} from "../../../domain/credentials/crypto.js";
+import {resolveSecretCrypto, type SecretCrypto} from "../../../domain/secrets/crypto.js";
 import {parseIdentityHandle} from "../../../domain/identity/cli.js";
 import {PostgresIdentityStore} from "../../../domain/identity/postgres.js";
 import {DB_URL_OPTION_DESCRIPTION} from "../../../lib/cli.js";
@@ -71,9 +71,9 @@ interface WhatsAppAccountStores {
 }
 
 export interface WhatsAppCliDependencies {
-  createDaemonRuntime?: (options: {dbUrl?: string; crypto: CredentialCrypto}) => Promise<ConnectorDaemonRuntimeHandle>;
+  createDaemonRuntime?: (options: {dbUrl?: string; crypto: SecretCrypto}) => Promise<ConnectorDaemonRuntimeHandle>;
   createRunService?: (options: WhatsAppServiceOptions) => WhatsAppRunService;
-  crypto?: CredentialCrypto;
+  crypto?: SecretCrypto;
 }
 
 type WhatsAppRunService = ConnectorAccountSupervisorWorker;
@@ -113,8 +113,8 @@ function parseWhatsAppActorId(value: string): string {
   return `${digits}@s.whatsapp.net`;
 }
 
-function requireWhatsAppCrypto(dependencies: WhatsAppCliDependencies = {}): CredentialCrypto {
-  const crypto = dependencies.crypto ?? resolveCredentialCrypto();
+function requireWhatsAppCrypto(dependencies: WhatsAppCliDependencies = {}): SecretCrypto {
+  const crypto = dependencies.crypto ?? resolveSecretCrypto();
   if (!crypto) throw new Error("CREDENTIALS_MASTER_KEY is required for WhatsApp accounts.");
   return crypto;
 }
@@ -138,7 +138,7 @@ async function withWhatsAppAccountStores<T>(
 
 function serviceOptions(
   account: ConnectorAccountRecord,
-  crypto: CredentialCrypto,
+  crypto: SecretCrypto,
   connection: Pick<WhatsAppServiceOptions, "pool" | "runtime">,
   overrides: Partial<Pick<WhatsAppServiceOptions, "disableHealthServer">> = {},
 ): WhatsAppServiceOptions {
@@ -292,7 +292,7 @@ function logRunEvent(event: string, payload: Record<string, unknown> = {}): void
 async function startWhatsAppDaemonRuntime(
   options: WhatsAppRunCliOptions,
   dependencies: WhatsAppCliDependencies,
-  crypto: CredentialCrypto,
+  crypto: SecretCrypto,
 ): Promise<ConnectorDaemonRuntimeHandle> {
   if (dependencies.createDaemonRuntime) return dependencies.createDaemonRuntime({dbUrl: options.dbUrl, crypto});
   return startConnectorDaemonRuntime({

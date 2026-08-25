@@ -3,7 +3,7 @@ import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {ensurePostgresAgentSchema} from "../src/domain/agents/postgres-schema.js";
-import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
+import {SecretCrypto} from "../src/domain/secrets/crypto.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {ensurePostgresIdentitySchema} from "../src/domain/identity/postgres-schema.js";
 import {PostgresWikiBindingStore} from "../src/domain/wiki/postgres.js";
@@ -43,7 +43,7 @@ describe("PostgresWikiBindingStore", () => {
       pool,
       wikiBindingService: new WikiBindingService({
         store: wikiBindingStore,
-        crypto: new CredentialCrypto("test-master-key"),
+        crypto: new SecretCrypto("test-master-key"),
       }),
       wikiBindingStore,
     };
@@ -92,6 +92,25 @@ describe("PostgresWikiBindingStore", () => {
     expect(count.rows[0]?.count).toBe(1);
   });
 
+  it("rejects ciphertext tuples swapped between agent bindings", async () => {
+    const {agentStore, pool, wikiBindingService} = await createHarness();
+    await agentStore.bootstrapAgent({agentKey: "panda", displayName: "Panda"});
+    await agentStore.bootstrapAgent({agentKey: "luna", displayName: "Luna"});
+    await wikiBindingService.setBinding({agentKey: "panda", wikiGroupId: 7, namespacePath: "agents/panda", apiToken: "panda-token"});
+    await wikiBindingService.setBinding({agentKey: "luna", wikiGroupId: 8, namespacePath: "agents/luna", apiToken: "luna-token"});
+    const source = (await pool.query(`
+      SELECT api_token_ciphertext, api_token_iv, api_token_tag, envelope_version
+      FROM runtime.agent_wiki_bindings WHERE agent_key = 'luna'
+    `)).rows[0]!;
+    await pool.query(`
+      UPDATE runtime.agent_wiki_bindings
+      SET api_token_ciphertext = $1, api_token_iv = $2, api_token_tag = $3, envelope_version = $4
+      WHERE agent_key = 'panda'
+    `, [source.api_token_ciphertext, source.api_token_iv, source.api_token_tag, source.envelope_version]);
+
+    await expect(wikiBindingService.getBinding("panda")).rejects.toThrow();
+  });
+
   it("clears stored bindings", async () => {
     const {agentStore, wikiBindingService} = await createHarness();
 
@@ -119,7 +138,7 @@ describe("PostgresWikiBindingStore", () => {
         api_token_ciphertext: Buffer.from("ciphertext"),
         api_token_iv: Buffer.from("iv"),
         api_token_tag: Buffer.from("tag"),
-        key_version: 0,
+        envelope_version: 0,
         created_at: new Date(),
         updated_at: new Date(),
       }],
@@ -129,7 +148,7 @@ describe("PostgresWikiBindingStore", () => {
     });
 
     await expect(wikiBindingStore.getBinding("panda")).rejects.toThrow(
-      "Wiki binding key version must be a positive integer.",
+      "Wiki binding envelope version must be a positive integer.",
     );
   });
 
@@ -142,7 +161,7 @@ describe("PostgresWikiBindingStore", () => {
         api_token_ciphertext: Buffer.from("ciphertext"),
         api_token_iv: Buffer.from("iv"),
         api_token_tag: Buffer.from("tag"),
-        key_version: 1,
+        envelope_version: 2,
         created_at: new Date(),
         updated_at: new Date(),
       }],
@@ -165,7 +184,7 @@ describe("PostgresWikiBindingStore", () => {
         api_token_ciphertext: Buffer.from("ciphertext"),
         api_token_iv: Buffer.from("iv"),
         api_token_tag: Buffer.from("tag"),
-        key_version: 1,
+        envelope_version: 2,
         created_at: "2026-05-01T12:00:00.000Z",
         updated_at: new Date(),
       }],

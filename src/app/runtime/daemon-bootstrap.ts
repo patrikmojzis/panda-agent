@@ -6,7 +6,7 @@ import {PostgresOutboundDeliveryStore} from "../../domain/channels/deliveries/po
 import {ChannelOutboundDeliveryWorker} from "../../domain/channels/deliveries/worker.js";
 import {PostgresConnectorLeaseRepo} from "../../domain/connector-leases/repo.js";
 import {PostgresConnectorAccountStore} from "../../domain/connectors/postgres.js";
-import {resolveCredentialCrypto} from "../../domain/credentials/crypto.js";
+import {resolveSecretCrypto} from "../../domain/secrets/crypto.js";
 import {PostgresTelegramStickerStore} from "../../domain/agents/telegram-stickers/postgres.js";
 import {TelegramStickerLibrary} from "../../domain/agents/telegram-stickers/service.js";
 import {HeartbeatRunner} from "../../domain/scheduling/heartbeats/runner.js";
@@ -269,13 +269,13 @@ export async function bootstrapDaemonContext(
       telegramStickerStore,
       createTelegramStickerSetReader({
         accounts: connectorAccounts,
-        crypto: resolveCredentialCrypto(),
+        crypto: resolveSecretCrypto(),
       }),
     );
     const discordStickers = createDiscordStickerCatalogReader({
       accounts: connectorAccounts,
       client: createDiscordRestClient(),
-      crypto: resolveCredentialCrypto(),
+      crypto: resolveSecretCrypto(),
     });
     const discordGifs = createDiscordGifService();
     const discordVoiceControls = new DiscordVoiceControlRepo({pool: runtime.pool});

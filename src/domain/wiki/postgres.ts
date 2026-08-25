@@ -53,9 +53,9 @@ function parseWikiBindingRow(row: Record<string, unknown>): WikiBindingRecord {
     apiTokenCiphertext: toBuffer(row.api_token_ciphertext),
     apiTokenIv: toBuffer(row.api_token_iv),
     apiTokenTag: toBuffer(row.api_token_tag),
-    keyVersion: parsePositiveInteger(
-      row.key_version,
-      "Wiki binding key version must be a positive integer.",
+    envelopeVersion: parsePositiveInteger(
+      row.envelope_version,
+      "Wiki binding envelope version must be a positive integer.",
     ),
     createdAt: requireTimestampMillis(row.created_at, "Wiki binding created_at must be a valid timestamp."),
     updatedAt: requireTimestampMillis(row.updated_at, "Wiki binding updated_at must be a valid timestamp."),
@@ -95,7 +95,7 @@ export class PostgresWikiBindingStore {
         api_token_ciphertext,
         api_token_iv,
         api_token_tag,
-        key_version
+        envelope_version
       ) VALUES (
         $1,
         $2,
@@ -112,7 +112,7 @@ export class PostgresWikiBindingStore {
         api_token_ciphertext = EXCLUDED.api_token_ciphertext,
         api_token_iv = EXCLUDED.api_token_iv,
         api_token_tag = EXCLUDED.api_token_tag,
-        key_version = EXCLUDED.key_version,
+        envelope_version = EXCLUDED.envelope_version,
         updated_at = NOW()
       RETURNING *
     `, [
@@ -122,7 +122,7 @@ export class PostgresWikiBindingStore {
       input.encryptedApiToken.ciphertext,
       input.encryptedApiToken.iv,
       input.encryptedApiToken.tag,
-      input.encryptedApiToken.keyVersion,
+      input.encryptedApiToken.envelopeVersion,
     ]);
 
     return parseWikiBindingRow(result.rows[0] as Record<string, unknown>);

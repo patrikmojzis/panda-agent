@@ -9,7 +9,7 @@ import {PostgresAgentStore} from "../../../domain/agents/postgres.js";
 import {normalizeAgentKey} from "../../../domain/agents/types.js";
 import {PostgresConnectorAccountStore} from "../../../domain/connectors/postgres.js";
 import {normalizeConnectorAccountKey, type ConnectorAccountOwnerInput, type ConnectorAccountRecord} from "../../../domain/connectors/types.js";
-import {resolveCredentialCrypto} from "../../../domain/credentials/crypto.js";
+import {resolveSecretCrypto} from "../../../domain/secrets/crypto.js";
 import {PostgresIdentityStore} from "../../../domain/identity/postgres.js";
 import {parseIdentityHandle} from "../../../domain/identity/cli.js";
 import {trimToUndefined} from "../../../lib/strings.js";
@@ -231,7 +231,7 @@ function readTelegramBotTokenFromEnv(envKey: string, env: NodeJS.ProcessEnv): st
 }
 
 function resolveTelegramAccountCrypto() {
-  const crypto = resolveCredentialCrypto();
+  const crypto = resolveSecretCrypto();
   if (!crypto) {
     throw new Error("CREDENTIALS_MASTER_KEY is required for Telegram account commands.");
   }

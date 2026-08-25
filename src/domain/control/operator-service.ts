@@ -17,7 +17,7 @@ import {normalizeAgentSkillTag, normalizeAgentSkillTags, type AgentPairingRecord
 import type {CredentialService} from "../credentials/resolver.js";
 import {PostgresConnectorAccountStore} from "../connectors/postgres.js";
 import type {ConnectorAccountRecord} from "../connectors/types.js";
-import type {CredentialCrypto} from "../credentials/crypto.js";
+import type {SecretCrypto} from "../secrets/crypto.js";
 import type {
     EmailAccountRecord,
     EmailAllowedRecipientRecord,
@@ -553,7 +553,7 @@ export interface ControlOperatorServiceOptions {
   credentials: CredentialService | null;
   email: ControlEmailStore;
   connectorAccounts: PostgresConnectorAccountStore;
-  connectorCrypto: CredentialCrypto | null;
+  connectorCrypto: SecretCrypto | null;
   whatsappAuth?: ControlWhatsAppAuthStore;
   whatsappRuntime?: ControlWhatsAppRuntimeStore;
   whatsappLinks?: ControlWhatsAppLinkManager;
@@ -1249,7 +1249,7 @@ export class ControlOperatorService {
   private readonly credentials: CredentialService | null;
   private readonly email: ControlEmailStore;
   private readonly connectorAccounts: PostgresConnectorAccountStore;
-  private readonly connectorCrypto: CredentialCrypto | null;
+  private readonly connectorCrypto: SecretCrypto | null;
   private readonly whatsappAuth: ControlWhatsAppAuthStore | null;
   private readonly whatsappRuntime: ControlWhatsAppRuntimeStore | null;
   private readonly whatsappLinks: ControlWhatsAppLinkManager | null;

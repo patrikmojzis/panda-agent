@@ -8,8 +8,9 @@ import {
   type SignalDataTypeMap,
 } from "baileys";
 
-import type {CredentialCrypto} from "../../../domain/credentials/crypto.js";
+import type {SecretCrypto, SecretContext} from "../../../domain/secrets/crypto.js";
 import {buildConnectorAccountTableNames} from "../../../domain/connectors/postgres-shared.js";
+import {normalizeConnectorAccountId} from "../../../domain/connectors/types.js";
 import type {PgPoolLike, PgQueryable} from "../../../lib/postgres-query.js";
 import {requireTimestampMillis} from "../../../lib/postgres-values.js";
 import {requireNonEmptyString, uniqueTrimmedStrings} from "../../../lib/strings.js";
@@ -17,7 +18,7 @@ import {buildWhatsAppAuthTableNames} from "./auth-schema.js";
 
 export interface PostgresWhatsAppAuthStoreOptions {
   pool: PgPoolLike;
-  crypto: CredentialCrypto;
+  crypto: SecretCrypto;
 }
 
 export interface WhatsAppAuthStateHandle {
@@ -48,9 +49,9 @@ function toBuffer(value: unknown): Buffer {
   throw new Error("WhatsApp auth encrypted row is missing a binary field.");
 }
 
-function parseKeyVersion(value: unknown): number {
+function parseEnvelopeVersion(value: unknown): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-    throw new Error("WhatsApp auth key version must be a positive integer.");
+    throw new Error("WhatsApp auth envelope version must be a positive integer.");
   }
   return value;
 }
@@ -59,13 +60,13 @@ function serializeBaileysJson(value: unknown): string {
   return JSON.stringify(value, BufferJSON.replacer);
 }
 
-function parseEncryptedJson<T>(row: Record<string, unknown>, crypto: CredentialCrypto): T {
-  const plaintext = crypto.decrypt({
-    valueCiphertext: toBuffer(row.value_ciphertext),
-    valueIv: toBuffer(row.value_iv),
-    valueTag: toBuffer(row.value_tag),
-    keyVersion: parseKeyVersion(row.key_version),
-  });
+function parseEncryptedJson<T>(row: Record<string, unknown>, crypto: SecretCrypto, context: SecretContext): T {
+  const plaintext = crypto.open({
+    ciphertext: toBuffer(row.value_ciphertext),
+    iv: toBuffer(row.value_iv),
+    tag: toBuffer(row.value_tag),
+    envelopeVersion: parseEnvelopeVersion(row.envelope_version),
+  }, context);
   return JSON.parse(plaintext, BufferJSON.reviver) as T;
 }
 
@@ -76,10 +77,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function reviveSignalValue<T extends keyof SignalDataTypeMap>(
   type: T,
   row: Record<string, unknown> | undefined,
-  crypto: CredentialCrypto,
+  crypto: SecretCrypto,
+  context: SecretContext,
 ): SignalDataTypeMap[T] | undefined {
   if (!row) return undefined;
-  const revived = parseEncryptedJson<unknown>(row, crypto);
+  const revived = parseEncryptedJson<unknown>(row, crypto, context);
   if (type !== "app-state-sync-key") return revived as SignalDataTypeMap[T];
   if (!isRecord(revived)) throw new Error("WhatsApp auth app-state-sync-key value must be an object.");
   return proto.Message.AppStateSyncKeyData.fromObject(revived) as unknown as SignalDataTypeMap[T];
@@ -87,7 +89,7 @@ function reviveSignalValue<T extends keyof SignalDataTypeMap>(
 
 export class PostgresWhatsAppAuthStore {
   private readonly pool: PgPoolLike;
-  private readonly crypto: CredentialCrypto;
+  private readonly crypto: SecretCrypto;
   private readonly tables = buildWhatsAppAuthTableNames();
   private readonly connectorTables = buildConnectorAccountTableNames();
 
@@ -99,20 +101,24 @@ export class PostgresWhatsAppAuthStore {
   async hasAuthState(accountId: string): Promise<boolean> {
     const result = await this.pool.query(
       `SELECT 1 FROM ${this.tables.authCreds} WHERE account_id = $1 LIMIT 1`,
-      [requireKeyPart("account id", accountId)],
+      [normalizeConnectorAccountId(accountId)],
     );
     return result.rows.length > 0;
   }
 
   async loadCreds(accountId: string): Promise<AuthenticationCreds> {
-    const normalizedAccountId = requireKeyPart("account id", accountId);
+    const normalizedAccountId = normalizeConnectorAccountId(accountId);
     const result = await this.pool.query(
       `SELECT * FROM ${this.tables.authCreds} WHERE account_id = $1`,
       [normalizedAccountId],
     );
     const row = result.rows[0];
     if (!row) return initAuthCreds();
-    return parseEncryptedJson<AuthenticationCreds>(row as Record<string, unknown>, this.crypto);
+    return parseEncryptedJson<AuthenticationCreds>(
+      row as Record<string, unknown>,
+      this.crypto,
+      {purpose: "whatsapp-auth-creds", identity: [normalizedAccountId]},
+    );
   }
 
   async saveCreds(accountId: string, creds: AuthenticationCreds): Promise<WhatsAppAuthCredsRecord> {
@@ -124,24 +130,27 @@ export class PostgresWhatsAppAuthStore {
     accountId: string,
     creds: AuthenticationCreds,
   ): Promise<WhatsAppAuthCredsRecord> {
-    const normalizedAccountId = requireKeyPart("account id", accountId);
-    const encrypted = this.crypto.encrypt(serializeBaileysJson(creds));
+    const normalizedAccountId = normalizeConnectorAccountId(accountId);
+    const encrypted = this.crypto.seal(
+      serializeBaileysJson(creds),
+      {purpose: "whatsapp-auth-creds", identity: [normalizedAccountId]},
+    );
     const result = await queryable.query(`
       INSERT INTO ${this.tables.authCreds} (
-        account_id, value_ciphertext, value_iv, value_tag, key_version
+        account_id, value_ciphertext, value_iv, value_tag, envelope_version
       ) VALUES ($1, $2, $3, $4, $5)
       ON CONFLICT (account_id)
       DO UPDATE SET
         value_ciphertext = EXCLUDED.value_ciphertext,
         value_iv = EXCLUDED.value_iv,
         value_tag = EXCLUDED.value_tag,
-        key_version = EXCLUDED.key_version,
+        envelope_version = EXCLUDED.envelope_version,
         updated_at = NOW()
       RETURNING account_id::text AS account_id, created_at, updated_at
-    `, [normalizedAccountId, encrypted.ciphertext, encrypted.iv, encrypted.tag, encrypted.keyVersion]);
+    `, [normalizedAccountId, encrypted.ciphertext, encrypted.iv, encrypted.tag, encrypted.envelopeVersion]);
     const row = result.rows[0] as Record<string, unknown>;
     return {
-      accountId: requireKeyPart("account id", row.account_id),
+      accountId: normalizeConnectorAccountId(requireKeyPart("account id", row.account_id)),
       creds,
       createdAt: requireTimestampMillis(row.created_at, "WhatsApp auth created_at must be a valid timestamp."),
       updatedAt: requireTimestampMillis(row.updated_at, "WhatsApp auth updated_at must be a valid timestamp."),
@@ -153,12 +162,12 @@ export class PostgresWhatsAppAuthStore {
     type: T,
     ids: readonly string[],
   ): Promise<{[id: string]: SignalDataTypeMap[T]}> {
-    const normalizedAccountId = requireKeyPart("account id", accountId);
+    const normalizedAccountId = normalizeConnectorAccountId(accountId);
     const normalizedType = requireKeyPart("key category", type);
     const normalizedIds = uniqueTrimmedStrings(ids.map((id) => requireKeyPart("key id", id)));
     if (normalizedIds.length === 0) return {};
     const result = await this.pool.query(`
-      SELECT key_id, value_ciphertext, value_iv, value_tag, key_version
+      SELECT key_id, value_ciphertext, value_iv, value_tag, envelope_version
       FROM ${this.tables.authKeys}
       WHERE account_id = $1 AND category = $2 AND key_id = ANY($3::text[])
     `, [normalizedAccountId, normalizedType, normalizedIds]);
@@ -168,12 +177,19 @@ export class PostgresWhatsAppAuthStore {
       rowsById.set(requireKeyPart("key id", row.key_id), row);
     }
     const data: Record<string, SignalDataTypeMap[T] | undefined> = {};
-    for (const id of normalizedIds) data[id] = reviveSignalValue(type, rowsById.get(id), this.crypto);
+    for (const id of normalizedIds) {
+      data[id] = reviveSignalValue(
+        type,
+        rowsById.get(id),
+        this.crypto,
+        {purpose: "whatsapp-auth-key", identity: [normalizedAccountId, normalizedType, id]},
+      );
+    }
     return data as {[id: string]: SignalDataTypeMap[T]};
   }
 
   async saveSignalKeys(accountId: string, data: SignalDataSet): Promise<void> {
-    const normalizedAccountId = requireKeyPart("account id", accountId);
+    const normalizedAccountId = normalizeConnectorAccountId(accountId);
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -192,7 +208,7 @@ export class PostgresWhatsAppAuthStore {
     accountId: string,
     data: SignalDataSet,
   ): Promise<void> {
-    const normalizedAccountId = requireKeyPart("account id", accountId);
+    const normalizedAccountId = normalizeConnectorAccountId(accountId);
     for (const [category, entries] of Object.entries(data) as Array<[keyof SignalDataTypeMap, SignalDataSet[keyof SignalDataTypeMap]]>) {
       if (!entries) continue;
       const normalizedCategory = requireKeyPart("key category", category);
@@ -205,17 +221,20 @@ export class PostgresWhatsAppAuthStore {
           );
           continue;
         }
-        const encrypted = this.crypto.encrypt(serializeBaileysJson(value));
+        const encrypted = this.crypto.seal(
+          serializeBaileysJson(value),
+          {purpose: "whatsapp-auth-key", identity: [normalizedAccountId, normalizedCategory, normalizedId]},
+        );
         await queryable.query(`
           INSERT INTO ${this.tables.authKeys} (
-            account_id, category, key_id, value_ciphertext, value_iv, value_tag, key_version
+            account_id, category, key_id, value_ciphertext, value_iv, value_tag, envelope_version
           ) VALUES ($1, $2, $3, $4, $5, $6, $7)
           ON CONFLICT (account_id, category, key_id)
           DO UPDATE SET
             value_ciphertext = EXCLUDED.value_ciphertext,
             value_iv = EXCLUDED.value_iv,
             value_tag = EXCLUDED.value_tag,
-            key_version = EXCLUDED.key_version,
+            envelope_version = EXCLUDED.envelope_version,
             updated_at = NOW()
         `, [
           normalizedAccountId,
@@ -224,14 +243,14 @@ export class PostgresWhatsAppAuthStore {
           encrypted.ciphertext,
           encrypted.iv,
           encrypted.tag,
-          encrypted.keyVersion,
+          encrypted.envelopeVersion,
         ]);
       }
     }
   }
 
   async deleteAuthState(accountId: string): Promise<void> {
-    const normalizedAccountId = requireKeyPart("account id", accountId);
+    const normalizedAccountId = normalizeConnectorAccountId(accountId);
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -251,7 +270,7 @@ export class PostgresWhatsAppAuthStore {
     accountId: string,
     write: (client: PgQueryable) => Promise<void>,
   ): Promise<void> {
-    const normalizedAccountId = requireKeyPart("account id", accountId);
+    const normalizedAccountId = normalizeConnectorAccountId(accountId);
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -280,7 +299,7 @@ export class PostgresWhatsAppAuthStore {
   }
 
   async createAuthState(accountId: string): Promise<WhatsAppAuthStateHandle> {
-    const normalizedAccountId = requireKeyPart("account id", accountId);
+    const normalizedAccountId = normalizeConnectorAccountId(accountId);
     const creds = await this.loadCreds(normalizedAccountId);
     return {
       state: {
@@ -331,7 +350,7 @@ export class PostgresWhatsAppAuthStore {
       },
       saveCreds: async () => {},
       promoteTo: async (accountId) => {
-        const normalizedAccountId = requireKeyPart("account id", accountId);
+        const normalizedAccountId = normalizeConnectorAccountId(accountId);
         const externalAccountId = creds.me?.id?.trim();
         if (!creds.registered || !externalAccountId) {
           throw new Error("WhatsApp linking completed without a registered account identity.");

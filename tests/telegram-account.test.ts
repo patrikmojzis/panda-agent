@@ -1,6 +1,6 @@
 import {describe, expect, it, vi} from "vitest";
 
-import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
+import {SecretCrypto} from "../src/domain/secrets/crypto.js";
 import {
   setTelegramBotAccount,
   validateStoredTelegramBotAccount,
@@ -61,7 +61,7 @@ function makeStoreBase() {
 describe("Telegram account adapter", () => {
   it("derives connector account fields and stores the token only through the encrypted secret path", async () => {
     const store = makeStore({getAccountByKey: vi.fn(async () => null)});
-    const crypto = new CredentialCrypto("telegram-account-test-master-key");
+    const crypto = new SecretCrypto("telegram-account-test-master-key");
     const client = {getBotIdentity: vi.fn(async () => bot)};
 
     const result = await setTelegramBotAccount({
@@ -90,7 +90,7 @@ describe("Telegram account adapter", () => {
 
   it("validates stored accounts and fails closed on bot-id connector mismatch", async () => {
     const store = makeStore();
-    const crypto = new CredentialCrypto("telegram-account-test-master-key");
+    const crypto = new SecretCrypto("telegram-account-test-master-key");
     const client = {getBotIdentity: vi.fn(async () => ({...bot, id: "999"}))};
 
     await expect(validateStoredTelegramBotAccount({
@@ -104,7 +104,7 @@ describe("Telegram account adapter", () => {
 
   it("redacts token material if setup dependencies fail unsafely", async () => {
     const store = makeStore({getAccountByKey: vi.fn(async () => null)});
-    const crypto = new CredentialCrypto("telegram-account-test-master-key");
+    const crypto = new SecretCrypto("telegram-account-test-master-key");
     const client = {
       getBotIdentity: vi.fn(async () => {
         throw new Error(`bad token ${privateToken} fragment 12345678`);
@@ -129,7 +129,7 @@ describe("Telegram account adapter", () => {
   });
   it("requires explicit replacement before overwriting an existing account key", async () => {
     const store = makeStore();
-    const crypto = new CredentialCrypto("telegram-account-test-master-key");
+    const crypto = new SecretCrypto("telegram-account-test-master-key");
     const client = {getBotIdentity: vi.fn(async () => bot)};
 
     await expect(setTelegramBotAccount({

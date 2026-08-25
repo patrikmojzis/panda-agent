@@ -1,14 +1,15 @@
-import {CredentialCrypto} from "./crypto.js";
+import {SecretCrypto} from "../secrets/crypto.js";
 import type {
-  CredentialListEntry,
   CredentialListFilter,
   CredentialMetadataEntry,
+  CredentialPreviewEntry,
   CredentialRecord,
   CredentialResolutionContext,
-  DecryptedCredentialRecord,
+  ResolvedCredentialRecord,
   SetCredentialInput,
 } from "./types.js";
 import {
+  credentialSecretContext,
   maskCredentialValue,
   normalizeCredentialAgentKey,
   normalizeCredentialEnvKey,
@@ -27,14 +28,19 @@ export interface CredentialServiceStore extends CredentialResolverStore {
 
 function decryptRecord(
   record: CredentialRecord,
-  crypto: CredentialCrypto,
-): DecryptedCredentialRecord {
+  crypto: SecretCrypto,
+): ResolvedCredentialRecord {
   return {
     id: record.id,
     envKey: record.envKey,
     agentKey: record.agentKey,
-    value: crypto.decrypt(record),
-    keyVersion: record.keyVersion,
+    value: crypto.open({
+      ciphertext: record.valueCiphertext,
+      iv: record.valueIv,
+      tag: record.valueTag,
+      envelopeVersion: record.envelopeVersion,
+    }, credentialSecretContext(record.agentKey, record.envKey)),
+    envelopeVersion: record.envelopeVersion,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
@@ -42,14 +48,14 @@ function decryptRecord(
 
 export class CredentialResolver {
   private readonly store: CredentialResolverStore;
-  private readonly crypto: CredentialCrypto | null;
+  private readonly crypto: SecretCrypto | null;
 
-  constructor(options: { store: CredentialResolverStore; crypto?: CredentialCrypto | null }) {
+  constructor(options: { store: CredentialResolverStore; crypto?: SecretCrypto | null }) {
     this.store = options.store;
     this.crypto = options.crypto ?? null;
   }
 
-  private requireCrypto(): CredentialCrypto {
+  private requireCrypto(): SecretCrypto {
     if (!this.crypto) {
       throw new Error("CREDENTIALS_MASTER_KEY is required to decrypt stored credentials.");
     }
@@ -67,7 +73,7 @@ export class CredentialResolver {
     const resolved: Record<string, string> = {};
 
     for (const record of records) {
-      resolved[record.envKey] = crypto.decrypt(record);
+      resolved[record.envKey] = decryptRecord(record, crypto).value;
     }
 
     return resolved;
@@ -76,7 +82,7 @@ export class CredentialResolver {
   async resolveCredential(
     envKey: string,
     context: CredentialResolutionContext,
-  ): Promise<DecryptedCredentialRecord | null> {
+  ): Promise<ResolvedCredentialRecord | null> {
     const record = await this.store.resolveCredential(envKey, context);
     if (!record) {
       return null;
@@ -88,10 +94,10 @@ export class CredentialResolver {
 
 export class CredentialService {
   private readonly store: CredentialServiceStore;
-  private readonly crypto: CredentialCrypto;
+  private readonly crypto: SecretCrypto;
   private readonly resolver: CredentialResolver;
 
-  constructor(options: { store: CredentialServiceStore; crypto: CredentialCrypto }) {
+  constructor(options: { store: CredentialServiceStore; crypto: SecretCrypto }) {
     this.store = options.store;
     this.crypto = options.crypto;
     this.resolver = new CredentialResolver(options);
@@ -101,16 +107,19 @@ export class CredentialService {
     envKey: string;
     value: string;
     agentKey: string;
-  }): Promise<DecryptedCredentialRecord> {
+  }): Promise<CredentialMetadataEntry> {
     const normalizedAgentKey = normalizeCredentialAgentKey(input.agentKey);
     const normalizedEnvKey = normalizeCredentialEnvKey(input.envKey);
     const record = await this.store.setCredential({
       agentKey: normalizedAgentKey,
       envKey: normalizedEnvKey,
-      encryptedValue: this.crypto.encrypt(input.value),
+      encryptedValue: this.crypto.seal(
+        input.value,
+        credentialSecretContext(normalizedAgentKey, normalizedEnvKey),
+      ),
     });
 
-    return decryptRecord(record, this.crypto);
+    return toMetadata(record);
   }
 
   async clearCredential(input: {
@@ -122,43 +131,39 @@ export class CredentialService {
     return this.store.deleteCredential(normalizedEnvKey, {agentKey: normalizedAgentKey});
   }
 
-  async listCredentials(filter: CredentialListFilter = {}): Promise<readonly CredentialListEntry[]> {
-    const records = await this.store.listCredentials(filter);
-
-    return records.map((record) => {
-      const decrypted = decryptRecord(record, this.crypto);
-      return {
-        ...decrypted,
-        valuePreview: maskCredentialValue(decrypted.value),
-      } satisfies CredentialListEntry;
-    });
-  }
-
   async listCredentialMetadata(filter: CredentialListFilter = {}): Promise<readonly CredentialMetadataEntry[]> {
     const records = await this.store.listCredentials(filter);
-
-    return records.map((record) => ({
-      id: record.id,
-      agentKey: record.agentKey,
-      envKey: record.envKey,
-      keyVersion: record.keyVersion,
-      createdAt: record.createdAt,
-      updatedAt: record.updatedAt,
-    }));
+    return records.map(toMetadata);
   }
 
   async resolveCredential(
     envKey: string,
     context: CredentialResolutionContext,
-  ): Promise<CredentialListEntry | null> {
+  ): Promise<CredentialPreviewEntry | null> {
     const resolved = await this.resolver.resolveCredential(envKey, context);
     if (!resolved) {
       return null;
     }
 
     return {
-      ...resolved,
+      id: resolved.id,
+      agentKey: resolved.agentKey,
+      envKey: resolved.envKey,
       valuePreview: maskCredentialValue(resolved.value),
+      envelopeVersion: resolved.envelopeVersion,
+      createdAt: resolved.createdAt,
+      updatedAt: resolved.updatedAt,
     };
   }
+}
+
+function toMetadata(record: CredentialRecord): CredentialMetadataEntry {
+  return {
+    id: record.id,
+    agentKey: record.agentKey,
+    envKey: record.envKey,
+    envelopeVersion: record.envelopeVersion,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  };
 }

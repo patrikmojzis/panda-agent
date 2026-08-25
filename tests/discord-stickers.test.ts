@@ -1,7 +1,7 @@
 import {describe, expect, it, vi} from "vitest";
 
 import type {CommandRequest} from "../src/domain/commands/types.js";
-import type {CredentialCrypto} from "../src/domain/credentials/crypto.js";
+import type {SecretCrypto} from "../src/domain/secrets/crypto.js";
 import {
   createDiscordStickerListCommand,
   createDiscordStickerSendCommand,
@@ -151,7 +151,7 @@ describe("Discord sticker API service", () => {
         getSecret: vi.fn(async () => "private-bot-token"),
       },
       client,
-      crypto: {} as CredentialCrypto,
+      crypto: {} as SecretCrypto,
     });
 
     await expect(reader.listGuildStickersForChannel({connectorKey: "discord-main", channelId: "12345"}))

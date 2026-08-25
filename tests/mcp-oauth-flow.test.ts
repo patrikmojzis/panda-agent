@@ -7,7 +7,7 @@ import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/postgres.js";
 import {ensurePostgresAgentTableSchema} from "../src/domain/agents/postgres-schema.js";
-import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
+import {SecretCrypto} from "../src/domain/secrets/crypto.js";
 import {ensurePostgresIdentitySchema} from "../src/domain/identity/postgres-schema.js";
 import {PostgresMcpOAuthStore} from "../src/domain/mcp/oauth-postgres.js";
 import {ensurePostgresMcpSchema} from "../src/domain/mcp/postgres-schema.js";
@@ -65,7 +65,7 @@ async function serviceHarness(): Promise<McpOAuthService> {
   await ensurePostgresMcpSchema(pool);
   await agents.bootstrapAgent({agentKey: "panda", displayName: "Panda"});
   await sessions.createSessionRecord({id: "session-test", agentKey: "panda", kind: "main", currentThreadId: "thread-test"});
-  return new McpOAuthService({store, crypto: new CredentialCrypto("oauth-flow-test-master-key")});
+  return new McpOAuthService({store, crypto: new SecretCrypto("oauth-flow-test-master-key")});
 }
 
 describe("MCP OAuth lifecycle", () => {

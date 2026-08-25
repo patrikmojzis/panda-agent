@@ -21,7 +21,7 @@ import {PostgresMcpConfigStore} from "../src/domain/mcp/postgres.js";
 import {ensurePostgresMcpSchema} from "../src/domain/mcp/postgres-schema.js";
 import {ControlMcpService} from "../src/domain/control/mcp-service.js";
 import {McpManagementService, type McpOAuthManager} from "../src/domain/mcp/management-service.js";
-import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
+import {SecretCrypto} from "../src/domain/secrets/crypto.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/postgres.js";
 import {ensurePostgresThreadRuntimeSchema} from "../src/domain/threads/runtime/postgres-schema.js";
 import {PostgresControlAuthService} from "../src/domain/control/auth.js";
@@ -313,7 +313,7 @@ async function createHarness(options: {
   const conversations = new ConversationRepo({pool});
   const gatewayStore = new PostgresGatewayStore({pool});
   const wikiBindingStore = new PostgresWikiBindingStore({pool});
-  const credentialCrypto = new CredentialCrypto("control-test-master-key");
+  const credentialCrypto = new SecretCrypto("control-test-master-key");
   const credentialService = new CredentialService({store: credentials, crypto: credentialCrypto});
   const mcpManagement = new McpManagementService({
     configs: mcpConfigs,
@@ -422,8 +422,8 @@ async function createHarness(options: {
     }),
   };
   await pool.query(`
-    INSERT INTO "runtime"."credentials" (id, env_key, agent_key, value_ciphertext, value_iv, value_tag, key_version)
-    VALUES ('00000000-0000-0000-0000-000000000001', 'API_TOKEN', 'panda', '\\x5345435245545f53454e54494e454c', '\\x6976', '\\x746167', 1)
+    INSERT INTO "runtime"."credentials" (id, env_key, agent_key, value_ciphertext, value_iv, value_tag, envelope_version)
+    VALUES ('00000000-0000-0000-0000-000000000001', 'API_TOKEN', 'panda', '\\x5345435245545f53454e54494e454c', '\\x6976', '\\x746167', 2)
   `);
   return {pool, identities, agents, sessions, executionEnvironments, a2aBindings, auth, reads, home, operator, controlMcp, mcpConfigs, briefings, heartbeats, scheduledTaskStore, watchStore, connectorAccountStore, credentialCrypto, emailStore, gatewayStore, wikiBindingStore, controlScheduledTasks, controlWatches, controlRuntimeActivity, controlConnectorAccounts, modelCallTraces, controlModelCallTraces, sessionCompaction, sessionRequests};
 }
@@ -4651,7 +4651,7 @@ describe("Control Runtime Activity HTTP", () => {
         ('10000000-0000-0000-0000-000000000004', 'discord', 'identity-main', 'discord:identity-main', 'identity', 'identity-patrik', NULL, 'Identity Discord PRIVATE_IDENTITY_DISPLAY_SAFE_TO_EXCLUDE', 'identity-ext', 'identity-user', 'enabled', '{"token":"PRIVATE_IDENTITY_CONFIG_TOKEN_MUST_NOT_LEAK"}'::jsonb, '{"channel":"PRIVATE_IDENTITY_METADATA_MUST_NOT_LEAK"}'::jsonb, '2040-01-04T00:00:00.000Z', '2040-01-04T00:00:01.000Z')
     `);
     await harness.pool.query(`
-      INSERT INTO "runtime"."connector_account_secrets" (account_id, secret_key, value_ciphertext, value_iv, value_tag, key_version, created_at, updated_at) VALUES
+      INSERT INTO "runtime"."connector_account_secrets" (account_id, secret_key, value_ciphertext, value_iv, value_tag, envelope_version, created_at, updated_at) VALUES
         ('10000000-0000-0000-0000-000000000001', 'bot_token', '\\x505249564154455f434950484552544558545f4d5553545f4e4f545f4c45414b', '\\x505249564154455f49565f4d5553545f4e4f545f4c45414b', '\\x505249564154455f5441475f4d5553545f4e4f545f4c45414b', 7, '2040-01-01T00:00:02.000Z', '2040-01-01T00:00:03.000Z'),
         ('10000000-0000-0000-0000-000000000002', 'bot_token', '\\x53595354454d5f434950484552544558545f4d5553545f4e4f545f4c45414b', '\\x53595354454d5f49565f4d5553545f4e4f545f4c45414b', '\\x53595354454d5f5441475f4d5553545f4e4f545f4c45414b', 3, '2040-01-02T00:00:02.000Z', '2040-01-02T00:00:03.000Z')
     `);
@@ -4717,7 +4717,7 @@ describe("Control Runtime Activity HTTP", () => {
       "valueCiphertext",
       "valueIv",
       "valueTag",
-      "keyVersion",
+      "envelopeVersion",
       "config",
       "metadata",
       "authHeader",

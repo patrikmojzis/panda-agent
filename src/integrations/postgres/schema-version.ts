@@ -10,6 +10,7 @@ import {PANDA_RUNTIME_OPERATION_RECEIPTS} from "./schema-versions/0005-runtime-o
 import {PANDA_THREAD_INPUT_CUTOFFS} from "./schema-versions/0006-thread-input-cutoffs.js";
 import {PANDA_RESET_RUN_FENCES} from "./schema-versions/0007-reset-run-fences.js";
 import {PANDA_SESSION_ARCHIVE} from "./schema-versions/0008-session-archive.js";
+import {PANDA_BOUND_SECRET_ENVELOPES} from "./schema-versions/0009-bound-secret-envelopes.js";
 
 export const PANDA_PRE_LEDGER_BASELINE: PostgresMigrationSummary = Object.freeze({
   id: "0001_pre_ledger_baseline",
@@ -24,6 +25,7 @@ export {PANDA_RUNTIME_OPERATION_RECEIPTS};
 export {PANDA_THREAD_INPUT_CUTOFFS};
 export {PANDA_RESET_RUN_FENCES};
 export {PANDA_SESSION_ARCHIVE};
+export {PANDA_BOUND_SECRET_ENVELOPES};
 
 export const PANDA_SCHEMA_VERSION = Object.freeze([
   PANDA_PRE_LEDGER_BASELINE,
@@ -34,6 +36,7 @@ export const PANDA_SCHEMA_VERSION = Object.freeze([
   PANDA_THREAD_INPUT_CUTOFFS,
   PANDA_RESET_RUN_FENCES,
   PANDA_SESSION_ARCHIVE,
+  PANDA_BOUND_SECRET_ENVELOPES,
 ]);
 
 /** Read-only database revision seam shared by every Postgres-backed process. */

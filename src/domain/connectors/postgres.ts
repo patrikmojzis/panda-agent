@@ -4,13 +4,14 @@ import {isJsonObject, readOptionalJsonValue, stringifyOptionalJsonValue, type Js
 import type {PgPoolLike} from "../../lib/postgres-query.js";
 import {requireTimestampMillis} from "../../lib/postgres-values.js";
 import {requireNonEmptyString, trimToUndefined} from "../../lib/strings.js";
-import type {CredentialCrypto} from "../credentials/crypto.js";
+import type {SecretCrypto, SecretContext} from "../secrets/crypto.js";
 import {buildConnectorAccountTableNames, type ConnectorAccountTableNames} from "./postgres-shared.js";
 import {
   type ConnectorAccountListFilter,
   type ConnectorAccountRecord,
   type ConnectorAccountSecretSummary,
   type ConnectorAccountStatus,
+  normalizeConnectorAccountId,
   normalizeConnectorAccountKey,
   normalizeConnectorAccountStatus,
   normalizeConnectorKey,
@@ -29,7 +30,7 @@ interface ConnectorAccountSecretValueRecord extends ConnectorAccountSecretSummar
   valueCiphertext: Buffer;
   valueIv: Buffer;
   valueTag: Buffer;
-  keyVersion: number;
+  envelopeVersion: number;
 }
 
 function toBuffer(value: unknown): Buffer {
@@ -52,9 +53,9 @@ function toBuffer(value: unknown): Buffer {
   throw new Error("Connector account secret row is missing a binary field.");
 }
 
-function parseKeyVersion(value: unknown): number {
+function parseEnvelopeVersion(value: unknown): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-    throw new Error("Connector account secret key version must be a positive integer.");
+    throw new Error("Connector account secret envelope version must be a positive integer.");
   }
 
   return value;
@@ -97,7 +98,7 @@ function parseAccountRow(row: Record<string, unknown>): ConnectorAccountRecord {
   });
 
   return {
-    id: requireNonEmptyString(row.id, "Connector account row is missing id."),
+    id: normalizeConnectorAccountId(requireNonEmptyString(row.id, "Connector account row is missing id.")),
     source: normalizeConnectorSource(
       requireNonEmptyString(row.source, "Connector account row is missing source."),
     ),
@@ -136,24 +137,24 @@ function parseSecretValueRow(row: Record<string, unknown>): ConnectorAccountSecr
     valueCiphertext: toBuffer(row.value_ciphertext),
     valueIv: toBuffer(row.value_iv),
     valueTag: toBuffer(row.value_tag),
-    keyVersion: parseKeyVersion(row.key_version),
+    envelopeVersion: parseEnvelopeVersion(row.envelope_version),
   };
-}
-
-function requireConnectorAccountId(accountId: string): string {
-  return requireNonEmptyString(accountId, "Connector account id must not be empty.");
 }
 
 function requireSecretPlaintext(value: string): string {
   return requireNonEmptyString(value, "Connector account secret value must not be empty.");
 }
 
-function requireCredentialCrypto(crypto: CredentialCrypto | null | undefined): CredentialCrypto {
+function requireSecretCrypto(crypto: SecretCrypto | null | undefined): SecretCrypto {
   if (!crypto) {
-    throw new Error("CredentialCrypto is required to access connector account secrets.");
+    throw new Error("SecretCrypto is required to access connector account secrets.");
   }
 
   return crypto;
+}
+
+function connectorSecretContext(accountId: string, secretKey: string): SecretContext {
+  return {purpose: "connector-account-secret", identity: [accountId, secretKey]};
 }
 
 export class PostgresConnectorAccountStore {
@@ -212,7 +213,7 @@ export class PostgresConnectorAccountStore {
         updated_at = NOW()
       RETURNING *
     `, [
-      input.id ?? randomUUID(),
+      normalizeConnectorAccountId(input.id ?? randomUUID()),
       normalizeConnectorSource(input.source),
       normalizeConnectorAccountKey(input.accountKey),
       normalizeConnectorKey(input.connectorKey),
@@ -325,9 +326,14 @@ export class PostgresConnectorAccountStore {
     accountId: string,
     secretKey: string,
     plaintext: string,
-    crypto: CredentialCrypto | null | undefined,
+    crypto: SecretCrypto | null | undefined,
   ): Promise<ConnectorAccountSecretSummary> {
-    const encryptedValue = requireCredentialCrypto(crypto).encrypt(requireSecretPlaintext(plaintext));
+    const normalizedAccountId = normalizeConnectorAccountId(accountId);
+    const normalizedSecretKey = normalizeConnectorSecretKey(secretKey);
+    const encryptedValue = requireSecretCrypto(crypto).seal(
+      requireSecretPlaintext(plaintext),
+      connectorSecretContext(normalizedAccountId, normalizedSecretKey),
+    );
     const result = await this.pool.query(`
       INSERT INTO ${this.tables.connectorAccountSecrets} (
         account_id,
@@ -335,7 +341,7 @@ export class PostgresConnectorAccountStore {
         value_ciphertext,
         value_iv,
         value_tag,
-        key_version
+        envelope_version
       ) VALUES (
         $1,
         $2,
@@ -349,16 +355,16 @@ export class PostgresConnectorAccountStore {
         value_ciphertext = EXCLUDED.value_ciphertext,
         value_iv = EXCLUDED.value_iv,
         value_tag = EXCLUDED.value_tag,
-        key_version = EXCLUDED.key_version,
+        envelope_version = EXCLUDED.envelope_version,
         updated_at = NOW()
       RETURNING account_id, secret_key, created_at, updated_at
     `, [
-      requireConnectorAccountId(accountId),
-      normalizeConnectorSecretKey(secretKey),
+      normalizedAccountId,
+      normalizedSecretKey,
       encryptedValue.ciphertext,
       encryptedValue.iv,
       encryptedValue.tag,
-      encryptedValue.keyVersion,
+      encryptedValue.envelopeVersion,
     ]);
 
     return parseSecretSummaryRow(result.rows[0] as Record<string, unknown>);
@@ -367,7 +373,7 @@ export class PostgresConnectorAccountStore {
   async getSecret(
     accountId: string,
     secretKey: string,
-    crypto: CredentialCrypto | null | undefined,
+    crypto: SecretCrypto | null | undefined,
   ): Promise<string | null> {
     const result = await this.pool.query(`
       SELECT *
@@ -376,7 +382,7 @@ export class PostgresConnectorAccountStore {
         AND secret_key = $2
       LIMIT 1
     `, [
-      requireConnectorAccountId(accountId),
+      normalizeConnectorAccountId(accountId),
       normalizeConnectorSecretKey(secretKey),
     ]);
 
@@ -386,7 +392,12 @@ export class PostgresConnectorAccountStore {
     }
 
     const secret = parseSecretValueRow(row as Record<string, unknown>);
-    return requireCredentialCrypto(crypto).decrypt(secret);
+    return requireSecretCrypto(crypto).open({
+      ciphertext: secret.valueCiphertext,
+      iv: secret.valueIv,
+      tag: secret.valueTag,
+      envelopeVersion: secret.envelopeVersion,
+    }, connectorSecretContext(secret.accountId, secret.secretKey));
   }
 
   async listSecretKeys(accountId: string): Promise<readonly ConnectorAccountSecretSummary[]> {
@@ -395,7 +406,7 @@ export class PostgresConnectorAccountStore {
       FROM ${this.tables.connectorAccountSecrets}
       WHERE account_id = $1
       ORDER BY secret_key ASC
-    `, [requireConnectorAccountId(accountId)]);
+    `, [normalizeConnectorAccountId(accountId)]);
 
     return result.rows.map((row) => parseSecretSummaryRow(row as Record<string, unknown>));
   }

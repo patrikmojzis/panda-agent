@@ -193,9 +193,9 @@ INSERT INTO runtime.credentials (
   'relationship',
   'panda',
   'ci-smoke-identity',
-  decode('00', 'hex'),
-  decode('00', 'hex'),
-  decode('00', 'hex'),
+  decode('6c2b3552723038657569714a5277564c7967773d', 'hex'),
+  decode('41414543417751464267634943516f4c', 'hex'),
+  decode('55506f7a4c552f73796b474566722f6a2f69393150773d3d', 'hex'),
   1
 );
 

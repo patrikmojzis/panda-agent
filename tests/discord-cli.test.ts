@@ -323,7 +323,7 @@ const discordCliMocks = vi.hoisted(() => {
     MockPostgresConnectorAccountStore,
     MockPostgresIdentityStore,
     MockPostgresSessionStore,
-    resolveCredentialCrypto: vi.fn(() => crypto),
+    resolveSecretCrypto: vi.fn(() => crypto),
     withPostgresPool: vi.fn(async (_dbUrl: string | undefined, fn: (pool: typeof pool) => Promise<unknown>) => {
       try {
         return await fn(pool);
@@ -350,8 +350,8 @@ vi.mock("../src/domain/sessions/postgres.js", () => ({
   PostgresSessionStore: discordCliMocks.MockPostgresSessionStore,
 }));
 
-vi.mock("../src/domain/credentials/crypto.js", () => ({
-  resolveCredentialCrypto: discordCliMocks.resolveCredentialCrypto,
+vi.mock("../src/domain/secrets/crypto.js", () => ({
+  resolveSecretCrypto: discordCliMocks.resolveSecretCrypto,
 }));
 
 vi.mock("../src/domain/identity/postgres.js", () => ({
@@ -449,8 +449,8 @@ describe("Discord account CLI", () => {
     discordCliMocks.identityStoreInstances.length = 0;
     discordCliMocks.sessionStoreInstances.length = 0;
     discordCliMocks.pool.end.mockClear();
-    discordCliMocks.resolveCredentialCrypto.mockReset();
-    discordCliMocks.resolveCredentialCrypto.mockImplementation(() => discordCliMocks.crypto);
+    discordCliMocks.resolveSecretCrypto.mockReset();
+    discordCliMocks.resolveSecretCrypto.mockImplementation(() => discordCliMocks.crypto);
     discordCliMocks.withPostgresPool.mockClear();
     discordCliMocks.resetFixtures();
     vi.restoreAllMocks();
@@ -1412,7 +1412,7 @@ describe("Discord account CLI", () => {
 
   it("disables an account without requiring credential decryption", async () => {
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
-    discordCliMocks.resolveCredentialCrypto.mockReturnValueOnce(null);
+    discordCliMocks.resolveSecretCrypto.mockReturnValueOnce(null);
 
     await createProgram().parseAsync([
       "discord",
@@ -1423,7 +1423,7 @@ describe("Discord account CLI", () => {
       "postgres://discord-db",
     ], {from: "user"});
 
-    expect(discordCliMocks.resolveCredentialCrypto).not.toHaveBeenCalled();
+    expect(discordCliMocks.resolveSecretCrypto).not.toHaveBeenCalled();
     expect(latestConnectorStore().disableAccount).toHaveBeenCalledWith("discord", "ops");
     const output = collectWrites(write);
     expect(output).toContain("Disabled Discord account ops.");

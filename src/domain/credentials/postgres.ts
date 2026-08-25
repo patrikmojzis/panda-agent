@@ -37,9 +37,9 @@ function toBuffer(value: unknown): Buffer {
   throw new Error("Credential row is missing a binary field.");
 }
 
-function parseKeyVersion(value: unknown): number {
+function parseEnvelopeVersion(value: unknown): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-    throw new Error("Credential key version must be a positive integer.");
+    throw new Error("Credential envelope version must be a positive integer.");
   }
 
   return value;
@@ -57,7 +57,7 @@ function parseCredentialRow(row: Record<string, unknown>): CredentialRecord {
     valueCiphertext: toBuffer(row.value_ciphertext),
     valueIv: toBuffer(row.value_iv),
     valueTag: toBuffer(row.value_tag),
-    keyVersion: parseKeyVersion(row.key_version),
+    envelopeVersion: parseEnvelopeVersion(row.envelope_version),
     createdAt: requireTimestampMillis(row.created_at, "Credential created_at must be a valid timestamp."),
     updatedAt: requireTimestampMillis(row.updated_at, "Credential updated_at must be a valid timestamp."),
   };
@@ -147,7 +147,7 @@ export class PostgresCredentialStore {
             value_ciphertext = $2,
             value_iv = $3,
             value_tag = $4,
-            key_version = $5,
+            envelope_version = $5,
             updated_at = NOW()
           WHERE id = $1
           RETURNING *
@@ -156,7 +156,7 @@ export class PostgresCredentialStore {
           input.encryptedValue.ciphertext,
           input.encryptedValue.iv,
           input.encryptedValue.tag,
-          input.encryptedValue.keyVersion,
+          input.encryptedValue.envelopeVersion,
         ]);
 
         await client.query("COMMIT");
@@ -171,7 +171,7 @@ export class PostgresCredentialStore {
           value_ciphertext,
           value_iv,
           value_tag,
-          key_version
+          envelope_version
         ) VALUES (
           $1,
           $2,
@@ -189,7 +189,7 @@ export class PostgresCredentialStore {
         input.encryptedValue.ciphertext,
         input.encryptedValue.iv,
         input.encryptedValue.tag,
-        input.encryptedValue.keyVersion,
+        input.encryptedValue.envelopeVersion,
       ]);
 
       await client.query("COMMIT");

@@ -149,7 +149,7 @@ export async function ensurePostgresConnectorAccountSchema(pool: PgQueryable): P
       value_ciphertext BYTEA NOT NULL,
       value_iv BYTEA NOT NULL,
       value_tag BYTEA NOT NULL,
-      key_version SMALLINT NOT NULL,
+      envelope_version SMALLINT NOT NULL CHECK (envelope_version >= 2),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )

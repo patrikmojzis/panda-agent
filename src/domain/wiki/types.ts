@@ -1,4 +1,5 @@
-import type {EncryptedCredentialValue} from "../credentials/types.js";
+import type {EncryptedSecret, SecretContext} from "../secrets/crypto.js";
+import {normalizeAgentKey} from "../agents/types.js";
 
 function trimNonEmpty(value: string): string {
   const trimmed = value.trim();
@@ -16,7 +17,7 @@ export interface WikiBindingRecord {
   apiTokenCiphertext: Buffer;
   apiTokenIv: Buffer;
   apiTokenTag: Buffer;
-  keyVersion: number;
+  envelopeVersion: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -26,7 +27,7 @@ export interface DecryptedWikiBindingRecord {
   wikiGroupId: number;
   namespacePath: string;
   apiToken: string;
-  keyVersion: number;
+  envelopeVersion: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -35,7 +36,7 @@ export interface SetWikiBindingInput {
   agentKey: string;
   wikiGroupId: number;
   namespacePath: string;
-  encryptedApiToken: EncryptedCredentialValue;
+  encryptedApiToken: EncryptedSecret;
 }
 
 export function normalizeWikiNamespacePath(value: string): string {
@@ -48,4 +49,8 @@ export function normalizeWikiGroupId(value: number): number {
   }
 
   return value;
+}
+
+export function wikiTokenSecretContext(agentKey: string): SecretContext {
+  return {purpose: "wiki-api-token", identity: [normalizeAgentKey(agentKey)]};
 }

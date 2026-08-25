@@ -1,7 +1,7 @@
 import {Bot} from "grammy";
 
 import type {ConnectorAccountOwnerInput, ConnectorAccountRecord, UpsertConnectorAccountInput} from "../../../domain/connectors/types.js";
-import type {CredentialCrypto} from "../../../domain/credentials/crypto.js";
+import type {SecretCrypto} from "../../../domain/secrets/crypto.js";
 import {TELEGRAM_BOT_TOKEN_SECRET_KEY, TELEGRAM_SOURCE, requireTelegramBotToken} from "./config.js";
 
 export interface TelegramBotIdentity {
@@ -22,12 +22,12 @@ export interface TelegramAccountStore {
     accountId: string,
     secretKey: string,
     plaintext: string,
-    crypto: CredentialCrypto | null | undefined,
+    crypto: SecretCrypto | null | undefined,
   ): Promise<unknown>;
   getSecret(
     accountId: string,
     secretKey: string,
-    crypto: CredentialCrypto | null | undefined,
+    crypto: SecretCrypto | null | undefined,
   ): Promise<string | null>;
 }
 
@@ -36,14 +36,14 @@ export interface SetTelegramBotAccountInput extends ConnectorAccountOwnerInput {
   botToken: string;
   replace?: boolean;
   client: TelegramBotIdentityClient;
-  crypto: CredentialCrypto | null | undefined;
+  crypto: SecretCrypto | null | undefined;
   store: TelegramAccountStore;
 }
 
 export interface StoredTelegramBotAccountInput {
   accountKey: string;
   client: TelegramBotIdentityClient;
-  crypto: CredentialCrypto | null | undefined;
+  crypto: SecretCrypto | null | undefined;
   store: TelegramAccountStore;
 }
 
@@ -87,7 +87,7 @@ export async function withTelegramSecretErrorSafety<T>(secret: string, fn: () =>
   }
 }
 
-function requireTelegramAccountCrypto(crypto: CredentialCrypto | null | undefined): CredentialCrypto {
+function requireTelegramAccountCrypto(crypto: SecretCrypto | null | undefined): SecretCrypto {
   if (!crypto) {
     throw new Error("CREDENTIALS_MASTER_KEY is required for Telegram account commands.");
   }

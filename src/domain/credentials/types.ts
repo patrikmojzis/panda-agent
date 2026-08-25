@@ -1,4 +1,5 @@
 import {requireNonEmptyString} from "../../lib/strings.js";
+import type {EncryptedSecret, SecretContext} from "../secrets/crypto.js";
 
 export interface CredentialRecord {
   id: string;
@@ -7,7 +8,7 @@ export interface CredentialRecord {
   valueCiphertext: Buffer;
   valueIv: Buffer;
   valueTag: Buffer;
-  keyVersion: number;
+  envelopeVersion: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -21,12 +22,7 @@ export interface CredentialResolutionContext {
   agentKey?: string;
 }
 
-export interface EncryptedCredentialValue {
-  ciphertext: Buffer;
-  iv: Buffer;
-  tag: Buffer;
-  keyVersion: number;
-}
+export type EncryptedCredentialValue = EncryptedSecret;
 
 export interface SetCredentialInput {
   agentKey: string;
@@ -34,25 +30,31 @@ export interface SetCredentialInput {
   encryptedValue: EncryptedCredentialValue;
 }
 
-export interface DecryptedCredentialRecord {
+export interface ResolvedCredentialRecord {
   id: string;
   agentKey: string;
   envKey: string;
   value: string;
-  keyVersion: number;
+  envelopeVersion: number;
   createdAt: number;
   updatedAt: number;
 }
 
-export interface CredentialListEntry extends DecryptedCredentialRecord {
+export interface CredentialPreviewEntry {
+  id: string;
+  agentKey: string;
+  envKey: string;
   valuePreview: string;
+  envelopeVersion: number;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export interface CredentialMetadataEntry {
   id: string;
   agentKey: string;
   envKey: string;
-  keyVersion: number;
+  envelopeVersion: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -165,6 +167,13 @@ export function normalizeCredentialEnvKey(value: string): string {
 
 export function normalizeCredentialAgentKey(value: string | undefined): string {
   return requireTrimmed("Credential agent key", value);
+}
+
+export function credentialSecretContext(agentKey: string, envKey: string): SecretContext {
+  return {
+    purpose: "agent-credential",
+    identity: [normalizeCredentialAgentKey(agentKey), normalizeCredentialEnvKey(envKey)],
+  };
 }
 
 export function maskCredentialValue(value: string): string {

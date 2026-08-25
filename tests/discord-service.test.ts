@@ -2,7 +2,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 
 import type {AcquireManagedConnectorLeaseOptions} from "../src/domain/connector-leases/repo.js";
 import type {ConnectorAccountRecord} from "../src/domain/connectors/types.js";
-import type {CredentialCrypto} from "../src/domain/credentials/crypto.js";
+import type {SecretCrypto} from "../src/domain/secrets/crypto.js";
 import {
   DiscordService,
   type DiscordServiceDependencies,
@@ -40,7 +40,7 @@ function makeAccount(overrides: Partial<ConnectorAccountRecord> = {}): Connector
 function createFixture(options: {
   account?: ConnectorAccountRecord | null;
   botUserId?: string;
-  crypto?: CredentialCrypto | null;
+  crypto?: SecretCrypto | null;
   leaseAlreadyHeld?: boolean;
   secret?: string | null;
 } = {}) {
@@ -48,7 +48,7 @@ function createFixture(options: {
   let leaseOptions: AcquireManagedConnectorLeaseOptions | null = null;
   let gatewayOptions: Parameters<NonNullable<DiscordServiceDependencies["createGateway"]>>[0] | null = null;
   const account = options.account === undefined ? makeAccount() : options.account;
-  const crypto = options.crypto === undefined ? ({kind: "crypto"} as unknown as CredentialCrypto) : options.crypto;
+  const crypto = options.crypto === undefined ? ({kind: "crypto"} as unknown as SecretCrypto) : options.crypto;
   const pool = {
     totalCount: 0,
     idleCount: 0,

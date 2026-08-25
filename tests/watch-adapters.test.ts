@@ -173,7 +173,7 @@ function createCredentialResolver(): WatchCredentialResolver {
       envKey,
       value: `secret-for-${envKey}`,
       agentKey: "panda",
-      keyVersion: 1,
+      envelopeVersion: 2,
       createdAt: 1,
       updatedAt: 1,
     })),

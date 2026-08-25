@@ -58,6 +58,17 @@ export interface ConnectorAccountSecretSummary {
   updatedAt: number;
 }
 
+const POSTGRES_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Returns the canonical text form PostgreSQL uses for connector account UUIDs. */
+export function normalizeConnectorAccountId(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  if (!POSTGRES_UUID_PATTERN.test(normalized)) {
+    throw new Error("Connector account id must be a UUID.");
+  }
+  return normalized;
+}
+
 export function normalizeConnectorSource(value: string): string {
   const normalized = value.trim().toLowerCase();
   if (!/^[a-z][a-z0-9_-]{0,63}$/.test(normalized)) {

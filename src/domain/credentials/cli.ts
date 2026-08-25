@@ -8,8 +8,8 @@ import {PostgresAgentStore} from "../agents/postgres.js";
 import {withPostgresPool} from "../../lib/postgres-database.js";
 import {PostgresCredentialStore} from "./postgres.js";
 import {CredentialService} from "./resolver.js";
-import {resolveCredentialCrypto} from "./crypto.js";
-import type {CredentialListEntry} from "./types.js";
+import {resolveSecretCrypto} from "../secrets/crypto.js";
+import type {CredentialMetadataEntry} from "./types.js";
 import {maskCredentialValue} from "./types.js";
 
 interface CredentialCliOptions {
@@ -73,7 +73,7 @@ async function withCredentialService<T>(
   }) => Promise<T>,
 ): Promise<T> {
   return withCredentialStores(options, async ({agentStore, credentialStore}) => {
-    const crypto = resolveCredentialCrypto();
+    const crypto = resolveSecretCrypto();
     if (!crypto) {
       throw new Error("CREDENTIALS_MASTER_KEY is required for credential commands.");
     }
@@ -107,11 +107,11 @@ async function resolveAgentOption(
   };
 }
 
-function renderCredentialEntry(entry: CredentialListEntry): string {
+function renderCredentialEntry(entry: CredentialMetadataEntry): string {
   return [
     entry.envKey,
     `  agent ${entry.agentKey}`,
-    `  value ${entry.valuePreview}`,
+    `  envelope version ${entry.envelopeVersion}`,
     `  updated ${new Date(entry.updatedAt).toISOString()}`,
   ].join("\n");
 }
@@ -157,9 +157,10 @@ async function setCredentialCommand(
       throw new Error("Missing credential agent.");
     }
 
+    const credentialValue = await readCredentialValue(value, options.stdin);
     const stored = await credentialService.setCredential({
       envKey,
-      value: await readCredentialValue(value, options.stdin),
+      value: credentialValue,
       agentKey: agent.agentKey,
     });
 
@@ -167,7 +168,7 @@ async function setCredentialCommand(
       [
         `Stored ${stored.envKey}.`,
         `agent ${stored.agentKey}`,
-        `value ${maskCredentialValue(stored.value)}`,
+        `value ${maskCredentialValue(credentialValue)}`,
       ].join("\n") + "\n",
     );
   });
@@ -200,7 +201,7 @@ async function clearCredentialCommand(
 async function listCredentialsCommand(options: CredentialCliOptions): Promise<void> {
   await withCredentialService(options, async ({agentStore, credentialService}) => {
     const agent = await resolveAgentOption(options, agentStore, "optional");
-    const entries = await credentialService.listCredentials(agent ?? {});
+    const entries = await credentialService.listCredentialMetadata(agent ?? {});
 
     if (entries.length === 0) {
       process.stdout.write("No credentials yet.\n");

@@ -15,7 +15,7 @@ export async function ensurePostgresWikiBindingSchema(pool: PgQueryable): Promis
       api_token_ciphertext BYTEA NOT NULL,
       api_token_iv BYTEA NOT NULL,
       api_token_tag BYTEA NOT NULL,
-      key_version SMALLINT NOT NULL,
+      envelope_version SMALLINT NOT NULL CHECK (envelope_version >= 2),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       CHECK (wiki_group_id > 0),

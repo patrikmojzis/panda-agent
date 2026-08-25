@@ -1,6 +1,6 @@
 import type {DiscordStickerSendActionPayload} from "../../../domain/channels/actions/types.js";
 import type {ConnectorAccountListFilter, ConnectorAccountRecord} from "../../../domain/connectors/types.js";
-import type {CredentialCrypto} from "../../../domain/credentials/crypto.js";
+import type {SecretCrypto} from "../../../domain/secrets/crypto.js";
 import {requireNonEmptyString} from "../../../lib/strings.js";
 import type {DiscordStickerCatalogReader} from "./commands.js";
 import {DISCORD_BOT_TOKEN_SECRET_KEY, DISCORD_SOURCE} from "./config.js";
@@ -8,13 +8,13 @@ import type {DiscordMessageReferenceBody, DiscordWorkerRestClient} from "./api.j
 
 interface DiscordStickerAccountStore {
   listAccounts(filter?: ConnectorAccountListFilter): Promise<readonly ConnectorAccountRecord[]>;
-  getSecret(accountId: string, key: string, crypto: CredentialCrypto): Promise<string | null>;
+  getSecret(accountId: string, key: string, crypto: SecretCrypto): Promise<string | null>;
 }
 
 export function createDiscordStickerCatalogReader(options: {
   accounts: DiscordStickerAccountStore;
   client: Pick<DiscordWorkerRestClient, "getChannelMetadata" | "listGuildStickers">;
-  crypto: CredentialCrypto | null;
+  crypto: SecretCrypto | null;
 }): DiscordStickerCatalogReader {
   return {
     async listGuildStickersForChannel(input) {

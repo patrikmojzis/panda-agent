@@ -21,7 +21,7 @@ import {
 } from "../../../domain/channels/deliveries/postgres.js";
 import {ChannelOutboundDeliveryWorker} from "../../../domain/channels/deliveries/worker.js";
 import {PostgresConnectorAccountStore} from "../../../domain/connectors/postgres.js";
-import type {CredentialCrypto} from "../../../domain/credentials/crypto.js";
+import type {SecretCrypto} from "../../../domain/secrets/crypto.js";
 import {resolveWhatsAppSocketVersion, WHATSAPP_SOURCE} from "./config.js";
 import {PostgresWhatsAppAuthStore, type WhatsAppAuthStateHandle} from "./auth-store.js";
 import {
@@ -54,7 +54,7 @@ export interface WhatsAppServiceOptions {
   accountId: string;
   accountKey: string;
   connectorKey: string;
-  crypto: CredentialCrypto;
+  crypto: SecretCrypto;
   dataDir: string;
   pool?: Pool;
   runtime?: ConnectorDaemonRuntimeHandle;

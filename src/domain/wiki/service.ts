@@ -1,5 +1,6 @@
-import {CredentialCrypto} from "../credentials/crypto.js";
+import {SecretCrypto} from "../secrets/crypto.js";
 import type {DecryptedWikiBindingRecord, SetWikiBindingInput, WikiBindingRecord} from "./types.js";
+import {wikiTokenSecretContext} from "./types.js";
 
 export interface WikiBindingServiceStore {
   deleteBinding(agentKey: string): Promise<boolean>;
@@ -9,19 +10,19 @@ export interface WikiBindingServiceStore {
 
 function decryptBindingRecord(
   record: WikiBindingRecord,
-  crypto: CredentialCrypto,
+  crypto: SecretCrypto,
 ): DecryptedWikiBindingRecord {
   return {
     agentKey: record.agentKey,
     wikiGroupId: record.wikiGroupId,
     namespacePath: record.namespacePath,
-    apiToken: crypto.decrypt({
-      valueCiphertext: record.apiTokenCiphertext,
-      valueIv: record.apiTokenIv,
-      valueTag: record.apiTokenTag,
-      keyVersion: record.keyVersion,
-    }),
-    keyVersion: record.keyVersion,
+    apiToken: crypto.open({
+      ciphertext: record.apiTokenCiphertext,
+      iv: record.apiTokenIv,
+      tag: record.apiTokenTag,
+      envelopeVersion: record.envelopeVersion,
+    }, wikiTokenSecretContext(record.agentKey)),
+    envelopeVersion: record.envelopeVersion,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
@@ -29,9 +30,9 @@ function decryptBindingRecord(
 
 export class WikiBindingService {
   private readonly store: WikiBindingServiceStore;
-  private readonly crypto: CredentialCrypto;
+  private readonly crypto: SecretCrypto;
 
-  constructor(options: {store: WikiBindingServiceStore; crypto: CredentialCrypto}) {
+  constructor(options: {store: WikiBindingServiceStore; crypto: SecretCrypto}) {
     this.store = options.store;
     this.crypto = options.crypto;
   }
@@ -55,7 +56,7 @@ export class WikiBindingService {
       agentKey: input.agentKey,
       wikiGroupId: input.wikiGroupId,
       namespacePath: input.namespacePath,
-      encryptedApiToken: this.crypto.encrypt(input.apiToken),
+      encryptedApiToken: this.crypto.seal(input.apiToken, wikiTokenSecretContext(input.agentKey)),
     });
 
     return decryptBindingRecord(record, this.crypto);

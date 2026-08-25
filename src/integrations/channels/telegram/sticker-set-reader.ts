@@ -6,7 +6,7 @@ import {
   type TelegramStickerSetSnapshot,
 } from "../../../domain/agents/telegram-stickers/types.js";
 import type {ConnectorAccountRecord} from "../../../domain/connectors/types.js";
-import type {CredentialCrypto} from "../../../domain/credentials/crypto.js";
+import type {SecretCrypto} from "../../../domain/secrets/crypto.js";
 import {TELEGRAM_BOT_TOKEN_SECRET_KEY, TELEGRAM_SOURCE} from "./config.js";
 import {inferTelegramStickerFormat} from "./sticker-metadata.js";
 import {withTelegramSecretErrorSafety} from "./account.js";
@@ -15,12 +15,12 @@ const TELEGRAM_STICKER_SET_TIMEOUT_MS = 10_000;
 
 export interface TelegramStickerSetAccountStore {
   getAccountByConnectorKey(source: string, connectorKey: string): Promise<ConnectorAccountRecord | null>;
-  getSecret(accountId: string, secretKey: string, crypto: CredentialCrypto | null | undefined): Promise<string | null>;
+  getSecret(accountId: string, secretKey: string, crypto: SecretCrypto | null | undefined): Promise<string | null>;
 }
 
 export interface TelegramStickerSetReaderOptions {
   accounts: TelegramStickerSetAccountStore;
-  crypto: CredentialCrypto | null | undefined;
+  crypto: SecretCrypto | null | undefined;
   createApi?: (token: string) => Pick<Api, "getStickerSet">;
   timeoutMs?: number;
 }

@@ -3,7 +3,7 @@ import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/postgres.js";
 import {ensurePostgresAgentTableSchema} from "../src/domain/agents/postgres-schema.js";
-import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
+import {SecretCrypto} from "../src/domain/secrets/crypto.js";
 import {ensurePostgresIdentitySchema} from "../src/domain/identity/postgres-schema.js";
 import {McpOAuthService} from "../src/domain/mcp/oauth-service.js";
 import {PostgresMcpOAuthStore} from "../src/domain/mcp/oauth-postgres.js";
@@ -42,7 +42,7 @@ describe("MCP OAuth persistence", () => {
     await agents.bootstrapAgent({agentKey: "panda", displayName: "Panda"});
     await sessions.createSessionRecord({id: "session-1", agentKey: "panda", kind: "main", currentThreadId: "thread-1"});
     await sessions.createSessionRecord({id: "session-agent", agentKey: "panda", kind: "branch", currentThreadId: "thread-agent"});
-    return {pool, store, service: new McpOAuthService({store, crypto: new CredentialCrypto("test-master-key")})};
+    return {pool, store, service: new McpOAuthService({store, crypto: new SecretCrypto("test-master-key")})};
   }
 
   it("round-trips encrypted connection state and never stores token plaintext", async () => {
@@ -59,6 +59,23 @@ describe("MCP OAuth persistence", () => {
     expect(connection?.state.tokens).toMatchObject({access_token: "secret-access-token"});
     const row = (await pool.query("SELECT * FROM runtime.agent_mcp_oauth_connections")).rows[0];
     expect(JSON.stringify(row)).not.toContain("secret-access-token");
+  });
+
+  it("rejects ciphertext tuples swapped between OAuth connection identities", async () => {
+    const {pool, service} = await harness();
+    await service.saveConnection({agentKey: "panda", serverName: "reports", expectedVersion: null, state: {version: MCP_OAUTH_STATE_VERSION, tokens: {access_token: "reports-token"}}});
+    await service.saveConnection({agentKey: "panda", serverName: "calendar", expectedVersion: null, state: {version: MCP_OAUTH_STATE_VERSION, tokens: {access_token: "calendar-token"}}});
+    const source = (await pool.query(`
+      SELECT state_ciphertext, state_iv, state_tag, envelope_version
+      FROM runtime.agent_mcp_oauth_connections WHERE agent_key = 'panda' AND server_name = 'calendar'
+    `)).rows[0]!;
+    await pool.query(`
+      UPDATE runtime.agent_mcp_oauth_connections
+      SET state_ciphertext = $1, state_iv = $2, state_tag = $3, envelope_version = $4
+      WHERE agent_key = 'panda' AND server_name = 'reports'
+    `, [source.state_ciphertext, source.state_iv, source.state_tag, source.envelope_version]);
+
+    await expect(service.getConnection("panda", "reports")).rejects.toThrow();
   });
 
   it("uses compare-and-set versions for token rotation", async () => {

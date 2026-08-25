@@ -17,7 +17,7 @@ import {
 } from "../../../domain/connector-leases/repo.js";
 import {PostgresConnectorAccountStore} from "../../../domain/connectors/postgres.js";
 import type {ConnectorAccountRecord} from "../../../domain/connectors/types.js";
-import {resolveCredentialCrypto, type CredentialCrypto} from "../../../domain/credentials/crypto.js";
+import {resolveSecretCrypto, type SecretCrypto} from "../../../domain/secrets/crypto.js";
 import {ConversationRepo} from "../../../domain/sessions/conversations/repo.js";
 import {PostgresSessionStore} from "../../../domain/sessions/postgres.js";
 import {RuntimeRequestRepo} from "../../../domain/threads/requests/repo.js";
@@ -127,7 +127,7 @@ export interface DiscordServiceDependencies {
     stores: DiscordWorkerStores;
     log(event: string, payload: Record<string, unknown>): void;
   }) => DiscordServiceVoiceWorker;
-  resolveCrypto?: () => CredentialCrypto | null;
+  resolveCrypto?: () => SecretCrypto | null;
 }
 
 function buildSecretRedactionFragments(secret: string): readonly string[] {
@@ -325,7 +325,7 @@ export class DiscordService {
   }
 
   private async loadBotToken(stores: DiscordWorkerStores, account: ConnectorAccountRecord): Promise<string> {
-    const crypto = (this.dependencies.resolveCrypto ?? resolveCredentialCrypto)();
+    const crypto = (this.dependencies.resolveCrypto ?? resolveSecretCrypto)();
     if (!crypto) {
       throw new Error("CREDENTIALS_MASTER_KEY is required for Discord worker.");
     }

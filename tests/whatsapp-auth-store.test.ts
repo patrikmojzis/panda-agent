@@ -6,7 +6,7 @@ import {initAuthCreds, proto} from "baileys";
 
 import {PostgresConnectorAccountStore} from "../src/domain/connectors/postgres.js";
 import {PostgresAgentStore} from "../src/domain/agents/postgres.js";
-import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
+import {SecretCrypto} from "../src/domain/secrets/crypto.js";
 import {PostgresWhatsAppAuthStore} from "../src/integrations/channels/whatsapp/auth-store.js";
 import {ensurePostgresWhatsAppAuthSchema} from "../src/integrations/channels/whatsapp/auth-schema.js";
 
@@ -22,7 +22,7 @@ describe("PostgresWhatsAppAuthStore", () => {
     const adapter = db.adapters.createPg();
     const pool = new adapter.Pool();
     pools.push(pool);
-    const crypto = new CredentialCrypto(masterKey);
+    const crypto = new SecretCrypto(masterKey);
     const auth = new PostgresWhatsAppAuthStore({pool, crypto});
     await ensurePostgresWhatsAppAuthSchema(pool);
     const agents = new PostgresAgentStore({pool});
@@ -48,7 +48,7 @@ describe("PostgresWhatsAppAuthStore", () => {
     const creds = initAuthCreds();
     creds.registered = true;
     creds.pairingCode = "123-456";
-    await auth.saveCreds(account.id, creds);
+    await auth.saveCreds(account.id.toUpperCase(), creds);
 
     await expect(auth.loadCreds(account.id)).resolves.toMatchObject({registered: true, pairingCode: "123-456"});
     const raw = await pool.query("SELECT value_ciphertext::text AS ciphertext FROM runtime.whatsapp_account_auth_creds WHERE account_id = $1", [account.id]);
@@ -61,7 +61,7 @@ describe("PostgresWhatsAppAuthStore", () => {
     creds.registered = true;
     await auth.saveCreds(account.id, creds);
 
-    const wrongKeyStore = new PostgresWhatsAppAuthStore({pool, crypto: new CredentialCrypto("different-key")});
+    const wrongKeyStore = new PostgresWhatsAppAuthStore({pool, crypto: new SecretCrypto("different-key")});
     await expect(wrongKeyStore.loadCreds(account.id)).rejects.toThrow();
   });
 
@@ -82,6 +82,25 @@ describe("PostgresWhatsAppAuthStore", () => {
 
     await auth.saveSignalKeys(account.id, {session: {"session-1": null}});
     await expect(auth.loadSignalKeys(account.id, "session", ["session-1"])).resolves.toEqual({"session-1": undefined});
+  });
+
+  it("rejects ciphertext tuples swapped between signal key identities", async () => {
+    const {account, auth, pool} = await createHarness();
+    await auth.saveSignalKeys(account.id, {
+      session: {"session-1": Buffer.from("first"), "session-2": Buffer.from("second")},
+    });
+    const source = (await pool.query(`
+      SELECT value_ciphertext, value_iv, value_tag, envelope_version
+      FROM runtime.whatsapp_account_auth_keys
+      WHERE account_id = $1 AND category = 'session' AND key_id = 'session-2'
+    `, [account.id])).rows[0]!;
+    await pool.query(`
+      UPDATE runtime.whatsapp_account_auth_keys
+      SET value_ciphertext = $2, value_iv = $3, value_tag = $4, envelope_version = $5
+      WHERE account_id = $1 AND category = 'session' AND key_id = 'session-1'
+    `, [account.id, source.value_ciphertext, source.value_iv, source.value_tag, source.envelope_version]);
+
+    await expect(auth.loadSignalKeys(account.id, "session", ["session-1"])).rejects.toThrow();
   });
 
   it("backs a Baileys auth state handle with the account", async () => {

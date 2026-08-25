@@ -9,7 +9,7 @@ import {Agent, BashTool, stringToUserMessage, Tool, ToolError, z,} from "../src/
 import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {ensurePostgresAgentTableSchema} from "../src/domain/agents/postgres-schema.js";
-import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
+import {SecretCrypto} from "../src/domain/secrets/crypto.js";
 import {createClearEnvValueCommand, createSetEnvValueCommand} from "../src/domain/credentials/commands.js";
 import {PostgresCredentialStore} from "../src/domain/credentials/postgres.js";
 import {ensurePostgresCredentialSchema} from "../src/domain/credentials/postgres-schema.js";
@@ -55,7 +55,7 @@ describe("credentials end-to-end", () => {
       displayName: "Panda",
     });
 
-    const crypto = new CredentialCrypto("e2e-master-key");
+    const crypto = new SecretCrypto("e2e-master-key");
     const resolver = new CredentialResolver({
       store: credentialStore,
       crypto,

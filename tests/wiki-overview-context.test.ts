@@ -27,7 +27,7 @@ function createBinding(agentKey = "panda") {
     wikiGroupId: 1,
     namespacePath: `agents/${agentKey}`,
     apiToken: "wiki-token",
-    keyVersion: 1,
+    envelopeVersion: 2,
     createdAt: 1,
     updatedAt: 1,
   };

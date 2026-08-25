@@ -1,6 +1,6 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 
-import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
+import {SecretCrypto} from "../src/domain/secrets/crypto.js";
 import {
   whatsappAccountCreateCommand,
   whatsappAccountDisableCommand,
@@ -69,7 +69,7 @@ vi.mock("../src/integrations/channels/whatsapp/auth-store.js", () => ({
 
 function dependencies(service: Record<string, unknown> = {}): WhatsAppCliDependencies {
   return {
-    crypto: new CredentialCrypto("whatsapp-cli-tests"),
+    crypto: new SecretCrypto("whatsapp-cli-tests"),
     createDaemonRuntime: async () => ({
       pool: {},
       poolConfig: {applicationName: "panda/whatsapp", max: 2},
@@ -186,7 +186,7 @@ describe("WhatsApp account CLI", () => {
       return service;
     });
     const command = whatsappRunCommand(undefined, {allEnabled: true}, {
-      crypto: new CredentialCrypto("whatsapp-cli-tests"),
+      crypto: new SecretCrypto("whatsapp-cli-tests"),
       createDaemonRuntime: async () => runtime,
       createRunService,
     });
@@ -218,7 +218,7 @@ describe("WhatsApp account CLI", () => {
     });
 
     await whatsappRunCommand(undefined, {allEnabled: true}, {
-      crypto: new CredentialCrypto("whatsapp-cli-tests"),
+      crypto: new SecretCrypto("whatsapp-cli-tests"),
       createDaemonRuntime: async () => ({
         pool: {},
         poolConfig: {applicationName: "panda/whatsapp", max: 2},

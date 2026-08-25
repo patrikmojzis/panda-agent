@@ -1,9 +1,9 @@
 import {isJsonObject, type JsonObject} from "../../lib/json.js";
 import {hashOpaqueToken} from "../../lib/opaque-tokens.js";
 import {isRecord} from "../../lib/records.js";
-import {CredentialCrypto} from "../credentials/crypto.js";
+import {SecretCrypto, type EncryptedSecret, type SecretContext} from "../secrets/crypto.js";
 import type {McpOAuthAttemptRecord, McpOAuthConnectionRecord, McpOAuthConnectionState, DecryptedMcpOAuthAttempt, DecryptedMcpOAuthConnection, McpOAuthInitiator} from "./oauth-types.js";
-import {MCP_OAUTH_STATE_VERSION} from "./oauth-types.js";
+import {MCP_OAUTH_STATE_VERSION, mcpOAuthAttemptSecretContext, mcpOAuthConnectionSecretContext} from "./oauth-types.js";
 
 type OAuthStore = {
   getConnection(agentKey: string, serverName: string): Promise<McpOAuthConnectionRecord | null>;
@@ -12,7 +12,7 @@ type OAuthStore = {
     serverName: string;
     resourceUrl?: string;
     authorizationServerUrl?: string;
-    encryptedState: ReturnType<CredentialCrypto["encrypt"]>;
+    encryptedState: EncryptedSecret;
     expectedVersion: number | null;
     authorizedAt?: number;
   }): Promise<McpOAuthConnectionRecord | null>;
@@ -21,7 +21,7 @@ type OAuthStore = {
     stateHash: string;
     agentKey: string;
     serverName: string;
-    encryptedVerifier: ReturnType<CredentialCrypto["encrypt"]>;
+    encryptedVerifier: EncryptedSecret;
     initiator: McpOAuthInitiator;
     expiresAt: number;
   }): Promise<McpOAuthAttemptRecord>;
@@ -29,13 +29,8 @@ type OAuthStore = {
   hasActiveAttempt(agentKey: string, serverName: string, now: number): Promise<boolean>;
 };
 
-function decrypt(crypto: CredentialCrypto, value: McpOAuthConnectionRecord["encryptedState"]): string {
-  return crypto.decrypt({
-    valueCiphertext: value.ciphertext,
-    valueIv: value.iv,
-    valueTag: value.tag,
-    keyVersion: value.keyVersion,
-  });
+function decrypt(crypto: SecretCrypto, value: EncryptedSecret, context: SecretContext): string {
+  return crypto.open(value, context);
 }
 
 function parseState(raw: string): McpOAuthConnectionState {
@@ -58,9 +53,12 @@ function parseState(raw: string): McpOAuthConnectionState {
   return value as unknown as McpOAuthConnectionState;
 }
 
-function decryptConnection(record: McpOAuthConnectionRecord, crypto: CredentialCrypto): DecryptedMcpOAuthConnection {
+function decryptConnection(record: McpOAuthConnectionRecord, crypto: SecretCrypto): DecryptedMcpOAuthConnection {
   const {encryptedState, ...metadata} = record;
-  return {...metadata, state: parseState(decrypt(crypto, encryptedState))};
+  return {
+    ...metadata,
+    state: parseState(decrypt(crypto, encryptedState, mcpOAuthConnectionSecretContext(record.agentKey, record.serverName))),
+  };
 }
 
 function jsonState(state: McpOAuthConnectionState): JsonObject {
@@ -70,7 +68,7 @@ function jsonState(state: McpOAuthConnectionState): JsonObject {
 }
 
 export class McpOAuthService {
-  constructor(private readonly options: {store: OAuthStore; crypto: CredentialCrypto}) {}
+  constructor(private readonly options: {store: OAuthStore; crypto: SecretCrypto}) {}
 
   async getConnection(agentKey: string, serverName: string): Promise<DecryptedMcpOAuthConnection | null> {
     const record = await this.options.store.getConnection(agentKey, serverName);
@@ -86,7 +84,10 @@ export class McpOAuthService {
     authorizationServerUrl?: string;
     authorizedAt?: number;
   }): Promise<DecryptedMcpOAuthConnection | null> {
-    const encryptedState = this.options.crypto.encrypt(JSON.stringify(jsonState(input.state)));
+    const encryptedState = this.options.crypto.seal(
+      JSON.stringify(jsonState(input.state)),
+      mcpOAuthConnectionSecretContext(input.agentKey, input.serverName),
+    );
     const record = await this.options.store.compareAndSetConnection({...input, encryptedState});
     return record ? decryptConnection(record, this.options.crypto) : null;
   }
@@ -103,11 +104,15 @@ export class McpOAuthService {
     initiator: McpOAuthInitiator;
     expiresAt: number;
   }): Promise<void> {
+    const stateHash = hashOpaqueToken(input.rawState);
     await this.options.store.createAttempt({
-      stateHash: hashOpaqueToken(input.rawState),
+      stateHash,
       agentKey: input.agentKey,
       serverName: input.serverName,
-      encryptedVerifier: this.options.crypto.encrypt(input.codeVerifier),
+      encryptedVerifier: this.options.crypto.seal(
+        input.codeVerifier,
+        mcpOAuthAttemptSecretContext(stateHash, input.agentKey, input.serverName),
+      ),
       initiator: input.initiator,
       expiresAt: input.expiresAt,
     });
@@ -117,7 +122,14 @@ export class McpOAuthService {
     const record = await this.options.store.consumeAttempt(hashOpaqueToken(rawState), now);
     if (!record) return null;
     const {encryptedVerifier, ...metadata} = record;
-    return {...metadata, codeVerifier: decrypt(this.options.crypto, encryptedVerifier)};
+    return {
+      ...metadata,
+      codeVerifier: decrypt(
+        this.options.crypto,
+        encryptedVerifier,
+        mcpOAuthAttemptSecretContext(record.stateHash, record.agentKey, record.serverName),
+      ),
+    };
   }
 
   hasActiveAttempt(agentKey: string, serverName: string, now = Date.now()): Promise<boolean> {

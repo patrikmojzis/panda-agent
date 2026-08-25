@@ -1,5 +1,8 @@
-import type {EncryptedCredentialValue} from "../credentials/types.js";
+import type {EncryptedSecret, SecretContext} from "../secrets/crypto.js";
 import type {JsonObject} from "../../lib/json.js";
+import {requireNonEmptyString} from "../../lib/strings.js";
+import {normalizeAgentKey} from "../agents/types.js";
+import {isSafeMcpServerName} from "./config.js";
 
 export const MCP_OAUTH_STATE_VERSION = 1;
 export const MCP_OAUTH_ATTEMPT_TTL_MS = 10 * 60 * 1000;
@@ -17,7 +20,7 @@ export interface McpOAuthConnectionRecord {
   serverName: string;
   resourceUrl?: string;
   authorizationServerUrl?: string;
-  encryptedState: EncryptedCredentialValue;
+  encryptedState: EncryptedSecret;
   version: number;
   authorizedAt?: number;
   createdAt: number;
@@ -32,7 +35,7 @@ export interface McpOAuthAttemptRecord {
   stateHash: string;
   agentKey: string;
   serverName: string;
-  encryptedVerifier: EncryptedCredentialValue;
+  encryptedVerifier: EncryptedSecret;
   initiator: McpOAuthInitiator;
   expiresAt: number;
   consumedAt?: number;
@@ -67,4 +70,27 @@ export interface McpOAuthDiscoverySummary {
 
 export function mcpOAuthGrantRef(serverName: string): string {
   return `mcp-oauth:${serverName}`;
+}
+
+function normalizeServerName(value: string): string {
+  const normalized = requireNonEmptyString(value, "MCP OAuth server name is required.");
+  if (!isSafeMcpServerName(normalized)) {
+    throw new Error("MCP OAuth server name is invalid.");
+  }
+  return normalized;
+}
+
+export function mcpOAuthConnectionSecretContext(agentKey: string, serverName: string): SecretContext {
+  return {purpose: "mcp-oauth-connection", identity: [normalizeAgentKey(agentKey), normalizeServerName(serverName)]};
+}
+
+export function mcpOAuthAttemptSecretContext(stateHash: string, agentKey: string, serverName: string): SecretContext {
+  return {
+    purpose: "mcp-oauth-attempt",
+    identity: [
+      requireNonEmptyString(stateHash, "MCP OAuth state hash is required."),
+      normalizeAgentKey(agentKey),
+      normalizeServerName(serverName),
+    ],
+  };
 }

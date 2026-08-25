@@ -3,7 +3,7 @@ import {withTransaction} from "../../lib/postgres-transaction.js";
 import {optionalTimestampMillis, requireTimestampMillis} from "../../lib/postgres-values.js";
 import {requireNonEmptyString} from "../../lib/strings.js";
 import {normalizeAgentKey} from "../agents/types.js";
-import type {EncryptedCredentialValue} from "../credentials/types.js";
+import type {EncryptedSecret} from "../secrets/crypto.js";
 import {isSafeMcpServerName} from "./config.js";
 import type {McpOAuthAttemptRecord, McpOAuthConnectionRecord, McpOAuthInitiator} from "./oauth-types.js";
 import {buildMcpTableNames} from "./postgres-shared.js";
@@ -32,12 +32,12 @@ function optionalString(value: unknown, label: string): string | undefined {
   return requireNonEmptyString(value, `${label} must be a non-empty string.`);
 }
 
-function encrypted(row: Record<string, unknown>, prefix: "state" | "verifier"): EncryptedCredentialValue {
+function encrypted(row: Record<string, unknown>, prefix: "state" | "verifier"): EncryptedSecret {
   return {
     ciphertext: binary(row[`${prefix}_ciphertext`], `MCP OAuth ${prefix} ciphertext`),
     iv: binary(row[`${prefix}_iv`], `MCP OAuth ${prefix} IV`),
     tag: binary(row[`${prefix}_tag`], `MCP OAuth ${prefix} tag`),
-    keyVersion: positiveInteger(row.key_version, "MCP OAuth key version"),
+    envelopeVersion: positiveInteger(row.envelope_version, "MCP OAuth envelope version"),
   };
 }
 
@@ -104,18 +104,18 @@ export class PostgresMcpOAuthStore {
     serverName: string;
     resourceUrl?: string;
     authorizationServerUrl?: string;
-    encryptedState: EncryptedCredentialValue;
+    encryptedState: EncryptedSecret;
     expectedVersion: number | null;
     authorizedAt?: number;
   }): Promise<McpOAuthConnectionRecord | null> {
     const params = [normalizeAgentKey(input.agentKey), serverName(input.serverName), input.resourceUrl ?? null, input.authorizationServerUrl ?? null,
-      input.encryptedState.ciphertext, input.encryptedState.iv, input.encryptedState.tag, input.encryptedState.keyVersion,
+      input.encryptedState.ciphertext, input.encryptedState.iv, input.encryptedState.tag, input.encryptedState.envelopeVersion,
       input.authorizedAt === undefined ? null : new Date(input.authorizedAt)];
     const result = input.expectedVersion === null
       ? await this.pool.query(`
           INSERT INTO ${this.tables.oauthConnections} (
             agent_key, server_name, resource_url, authorization_server_url,
-            state_ciphertext, state_iv, state_tag, key_version, authorized_at
+            state_ciphertext, state_iv, state_tag, envelope_version, authorized_at
           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
           ON CONFLICT (agent_key, server_name) DO NOTHING
           RETURNING *
@@ -123,7 +123,7 @@ export class PostgresMcpOAuthStore {
       : await this.pool.query(`
           UPDATE ${this.tables.oauthConnections}
           SET resource_url=$3, authorization_server_url=$4,
-              state_ciphertext=$5, state_iv=$6, state_tag=$7, key_version=$8,
+              state_ciphertext=$5, state_iv=$6, state_tag=$7, envelope_version=$8,
               authorized_at=$9, version=version+1, updated_at=NOW()
           WHERE agent_key=$1 AND server_name=$2 AND version=$10
           RETURNING *
@@ -140,7 +140,7 @@ export class PostgresMcpOAuthStore {
     stateHash: string;
     agentKey: string;
     serverName: string;
-    encryptedVerifier: EncryptedCredentialValue;
+    encryptedVerifier: EncryptedSecret;
     initiator: McpOAuthInitiator;
     expiresAt: number;
   }): Promise<McpOAuthAttemptRecord> {
@@ -159,14 +159,14 @@ export class PostgresMcpOAuthStore {
       const result = await client.query(`
         INSERT INTO ${this.tables.oauthAttempts} (
           state_hash, agent_key, server_name, verifier_ciphertext, verifier_iv, verifier_tag,
-          key_version, initiator_kind, initiated_identity_id, initiated_session_id, initiated_thread_id, expires_at
+          envelope_version, initiator_kind, initiated_identity_id, initiated_session_id, initiated_thread_id, expires_at
         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
         ON CONFLICT (agent_key, server_name) DO UPDATE SET
           state_hash=EXCLUDED.state_hash,
           verifier_ciphertext=EXCLUDED.verifier_ciphertext,
           verifier_iv=EXCLUDED.verifier_iv,
           verifier_tag=EXCLUDED.verifier_tag,
-          key_version=EXCLUDED.key_version,
+          envelope_version=EXCLUDED.envelope_version,
           initiator_kind=EXCLUDED.initiator_kind,
           initiated_identity_id=EXCLUDED.initiated_identity_id,
           initiated_session_id=EXCLUDED.initiated_session_id,
@@ -176,7 +176,7 @@ export class PostgresMcpOAuthStore {
           created_at=NOW()
         RETURNING *
       `, [input.stateHash, normalizeAgentKey(input.agentKey), serverName(input.serverName), input.encryptedVerifier.ciphertext,
-        input.encryptedVerifier.iv, input.encryptedVerifier.tag, input.encryptedVerifier.keyVersion,
+        input.encryptedVerifier.iv, input.encryptedVerifier.tag, input.encryptedVerifier.envelopeVersion,
         input.initiator.kind,
         input.initiator.identityId ?? null,
         sessionId,

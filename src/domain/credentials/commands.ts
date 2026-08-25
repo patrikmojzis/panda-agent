@@ -209,7 +209,7 @@ export const envListCommandDescriptor: CommandDescriptor = {
     prefix: "string|null",
     credentials: [{
       envKey: "string",
-      keyVersion: "number",
+      envelopeVersion: "number",
       createdAt: "number",
       updatedAt: "number",
     }],
@@ -230,7 +230,7 @@ export function createSetEnvValueCommand(service: EnvCommandService): Registered
       const output = requireCommandJsonObject({
         ok: true,
         envKey: record.envKey,
-        valueLength: record.value.length,
+        valueLength: input.value.length,
       }, "env.set result");
 
       return {
@@ -255,7 +255,7 @@ export function createListEnvValuesCommand(service: EnvCommandService): Register
         .filter((credential) => input.prefix === undefined || credential.envKey.startsWith(input.prefix))
         .map((credential) => ({
           envKey: credential.envKey,
-          keyVersion: credential.keyVersion,
+          envelopeVersion: credential.envelopeVersion,
           createdAt: credential.createdAt,
           updatedAt: credential.updatedAt,
         }));

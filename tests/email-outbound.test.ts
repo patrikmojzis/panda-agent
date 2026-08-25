@@ -102,7 +102,7 @@ function fakeResolver(): EmailOutboundCredentialResolver {
       value: `${envKey}-value`,
       valuePreview: "preview",
       agentKey: "panda",
-      keyVersion: 1,
+      envelopeVersion: 2,
       createdAt: 1,
       updatedAt: 1,
     }),

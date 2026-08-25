@@ -10,7 +10,7 @@ import {ConversationRepo} from "../../../domain/sessions/conversations/repo.js";
 import type {ConversationBinding} from "../../../domain/sessions/conversations/types.js";
 import {PostgresSessionStore} from "../../../domain/sessions/postgres.js";
 import {normalizeConnectorAccountKey, type ConnectorAccountOwnerInput, type ConnectorAccountRecord} from "../../../domain/connectors/types.js";
-import {resolveCredentialCrypto, type CredentialCrypto} from "../../../domain/credentials/crypto.js";
+import {resolveSecretCrypto, type SecretCrypto} from "../../../domain/secrets/crypto.js";
 import {PostgresIdentityStore} from "../../../domain/identity/postgres.js";
 import {normalizeIdentityHandle, type IdentityBindingRecord, type IdentityRecord} from "../../../domain/identity/types.js";
 import {DB_URL_OPTION_DESCRIPTION, parseRequiredOptionValue, parseSessionIdOption} from "../../../lib/cli.js";
@@ -231,8 +231,8 @@ function readDiscordBotTokenFromEnv(envKey: string, env: NodeJS.ProcessEnv): str
   return token;
 }
 
-function resolveDiscordAccountCrypto(): CredentialCrypto {
-  const crypto = resolveCredentialCrypto();
+function resolveDiscordAccountCrypto(): SecretCrypto {
+  const crypto = resolveSecretCrypto();
   if (!crypto) {
     throw new Error("CREDENTIALS_MASTER_KEY is required for Discord account commands.");
   }

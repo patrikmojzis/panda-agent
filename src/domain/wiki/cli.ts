@@ -8,7 +8,7 @@ import {parseAgentKey} from "../agents/cli.js";
 import type {CommandDescriptor} from "../commands/types.js";
 import {writeCommandDescriptorHelp} from "../commands/cli.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
-import {resolveCredentialCrypto} from "../credentials/crypto.js";
+import {resolveSecretCrypto} from "../secrets/crypto.js";
 import {PostgresWikiBindingStore} from "./postgres.js";
 import {WikiBindingService} from "./service.js";
 import {normalizeWikiNamespacePath} from "./types.js";
@@ -109,7 +109,7 @@ async function withWikiBindingService<T>(
   }) => Promise<T>,
 ): Promise<T> {
   return withWikiBindingStores(options, async ({agentStore, wikiBindingStore}) => {
-    const crypto = resolveCredentialCrypto();
+    const crypto = resolveSecretCrypto();
     if (!crypto) {
       throw new Error("CREDENTIALS_MASTER_KEY is required for wiki binding commands.");
     }

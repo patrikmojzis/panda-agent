@@ -1,5 +1,5 @@
 import type {ConnectorAccountOwnerInput, ConnectorAccountRecord, UpsertConnectorAccountInput} from "../../../domain/connectors/types.js";
-import type {CredentialCrypto} from "../../../domain/credentials/crypto.js";
+import type {SecretCrypto} from "../../../domain/secrets/crypto.js";
 import {DISCORD_BOT_TOKEN_SECRET_KEY, DISCORD_SOURCE} from "./config.js";
 import {type DiscordCurrentUser, type DiscordRestClient, requireDiscordBotToken} from "./api.js";
 
@@ -11,12 +11,12 @@ export interface DiscordAccountStore {
     accountId: string,
     secretKey: string,
     plaintext: string,
-    crypto: CredentialCrypto | null | undefined,
+    crypto: SecretCrypto | null | undefined,
   ): Promise<unknown>;
   getSecret(
     accountId: string,
     secretKey: string,
-    crypto: CredentialCrypto | null | undefined,
+    crypto: SecretCrypto | null | undefined,
   ): Promise<string | null>;
 }
 
@@ -24,14 +24,14 @@ export interface SetDiscordBotAccountInput extends ConnectorAccountOwnerInput {
   accountKey: string;
   botToken: string;
   client: DiscordRestClient;
-  crypto: CredentialCrypto | null | undefined;
+  crypto: SecretCrypto | null | undefined;
   store: DiscordAccountStore;
 }
 
 export interface StoredDiscordBotAccountInput {
   accountKey: string;
   client: DiscordRestClient;
-  crypto: CredentialCrypto | null | undefined;
+  crypto: SecretCrypto | null | undefined;
   store: DiscordAccountStore;
 }
 
@@ -81,7 +81,7 @@ async function withSecretErrorSafety<T>(secret: string, fn: () => Promise<T>): P
   }
 }
 
-function requireDiscordAccountCrypto(crypto: CredentialCrypto | null | undefined): CredentialCrypto {
+function requireDiscordAccountCrypto(crypto: SecretCrypto | null | undefined): SecretCrypto {
   if (!crypto) {
     throw new Error("CREDENTIALS_MASTER_KEY is required for Discord account commands.");
   }

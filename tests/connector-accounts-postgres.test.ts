@@ -6,7 +6,7 @@ import {DataType, newDb} from "pg-mem";
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {PostgresConnectorAccountStore} from "../src/domain/connectors/index.js";
 import {ensurePostgresConnectorAccountSchema} from "../src/domain/connectors/postgres-schema.js";
-import {CredentialCrypto} from "../src/domain/credentials/crypto.js";
+import {SecretCrypto} from "../src/domain/secrets/crypto.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 
 describe("PostgresConnectorAccountStore", () => {
@@ -164,18 +164,19 @@ describe("PostgresConnectorAccountStore", () => {
 
   it("round-trips encrypted connector secrets and returns null for missing secrets", async () => {
     const {connectorStore, pool} = await createHarness();
-    const crypto = new CredentialCrypto("test-connector-master-key");
+    const crypto = new SecretCrypto("test-connector-master-key");
     const account = await connectorStore.upsertAccount({
       source: "discord",
       accountKey: "ops",
       connectorKey: "bot-1",
     });
 
-    await connectorStore.setSecret(account.id, "bot_token", "dummy-token-roundtrip", crypto);
+    await connectorStore.setSecret(account.id.toUpperCase(), "bot_token", "dummy-token-roundtrip", crypto);
 
     await expect(connectorStore.getSecret(account.id, "bot_token", crypto)).resolves.toBe("dummy-token-roundtrip");
+    await expect(connectorStore.getSecret(account.id.toUpperCase(), "bot_token", crypto)).resolves.toBe("dummy-token-roundtrip");
     await expect(connectorStore.getSecret(account.id, "missing_token", crypto)).resolves.toBeNull();
-    await expect(connectorStore.getSecret(account.id, "bot_token", null)).rejects.toThrow("CredentialCrypto");
+    await expect(connectorStore.getSecret(account.id, "bot_token", null)).rejects.toThrow("SecretCrypto");
 
     const raw = await pool.query(`
       SELECT value_ciphertext
@@ -187,9 +188,29 @@ describe("PostgresConnectorAccountStore", () => {
     expect(ciphertext.value_ciphertext.equals(Buffer.from("dummy-token-roundtrip", "utf8"))).toBe(false);
   });
 
+  it("rejects ciphertext tuples swapped between connector secret keys", async () => {
+    const {connectorStore, pool} = await createHarness();
+    const crypto = new SecretCrypto("test-connector-master-key");
+    const account = await connectorStore.upsertAccount({source: "discord", accountKey: "ops", connectorKey: "bot-1"});
+    await connectorStore.setSecret(account.id, "bot_token", "bot-secret", crypto);
+    await connectorStore.setSecret(account.id, "client_secret", "client-secret", crypto);
+    const source = (await pool.query(`
+      SELECT value_ciphertext, value_iv, value_tag, envelope_version
+      FROM runtime.connector_account_secrets
+      WHERE account_id = $1 AND secret_key = 'client_secret'
+    `, [account.id])).rows[0]!;
+    await pool.query(`
+      UPDATE runtime.connector_account_secrets
+      SET value_ciphertext = $2, value_iv = $3, value_tag = $4, envelope_version = $5
+      WHERE account_id = $1 AND secret_key = 'bot_token'
+    `, [account.id, source.value_ciphertext, source.value_iv, source.value_tag, source.envelope_version]);
+
+    await expect(connectorStore.getSecret(account.id, "bot_token", crypto)).rejects.toThrow();
+  });
+
   it("does not expose plaintext or ciphertext in account list or secret summaries", async () => {
     const {connectorStore} = await createHarness();
-    const crypto = new CredentialCrypto("test-connector-master-key");
+    const crypto = new SecretCrypto("test-connector-master-key");
     const account = await connectorStore.upsertAccount({
       source: "discord",
       accountKey: "ops",
