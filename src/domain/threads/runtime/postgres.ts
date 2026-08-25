@@ -77,6 +77,7 @@ import {
   completeOwnedThreadRun,
   failOrphanedThreadRuns,
   failOwnedThreadRun,
+  failOwnedThreadRunBeforeExecution,
   isRunnableThread,
   isThreadRunActive,
   lockThreadRunOwner,
@@ -1231,13 +1232,18 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
     return parseMessageRow(row);
   }
 
-  async tryStartRun(threadId: string, owner: ThreadRunOwner): Promise<ThreadRunRecord | null> {
+  async tryStartRun(
+    threadId: string,
+    owner: ThreadRunOwner,
+    runId: string,
+  ): Promise<ThreadRunRecord | null> {
     const record = await tryStartThreadRun({
       queryable: this.pool,
       tables: this.tables,
       sessionTables: this.sessionTables,
       threadId,
       owner,
+      runId,
       notificationChannel: this.notificationChannel,
     });
     return record;
@@ -1294,6 +1300,21 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
   async failRun(runId: string, error?: string): Promise<ThreadRunRecord> {
     return withTransaction(this.pool, async (client) => {
       const record = await failOwnedThreadRun({
+        queryable: client,
+        tables: this.tables,
+        sessionTables: this.sessionTables,
+        runId,
+        ...(error !== undefined ? {error} : {}),
+        notificationChannel: this.notificationChannel,
+      });
+      await this.notifyThreadChanged(record.threadId, client);
+      return record;
+    });
+  }
+
+  async failRunBeforeExecution(runId: string, error?: string): Promise<ThreadRunRecord> {
+    return withTransaction(this.pool, async (client) => {
+      const record = await failOwnedThreadRunBeforeExecution({
         queryable: client,
         tables: this.tables,
         sessionTables: this.sessionTables,

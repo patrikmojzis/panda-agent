@@ -1,5 +1,3 @@
-import {randomUUID} from "node:crypto";
-
 import {POSTGRES_CONNECTOR_LEASE_TABLE} from "../../connector-leases/postgres-schema.js";
 import type {PgQueryable} from "../../../lib/postgres-query.js";
 import type {SessionTableNames} from "../../sessions/postgres-shared.js";
@@ -117,6 +115,7 @@ export async function tryStartThreadRun(input: {
   sessionTables: SessionTableNames;
   threadId: string;
   owner: ThreadRunOwner;
+  runId: string;
   notificationChannel: string;
 }): Promise<ThreadRunRecord | null> {
   const result = await input.queryable.query(`
@@ -131,6 +130,25 @@ export async function tryStartThreadRun(input: {
       -- takeover must wait until each claim transaction has either committed
       -- its run or proved that no run can be claimed.
       FOR SHARE
+    ), existing_run AS MATERIALIZED (
+      -- The caller retains this run id across admission retries. If the INSERT
+      -- committed but its response was lost, return that exact owned row
+      -- without requiring another wake or repeating claim side effects.
+      SELECT run.*
+      FROM ${input.tables.runs} AS run
+      INNER JOIN ${input.tables.threads} AS thread
+        ON thread.id = run.thread_id
+       AND thread.run_claims_blocked_at IS NULL
+      INNER JOIN ${input.sessionTables.sessions} AS session
+        ON session.id = thread.session_id
+       AND session.current_thread_id = thread.id
+      CROSS JOIN current_owner
+      WHERE run.id = $1
+        AND run.thread_id = $2
+        AND run.owner_source = $3
+        AND run.owner_key = $4
+        AND run.owner_holder_id = $5
+        AND run.status = 'running'
     ), target_session AS MATERIALIZED (
       SELECT thread.session_id
       FROM ${input.tables.threads} AS thread
@@ -167,6 +185,7 @@ export async function tryStartThreadRun(input: {
        AND session.current_thread_id = thread.id
       WHERE thread.id = $2
         AND EXISTS (SELECT 1 FROM observed_wake)
+        AND NOT EXISTS (SELECT 1 FROM existing_run)
         -- PostgreSQL rechecks this row predicate after waiting for the row
         -- lock. A reset fence committed after the statement snapshot therefore
         -- still defeats the stale claim instead of admitting a successor run.
@@ -187,6 +206,10 @@ export async function tryStartThreadRun(input: {
       FROM claimable_thread
       ON CONFLICT (thread_id) WHERE status = 'running' DO NOTHING
       RETURNING *
+    ), resolved_run AS (
+      SELECT * FROM inserted_run
+      UNION ALL
+      SELECT * FROM existing_run
     ), consumed_wake AS (
       -- Clear only the generation visible to this statement. PostgreSQL may
       -- recheck the row after a lock wait without refreshing the statement
@@ -212,12 +235,12 @@ export async function tryStartThreadRun(input: {
       ) AS notification
       FROM updated_thread
     )
-    SELECT inserted_run.*, notified.notification,
+    SELECT resolved_run.*, notified.notification,
            (SELECT COUNT(*) FROM consumed_wake) AS consumed_wake_count
-    FROM inserted_run
-    INNER JOIN notified ON TRUE
+    FROM resolved_run
+    LEFT JOIN notified ON TRUE
   `, [
-    randomUUID(),
+    input.runId,
     input.threadId,
     input.owner.source,
     input.owner.connectorKey,
@@ -225,6 +248,54 @@ export async function tryStartThreadRun(input: {
     input.notificationChannel,
   ]);
 
+  const row = result.rows[0] as Record<string, unknown> | undefined;
+  if (row) {
+    return parseRunRow(row);
+  }
+
+  // A concurrent replay can take its statement snapshot before the original
+  // claim commits, then lose the INSERT conflict after waiting for that commit.
+  // PostgreSQL does not make the winner visible to the old snapshot, so only a
+  // fresh statement can distinguish that committed claim from a true no-claim.
+  return findThreadRunAdmission(input);
+}
+
+async function findThreadRunAdmission(input: {
+  queryable: PgQueryable;
+  tables: ThreadRuntimeTableNames;
+  sessionTables: SessionTableNames;
+  threadId: string;
+  owner: ThreadRunOwner;
+  runId: string;
+}): Promise<ThreadRunRecord | null> {
+  const result = await input.queryable.query(`
+    SELECT run.*
+    FROM ${input.tables.runs} AS run
+    INNER JOIN ${input.tables.threads} AS thread
+      ON thread.id = run.thread_id
+     AND thread.run_claims_blocked_at IS NULL
+    INNER JOIN ${input.sessionTables.sessions} AS session
+      ON session.id = thread.session_id
+     AND session.current_thread_id = thread.id
+    INNER JOIN ${POSTGRES_CONNECTOR_LEASE_TABLE} AS owner_lease
+      ON owner_lease.source = run.owner_source
+     AND owner_lease.connector_key = run.owner_key
+     AND owner_lease.holder_id = run.owner_holder_id
+     AND owner_lease.leased_until > NOW()
+    WHERE run.id = $1
+      AND run.thread_id = $2
+      AND run.owner_source = $3
+      AND run.owner_key = $4
+      AND run.owner_holder_id = $5
+      AND run.status = 'running'
+    LIMIT 1
+  `, [
+    input.runId,
+    input.threadId,
+    input.owner.source,
+    input.owner.connectorKey,
+    input.owner.holderId,
+  ]);
   const row = result.rows[0] as Record<string, unknown> | undefined;
   return row ? parseRunRow(row) : null;
 }
@@ -282,6 +353,31 @@ export async function failOwnedThreadRun(input: {
   error?: string;
   notificationChannel: string;
 }): Promise<ThreadRunRecord> {
+  return failOwnedThreadRunWithWakePolicy(input, false);
+}
+
+export async function failOwnedThreadRunBeforeExecution(input: {
+  queryable: PgQueryable;
+  tables: ThreadRuntimeTableNames;
+  sessionTables: SessionTableNames;
+  runId: string;
+  error?: string;
+  notificationChannel: string;
+}): Promise<ThreadRunRecord> {
+  return failOwnedThreadRunWithWakePolicy(input, true);
+}
+
+async function failOwnedThreadRunWithWakePolicy(
+  input: {
+    queryable: PgQueryable;
+    tables: ThreadRuntimeTableNames;
+    sessionTables: SessionTableNames;
+    runId: string;
+    error?: string;
+    notificationChannel: string;
+  },
+  rearmWithoutPendingInput: boolean,
+): Promise<ThreadRunRecord> {
   const result = await input.queryable.query(`
     WITH ${buildActiveThreadRunGuardCte(input.tables, {runIdParameter: 1})}, locked_thread AS MATERIALIZED (
       SELECT thread.id, thread.session_id
@@ -297,8 +393,9 @@ export async function failOwnedThreadRun(input: {
       WHERE run.id = active_run.id
       RETURNING run.*
     ), changed_threads AS (
-      -- A failed run re-arms its remaining cutoff with one session wake. Input
-      -- rows stay immutable; an explicit abort deliberately leaves them dormant.
+      -- Normal failure re-arms only an admitted pending cutoff. A claim that
+      -- never reached execution must also restore a consumed wake-only edge.
+      -- Input rows stay immutable; an explicit abort leaves both dormant.
       SELECT thread.id AS thread_id, thread.session_id
       FROM active_run
       INNER JOIN locked_thread AS thread ON thread.id = active_run.thread_id
@@ -306,13 +403,16 @@ export async function failOwnedThreadRun(input: {
         ON session.id = thread.session_id
        AND session.current_thread_id = thread.id
       WHERE active_run.abort_requested_at IS NULL
-        AND EXISTS (
-          SELECT 1
-          FROM ${input.tables.inputs} AS pending_input
-          WHERE pending_input.thread_id = active_run.thread_id
-            AND pending_input.applied_at IS NULL
-            AND pending_input.discarded_at IS NULL
-            AND pending_input.input_order <= active_run.admitted_through_input_order
+        AND (
+          $4::boolean
+          OR EXISTS (
+            SELECT 1
+            FROM ${input.tables.inputs} AS pending_input
+            WHERE pending_input.thread_id = active_run.thread_id
+              AND pending_input.applied_at IS NULL
+              AND pending_input.discarded_at IS NULL
+              AND pending_input.input_order <= active_run.admitted_through_input_order
+          )
         )
     ), woken_sessions AS (
       INSERT INTO ${input.sessionTables.sessionRuntimeConfig} (
@@ -338,7 +438,12 @@ export async function failOwnedThreadRun(input: {
            (SELECT COUNT(*) FROM woken_sessions) AS woken_session_count,
            (SELECT COUNT(*) FROM notified) AS notification_count
     FROM failed_run
-  `, [input.runId, input.error ?? null, input.notificationChannel]);
+  `, [
+    input.runId,
+    input.error ?? null,
+    input.notificationChannel,
+    rearmWithoutPendingInput,
+  ]);
   const row = result.rows[0] as Record<string, unknown> | undefined;
   if (!row) {
     throw new ThreadRunClaimLostError(input.runId);

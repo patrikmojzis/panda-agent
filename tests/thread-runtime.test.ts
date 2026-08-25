@@ -1,3 +1,4 @@
+import {randomUUID} from "node:crypto";
 import {mkdtemp, rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
@@ -75,7 +76,7 @@ async function createTestCoordinator(
 
 async function startTestRun(store: TestThreadRuntimeStore, threadId: string) {
   await store.requestWake(threadId);
-  const run = await store.tryStartRun(threadId, TEST_RUN_OWNER);
+  const run = await store.tryStartRun(threadId, TEST_RUN_OWNER, randomUUID());
   if (!run) {
     throw new Error(`Could not start test run for ${threadId}.`);
   }
@@ -443,6 +444,38 @@ class BlockedClaimStore extends TestThreadRuntimeStore {
     // Models a competing durable running row. The input is still pending, but
     // the exact claimability check must not spin while another owner runs it.
     return false;
+  }
+}
+
+class LostClaimResponseStore extends TestThreadRuntimeStore {
+  attempts = 0;
+  readonly attemptedRunIds: string[] = [];
+
+  override async tryStartRun(threadId: string, owner: ThreadRunOwner, runId: string) {
+    this.attempts += 1;
+    this.attemptedRunIds.push(runId);
+    const run = await super.tryStartRun(threadId, owner, runId);
+    if (this.attempts === 1 && run) {
+      throw new Error("database connection reset after claim commit");
+    }
+    return run;
+  }
+}
+
+class ShutdownLostClaimResponseStore extends TestThreadRuntimeStore {
+  readonly claimCommitted = createDeferred<void>();
+  readonly releaseClaimError = createDeferred<void>();
+  readonly attemptedRunIds: string[] = [];
+
+  override async tryStartRun(threadId: string, owner: ThreadRunOwner, runId: string) {
+    this.attemptedRunIds.push(runId);
+    const run = await super.tryStartRun(threadId, owner, runId);
+    if (this.attemptedRunIds.length === 1 && run) {
+      this.claimCommitted.resolve();
+      await this.releaseClaimError.promise;
+      throw new Error("database connection reset after claim commit");
+    }
+    return run;
   }
 }
 
@@ -1365,7 +1398,7 @@ describe("ThreadRuntimeCoordinator", () => {
     }, "queue");
     await store.requestWake("thread-queued-fail-before-apply");
 
-    const run = await store.tryStartRun("thread-queued-fail-before-apply", TEST_RUN_OWNER);
+    const run = await store.tryStartRun("thread-queued-fail-before-apply", TEST_RUN_OWNER, randomUUID());
     expect(run).not.toBeNull();
     await expect(store.getInput(queued.input.id)).resolves.toMatchObject({
       deliveryMode: "queue",
@@ -1389,7 +1422,7 @@ describe("ThreadRuntimeCoordinator", () => {
       message: stringToUserMessage("initial wake"),
       source: "gateway",
     });
-    const run = await store.tryStartRun("thread-boundary-admission", TEST_RUN_OWNER);
+    const run = await store.tryStartRun("thread-boundary-admission", TEST_RUN_OWNER, randomUUID());
     await store.applyPendingInputs("thread-boundary-admission", run!.id);
 
     const queuedBeforeWake = await store.enqueueInput("thread-boundary-admission", {
@@ -1455,6 +1488,122 @@ describe("ThreadRuntimeCoordinator", () => {
       return entry.message.role === "assistant"
         && entry.message.content.some((block) => block.type === "text" && block.text === "processed external wake");
     })).toBe(true);
+  });
+
+  it("recovers a durable wake when the committed run-claim response is lost", async () => {
+    const store = new LostClaimResponseStore();
+    const runtime = createMockRuntime(
+      message("processed after retry"),
+      message("Nothing else to do."),
+    );
+    const registry = new TestThreadDefinitionRegistry().register("admission-retry-agent", {
+      agent: new Agent({
+        name: "admission-retry-agent",
+        instructions: "Reply briefly.",
+      }),
+      runtime,
+    });
+    await createRuntimeThread(store, {
+      id: "thread-admission-retry",
+      agentKey: "admission-retry-agent",
+    });
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const coordinator = await createTestCoordinator({
+      store,
+      resolveDefinition: (thread) => registry.resolve(thread),
+    });
+
+    await coordinator.submitInput("thread-admission-retry", {
+      message: stringToUserMessage("one durable wake"),
+      source: "gateway",
+    });
+    await coordinator.waitForIdle("thread-admission-retry");
+
+    expect(store.attempts).toBe(2);
+    expect(new Set(store.attemptedRunIds).size).toBe(1);
+    expect(runtime.complete).toHaveBeenCalledTimes(2);
+    const runs = await store.listRuns("thread-admission-retry");
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.status).toBe("completed");
+    const transcript = await store.loadTranscriptHistory("thread-admission-retry");
+    expect(transcript.filter((entry) => entry.origin === "input")).toHaveLength(1);
+    expect(transcript.some((entry) => {
+      return entry.message.role === "assistant"
+        && entry.message.content.some((block) => block.type === "text" && block.text === "processed after retry");
+    })).toBe(true);
+  });
+
+  it("fails and rearms an ambiguously committed claim before shutdown releases ownership", async () => {
+    const store = new ShutdownLostClaimResponseStore();
+    await createRuntimeThread(store, {
+      id: "thread-admission-shutdown",
+      agentKey: "admission-shutdown-agent",
+    });
+    const coordinator = await createTestCoordinator({
+      store,
+      shutdownDrainTimeoutMs: 1_000,
+      resolveDefinition: async () => {
+        throw new Error("shutdown admission reconciliation must not start model work");
+      },
+    });
+
+    await coordinator.submitInput("thread-admission-shutdown", {
+      message: stringToUserMessage("survive shutdown"),
+      source: "gateway",
+    });
+    await store.claimCommitted.promise;
+
+    const stopping = coordinator.stop(new Error("planned shutdown"));
+    const concurrentStop = coordinator.stop(new Error("later shutdown"));
+    expect(concurrentStop).toBe(stopping);
+    store.releaseClaimError.resolve();
+    await Promise.all([stopping, concurrentStop]);
+
+    expect(new Set(store.attemptedRunIds).size).toBe(1);
+    const runs = await store.listRuns("thread-admission-shutdown");
+    expect(runs).toEqual([
+      expect.objectContaining({
+        id: store.attemptedRunIds[0],
+        status: "failed",
+        error: "planned shutdown",
+      }),
+    ]);
+    await expect(store.hasPendingWake("thread-admission-shutdown")).resolves.toBe(true);
+    await expect(store.hasPendingInputs("thread-admission-shutdown")).resolves.toBe(true);
+  });
+
+  it("atomically restores a wake-only claim when shutdown wins before execution", async () => {
+    const store = new ShutdownLostClaimResponseStore();
+    await createRuntimeThread(store, {
+      id: "thread-wake-only-admission-shutdown",
+      agentKey: "wake-only-admission-shutdown-agent",
+    });
+    const coordinator = await createTestCoordinator({
+      store,
+      shutdownDrainTimeoutMs: 1_000,
+      resolveDefinition: async () => {
+        throw new Error("wake-only shutdown reconciliation must not start model work");
+      },
+    });
+
+    await store.requestWake("thread-wake-only-admission-shutdown");
+    await coordinator.poke("thread-wake-only-admission-shutdown");
+    await store.claimCommitted.promise;
+
+    const stopping = coordinator.stop(new Error("planned shutdown"));
+    store.releaseClaimError.resolve();
+    await stopping;
+
+    const runs = await store.listRuns("thread-wake-only-admission-shutdown");
+    expect(runs).toEqual([
+      expect.objectContaining({
+        id: store.attemptedRunIds[0],
+        status: "failed",
+        error: "planned shutdown",
+      }),
+    ]);
+    await expect(store.hasPendingInputs("thread-wake-only-admission-shutdown")).resolves.toBe(false);
+    await expect(store.hasPendingWake("thread-wake-only-admission-shutdown")).resolves.toBe(true);
   });
 
   it("leaves durable wake input pending when the database run claim is unavailable", async () => {
@@ -3135,7 +3284,7 @@ describe("ThreadRuntimeCoordinator", () => {
     });
     const freeRun = await store.createRun("thread-free");
     await store.requestWake("thread-held");
-    const heldRun = await store.tryStartRun("thread-held", TEST_RUN_OWNER);
+    const heldRun = await store.tryStartRun("thread-held", TEST_RUN_OWNER, randomUUID());
     if (!heldRun) {
       throw new Error("Expected a run owned by the current daemon.");
     }
@@ -3164,7 +3313,7 @@ describe("ThreadRuntimeCoordinator", () => {
       });
       const freeRun = await store.createRun("thread-free-default");
       await store.requestWake("thread-held-default");
-      const heldRun = await store.tryStartRun("thread-held-default", TEST_RUN_OWNER);
+      const heldRun = await store.tryStartRun("thread-held-default", TEST_RUN_OWNER, randomUUID());
       if (!heldRun) {
         throw new Error("Expected a run owned by the current daemon.");
       }

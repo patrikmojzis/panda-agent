@@ -1,3 +1,5 @@
+import {randomUUID} from "node:crypto";
+
 import {afterAll, beforeAll, describe, expect, it} from "vitest";
 
 import {createPandaSchemaMigrator} from "../../src/app/database/migration-catalog.js";
@@ -64,7 +66,7 @@ describe("run-owned runtime state on PostgreSQL", () => {
 
   liveIt("fences shell and background-job writes at daemon takeover", async () => {
     await threadStore.requestWake("owned-state-thread");
-    const runA = await threadStore.tryStartRun("owned-state-thread", ownerA);
+    const runA = await threadStore.tryStartRun("owned-state-thread", ownerA, randomUUID());
     expect(runA).not.toBeNull();
 
     await expect(threadStore.upsertShellSession({
@@ -115,7 +117,7 @@ describe("run-owned runtime state on PostgreSQL", () => {
     });
 
     await threadStore.requestWake("owned-state-thread");
-    const runB = await threadStore.tryStartRun("owned-state-thread", ownerB);
+    const runB = await threadStore.tryStartRun("owned-state-thread", ownerB, randomUUID());
     expect(runB).not.toBeNull();
     await threadStore.upsertShellSession({
       sessionId: "owned-state-session",

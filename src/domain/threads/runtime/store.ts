@@ -117,13 +117,19 @@ export interface ThreadRuntimeStore {
     threadId: string,
     payload: ThreadRuntimeMessagePayload,
   ): Promise<ThreadMessageRecord>;
-  tryStartRun(threadId: string, owner: ThreadRunOwner): Promise<ThreadRunRecord | null>;
+  tryStartRun(
+    threadId: string,
+    owner: ThreadRunOwner,
+    runId: string,
+  ): Promise<ThreadRunRecord | null>;
   assertRunActive(runId: string): Promise<void>;
   updateThreadForRun(threadId: string, runId: string, update: ThreadRuntimeStateUpdate): Promise<ThreadRecord>;
   getRun(runId: string): Promise<ThreadRunRecord>;
   listAbortRequestedRuns(runIds: readonly string[]): Promise<readonly ThreadRunRecord[]>;
   completeRun(runId: string): Promise<ThreadRunRecord>;
   failRun(runId: string, error?: string): Promise<ThreadRunRecord>;
+  /** Terminalize an unexecuted owned run and atomically restore its consumed wake. */
+  failRunBeforeExecution(runId: string, error?: string): Promise<ThreadRunRecord>;
   failOrphanedRuns(
     owner: ThreadRunOwner,
     error: string,

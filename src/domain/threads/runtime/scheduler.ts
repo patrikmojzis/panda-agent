@@ -1,3 +1,5 @@
+import {randomUUID} from "node:crypto";
+
 type SchedulerState = "idle" | "running" | "stopping" | "closed";
 
 interface Deferred<T> {
@@ -10,25 +12,54 @@ interface ScheduledWork<T = unknown> {
   threadId: string;
   kind: "run" | "exclusive";
   priority: "interactive" | "backlog" | "control";
+  runId: string | null;
   execute(signal: AbortSignal): Promise<T>;
   deferred: Deferred<T>;
   controller: AbortController | null;
+  admissionUncertain: boolean;
+  admissionFailures: number;
+  admissionRetryAt: number | null;
+  admissionRetryStartedAt: number | null;
 }
 
 export interface ThreadRunSchedulerOptions {
   maxConcurrentRuns: number;
   maxInteractiveBurst?: number;
   shutdownDrainTimeoutMs?: number;
-  run(threadId: string, signal: AbortSignal): Promise<ThreadRunExecutionResult>;
-  onRunSettled?(threadId: string, result: ThreadRunExecutionResult): Promise<void> | void;
+  run(threadId: string, signal: AbortSignal, runId: string): Promise<ThreadRunAttemptResult>;
+  onAttemptSettled?(threadId: string, result: ThreadRunAttemptResult): Promise<void> | void;
+  onAdmissionRetry?(retry: ThreadRunAdmissionRetry): Promise<void> | void;
+  onAdmissionShutdown?(
+    threadId: string,
+    runId: string,
+    reason: unknown,
+  ): Promise<void> | void;
   onExclusiveSettled?(threadId: string): Promise<void> | void;
   onCapacityAvailable?(): Promise<void> | void;
   onError?(threadId: string, error: unknown): Promise<void> | void;
 }
 
-export interface ThreadRunExecutionResult {
-  outcome: "completed" | "aborted" | "no_claim" | "claim_lost" | "stopped";
+export type ThreadRunAttemptResult =
+  | {outcome: "completed" | "aborted" | "no_claim" | "claim_lost" | "stopped"}
+  | {outcome: "admission_failed"; error: unknown};
+
+export interface ThreadRunAdmissionRetry {
+  threadId: string;
+  error: unknown;
+  attempt: number;
+  delayMs: number;
 }
+
+export interface ThreadRunSchedulerSnapshot {
+  active: number;
+  queued: number;
+  retrying: number;
+  oldestAdmissionRetryAgeMs: number;
+  maxConcurrentRuns: number;
+}
+
+const ADMISSION_RETRY_INITIAL_DELAY_MS = 100;
+const ADMISSION_RETRY_MAX_DELAY_MS = 5_000;
 
 function createDeferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
@@ -63,6 +94,17 @@ function requireMaxInteractiveBurst(value: number | undefined): number {
   return resolved;
 }
 
+function admissionRetryDelayMs(attempt: number): number {
+  const exponent = Math.min(Math.max(0, attempt - 1), 30);
+  const ceiling = Math.min(
+    ADMISSION_RETRY_INITIAL_DELAY_MS * (2 ** exponent),
+    ADMISSION_RETRY_MAX_DELAY_MS,
+  );
+  // Equal jitter prevents several daemons recovering from the same outage from
+  // synchronizing their claim attempts while retaining a meaningful floor.
+  return Math.ceil((ceiling / 2) + (Math.random() * ceiling / 2));
+}
+
 /**
  * Owns process-local thread serialization and global run backpressure.
  *
@@ -77,41 +119,65 @@ export class ThreadRunScheduler {
   private readonly runThread: (
     threadId: string,
     signal: AbortSignal,
-  ) => Promise<ThreadRunExecutionResult>;
-  private readonly onRunSettled?: (
+    runId: string,
+  ) => Promise<ThreadRunAttemptResult>;
+  private readonly onAttemptSettled?: (
     threadId: string,
-    result: ThreadRunExecutionResult,
+    result: ThreadRunAttemptResult,
+  ) => Promise<void> | void;
+  private readonly onAdmissionRetry?: (retry: ThreadRunAdmissionRetry) => Promise<void> | void;
+  private readonly onAdmissionShutdown?: (
+    threadId: string,
+    runId: string,
+    reason: unknown,
   ) => Promise<void> | void;
   private readonly onExclusiveSettled?: (threadId: string) => Promise<void> | void;
   private readonly onCapacityAvailable?: () => Promise<void> | void;
   private readonly onError?: (threadId: string, error: unknown) => Promise<void> | void;
   private readonly queue: ScheduledWork[] = [];
+  private readonly admissionRetryQueue: Array<ScheduledWork<ThreadRunAttemptResult>> = [];
   private readonly queuedByThreadId = new Map<string, ScheduledWork>();
   private readonly activeByThreadId = new Map<string, ScheduledWork>();
   private readonly settlingByThreadId = new Map<string, Set<ScheduledWork>>();
   private readonly exclusiveAfterActive = new Map<string, ScheduledWork>();
+  private readonly runAfterExclusive = new Map<string, ScheduledWork<ThreadRunAttemptResult>>();
   private readonly rerunRequested = new Set<string>();
   private readonly activeTasks = new Set<Promise<void>>();
   private readonly lastErrors = new Map<string, unknown>();
   private state: SchedulerState = "idle";
   private drainQueued = false;
   private interactiveStartsSinceBacklog = 0;
+  private admissionRetryTimer: NodeJS.Timeout | undefined;
+  private shutdownReason: unknown;
+  private stopPromise: Promise<void> | null = null;
 
   constructor(options: ThreadRunSchedulerOptions) {
     this.maxConcurrentRuns = requireMaxConcurrentRuns(options.maxConcurrentRuns);
     this.maxInteractiveBurst = requireMaxInteractiveBurst(options.maxInteractiveBurst);
     this.shutdownDrainTimeoutMs = requireShutdownDrainTimeout(options.shutdownDrainTimeoutMs);
     this.runThread = options.run;
-    this.onRunSettled = options.onRunSettled;
+    this.onAttemptSettled = options.onAttemptSettled;
+    this.onAdmissionRetry = options.onAdmissionRetry;
+    this.onAdmissionShutdown = options.onAdmissionShutdown;
     this.onExclusiveSettled = options.onExclusiveSettled;
     this.onCapacityAvailable = options.onCapacityAvailable;
     this.onError = options.onError;
   }
 
-  getSnapshot(): {active: number; queued: number; maxConcurrentRuns: number} {
+  getSnapshot(): ThreadRunSchedulerSnapshot {
+    const retryStartedAt = this.admissionRetryQueue.reduce<number | null>((oldest, work) => {
+      if (work.admissionRetryStartedAt === null) {
+        return oldest;
+      }
+      return oldest === null
+        ? work.admissionRetryStartedAt
+        : Math.min(oldest, work.admissionRetryStartedAt);
+    }, null);
     return {
       active: this.activeByThreadId.size,
       queued: this.queuedByThreadId.size,
+      retrying: this.admissionRetryQueue.length,
+      oldestAdmissionRetryAgeMs: retryStartedAt === null ? 0 : Math.max(0, Date.now() - retryStartedAt),
       maxConcurrentRuns: this.maxConcurrentRuns,
     };
   }
@@ -138,11 +204,14 @@ export class ThreadRunScheduler {
         this.rerunRequested.add(threadId);
       } else if (priority === "interactive" && queued.priority === "backlog") {
         const index = this.queue.indexOf(queued);
+        queued.priority = "interactive";
         if (index >= 0) {
           this.queue.splice(index, 1);
-          queued.priority = "interactive";
           this.insertRunWork(queued);
         }
+        // Delayed admission work is not in the runnable queue yet. Updating the
+        // work in place preserves the retry deadline and upgrades its eventual
+        // queue position without creating a second lane for the thread.
       }
       return;
     }
@@ -154,17 +223,26 @@ export class ThreadRunScheduler {
       return;
     }
 
-    const deferred = createDeferred<ThreadRunExecutionResult>();
+    const deferred = createDeferred<ThreadRunAttemptResult>();
+    const runId = randomUUID();
     // Scheduling is intentionally fire-and-forget. Callers that need the result
     // observe the same promise through waitForCurrentRun/waitForIdle.
     void deferred.promise.catch(() => undefined);
-    const work: ScheduledWork<ThreadRunExecutionResult> = {
+    const work: ScheduledWork<ThreadRunAttemptResult> = {
       threadId,
       kind: "run",
       priority,
-      execute: (signal) => this.runThread(threadId, signal),
+      runId,
+      // The run id is also the admission idempotency key. Retrying this same
+      // work must reconcile an ambiguously committed claim rather than create a
+      // fresh claim identity and mistake the committed row for another owner.
+      execute: (signal) => this.runThread(threadId, signal, runId),
       deferred,
       controller: null,
+      admissionUncertain: false,
+      admissionFailures: 0,
+      admissionRetryAt: null,
+      admissionRetryStartedAt: null,
     };
     this.insertRunWork(work);
     this.queuedByThreadId.set(threadId, work);
@@ -194,12 +272,17 @@ export class ThreadRunScheduler {
       threadId,
       kind: "exclusive",
       priority: "control",
+      runId: null,
       execute: async (signal) => {
         await activeAbortPreparation;
         return operation(signal);
       },
       deferred,
       controller: null,
+      admissionUncertain: false,
+      admissionFailures: 0,
+      admissionRetryAt: null,
+      admissionRetryStartedAt: null,
     };
     if (active) {
       // Reserving the lane closes the reset/compaction race: no queued run can
@@ -221,14 +304,21 @@ export class ThreadRunScheduler {
     } else if (queued) {
       // The run hint still represents durable work. If exclusive work fails,
       // it must not disappear merely because it won the process-local lane.
-      this.rerunRequested.add(threadId);
-      const index = this.queue.indexOf(queued);
-      if (index >= 0) {
-        this.queue.splice(index, 1);
+      this.removeQueuedWork(queued);
+      const admissionRetry = queued.kind === "run" && queued.admissionUncertain
+        ? queued as ScheduledWork<ThreadRunAttemptResult>
+        : null;
+      if (admissionRetry) {
+        // A delayed admission may represent a committed claim whose response
+        // was lost. Preserve the exact work/run id across control work instead
+        // of replacing it with a fresh, non-idempotent admission identity.
+        this.runAfterExclusive.set(threadId, admissionRetry);
+      } else {
+        this.rerunRequested.add(threadId);
+        queued.deferred.reject(new Error("Thread run was superseded by exclusive work."));
       }
       // Control work must not inherit a deep startup-backlog position.
       this.queue.unshift(work);
-      queued.deferred.reject(new Error("Thread run was superseded by exclusive work."));
       this.queuedByThreadId.set(threadId, work);
     } else {
       this.queue.unshift(work);
@@ -283,7 +373,12 @@ export class ThreadRunScheduler {
     }
   }
 
-  async stop(reason: unknown = new Error("Thread runtime stopped.")): Promise<void> {
+  stop(reason: unknown = new Error("Thread runtime stopped.")): Promise<void> {
+    this.stopPromise ??= this.stopOnce(reason);
+    return this.stopPromise;
+  }
+
+  private async stopOnce(reason: unknown): Promise<void> {
     if (this.state === "closed") {
       return;
     }
@@ -294,15 +389,19 @@ export class ThreadRunScheduler {
     }
 
     this.state = "stopping";
-    this.rejectQueued(reason);
+    this.shutdownReason = reason;
+    const queuedAdmissionDrains = this.rejectQueued(reason).map((work) => {
+      return this.drainAdmissionOnShutdown(work, reason);
+    });
     for (const work of this.activeByThreadId.values()) {
       work.controller?.abort(reason);
     }
-    const drained = await this.waitForActiveTasks([...this.activeTasks]);
+    const drainTasks = [...this.activeTasks, ...queuedAdmissionDrains];
+    const drained = await this.waitForActiveTasks(drainTasks);
     if (!drained) {
       const activeThreadIds = [...this.activeByThreadId.keys()];
       const error = new Error(
-        `Thread runtime shutdown exceeded ${this.shutdownDrainTimeoutMs}ms; abandoning ${activeThreadIds.length} non-cooperative run(s).`,
+        `Thread runtime shutdown exceeded ${this.shutdownDrainTimeoutMs}ms; abandoning ${drainTasks.length} non-cooperative task(s).`,
       );
       for (const threadId of activeThreadIds) {
         void Promise.resolve(this.onError?.(threadId, error)).catch(() => undefined);
@@ -311,15 +410,27 @@ export class ThreadRunScheduler {
     this.state = "closed";
   }
 
-  private rejectQueued(reason: unknown): void {
-    const queued = new Set(this.queuedByThreadId.values());
+  private rejectQueued(reason: unknown): Array<ScheduledWork<ThreadRunAttemptResult>> {
+    const queued = new Set([
+      ...this.queuedByThreadId.values(),
+      ...this.runAfterExclusive.values(),
+    ]);
+    const admissionDrains: Array<ScheduledWork<ThreadRunAttemptResult>> = [];
     this.queue.length = 0;
+    this.admissionRetryQueue.length = 0;
+    this.clearAdmissionRetryTimer();
     this.exclusiveAfterActive.clear();
+    this.runAfterExclusive.clear();
     this.rerunRequested.clear();
     for (const work of queued) {
       this.queuedByThreadId.delete(work.threadId);
-      work.deferred.reject(reason);
+      if (work.kind === "run" && work.admissionUncertain && work.runId) {
+        admissionDrains.push(work as ScheduledWork<ThreadRunAttemptResult>);
+      } else {
+        work.deferred.reject(reason);
+      }
     }
+    return admissionDrains;
   }
 
   private kick(): void {
@@ -360,11 +471,14 @@ export class ThreadRunScheduler {
     let error: unknown;
     let failed = false;
     let result: unknown;
+    let retryScheduled = false;
+    let admissionRetry: ThreadRunAdmissionRetry | undefined;
+    let admissionShutdown: {runId: string; reason: unknown} | undefined;
     try {
       result = await work.execute(signal);
       if (
         work.kind === "exclusive"
-        || (result as ThreadRunExecutionResult).outcome === "completed"
+        || (result as ThreadRunAttemptResult).outcome === "completed"
       ) {
         this.lastErrors.delete(work.threadId);
       }
@@ -381,11 +495,17 @@ export class ThreadRunScheduler {
       this.activeByThreadId.delete(work.threadId);
       work.controller = null;
       this.addSettlingWork(work);
+      const attemptResult = work.kind === "run" && !failed
+        ? result as ThreadRunAttemptResult
+        : undefined;
+      const admissionFailure = attemptResult?.outcome === "admission_failed"
+        ? attemptResult
+        : undefined;
 
       if (
         work.kind === "run"
         && !failed
-        && (result as ThreadRunExecutionResult).outcome === "completed"
+        && attemptResult?.outcome === "completed"
       ) {
         // A normal run consumes wakes that arrive before its final boundary;
         // the authoritative settlement hook finds only work that raced after
@@ -394,15 +514,49 @@ export class ThreadRunScheduler {
       }
       const reservedExclusive = this.exclusiveAfterActive.get(work.threadId);
       if (this.state === "running" && reservedExclusive) {
+        if (admissionFailure) {
+          // Preserve the exact attempt identity. The failed claim may have
+          // committed, so a fresh run id after control work could mistake that
+          // owned row for unrelated work and strand it.
+          work.admissionUncertain = true;
+          this.runAfterExclusive.set(
+            work.threadId,
+            work as ScheduledWork<ThreadRunAttemptResult>,
+          );
+          retryScheduled = true;
+        }
         this.exclusiveAfterActive.delete(work.threadId);
         this.queue.unshift(reservedExclusive);
       } else if (work.kind === "exclusive") {
+        const retainedRun = this.runAfterExclusive.get(work.threadId);
         const rerun = this.rerunRequested.delete(work.threadId);
-        // Successful callers perform an authoritative reconciliation before
-        // returning. Failure has no caller-side reconciliation, so preserve a
-        // wake that arrived while the exclusive lane was held.
-        if (this.state === "running" && failed && rerun) {
+        if (this.state === "running" && retainedRun) {
+          this.runAfterExclusive.delete(work.threadId);
+          this.insertRunWork(retainedRun);
+          this.queuedByThreadId.set(work.threadId, retainedRun);
+        } else if (this.state === "running" && failed && rerun) {
+          // Successful callers perform an authoritative reconciliation before
+          // returning. Failure has no caller-side reconciliation, so preserve
+          // a wake that arrived while the exclusive lane was held.
           this.schedule(work.threadId);
+        }
+      } else if (admissionFailure) {
+        // The original work remains the one process-local lane for this durable
+        // wake. Additional NOTIFY hints are already represented by it and must
+        // not multiply retries or bypass backoff.
+        this.rerunRequested.delete(work.threadId);
+        if (this.state === "running") {
+          admissionRetry = this.delayAdmissionRetry(
+            work as ScheduledWork<ThreadRunAttemptResult>,
+            admissionFailure.error,
+          );
+          retryScheduled = true;
+        } else if (this.state === "stopping" && work.runId) {
+          // The claim statement has finished, but its error does not prove the
+          // transaction rolled back. Shutdown must reconcile this exact id
+          // before releasing the daemon owner; it must never start a fresh id.
+          work.admissionUncertain = true;
+          admissionShutdown = {runId: work.runId, reason: this.shutdownReason};
         }
       } else {
         const rerun = this.rerunRequested.delete(work.threadId);
@@ -420,10 +574,28 @@ export class ThreadRunScheduler {
       // the process-local concurrency limit into idle time for unrelated work.
       this.kick();
 
-      if (work.kind === "run" && !failed) {
+      if (admissionRetry) {
+        const retry = admissionRetry;
         await this.reportSettlementError(
           work.threadId,
-          () => this.onRunSettled?.(work.threadId, result as ThreadRunExecutionResult),
+          () => this.onAdmissionRetry?.(retry),
+        );
+      }
+      if (admissionShutdown) {
+        const shutdown = admissionShutdown;
+        await this.reportSettlementError(
+          work.threadId,
+          () => this.onAdmissionShutdown?.(
+            work.threadId,
+            shutdown.runId,
+            shutdown.reason,
+          ),
+        );
+      }
+      if (attemptResult && !admissionFailure) {
+        await this.reportSettlementError(
+          work.threadId,
+          () => this.onAttemptSettled?.(work.threadId, attemptResult),
         );
       }
       if (work.kind === "exclusive" && !failed) {
@@ -436,6 +608,12 @@ export class ThreadRunScheduler {
     }
 
     this.removeSettlingWork(work);
+    if (retryScheduled) {
+      // The deferred remains unresolved across attempts, so waitForCurrent and
+      // waitForIdle cover the entire admission-retry lane rather than exposing
+      // a false idle boundary between attempts.
+      return;
+    }
     if (failed) {
       work.deferred.reject(error);
       // The work promise carries the failure to waiters. The scheduler task
@@ -443,6 +621,107 @@ export class ThreadRunScheduler {
       return;
     }
     work.deferred.resolve(result);
+  }
+
+  private delayAdmissionRetry(
+    work: ScheduledWork<ThreadRunAttemptResult>,
+    error: unknown,
+  ): ThreadRunAdmissionRetry {
+    const now = Date.now();
+    work.admissionUncertain = true;
+    work.admissionFailures += 1;
+    work.admissionRetryStartedAt ??= now;
+    const delayMs = admissionRetryDelayMs(work.admissionFailures);
+    work.admissionRetryAt = now + delayMs;
+    const insertionIndex = this.admissionRetryQueue.findIndex((queued) => {
+      return (queued.admissionRetryAt ?? Number.POSITIVE_INFINITY) > work.admissionRetryAt!;
+    });
+    if (insertionIndex < 0) {
+      this.admissionRetryQueue.push(work);
+    } else {
+      this.admissionRetryQueue.splice(insertionIndex, 0, work);
+    }
+    this.queuedByThreadId.set(work.threadId, work);
+    this.armAdmissionRetryTimer();
+    return {
+      threadId: work.threadId,
+      error,
+      attempt: work.admissionFailures,
+      delayMs,
+    };
+  }
+
+  private async drainAdmissionOnShutdown(
+    work: ScheduledWork<ThreadRunAttemptResult>,
+    reason: unknown,
+  ): Promise<void> {
+    try {
+      const runId = work.runId;
+      if (runId) {
+        await this.reportSettlementError(
+          work.threadId,
+          () => this.onAdmissionShutdown?.(work.threadId, runId, reason),
+        );
+      }
+    } finally {
+      work.deferred.reject(reason);
+    }
+  }
+
+  private armAdmissionRetryTimer(): void {
+    this.clearAdmissionRetryTimer();
+    const next = this.admissionRetryQueue[0];
+    if (!next || next.admissionRetryAt === null || this.state !== "running") {
+      return;
+    }
+    this.admissionRetryTimer = setTimeout(() => {
+      this.admissionRetryTimer = undefined;
+      this.releaseAdmissionRetries();
+    }, Math.max(0, next.admissionRetryAt - Date.now()));
+    this.admissionRetryTimer.unref?.();
+  }
+
+  private clearAdmissionRetryTimer(): void {
+    if (this.admissionRetryTimer) {
+      clearTimeout(this.admissionRetryTimer);
+      this.admissionRetryTimer = undefined;
+    }
+  }
+
+  private releaseAdmissionRetries(): void {
+    if (this.state !== "running") {
+      return;
+    }
+    const now = Date.now();
+    while (true) {
+      const work = this.admissionRetryQueue[0];
+      if (!work || work.admissionRetryAt === null || work.admissionRetryAt > now) {
+        break;
+      }
+      this.admissionRetryQueue.shift();
+      work.admissionRetryAt = null;
+      if (this.queuedByThreadId.get(work.threadId) === work) {
+        this.insertRunWork(work);
+      }
+    }
+    this.armAdmissionRetryTimer();
+    this.kick();
+  }
+
+  private removeQueuedWork(work: ScheduledWork): void {
+    const queueIndex = this.queue.indexOf(work);
+    if (queueIndex >= 0) {
+      this.queue.splice(queueIndex, 1);
+    }
+    const retryIndex = this.admissionRetryQueue.indexOf(
+      work as ScheduledWork<ThreadRunAttemptResult>,
+    );
+    if (retryIndex >= 0) {
+      this.admissionRetryQueue.splice(retryIndex, 1);
+      work.admissionRetryAt = null;
+      work.admissionRetryStartedAt = null;
+      this.armAdmissionRetryTimer();
+    }
   }
 
   private getThreadWork(threadId: string): ScheduledWork | undefined {

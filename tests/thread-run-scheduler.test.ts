@@ -45,7 +45,13 @@ describe("ThreadRunScheduler", () => {
     await nextTurn();
 
     expect(started).toEqual(["one", "two"]);
-    expect(scheduler.getSnapshot()).toEqual({active: 2, queued: 3, maxConcurrentRuns: 2});
+    expect(scheduler.getSnapshot()).toEqual({
+      active: 2,
+      queued: 3,
+      retrying: 0,
+      oldestAdmissionRetryAgeMs: 0,
+      maxConcurrentRuns: 2,
+    });
 
     gates.get("one")?.resolve();
     await nextTurn();
@@ -78,7 +84,7 @@ describe("ThreadRunScheduler", () => {
         }
         return DURABLY_COMPLETED;
       },
-      async onRunSettled(threadId) {
+      async onAttemptSettled(threadId) {
         if (threadId === "first" && firstAttempts === 1) {
           await firstSettlement.promise;
           scheduler.schedule("first");
@@ -125,7 +131,7 @@ describe("ThreadRunScheduler", () => {
     scheduler = new ThreadRunScheduler({
       maxConcurrentRuns: 1,
       run,
-      onRunSettled(threadId) {
+      onAttemptSettled(threadId) {
         if (durableRunnable) {
           durableRunnable = false;
           scheduler.schedule(threadId);
@@ -244,6 +250,77 @@ describe("ThreadRunScheduler", () => {
     expect(order).toEqual(["run:blocker", "exclusive:thread"]);
   });
 
+  it("lets exclusive work supersede a delayed admission retry", async () => {
+    const retryObserved = createDeferred<void>();
+    const order: string[] = [];
+    const runIds: string[] = [];
+    let attempts = 0;
+    let scheduler!: ThreadRunScheduler;
+    scheduler = new ThreadRunScheduler({
+      maxConcurrentRuns: 1,
+      async run(_threadId, _signal, runId) {
+        attempts += 1;
+        runIds.push(runId);
+        order.push(`run:${attempts}`);
+        if (attempts === 1) {
+          return {outcome: "admission_failed", error: new Error("database unavailable")};
+        }
+        return DURABLY_COMPLETED;
+      },
+      onAdmissionRetry() {
+        retryObserved.resolve();
+      },
+      onExclusiveSettled(threadId) {
+        scheduler.schedule(threadId);
+      },
+    });
+
+    scheduler.start();
+    scheduler.schedule("thread");
+    await retryObserved.promise;
+    await scheduler.runExclusively("thread", async () => {
+      order.push("exclusive");
+    });
+    await scheduler.waitForIdle("thread");
+
+    expect(order).toEqual(["run:1", "exclusive", "run:2"]);
+    expect(new Set(runIds).size).toBe(1);
+    expect(scheduler.getSnapshot()).toMatchObject({active: 0, queued: 0, retrying: 0});
+  });
+
+  it("preserves admission work when reserved exclusive work also fails", async () => {
+    const firstAttemptStarted = createDeferred<void>();
+    const releaseFirstAttempt = createDeferred<void>();
+    let attempts = 0;
+    const runIds: string[] = [];
+    const scheduler = new ThreadRunScheduler({
+      maxConcurrentRuns: 1,
+      async run(_threadId, _signal, runId) {
+        attempts += 1;
+        runIds.push(runId);
+        if (attempts === 1) {
+          firstAttemptStarted.resolve();
+          await releaseFirstAttempt.promise;
+          return {outcome: "admission_failed", error: new Error("database unavailable")};
+        }
+        return DURABLY_COMPLETED;
+      },
+    });
+
+    scheduler.start();
+    scheduler.schedule("thread");
+    await firstAttemptStarted.promise;
+    const exclusive = scheduler.runExclusively("thread", async () => {
+      throw new Error("reset failed");
+    });
+    releaseFirstAttempt.resolve();
+
+    await expect(exclusive).rejects.toThrow("reset failed");
+    await scheduler.waitForIdle("thread");
+    expect(attempts).toBe(2);
+    expect(new Set(runIds).size).toBe(1);
+  });
+
   it("replays a wake that arrived during failed exclusive work", async () => {
     const exclusiveStarted = createDeferred<void>();
     const releaseExclusive = createDeferred<void>();
@@ -312,6 +389,188 @@ describe("ThreadRunScheduler", () => {
     await scheduler.waitForIdle("healthy");
     expect(errors).toEqual([{threadId: "broken", error: failure}]);
     expect(scheduler.getSnapshot().active).toBe(0);
+  });
+
+  it("retries admission without consuming capacity or requiring another wake", async () => {
+    const admissionError = new Error("database connection reset before claim");
+    const retryObserved = createDeferred<void>();
+    const healthyStarted = createDeferred<void>();
+    const releaseHealthy = createDeferred<void>();
+    const order: string[] = [];
+    let retryingAttempts = 0;
+    const retryingRunIds: string[] = [];
+    const retries: Array<{attempt: number; delayMs: number}> = [];
+    const scheduler = new ThreadRunScheduler({
+      maxConcurrentRuns: 1,
+      async run(threadId, _signal, runId) {
+        order.push(threadId);
+        if (threadId === "retrying") {
+          retryingAttempts += 1;
+          retryingRunIds.push(runId);
+          if (retryingAttempts === 1) {
+            return {outcome: "admission_failed", error: admissionError};
+          }
+          return DURABLY_COMPLETED;
+        }
+        healthyStarted.resolve();
+        await releaseHealthy.promise;
+        return DURABLY_COMPLETED;
+      },
+      onAdmissionRetry({attempt, delayMs}) {
+        retries.push({attempt, delayMs});
+        retryObserved.resolve();
+      },
+    });
+
+    scheduler.start();
+    scheduler.schedule("retrying");
+    scheduler.schedule("healthy");
+    const retryingIdle = scheduler.waitForIdle("retrying");
+    await retryObserved.promise;
+    await healthyStarted.promise;
+
+    expect(order).toEqual(["retrying", "healthy"]);
+    expect(scheduler.getSnapshot()).toMatchObject({active: 1, queued: 1, retrying: 1});
+    expect(retries).toEqual([{attempt: 1, delayMs: expect.any(Number)}]);
+    expect(retries[0]!.delayMs).toBeGreaterThanOrEqual(50);
+    expect(retries[0]!.delayMs).toBeLessThanOrEqual(100);
+
+    // More NOTIFY hints still represent the same durable lane and cannot skip
+    // the admission backoff or create parallel attempts.
+    scheduler.schedule("retrying");
+    scheduler.schedule("retrying");
+    releaseHealthy.resolve();
+    await Promise.all([scheduler.waitForIdle("healthy"), retryingIdle]);
+
+    expect(order).toEqual(["retrying", "healthy", "retrying"]);
+    expect(retryingAttempts).toBe(2);
+    expect(new Set(retryingRunIds).size).toBe(1);
+  });
+
+  it("keeps repeated admission retries bounded and cancels them on shutdown", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(1);
+    const admissionError = new Error("database unavailable");
+    let attempts = 0;
+    const delays: number[] = [];
+    const scheduler = new ThreadRunScheduler({
+      maxConcurrentRuns: 1,
+      async run() {
+        attempts += 1;
+        return {outcome: "admission_failed", error: admissionError};
+      },
+      onAdmissionRetry({delayMs}) {
+        delays.push(delayMs);
+      },
+    });
+
+    try {
+      scheduler.start();
+      scheduler.schedule("thread");
+      const idle = scheduler.waitForIdle("thread");
+      await vi.advanceTimersByTimeAsync(0);
+
+      const expectedDelays = [100, 200, 400, 800, 1_600, 3_200, 5_000, 5_000];
+      for (const [index, delayMs] of expectedDelays.entries()) {
+        expect(delays[index]).toBe(delayMs);
+        scheduler.schedule("thread");
+        scheduler.schedule("thread");
+        await vi.advanceTimersByTimeAsync(delayMs);
+      }
+      expect(attempts).toBe(expectedDelays.length + 1);
+      expect(scheduler.getSnapshot()).toMatchObject({active: 0, queued: 1, retrying: 1});
+
+      const shutdown = new Error("shutdown");
+      await scheduler.stop(shutdown);
+      await expect(idle).rejects.toBe(shutdown);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(attempts).toBe(expectedDelays.length + 1);
+      expect(scheduler.getSnapshot()).toMatchObject({active: 0, queued: 0, retrying: 0});
+    } finally {
+      await scheduler.stop();
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    }
+  });
+
+  it("drains a delayed ambiguous admission id during shutdown", async () => {
+    const retryObserved = createDeferred<void>();
+    const shutdownReason = new Error("shutdown");
+    const attemptedRunIds: string[] = [];
+    const reconciled: Array<{threadId: string; runId: string; reason: unknown}> = [];
+    const scheduler = new ThreadRunScheduler({
+      maxConcurrentRuns: 1,
+      async run(_threadId, _signal, runId) {
+        attemptedRunIds.push(runId);
+        return {outcome: "admission_failed", error: new Error("ambiguous claim")};
+      },
+      onAdmissionRetry() {
+        retryObserved.resolve();
+      },
+      async onAdmissionShutdown(threadId, runId, reason) {
+        reconciled.push({threadId, runId, reason});
+      },
+    });
+
+    scheduler.start();
+    scheduler.schedule("thread");
+    await retryObserved.promise;
+    const idle = scheduler.waitForIdle("thread");
+    await scheduler.stop(shutdownReason);
+
+    await expect(idle).rejects.toBe(shutdownReason);
+    expect(attemptedRunIds).toHaveLength(1);
+    expect(reconciled).toEqual([{
+      threadId: "thread",
+      runId: attemptedRunIds[0],
+      reason: shutdownReason,
+    }]);
+  });
+
+  it("shares one admission drain across concurrent shutdown callers", async () => {
+    const retryObserved = createDeferred<void>();
+    const drainStarted = createDeferred<void>();
+    const releaseDrain = createDeferred<void>();
+    const shutdownReason = new Error("shutdown");
+    let drainCalls = 0;
+    const scheduler = new ThreadRunScheduler({
+      maxConcurrentRuns: 1,
+      async run() {
+        return {outcome: "admission_failed", error: new Error("ambiguous claim")};
+      },
+      onAdmissionRetry() {
+        retryObserved.resolve();
+      },
+      async onAdmissionShutdown() {
+        drainCalls += 1;
+        drainStarted.resolve();
+        await releaseDrain.promise;
+      },
+    });
+
+    scheduler.start();
+    scheduler.schedule("thread");
+    await retryObserved.promise;
+    const idle = expect(scheduler.waitForIdle("thread")).rejects.toBe(shutdownReason);
+    let firstStopped = false;
+    let secondStopped = false;
+    const firstStop = scheduler.stop(shutdownReason).then(() => {
+      firstStopped = true;
+    });
+    await drainStarted.promise;
+    const secondStop = scheduler.stop(new Error("later shutdown")).then(() => {
+      secondStopped = true;
+    });
+    await nextTurn();
+
+    expect(firstStopped).toBe(false);
+    expect(secondStopped).toBe(false);
+    expect(drainCalls).toBe(1);
+
+    releaseDrain.resolve();
+    await Promise.all([firstStop, secondStop, idle]);
+    expect(firstStopped).toBe(true);
+    expect(secondStopped).toBe(true);
   });
 
   it("retains one wake that arrives during a failed run", async () => {
@@ -440,7 +699,7 @@ describe("ThreadRunScheduler", () => {
       async run() {
         return {outcome: "no_claim" as const};
       },
-      onRunSettled: runSettled,
+      onAttemptSettled: runSettled,
       onCapacityAvailable: capacityAvailable,
     });
 
@@ -475,7 +734,13 @@ describe("ThreadRunScheduler", () => {
     await scheduler.stop(new Error("shutdown"));
     expect(signals.get("active")?.aborted).toBe(true);
     expect(signals.has("queued")).toBe(false);
-    expect(scheduler.getSnapshot()).toEqual({active: 0, queued: 0, maxConcurrentRuns: 1});
+    expect(scheduler.getSnapshot()).toEqual({
+      active: 0,
+      queued: 0,
+      retrying: 0,
+      oldestAdmissionRetryAgeMs: 0,
+      maxConcurrentRuns: 1,
+    });
   });
 
   it("bounds shutdown when active work ignores cancellation", async () => {

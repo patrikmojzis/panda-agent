@@ -8,6 +8,7 @@ import {THREAD_INPUT_ADMISSION_MIGRATION} from "../../src/app/database/migration
 import {
   completeOwnedThreadRun,
   failOwnedThreadRun,
+  failOwnedThreadRunBeforeExecution,
   failOrphanedThreadRuns,
   isThreadRunActive,
   takeOwnedThreadRunBoundary,
@@ -43,6 +44,20 @@ async function waitForLockWait(pool: Pool, pid: number, operation = "statement")
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`Timed out waiting for the ${operation} to block on a row lock.`);
+}
+
+async function waitForNotification(
+  notifications: readonly {channel: string; payload?: string}[],
+  channel: string,
+): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    if (notifications.some((notification) => notification.channel === channel)) {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for notification channel ${channel}.`);
 }
 
 const databaseUrl = process.env.TEST_DATABASE_URL?.trim();
@@ -147,6 +162,7 @@ describe("durable thread run claims with PostgreSQL", () => {
           sessionTables,
           threadId: "thread-a",
           owner: ownerA,
+          runId: randomUUID(),
           notificationChannel: "thread_claim_test",
         }),
         tryStartThreadRun({
@@ -155,6 +171,7 @@ describe("durable thread run claims with PostgreSQL", () => {
           sessionTables,
           threadId: "thread-a",
           owner: ownerA,
+          runId: randomUUID(),
           notificationChannel: "thread_claim_test",
         }),
       ]);
@@ -162,10 +179,160 @@ describe("durable thread run claims with PostgreSQL", () => {
       expect(competingClaims.filter((run) => run !== null)).toHaveLength(1);
       expect(firstRun?.owner).toEqual(ownerA);
       await expect(isThreadRunActive({queryable, tables, runId: firstRun!.id})).resolves.toBe(true);
+      // Model a committed claim whose response never reached the coordinator.
+      // Replaying the same scheduler-owned id must recover that exact row even
+      // though its wake was already consumed by the first statement.
+      await expect(tryStartThreadRun({
+        queryable,
+        tables,
+        sessionTables,
+        threadId: "thread-a",
+        owner: ownerA,
+        runId: firstRun!.id,
+        notificationChannel: "thread_claim_test",
+      })).resolves.toEqual(firstRun);
+      await expect(queryable.query(`
+        SELECT COUNT(*)::integer AS count
+        FROM "runtime".runs
+        WHERE thread_id = 'thread-a'
+      `)).resolves.toMatchObject({rows: [{count: 1}]});
       await expect(queryable.query(`
         SELECT delivery_mode FROM "runtime".inputs
         WHERE id = '00000000-0000-4000-8000-000000000001'
       `)).resolves.toMatchObject({rows: [{delivery_mode: "wake"}]});
+
+      // Force retry B to snapshot the wake before claim A commits, then wait
+      // behind A's locks. B's old snapshot cannot see A's winning run after
+      // the conflict, so the fresh exact-id reconciliation must recover it.
+      await queryable.query(`
+        INSERT INTO "runtime".agent_sessions (id, current_thread_id)
+        VALUES ('session-concurrent-replay', 'thread-concurrent-replay');
+        INSERT INTO "runtime".threads (id, session_id)
+        VALUES ('thread-concurrent-replay', 'session-concurrent-replay');
+        INSERT INTO "runtime".session_runtime_config (
+          session_id, pending_wake_at, pending_wake_generation
+        ) VALUES ('session-concurrent-replay', NOW(), 1);
+        INSERT INTO "runtime".inputs (id, thread_id, delivery_mode)
+        VALUES (
+          '00000000-0000-4000-9000-000000000001',
+          'thread-concurrent-replay',
+          'wake'
+        );
+      `);
+      const ambiguousClaimClient = await pool.connect();
+      const ambiguousRetryClient = await pool.connect();
+      const admissionListener = await pool.connect();
+      const notifications: Array<{channel: string; payload?: string}> = [];
+      admissionListener.on("notification", (notification) => {
+        notifications.push({
+          channel: notification.channel,
+          ...(notification.payload === undefined ? {} : {payload: notification.payload}),
+        });
+      });
+      try {
+        await admissionListener.query("LISTEN thread_claim_test; LISTEN thread_claim_test_sync");
+        await ambiguousClaimClient.query("BEGIN");
+        const concurrentRunId = randomUUID();
+        const committedClaim = await tryStartThreadRun({
+          queryable: new SchemaScopedQuery(ambiguousClaimClient, schema),
+          tables,
+          sessionTables,
+          threadId: "thread-concurrent-replay",
+          owner: ownerA,
+          runId: concurrentRunId,
+          notificationChannel: "thread_claim_test",
+        });
+        const updatedInsideClaim = await ambiguousClaimClient.query(`
+          SELECT updated_at
+          FROM ${quotedSchema}.threads
+          WHERE id = 'thread-concurrent-replay'
+        `);
+        const replay = tryStartThreadRun({
+          queryable: new SchemaScopedQuery(ambiguousRetryClient, schema),
+          tables,
+          sessionTables,
+          threadId: "thread-concurrent-replay",
+          owner: ownerA,
+          runId: concurrentRunId,
+          notificationChannel: "thread_claim_test",
+        });
+        await waitForLockWait(pool, ambiguousRetryClient.processID, "concurrent claim replay");
+        await ambiguousClaimClient.query("COMMIT");
+
+        await expect(replay).resolves.toEqual(committedClaim);
+        await pool.query("SELECT pg_notify('thread_claim_test_sync', 'done')");
+        await waitForNotification(notifications, "thread_claim_test_sync");
+        const threadNotifications = notifications
+          .filter((notification) => notification.channel === "thread_claim_test" && notification.payload)
+          .map((notification) => JSON.parse(notification.payload!) as {threadId?: unknown})
+          .filter((notification) => notification.threadId === "thread-concurrent-replay");
+        expect(threadNotifications).toHaveLength(1);
+        await expect(queryable.query(`
+          SELECT
+            (SELECT COUNT(*)::integer FROM "runtime".runs
+             WHERE thread_id = 'thread-concurrent-replay') AS run_count,
+            config.pending_wake_at,
+            config.pending_wake_generation,
+            thread.updated_at
+          FROM "runtime".threads AS thread
+          INNER JOIN "runtime".session_runtime_config AS config
+            ON config.session_id = thread.session_id
+          WHERE thread.id = 'thread-concurrent-replay'
+        `)).resolves.toMatchObject({rows: [{
+          run_count: 1,
+          pending_wake_at: null,
+          pending_wake_generation: "1",
+          updated_at: updatedInsideClaim.rows[0]?.updated_at,
+        }]});
+        await completeOwnedThreadRun({
+          queryable,
+          tables,
+          runId: committedClaim!.id,
+        });
+      } finally {
+        await ambiguousClaimClient.query("ROLLBACK").catch(() => undefined);
+        ambiguousClaimClient.release();
+        ambiguousRetryClient.release();
+        admissionListener.release();
+      }
+
+      await queryable.query(`
+        INSERT INTO "runtime".agent_sessions (id, current_thread_id)
+        VALUES ('session-wake-only-shutdown', 'thread-wake-only-shutdown');
+        INSERT INTO "runtime".threads (id, session_id)
+        VALUES ('thread-wake-only-shutdown', 'session-wake-only-shutdown');
+        INSERT INTO "runtime".session_runtime_config (
+          session_id, pending_wake_at, pending_wake_generation
+        ) VALUES ('session-wake-only-shutdown', NOW(), 1);
+      `);
+      const wakeOnlyRun = await tryStartThreadRun({
+        queryable,
+        tables,
+        sessionTables,
+        threadId: "thread-wake-only-shutdown",
+        owner: ownerA,
+        runId: randomUUID(),
+        notificationChannel: "thread_claim_test",
+      });
+      await failOwnedThreadRunBeforeExecution({
+        queryable,
+        tables,
+        sessionTables,
+        runId: wakeOnlyRun!.id,
+        error: "shutdown before execution",
+        notificationChannel: "thread_claim_test",
+      });
+      await expect(queryable.query(`
+        SELECT run.status, config.pending_wake_at IS NOT NULL AS pending_wake
+        FROM "runtime".runs AS run
+        INNER JOIN "runtime".threads AS thread ON thread.id = run.thread_id
+        INNER JOIN "runtime".session_runtime_config AS config
+          ON config.session_id = thread.session_id
+        WHERE run.id = $1
+      `, [wakeOnlyRun!.id])).resolves.toMatchObject({rows: [{
+        status: "failed",
+        pending_wake: true,
+      }]});
 
       const ownerB = {source: "daemon", connectorKey: "primary", holderId: "owner-b"};
       await queryable.query(`
@@ -201,6 +368,7 @@ describe("durable thread run claims with PostgreSQL", () => {
         sessionTables,
         threadId: "thread-a",
         owner: ownerB,
+        runId: randomUUID(),
         notificationChannel: "thread_claim_test",
       });
       expect(successor?.owner).toEqual(ownerB);
@@ -211,6 +379,7 @@ describe("durable thread run claims with PostgreSQL", () => {
         sessionTables,
         threadId: "thread-a",
         owner: ownerB,
+        runId: randomUUID(),
         notificationChannel: "thread_claim_test",
       })).resolves.toBeNull();
 
@@ -228,6 +397,7 @@ describe("durable thread run claims with PostgreSQL", () => {
         sessionTables,
         threadId: "thread-a",
         owner: ownerB,
+        runId: randomUUID(),
         notificationChannel: "thread_claim_test",
       });
       await queryable.query(`
@@ -261,6 +431,7 @@ describe("durable thread run claims with PostgreSQL", () => {
         sessionTables,
         threadId: "thread-a",
         owner: ownerB,
+        runId: randomUUID(),
         notificationChannel: "thread_claim_test",
       })).resolves.toBeNull();
 
@@ -288,6 +459,7 @@ describe("durable thread run claims with PostgreSQL", () => {
         sessionTables,
         threadId: "thread-paged",
         owner: ownerB,
+        runId: randomUUID(),
         notificationChannel: "thread_claim_test",
       });
       await expect(queryable.query(`
@@ -387,6 +559,7 @@ describe("durable thread run claims with PostgreSQL", () => {
         sessionTables,
         threadId: "thread-fail-before-apply",
         owner: ownerB,
+        runId: randomUUID(),
         notificationChannel: "thread_claim_test",
       });
       await failOwnedThreadRun({
@@ -423,6 +596,7 @@ describe("durable thread run claims with PostgreSQL", () => {
         sessionTables,
         threadId: "thread-generation",
         owner: ownerB,
+        runId: randomUUID(),
         notificationChannel: "thread_claim_test",
       });
       expect(generationRun).not.toBeNull();
@@ -521,6 +695,7 @@ describe("durable thread run claims with PostgreSQL", () => {
           sessionTables,
           threadId: "thread-a",
           owner: ownerB,
+          runId: randomUUID(),
           notificationChannel: "thread_claim_test",
         });
         await waitForLockWait(pool, claimPid);

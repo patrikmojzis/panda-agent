@@ -1,3 +1,4 @@
+import {randomUUID} from "node:crypto";
 import {mkdtemp, rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
@@ -844,7 +845,7 @@ describe("createDaemonThreadHelpers", () => {
       source: "panda-core",
       connectorKey: "test",
       holderId: "would-replay-old-thread",
-    })).resolves.toBeNull();
+    }, randomUUID())).resolves.toBeNull();
 
     await expect(helpers.handleResetSession(payload, "request-reset-fenced", 2, true))
       .resolves.toMatchObject({previousThreadId: "thread-reset-fenced", sessionId: "session-main"});

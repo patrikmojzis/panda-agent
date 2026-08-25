@@ -274,7 +274,7 @@ describe("atomic runtime persistence on PostgreSQL", () => {
         JSON.stringify(inputPayload(`statement-budget-bulk-${suffix}`).message),
       ]);
 
-      const run = await threadStore.tryStartRun(threadId, owner);
+      const run = await threadStore.tryStartRun(threadId, owner, randomUUID());
       expect(run).not.toBeNull();
       const before = await pool.query(`
         SELECT updated_at::text AS updated_at, xmin::text AS xmin
@@ -365,7 +365,7 @@ describe("atomic runtime persistence on PostgreSQL", () => {
       input: {id: queued.input.id, deliveryMode: "queue"},
     });
 
-    const run = await threadStore.tryStartRun("atomic-thread", owner);
+    const run = await threadStore.tryStartRun("atomic-thread", owner, randomUUID());
     expect(run).not.toBeNull();
     const concurrentApply = await Promise.all([
       threadStore.applyPendingInputs("atomic-thread", run!.id),
@@ -576,7 +576,7 @@ describe("atomic runtime persistence on PostgreSQL", () => {
     });
     await threadStore.createThread({id: threadId, sessionId});
     await threadStore.enqueueInput(threadId, inputPayload(`queue-boundary-start-${suffix}`));
-    const run = await threadStore.tryStartRun(threadId, owner);
+    const run = await threadStore.tryStartRun(threadId, owner, randomUUID());
     expect(run).not.toBeNull();
     await threadStore.applyPendingInputs(threadId, run!.id);
 
@@ -595,7 +595,7 @@ describe("atomic runtime persistence on PostgreSQL", () => {
 
     await threadStore.requestWake(threadId);
     await expect(threadStore.hasPendingWake(threadId)).resolves.toBe(true);
-    const nextRun = await threadStore.tryStartRun(threadId, owner);
+    const nextRun = await threadStore.tryStartRun(threadId, owner, randomUUID());
     expect(nextRun).not.toBeNull();
     await expect(threadStore.applyPendingInputs(threadId, nextRun!.id)).resolves.toHaveLength(1);
     await expect(threadStore.getInput(queued.input.id)).resolves.toMatchObject({status: "applied"});
@@ -618,7 +618,7 @@ describe("atomic runtime persistence on PostgreSQL", () => {
       payload: {threadId, reason: "stop once"},
     }, {idempotencyKey: `test:abort-replay:${suffix}`})).id;
     await threadStore.enqueueInput(threadId, inputPayload(`abort-first-${suffix}`));
-    const firstRun = await threadStore.tryStartRun(threadId, owner);
+    const firstRun = await threadStore.tryStartRun(threadId, owner, randomUUID());
     expect(firstRun).not.toBeNull();
 
     const concurrentAbort = await Promise.all([
@@ -631,7 +631,7 @@ describe("atomic runtime persistence on PostgreSQL", () => {
     ]);
     await threadStore.completeRun(firstRun!.id);
     await threadStore.enqueueInput(threadId, inputPayload(`abort-second-${suffix}`));
-    const secondRun = await threadStore.tryStartRun(threadId, owner);
+    const secondRun = await threadStore.tryStartRun(threadId, owner, randomUUID());
     expect(secondRun).not.toBeNull();
 
     await expect(threadStore.requestRunAbort(threadId, "stop once", operationId))
@@ -686,7 +686,7 @@ describe("atomic runtime persistence on PostgreSQL", () => {
     await expect(threadStore.hasPendingWake(threadId)).resolves.toBe(true);
     await expect(threadStore.isThreadRunnable(threadId)).resolves.toBe(false);
     await expect(threadStore.listRunnableThreadIds(100)).resolves.not.toContain(threadId);
-    await expect(threadStore.tryStartRun(threadId, owner)).resolves.toBeNull();
+    await expect(threadStore.tryStartRun(threadId, owner, randomUUID())).resolves.toBeNull();
   });
 
   liveIt("waits on the run before touching the thread during abort", async () => {
@@ -701,7 +701,7 @@ describe("atomic runtime persistence on PostgreSQL", () => {
     });
     await threadStore.createThread({id: threadId, sessionId});
     await threadStore.enqueueInput(threadId, inputPayload(`abort-lock-${suffix}`));
-    const run = await threadStore.tryStartRun(threadId, owner);
+    const run = await threadStore.tryStartRun(threadId, owner, randomUUID());
     expect(run).not.toBeNull();
 
     const blocker = await pool.connect();
@@ -803,7 +803,7 @@ describe("atomic runtime persistence on PostgreSQL", () => {
       await blocker.query(`
         SELECT id FROM "runtime"."agent_sessions" WHERE id = $1 FOR UPDATE
       `, [sessionId]);
-      const staleClaim = pinnedStore.tryStartRun(threadId, owner);
+      const staleClaim = pinnedStore.tryStartRun(threadId, owner, randomUUID());
       await waitForBackendLock(pool, claimantPid);
 
       await expect(threadStore.requestRunAbort(
@@ -814,7 +814,7 @@ describe("atomic runtime persistence on PostgreSQL", () => {
       )).resolves.toBeNull();
       await blocker.query("COMMIT");
       await expect(staleClaim).resolves.toBeNull();
-      await expect(threadStore.tryStartRun(threadId, owner)).resolves.toBeNull();
+      await expect(threadStore.tryStartRun(threadId, owner, randomUUID())).resolves.toBeNull();
     } finally {
       await blocker.query("ROLLBACK").catch(() => {});
       blocker.release();
@@ -860,7 +860,7 @@ describe("atomic runtime persistence on PostgreSQL", () => {
     const aborterPid = Number((await aborter.query("SELECT pg_backend_pid() AS pid")).rows[0]?.pid);
     try {
       await claimant.query("BEGIN");
-      const claimed = await claimStore.tryStartRun(threadId, owner);
+      const claimed = await claimStore.tryStartRun(threadId, owner, randomUUID());
       expect(claimed).not.toBeNull();
 
       const abort = abortStore.requestRunAbort(
@@ -913,7 +913,7 @@ describe("atomic runtime persistence on PostgreSQL", () => {
     });
     await threadStore.createThread({id: threadId, sessionId});
     await threadStore.enqueueInput(threadId, inputPayload(`initial-${suffix}`));
-    const run = await threadStore.tryStartRun(threadId, owner);
+    const run = await threadStore.tryStartRun(threadId, owner, randomUUID());
     expect(run).not.toBeNull();
     await threadStore.applyPendingInputs(threadId, run!.id);
 
@@ -1090,7 +1090,7 @@ describe("atomic runtime persistence on PostgreSQL", () => {
         {inputId},
       );
       await expect(threadStore.wakePendingInputs(threadId)).resolves.toEqual([threadId]);
-      run = await threadStore.tryStartRun(threadId, owner);
+      run = await threadStore.tryStartRun(threadId, owner, randomUUID());
       expect(run).not.toBeNull();
 
       await blocker.query("BEGIN");
@@ -1313,7 +1313,7 @@ describe("atomic runtime persistence on PostgreSQL", () => {
       });
       await sessionLocked;
 
-      claim = threadStore.tryStartRun(previousThreadId, owner);
+      claim = threadStore.tryStartRun(previousThreadId, owner, randomUUID());
       await waitForLockWaiters(pool, 1);
       renewal = connectorLeases.renew({...owner, ttlMs: 120_000});
       await waitForLockWaiters(pool, 2);

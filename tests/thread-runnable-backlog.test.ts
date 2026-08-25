@@ -55,8 +55,12 @@ class BacklogStore extends TestThreadRuntimeStore {
     return super.listRunnableThreadIds(limit);
   }
 
-  override async tryStartRun(threadId: string, owner: ThreadRunOwner): Promise<ThreadRunRecord | null> {
-    const run = await super.tryStartRun(threadId, owner);
+  override async tryStartRun(
+    threadId: string,
+    owner: ThreadRunOwner,
+    runId: string,
+  ): Promise<ThreadRunRecord | null> {
+    const run = await super.tryStartRun(threadId, owner, runId);
     if (run) {
       this.activeRuns += 1;
       this.maxActiveRuns = Math.max(this.maxActiveRuns, this.activeRuns);

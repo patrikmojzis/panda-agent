@@ -49,7 +49,7 @@ import {renderRuntimeAutonomyContext} from "../../../prompts/runtime/autonomy-co
 import type {ThreadRuntimeNotification} from "./postgres-notifications.js";
 import {
   ThreadRunScheduler,
-  type ThreadRunExecutionResult,
+  type ThreadRunAttemptResult,
 } from "./scheduler.js";
 
 export type ThreadWakeMode = "wake" | "queue";
@@ -310,6 +310,7 @@ export class ThreadRuntimeCoordinator {
   private notificationStatusGeneration = 0;
   private owner: ThreadRunOwner | null = null;
   private shutdownSettlementDeadlineAt: number | null = null;
+  private stopPromise: Promise<void> | null = null;
   private stopped = true;
   private closed = false;
 
@@ -325,8 +326,8 @@ export class ThreadRuntimeCoordinator {
     this.scheduler = new ThreadRunScheduler({
       maxConcurrentRuns: options.maxConcurrentRuns,
       shutdownDrainTimeoutMs: this.shutdownDrainTimeoutMs,
-      run: (threadId, signal) => this.runUntilIdle(threadId, signal),
-      onRunSettled: async (threadId, result) => {
+      run: (threadId, signal, runId) => this.runUntilIdle(threadId, runId, signal),
+      onAttemptSettled: async (threadId, result) => {
         if (result.outcome === "completed" || result.outcome === "no_claim") {
           await this.reconcileThreadSettlement(
             threadId,
@@ -341,6 +342,19 @@ export class ThreadRuntimeCoordinator {
             () => this.store.hasPendingWake(threadId),
           );
         }
+      },
+      onAdmissionRetry: ({threadId, error, attempt, delayMs}) => {
+        if (attempt === 1 || attempt === 3 || attempt % 30 === 0) {
+          console.error("Thread run admission failed; retrying", {
+            threadId,
+            attempt,
+            delayMs,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      },
+      onAdmissionShutdown: (threadId, runId, reason) => {
+        return this.reconcileAdmissionDuringShutdown(threadId, runId, reason);
       },
       onExclusiveSettled: (threadId) => this.reconcileThreadSettlement(
         threadId,
@@ -547,7 +561,12 @@ export class ThreadRuntimeCoordinator {
     }
   }
 
-  async stop(reason: unknown = new Error("Thread runtime stopped.")): Promise<void> {
+  stop(reason: unknown = new Error("Thread runtime stopped.")): Promise<void> {
+    this.stopPromise ??= this.stopOnce(reason);
+    return this.stopPromise;
+  }
+
+  private async stopOnce(reason: unknown): Promise<void> {
     if (this.stopped && !this.owner) {
       return;
     }
@@ -1193,7 +1212,10 @@ export class ThreadRuntimeCoordinator {
    */
   private async settleRun(
     runId: string,
-    settlement: {kind: "complete"} | {kind: "fail"; error: string},
+    settlement:
+      | {kind: "complete"}
+      | {kind: "fail"; error: string}
+      | {kind: "fail_before_execution"; error: string},
   ): Promise<ThreadRunRecord | null> {
     let retryDelayMs = 25;
     let failedAttempts = 0;
@@ -1207,8 +1229,11 @@ export class ThreadRuntimeCoordinator {
 
       if (!claimLost) {
         try {
-          return settlement.kind === "complete"
-            ? await this.store.completeRun(runId)
+          if (settlement.kind === "complete") {
+            return await this.store.completeRun(runId);
+          }
+          return settlement.kind === "fail_before_execution"
+            ? await this.store.failRunBeforeExecution(runId, settlement.error)
             : await this.store.failRun(runId, settlement.error);
         } catch (error) {
           claimLost = error instanceof ThreadRunClaimLostError;
@@ -1249,16 +1274,84 @@ export class ThreadRuntimeCoordinator {
     }
   }
 
+  /**
+   * Resolve a claim whose commit is uncertain without starting new work.
+   *
+   * A client error can arrive before its backend transaction finishes, so a
+   * read-only miss is not conclusive. Replaying the full same-id claim either
+   * waits for and recovers that transaction or creates the one fenced run that
+   * represents the still-pending wake. No provider or tool work runs here.
+   */
+  private async reconcileAdmissionDuringShutdown(
+    threadId: string,
+    runId: string,
+    reason: unknown,
+  ): Promise<void> {
+    const owner = this.owner;
+    if (!owner) {
+      return;
+    }
+
+    let retryDelayMs = 25;
+    let failedAttempts = 0;
+    while (true) {
+      const deadline = this.shutdownSettlementDeadlineAt;
+      if (deadline !== null && Date.now() >= deadline) {
+        return;
+      }
+
+      try {
+        const run = await this.store.tryStartRun(threadId, owner, runId);
+        if (!run) {
+          return;
+        }
+        await this.settleRun(run.id, {
+          kind: "fail_before_execution",
+          error: stringifyUnknown(reason, {preferErrorMessage: true}),
+        });
+        return;
+      } catch {
+        failedAttempts += 1;
+        if (failedAttempts === 3 || failedAttempts % 30 === 0) {
+          console.error("Thread run admission shutdown reconciliation is retrying", {
+            threadId,
+            runId,
+            failedAttempts,
+          });
+        }
+      }
+
+      const remainingShutdownMs = this.shutdownSettlementDeadlineAt === null
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, this.shutdownSettlementDeadlineAt - Date.now());
+      if (remainingShutdownMs === 0) {
+        return;
+      }
+      await sleep(Math.min(retryDelayMs, remainingShutdownMs));
+      retryDelayMs = Math.min(retryDelayMs * 2, RUN_SETTLEMENT_MAX_RETRY_DELAY_MS);
+    }
+  }
+
   private async runUntilIdle(
     threadId: string,
+    runId: string,
     signal: AbortSignal,
-  ): Promise<ThreadRunExecutionResult> {
+  ): Promise<ThreadRunAttemptResult> {
     const owner = this.owner;
     if (this.stopped || !owner) {
       return {outcome: "stopped"};
     }
     signal.throwIfAborted();
-    const run = await this.store.tryStartRun(threadId, owner);
+    let run: ThreadRunRecord | null;
+    try {
+      run = await this.store.tryStartRun(threadId, owner, runId);
+    } catch (error) {
+      // No run has been handed to the executor yet. The claim may still have
+      // committed, but replaying its stable id can only recover that row; it
+      // cannot replay provider or tool side effects. Return a typed outcome so
+      // the scheduler can release capacity and back off without losing work.
+      return {outcome: "admission_failed", error};
+    }
     if (!run) {
       return {outcome: "no_claim"};
     }

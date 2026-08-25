@@ -1,3 +1,5 @@
+import {randomUUID} from "node:crypto";
+
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/coordinator.js";
@@ -42,7 +44,7 @@ async function enqueueAndApply(
     message: stringToUserMessage("run this exact input"),
     source: "test",
   });
-  const run = await store.tryStartRun(threadId, TEST_OWNER);
+  const run = await store.tryStartRun(threadId, TEST_OWNER, randomUUID());
   if (!run) {
     throw new Error("Expected the input's run claim to succeed.");
   }

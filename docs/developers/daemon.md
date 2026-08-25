@@ -73,6 +73,25 @@ run's fenced settlement until it becomes terminal, loses ownership, or reaches
 the scheduler's shared drain deadline. The lane is not reported idle while a
 coalesced wake is still uncertain. Healthy steady state does not poll.
 
+A database failure before the durable run claim exists moves the same thread
+lane into an equal-jitter exponential retry, from 100ms to a 5s ceiling. The
+delay holds neither a scheduler run slot nor a database client; later wake hints
+coalesce into that lane, and retry continues at the capped rate until admission
+succeeds or the coordinator stops. The lane retains one run UUID across those
+attempts, so a claim that committed before its response was lost is recovered
+idempotently without consuming another wake or inserting another run. An empty
+claim result is reconciled by a fresh exact-ID read, covering a retry whose
+older statement snapshot waited behind the original commit. During shutdown,
+any already-ambiguous ID replays the same claim protocol within the shared drain
+deadline. That replay waits for a still-finishing backend transaction instead
+of treating an early read miss as rollback; the recovered owned run is failed
+before execution and its consumed wake is atomically restored, including
+wake-only turns with no input row. Concurrent shutdown callers share that one
+drain. This
+retry applies only around claim admission. Once the committed run is returned,
+its fenced settlement owns the outcome and the scheduler never replays model or
+tool side effects as an admission retry.
+
 Starting work is a durable claim. A `runtime.runs` row records the exact daemon
 lease source, key, and holder, and a partial unique index permits only one
 `running` row per thread. The claim succeeds only while that renewable

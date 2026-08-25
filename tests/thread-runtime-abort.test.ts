@@ -71,9 +71,9 @@ class AbortReadCountingStore extends TestThreadRuntimeStore {
 class RegistrationRaceStore extends AbortReadCountingStore {
   tryStartRunCalls = 0;
 
-  override async tryStartRun(threadId: string, owner: ThreadRunOwner) {
+  override async tryStartRun(threadId: string, owner: ThreadRunOwner, runId: string) {
     this.tryStartRunCalls += 1;
-    const run = await super.tryStartRun(threadId, owner);
+    const run = await super.tryStartRun(threadId, owner, runId);
     if (!run) {
       return null;
     }
@@ -88,8 +88,8 @@ class GatedRegistrationRaceStore extends RegistrationRaceStore {
   readonly claimEntered = createDeferred<void>();
   readonly releaseClaim = createDeferred<void>();
 
-  override async tryStartRun(threadId: string, owner: ThreadRunOwner) {
-    const run = await super.tryStartRun(threadId, owner);
+  override async tryStartRun(threadId: string, owner: ThreadRunOwner, runId: string) {
+    const run = await super.tryStartRun(threadId, owner, runId);
     this.claimEntered.resolve();
     await this.releaseClaim.promise;
     return run;
@@ -101,9 +101,9 @@ class GatedNoClaimStore extends AbortReadCountingStore {
   readonly releaseClaim = createDeferred<void>();
   private gateNextClaim = true;
 
-  override async tryStartRun(threadId: string, owner: ThreadRunOwner) {
+  override async tryStartRun(threadId: string, owner: ThreadRunOwner, runId: string) {
     if (!this.gateNextClaim) {
-      return super.tryStartRun(threadId, owner);
+      return super.tryStartRun(threadId, owner, runId);
     }
     this.gateNextClaim = false;
     // Model a claim statement whose snapshot sees no work. A real wake can
@@ -112,7 +112,7 @@ class GatedNoClaimStore extends AbortReadCountingStore {
     const runnableInClaimSnapshot = await this.isThreadRunnable(threadId);
     this.claimEntered.resolve();
     await this.releaseClaim.promise;
-    return runnableInClaimSnapshot ? super.tryStartRun(threadId, owner) : null;
+    return runnableInClaimSnapshot ? super.tryStartRun(threadId, owner, runId) : null;
   }
 }
 
