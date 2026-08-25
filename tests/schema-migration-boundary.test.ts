@@ -46,6 +46,7 @@ describe("database migration boundary", () => {
       "app/database/migrations/0006-thread-input-cutoffs.ts",
       "app/database/migrations/0007-reset-run-fences.ts",
       "app/database/migrations/0008-legacy-schema-reconciliation.ts",
+      "app/database/migrations/0009-legacy-input-backlog-quarantine.ts",
       "app/database/readonly-role.ts",
       "domain/threads/requests/postgres-operation-schema.ts",
       "lib/postgres-migrations.ts",
