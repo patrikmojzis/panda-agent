@@ -1581,12 +1581,12 @@ describe("BrowserTool", () => {
       .mockResolvedValueOnce(asLaunchedBrowser(secondBrowser));
     const service = new BrowserSessionService({
       launchBrowserImpl,
-      actionTimeoutMs: 10,
+      actionTimeoutMs: 1_000,
     });
     services.push(service);
 
     const run = createRunContext({cwd: "/workspace/panda", threadId: "thread-1"});
-    await expect(service.handle({action: "snapshot"}, run))
+    await expect(service.handle({action: "snapshot", timeoutMs: 10}, run))
       .rejects.toThrow(/browser (action snapshot|snapshot) timed out after 10ms/);
 
     await service.handle({action: "snapshot"}, run);

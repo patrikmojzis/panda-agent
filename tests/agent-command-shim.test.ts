@@ -5688,7 +5688,7 @@ printf '{"ok":true,"output":%s}\\n' "$body"
   it("preserves remote command failure status in shell chains", async () => {
     const server = await startWatchServer();
 
-    await expect(execFileAsync("/bin/zsh", [
+    await expect(execFileAsync("/bin/sh", [
       "-c",
       `"${shimPath}" todo show --json '{"index":0}' && printf 'continued\\n'`,
     ], {

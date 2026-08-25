@@ -18,6 +18,7 @@ export type BrowserPageSection = "page" | "dialog";
 type BrowserSnapshotActionOptions = {
   snapshotMode?: BrowserSnapshotMode;
   deviceProfile?: BrowserDeviceProfile;
+  timeoutMs?: number;
 };
 
 type BrowserDeviceActionOptions = {
@@ -28,7 +29,6 @@ export type BrowserAction =
   | ({
       action: "navigate";
       url: string;
-      timeoutMs?: number;
     } & BrowserSnapshotActionOptions)
   | ({
       action: "snapshot";
@@ -37,7 +37,6 @@ export type BrowserAction =
       action: "click";
       ref?: string;
       selector?: string;
-      timeoutMs?: number;
     } & BrowserSnapshotActionOptions)
   | ({
       action: "type";
@@ -45,14 +44,12 @@ export type BrowserAction =
       selector?: string;
       text: string;
       submit?: boolean;
-      timeoutMs?: number;
     } & BrowserSnapshotActionOptions)
   | ({
       action: "press";
       key: string;
       ref?: string;
       selector?: string;
-      timeoutMs?: number;
     } & BrowserSnapshotActionOptions)
   | ({
       action: "select";
@@ -60,7 +57,6 @@ export type BrowserAction =
       selector?: string;
       value?: string;
       values?: string[];
-      timeoutMs?: number;
     } & BrowserSnapshotActionOptions)
   | ({
       action: "wait";
@@ -68,7 +64,6 @@ export type BrowserAction =
       selector?: string;
       text?: string;
       url?: string;
-      timeoutMs?: number;
     } & BrowserSnapshotActionOptions)
   | {
       action: "evaluate";

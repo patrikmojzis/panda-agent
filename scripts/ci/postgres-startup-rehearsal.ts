@@ -6,11 +6,6 @@ import {fileURLToPath} from "node:url";
 import {READONLY_SESSION_VIEW_BASENAMES} from "../../src/domain/threads/runtime/index.js";
 import {createPandaSchemaMigrator, PANDA_SCHEMA_MIGRATIONS} from "../../src/app/database/migration-catalog.js";
 import {runPandaDatabaseIntegrityChecks} from "../../src/app/database/integrity-catalog.js";
-import {
-  PANDA_EXPECTED_COLUMNS,
-  PANDA_EXPECTED_CONSTRAINTS,
-  PANDA_EXPECTED_RELATIONS,
-} from "../../src/app/database/schema-object-manifest.js";
 import {recreateSmokeDatabase} from "../../src/app/smoke/database.js";
 import {createPostgresPool} from "../../src/app/runtime/database.js";
 import {
@@ -223,113 +218,6 @@ async function assertReadonlyExamplesExecute(pool: ReturnType<typeof createPostg
   }
 }
 
-async function assertSchemaObjectManifestExact(pool: ReturnType<typeof createPostgresPool>): Promise<void> {
-  const relations = await pool.query(`
-    SELECT namespace.nspname AS schema_name,
-           relation.relname AS object_name,
-           relation.relkind::TEXT AS object_kind,
-           MD5(CASE relation.relkind
-             WHEN 'i' THEN pg_get_indexdef(relation.oid)
-             WHEN 'v' THEN pg_get_viewdef(relation.oid, TRUE)
-             WHEN 'm' THEN pg_get_viewdef(relation.oid, TRUE)
-             WHEN 'S' THEN CONCAT_WS('|',
-               format_type(sequence.seqtypid, NULL),
-               sequence.seqstart::TEXT,
-               sequence.seqincrement::TEXT,
-               sequence.seqmax::TEXT,
-               sequence.seqmin::TEXT,
-               sequence.seqcache::TEXT,
-               sequence.seqcycle::TEXT
-             )
-             ELSE ''
-           END) AS definition_hash
-    FROM pg_class AS relation
-    INNER JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
-    LEFT JOIN pg_sequence AS sequence ON sequence.seqrelid = relation.oid
-    WHERE namespace.nspname IN ('runtime', 'session')
-      AND relation.relkind IN ('r', 'p', 'v', 'm', 'S', 'i')
-    ORDER BY namespace.nspname COLLATE "C",
-             relation.relkind::TEXT COLLATE "C",
-             relation.relname COLLATE "C"
-  `);
-  // Keep this query identical to the generator. PostgreSQL 18 materializes
-  // NOT NULL as history-dependent pg_constraint rows; columns already encode
-  // nullability exactly, so those rows are deliberately excluded here.
-  const constraints = await pool.query(`
-    SELECT namespace.nspname AS schema_name,
-           relation.relname AS table_name,
-           constraint_record.conname AS constraint_name,
-           constraint_record.contype::TEXT AS constraint_kind,
-           MD5(pg_get_constraintdef(constraint_record.oid, TRUE)) AS definition_hash
-    FROM pg_constraint AS constraint_record
-    INNER JOIN pg_class AS relation ON relation.oid = constraint_record.conrelid
-    INNER JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
-    WHERE namespace.nspname IN ('runtime', 'session')
-      AND constraint_record.contype <> 'n'
-    ORDER BY namespace.nspname COLLATE "C",
-             relation.relname COLLATE "C",
-             constraint_record.conname COLLATE "C"
-  `);
-  const columns = await pool.query(`
-    SELECT namespace.nspname AS schema_name,
-           relation.relname AS relation_name,
-           column_record.attname AS column_name,
-           format_type(column_record.atttypid, column_record.atttypmod) AS data_type,
-           column_record.attnotnull::TEXT AS not_null,
-           MD5(COALESCE(pg_get_expr(attribute_default.adbin, attribute_default.adrelid, TRUE), '')) AS default_hash,
-           column_record.attidentity::TEXT AS identity_kind,
-           column_record.attgenerated::TEXT AS generated_kind,
-           COALESCE(collation_record.collname, '') AS collation_name
-    FROM pg_attribute AS column_record
-    INNER JOIN pg_class AS relation ON relation.oid = column_record.attrelid
-    INNER JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
-    LEFT JOIN pg_attrdef AS attribute_default
-      ON attribute_default.adrelid = column_record.attrelid
-     AND attribute_default.adnum = column_record.attnum
-    LEFT JOIN pg_collation AS collation_record ON collation_record.oid = column_record.attcollation
-    WHERE namespace.nspname IN ('runtime', 'session')
-      AND relation.relkind IN ('r', 'p', 'v', 'm')
-      AND column_record.attnum > 0
-      AND column_record.attisdropped = FALSE
-    ORDER BY namespace.nspname COLLATE "C",
-             relation.relname COLLATE "C",
-             column_record.attname COLLATE "C"
-  `);
-  const relationTuples = relations.rows.map((row) => [
-    row.schema_name,
-    row.object_name,
-    row.object_kind,
-    row.definition_hash,
-  ]);
-  const constraintTuples = constraints.rows.map((row) => [
-    row.schema_name,
-    row.table_name,
-    row.constraint_name,
-    row.constraint_kind,
-    row.definition_hash,
-  ]);
-  const columnTuples = columns.rows.map((row) => [
-    row.schema_name,
-    row.relation_name,
-    row.column_name,
-    row.data_type,
-    row.not_null,
-    row.default_hash,
-    row.identity_kind,
-    row.generated_kind,
-    row.collation_name,
-  ]);
-  if (JSON.stringify(relationTuples) !== JSON.stringify(PANDA_EXPECTED_RELATIONS)) {
-    throw new Error("Fresh/legacy relation catalog differs from schema-object-manifest.ts.");
-  }
-  if (JSON.stringify(constraintTuples) !== JSON.stringify(PANDA_EXPECTED_CONSTRAINTS)) {
-    throw new Error("Fresh/legacy constraint catalog differs from schema-object-manifest.ts.");
-  }
-  if (JSON.stringify(columnTuples) !== JSON.stringify(PANDA_EXPECTED_COLUMNS)) {
-    throw new Error("Fresh/legacy column catalog differs from schema-object-manifest.ts.");
-  }
-}
-
 async function runScenario(name: string, fixturePath?: string): Promise<void> {
   const target = await recreateSmokeDatabase(requireTestDatabaseUrl());
   const pool = createPostgresPool({
@@ -363,8 +251,9 @@ async function runScenario(name: string, fixturePath?: string): Promise<void> {
     await assertBaselineCutover(pool);
     await assertLegacyThreadContextColumnDropped(pool);
     await assertReadonlyExamplesExecute(pool);
+    // Prove catalog fingerprints do not inherit the operator's host timezone.
+    await pool.query("SET TIME ZONE 'Europe/Bratislava'");
     await runPandaDatabaseIntegrityChecks(pool);
-    await assertSchemaObjectManifestExact(pool);
     process.stdout.write(`Postgres startup rehearsal passed: ${name}\n`);
   } finally {
     await pool.end();
