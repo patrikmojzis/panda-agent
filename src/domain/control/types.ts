@@ -16,6 +16,7 @@ export interface ControlGrantRecord {
 export interface ControlSessionRecord {
   id: string;
   identityId: string;
+  /** Login-time privilege ceiling; authentication revalidates matching active access. */
   role: ControlGrantRole;
   csrfTokenHash: string;
   expiresAt: number;

@@ -34,6 +34,33 @@ const PANDA_DATABASE_ROW_INTEGRITY_CHECKS: readonly IntegrityCheckGroup[] = [
       `,
     }],
   },
+  {
+    scope: "Control identity access",
+    checks: [
+      {
+        label: "active Control grants owned by deleted identities",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM runtime.control_grants AS control_grant
+          INNER JOIN runtime.identities AS identity
+            ON identity.id = control_grant.identity_id
+          WHERE identity.status = 'deleted'
+            AND control_grant.active = TRUE
+        `,
+      },
+      {
+        label: "unrevoked Control sessions owned by deleted identities",
+        sql: `
+          SELECT COUNT(*)::INTEGER AS count
+          FROM runtime.control_sessions AS control_session
+          INNER JOIN runtime.identities AS identity
+            ON identity.id = control_session.identity_id
+          WHERE identity.status = 'deleted'
+            AND control_session.revoked_at IS NULL
+        `,
+      },
+    ],
+  },
 ];
 
 export async function runPandaDatabaseIntegrityChecks(pool: PgPoolLike): Promise<{checked: number}> {

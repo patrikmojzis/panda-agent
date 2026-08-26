@@ -2,9 +2,11 @@ import {randomUUID} from "node:crypto";
 
 import {generateOpaqueToken, hashOpaqueToken, opaqueTokenMatches} from "../../lib/opaque-tokens.js";
 import type {PgPoolLike} from "../../lib/postgres-query.js";
+import {withTransaction} from "../../lib/postgres-transaction.js";
 import {optionalTimestampMillis, requireTimestampMillis} from "../../lib/postgres-values.js";
 import {requireNonEmptyString} from "../../lib/strings.js";
 import {normalizeAgentKey} from "../agents/types.js";
+import {buildIdentityTableNames} from "../identity/postgres-shared.js";
 import {buildControlTableNames} from "./postgres-shared.js";
 import type {ControlGrantRecord, ControlGrantRole, ControlLoginResult, ControlSessionRecord} from "./types.js";
 
@@ -48,6 +50,7 @@ function parseSession(row: Record<string, unknown>): ControlSessionRecord {
 export class PostgresControlAuthService {
   private readonly pool: PgPoolLike;
   private readonly tables = buildControlTableNames();
+  private readonly identityTables = buildIdentityTableNames();
 
   constructor(options: {pool: PgPoolLike}) {
     this.pool = options.pool;
@@ -59,11 +62,25 @@ export class PostgresControlAuthService {
     const agentKey = role === "scoped" ? normalizeAgentKey(requireNonEmptyString(input.agentKey, "Scoped Control grants require an agent key.")) : null;
     if (role === "admin" && input.agentKey) throw new Error("Admin Control grants must not specify an agent key.");
     const expiresAt = Date.now() + (input.loginTokenTtlMs ?? DEFAULT_CONTROL_LOGIN_TOKEN_TTL_MS);
-    const inserted = await this.pool.query(`
-      INSERT INTO ${this.tables.grants} (id, identity_id, role, agent_key, label, login_token_hash, login_token_expires_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
-      RETURNING *
-    `, [randomUUID(), requireNonEmptyString(input.identityId, "Identity id is required."), role, agentKey, input.label?.trim() || null, hashOpaqueToken(token), new Date(expiresAt)]);
+    const identityId = requireNonEmptyString(input.identityId, "Identity id is required.");
+    const inserted = await withTransaction(this.pool, async (client) => {
+      const identity = await client.query(`
+        SELECT id
+        FROM ${this.identityTables.identities}
+        WHERE id = $1
+          AND status = 'active'
+        FOR UPDATE
+      `, [identityId]);
+      if (identity.rows.length === 0) {
+        throw new Error("Control grants require an active identity.");
+      }
+
+      return client.query(`
+        INSERT INTO ${this.tables.grants} (id, identity_id, role, agent_key, label, login_token_hash, login_token_expires_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        RETURNING *
+      `, [randomUUID(), identityId, role, agentKey, input.label?.trim() || null, hashOpaqueToken(token), new Date(expiresAt)]);
+    });
     return {grant: parseGrant(inserted.rows[0] as Record<string, unknown>), loginToken: token};
   }
 
@@ -73,7 +90,15 @@ export class PostgresControlAuthService {
   }
 
   async hasAnyGrant(): Promise<boolean> {
-    const result = await this.pool.query(`SELECT 1 FROM ${this.tables.grants} WHERE active = TRUE LIMIT 1`);
+    const result = await this.pool.query(`
+      SELECT 1
+      FROM ${this.tables.grants} AS control_grant
+      INNER JOIN ${this.identityTables.identities} AS identity
+        ON identity.id = control_grant.identity_id
+       AND identity.status = 'active'
+      WHERE control_grant.active = TRUE
+      LIMIT 1
+    `);
     return result.rows.length > 0;
   }
 
@@ -82,21 +107,44 @@ export class PostgresControlAuthService {
     const csrfToken = generateOpaqueToken("pcc");
     const remember = options.remember === true;
     const expiresAt = Date.now() + (options.sessionTtlMs ?? (remember ? DEFAULT_CONTROL_REMEMBERED_SESSION_TTL_MS : DEFAULT_CONTROL_SESSION_TTL_MS));
+    const loginTokenHash = hashOpaqueToken(requireNonEmptyString(token, "Control login token is required."));
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const consumed = await client.query(`
-        UPDATE ${this.tables.grants}
-        SET login_token_consumed_at = NOW(), updated_at = NOW()
+      const eligibleGrant = await client.query(`
+        SELECT identity_id
+        FROM ${this.tables.grants}
         WHERE login_token_hash = $1
           AND active = TRUE
           AND login_token_consumed_at IS NULL
           AND login_token_expires_at > NOW()
+      `, [loginTokenHash]);
+      const identityId = (eligibleGrant.rows[0] as {identity_id?: unknown} | undefined)?.identity_id;
+      if (typeof identityId !== "string") {
+        throw new Error("Control login token is invalid, expired, or already used.");
+      }
+      const eligibleIdentity = await client.query(`
+        SELECT id
+        FROM ${this.identityTables.identities}
+        WHERE id = $1
+          AND status = 'active'
+        FOR UPDATE
+      `, [identityId]);
+      if (eligibleIdentity.rows.length === 0) {
+        throw new Error("Control login token is invalid, expired, or already used.");
+      }
+      const consumed = await client.query(`
+        UPDATE ${this.tables.grants}
+        SET login_token_consumed_at = NOW(), updated_at = NOW()
+        WHERE login_token_hash = $1
+          AND identity_id = $2
+          AND active = TRUE
+          AND login_token_consumed_at IS NULL
+          AND login_token_expires_at > NOW()
         RETURNING *
-      `, [hashOpaqueToken(requireNonEmptyString(token, "Control login token is required."))]);
+      `, [loginTokenHash, identityId]);
       const grant = consumed.rows[0] ? parseGrant(consumed.rows[0] as Record<string, unknown>) : null;
       if (!grant) {
-        await client.query("ROLLBACK");
         throw new Error("Control login token is invalid, expired, or already used.");
       }
       const inserted = await client.query(`
@@ -120,12 +168,32 @@ export class PostgresControlAuthService {
   }
 
   async getSessionByToken(token: string): Promise<ControlSessionRecord | null> {
+    const authorized = await this.pool.query(`
+      SELECT control_session.id
+      FROM ${this.tables.sessions} AS control_session
+      INNER JOIN ${this.identityTables.identities} AS identity
+        ON identity.id = control_session.identity_id
+       AND identity.status = 'active'
+      INNER JOIN ${this.tables.grants} AS control_grant
+        ON control_grant.identity_id = control_session.identity_id
+       AND control_grant.role = control_session.role
+       AND control_grant.active = TRUE
+      WHERE control_session.session_token_hash = $1
+        AND control_session.revoked_at IS NULL
+        AND control_session.expires_at > NOW()
+      LIMIT 1
+    `, [hashOpaqueToken(requireNonEmptyString(token, "Control session token is required."))]);
+    const authorizedSessionId = (authorized.rows[0] as {id?: unknown} | undefined)?.id;
+    if (typeof authorizedSessionId !== "string") return null;
+
     const result = await this.pool.query(`
       UPDATE ${this.tables.sessions}
       SET last_seen_at = NOW()
-      WHERE session_token_hash = $1 AND revoked_at IS NULL AND expires_at > NOW()
+      WHERE id = $1
+        AND revoked_at IS NULL
+        AND expires_at > NOW()
       RETURNING *
-    `, [hashOpaqueToken(requireNonEmptyString(token, "Control session token is required."))]);
+    `, [authorizedSessionId]);
     return result.rows[0] ? parseSession(result.rows[0] as Record<string, unknown>) : null;
   }
 

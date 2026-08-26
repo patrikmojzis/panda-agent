@@ -9,9 +9,10 @@ import {RUNTIME_OPERATION_RECEIPTS_MIGRATION} from "./migrations/0005-runtime-op
 import {THREAD_INPUT_CUTOFFS_MIGRATION} from "./migrations/0006-thread-input-cutoffs.js";
 import {RESET_RUN_FENCES_MIGRATION} from "./migrations/0007-reset-run-fences.js";
 import {LEGACY_SCHEMA_RECONCILIATION_MIGRATION} from "./migrations/0008-legacy-schema-reconciliation.js";
-import {REFRESH_ARCHIVED_SESSION_VIEW_MIGRATION} from "./migrations/0008-refresh-archived-session-view.js";
-import {SESSION_ARCHIVE_MIGRATION} from "./migrations/0008-session-archive.js";
-import {BOUND_SECRET_ENVELOPES_MIGRATION} from "./migrations/0009-bound-secret-envelopes.js";
+import {SESSION_ARCHIVE_MIGRATION} from "./migrations/0009-session-archive.js";
+import {REFRESH_ARCHIVED_SESSION_VIEW_MIGRATION} from "./migrations/0010-refresh-archived-session-view.js";
+import {BOUND_SECRET_ENVELOPES_MIGRATION} from "./migrations/0011-bound-secret-envelopes.js";
+import {CONTROL_IDENTITY_REVOCATION_MIGRATION} from "./migrations/0012-control-identity-revocation.js";
 import {reconcileReadonlySessionRole} from "./readonly-role.js";
 
 export const PANDA_SCHEMA_MIGRATIONS = Object.freeze([
@@ -22,10 +23,11 @@ export const PANDA_SCHEMA_MIGRATIONS = Object.freeze([
   RUNTIME_OPERATION_RECEIPTS_MIGRATION,
   THREAD_INPUT_CUTOFFS_MIGRATION,
   RESET_RUN_FENCES_MIGRATION,
-  SESSION_ARCHIVE_MIGRATION,
   LEGACY_SCHEMA_RECONCILIATION_MIGRATION,
+  SESSION_ARCHIVE_MIGRATION,
   REFRESH_ARCHIVED_SESSION_VIEW_MIGRATION,
   BOUND_SECRET_ENVELOPES_MIGRATION,
+  CONTROL_IDENTITY_REVOCATION_MIGRATION,
 ]);
 
 /** Entry points bundled by CI to prove every persisted checksum matches code. */
@@ -37,10 +39,11 @@ export const PANDA_SCHEMA_MIGRATION_SOURCES: Readonly<Record<string, string>> = 
   "0005_runtime_operation_receipts": "src/app/database/migrations/0005-runtime-operation-receipts.ts",
   "0006_thread_input_cutoffs": "src/app/database/migrations/0006-thread-input-cutoffs.ts",
   "0007_reset_run_fences": "src/app/database/migrations/0007-reset-run-fences.ts",
-  "0008_archive_session": "src/app/database/migrations/0008-session-archive.ts",
   "0008_legacy_schema_reconciliation": "src/app/database/migrations/0008-legacy-schema-reconciliation.ts",
-  "0008_refresh_archived_session_view": "src/app/database/migrations/0008-refresh-archived-session-view.ts",
-  "0009_bound_secret_envelopes": "src/app/database/migrations/0009-bound-secret-envelopes.ts",
+  "0009_archive_session": "src/app/database/migrations/0009-session-archive.ts",
+  "0010_refresh_archived_session_view": "src/app/database/migrations/0010-refresh-archived-session-view.ts",
+  "0011_bound_secret_envelopes": "src/app/database/migrations/0011-bound-secret-envelopes.ts",
+  "0012_control_identity_revocation": "src/app/database/migrations/0012-control-identity-revocation.ts",
 });
 
 export interface CreatePandaSchemaMigratorOptions {

@@ -2,7 +2,7 @@ import {createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes} fro
 
 import type {PostgresMigration} from "../../../lib/postgres-migrations.js";
 import type {PgQueryable} from "../../../lib/postgres-query.js";
-import {PANDA_BOUND_SECRET_ENVELOPES} from "../../../integrations/postgres/schema-versions/0009-bound-secret-envelopes.js";
+import {PANDA_BOUND_SECRET_ENVELOPES} from "../../../integrations/postgres/schema-versions/0011-bound-secret-envelopes.js";
 
 const AES_ALGORITHM = "aes-256-gcm";
 const BATCH_SIZE = 200;

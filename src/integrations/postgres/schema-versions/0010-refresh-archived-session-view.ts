@@ -1,7 +1,7 @@
 import type {PostgresMigrationSummary} from "../../../lib/postgres-migrations.js";
 
 export const PANDA_REFRESH_ARCHIVED_SESSION_VIEW: PostgresMigrationSummary = Object.freeze({
-  id: "0008_refresh_archived_session_view",
+  id: "0010_refresh_archived_session_view",
   description: "Expose session archive state through the scoped readonly view",
-  checksum: "3cc0691688df05196ca7080ce65a024b4774fd54368775456091d3b0e0aa14e0",
+  checksum: "0df6a33d2a39bbfaf2b59c0c00296172002400de9808bed8059c3309ff204193",
 });

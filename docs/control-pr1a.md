@@ -33,6 +33,8 @@ panda control grant --identity patrik --role scoped --agent clawd
 
 The command prints a one-time `loginToken` that expires after 15 minutes. Treat it as a secret operator bootstrap token. The HTTP login endpoint consumes it and exchanges it for a Control session cookie and CSRF token; token reuse fails. The Control UI can optionally remember a trusted browser for 30 days by extending the resulting session cookie; the same role/scope checks still apply, and logout revokes the stored session.
 
+Every request revalidates the session against an active identity and a matching active grant. Deleting an identity atomically disables all of its Control grants and revokes all of its Control sessions. Reactivating that identity does not restore the old grants or cookies; issue a new grant and log in again.
+
 ## PR1A endpoints
 
 - `GET /api/control/health`

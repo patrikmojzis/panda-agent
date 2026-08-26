@@ -1,5 +1,5 @@
 import type {PostgresMigration} from "../../../lib/postgres-migrations.js";
-import {PANDA_SESSION_ARCHIVE} from "../../../integrations/postgres/schema-versions/0008-session-archive.js";
+import {PANDA_SESSION_ARCHIVE} from "../../../integrations/postgres/schema-versions/0009-session-archive.js";
 
 /** Adds the durable archive authority and explicit session ownership for queued effects. */
 export const SESSION_ARCHIVE_MIGRATION: PostgresMigration = {

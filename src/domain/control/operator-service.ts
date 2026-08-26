@@ -45,7 +45,7 @@ import {
     type IdentityStatus,
     normalizeIdentityHandle
 } from "../identity/types.js";
-import type {PgQueryable} from "../../lib/postgres-query.js";
+import type {PgPoolLike, PgQueryable} from "../../lib/postgres-query.js";
 import {buildScheduledTaskTableNames} from "../scheduling/tasks/postgres-shared.js";
 import {ConversationRepo} from "../sessions/conversations/repo.js";
 import {buildConversationSessionTableNames} from "../sessions/conversations/postgres-shared.js";
@@ -63,6 +63,7 @@ import type {WikiBindingService} from "../wiki/service.js";
 import type {WikiBindingRecord} from "../wiki/types.js";
 import {normalizeWikiGroupId, normalizeWikiNamespacePath} from "../wiki/types.js";
 import type {ControlAuditEventSummary, ControlReadService} from "./read-service.js";
+import {PostgresControlIdentityAccess} from "./identity-access.js";
 import type {ControlSessionRecord} from "./types.js";
 import {summarizeRuntimeError} from "../../lib/runtime-error-summary.js";
 import {
@@ -532,7 +533,7 @@ export interface ControlGlobalSearchResult {
 }
 
 export interface ControlOperatorServiceOptions {
-  pool: PgQueryable;
+  pool: PgPoolLike;
   reads: Pick<ControlReadService, "listAgents" | "listAuditEvents">;
   a2aBindings: ControlA2ABindingStore;
   agents: AgentStore;
@@ -1240,6 +1241,7 @@ async function tableExists(pool: PgQueryable, relation: string): Promise<boolean
 
 export class ControlOperatorService {
   private readonly pool: PgQueryable;
+  private readonly identityAccess: PostgresControlIdentityAccess;
   private readonly reads: Pick<ControlReadService, "listAgents" | "listAuditEvents">;
   private readonly a2aBindings: ControlA2ABindingStore;
   private readonly agents: AgentStore;
@@ -1271,6 +1273,7 @@ export class ControlOperatorService {
 
   constructor(options: ControlOperatorServiceOptions) {
     this.pool = options.pool;
+    this.identityAccess = new PostgresControlIdentityAccess({pool: options.pool});
     this.reads = options.reads;
     this.a2aBindings = options.a2aBindings;
     this.agents = options.agents;
@@ -1776,11 +1779,19 @@ export class ControlOperatorService {
     if (input.status !== undefined && !status) {
       throw new Error("Identity status must be active or deleted.");
     }
-    const identity = await this.identities.updateIdentity({
-      identityId,
-      ...(displayName !== undefined ? {displayName} : {}),
-      ...(status ? {status} : {}),
-    });
+    const revocation = status === "deleted"
+      ? await this.identityAccess.deleteIdentity({
+        identityId,
+        ...(displayName !== undefined ? {displayName} : {}),
+      })
+      : undefined;
+    const identity = revocation
+      ? await this.identities.getIdentity(identityId)
+      : await this.identities.updateIdentity({
+        identityId,
+        ...(displayName !== undefined ? {displayName} : {}),
+        ...(status ? {status} : {}),
+      });
     return {
       identity: publicIdentityOption(identity),
       audit: {
@@ -1788,6 +1799,7 @@ export class ControlOperatorService {
         identityHandle: identity.handle,
         ...(displayName !== undefined ? {displayName: identity.displayName} : {}),
         ...(status ? {status: identity.status} : {}),
+        ...(revocation ?? {}),
       },
     };
   }

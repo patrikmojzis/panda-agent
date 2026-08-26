@@ -1,5 +1,5 @@
 import type {PostgresMigration} from "../../../lib/postgres-migrations.js";
-import {PANDA_REFRESH_ARCHIVED_SESSION_VIEW} from "../../../integrations/postgres/schema-versions/0008-refresh-archived-session-view.js";
+import {PANDA_REFRESH_ARCHIVED_SESSION_VIEW} from "../../../integrations/postgres/schema-versions/0010-refresh-archived-session-view.js";
 
 /** Refreshes the readonly session view after the archive column and legacy reconciliation both exist. */
 export const REFRESH_ARCHIVED_SESSION_VIEW_MIGRATION: PostgresMigration = {

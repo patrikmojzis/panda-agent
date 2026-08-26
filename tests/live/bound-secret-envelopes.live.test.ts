@@ -11,7 +11,7 @@ import {createPostgresMigrator} from "../../src/lib/postgres-migrations.js";
 const databaseUrl = process.env.TEST_DATABASE_URL?.trim();
 const liveIt = databaseUrl ? it : it.skip;
 const masterKey = "bound-secret-migration-master-key";
-const boundMigrationIndex = PANDA_SCHEMA_MIGRATIONS.findIndex(({id}) => id === "0009_bound_secret_envelopes");
+const boundMigrationIndex = PANDA_SCHEMA_MIGRATIONS.findIndex(({id}) => id === "0011_bound_secret_envelopes");
 
 function sealV1(value: string) {
   const key = createHash("sha256").update(masterKey, "utf8").digest();
@@ -211,7 +211,7 @@ describe("bound secret envelope migration", () => {
     await expect(pool.query(`
       SELECT COUNT(*)::integer AS count
       FROM runtime.schema_migrations
-      WHERE migration_id = '0009_bound_secret_envelopes'
+      WHERE migration_id = '0011_bound_secret_envelopes'
     `)).resolves.toMatchObject({rows: [{count: 0}]});
 
     process.env.CREDENTIALS_MASTER_KEY = masterKey;
@@ -250,7 +250,7 @@ describe("bound secret envelope migration", () => {
     expect(after.value_ciphertext).toEqual(before);
     await expect(pool.query(`
       SELECT COUNT(*)::integer AS count FROM runtime.schema_migrations
-      WHERE migration_id = '0009_bound_secret_envelopes'
+      WHERE migration_id = '0011_bound_secret_envelopes'
     `)).resolves.toMatchObject({rows: [{count: 0}]});
   });
 

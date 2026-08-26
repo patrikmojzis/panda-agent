@@ -20,7 +20,7 @@ There is one value per `(agent_key, env_key)`.
 
 ## Schema Migration
 
-Migration `0009_bound_secret_envelopes` rewraps all persisted v1 secrets while database writers are stopped. A database with v1 rows must run the migration with the same `CREDENTIALS_MASTER_KEY` that encrypted them. Missing, wrong, or corrupted key material aborts the whole transaction and leaves the migration ledger untouched. Empty databases do not require the key.
+Migration `0011_bound_secret_envelopes` rewraps all persisted v1 secrets while database writers are stopped. A database with v1 rows must run the migration with the same `CREDENTIALS_MASTER_KEY` that encrypted them. Missing, wrong, or corrupted key material aborts the whole transaction and leaves the migration ledger untouched. Empty databases do not require the key.
 
 The migration covers agent credentials, connector secrets, WhatsApp auth state, Wiki tokens, and MCP OAuth state. Expired or consumed OAuth attempts are deleted before rewrapping.
 

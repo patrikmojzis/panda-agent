@@ -6,6 +6,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 import type {AssistantMessage} from "@earendil-works/pi-ai";
 
+import {CONTROL_IDENTITY_REVOCATION_MIGRATION} from "../src/app/database/migrations/0012-control-identity-revocation.js";
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {ensurePostgresAgentSchema} from "../src/domain/agents/postgres-schema.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
@@ -454,6 +455,30 @@ describe("Control auth HTTP", () => {
 
     await harness.auth.createGrant({identityId: "identity-patrik", role: "admin"});
     await expect((await fetch(`${base}/api/control/bootstrap`)).json()).resolves.toEqual({hasGrant: true});
+  });
+
+  it("migrates legacy deleted identities without allowing reactivation to restore old access", async () => {
+    const harness = await createHarness();
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role: "admin"});
+    const login = await harness.auth.loginWithToken(grant.loginToken, {remember: true});
+
+    await harness.identities.updateIdentity({identityId: "identity-patrik", status: "deleted"});
+    await CONTROL_IDENTITY_REVOCATION_MIGRATION.apply({queryable: harness.pool});
+    await CONTROL_IDENTITY_REVOCATION_MIGRATION.apply({queryable: harness.pool});
+
+    await expect(harness.pool.query(`
+      SELECT active
+      FROM "runtime"."control_grants"
+      WHERE id = $1
+    `, [grant.grant.id])).resolves.toMatchObject({rows: [{active: false}]});
+    await expect(harness.pool.query(`
+      SELECT revoked_at IS NOT NULL AS revoked
+      FROM "runtime"."control_sessions"
+      WHERE id = $1
+    `, [login.session.id])).resolves.toMatchObject({rows: [{revoked: true}]});
+
+    await harness.identities.updateIdentity({identityId: "identity-patrik", status: "active"});
+    await expect(harness.auth.getSessionByToken(login.sessionToken)).resolves.toBeNull();
   });
 
   it("manages agent MCP servers with CSRF, scoped visibility, safe DTOs, counts, and producer-allowlisted raw audit", async () => {
@@ -1177,6 +1202,84 @@ describe("Control operator HTTP", () => {
     expect(auditText).toContain("disable_identity");
     expect(auditText).toContain("\"identityHandle\":\"nina\"");
     expect(auditText).not.toContain(createdBody.identity.id);
+  });
+
+  it("revokes deleted identities immediately and does not resurrect their old access", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const patrik = await login(base, harness);
+    await harness.identities.createIdentity({
+      id: "identity-nina",
+      handle: "nina",
+      displayName: "Nina",
+    });
+    const rememberedGrant = await harness.auth.createGrant({
+      identityId: "identity-nina",
+      role: "admin",
+    });
+    const pendingGrant = await harness.auth.createGrant({
+      identityId: "identity-nina",
+      role: "admin",
+    });
+    const rememberedLogin = await fetch(`${base}/api/control/login`, {
+      method: "POST",
+      body: JSON.stringify({token: rememberedGrant.loginToken, remember: true}),
+    });
+    expect(rememberedLogin.status).toBe(200);
+    const rememberedCookies = cookieHeader(rememberedLogin);
+
+    const disabled = await fetch(`${base}/api/control/identities/identity-nina`, {
+      method: "DELETE",
+      headers: {cookie: patrik.cookies, "x-control-csrf": patrik.csrfToken},
+    });
+    expect(disabled.status).toBe(200);
+
+    expect((await fetch(`${base}/api/control/me`, {
+      headers: {cookie: rememberedCookies},
+    })).status).toBe(401);
+    const pendingLogin = await fetch(`${base}/api/control/login`, {
+      method: "POST",
+      body: JSON.stringify({token: pendingGrant.loginToken}),
+    });
+    expect(pendingLogin.status).toBe(401);
+    await expect(harness.auth.createGrant({
+      identityId: "identity-nina",
+      role: "admin",
+    })).rejects.toThrow("Control grants require an active identity.");
+    await expect(harness.pool.query(`
+      SELECT active
+      FROM "runtime"."control_grants"
+      WHERE identity_id = 'identity-nina'
+      ORDER BY created_at, id
+    `)).resolves.toMatchObject({rows: [{active: false}, {active: false}]});
+    await expect(harness.pool.query(`
+      SELECT revoked_at IS NOT NULL AS revoked
+      FROM "runtime"."control_sessions"
+      WHERE identity_id = 'identity-nina'
+    `)).resolves.toMatchObject({rows: [{revoked: true}]});
+
+    const reactivated = await fetch(`${base}/api/control/identities/identity-nina`, {
+      method: "PATCH",
+      headers: {cookie: patrik.cookies, "x-control-csrf": patrik.csrfToken},
+      body: JSON.stringify({status: "active"}),
+    });
+    expect(reactivated.status).toBe(200);
+    expect((await fetch(`${base}/api/control/me`, {
+      headers: {cookie: rememberedCookies},
+    })).status).toBe(401);
+
+    const freshGrant = await harness.auth.createGrant({
+      identityId: "identity-nina",
+      role: "admin",
+    });
+    const freshLogin = await fetch(`${base}/api/control/login`, {
+      method: "POST",
+      body: JSON.stringify({token: freshGrant.loginToken}),
+    });
+    expect(freshLogin.status).toBe(200);
+    expect((await fetch(`${base}/api/control/me`, {
+      headers: {cookie: cookieHeader(freshLogin)},
+    })).status).toBe(200);
   });
 
   it("updates session runtime defaults through a scoped session route", async () => {
