@@ -74,6 +74,7 @@ RUN --mount=type=cache,id=panda-apt-cache,target=/var/cache/apt,sharing=locked \
     python3
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json ./
+COPY patches ./patches
 COPY apps/control-ui/package.json ./apps/control-ui/package.json
 RUN --mount=type=cache,id=panda-pnpm-store,target=/pnpm/store,sharing=locked \
   pnpm install --frozen-lockfile --store-dir /pnpm/store
@@ -87,6 +88,7 @@ RUN --mount=type=cache,id=panda-pnpm-store,target=/pnpm/store,sharing=locked \
 FROM node-base AS prod-deps
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches ./patches
 RUN --mount=type=cache,id=panda-pnpm-store,target=/pnpm/store,sharing=locked \
   pnpm install --prod --frozen-lockfile --ignore-scripts --filter panda --store-dir /pnpm/store
 
