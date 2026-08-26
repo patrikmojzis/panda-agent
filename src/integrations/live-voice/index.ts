@@ -16,3 +16,4 @@ export {
   type LiveVoiceProviderHealth,
   type LiveVoiceProviderSession,
 } from "../voice/provider.js";
+export {hasAudiblePcm16, resamplePcm16} from "../voice/pcm.js";
