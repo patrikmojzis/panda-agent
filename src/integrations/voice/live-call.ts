@@ -79,6 +79,7 @@ export interface LiveVoiceCallSnapshot {
   connected: boolean;
   recovering: boolean;
   closing: boolean;
+  terminalReason?: string;
   providerGeneration: number;
   providerReconnectCount: number;
   provider: LiveVoiceProviderHealth | undefined;
@@ -163,6 +164,7 @@ export class LiveVoiceCall {
   private connected = false;
   private recovery?: Promise<void>;
   private closing = false;
+  private terminalReason?: string;
   private activeCapture?: LiveVoiceCapture;
   private pendingUtterance?: LiveVoiceUtterance;
   private providerTurnTimeout?: NodeJS.Timeout;
@@ -190,7 +192,7 @@ export class LiveVoiceCall {
   constructor(private readonly options: LiveVoiceCallOptions) {}
 
   async start(signal?: AbortSignal): Promise<void> {
-    if (this.closing) throw new Error("Live voice call is closed.");
+    if (this.closing || this.terminalReason) throw new Error("Live voice call is closed.");
     const combined = AbortSignal.any([this.abort.signal, ...(signal ? [signal] : [])]);
     const provider = this.createProvider();
     this.provider = provider;
@@ -283,20 +285,23 @@ export class LiveVoiceCall {
   }
 
   noteOutputFailure(error: unknown): void {
-    if (this.closing) return;
+    if (this.closing || this.terminalReason) return;
     this.playbackFailed = true;
     const now = Date.now();
     while (this.playbackFailureTimes.length > 0 && this.playbackFailureTimes[0]! <= now - PLAYBACK_FAILURE_WINDOW_MS) this.playbackFailureTimes.shift();
     this.playbackFailureTimes.push(now);
     this.options.log("live_voice_playback_failed", {message: safeFailureMessage(error)});
+    if (this.playbackFailureTimes.length >= MAX_PLAYBACK_FAILURES_PER_WINDOW) {
+      this.failTerminal("audio_output_failed");
+      return;
+    }
     this.options.output.reset();
     this.live.outputIdle();
     this.changed();
-    if (this.playbackFailureTimes.length >= MAX_PLAYBACK_FAILURES_PER_WINDOW) this.options.onTerminalFailure("audio_output_failed");
   }
 
   async deliver(input: {controlId: string; text: string; mode: "progress" | "final"; liveVoiceTurnId?: string}): Promise<{delivery: "delegation" | "session"; turn?: LiveVoiceTurnRecord}> {
-    if (!this.connected && this.recovery && !this.closing) {
+    if (!this.connected && this.recovery && !this.closing && !this.terminalReason) {
       await boundedWait(this.recovery, DELIVERY_RECOVERY_WAIT_MS, "Live voice provider recovery timed out during delivery.");
     }
     if (!this.connected || !this.provider || this.closing) throw new Error("provider_unavailable");
@@ -353,8 +358,9 @@ export class LiveVoiceCall {
     const output = this.options.output.getSnapshot();
     return {
       connected: this.connected,
-      recovering: Boolean(this.recovery),
+      recovering: !this.terminalReason && Boolean(this.recovery),
       closing: this.closing,
+      ...(this.terminalReason ? {terminalReason: this.terminalReason} : {}),
       providerGeneration: this.providerGeneration,
       providerReconnectCount: this.providerReconnectCount,
       provider: this.provider?.getHealthSnapshot?.(),
@@ -464,7 +470,7 @@ export class LiveVoiceCall {
   }
 
   private currentGeneration(generation: number): boolean {
-    return !this.closing && generation === this.providerGeneration;
+    return !this.closing && !this.terminalReason && generation === this.providerGeneration;
   }
 
   private reserveUtterance(actorId: string, now: number): LiveVoiceUtterance | undefined {
@@ -483,7 +489,7 @@ export class LiveVoiceCall {
     this.clearProviderTurnTimeout();
     this.providerTurnTimeout = setTimeout(() => {
       this.providerTurnTimeout = undefined;
-      if (this.closing || this.pendingUtterance !== utterance || utterance.turnDone || this.activeCapture?.utterance === utterance) return;
+      if (!this.currentGeneration(utterance.providerGeneration) || !this.connected || this.pendingUtterance !== utterance || utterance.turnDone || this.activeCapture?.utterance === utterance) return;
       this.options.log("live_voice_provider_turn_timeout", {providerGeneration: utterance.providerGeneration});
       this.handleProviderFailure(utterance.providerGeneration, {
         source: "sideband", code: "transport_failed", retryable: true,
@@ -499,17 +505,19 @@ export class LiveVoiceCall {
   }
 
   private handleProviderFailure(generation: number, failure: LiveVoiceProviderFailure): void {
+    if (!this.currentGeneration(generation)) return;
     this.connected = false;
+    this.clearProviderTurnTimeout();
     if (!failure.retryable) {
       const reason = failure.code === "auth_unavailable" ? "auth_unavailable" : failure.code === "session_expired" ? "session_expired" : "provider_failed";
-      this.options.onTerminalFailure(reason);
+      this.failTerminal(reason);
       return;
     }
     const now = Date.now();
     while (this.providerFailureTimes.length > 0 && this.providerFailureTimes[0]! <= now - PROVIDER_FAILURE_WINDOW_MS) this.providerFailureTimes.shift();
     this.providerFailureTimes.push(now);
     if (this.providerFailureTimes.length >= MAX_PROVIDER_FAILURES_PER_WINDOW) {
-      this.options.onTerminalFailure("provider_unstable");
+      this.failTerminal("provider_unstable");
       return;
     }
     this.providerReconnectCount += 1;
@@ -542,11 +550,25 @@ export class LiveVoiceCall {
         provider.close();
         if (this.closing || this.abort.signal.aborted) return;
         this.options.log("live_voice_provider_reconnect_failed", {attempt: index + 1, message: safeFailureMessage(error)});
-        if (!retryableStartupFailure(error)) { this.options.onTerminalFailure("provider_failed"); return; }
+        if (!retryableStartupFailure(error)) { this.failTerminal("provider_failed"); return; }
         failedGeneration = this.providerGeneration;
       }
     }
-    this.options.onTerminalFailure("provider_failed");
+    this.failTerminal("provider_failed");
+  }
+
+  private failTerminal(reason: string): void {
+    if (this.closing || this.terminalReason) return;
+    this.terminalReason = reason;
+    this.connected = false;
+    this.clearProviderTurnTimeout();
+    this.abort.abort(new Error(`Live voice call failed: ${reason}.`));
+    this.provider?.close();
+    this.provider = undefined;
+    this.options.output.reset();
+    this.live.outputIdle();
+    this.changed();
+    this.options.onTerminalFailure(reason);
   }
 
   private delegateCurrentUtterance(providerGeneration: number, providerDelegationId: string, prompt: string): Promise<void> | undefined {

@@ -211,6 +211,34 @@ describe("LiveVoiceCall", () => {
     await harness.call.close("test_done");
   });
 
+  it("cannot resurrect a terminal provider failure through an armed turn timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const first = {connect: vi.fn(async () => undefined), sendAudio: vi.fn(), appendDelegationContext: vi.fn(async () => true), appendSessionContext: vi.fn(async () => true), close: vi.fn()};
+      const second = {connect: vi.fn(async () => undefined), sendAudio: vi.fn(), appendDelegationContext: vi.fn(async () => true), appendSessionContext: vi.fn(async () => true), close: vi.fn()};
+      const harness = createHarness({providers: [first, second]});
+      await harness.call.start();
+      const capture = harness.call.beginCapture("user-1");
+      if (capture.status !== "accepted") throw new Error("expected accepted capture");
+      harness.call.pushAudio(capture.captureId, Buffer.alloc(960, 1));
+      harness.call.endCapture(capture.captureId);
+
+      harness.providerCallbacks[0]!.onFailure({source: "session", code: "session_expired", retryable: false, message: "gone", status: 404});
+      harness.providerCallbacks[0]!.onFailure({source: "session", code: "session_expired", retryable: false, message: "gone again", status: 404});
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      expect(harness.call.getSnapshot()).toMatchObject({connected: false, recovering: false, terminalReason: "session_expired"});
+      expect(harness.call.beginCapture("user-2")).toEqual({status: "provider_unavailable"});
+      await expect(harness.call.deliver({controlId: "late", text: "Too late.", mode: "final"})).rejects.toThrow("provider_unavailable");
+      expect(harness.onTerminalFailure).toHaveBeenCalledOnce();
+      expect(first.close).toHaveBeenCalledOnce();
+      expect(second.connect).not.toHaveBeenCalled();
+      await harness.call.close("test_done");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps an active transport capture usable after provider recovery", async () => {
     const first = {connect: vi.fn(async () => undefined), sendAudio: vi.fn(), appendDelegationContext: vi.fn(async () => true), appendSessionContext: vi.fn(async () => true), close: vi.fn()};
     const second = {connect: vi.fn(async () => undefined), sendAudio: vi.fn(), appendDelegationContext: vi.fn(async () => true), appendSessionContext: vi.fn(async () => true), close: vi.fn()};
