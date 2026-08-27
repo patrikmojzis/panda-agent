@@ -730,11 +730,11 @@ export class PostgresSessionStore implements SessionStore {
         $4,
         $5::jsonb,
         CASE WHEN $6 THEN ${settingsOrder ? "$9" : "NOW()"} ELSE TIMESTAMPTZ '1970-01-01 00:00:00+00' END,
-        CASE WHEN $6 THEN ${settingsOrder ? "$10::uuid" : "NULL"} ELSE NULL END,
+        CASE WHEN $6 THEN ${settingsOrder ? "$10::uuid" : "NULL::uuid"} ELSE NULL END,
         CASE WHEN $7 THEN ${settingsOrder ? "$9" : "NOW()"} ELSE TIMESTAMPTZ '1970-01-01 00:00:00+00' END,
-        CASE WHEN $7 THEN ${settingsOrder ? "$10::uuid" : "NULL"} ELSE NULL END,
+        CASE WHEN $7 THEN ${settingsOrder ? "$10::uuid" : "NULL::uuid"} ELSE NULL END,
         CASE WHEN $8 THEN ${settingsOrder ? "$9" : "NOW()"} ELSE TIMESTAMPTZ '1970-01-01 00:00:00+00' END,
-        CASE WHEN $8 THEN ${settingsOrder ? "$10::uuid" : "NULL"} ELSE NULL END
+        CASE WHEN $8 THEN ${settingsOrder ? "$10::uuid" : "NULL::uuid"} ELSE NULL END
       )
       ON CONFLICT (session_id) DO UPDATE
       SET model = CASE WHEN $6 THEN EXCLUDED.model ELSE ${this.tables.sessionRuntimeConfig}.model END,
