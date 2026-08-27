@@ -90,8 +90,8 @@ importers:
         specifier: 0.35.3
         version: 0.35.3(@types/node@25.9.5)
       werift:
-        specifier: 0.24.1
-        version: 0.24.1
+        specifier: 0.24.4
+        version: 0.24.4
       ws:
         specifier: ^8.21.0
         version: 8.21.3
@@ -2079,9 +2079,6 @@ packages:
   '@shinyoshiaki/binary-data@0.6.1':
     resolution: {integrity: sha512-7HDb/fQAop2bCmvDIzU5+69i+UJaFgIVp99h1VzK1mpg1JwSODOkjbqD7ilTYnqlnadF8C4XjpwpepxDsGY6+w==}
     engines: {node: '>=6'}
-
-  '@shinyoshiaki/jspack@0.0.6':
-    resolution: {integrity: sha512-SdsNhLjQh4onBlyPrn4ia1Pdx5bXT88G/LIEpOYAjx2u4xeY/m/HB5yHqlkJB1uQR3Zw4R3hBWLj46STRAN0rg==}
 
   '@sindresorhus/merge-streams@4.0.0':
     resolution: {integrity: sha512-tlqY9xq5ukxTUZBmoOp+m61cqwQD5pHJtFY3Mn8CA8ps6yghLH/Hw8UPdqg4OLmFW3IFlcXnQNmo/dh8HzXYIQ==}
@@ -5192,27 +5189,8 @@ packages:
     resolution: {integrity: sha512-VwddBukDzu71offAQR975unBIGqfKZpM+8ZX6ySk8nYhVoo5CYaZyzt3YBvYtRtO+aoGlqxPg/B87NGVZ/fu6g==}
     engines: {node: '>=12'}
 
-  werift-common@0.0.3:
-    resolution: {integrity: sha512-ma3E4BqKTyZVLhrdfTVs2T1tg9seeUtKMRn5e64LwgrogWa62+3LAUoLBUSl1yPWhgSkXId7GmcHuWDen9IJeQ==}
-    engines: {node: '>=16'}
-
-  werift-dtls@0.5.8:
-    resolution: {integrity: sha512-oH39cdCpVLqKcPZRMGQLcN+tIBixvMGqjCB9qCrH39Tu9Mmu8u2+zTzyl0Fod87EK6PNPgoNqMJt64xlSMfLnw==}
-    engines: {node: '>=16'}
-
-  werift-ice@0.2.3:
-    resolution: {integrity: sha512-k000fIaw8w2D4Xv5EvW6b5h4faJx8p4D8HPuDzRiGTx6UrLv2BuvUkC60LNqxlDf9o3zh90Hx1WZoHbhuw9keA==}
-
-  werift-rtp@0.8.9:
-    resolution: {integrity: sha512-uLFOawIXw8FblIp1akfIVYFuRNtNo7csRxYypLz0t++sUNCN7sPeghVqET/c3Mq7Tg2QA3oAb15fXIIuJEp2AA==}
-    engines: {node: '>=10'}
-
-  werift-sctp@0.0.11:
-    resolution: {integrity: sha512-7109yuI5U7NTEHjqjn0A8VeynytkgVaxM6lRr1Ziv0D8bPcaB8A7U/P88M7WaCpWDoELHoXiRUjQycMWStIgjQ==}
-    engines: {node: '>=10'}
-
-  werift@0.24.1:
-    resolution: {integrity: sha512-8Mpf0FWO2pkd9UQyZ0Hb1CcimydlNh8KCvZGD2X/D0ucVY6ubJxX91cndOpTOnPA7wleopop044VSNZeCEwgeA==}
+  werift@0.24.4:
+    resolution: {integrity: sha512-NoROZ11L/ZqAB5ombCB4VBuVNdIZfwI493zlxlIX7BlwfWRy55eDJdtWMC2VX35yBXFaWwA8NtYbmJ8qWtVk9Q==}
     engines: {node: '>=16'}
 
   whatsapp-rust-bridge@0.5.4:
@@ -7341,8 +7319,6 @@ snapshots:
     dependencies:
       generate-function: 2.3.1
       is-plain-object: 2.0.4
-
-  '@shinyoshiaki/jspack@0.0.6': {}
 
   '@sindresorhus/merge-streams@4.0.0': {}
 
@@ -10386,44 +10362,7 @@ snapshots:
 
   webidl-conversions@7.0.0: {}
 
-  werift-common@0.0.3:
-    dependencies:
-      '@shinyoshiaki/jspack': 0.0.6
-      debug: 4.4.3
-    transitivePeerDependencies:
-      - supports-color
-
-  werift-dtls@0.5.8:
-    dependencies:
-      '@fidm/x509': 1.2.1
-      '@noble/curves': 1.9.7
-      '@peculiar/x509': 1.14.3
-      '@shinyoshiaki/binary-data': 0.6.1
-      debug: 4.4.0
-      tweetnacl: 1.0.3
-    transitivePeerDependencies:
-      - supports-color
-
-  werift-ice@0.2.3:
-    dependencies:
-      debug: 4.4.0
-      multicast-dns: 7.2.5
-    transitivePeerDependencies:
-      - supports-color
-
-  werift-rtp@0.8.9:
-    dependencies:
-      buffer: 6.0.3
-      debug: 4.4.0
-      mediabunny: 1.55.2
-    transitivePeerDependencies:
-      - supports-color
-
-  werift-sctp@0.0.11:
-    dependencies:
-      '@shinyoshiaki/jspack': 0.0.6
-
-  werift@0.24.1:
+  werift@0.24.4:
     dependencies:
       '@fidm/x509': 1.2.1
       '@noble/curves': 1.9.7
@@ -10434,11 +10373,6 @@ snapshots:
       mediabunny: 1.55.2
       multicast-dns: 7.2.5
       tweetnacl: 1.0.3
-      werift-common: 0.0.3
-      werift-dtls: 0.5.8
-      werift-ice: 0.2.3
-      werift-rtp: 0.8.9
-      werift-sctp: 0.0.11
     transitivePeerDependencies:
       - supports-color
 
