@@ -10,7 +10,7 @@ import {PostgresConnectorLeaseRepo} from "../../src/domain/connector-leases/repo
 import {PostgresIdentityStore} from "../../src/domain/identity/postgres.js";
 import {PostgresSessionStore} from "../../src/domain/sessions/postgres.js";
 import {LiveVoiceRepo} from "../../src/domain/live-voice/repo.js";
-import {resetSessionCurrentThread} from "../../src/domain/sessions/lifecycle.js";
+import {createSessionWithInitialThread, resetSessionCurrentThread} from "../../src/domain/sessions/lifecycle.js";
 import {RuntimeRequestRepo} from "../../src/domain/threads/requests/repo.js";
 import {buildRuntimeRequestTableNames} from "../../src/domain/threads/requests/postgres-shared.js";
 import {PostgresThreadRuntimeStore} from "../../src/domain/threads/runtime/postgres.js";
@@ -215,6 +215,39 @@ describe("atomic runtime persistence on PostgreSQL", () => {
     expect(claimed?.id).toBe(enqueued.id);
     await withinStatementBudget(countedPool, 1, () => {
       return countedRequests.completeRequest(enqueued.id, claimed!.claimToken!, {accepted: true});
+    });
+  });
+
+  liveIt("creates a subagent session with runtime configuration atomically", async () => {
+    const suffix = randomUUID();
+    const sessionId = `configured-subagent-${suffix}`;
+    const threadId = `configured-subagent-thread-${suffix}`;
+
+    await expect(createSessionWithInitialThread({
+      pool,
+      sessionStore,
+      threadStore,
+      activeParentSessionId: "atomic-session",
+      session: {
+        id: sessionId,
+        agentKey: "panda",
+        kind: "subagent",
+        currentThreadId: threadId,
+      },
+      thread: {id: threadId, sessionId},
+      runtimeConfig: {
+        model: "openai/gpt-5.2",
+        thinking: "high",
+        inferenceProjection: {dropThinking: {preserveRecentUserTurns: 2}},
+      },
+    })).resolves.toMatchObject({
+      session: {id: sessionId, kind: "subagent"},
+      thread: {id: threadId, sessionId},
+    });
+    await expect(sessionStore.getSessionRuntimeConfig(sessionId)).resolves.toMatchObject({
+      model: "openai/gpt-5.2",
+      thinking: "high",
+      inferenceProjection: {dropThinking: {preserveRecentUserTurns: 2}},
     });
   });
 
