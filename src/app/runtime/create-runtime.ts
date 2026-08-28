@@ -5,6 +5,9 @@ import type {A2ASessionBindingRepo} from "../../domain/a2a/repo.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
 import type {SubagentProfileStore} from "../../domain/subagents/store.js";
 import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
+import type {ScheduledCommandIntegrity} from "../../domain/scheduling/scheduled-commands/integrity.js";
+import type {ScheduledCommandService} from "../../domain/scheduling/scheduled-commands/service.js";
+import type {ScheduledCommandStore} from "../../domain/scheduling/scheduled-commands/store.js";
 import type {WatchStore} from "../../domain/watches/store.js";
 import type {RuntimeCommandLeaseService} from "./command-leases.js";
 import type {RuntimeCommandDispatcher} from "./command-dispatcher.js";
@@ -179,6 +182,9 @@ export interface RuntimeServices {
   store: ThreadRuntimeStore;
   shellStateStore: ThreadShellStateStore;
   scheduledTasks: ScheduledTaskStore;
+  scheduledCommands: ScheduledCommandStore;
+  scheduledCommandIntegrity: ScheduledCommandIntegrity | null;
+  scheduledCommandService: ScheduledCommandService | null;
   email: EmailStore;
   watches: WatchStore;
   commandExecutor: RuntimeCommandDispatcher;
@@ -369,6 +375,9 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     store: runtime.store,
     shellStateStore: runtime.shellStateStore,
     scheduledTasks: runtime.scheduledTasks,
+    scheduledCommands: runtime.scheduledCommands,
+    scheduledCommandIntegrity: runtime.scheduledCommandIntegrity,
+    scheduledCommandService: runtime.scheduledCommandService,
     email: runtime.email,
     watches: runtime.watches,
     commandExecutor: runtime.commandExecutor,

@@ -8,9 +8,9 @@ import type {
   RegisteredCommand,
 } from "../../domain/commands/types.js";
 import type {ExecutionSkillPolicy} from "../../domain/execution-environments/types.js";
-import {READONLY_SESSION_VIEW_BASENAMES} from "../../domain/threads/runtime/postgres-readonly.js";
 import {isRecord} from "../../lib/records.js";
 import {truncateText} from "../../lib/strings.js";
+import {CURRENT_READONLY_SESSION_VIEW_BASENAMES} from "./readonly-session-views.js";
 
 const MAX_ROWS = 50;
 const MAX_OUTPUT_BYTES = 32_000;
@@ -25,12 +25,12 @@ const READONLY_VIEW_GUIDANCE = [
   "A single read-only SELECT or WITH query.",
   "Prefer session.agent_sessions for the current session row.",
   "session.agent_sessions exposes current_thread_id, not thread_id.",
-  "The readonly command already scopes session.threads, session.messages, session.tool_results, session.inputs, session.runs, session.todos, session.subagent_history, session.scheduled_tasks, session.scheduled_task_runs, session.watches, session.watch_runs, and session.watch_events to the current session.",
+  "The readonly command already scopes session.threads, session.messages, session.tool_results, session.inputs, session.runs, session.todos, session.subagent_history, session.scheduled_tasks, session.scheduled_task_runs, session.scheduled_commands, session.scheduled_command_runs, session.watches, session.watch_runs, and session.watch_events to the current session.",
   "The readonly command also scopes session.prompts to the current session, and session.agent_pairings and session.agent_skills to the current agent.",
   "Do not invent is_active flags or extra session_id subqueries unless you are joining raw tables outside the session.* views.",
   "Use session.prompts for session prompt docs, session.agent_pairings for known identities, and session.agent_skills for stored skills.",
   "For exploratory reads, prefer left(...), substring(...), regex filters, full-text search, or other narrow projections instead of pulling giant content blobs blindly.",
-  "For durable session todo context, query session.todos. For deeper subagent archaeology beyond panda subagent list/show, query session.subagent_history. For session automation, query session.scheduled_tasks or session.watches directly with ORDER BY/LIMIT.",
+  "For durable session todo context, query session.todos. For deeper subagent archaeology beyond panda subagent list/show, query session.subagent_history. For model schedules use session.scheduled_tasks; for mechanical commands use session.scheduled_commands and session.scheduled_command_runs; for watches use session.watches, always with ORDER BY/LIMIT.",
   "Prefer session.agent_skills for stored skill bodies and session.messages_raw only when you truly need raw JSONB.",
   "Large skill bodies may need substring(...) or targeted column selection.",
   "If you need schema help, query information_schema.columns.",
@@ -102,10 +102,10 @@ async function buildReadonlySchemaHelp(getPool: PgPoolResolver): Promise<JsonObj
       WHERE table_schema = 'session'
         AND table_name = ANY($1::text[])
       ORDER BY table_name, ordinal_position
-    `, [READONLY_SESSION_VIEW_BASENAMES]);
+    `, [CURRENT_READONLY_SESSION_VIEW_BASENAMES]);
 
     const columnsByView = new Map<string, Array<{name: string; type: string}>>(
-      READONLY_SESSION_VIEW_BASENAMES.map((name) => [name, []]),
+      CURRENT_READONLY_SESSION_VIEW_BASENAMES.map((name) => [name, []]),
     );
     for (const rawRow of result.rows) {
       const row = rawRow as Record<string, unknown>;
@@ -122,7 +122,7 @@ async function buildReadonlySchemaHelp(getPool: PgPoolResolver): Promise<JsonObj
       });
     }
 
-    const missing = READONLY_SESSION_VIEW_BASENAMES.filter((name) => columnsByView.get(name)?.length === 0);
+    const missing = CURRENT_READONLY_SESSION_VIEW_BASENAMES.filter((name) => columnsByView.get(name)?.length === 0);
     if (missing.length > 0) {
       const expected = missing.map((name) => `session.${name}`).join(", ");
       throw new Error(`Readonly schema is incomplete: expected ${expected} but ${missing.length === 1 ? "it is" : "they are"} unavailable.`);
@@ -132,7 +132,7 @@ async function buildReadonlySchemaHelp(getPool: PgPoolResolver): Promise<JsonObj
     return {
       operation: "schema_help",
       guidance: READONLY_VIEW_GUIDANCE,
-      views: READONLY_SESSION_VIEW_BASENAMES.map((name) => ({
+      views: CURRENT_READONLY_SESSION_VIEW_BASENAMES.map((name) => ({
         name: `session.${name}`,
         columns: columnsByView.get(name) ?? [],
       })),

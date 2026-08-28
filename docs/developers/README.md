@@ -33,6 +33,7 @@ Start here:
 - [Postgres Pool Sizing](./pg-pool-size.md)
 - [Heartbeat](./heartbeat.md)
 - [Watches](./watches.md)
+- [Mechanical Scheduler](./mechanical-scheduler.md)
 - [Live Smoke](./live-smoke.md)
 - [Background Jobs Smoke Recipe](./background-bash-smoke.md)
 - [WhatsApp](./whatsapp.md)

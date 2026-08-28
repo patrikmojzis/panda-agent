@@ -18,6 +18,7 @@ export interface RuntimeCommandDependenciesInput {
   watchStore: RequiredCommandDependency<"watchStore">;
   watchMutations: RequiredCommandDependency<"watchMutations">;
   scheduledTasks: RequiredCommandDependency<"scheduledTasks">;
+  scheduledCommands?: AgentCommandModuleDependencies["scheduledCommands"];
   apps: RequiredCommandDependency<"apps">;
   appAuth: RequiredCommandDependency<"appAuth">;
   agentSkills: RequiredCommandDependency<"agentSkills">;
@@ -72,6 +73,7 @@ export function buildRuntimeCommandDependencies(
     watchStore: input.watchStore,
     watchMutations: input.watchMutations,
     scheduledTasks: input.scheduledTasks,
+    scheduledCommands: input.scheduledCommands,
     apps: input.apps,
     appAuth: input.appAuth,
     resolveAppUrls: (appInput) => resolveAgentAppUrls({...appInput, env: input.env}),

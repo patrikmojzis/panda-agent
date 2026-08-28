@@ -7,7 +7,7 @@ import {
 } from "../src/integrations/postgres/readonly-query-command.js";
 import {ToolError} from "../src/kernel/agent/exceptions.js";
 import {readDatabaseUsername} from "../src/domain/threads/runtime/index.js";
-import {READONLY_SESSION_VIEW_BASENAMES} from "../src/domain/threads/runtime/postgres-readonly.js";
+import {CURRENT_READONLY_SESSION_VIEW_BASENAMES} from "../src/integrations/postgres/readonly-session-views.js";
 
 interface RecordedQuery {
   text: string;
@@ -91,7 +91,7 @@ function inputRequest(input: Record<string, unknown>) {
 }
 
 function readonlySchemaRows(excludedView?: string): Array<Record<string, unknown>> {
-  return READONLY_SESSION_VIEW_BASENAMES
+  return CURRENT_READONLY_SESSION_VIEW_BASENAMES
     .filter((view) => view !== excludedView)
     .flatMap((view) => {
       const columns = view === "messages"
@@ -145,7 +145,7 @@ describe("postgres readonly query command", () => {
     expect(postgresReadonlyQueryCommandDescriptor.description).toContain("Do not invent is_active flags or extra session_id subqueries");
     expect(postgresReadonlyQueryCommandDescriptor.description).toContain("query session.todos");
     expect(postgresReadonlyQueryCommandDescriptor.description).toContain("query session.subagent_history");
-    expect(postgresReadonlyQueryCommandDescriptor.description).toContain("query session.scheduled_tasks or session.watches directly");
+    expect(postgresReadonlyQueryCommandDescriptor.description).toContain("for mechanical commands use session.scheduled_commands and session.scheduled_command_runs");
     expect(postgresReadonlyQueryCommandDescriptor.description).not.toContain("agent_telepathy_devices");
   });
 
@@ -292,6 +292,8 @@ describe("postgres readonly query command", () => {
         expect.objectContaining({name: "session.runtime_config"}),
         expect.objectContaining({name: "session.watch_runs"}),
         expect.objectContaining({name: "session.email_messages"}),
+        expect.objectContaining({name: "session.scheduled_commands"}),
+        expect.objectContaining({name: "session.scheduled_command_runs"}),
       ]),
       examples: expect.arrayContaining([
         expect.objectContaining({
@@ -303,7 +305,7 @@ describe("postgres readonly query command", () => {
       ]),
     });
     expect((result.output.views as Array<{name: string}>).map((view) => view.name)).toEqual(
-      READONLY_SESSION_VIEW_BASENAMES.map((name) => `session.${name}`),
+      CURRENT_READONLY_SESSION_VIEW_BASENAMES.map((name) => `session.${name}`),
     );
     expect(JSON.stringify(result.output)).not.toContain("runtime.");
     expect(pool.client.queries.map((query) => query.text.trim())).toEqual([
@@ -312,7 +314,7 @@ describe("postgres readonly query command", () => {
       expect.stringContaining("FROM information_schema.columns"),
       "COMMIT",
     ]);
-    expect(pool.client.queries[2]?.values).toEqual([READONLY_SESSION_VIEW_BASENAMES]);
+    expect(pool.client.queries[2]?.values).toEqual([CURRENT_READONLY_SESSION_VIEW_BASENAMES]);
     await expect(command.execute(inputRequest({
       schemaHelp: true,
       sql: "select 1",

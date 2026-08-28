@@ -107,6 +107,27 @@ import {
 } from "../../domain/scheduling/tasks/commands.js";
 import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
 import {
+  createCronCreateCommand,
+  createCronDeleteCommand,
+  createCronDisableCommand,
+  createCronEnableCommand,
+  createCronListCommand,
+  createCronRunCommand,
+  createCronRunsCommand,
+  createCronShowCommand,
+  createCronUpdateCommand,
+  cronCreateCommandDescriptor,
+  cronDeleteCommandDescriptor,
+  cronDisableCommandDescriptor,
+  cronEnableCommandDescriptor,
+  cronListCommandDescriptor,
+  cronRunCommandDescriptor,
+  cronRunsCommandDescriptor,
+  cronShowCommandDescriptor,
+  cronUpdateCommandDescriptor,
+} from "../../domain/scheduling/scheduled-commands/commands.js";
+import type {ScheduledCommandService} from "../../domain/scheduling/scheduled-commands/service.js";
+import {
   createSessionPromptReadCommand,
   createSessionPromptSetCommand,
   createSessionPromptTransformCommand,
@@ -426,6 +447,7 @@ export interface AgentCommandModuleDependencies {
   watchStore?: WatchStore;
   watchMutations?: WatchMutationService;
   scheduledTasks?: ScheduledTaskStore;
+  scheduledCommands?: ScheduledCommandService;
   apps?: AgentAppCommandService;
   appAuth?: AgentAppCommandAuthService;
   resolveAppUrls?: AppCommandOptions["resolveUrls"];
@@ -900,6 +922,69 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
     "@payload.json",
     agentCommandPolicy(["operate"]),
     (dependencies) => createScheduleCancelCommand(requireScheduledTasks(dependencies)),
+  ),
+  agentCommandModule(
+    cronListCommandDescriptor,
+    ["cron", "list"],
+    "@payload.json",
+    agentCommandPolicy(["operate"]),
+    (dependencies) => dependencies.scheduledCommands ? createCronListCommand(dependencies.scheduledCommands) : null,
+  ),
+  agentCommandModule(
+    cronShowCommandDescriptor,
+    ["cron", "show"],
+    "@payload.json",
+    agentCommandPolicy(["operate"]),
+    (dependencies) => dependencies.scheduledCommands ? createCronShowCommand(dependencies.scheduledCommands) : null,
+  ),
+  agentCommandModule(
+    cronRunsCommandDescriptor,
+    ["cron", "runs"],
+    "@payload.json",
+    agentCommandPolicy(["operate"]),
+    (dependencies) => dependencies.scheduledCommands ? createCronRunsCommand(dependencies.scheduledCommands) : null,
+  ),
+  agentCommandModule(
+    cronCreateCommandDescriptor,
+    ["cron", "create"],
+    "@payload.json",
+    agentCommandPolicy(["operate"], {requiresBash: true}),
+    (dependencies) => dependencies.scheduledCommands ? createCronCreateCommand(dependencies.scheduledCommands) : null,
+  ),
+  agentCommandModule(
+    cronUpdateCommandDescriptor,
+    ["cron", "update"],
+    "@payload.json",
+    agentCommandPolicy(["operate"], {requiresBash: true}),
+    (dependencies) => dependencies.scheduledCommands ? createCronUpdateCommand(dependencies.scheduledCommands) : null,
+  ),
+  agentCommandModule(
+    cronEnableCommandDescriptor,
+    ["cron", "enable"],
+    "@payload.json",
+    agentCommandPolicy(["operate"], {requiresBash: true}),
+    (dependencies) => dependencies.scheduledCommands ? createCronEnableCommand(dependencies.scheduledCommands) : null,
+  ),
+  agentCommandModule(
+    cronDisableCommandDescriptor,
+    ["cron", "disable"],
+    "@payload.json",
+    agentCommandPolicy(["operate"]),
+    (dependencies) => dependencies.scheduledCommands ? createCronDisableCommand(dependencies.scheduledCommands) : null,
+  ),
+  agentCommandModule(
+    cronDeleteCommandDescriptor,
+    ["cron", "delete"],
+    "@payload.json",
+    agentCommandPolicy(["operate"]),
+    (dependencies) => dependencies.scheduledCommands ? createCronDeleteCommand(dependencies.scheduledCommands) : null,
+  ),
+  agentCommandModule(
+    cronRunCommandDescriptor,
+    ["cron", "run"],
+    "@payload.json",
+    agentCommandPolicy(["operate"], {requiresBash: true}),
+    (dependencies) => dependencies.scheduledCommands ? createCronRunCommand(dependencies.scheduledCommands) : null,
   ),
   agentCommandModule(
     appCheckCommandDescriptor,

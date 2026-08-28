@@ -96,6 +96,22 @@ resolve_environment_host_root() {
   esac
 }
 
+resolve_core_secrets_host_root() {
+  local value expanded
+  value="${PANDA_CORE_SECRETS_HOST_ROOT:-$HOME/.panda-core-secrets}"
+  expanded="$(expand_home "$(expand_home_variable "$value")")"
+  [[ "$expanded" != *'$'* ]] \
+    || die "PANDA_CORE_SECRETS_HOST_ROOT must not contain shell variables other than HOME."
+  case "$expanded" in
+    /*)
+      printf '%s\n' "$expanded"
+      ;;
+    *)
+      die "PANDA_CORE_SECRETS_HOST_ROOT must be an absolute path."
+      ;;
+  esac
+}
+
 resolve_command_socket_host_dir() {
   local value expanded
   value="${PANDA_COMMAND_SOCKET_HOST_DIR:-$HOME/.panda/run/command}"
@@ -301,6 +317,8 @@ load_env_file "$env_file"
 
 normalized_environment_host_root="$(resolve_environment_host_root)" || exit "$?"
 export PANDA_ENVIRONMENTS_HOST_ROOT="$normalized_environment_host_root"
+normalized_core_secrets_host_root="$(resolve_core_secrets_host_root)" || exit "$?"
+export PANDA_CORE_SECRETS_HOST_ROOT="$normalized_core_secrets_host_root"
 command_transport="$(resolve_command_transport)" || exit "$?"
 export PANDA_COMMAND_TRANSPORT="$command_transport"
 command_socket_host_dir=""
@@ -1133,7 +1151,7 @@ ensure_host_dirs() {
   browser_root="$(expand_home "${BROWSER_RUNNER_ROOT:-$HOME/.panda-browser-runner}")"
   environments_root="$(expand_home "${PANDA_ENVIRONMENTS_HOST_ROOT:-$HOME/.panda/environments}")"
 
-  mkdir -p "$core_root" "$shared_root" "$browser_root" "$environments_root"
+  mkdir -p "$core_root" "$shared_root" "$browser_root" "$environments_root" "$PANDA_CORE_SECRETS_HOST_ROOT"
   if [[ "$command_transport" == "socket" ]]; then
     mkdir -p "$command_socket_host_dir"
   fi

@@ -98,6 +98,7 @@ describe("RuntimeCommandLeaseService", () => {
       allowedCommands: defaultCommandNamesWhere((module) => (
         module.policy.requiresIdentity !== true
         && module.policy.requiresCredentialMutation !== true
+        && module.policy.requiresBash !== true
       )),
       credentialMutationAllowed: false,
     });
@@ -131,7 +132,7 @@ describe("RuntimeCommandLeaseService", () => {
       identityId: "identity-current",
       credentialMutationAllowed: true,
       toolPolicy: {
-        allowedTools: defaultCommandCapabilities(),
+        allowedTools: [...defaultCommandCapabilities(), "bash"],
         postgresReadonly: {
           allowed: true,
         },

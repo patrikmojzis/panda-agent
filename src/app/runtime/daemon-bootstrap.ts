@@ -14,6 +14,10 @@ import {
   DEFAULT_SCHEDULED_TASK_CONCURRENCY,
   ScheduledTaskRunner,
 } from "../../domain/scheduling/tasks/runner.js";
+import {
+  DEFAULT_SCHEDULED_COMMAND_CONCURRENCY,
+  ScheduledCommandRunner,
+} from "../../domain/scheduling/scheduled-commands/runner.js";
 import {ConversationRepo} from "../../domain/sessions/conversations/repo.js";
 import {SessionRouteRepo} from "../../domain/sessions/routes/repo.js";
 import {WatchRunner} from "../../domain/watches/runner.js";
@@ -53,6 +57,7 @@ import {readPositiveIntegerEnv} from "./database.js";
 import {trimToNull} from "../../lib/strings.js";
 import {FileSystemCommandUploadStore} from "../../integrations/commands/file-uploads.js";
 import {resolveRuntimeRequestMediaReceiptOwners} from "./runtime-request-media.js";
+import {RuntimeScheduledCommandExecutor} from "./scheduled-command-executor.js";
 
 interface DaemonContext {
   fallbackContext: {cwd: string};
@@ -71,6 +76,7 @@ interface DaemonContext {
   mediaReceiptJanitor: FileSystemMediaStore;
   daemonState: DaemonStateRepo;
   scheduledTaskRunner: ScheduledTaskRunner;
+  scheduledCommandRunner: Pick<ScheduledCommandRunner, "start" | "stop">;
   watchRunner: WatchRunner;
   sessionHeartbeatRunner: HeartbeatRunner;
   liveVoice: LiveVoiceRepo;
@@ -411,6 +417,33 @@ export async function bootstrapDaemonContext(
         });
       },
     });
+    const scheduledCommandRunner = runtime.scheduledCommandIntegrity
+      ? new ScheduledCommandRunner({
+        commands: runtime.scheduledCommands,
+        integrity: runtime.scheduledCommandIntegrity,
+        executor: new RuntimeScheduledCommandExecutor({
+          sessions: runtime.sessionStore,
+          environments: runtime.executionEnvironmentResolver,
+          credentials: runtime.credentialResolver,
+          env: process.env,
+          baseCwd: options.cwd,
+        }),
+        coordinator: runtime.coordinator,
+        maxConcurrentRuns: readPositiveIntegerEnv(
+          "PANDA_SCHEDULED_COMMAND_CONCURRENCY",
+          DEFAULT_SCHEDULED_COMMAND_CONCURRENCY,
+        ),
+        onError: (error, commandId) => {
+          console.error("Scheduled command execution failed", {
+            commandId: commandId ?? null,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+      })
+      : {
+        async start() {},
+        async stop() {},
+      };
     const evaluateWatch = createWatchEvaluator({
       credentialResolver: runtime.credentialResolver,
     });
@@ -467,6 +500,7 @@ export async function bootstrapDaemonContext(
       mediaReceiptJanitor,
       daemonState,
       scheduledTaskRunner,
+      scheduledCommandRunner,
       watchRunner,
       sessionHeartbeatRunner,
       liveVoice,

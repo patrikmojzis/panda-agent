@@ -14,6 +14,7 @@ import {PANDA_SESSION_ARCHIVE} from "./schema-versions/0009-session-archive.js";
 import {PANDA_REFRESH_ARCHIVED_SESSION_VIEW} from "./schema-versions/0010-refresh-archived-session-view.js";
 import {PANDA_BOUND_SECRET_ENVELOPES} from "./schema-versions/0011-bound-secret-envelopes.js";
 import {PANDA_CONTROL_IDENTITY_REVOCATION} from "./schema-versions/0012-control-identity-revocation.js";
+import {PANDA_SCHEDULED_COMMANDS} from "./schema-versions/0013-scheduled-commands.js";
 
 export const PANDA_PRE_LEDGER_BASELINE: PostgresMigrationSummary = Object.freeze({
   id: "0001_pre_ledger_baseline",
@@ -32,6 +33,7 @@ export {PANDA_SESSION_ARCHIVE};
 export {PANDA_REFRESH_ARCHIVED_SESSION_VIEW};
 export {PANDA_BOUND_SECRET_ENVELOPES};
 export {PANDA_CONTROL_IDENTITY_REVOCATION};
+export {PANDA_SCHEDULED_COMMANDS};
 
 export const PANDA_SCHEMA_VERSION = Object.freeze([
   PANDA_PRE_LEDGER_BASELINE,
@@ -46,6 +48,7 @@ export const PANDA_SCHEMA_VERSION = Object.freeze([
   PANDA_REFRESH_ARCHIVED_SESSION_VIEW,
   PANDA_BOUND_SECRET_ENVELOPES,
   PANDA_CONTROL_IDENTITY_REVOCATION,
+  PANDA_SCHEDULED_COMMANDS,
 ]);
 
 /** Read-only database revision seam shared by every Postgres-backed process. */

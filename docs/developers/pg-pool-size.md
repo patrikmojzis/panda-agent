@@ -74,6 +74,7 @@ The first real fixes are in:
 - The trace-writer pool bounds statements at 5 seconds and client queries at 7.5 seconds so best-effort telemetry cannot wedge shutdown.
 - Thread concurrency is process-local backpressure capped by `PANDA_CORE_THREAD_RUN_CONCURRENCY`; durable run claims do not pin database clients.
 - Scheduled occurrence supervision is independently capped by `PANDA_SCHEDULED_TASK_CONCURRENCY` (default `4`); it keeps unrelated tasks moving without pinning database clients while their exact thread runs execute.
+- Mechanical command supervision is capped by `PANDA_SCHEDULED_COMMAND_CONCURRENCY` (default `2`). Shell execution happens in remote agent runners and does not pin database clients; short claim and settlement statements use the core query pool.
 - `panda-core` no longer pays for `panda/core-ro` at boot.
 - Healthchecks are local HTTP probes instead of DB-backed pokes.
 - Long-running pools set `application_name` and emit pool stats on startup, on errors, and while waiters exist.

@@ -63,6 +63,7 @@ describe("command lease authority", () => {
       policyModule("postgres.readonly.query", {requiresReadonlyPostgres: true}),
       policyModule("skill.load", {requiredAgentSkillOperation: "load"}),
       policyModule("skill.set", {requiredAgentSkillOperation: "set"}),
+      policyModule("cron.create", {requiresBash: true}),
     ];
 
     expect(resolveCommandLeaseAuthority({
@@ -75,9 +76,12 @@ describe("command lease authority", () => {
           "postgres.readonly.query",
           "skill.load",
           "skill.set",
+          "cron.create",
+          "bash",
         ],
         postgresReadonly: {allowed: true},
         agentSkill: {allowedOperations: ["load"]},
+        bash: {allowed: false},
       },
     })).toEqual(["postgres.readonly.query", "skill.load"]);
 
@@ -93,9 +97,12 @@ describe("command lease authority", () => {
           "postgres.readonly.query",
           "skill.load",
           "skill.set",
+          "cron.create",
+          "bash",
         ],
         postgresReadonly: {allowed: true},
         agentSkill: {allowedOperations: ["load", "set"]},
+        bash: {allowed: true},
       },
     })).toEqual([
       "micro-app.link.create",
@@ -103,6 +110,7 @@ describe("command lease authority", () => {
       "postgres.readonly.query",
       "skill.load",
       "skill.set",
+      "cron.create",
     ]);
   });
 

@@ -11,7 +11,7 @@ import {commandStaleVersionConflict} from "../src/domain/commands/errors.js";
 import {FileSystemCommandUploadStore} from "../src/integrations/commands/file-uploads.js";
 import {FileSystemWebResourceStore} from "../src/integrations/web/web-resources.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
-import {READONLY_SESSION_VIEW_BASENAMES} from "../src/domain/threads/runtime/postgres-readonly.js";
+import {CURRENT_READONLY_SESSION_VIEW_BASENAMES} from "../src/integrations/postgres/readonly-session-views.js";
 import {
   createA2AHistoryCommand,
   createA2AInspectCommand,
@@ -61,6 +61,17 @@ import {
   createScheduleShowCommand,
   createScheduleUpdateCommand,
 } from "../src/domain/scheduling/tasks/commands.js";
+import {
+  cronCreateCommandDescriptor,
+  cronDeleteCommandDescriptor,
+  cronDisableCommandDescriptor,
+  cronEnableCommandDescriptor,
+  cronListCommandDescriptor,
+  cronRunCommandDescriptor,
+  cronRunsCommandDescriptor,
+  cronShowCommandDescriptor,
+  cronUpdateCommandDescriptor,
+} from "../src/domain/scheduling/scheduled-commands/commands.js";
 import {
   createSessionPromptReadCommand,
   createSessionPromptSetCommand,
@@ -213,6 +224,17 @@ const mcpManagementDescriptors = [
   mcpOauthStatusCommandDescriptor,
   mcpOauthDisconnectCommandDescriptor,
 ];
+const cronDescriptors = [
+  cronListCommandDescriptor,
+  cronShowCommandDescriptor,
+  cronRunsCommandDescriptor,
+  cronCreateCommandDescriptor,
+  cronUpdateCommandDescriptor,
+  cronEnableCommandDescriptor,
+  cronDisableCommandDescriptor,
+  cronDeleteCommandDescriptor,
+  cronRunCommandDescriptor,
+];
 
 function echoInputCommand(descriptor: CommandDescriptor): RegisteredCommand {
   return {
@@ -264,7 +286,7 @@ class FakeReadonlyClient {
     }
     if (text.includes("FROM information_schema.columns")) {
       return {
-        rows: READONLY_SESSION_VIEW_BASENAMES.map((tableName, index) => ({
+        rows: CURRENT_READONLY_SESSION_VIEW_BASENAMES.map((tableName, index) => ({
           table_name: tableName,
           column_name: tableName === "messages" ? "text" : "id",
           data_type: "text",
@@ -1921,6 +1943,7 @@ describe("agent command shim", () => {
       executor: new RuntimeCommandDispatcher({
         commands: [
           ...mcpManagementDescriptors.map(echoInputCommand),
+          ...cronDescriptors.map(echoInputCommand),
           ...[
             telegramStickerInspectCommandDescriptor,
             telegramStickerSaveCommandDescriptor,
@@ -4292,6 +4315,75 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     expect(JSON.parse(stdout)).toEqual({
       taskId: "task-1",
     });
+  });
+
+  it("executes cron.create and cron.update through native args", async () => {
+    const server = await startWatchServer();
+    const directory = await mkdtemp(path.join(os.tmpdir(), "panda-cron-shim-"));
+    directories.push(directory);
+    const scriptPath = path.join(directory, "sync.sh");
+    await writeFile(scriptPath, "./sync-prices --quiet", "utf8");
+
+    const created = await execFileAsync(shimPath, [
+      "cron",
+      "create",
+      "sync prices",
+      "--cron",
+      "0 * * * *",
+      "--timezone",
+      "Europe/Bratislava",
+      "--command",
+      `@${scriptPath}`,
+      "--cwd",
+      "metabase",
+      "--credentials",
+      "GAS_API_TOKEN,METABASE_DATABASE_URL",
+      "--timeout-ms",
+      "90000",
+      "--disabled",
+    ], {env: shimEnv(server)});
+    const updated = await execFileAsync(shimPath, [
+      "cron",
+      "update",
+      "command-1",
+      "--expected-version",
+      "1",
+      "--command",
+      "./sync-prices --full",
+      "--credentials",
+      "",
+    ], {env: shimEnv(server)});
+
+    expect(JSON.parse(created.stdout)).toEqual({
+      title: "sync prices",
+      cron: "0 * * * *",
+      timezone: "Europe/Bratislava",
+      command: "./sync-prices --quiet",
+      cwd: "metabase",
+      credentials: "GAS_API_TOKEN,METABASE_DATABASE_URL",
+      timeoutMs: 90_000,
+      disabled: true,
+    });
+    expect(JSON.parse(updated.stdout)).toEqual({
+      commandId: "command-1",
+      expectedVersion: 1,
+      command: "./sync-prices --full",
+      credentials: "",
+    });
+  });
+
+  it("executes cron list, show, runs, and state operations through native args", async () => {
+    const server = await startWatchServer();
+
+    const list = await execFileAsync(shimPath, ["cron", "list", "--status", "all", "--limit", "10"], {env: shimEnv(server)});
+    const show = await execFileAsync(shimPath, ["cron", "show", "command-1"], {env: shimEnv(server)});
+    const runs = await execFileAsync(shimPath, ["cron", "runs", "command-1", "--limit", "5"], {env: shimEnv(server)});
+    const enabled = await execFileAsync(shimPath, ["cron", "enable", "command-1", "--expected-version", "2"], {env: shimEnv(server)});
+
+    expect(JSON.parse(list.stdout)).toEqual({status: "all", limit: 10});
+    expect(JSON.parse(show.stdout)).toEqual({commandId: "command-1"});
+    expect(JSON.parse(runs.stdout)).toEqual({commandId: "command-1", limit: 5});
+    expect(JSON.parse(enabled.stdout)).toEqual({commandId: "command-1", expectedVersion: 2});
   });
 
   it("executes schedule.create through native once and recurring args", async () => {

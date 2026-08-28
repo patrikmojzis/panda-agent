@@ -37,7 +37,9 @@ describe("readonly session role reconciliation", () => {
     expect(database.configuredRole).toBe("panda_readonly");
     expect(database.queries.some(({sql}) => sql.includes('GRANT USAGE ON SCHEMA "session" TO "panda_readonly"')))
       .toBe(true);
-    expect(database.queries.some(({sql}) => sql.includes("GRANT SELECT ON"))).toBe(true);
+    const grant = database.queries.find(({sql}) => sql.includes("GRANT SELECT ON"))?.sql;
+    expect(grant).toContain('"session"."scheduled_commands"');
+    expect(grant).toContain('"session"."scheduled_command_runs"');
     expect(database.queries.some(({sql}) => sql.startsWith("CREATE TABLE"))).toBe(false);
   });
 

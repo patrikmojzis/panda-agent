@@ -19,6 +19,10 @@ import {PostgresIdentityStore} from "../../domain/identity/postgres.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
 import {PostgresScheduledTaskStore} from "../../domain/scheduling/tasks/postgres.js";
 import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
+import {loadScheduledCommandIntegrity, type ScheduledCommandIntegrity} from "../../domain/scheduling/scheduled-commands/integrity.js";
+import {PostgresScheduledCommandStore} from "../../domain/scheduling/scheduled-commands/postgres.js";
+import type {ScheduledCommandStore} from "../../domain/scheduling/scheduled-commands/store.js";
+import {ScheduledCommandService} from "../../domain/scheduling/scheduled-commands/service.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
 import {PostgresSubagentProfileStore} from "../../domain/subagents/postgres.js";
@@ -175,6 +179,9 @@ interface RuntimeBootstrapResult {
   store: ThreadRuntimeStore;
   shellStateStore: ThreadShellStateStore;
   scheduledTasks: ScheduledTaskStore;
+  scheduledCommands: ScheduledCommandStore;
+  scheduledCommandIntegrity: ScheduledCommandIntegrity | null;
+  scheduledCommandService: ScheduledCommandService | null;
   email: EmailStore;
   watches: WatchStore;
   commandExecutor: RuntimeCommandDispatcher;
@@ -538,6 +545,9 @@ export async function bootstrapRuntime(
     const scheduledTasks = new PostgresScheduledTaskStore({
       pool: postgresPool,
     });
+    const scheduledCommands = new PostgresScheduledCommandStore({
+      pool: postgresPool,
+    });
     const watches = new PostgresWatchStore({
       pool: postgresPool,
     });
@@ -600,6 +610,14 @@ export async function bootstrapRuntime(
       store: credentialStore,
       crypto: credentialCrypto,
     });
+    const scheduledCommandIntegrity = await loadScheduledCommandIntegrity(process.env);
+    const scheduledCommandService = scheduledCommandIntegrity
+      ? new ScheduledCommandService({
+        store: scheduledCommands,
+        integrity: scheduledCommandIntegrity,
+        credentials: credentialResolver,
+      })
+      : null;
     const mcpManagement = new McpManagementService({
       configs: mcpConfigs,
       credentials: credentialResolver,
@@ -709,6 +727,7 @@ export async function bootstrapRuntime(
       watchStore: watches,
       watchMutations,
       scheduledTasks,
+      scheduledCommands: scheduledCommandService ?? undefined,
       apps,
       appAuth,
       agentSkills: agentStore,
@@ -813,6 +832,9 @@ export async function bootstrapRuntime(
       store,
       shellStateStore: store,
       scheduledTasks,
+      scheduledCommands,
+      scheduledCommandIntegrity,
+      scheduledCommandService,
       email,
       watches,
       commandExecutor: commandDispatcher,

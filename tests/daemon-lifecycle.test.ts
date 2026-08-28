@@ -138,6 +138,7 @@ function createDaemonLifecycleContext(overrides: DaemonLifecycleContextOverrides
     emailOutboundWorker: createStartStopService(),
     emailSyncRunner: createStartStopService(),
     scheduledTaskRunner: createStartStopService(),
+    scheduledCommandRunner: createStartStopService(),
     watchRunner: createStartStopService(),
     sessionHeartbeatRunner: createStartStopService(),
     discordVoice: {close: vi.fn(async () => undefined)},

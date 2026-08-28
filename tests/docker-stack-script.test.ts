@@ -1389,6 +1389,9 @@ exit 42
     expect(baseCompose).toContain("  panda-whatsapp:\n    image: panda-app:latest");
     expect(baseCompose).toContain("CREDENTIALS_MASTER_KEY: ${CREDENTIALS_MASTER_KEY:-}");
     expect(baseCompose).toContain("PANDA_WHATSAPP_DB_POOL_MAX: ${PANDA_WHATSAPP_DB_POOL_MAX:-2}");
+    expect(baseCompose).toContain("${PANDA_CORE_SECRETS_HOST_ROOT:-${HOME}/.panda-core-secrets}:/run/secrets/panda-core:ro");
+    expect(baseCompose.match(/PANDA_SCHEDULED_COMMAND_INTEGRITY_KEY: ""/g)).toHaveLength(3);
+    expect(baseCompose.match(/PANDA_SCHEDULED_COMMAND_INTEGRITY_KEY_FILE: ""/g)).toHaveLength(3);
     expect(baseCompose).toContain("${PANDA_ENVIRONMENTS_HOST_ROOT:-${HOME}/.panda/environments}:${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}");
     expect(baseCompose).toContain("BASH_SERVER_SHARED_SECRET: ${BASH_SERVER_SHARED_SECRET:-}");
     expect(baseCompose).not.toContain("  panda-telegram:\n    build:");

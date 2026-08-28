@@ -1,10 +1,10 @@
 {
   "files": [
     {
-      "bytes": 128298,
-      "lines": 4263,
+      "bytes": 136215,
+      "lines": 4551,
       "path": "scripts/agent-command-shim/routes.generated.sh",
-      "sha256": "ab1b1d8b7163ce61c5135f1d3225ba2e55baed71815b8b29528266f63d586f62"
+      "sha256": "412887aa0c3cca09ddb55ce61be90419ebcc249a52b64d62f3b749ef351fcb3d"
     },
     {
       "bytes": 1166,
@@ -13,16 +13,16 @@
       "sha256": "5bdd27237cdbea0029962f848523647def7fb81053ec670d6d708d4eb51a8c10"
     },
     {
-      "bytes": 15650,
-      "lines": 373,
+      "bytes": 17067,
+      "lines": 399,
       "path": "src/app/runtime/create-runtime.ts",
-      "sha256": "f364052ced5fcc126c6ae0cfb6f8e019e04a7d61807f75bc92e2a4d9ec81688c"
+      "sha256": "1a1004c51544a7e25b32abafe0e8ad5afe42350f599fcf125434ba3a56382faf"
     },
     {
-      "bytes": 18464,
-      "lines": 467,
+      "bytes": 20412,
+      "lines": 515,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "00de1a596bc8f7f31c371501cc95e54da94ca5dc1351799f3d197d63b9930c95"
+      "sha256": "96a2a7f7de967cf694d045560d8061d955c1fbcb4d32ecf1d8c96cb3787b0614"
     },
     {
       "bytes": 12121,
@@ -37,10 +37,10 @@
       "sha256": "033685d9e20dc15874865f8bf3e8b9c0d4244ede32cd871ea21590f8b47c45c4"
     },
     {
-      "bytes": 32608,
-      "lines": 861,
+      "bytes": 33752,
+      "lines": 882,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "ed7979888b46239a136bb9f163809803e5eb96d489b336913d07589b4cd5c71e"
+      "sha256": "ab9363b1c94d2cff2f232e9fc3db575ebd812be60a973039a32b2914566d11b8"
     },
     {
       "bytes": 10873,
@@ -67,10 +67,10 @@
       "sha256": "c6d98f315f2cfc237bbf5fdd6eb957112e92238bedd6e16956056d0a7939fb56"
     },
     {
-      "bytes": 62090,
-      "lines": 1732,
+      "bytes": 65230,
+      "lines": 1817,
       "path": "src/panda/commands/agent-command-modules.ts",
-      "sha256": "85de125439889616b9be9884fcb7e6ec78ad19d116abb08d86a3eb216946a46b"
+      "sha256": "dccc06688c262af06844347a0dd1df94dae0c2b53604d1db5b310e43fe161db4"
     },
     {
       "bytes": 572,
@@ -361,6 +361,12 @@
       "sha256": "6de48107f7a2dc4a1079eea892478cccd66ce38877265b516f999d9e2b9af66e"
     },
     {
+      "bytes": 764,
+      "lines": 21,
+      "path": "src/prompts/runtime/scheduled-commands.ts",
+      "sha256": "2a589e4556aabba52fa1f15ba800328d1748a565938b7ceaf6858cd4278c2e2c"
+    },
+    {
       "bytes": 361,
       "lines": 17,
       "path": "src/prompts/runtime/scheduled-tasks.ts",
@@ -530,6 +536,15 @@
         "schedule.create",
         "schedule.update",
         "schedule.cancel",
+        "cron.list",
+        "cron.show",
+        "cron.runs",
+        "cron.create",
+        "cron.update",
+        "cron.enable",
+        "cron.disable",
+        "cron.delete",
+        "cron.run",
         "micro-app.check",
         "micro-app.create",
         "micro-app.link.create",

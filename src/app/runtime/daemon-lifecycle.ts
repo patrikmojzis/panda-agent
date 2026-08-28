@@ -101,6 +101,7 @@ export interface DaemonLifecycleContext {
   emailOutboundWorker: StartStopService;
   emailSyncRunner: StartStopService;
   scheduledTaskRunner: StartStopService;
+  scheduledCommandRunner: StartStopService;
   watchRunner: StartStopService;
   sessionHeartbeatRunner: StartStopService;
   discordVoice: {close(): Promise<void>};
@@ -328,6 +329,7 @@ export function createDaemonLifecycle(input: {
               const steps = [
                 {label: "request-drain", run: () => requestDrainStopPromise ?? requestDrain.stop()},
                 {label: "scheduled-task-runner", run: () => input.context.scheduledTaskRunner.stop()},
+                {label: "scheduled-command-runner", run: () => input.context.scheduledCommandRunner.stop()},
                 {label: "watch-runner", run: () => input.context.watchRunner.stop()},
                 {label: "session-heartbeat-runner", run: () => input.context.sessionHeartbeatRunner.stop()},
                 {label: "discord-voice-store", run: () => input.context.discordVoice.close()},
@@ -751,6 +753,16 @@ export function createDaemonLifecycle(input: {
               await stopServiceWithinDeadline(
                 "late-started scheduled task runner",
                 () => input.context.scheduledTaskRunner.stop(),
+              );
+            }
+            return;
+          }
+          await input.context.scheduledCommandRunner.start();
+          if (stopped) {
+            if (cleanupStarted) {
+              await stopServiceWithinDeadline(
+                "late-started scheduled command runner",
+                () => input.context.scheduledCommandRunner.stop(),
               );
             }
             return;

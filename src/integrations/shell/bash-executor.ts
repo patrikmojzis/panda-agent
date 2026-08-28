@@ -2,7 +2,6 @@ import {randomUUID} from "node:crypto";
 
 import type {JsonObject} from "../../lib/json.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
-import type {RunContext} from "../../kernel/agent/run-context.js";
 import {executeBashCommand} from "./bash-execution.js";
 import {sanitizeBashOutputPreview} from "./bash-output.js";
 import type {
@@ -71,12 +70,18 @@ export interface BashExecutorOptions {
   resolvedEnv?: Record<string, string>;
   shellEnv?: Record<string, string>;
   executionEnvironment?: ResolvedExecutionEnvironment;
-  run: RunContext<ShellExecutionContext>;
+  run: BashExecutionRunContext<ShellExecutionContext>;
+}
+
+export interface BashExecutionRunContext<TContext extends ShellExecutionContext = ShellExecutionContext> {
+  readonly context?: TContext;
+  readonly signal?: AbortSignal;
+  emitToolProgress(progress: JsonObject): void;
 }
 
 export interface BashExecutor {
   execute<TContext extends ShellExecutionContext>(
-    options: BashExecutorOptions & {run: RunContext<TContext>},
+    options: BashExecutorOptions & {run: BashExecutionRunContext<TContext>},
   ): Promise<BashExecutionResult>;
 }
 
@@ -193,7 +198,7 @@ export class LocalShellExecutor implements BashExecutor {
   }
 
   async execute<TContext extends ShellExecutionContext>(
-    options: BashExecutorOptions & {run: RunContext<TContext>},
+    options: BashExecutorOptions & {run: BashExecutionRunContext<TContext>},
   ): Promise<BashExecutionResult> {
     const shell = this.shell ?? this.env.SHELL ?? SAFE_SHELL;
     const spawnFailure = await readBashSpawnPreflightFailure({
@@ -309,7 +314,7 @@ export class RemoteShellExecutor implements BashExecutor {
   }
 
   async execute<TContext extends ShellExecutionContext>(
-    options: BashExecutorOptions & {run: RunContext<TContext>},
+    options: BashExecutorOptions & {run: BashExecutionRunContext<TContext>},
   ): Promise<BashExecutionResult> {
     if (!this.runnerUrlTemplate && !options.executionEnvironment?.runnerUrl) {
       throw new ToolError("Remote bash execution requires BASH_SERVER_URL_TEMPLATE.");

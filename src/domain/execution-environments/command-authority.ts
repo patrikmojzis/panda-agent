@@ -1,6 +1,6 @@
 import type {CommandCatalog} from "../commands/modules.js";
 import type {CommandName, CommandPolicyModule} from "../commands/types.js";
-import {normalizeAgentSkillOperations} from "./policy.js";
+import {isExecutionToolAllowedByPolicy, normalizeAgentSkillOperations} from "./policy.js";
 import type {AgentSkillOperation, ExecutionToolPolicy} from "./types.js";
 
 const DEFAULT_AGENT_SKILL_OPERATIONS: readonly AgentSkillOperation[] = ["load", "set", "patch", "delete"];
@@ -58,6 +58,9 @@ export function resolveCommandLeaseAuthority(input: ResolveCommandLeaseAuthority
       return [];
     }
     if (modulePolicy.requiresCredentialMutation === true && input.credentialMutationAllowed !== true) {
+      return [];
+    }
+    if (modulePolicy.requiresBash === true && !isExecutionToolAllowedByPolicy(policy, "bash")) {
       return [];
     }
     if (

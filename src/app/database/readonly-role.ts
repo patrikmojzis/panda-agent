@@ -5,9 +5,7 @@ import {
   quoteIdentifier,
   SESSION_SCHEMA,
 } from "../../lib/postgres-relations.js";
-import {
-  READONLY_SESSION_VIEW_DEFINITIONS,
-} from "../../domain/threads/runtime/postgres-readonly.js";
+import {CURRENT_READONLY_SESSION_VIEW_DEFINITIONS} from "../../integrations/postgres/readonly-session-views.js";
 
 const READONLY_ROLE_CONFIGURATION_KEY = "readonly_session_role";
 
@@ -34,7 +32,7 @@ export async function reconcileReadonlySessionRole(
   const configurationTable = buildRuntimeRelationNames({
     schemaConfiguration: "schema_configuration",
   }).schemaConfiguration;
-  const {prefix: _prefix, ...views} = buildSessionRelationNames(READONLY_SESSION_VIEW_DEFINITIONS);
+  const {prefix: _prefix, ...views} = buildSessionRelationNames(CURRENT_READONLY_SESSION_VIEW_DEFINITIONS);
   const viewList = Object.values(views).join(", ");
 
   const existing = await queryable.query(`

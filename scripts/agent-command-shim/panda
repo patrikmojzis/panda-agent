@@ -1974,6 +1974,307 @@ USAGE
     execute_json_command "$command_name" "$(read_json_input "$1")"
     exit $?
     ;;
+  cron)
+    shift
+    case "${1:-}" in
+      ""|--help|-h)
+        cat <<'USAGE'
+Usage:
+  panda cron list --help [--json]
+  panda cron show --help [--json]
+  panda cron runs --help [--json]
+  panda cron create --help [--json]
+  panda cron update --help [--json]
+  panda cron enable --help [--json]
+  panda cron disable --help [--json]
+  panda cron delete --help [--json]
+  panda cron run --help [--json]
+  panda cron list [--status active|disabled|blocked|all] [--limit <n>]
+  panda cron show <command-id>
+  panda cron runs <command-id> [--limit <n>]
+  panda cron create <title> --cron <expr> --timezone <tz> --command <text|@file|@-> [--cwd <path>] [--credentials <csv>] [--timeout-ms <n>] [--disabled]
+  panda cron update <command-id> --expected-version <n> [--title <text>] [--cron <expr>] [--timezone <tz>] [--command <text|@file|@->] [--cwd <path>] [--credentials <csv>] [--timeout-ms <n>]
+  panda cron enable <command-id> --expected-version <n>
+  panda cron disable <command-id> --expected-version <n>
+  panda cron delete <command-id> --expected-version <n>
+  panda cron run <command-id> --expected-version <n>
+  panda cron <subcommand> --json @payload.json
+USAGE
+        exit 0
+        ;;
+    esac
+    subcommand="${1:-}"
+    case "$subcommand" in
+      list) command_name="cron.list" ;;
+      show) command_name="cron.show" ;;
+      runs) command_name="cron.runs" ;;
+      create) command_name="cron.create" ;;
+      update) command_name="cron.update" ;;
+      enable) command_name="cron.enable" ;;
+      disable) command_name="cron.disable" ;;
+      delete) command_name="cron.delete" ;;
+      run) command_name="cron.run" ;;
+      *) die "Unknown panda cron command. Try: panda cron list --help" ;;
+    esac
+    shift
+    if [ "${1:-}" = "--help" ]; then
+      shift
+      if [ "${1:-}" = "--json" ]; then
+        curl_command "$(command_url "/commands/${command_name}/help?format=json")"
+        exit 0
+      fi
+      if declare -F agent_command_shim_print_local_help >/dev/null; then
+        if agent_command_shim_print_local_help "$command_name"; then
+          exit 0
+        fi
+      fi
+      curl_command "$(command_url "/commands/${command_name}/help")"
+      exit 0
+    fi
+    if [ "${1:-}" = "--json" ]; then
+      shift
+      [ -n "${1:-}" ] || die "panda cron ${subcommand} --json requires @file, @-, or inline JSON."
+      execute_json_command "$command_name" "$(read_json_input "$1")"
+      exit $?
+    fi
+    case "$subcommand" in
+      list)
+        status=""
+        limit=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --status)
+              [ "$#" -gt 1 ] || die "panda cron list --status requires a value."
+              status="$2"
+              shift 2
+              ;;
+            --limit)
+              [ "$#" -gt 1 ] || die "panda cron list --limit requires a number."
+              require_positive_integer "$2" "panda cron list --limit"
+              limit="$2"
+              shift 2
+              ;;
+            *) die "Unknown panda cron list option: $1" ;;
+          esac
+        done
+        payload="$(jq -n --arg status "$status" --arg limit "$limit" \
+          '({})
+           + (if $status != "" then {status: $status} else {} end)
+           + (if $limit != "" then {limit: ($limit | tonumber)} else {} end)')"
+        ;;
+      show)
+        command_id="${1:-}"
+        [ -n "$command_id" ] || die "panda cron show requires <command-id>."
+        shift
+        [ "$#" -eq 0 ] || die "panda cron show accepts only one command id."
+        payload="$(jq -n --arg commandId "$command_id" '{commandId: $commandId}')"
+        ;;
+      runs)
+        command_id="${1:-}"
+        [ -n "$command_id" ] || die "panda cron runs requires <command-id>."
+        shift
+        limit=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --limit)
+              [ "$#" -gt 1 ] || die "panda cron runs --limit requires a number."
+              require_positive_integer "$2" "panda cron runs --limit"
+              limit="$2"
+              shift 2
+              ;;
+            *) die "Unknown panda cron runs option: $1" ;;
+          esac
+        done
+        payload="$(jq -n --arg commandId "$command_id" --arg limit "$limit" \
+          '{commandId: $commandId} + (if $limit != "" then {limit: ($limit | tonumber)} else {} end)')"
+        ;;
+      create)
+        title_arg="${1:-}"
+        [ -n "$title_arg" ] || die "panda cron create requires <title>."
+        title="$(read_text_input "$title_arg")"
+        shift
+        cron_expression=""
+        timezone=""
+        command_text=""
+        command_set="false"
+        cwd=""
+        credentials=""
+        timeout_ms=""
+        disabled="false"
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --cron)
+              [ "$#" -gt 1 ] || die "panda cron create --cron requires an expression."
+              cron_expression="$2"
+              shift 2
+              ;;
+            --timezone)
+              [ "$#" -gt 1 ] || die "panda cron create --timezone requires an IANA timezone."
+              timezone="$2"
+              shift 2
+              ;;
+            --command)
+              [ "$#" -gt 1 ] || die "panda cron create --command requires a value."
+              command_text="$(read_text_input "$2")"
+              command_set="true"
+              shift 2
+              ;;
+            --cwd)
+              [ "$#" -gt 1 ] || die "panda cron create --cwd requires a path."
+              cwd="$2"
+              shift 2
+              ;;
+            --credentials)
+              [ "$#" -gt 1 ] || die "panda cron create --credentials requires a comma-separated list."
+              credentials="$2"
+              shift 2
+              ;;
+            --timeout-ms)
+              [ "$#" -gt 1 ] || die "panda cron create --timeout-ms requires a number."
+              require_positive_integer "$2" "panda cron create --timeout-ms"
+              timeout_ms="$2"
+              shift 2
+              ;;
+            --disabled)
+              disabled="true"
+              shift
+              ;;
+            *) die "Unknown panda cron create option: $1" ;;
+          esac
+        done
+        [ -n "$cron_expression" ] || die "panda cron create requires --cron <expr>."
+        [ -n "$timezone" ] || die "panda cron create requires --timezone <tz>."
+        [ "$command_set" = "true" ] || die "panda cron create requires --command <text|@file|@->."
+        payload="$(jq -n \
+          --arg title "$title" \
+          --arg cron "$cron_expression" \
+          --arg timezone "$timezone" \
+          --arg command "$command_text" \
+          --arg cwd "$cwd" \
+          --arg credentials "$credentials" \
+          --arg timeoutMs "$timeout_ms" \
+          --arg disabled "$disabled" \
+          '{title: $title, cron: $cron, timezone: $timezone, command: $command}
+           + (if $cwd != "" then {cwd: $cwd} else {} end)
+           + (if $credentials != "" then {credentials: $credentials} else {} end)
+           + (if $timeoutMs != "" then {timeoutMs: ($timeoutMs | tonumber)} else {} end)
+           + (if $disabled == "true" then {disabled: true} else {} end)')"
+        ;;
+      update)
+        command_id="${1:-}"
+        [ -n "$command_id" ] || die "panda cron update requires <command-id>."
+        shift
+        expected_version=""
+        title=""
+        title_set="false"
+        cron_expression=""
+        timezone=""
+        command_text=""
+        command_set="false"
+        cwd=""
+        cwd_set="false"
+        credentials=""
+        credentials_set="false"
+        timeout_ms=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --expected-version)
+              [ "$#" -gt 1 ] || die "panda cron update --expected-version requires a number."
+              require_positive_integer "$2" "panda cron update --expected-version"
+              expected_version="$2"
+              shift 2
+              ;;
+            --title)
+              [ "$#" -gt 1 ] || die "panda cron update --title requires a value."
+              title="$(read_text_input "$2")"
+              title_set="true"
+              shift 2
+              ;;
+            --cron)
+              [ "$#" -gt 1 ] || die "panda cron update --cron requires an expression."
+              cron_expression="$2"
+              shift 2
+              ;;
+            --timezone)
+              [ "$#" -gt 1 ] || die "panda cron update --timezone requires an IANA timezone."
+              timezone="$2"
+              shift 2
+              ;;
+            --command)
+              [ "$#" -gt 1 ] || die "panda cron update --command requires a value."
+              command_text="$(read_text_input "$2")"
+              command_set="true"
+              shift 2
+              ;;
+            --cwd)
+              [ "$#" -gt 1 ] || die "panda cron update --cwd requires a path."
+              cwd="$2"
+              cwd_set="true"
+              shift 2
+              ;;
+            --credentials)
+              [ "$#" -gt 1 ] || die "panda cron update --credentials requires a comma-separated list."
+              credentials="$2"
+              credentials_set="true"
+              shift 2
+              ;;
+            --timeout-ms)
+              [ "$#" -gt 1 ] || die "panda cron update --timeout-ms requires a number."
+              require_positive_integer "$2" "panda cron update --timeout-ms"
+              timeout_ms="$2"
+              shift 2
+              ;;
+            *) die "Unknown panda cron update option: $1" ;;
+          esac
+        done
+        [ -n "$expected_version" ] || die "panda cron update requires --expected-version <n>."
+        payload="$(jq -n \
+          --arg commandId "$command_id" \
+          --arg expectedVersion "$expected_version" \
+          --arg title "$title" \
+          --arg titleSet "$title_set" \
+          --arg cron "$cron_expression" \
+          --arg timezone "$timezone" \
+          --arg command "$command_text" \
+          --arg commandSet "$command_set" \
+          --arg cwd "$cwd" \
+          --arg cwdSet "$cwd_set" \
+          --arg credentials "$credentials" \
+          --arg credentialsSet "$credentials_set" \
+          --arg timeoutMs "$timeout_ms" \
+          '{commandId: $commandId, expectedVersion: ($expectedVersion | tonumber)}
+           + (if $titleSet == "true" then {title: $title} else {} end)
+           + (if $cron != "" then {cron: $cron} else {} end)
+           + (if $timezone != "" then {timezone: $timezone} else {} end)
+           + (if $commandSet == "true" then {command: $command} else {} end)
+           + (if $cwdSet == "true" then {cwd: $cwd} else {} end)
+           + (if $credentialsSet == "true" then {credentials: $credentials} else {} end)
+           + (if $timeoutMs != "" then {timeoutMs: ($timeoutMs | tonumber)} else {} end)')"
+        ;;
+      enable|disable|delete|run)
+        command_id="${1:-}"
+        [ -n "$command_id" ] || die "panda cron ${subcommand} requires <command-id>."
+        shift
+        expected_version=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --expected-version)
+              [ "$#" -gt 1 ] || die "panda cron ${subcommand} --expected-version requires a number."
+              require_positive_integer "$2" "panda cron ${subcommand} --expected-version"
+              expected_version="$2"
+              shift 2
+              ;;
+            *) die "Unknown panda cron ${subcommand} option: $1" ;;
+          esac
+        done
+        [ -n "$expected_version" ] || die "panda cron ${subcommand} requires --expected-version <n>."
+        payload="$(jq -n --arg commandId "$command_id" --arg expectedVersion "$expected_version" \
+          '{commandId: $commandId, expectedVersion: ($expectedVersion | tonumber)}')"
+        ;;
+    esac
+    execute_json_command "$command_name" "$payload"
+    exit $?
+    ;;
   schedule)
     shift
     case "${1:-}" in

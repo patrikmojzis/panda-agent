@@ -83,6 +83,33 @@ agent_command_shim_lookup_route() {
     'schedule cancel')
       printf '%s\t%s\n' 'schedule.cancel' 'schedule cancel'
       ;;
+    'cron list')
+      printf '%s\t%s\n' 'cron.list' 'cron list'
+      ;;
+    'cron show')
+      printf '%s\t%s\n' 'cron.show' 'cron show'
+      ;;
+    'cron runs')
+      printf '%s\t%s\n' 'cron.runs' 'cron runs'
+      ;;
+    'cron create')
+      printf '%s\t%s\n' 'cron.create' 'cron create'
+      ;;
+    'cron update')
+      printf '%s\t%s\n' 'cron.update' 'cron update'
+      ;;
+    'cron enable')
+      printf '%s\t%s\n' 'cron.enable' 'cron enable'
+      ;;
+    'cron disable')
+      printf '%s\t%s\n' 'cron.disable' 'cron disable'
+      ;;
+    'cron delete')
+      printf '%s\t%s\n' 'cron.delete' 'cron delete'
+      ;;
+    'cron run')
+      printf '%s\t%s\n' 'cron.run' 'cron run'
+      ;;
     'micro-app check')
       printf '%s\t%s\n' 'micro-app.check' 'micro-app check'
       ;;
@@ -430,6 +457,15 @@ agent_command_shim_print_root_usage_commands() {
   panda schedule create <title> (--at <iso>|--cron <expr> --timezone <tz>) --instruction <text|@file|@-> [--disabled]
   panda schedule update <task-id> [--title <text|@file|@->] [--at <iso>|--cron <expr> --timezone <tz>] [--instruction <text|@file|@->] [--enable|--disable]
   panda schedule cancel <task-id> [--reason <text|@file|@->]
+  panda cron list [--status active|disabled|blocked|all] [--limit <n>]
+  panda cron show <command-id>
+  panda cron runs <command-id> [--limit <n>]
+  panda cron create <title> --cron <expr> --timezone <tz> --command <text|@file|@-> [--cwd <path>] [--credentials <csv>] [--timeout-ms <n>] [--disabled]
+  panda cron update <command-id> --expected-version <n> [--title <text>] [--cron <expr>] [--timezone <tz>] [--command <text|@file|@->] [--cwd <path>] [--credentials <csv>] [--timeout-ms <n>]
+  panda cron enable <command-id> --expected-version <n>
+  panda cron disable <command-id> --expected-version <n>
+  panda cron delete <command-id> --expected-version <n>
+  panda cron run <command-id> --expected-version <n>
   panda micro-app check [app-slug]
   panda micro-app create <slug> --name <text|@file|@-> [--description <text|@file|@->] [--identity-scoped] [--schema <sql|@file|@->]
   panda micro-app link create <app-slug> [--expires <minutes|Nm|Nh>]
@@ -844,6 +880,96 @@ Detailed help is available only through the current agent command lease.
 Usage:
   panda schedule cancel --json @payload.json
 PANDA_COMMAND_HELP_schedule_cancel
+      ;;
+    'cron.list')
+      cat <<'PANDA_COMMAND_HELP_cron_list'
+Panda command: cron.list
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda cron list --json @payload.json
+PANDA_COMMAND_HELP_cron_list
+      ;;
+    'cron.show')
+      cat <<'PANDA_COMMAND_HELP_cron_show'
+Panda command: cron.show
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda cron show --json @payload.json
+PANDA_COMMAND_HELP_cron_show
+      ;;
+    'cron.runs')
+      cat <<'PANDA_COMMAND_HELP_cron_runs'
+Panda command: cron.runs
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda cron runs --json @payload.json
+PANDA_COMMAND_HELP_cron_runs
+      ;;
+    'cron.create')
+      cat <<'PANDA_COMMAND_HELP_cron_create'
+Panda command: cron.create
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda cron create --json @payload.json
+PANDA_COMMAND_HELP_cron_create
+      ;;
+    'cron.update')
+      cat <<'PANDA_COMMAND_HELP_cron_update'
+Panda command: cron.update
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda cron update --json @payload.json
+PANDA_COMMAND_HELP_cron_update
+      ;;
+    'cron.enable')
+      cat <<'PANDA_COMMAND_HELP_cron_enable'
+Panda command: cron.enable
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda cron enable --json @payload.json
+PANDA_COMMAND_HELP_cron_enable
+      ;;
+    'cron.disable')
+      cat <<'PANDA_COMMAND_HELP_cron_disable'
+Panda command: cron.disable
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda cron disable --json @payload.json
+PANDA_COMMAND_HELP_cron_disable
+      ;;
+    'cron.delete')
+      cat <<'PANDA_COMMAND_HELP_cron_delete'
+Panda command: cron.delete
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda cron delete --json @payload.json
+PANDA_COMMAND_HELP_cron_delete
+      ;;
+    'cron.run')
+      cat <<'PANDA_COMMAND_HELP_cron_run'
+Panda command: cron.run
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda cron run --json @payload.json
+PANDA_COMMAND_HELP_cron_run
       ;;
     'micro-app.check')
       cat <<'PANDA_COMMAND_HELP_micro_app_check'
@@ -2382,6 +2508,168 @@ PANDA_COMMAND_HELP_JSON_schedule_update
   "examples": []
 }
 PANDA_COMMAND_HELP_JSON_schedule_cancel
+      ;;
+    'cron.list')
+      cat <<'PANDA_COMMAND_HELP_JSON_cron_list'
+{
+  "name": "cron.list",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda cron list --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_cron_list
+      ;;
+    'cron.show')
+      cat <<'PANDA_COMMAND_HELP_JSON_cron_show'
+{
+  "name": "cron.show",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda cron show --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_cron_show
+      ;;
+    'cron.runs')
+      cat <<'PANDA_COMMAND_HELP_JSON_cron_runs'
+{
+  "name": "cron.runs",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda cron runs --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_cron_runs
+      ;;
+    'cron.create')
+      cat <<'PANDA_COMMAND_HELP_JSON_cron_create'
+{
+  "name": "cron.create",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda cron create --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_cron_create
+      ;;
+    'cron.update')
+      cat <<'PANDA_COMMAND_HELP_JSON_cron_update'
+{
+  "name": "cron.update",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda cron update --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_cron_update
+      ;;
+    'cron.enable')
+      cat <<'PANDA_COMMAND_HELP_JSON_cron_enable'
+{
+  "name": "cron.enable",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda cron enable --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_cron_enable
+      ;;
+    'cron.disable')
+      cat <<'PANDA_COMMAND_HELP_JSON_cron_disable'
+{
+  "name": "cron.disable",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda cron disable --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_cron_disable
+      ;;
+    'cron.delete')
+      cat <<'PANDA_COMMAND_HELP_JSON_cron_delete'
+{
+  "name": "cron.delete",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda cron delete --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_cron_delete
+      ;;
+    'cron.run')
+      cat <<'PANDA_COMMAND_HELP_JSON_cron_run'
+{
+  "name": "cron.run",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda cron run --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_cron_run
       ;;
     'micro-app.check')
       cat <<'PANDA_COMMAND_HELP_JSON_micro_app_check'

@@ -63,6 +63,7 @@ export interface CommandPolicyDescriptor {
   requiresIdentity?: boolean;
   requiresCredentialMutation?: boolean;
   requiresReadonlyPostgres?: boolean;
+  requiresBash?: boolean;
   requiredAgentSkillOperation?: AgentSkillOperation;
 }
 
