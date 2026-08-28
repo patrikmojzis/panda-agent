@@ -310,7 +310,7 @@ describe("createRuntime", () => {
     expect(runtime.pool).toBe(runtimeMocks.poolInstances[0]);
     expect(runtime.notificationPool).toBe(runtimeMocks.poolInstances[1]);
     expect(runtimeMocks.coordinatorOptions.at(-1)).toEqual(expect.objectContaining({
-      maxConcurrentRuns: 4,
+      maxConcurrentRuns: 8,
       modelCallObserver: expect.any(Object),
     }));
     const publicTraceStore = runtime.modelCallTraces as unknown as {pool: unknown};

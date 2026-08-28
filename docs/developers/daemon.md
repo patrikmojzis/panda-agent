@@ -61,7 +61,7 @@ poll during healthy operation.
 ## Run Ownership And Scheduling
 
 Thread execution is bounded by `PANDA_CORE_THREAD_RUN_CONCURRENCY` (default
-`4`). The coordinator keeps a process-local FIFO scheduler with one lane per
+`8`). The coordinator keeps a process-local FIFO scheduler with one lane per
 thread. This is backpressure, not durability: inputs and pending wakes remain
 in Postgres. Bounded scans run at startup and after `LISTEN` reconnects. If a
 scan finds a full page, the scheduler refills at low water until a short page

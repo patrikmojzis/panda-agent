@@ -69,7 +69,7 @@ import {
 } from "../../domain/agents/paired-identity-directory.js";
 import {closePiAiRuntimeResources} from "../../integrations/providers/shared/runtime.js";
 
-const DEFAULT_THREAD_RUN_CONCURRENCY = 4;
+const DEFAULT_THREAD_RUN_CONCURRENCY = 8;
 const DEFAULT_THREAD_RUN_DRAIN_TIMEOUT_MS = 30_000;
 const RUNTIME_CLOSE_STEP_TIMEOUT_MS = 5_000;
 
