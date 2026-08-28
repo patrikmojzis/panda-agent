@@ -6,7 +6,7 @@ import type {
   ResolvedCommandWritableFile,
 } from "../../domain/commands/files.js";
 import type {CommandRequest, CommandScope} from "../../domain/commands/types.js";
-import {resolveContextPath, resolveReadableContextPath} from "./panda-path-context.js";
+import {materializeReadableContextPath, resolveContextPath} from "./panda-path-context.js";
 
 function buildPathContext(scope: CommandScope, workingDirectory: string | undefined): {
   agentKey: string;
@@ -30,7 +30,7 @@ export class RuntimeCommandFileResolver implements CommandFileResolver {
     const displayPath = input.file.path;
     return {
       displayPath,
-      path: await resolveReadableContextPath(
+      path: await materializeReadableContextPath(
         displayPath,
         buildPathContext(input.request.scope, input.request.workingDirectory),
         this.env,

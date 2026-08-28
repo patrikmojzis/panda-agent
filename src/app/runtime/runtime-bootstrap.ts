@@ -81,6 +81,11 @@ import {RemoteExecutionEnvironmentSetupRunner} from "./execution-environment-set
 import {
     createExecutionEnvironmentManagerClientFromEnv
 } from "../../integrations/shell/execution-environment-manager-client.js";
+import {loadRunnerTokenAuthority} from "../../integrations/shell/runner-auth.js";
+import {
+  resolveBashExecutionMode,
+  resolveRunnerSharedSecret,
+} from "../../domain/execution-environments/runner-config.js";
 import {A2ASessionBindingRepo} from "../../domain/a2a/repo.js";
 import {PostgresControlAuthService} from "../../domain/control/auth.js";
 import {ControlReadService} from "../../domain/control/read-service.js";
@@ -631,6 +636,17 @@ export async function bootstrapRuntime(
       management: mcpManagement,
     });
     const executionEnvironmentManager = createExecutionEnvironmentManagerClientFromEnv(process.env);
+    const runnerTokenAuthority = loadRunnerTokenAuthority(process.env);
+    const legacyRunnerSharedSecret = resolveRunnerSharedSecret(process.env);
+    if (
+      (executionEnvironmentManager || resolveBashExecutionMode(process.env) === "remote")
+      && !runnerTokenAuthority
+      && !legacyRunnerSharedSecret
+    ) {
+      throw new Error(
+        "Remote runner execution requires PANDA_RUNNER_TOKEN_MASTER_KEY_FILE or PANDA_RUNNER_TOKEN_MASTER_KEY. BASH_SERVER_SHARED_SECRET is migration-only.",
+      );
+    }
     const executionEnvironmentSetupRunner = new RemoteExecutionEnvironmentSetupRunner({
       credentialResolver,
       env: process.env,
@@ -651,6 +667,8 @@ export async function bootstrapRuntime(
       manager: executionEnvironmentManager,
       setupRunner: executionEnvironmentSetupRunner,
       commandLeases,
+      runnerTokenAuthority,
+      legacyRunnerSharedSecret,
       fallbackRunnerCommandSocketAccess: trimToNull(process.env.PANDA_COMMAND_SOCKET_MOUNTED_RUNNERS)?.toLowerCase() === "true",
     });
     const executionEnvironmentResolver = new ExecutionEnvironmentResolver({

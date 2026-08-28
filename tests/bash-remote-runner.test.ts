@@ -1,5 +1,5 @@
 import {execFile} from "node:child_process";
-import {mkdir, mkdtemp, readFile, realpath, rm} from "node:fs/promises";
+import {chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile} from "node:fs/promises";
 import {request as httpRequest} from "node:http";
 import {tmpdir} from "node:os";
 import path from "node:path";
@@ -23,6 +23,7 @@ import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environ
 import {ensurePostgresExecutionEnvironmentSchema} from "../src/domain/execution-environments/postgres-schema.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {RemoteShellExecutor, resolveRunnerUrl,} from "../src/integrations/shell/bash-executor.js";
+import {HmacRunnerTokenAuthority} from "../src/integrations/shell/runner-auth.js";
 import {
   type CommandExecutor,
   type CommandExecutorExecInput,
@@ -113,6 +114,8 @@ describe("remote bash runner", () => {
     options: {
       env?: NodeJS.ProcessEnv;
       sharedSecret?: string;
+      authToken?: string;
+      legacySharedSecret?: string;
       allowedRoots?: readonly string[];
       commandExecutor?: CommandExecutor;
     } = {},
@@ -123,6 +126,11 @@ describe("remote bash runner", () => {
       port: 0,
       env: options.env,
       sharedSecret: options.sharedSecret,
+      authToken: options.authToken,
+      legacySharedSecret: options.legacySharedSecret,
+      allowUnauthenticatedForTests: options.sharedSecret === undefined
+        && options.authToken === undefined
+        && options.legacySharedSecret === undefined,
       allowedRoots: options.allowedRoots,
       commandExecutor: options.commandExecutor,
     });
@@ -223,6 +231,41 @@ describe("remote bash runner", () => {
       RUNNER_AGENT_KEY: "panda",
       BASH_SERVER_AGENT_KEY: "panda",
     })).toThrow("RUNNER_AGENT_KEY was renamed to BASH_SERVER_AGENT_KEY");
+  });
+
+  it("fails runner startup closed when authentication is absent", async () => {
+    expect(() => resolveBashRunnerOptions({BASH_SERVER_AGENT_KEY: "panda"}))
+      .toThrow("Runner authentication is required");
+    await expect(startBashRunner({agentKey: "panda", host: "127.0.0.1", port: 0}))
+      .rejects.toThrow("Runner authentication is required");
+  });
+
+  it("requires runner token files to be private regular files", async () => {
+    const directory = await createWorkspace("runner-auth-file-");
+    const tokenFile = path.join(directory, "token");
+    await writeFile(tokenFile, "runner-token\n", {mode: 0o644});
+
+    expect(() => resolveBashRunnerOptions({
+      BASH_SERVER_AGENT_KEY: "panda",
+      BASH_SERVER_AUTH_TOKEN_FILE: tokenFile,
+    })).toThrow("permissions must deny group and other access");
+
+    await chmod(tokenFile, 0o600);
+    expect(resolveBashRunnerOptions({
+      BASH_SERVER_AGENT_KEY: "panda",
+      BASH_SERVER_AUTH_TOKEN_FILE: tokenFile,
+    }).authToken).toBe("runner-token");
+  });
+
+  it("accepts the migration bearer alongside scoped runner auth during rollout", () => {
+    expect(resolveBashRunnerOptions({
+      BASH_SERVER_AGENT_KEY: "panda",
+      BASH_SERVER_AUTH_TOKEN: "scoped-token",
+      BASH_SERVER_SHARED_SECRET: "legacy-global-token",
+    })).toMatchObject({
+      authToken: "scoped-token",
+      legacySharedSecret: "legacy-global-token",
+    });
   });
 
 
@@ -990,6 +1033,7 @@ describe("remote bash runner", () => {
         agentKey: "panda",
         host: "127.0.0.1",
         port: 0,
+        allowUnauthenticatedForTests: true,
         commandExecutor: {
           execute: async () => { throw new Error("unexpected exec"); },
           startJob: async (input) => {
@@ -1744,6 +1788,7 @@ describe("remote bash runner", () => {
         agentKey: "panda",
         host: "127.0.0.1",
         port: 0,
+        allowUnauthenticatedForTests: true,
         commandExecutor: {
           execute: async () => { throw new Error("unexpected exec"); },
           startJob: async (input) => {
@@ -3156,6 +3201,58 @@ describe("remote bash runner", () => {
     });
     expect(correct.status).toBe(200);
     await expect(readFile(markerPath, "utf8")).resolves.toBe("ok");
+  });
+
+  it("accepts both scoped and legacy bearer tokens during the bounded migration window", async () => {
+    const workspace = await createWorkspace("runtime-runner-dual-auth-");
+    const runner = await createRunner("panda", {
+      authToken: "scoped-token",
+      legacySharedSecret: "legacy-token",
+      allowedRoots: [workspace],
+    });
+    const requestBody = {
+      command: "printf ok",
+      cwd: workspace,
+      timeoutMs: 1_000,
+      trackedEnvKeys: [],
+      maxOutputChars: 8_000,
+    };
+    for (const [requestId, token] of [["scoped", "scoped-token"], ["legacy", "legacy-token"]] as const) {
+      const response = await fetch(`http://127.0.0.1:${runner.port}/agents/panda/exec`, {
+        method: "POST",
+        headers: buildDirectRunnerHeaders("panda", {sharedSecret: token}),
+        body: JSON.stringify({...requestBody, requestId}),
+      });
+      expect(response.status).toBe(200);
+    }
+  });
+
+  it("rejects another agent's derived token before executing anything", async () => {
+    const workspace = await createWorkspace("runtime-agent-token-isolation-");
+    const markerPath = path.join(workspace, "cross-agent.txt");
+    const masterKey = "runner-master-key-material-32-bytes-minimum";
+    const authority = new HmacRunnerTokenAuthority(Buffer.from(masterKey));
+    const pandaToken = authority.derive({kind: "persistent-agent", agentKey: "panda", scopeId: "panda"});
+    const runner = await createRunner("panda", {sharedSecret: pandaToken, allowedRoots: [workspace]});
+    const tool = new BashTool({
+      env: {
+        BASH_EXECUTION_MODE: "remote",
+        BASH_SERVER_URL_TEMPLATE: `http://127.0.0.1:${runner.port}/agents/{agentKey}`,
+        PANDA_RUNNER_TOKEN_MASTER_KEY: masterKey,
+      },
+    });
+
+    await expect(tool.run(
+      {command: `printf compromised > ${JSON.stringify(markerPath)}`},
+      createRunContext({agentKey: "luna", cwd: workspace, shell: {cwd: workspace, env: {}}}),
+    )).rejects.toThrow("Invalid runner Authorization header");
+    await expect(readFile(markerPath, "utf8")).rejects.toMatchObject({code: "ENOENT"});
+
+    await expect(tool.run(
+      {command: `printf safe > ${JSON.stringify(markerPath)}`},
+      createRunContext({agentKey: "panda", cwd: workspace, shell: {cwd: workspace, env: {}}}),
+    )).resolves.toMatchObject({exitCode: 0});
+    await expect(readFile(markerPath, "utf8")).resolves.toBe("safe");
   });
 
   it("enforces optional allowed roots for foreground and background initial cwd", async () => {

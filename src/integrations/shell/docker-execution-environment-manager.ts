@@ -1,5 +1,5 @@
 import {createHash, createHmac, randomBytes, timingSafeEqual} from "node:crypto";
-import {mkdir, rm, writeFile} from "node:fs/promises";
+import {chmod, mkdir, realpath, rename, rm, writeFile} from "node:fs/promises";
 import http, {createServer, type IncomingMessage, type Server} from "node:http";
 import type {Readable} from "node:stream";
 import os from "node:os";
@@ -22,6 +22,7 @@ import {
   DEFAULT_WORKER_ARTIFACTS_PATH,
   DEFAULT_WORKER_INBOX_PATH,
   DEFAULT_WORKER_WORKSPACE_PATH,
+  isPathWithinRoot,
   type ExecutionEnvironmentFilesystemMetadata,
 } from "../../domain/execution-environments/filesystem.js";
 import {sleep} from "../../lib/async.js";
@@ -51,6 +52,7 @@ const DEFAULT_DOCKER_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_CORE_ENVIRONMENTS_ROOT = "/root/.panda/environments";
 const DEFAULT_WORKER_COMMAND_ACCESS_FILE = path.posix.join(DEFAULT_WORKER_WORKSPACE_PATH, ".panda", "command-access.env");
 const DEFAULT_WORKER_COMMAND_SOCKET_DIR = "/run/panda-command";
+const DEFAULT_RUNNER_AUTH_TOKEN_FILE = "/run/secrets/panda-runner/token";
 const DEFAULT_ENVIRONMENT_LOG_TAIL_LINES = 200;
 const MAX_ENVIRONMENT_LOG_TAIL_LINES = 1_000;
 const DOCKER_DNS_LABEL_MAX_LENGTH = 63;
@@ -90,6 +92,23 @@ interface DockerContainerInspectResult {
   NetworkSettings?: {
     Ports?: Record<string, Array<{HostIp?: string; HostPort?: string}> | null>;
   };
+}
+
+export interface DockerNetworkCreateConfig {
+  CheckDuplicate: true;
+  Internal: boolean;
+  Labels: Record<string, string>;
+}
+
+interface DockerNetworkCreateResult {
+  Id: string;
+  Warning?: string;
+}
+
+interface DockerNetworkInspectResult {
+  Id: string;
+  Name?: string;
+  Labels?: Record<string, string>;
 }
 
 export interface DockerExecCreateConfig {
@@ -136,6 +155,11 @@ export interface DockerContainerCreateConfig {
 }
 
 export interface DockerClient {
+  createNetwork(name: string, config: DockerNetworkCreateConfig): Promise<DockerNetworkCreateResult>;
+  inspectNetwork(network: string): Promise<DockerNetworkInspectResult>;
+  connectNetwork(network: string, container: string, aliases?: readonly string[]): Promise<void>;
+  disconnectNetwork(network: string, container: string): Promise<void>;
+  removeNetwork(network: string): Promise<void>;
   createContainer(name: string, config: DockerContainerCreateConfig): Promise<DockerContainerCreateResult>;
   startContainer(container: string): Promise<void>;
   inspectContainer(container: string): Promise<DockerContainerInspectResult>;
@@ -176,6 +200,52 @@ class DockerEngineClient implements DockerClient {
     }
 
     this.socketPath = trimmed;
+  }
+
+  async createNetwork(name: string, config: DockerNetworkCreateConfig): Promise<DockerNetworkCreateResult> {
+    return this.requestJson<DockerNetworkCreateResult>({
+      method: "POST",
+      path: "/networks/create",
+      body: {Name: name, ...config},
+      expectedStatuses: [201],
+    });
+  }
+
+  async inspectNetwork(network: string): Promise<DockerNetworkInspectResult> {
+    return this.requestJson<DockerNetworkInspectResult>({
+      method: "GET",
+      path: `/networks/${encodeURIComponent(network)}`,
+      expectedStatuses: [200],
+    });
+  }
+
+  async connectNetwork(network: string, container: string, aliases: readonly string[] = []): Promise<void> {
+    await this.requestJson<void>({
+      method: "POST",
+      path: `/networks/${encodeURIComponent(network)}/connect`,
+      body: {
+        Container: container,
+        ...(aliases.length > 0 ? {EndpointConfig: {Aliases: [...aliases]}} : {}),
+      },
+      expectedStatuses: [200],
+    });
+  }
+
+  async disconnectNetwork(network: string, container: string): Promise<void> {
+    await this.requestJson<void>({
+      method: "POST",
+      path: `/networks/${encodeURIComponent(network)}/disconnect`,
+      body: {Container: container, Force: true},
+      expectedStatuses: [200, 404],
+    });
+  }
+
+  async removeNetwork(network: string): Promise<void> {
+    await this.requestJson<void>({
+      method: "DELETE",
+      path: `/networks/${encodeURIComponent(network)}`,
+      expectedStatuses: [204, 404],
+    });
   }
 
   async createContainer(name: string, config: DockerContainerCreateConfig): Promise<DockerContainerCreateResult> {
@@ -363,12 +433,18 @@ export interface DockerExecutionEnvironmentManagerOptions {
   workspaceImage?: string;
   workspaceExecSecret?: string;
   managerUrl?: string;
+  controlNetwork?: string;
+  browserContainerName?: string;
+  /** @deprecated Use controlNetwork. Kept for programmatic migration only. */
   network?: string;
   hostBindIp?: string;
   hostRunnerHost?: string;
   runnerPort?: number;
   runnerCwd?: string;
+  /** @deprecated Compatibility credential while callers migrate to request-scoped runnerAuthToken. */
   runnerSharedSecret?: string;
+  hostRunnerSecretsRoot?: string;
+  managerRunnerSecretsRoot?: string;
   hostEnvironmentsRoot?: string;
   managerEnvironmentsRoot?: string;
   coreEnvironmentsRoot?: string;
@@ -544,6 +620,10 @@ function resolveDefaultHostEnvironmentsRoot(): string {
   return path.join(os.homedir(), ".panda", "environments");
 }
 
+function resolveDefaultHostRunnerSecretsRoot(): string {
+  return path.join(os.homedir(), ".panda-runner-secrets", "disposable");
+}
+
 function resolveEnvironmentRootPath(value: string | undefined, fallback: string): string {
   const trimmed = trimToUndefined(value);
   if (!trimmed) {
@@ -565,7 +645,7 @@ function buildEnvironmentDir(environmentId: string): string {
   return `${normalized.slice(0, maxBaseLength)}-${digest}`;
 }
 
-function buildContainerName(prefix: string, environmentId: string, role?: "control" | "workspace"): string {
+function buildDockerResourceName(prefix: string, environmentId: string, role?: string): string {
   const normalizedPrefix = normalizeDockerDnsLabelPart(prefix);
   const normalized = normalizeDockerDnsLabelPart(environmentId);
   const digest = createHash("sha256").update(environmentId).digest("hex").slice(0, 10);
@@ -575,6 +655,14 @@ function buildContainerName(prefix: string, environmentId: string, role?: "contr
   const maxBaseLength = DOCKER_DNS_LABEL_MAX_LENGTH - trimmedPrefix.length - digest.length - rolePart.length - 2;
   const trimmedBase = trimDockerDnsPart(normalized, maxBaseLength);
   return `${trimmedPrefix}-${trimmedBase}${rolePart}-${digest}`;
+}
+
+function buildContainerName(prefix: string, environmentId: string, role?: "control" | "workspace"): string {
+  return buildDockerResourceName(prefix, environmentId, role);
+}
+
+function buildWorkspaceNetworkName(prefix: string, environmentId: string): string {
+  return buildDockerResourceName(prefix, environmentId, "workspace-net");
 }
 
 function buildLabels(input: DisposableEnvironmentCreateRequest, role?: "control" | "workspace", extra: Record<string, string> = {}): Record<string, string> {
@@ -594,7 +682,7 @@ function buildControlContainerConfig(input: {
   image: string;
   runnerPort: number;
   runnerCwd: string;
-  runnerSharedSecret?: string;
+  runnerAuthTokenBind: string;
   workspaceExecToken: string;
   managerUrl?: string;
   workspaceContainerName: string;
@@ -616,7 +704,7 @@ function buildControlContainerConfig(input: {
       `BASH_SERVER_AGENT_KEY=${input.request.agentKey}`,
       `BASH_SERVER_PORT=${input.runnerPort}`,
       `BASH_SERVER_ALLOWED_ROOTS=${input.filesystem.workspace.workerPath}`,
-      ...(input.runnerSharedSecret ? [`BASH_SERVER_SHARED_SECRET=${input.runnerSharedSecret}`] : []),
+      `BASH_SERVER_AUTH_TOKEN_FILE=${DEFAULT_RUNNER_AUTH_TOKEN_FILE}`,
       ...(input.managerUrl ? [`PANDA_WORKSPACE_EXEC_MANAGER_URL=${input.managerUrl}`] : []),
       `PANDA_WORKSPACE_EXEC_ENVIRONMENT_ID=${input.request.environmentId}`,
       `PANDA_WORKSPACE_EXEC_TOKEN=${input.workspaceExecToken}`,
@@ -624,7 +712,9 @@ function buildControlContainerConfig(input: {
       `TZ=${safeEnv.TZ ?? "UTC"}`,
     ],
     WorkingDir: input.runnerCwd,
-    Labels: buildLabels(input.request, "control", {"panda.environment.workspace_container": input.workspaceContainerName}),
+    Labels: buildLabels(input.request, "control", {
+      "panda.environment.workspace_container": input.workspaceContainerName,
+    }),
     ExposedPorts: {
       [portKey]: {},
     },
@@ -642,6 +732,7 @@ function buildControlContainerConfig(input: {
         `${input.filesystem.workspace.hostPath}:${input.filesystem.workspace.workerPath}`,
         `${input.filesystem.inbox.hostPath}:${input.filesystem.inbox.workerPath}`,
         `${input.filesystem.artifacts.hostPath}:${input.filesystem.artifacts.workerPath}`,
+        input.runnerAuthTokenBind,
       ],
       ...(input.network
         ? {NetworkMode: input.network}
@@ -735,6 +826,88 @@ function resolveContainerCommandAccess(
 function resolveCommandAccessFilePath(filesystem: ExecutionEnvironmentFilesystemMetadata): string {
   const workspacePath = filesystem.workspace.managerPath ?? filesystem.workspace.hostPath ?? filesystem.workspace.corePath;
   return path.join(workspacePath, ".panda", "command-access.env");
+}
+
+interface RunnerAuthTokenFilePaths {
+  hostPath: string;
+  managerPath: string;
+}
+
+async function writeRunnerAuthTokenFile(
+  paths: RunnerAuthTokenFilePaths,
+  runnerAuthToken: string,
+): Promise<void> {
+  const directory = path.dirname(paths.managerPath);
+  await mkdir(directory, {recursive: true, mode: 0o700});
+  await chmod(directory, 0o700);
+  const temporaryPath = `${paths.managerPath}.${randomBytes(8).toString("hex")}.tmp`;
+  try {
+    await writeFile(
+      temporaryPath,
+      `${assertCommandAccessLineValue("runnerAuthToken", runnerAuthToken)}\n`,
+      {flag: "wx", mode: 0o600},
+    );
+    await chmod(temporaryPath, 0o600);
+    await rename(temporaryPath, paths.managerPath);
+  } catch (error) {
+    await rm(temporaryPath, {force: true}).catch(() => {});
+    throw error;
+  }
+}
+
+function buildRunnerAuthTokenFilePaths(input: {
+  agentKey: string;
+  environmentId: string;
+  hostRoot: string;
+  managerRoot: string;
+}): RunnerAuthTokenFilePaths {
+  const relativePath = path.join(
+    normalizeAgentKey(input.agentKey),
+    buildEnvironmentDir(input.environmentId),
+    "token",
+  );
+  return {
+    hostPath: path.join(input.hostRoot, relativePath),
+    managerPath: path.join(input.managerRoot, relativePath),
+  };
+}
+
+async function canonicalizeNearestExistingPath(targetPath: string): Promise<string> {
+  let current = path.resolve(targetPath);
+  const missing: string[] = [];
+  while (true) {
+    try {
+      return path.join(await realpath(current), ...missing);
+    } catch {
+      const parent = path.dirname(current);
+      if (parent === current) return path.resolve(targetPath);
+      missing.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+async function assertRunnerAuthTokenOutsideAgentEnvironmentMounts(input: {
+  agentKey: string;
+  hostEnvironmentsRoot: string;
+  managerEnvironmentsRoot: string;
+  tokenFile: RunnerAuthTokenFilePaths;
+}): Promise<void> {
+  const hostAgentRoot = path.join(input.hostEnvironmentsRoot, input.agentKey);
+  const managerAgentRoot = path.join(input.managerEnvironmentsRoot, input.agentKey);
+  const [canonicalManagerAgentRoot, canonicalManagerTokenFile] = await Promise.all([
+    canonicalizeNearestExistingPath(managerAgentRoot),
+    canonicalizeNearestExistingPath(input.tokenFile.managerPath),
+  ]);
+  if (
+    isPathWithinRoot(hostAgentRoot, input.tokenFile.hostPath)
+    || isPathWithinRoot(managerAgentRoot, input.tokenFile.managerPath)
+    || isPathWithinRoot(canonicalManagerAgentRoot, canonicalManagerTokenFile)
+  ) {
+    throw new Error(
+      "Disposable runner secrets must be stored outside the per-agent environment tree mounted into runners.",
+    );
+  }
 }
 
 function assertCommandAccessLineValue(label: string, value: string): string {
@@ -872,6 +1045,26 @@ function isManagedEnvironmentId(
     && labels["panda.environment.id"] === environmentId;
 }
 
+function isExpectedManagedEnvironmentNetwork(
+  inspect: DockerNetworkInspectResult,
+  expectedLabels: Pick<DisposableEnvironmentCreateRequest, "agentKey" | "environmentId" | "sessionId">,
+): boolean {
+  return inspect.Labels?.["panda.managed"] === "true"
+    && inspect.Labels["panda.environment.id"] === expectedLabels.environmentId
+    && inspect.Labels["panda.agent.key"] === expectedLabels.agentKey
+    && inspect.Labels["panda.session.id"] === expectedLabels.sessionId
+    && inspect.Labels["panda.environment.role"] === "workspace-network";
+}
+
+function isManagedEnvironmentNetworkId(
+  inspect: DockerNetworkInspectResult,
+  environmentId: string,
+): boolean {
+  return inspect.Labels?.["panda.managed"] === "true"
+    && inspect.Labels["panda.environment.id"] === environmentId
+    && inspect.Labels["panda.environment.role"] === "workspace-network";
+}
+
 function isAutoRemoveInProgress(error: unknown): boolean {
   return error instanceof DockerApiError
     && error.statusCode === 409
@@ -899,12 +1092,16 @@ function validateCreateRequest(value: unknown): DisposableEnvironmentCreateReque
   const agentKey = normalizeAgentKey(trimToNull(value.agentKey) ?? "");
   const sessionId = trimToNull(value.sessionId);
   const environmentId = trimToNull(value.environmentId);
+  const runnerAuthToken = trimToNull(value.runnerAuthToken);
   const ttlMs = value.ttlMs === undefined ? undefined : Number(value.ttlMs);
   if (!sessionId) {
     throw new ToolError("sessionId must not be empty.");
   }
   if (!environmentId) {
     throw new ToolError("environmentId must not be empty.");
+  }
+  if (!runnerAuthToken) {
+    throw new ToolError("runnerAuthToken must not be empty.");
   }
   if (ttlMs !== undefined && (!Number.isInteger(ttlMs) || ttlMs < 1)) {
     throw new ToolError("ttlMs must be a positive integer.");
@@ -914,6 +1111,7 @@ function validateCreateRequest(value: unknown): DisposableEnvironmentCreateReque
     agentKey,
     sessionId,
     environmentId,
+    runnerAuthToken,
     ...(ttlMs === undefined ? {} : {ttlMs}),
     ...(value.metadata === undefined ? {} : {metadata: validateManagerMetadata(value.metadata)}),
     ...(isRecord(value.commandAccess) ? {commandAccess: validateCommandAccess(value.commandAccess)} : {}),
@@ -1050,6 +1248,11 @@ export function resolveDockerExecutionEnvironmentManagerOptions(
   env: NodeJS.ProcessEnv = process.env,
 ): DockerExecutionEnvironmentManagerOptions {
   assertNoDeprecatedBashServerEnv(env, DOCKER_MANAGER_BASH_SERVER_ENV_NAMES);
+  if (env.PANDA_DISPOSABLE_RUNNER_NETWORK !== undefined) {
+    throw new Error(
+      "PANDA_DISPOSABLE_RUNNER_NETWORK was replaced by PANDA_DISPOSABLE_RUNNER_CONTROL_NETWORK; workspace networks are now created per environment.",
+    );
+  }
   return {
     env,
     dockerHost: trimToUndefined(env.PANDA_DOCKER_HOST) ?? trimToUndefined(env.DOCKER_HOST) ?? DEFAULT_DOCKER_HOST,
@@ -1060,12 +1263,22 @@ export function resolveDockerExecutionEnvironmentManagerOptions(
     workspaceImage: trimToUndefined(env.PANDA_DISPOSABLE_WORKSPACE_IMAGE) ?? DEFAULT_WORKSPACE_IMAGE,
     workspaceExecSecret: trimToUndefined(env.PANDA_WORKSPACE_EXEC_SECRET),
     managerUrl: trimToUndefined(env.PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL),
-    network: trimToUndefined(env.PANDA_DISPOSABLE_RUNNER_NETWORK),
+    controlNetwork: trimToUndefined(env.PANDA_DISPOSABLE_RUNNER_CONTROL_NETWORK),
+    browserContainerName: trimToUndefined(env.PANDA_DISPOSABLE_BROWSER_CONTAINER_NAME),
     hostBindIp: trimToUndefined(env.PANDA_DISPOSABLE_RUNNER_HOST_BIND_IP) ?? DEFAULT_HOST_BIND_IP,
     hostRunnerHost: trimToUndefined(env.PANDA_DISPOSABLE_RUNNER_PUBLIC_HOST) ?? DEFAULT_HOST_BIND_IP,
     runnerPort: parsePort(trimToNull(env.PANDA_DISPOSABLE_RUNNER_PORT), DEFAULT_RUNNER_PORT),
     runnerCwd: trimToUndefined(env.PANDA_DISPOSABLE_RUNNER_CWD) ?? DEFAULT_RUNNER_CWD,
     runnerSharedSecret: trimToUndefined(env.BASH_SERVER_SHARED_SECRET),
+    hostRunnerSecretsRoot: resolveEnvironmentRootPath(
+      env.PANDA_DISPOSABLE_RUNNER_SECRETS_HOST_ROOT,
+      resolveDefaultHostRunnerSecretsRoot(),
+    ),
+    managerRunnerSecretsRoot: resolveEnvironmentRootPath(
+      env.PANDA_DISPOSABLE_RUNNER_SECRETS_ROOT,
+      trimToUndefined(env.PANDA_DISPOSABLE_RUNNER_SECRETS_HOST_ROOT)
+        ?? resolveDefaultHostRunnerSecretsRoot(),
+    ),
     hostEnvironmentsRoot: resolveEnvironmentRootPath(
       env.PANDA_ENVIRONMENTS_HOST_ROOT,
       resolveDefaultHostEnvironmentsRoot(),
@@ -1252,12 +1465,15 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
   private readonly workspaceImage: string;
   private readonly workspaceExecSecret: string;
   private readonly managerUrl?: string;
-  private readonly network?: string;
+  private readonly controlNetwork?: string;
+  private readonly browserContainerName?: string;
   private readonly hostBindIp: string;
   private readonly hostRunnerHost: string;
   private readonly runnerPort: number;
   private readonly runnerCwd: string;
   private readonly runnerSharedSecret?: string;
+  private readonly hostRunnerSecretsRoot: string;
+  private readonly managerRunnerSecretsRoot: string;
   private readonly hostEnvironmentsRoot: string;
   private readonly managerEnvironmentsRoot: string;
   private readonly coreEnvironmentsRoot: string;
@@ -1278,12 +1494,21 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
     this.workspaceImage = resolved.workspaceImage ?? DEFAULT_WORKSPACE_IMAGE;
     this.workspaceExecSecret = trimToUndefined(resolved.workspaceExecSecret) ?? randomBytes(32).toString("base64url");
     this.managerUrl = trimToUndefined(resolved.managerUrl);
-    this.network = trimToUndefined(resolved.network);
+    this.controlNetwork = trimToUndefined(resolved.controlNetwork ?? resolved.network);
+    this.browserContainerName = trimToUndefined(resolved.browserContainerName);
     this.hostBindIp = resolved.hostBindIp ?? DEFAULT_HOST_BIND_IP;
     this.hostRunnerHost = resolved.hostRunnerHost ?? DEFAULT_HOST_BIND_IP;
     this.runnerPort = resolved.runnerPort ?? DEFAULT_RUNNER_PORT;
     this.runnerCwd = resolved.runnerCwd ?? DEFAULT_RUNNER_CWD;
     this.runnerSharedSecret = trimToUndefined(resolved.runnerSharedSecret);
+    this.hostRunnerSecretsRoot = resolveEnvironmentRootPath(
+      resolved.hostRunnerSecretsRoot,
+      resolveDefaultHostRunnerSecretsRoot(),
+    );
+    this.managerRunnerSecretsRoot = resolveEnvironmentRootPath(
+      resolved.managerRunnerSecretsRoot,
+      this.hostRunnerSecretsRoot,
+    );
     this.hostEnvironmentsRoot = resolveEnvironmentRootPath(
       resolved.hostEnvironmentsRoot,
       resolveDefaultHostEnvironmentsRoot(),
@@ -1331,37 +1556,60 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
     await ensureEnvironmentFilesystem(filesystem);
     const containerCommandAccess = resolveContainerCommandAccess(request.commandAccess, this.commandSocketHostDir);
     await writeCommandAccessFile(filesystem, containerCommandAccess.commandAccess);
-    const workspaceConfig = buildWorkspaceContainerConfig({
-      request,
-      image: this.workspaceImage,
-      runnerCwd: this.runnerCwd,
-      filesystem,
-      commandAccess: containerCommandAccess.commandAccess,
-      commandSocketBind: containerCommandAccess.commandSocketBind,
-      network: this.network,
-    });
-    const workspaceExecToken = createWorkspaceExecCredential({
+    const runnerAuthToken = trimToUndefined(request.runnerAuthToken) ?? this.runnerSharedSecret;
+    if (!runnerAuthToken) {
+      throw new Error("Disposable control runner authentication is required.");
+    }
+    const runnerAuthTokenFile = buildRunnerAuthTokenFilePaths({
+      agentKey: request.agentKey,
       environmentId: request.environmentId,
-      secret: this.workspaceExecSecret,
+      hostRoot: this.hostRunnerSecretsRoot,
+      managerRoot: this.managerRunnerSecretsRoot,
     });
-    const controlConfig = buildControlContainerConfig({
-      request,
-      image: this.controlRunnerImage,
-      runnerPort: this.runnerPort,
-      runnerCwd: this.runnerCwd,
-      ...(this.runnerSharedSecret ? {runnerSharedSecret: this.runnerSharedSecret} : {}),
-      workspaceExecToken,
-      ...(this.managerUrl ? {managerUrl: this.managerUrl} : {}),
-      workspaceContainerName,
-      filesystem,
-      network: this.network,
-      hostBindIp: this.hostBindIp,
+    await assertRunnerAuthTokenOutsideAgentEnvironmentMounts({
+      agentKey: request.agentKey,
+      hostEnvironmentsRoot: this.hostEnvironmentsRoot,
+      managerEnvironmentsRoot: this.managerEnvironmentsRoot,
+      tokenFile: runnerAuthTokenFile,
     });
+    const runnerAuthTokenBind = `${runnerAuthTokenFile.hostPath}:${DEFAULT_RUNNER_AUTH_TOKEN_FILE}:ro`;
+    const workspaceNetworkName = buildWorkspaceNetworkName(this.containerNamePrefix, request.environmentId);
     const createdContainers: string[] = [];
+    let workspaceNetworkOwned = false;
     let controlContainerId: string | undefined;
     let workspaceContainerId: string | undefined;
     let inspect: DockerContainerInspectResult;
     try {
+      await writeRunnerAuthTokenFile(runnerAuthTokenFile, runnerAuthToken);
+      const workspaceConfig = buildWorkspaceContainerConfig({
+        request,
+        image: this.workspaceImage,
+        runnerCwd: this.runnerCwd,
+        filesystem,
+        commandAccess: containerCommandAccess.commandAccess,
+        commandSocketBind: containerCommandAccess.commandSocketBind,
+        network: workspaceNetworkName,
+      });
+      const workspaceExecToken = createWorkspaceExecCredential({
+        environmentId: request.environmentId,
+        secret: this.workspaceExecSecret,
+      });
+      const controlConfig = buildControlContainerConfig({
+        request,
+        image: this.controlRunnerImage,
+        runnerPort: this.runnerPort,
+        runnerCwd: this.runnerCwd,
+        runnerAuthTokenBind,
+        workspaceExecToken,
+        ...(this.managerUrl ? {managerUrl: this.managerUrl} : {}),
+        workspaceContainerName,
+        filesystem,
+        network: this.controlNetwork,
+        hostBindIp: this.hostBindIp,
+      });
+      await this.ensureWorkspaceNetwork(workspaceNetworkName, request);
+      workspaceNetworkOwned = true;
+      await this.connectBrowserPreviewNetwork(workspaceNetworkName);
       workspaceContainerId = await this.ensureContainer(workspaceContainerName, request, workspaceConfig);
       createdContainers.push(workspaceContainerName);
       await this.docker.startContainer(workspaceContainerId);
@@ -1370,11 +1618,15 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       await this.docker.startContainer(controlContainerId);
       inspect = await this.waitForReady(controlContainerName);
     } catch (error) {
-      await this.cleanupFailedCreate(createdContainers.length > 0 ? createdContainers : [controlContainerName, workspaceContainerName]);
+      await this.cleanupFailedCreate(
+        createdContainers.length > 0 ? createdContainers : [controlContainerName, workspaceContainerName],
+        workspaceNetworkOwned ? workspaceNetworkName : undefined,
+        runnerAuthTokenFile.managerPath,
+      );
       throw error;
     }
 
-    const runnerUrl = this.network
+    const runnerUrl = this.controlNetwork
       ? `http://${controlContainerName}:${this.runnerPort}`
       : `http://${this.hostRunnerHost}:${readPublishedPort(inspect, this.runnerPort)}`;
     return {
@@ -1396,7 +1648,9 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
           name: workspaceContainerName,
           image: this.workspaceImage,
         },
-        ...(this.network ? {network: this.network} : {}),
+        ...(this.controlNetwork ? {controlNetwork: this.controlNetwork} : {}),
+        workspaceNetwork: workspaceNetworkName,
+        browserPreviewConnected: Boolean(this.browserContainerName),
       },
     };
   }
@@ -1407,6 +1661,7 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       buildContainerName(this.containerNamePrefix, environmentId, "workspace"),
     ];
     const errors: Error[] = [];
+    let runnerAuthTokenFile: string | undefined;
     for (const containerName of containerNames) {
       let inspect: DockerContainerInspectResult | null;
       try {
@@ -1417,6 +1672,24 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
       }
       if (!inspect) {
         continue;
+      }
+      const agentKey = trimToUndefined(inspect.Config?.Labels?.["panda.agent.key"]);
+      if (agentKey) {
+        try {
+          const normalizedAgentKey = normalizeAgentKey(agentKey);
+          const expectedRunnerAuthTokenFile = buildRunnerAuthTokenFilePaths({
+            agentKey: normalizedAgentKey,
+            environmentId,
+            hostRoot: this.hostRunnerSecretsRoot,
+            managerRoot: this.managerRunnerSecretsRoot,
+          }).managerPath;
+          if (runnerAuthTokenFile && runnerAuthTokenFile !== expectedRunnerAuthTokenFile) {
+            throw new Error(`Disposable environment ${environmentId} has conflicting runner-token owners.`);
+          }
+          runnerAuthTokenFile = expectedRunnerAuthTokenFile;
+        } catch (error) {
+          errors.push(error instanceof Error ? error : new Error(String(error)));
+        }
       }
       try {
         await this.docker.stopContainer(containerName);
@@ -1433,6 +1706,36 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
     }
     for (const key of [...this.workspaceProcesses.keys()]) {
       if (key.startsWith(`${environmentId}\0`)) this.workspaceProcesses.delete(key);
+    }
+    const workspaceNetworkName = buildWorkspaceNetworkName(this.containerNamePrefix, environmentId);
+    try {
+      const network = await this.inspectManagedWorkspaceNetwork(workspaceNetworkName, environmentId);
+      if (network) {
+        const networkAgentKey = trimToUndefined(network.Labels?.["panda.agent.key"]);
+        if (networkAgentKey) {
+          const expectedRunnerAuthTokenFile = buildRunnerAuthTokenFilePaths({
+            agentKey: normalizeAgentKey(networkAgentKey),
+            environmentId,
+            hostRoot: this.hostRunnerSecretsRoot,
+            managerRoot: this.managerRunnerSecretsRoot,
+          }).managerPath;
+          if (runnerAuthTokenFile && runnerAuthTokenFile !== expectedRunnerAuthTokenFile) {
+            throw new Error(`Disposable environment ${environmentId} has conflicting runner-token owners.`);
+          }
+          runnerAuthTokenFile = expectedRunnerAuthTokenFile;
+        }
+        await this.disconnectBrowserPreviewNetwork(workspaceNetworkName);
+        await this.docker.removeNetwork(workspaceNetworkName);
+      }
+    } catch (error) {
+      errors.push(error instanceof Error ? error : new Error(String(error)));
+    }
+    if (runnerAuthTokenFile) {
+      try {
+        await rm(runnerAuthTokenFile, {force: true});
+      } catch (error) {
+        errors.push(error instanceof Error ? error : new Error(String(error)));
+      }
     }
     if (errors.length === 1) {
       throw errors[0]!;
@@ -1674,7 +1977,11 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
     }
   }
 
-  private async cleanupFailedCreate(containers: string | readonly string[]): Promise<void> {
+  private async cleanupFailedCreate(
+    containers: string | readonly string[],
+    workspaceNetworkName?: string,
+    runnerAuthTokenFile?: string,
+  ): Promise<void> {
     const containerNames = Array.isArray(containers) ? [...containers].reverse() : [containers];
     for (const container of containerNames) {
       try {
@@ -1690,6 +1997,89 @@ export class DockerExecutionEnvironmentManager implements ExecutionEnvironmentMa
         }
       }
     }
+    if (workspaceNetworkName) {
+      try {
+        await this.disconnectBrowserPreviewNetwork(workspaceNetworkName);
+        await this.docker.removeNetwork(workspaceNetworkName);
+      } catch {
+        // Best effort. Container cleanup errors retain the more useful root cause.
+      }
+    }
+    if (runnerAuthTokenFile) {
+      try {
+        await rm(runnerAuthTokenFile, {force: true});
+      } catch {
+        // Best effort. Container cleanup errors retain the more useful root cause.
+      }
+    }
+  }
+
+  private async connectBrowserPreviewNetwork(workspaceNetworkName: string): Promise<void> {
+    if (!this.browserContainerName) return;
+    try {
+      await this.docker.connectNetwork(
+        workspaceNetworkName,
+        this.browserContainerName,
+        ["panda-browser-runner"],
+      );
+    } catch (error) {
+      if (error instanceof DockerApiError && error.statusCode === 403 && /already exists/i.test(error.message)) {
+        return;
+      }
+      throw error;
+    }
+  }
+
+  private async disconnectBrowserPreviewNetwork(workspaceNetworkName: string): Promise<void> {
+    if (!this.browserContainerName) return;
+    try {
+      await this.docker.disconnectNetwork(workspaceNetworkName, this.browserContainerName);
+    } catch (error) {
+      if (error instanceof DockerApiError && [403, 404].includes(error.statusCode)) return;
+      throw error;
+    }
+  }
+
+  private async ensureWorkspaceNetwork(
+    networkName: string,
+    request: DisposableEnvironmentCreateRequest,
+  ): Promise<string> {
+    try {
+      const created = await this.docker.createNetwork(networkName, {
+        CheckDuplicate: true,
+        Internal: false,
+        Labels: buildLabels(request, undefined, {"panda.environment.role": "workspace-network"}),
+      });
+      return created.Id;
+    } catch (error) {
+      if (!(error instanceof DockerApiError) || error.statusCode !== 409) {
+        throw error;
+      }
+      const existing = await this.docker.inspectNetwork(networkName);
+      if (!isExpectedManagedEnvironmentNetwork(existing, request)) {
+        throw error;
+      }
+      return existing.Id;
+    }
+  }
+
+  private async inspectManagedWorkspaceNetwork(
+    networkName: string,
+    environmentId: string,
+  ): Promise<DockerNetworkInspectResult | null> {
+    let inspect: DockerNetworkInspectResult;
+    try {
+      inspect = await this.docker.inspectNetwork(networkName);
+    } catch (error) {
+      if (error instanceof DockerApiError && error.statusCode === 404) {
+        return null;
+      }
+      throw error;
+    }
+    if (!isManagedEnvironmentNetworkId(inspect, environmentId)) {
+      throw new Error(`Refusing to remove non-Panda or mismatched network ${networkName}.`);
+    }
+    return inspect;
   }
 
   private async ensureContainer(

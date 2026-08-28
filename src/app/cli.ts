@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 
 import {randomBytes} from "node:crypto";
-import process from "node:process";
+import {chmod, mkdir, rename, rm, writeFile} from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import process from "node:process";
 
 import {Command} from "commander";
 import {commandUsesDatabase, DB_URL_OPTION_DESCRIPTION} from "./cli-shared.js";
@@ -45,6 +47,10 @@ import {registerWhatsAppCommands} from "../integrations/channels/whatsapp/cli.js
 import {resolveBrowserRunnerOptions, startBrowserRunner} from "../integrations/browser/runner.js";
 import {resolveBashRunnerOptions, startBashRunner} from "../integrations/shell/bash-runner.js";
 import {resolveWorkspaceCommandExecutorFromEnv} from "../integrations/shell/workspace-command-executor.js";
+import {
+  executionEnvironmentRunnerAuthScope,
+  loadRunnerTokenAuthority,
+} from "../integrations/shell/runner-auth.js";
 import {
     resolveExecutionEnvironmentManagerServerOptions,
     startExecutionEnvironmentManager,
@@ -91,7 +97,6 @@ interface RunnerAttachCliOptions {
   runnerUrl?: string;
   runnerCwd?: string;
   allowTools?: string;
-  sharedSecret?: string;
   environmentId?: string;
   default?: boolean;
 }
@@ -234,6 +239,27 @@ function runnerAttachPort(runnerUrl: string): string {
   }
 }
 
+function shellQuoteRunnerAttachValue(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
+async function writePrivateRunnerToken(filePath: string, token: string): Promise<string> {
+  const resolvedPath = path.resolve(filePath);
+  const directory = path.dirname(resolvedPath);
+  await mkdir(directory, {recursive: true, mode: 0o700});
+  await chmod(directory, 0o700);
+  const temporaryPath = `${resolvedPath}.${randomBytes(8).toString("hex")}.tmp`;
+  try {
+    await writeFile(temporaryPath, `${token}\n`, {flag: "wx", mode: 0o600});
+    await chmod(temporaryPath, 0o600);
+    await rename(temporaryPath, resolvedPath);
+  } catch (error) {
+    await rm(temporaryPath, {force: true}).catch(() => {});
+    throw error;
+  }
+  return resolvedPath;
+}
+
 async function runRunnerAttachCommand(
   sessionRef: string,
   aliasInput: string,
@@ -245,7 +271,12 @@ async function runRunnerAttachCommand(
   }
   const alias = normalizeExecutionEnvironmentAlias(aliasInput);
   const allowedTools = parseRunnerAttachAllowedTools(options.allowTools);
-  const sharedSecret = options.sharedSecret?.trim() || randomBytes(32).toString("base64url");
+  const runnerTokens = loadRunnerTokenAuthority(process.env);
+  if (!runnerTokens) {
+    throw new Error(
+      "runner attach requires PANDA_RUNNER_TOKEN_MASTER_KEY_FILE or PANDA_RUNNER_TOKEN_MASTER_KEY in the operator environment.",
+    );
+  }
 
   await withPostgresPool(options.dbUrl, async (pool) => {
     const sessionStore = new PostgresSessionStore({pool});
@@ -255,6 +286,11 @@ async function runRunnerAttachCommand(
       agentKey: options.agent,
     });
     const environmentId = options.environmentId?.trim() || runnerAttachEnvironmentId(session.id, alias);
+    const runnerAuthToken = runnerTokens.derive(executionEnvironmentRunnerAuthScope(session.agentKey, environmentId));
+    const runnerTokenFile = await writePrivateRunnerToken(
+      path.join(os.homedir(), ".panda-runner-secrets", "persistent", `${session.agentKey}-${alias}.token`),
+      runnerAuthToken,
+    );
     const environment = await environmentStore.createEnvironment({
       id: environmentId,
       agentKey: session.agentKey,
@@ -277,15 +313,13 @@ async function runRunnerAttachCommand(
       `environment ${binding.environmentId}`,
       `default ${binding.isDefault ? "yes" : "no"}`,
       `allowedTools ${allowedTools.join(",")}`,
+      `runner token file ${runnerTokenFile} (0600)`,
       "",
-      "Core env (set on panda-core before using the target):",
-      `export BASH_SERVER_SHARED_SECRET=${sharedSecret}`,
-      "",
-      "Runner env (set on the personal PC/Mac runner):",
+      "Copy that token file securely to the personal PC/Mac runner, then set:",
       `export BASH_SERVER_AGENT_KEY=${session.agentKey}`,
       `export BASH_SERVER_PORT=${runnerAttachPort(runnerUrl)}`,
-      `export BASH_SERVER_SHARED_SECRET=${sharedSecret}`,
-      `export BASH_SERVER_ALLOWED_ROOTS=${runnerCwd}`,
+      `export BASH_SERVER_AUTH_TOKEN_FILE=${shellQuoteRunnerAttachValue(runnerTokenFile)}`,
+      `export BASH_SERVER_ALLOWED_ROOTS=${shellQuoteRunnerAttachValue(runnerCwd)}`,
       "panda bash-server",
     ].join("\n") + "\n");
   });
@@ -340,7 +374,7 @@ async function runEnvironmentManagerCommand(options: EnvironmentManagerCliOption
     ...(options.token ? {PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN: options.token} : {}),
     ...(options.dockerHost ? {PANDA_DOCKER_HOST: options.dockerHost} : {}),
     ...(options.image ? {PANDA_DISPOSABLE_RUNNER_IMAGE: options.image} : {}),
-    ...(options.network ? {PANDA_DISPOSABLE_RUNNER_NETWORK: options.network} : {}),
+    ...(options.network ? {PANDA_DISPOSABLE_RUNNER_CONTROL_NETWORK: options.network} : {}),
     ...(options.runnerCwd ? {PANDA_DISPOSABLE_RUNNER_CWD: options.runnerCwd} : {}),
     ...(options.runnerPublicHost ? {PANDA_DISPOSABLE_RUNNER_PUBLIC_HOST: options.runnerPublicHost} : {}),
   });
@@ -468,7 +502,6 @@ function registerBashServerCommand(command: Command, description: string, option
       .option("--runner-url <url>", "Reachable runner base URL")
       .option("--runner-cwd <path>", "Initial cwd inside the personal runner")
       .option("--allow-tools <csv>", "Comma-separated tools allowed on this target")
-      .option("--shared-secret <secret>", "Shared secret for core-to-runner POST requests; generated if omitted")
       .option("--environment-id <id>", "Existing or desired execution environment id")
       .option("--default", "Make this binding the session default target")
       .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)

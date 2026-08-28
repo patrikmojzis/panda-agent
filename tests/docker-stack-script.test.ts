@@ -431,6 +431,7 @@ exit 42
       "WIKI_DB_URL=postgresql://example/wiki",
       "BROWSER_RUNNER_SHARED_SECRET=secret",
       "PANDA_AGENTS=",
+      "PANDA_COMMAND_TRANSPORT=http",
     ].join("\n"));
 
     const result = await runScript(["up"], {
@@ -466,6 +467,7 @@ exit 42
       "WIKI_DB_URL=postgresql://example/wiki",
       "BROWSER_RUNNER_SHARED_SECRET=secret",
       "PANDA_AGENTS=",
+      "PANDA_COMMAND_TRANSPORT=http",
     ].join("\n"));
 
     const result = await runScript(["up"], {
@@ -491,6 +493,7 @@ exit 42
       "WIKI_DB_URL=postgresql://example/wiki",
       "BROWSER_RUNNER_SHARED_SECRET=secret",
       "PANDA_AGENTS=",
+      "PANDA_COMMAND_TRANSPORT=http",
     ].join("\n"));
 
     const result = await runScript(["up"], {
@@ -514,6 +517,7 @@ exit 42
       "WIKI_DB_URL=postgresql://example/wiki",
       "BROWSER_RUNNER_SHARED_SECRET=secret",
       "PANDA_AGENTS=",
+      "PANDA_COMMAND_TRANSPORT=http",
       "PANDA_TRACE_COLLECTOR_ENABLED=true",
       "PANDA_TRACE_COLLECTOR_SERVICES=core,discord",
       "PANDA_TRACE_ENVIRONMENT=staging",
@@ -582,6 +586,7 @@ exit 42
       "WIKI_DB_URL=postgresql://example/wiki",
       "BROWSER_RUNNER_SHARED_SECRET=secret",
       "PANDA_AGENTS=",
+      "PANDA_COMMAND_TRANSPORT=http",
       "PANDA_TRACE_COLLECTOR_ENABLED=true",
       "PANDA_TRACE_COLLECTOR_SERVICES=core,discord",
       "PANDA_TRACE_SOURCE_CORE=src_core_123",
@@ -692,7 +697,7 @@ exit 42
     expect(coreSection).toContain("PANDA_COMMAND_SERVER_HOST: ${PANDA_COMMAND_SERVER_HOST:-0.0.0.0}");
     expect(coreSection).toContain("PANDA_COMMAND_SERVER_PORT: ${PANDA_COMMAND_SERVER_PORT:-8096}");
     expect(coreSection).toContain("PANDA_COMMAND_SERVER_URL: ${PANDA_COMMAND_SERVER_URL:-http://panda-core:${PANDA_COMMAND_SERVER_PORT:-8096}}");
-    expect(coreSection).toMatch(/^\s+- runner_net$/m);
+    expect(coreSection).toMatch(/^\s+- browser_runner_net$/m);
     expect(coreSection).not.toMatch(/8096:8096/);
     expect(coreSection).not.toContain("${PANDA_COMMAND_SERVER_PORT:-8096}:${PANDA_COMMAND_SERVER_PORT:-8096}");
     expect(coreSection).not.toContain("PANDA_COMMAND_SERVER_TOKEN");
@@ -784,6 +789,7 @@ exit 42
       "WIKI_DB_URL=postgresql://example/wiki",
       "BROWSER_RUNNER_SHARED_SECRET=secret",
       "PANDA_AGENTS=",
+      "PANDA_COMMAND_TRANSPORT=http",
     ].join("\n"));
 
     const result = await runScript(["up"], {
@@ -835,11 +841,12 @@ exit 42
       "BROWSER_RUNNER_SHARED_SECRET=secret",
       "PANDA_AGENTS=",
     ].join("\n"));
+    const homeDir = await makeTempDir("panda-home-");
 
     const result = await runScript(["up", "--build"], {
       envFile,
       dockerBin,
-      homeDir: await makeTempDir("panda-home-"),
+      homeDir,
     });
 
     expect(result.exitCode).toBe(0);
@@ -849,6 +856,9 @@ exit 42
     expect(logContents).not.toContain("build --target bash-runner --build-arg NODE_MAJOR=22 -t panda-runner:latest");
     expect(logContents).toContain("up -d --no-build --remove-orphans");
     expect(logContents).not.toContain("up -d --build --remove-orphans");
+    expect(permissionBits((await stat(path.join(homeDir, ".panda-core-secrets", "runner-token-master-key"))).mode)).toBe(0o600);
+    const baseCompose = await readFile(baseComposePath, "utf8");
+    expect(baseCompose).toContain("PANDA_RUNNER_TOKEN_MASTER_KEY_FILE: /run/secrets/panda-core/runner-token-master-key");
   });
 
   it("renders managed disposable environment infrastructure on private networks", async () => {
@@ -874,41 +884,58 @@ exit 42
     expect(upResult.stdout).toContain("./scripts/docker-stack.sh logs environment-manager");
     const generatedCompose = await readFile(generatedComposePath, "utf8");
     const environmentsRoot = path.join(homeDir, ".panda", "environments");
+    const runnerSecretsRoot = path.join(homeDir, ".panda-runner-secrets", "disposable");
     expect(generatedCompose).toContain("panda-environment-manager:");
     expect(generatedCompose).toContain('command: ["environment-manager"]');
     expect(generatedCompose).toContain("PANDA_DOCKER_HOST: ${PANDA_DOCKER_HOST:-unix:///var/run/docker.sock}");
     expect(generatedCompose).toContain('- "/var/run/docker.sock:/var/run/docker.sock"');
     expect(generatedCompose).toContain(`PANDA_ENVIRONMENTS_HOST_ROOT: ${environmentsRoot}`);
+    expect(generatedCompose).toContain(`PANDA_DISPOSABLE_RUNNER_SECRETS_HOST_ROOT: ${runnerSecretsRoot}`);
+    expect(generatedCompose).toContain("PANDA_DISPOSABLE_RUNNER_SECRETS_ROOT: ${PANDA_DISPOSABLE_RUNNER_SECRETS_ROOT:-/run/panda-runner-secrets}");
     expect(generatedCompose).toContain("PANDA_ENVIRONMENTS_ROOT: ${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}");
     expect(generatedCompose).toContain("PANDA_CORE_ENVIRONMENTS_ROOT: ${PANDA_CORE_ENVIRONMENTS_ROOT:-${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}}");
     expect(generatedCompose).toContain("PANDA_RUNNER_ENVIRONMENTS_ROOT: ${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}");
     expect(generatedCompose).toContain(`- "${environmentsRoot}:${"${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}"}"`);
+    expect(generatedCompose).toContain(`- "${runnerSecretsRoot}:${"${PANDA_DISPOSABLE_RUNNER_SECRETS_ROOT:-/run/panda-runner-secrets}"}"`);
     expect(generatedCompose).toContain("PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL}");
     expect(generatedCompose).toContain("PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN}");
-    expect(generatedCompose).toContain("BASH_SERVER_SHARED_SECRET: ${BASH_SERVER_SHARED_SECRET:-}");
+    expect(generatedCompose).toContain("PANDA_RUNNER_TOKEN_MASTER_KEY_FILE: /run/secrets/panda-core/runner-token-master-key");
+    expect(generatedCompose.match(/BASH_SERVER_SHARED_SECRET: ""/g)).toHaveLength(1);
     expect(generatedCompose).toContain("PANDA_DISPOSABLE_CONTROL_RUNNER_IMAGE: ${PANDA_DISPOSABLE_CONTROL_RUNNER_IMAGE:-${PANDA_DISPOSABLE_RUNNER_IMAGE:-panda-runner:latest}}");
     const workspaceDefaultMatch = generatedCompose.match(/PANDA_DISPOSABLE_WORKSPACE_IMAGE: \${PANDA_DISPOSABLE_WORKSPACE_IMAGE:-panda-workspace:([a-f0-9]{16})}/);
     expect(workspaceDefaultMatch).not.toBeNull();
     const workspaceImage = `panda-workspace:${workspaceDefaultMatch?.[1]}`;
     const managerStart = generatedCompose.indexOf("  panda-environment-manager:");
+    const coreSection = generatedCompose.slice(
+      generatedCompose.indexOf("  panda-core:"),
+      managerStart,
+    );
+    expect(coreSection).toContain('PANDA_RUNNER_TOKEN_MASTER_KEY: ""');
+    expect(coreSection).toContain('BASH_SERVER_AUTH_TOKEN: ""');
+    expect(coreSection).toContain('BASH_SERVER_AUTH_TOKEN_FILE: ""');
+    expect(coreSection).toContain('BASH_SERVER_SHARED_SECRET: ""');
     const gatewayStart = generatedCompose.indexOf("  panda-gateway:");
     const managerSection = generatedCompose.slice(managerStart, gatewayStart >= 0 ? gatewayStart : generatedCompose.indexOf("\nnetworks:"));
+    expect(managerSection).not.toContain("PANDA_RUNNER_TOKEN_MASTER_KEY_FILE");
+    expect(managerSection).not.toContain("BASH_SERVER_SHARED_SECRET");
     expect(managerSection).toContain("PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL}");
+    expect(managerSection).toContain("PANDA_DISPOSABLE_BROWSER_CONTAINER_NAME: ${PANDA_BROWSER_RUNNER_CONTAINER_NAME:-panda-browser-runner}");
     expect(managerSection).toMatch(/^\s+- execution_manager_net$/m);
-    expect(managerSection).toMatch(/^\s+- disposable_runner_net$/m);
+    expect(managerSection).toMatch(/^\s+- runner_control_net$/m);
     expect(generatedCompose).toContain("      - execution_manager_net");
-    expect(generatedCompose).toContain("      - disposable_runner_net");
+    expect(generatedCompose).toContain("      - runner_control_net");
     const browserStart = generatedCompose.indexOf("  panda-browser-runner:");
     const runnerStart = generatedCompose.indexOf("  panda-runner-");
     const networksStart = generatedCompose.indexOf("\nnetworks:");
     expect(browserStart).toBeGreaterThanOrEqual(0);
     const browserEnd = runnerStart >= 0 ? runnerStart : networksStart;
     const browserSection = generatedCompose.slice(browserStart, browserEnd);
-    expect(browserSection).toMatch(/^\s+- runner_net$/m);
-    expect(browserSection).toMatch(/^\s+- disposable_runner_net$/m);
+    expect(browserSection).toContain("container_name: ${PANDA_BROWSER_RUNNER_CONTAINER_NAME:-panda-browser-runner}");
+    expect(browserSection).not.toContain("runner_control_net");
     expect(generatedCompose).toContain("execution_manager_net:\n    name: ${PANDA_EXECUTION_ENVIRONMENT_MANAGER_NETWORK}\n    internal: true");
-    expect(generatedCompose).toContain("disposable_runner_net:\n    name: ${PANDA_DISPOSABLE_RUNNER_NETWORK}");
+    expect(generatedCompose).toContain("runner_control_net:\n    name: ${PANDA_DISPOSABLE_RUNNER_CONTROL_NETWORK}\n    internal: true");
     expect(generatedCompose).not.toContain("gateway_edge_net");
+    expect(permissionBits((await stat(runnerSecretsRoot)).mode)).toBe(0o700);
     const logContents = await readFile(logPath, "utf8");
     expect(logContents.match(/build --target bash-runner --build-arg NODE_MAJOR=22 -t panda-runner:latest/g)).toHaveLength(1);
     expect(logContents).toContain(`image inspect ${workspaceImage}`);
@@ -1187,6 +1214,7 @@ exit 42
       "PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true",
       "PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN=environment-manager-token",
       "PANDA_ENVIRONMENTS_HOST_ROOT=$HOME/panda-envs",
+      "PANDA_DISPOSABLE_RUNNER_SECRETS_HOST_ROOT=$HOME/panda-runner-secrets",
     ].join("\n"));
     const homeDir = await makeTempDir("panda-home-");
 
@@ -1199,10 +1227,18 @@ exit 42
     expect(result.exitCode).toBe(0);
     const generatedCompose = await readFile(generatedComposePath, "utf8");
     const environmentsRoot = path.join(homeDir, "panda-envs");
+    const runnerSecretsRoot = path.join(homeDir, "panda-runner-secrets");
     expect(generatedCompose).toContain(`PANDA_ENVIRONMENTS_HOST_ROOT: ${environmentsRoot}`);
     expect(generatedCompose).toContain(`- "${environmentsRoot}:${"${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}"}"`);
     expect(generatedCompose).toContain(`- "${environmentsRoot}/claw:${"${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}"}"`);
+    expect(generatedCompose).toContain(`- "${runnerSecretsRoot}:${"${PANDA_DISPOSABLE_RUNNER_SECRETS_ROOT:-/run/panda-runner-secrets}"}"`);
+    const persistentRunnerSection = generatedCompose.slice(
+      generatedCompose.indexOf("  panda-runner-claw:"),
+      generatedCompose.indexOf("\nnetworks:"),
+    );
+    expect(persistentRunnerSection).not.toContain(runnerSecretsRoot);
     expect(generatedCompose).not.toContain("$HOME/panda-envs");
+    expect(generatedCompose).not.toContain("$HOME/panda-runner-secrets");
   });
 
   it("rejects relative disposable environment host roots", async () => {
@@ -1224,6 +1260,52 @@ exit 42
 
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr).toContain("PANDA_ENVIRONMENTS_HOST_ROOT must be an absolute path");
+  });
+
+  it("rejects Core secret roots that resolve through an ancestor symlink into the shared workspace", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const homeDir = await makeTempDir("panda-home-");
+    const sharedRoot = path.join(homeDir, ".panda", "shared");
+    const aliasRoot = path.join(homeDir, "shared-alias");
+    await mkdir(sharedRoot, {recursive: true});
+    await symlink(sharedRoot, aliasRoot);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=claw",
+      `PANDA_CORE_SECRETS_HOST_ROOT=${path.join(aliasRoot, "secrets")}`,
+    ].join("\n"));
+
+    const result = await runScript(["up"], {envFile, dockerBin, homeDir});
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("PANDA_CORE_SECRETS_HOST_ROOT must not overlap shared workspace");
+    await expect(readFile(path.join(aliasRoot, "secrets", "runner-token-master-key"), "utf8"))
+      .rejects.toMatchObject({code: "ENOENT"});
+  });
+
+  it("rejects the obsolete shared disposable runner network", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_DISPOSABLE_ENVIRONMENTS_ENABLED=true",
+      "PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN=environment-manager-token",
+      "PANDA_DISPOSABLE_RUNNER_NETWORK=old-shared-net",
+    ].join("\n"));
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("replaced by PANDA_DISPOSABLE_RUNNER_CONTROL_NETWORK");
   });
 
   it("does not enable disposable environments from manager config alone", async () => {
@@ -1370,7 +1452,8 @@ exit 42
     expect(generatedCompose).toContain("image: panda-runner:latest");
     expect(generatedCompose).toContain("pull_policy: never");
     expect(generatedCompose).toContain('command: ["bash-server"]');
-    expect(generatedCompose).toContain("BASH_SERVER_SHARED_SECRET: ${BASH_SERVER_SHARED_SECRET:-}");
+    expect(generatedCompose).toContain("BASH_SERVER_AUTH_TOKEN_FILE: /run/secrets/panda-runner/token");
+    expect(generatedCompose.match(/BASH_SERVER_SHARED_SECRET: ""/g)).toHaveLength(1);
     expect(generatedCompose).toContain("BASH_SERVER_ALLOWED_ROOTS: ${BASH_SERVER_ALLOWED_ROOTS:-}");
     expect(generatedCompose.match(/restart: unless-stopped/g)).toHaveLength(2);
     expect(generatedCompose).not.toContain("panda-runner-Luna");
@@ -1378,6 +1461,26 @@ exit 42
     const environmentsRoot = path.join(homeDir, ".panda", "environments");
     expect(generatedCompose).toContain(`- "${environmentsRoot}/claw:${"${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}"}"`);
     expect(generatedCompose).toContain(`- "${environmentsRoot}/luna:${"${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}"}"`);
+    const runnerAuthDir = path.join(homeDir, ".panda-core-secrets", "runner-auth");
+    const clawToken = (await readFile(path.join(runnerAuthDir, "claw.token"), "utf8")).trim();
+    const lunaToken = (await readFile(path.join(runnerAuthDir, "luna.token"), "utf8")).trim();
+    expect(clawToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(lunaToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(clawToken).not.toBe(lunaToken);
+    expect(permissionBits((await stat(path.join(homeDir, ".panda-core-secrets", "runner-token-master-key"))).mode)).toBe(0o600);
+    expect(permissionBits((await stat(path.join(homeDir, ".panda-core-secrets"))).mode)).toBe(0o700);
+    expect(permissionBits((await stat(path.join(runnerAuthDir, "claw.token"))).mode)).toBe(0o600);
+    expect(generatedCompose).not.toContain(clawToken);
+    expect(generatedCompose).not.toContain(lunaToken);
+    expect(generatedCompose.match(/\/workspace\/shared/g)).toHaveLength(3);
+    const clawRunnerSection = generatedCompose.slice(
+      generatedCompose.indexOf("  panda-runner-claw:"),
+      generatedCompose.indexOf("  panda-runner-luna:"),
+    );
+    expect(clawRunnerSection).toContain(`${runnerAuthDir}/claw.token:/run/secrets/panda-runner/token:ro`);
+    expect(clawRunnerSection).not.toContain("runner-token-master-key");
+    expect(clawRunnerSection).not.toContain("/run/secrets/panda-core");
+    expect(clawRunnerSection).not.toContain("BASH_SERVER_SHARED_SECRET");
 
     const baseCompose = await readFile(baseComposePath, "utf8");
     expect(baseCompose).toContain("  panda-telegram:\n    image: panda-app:latest");
@@ -1392,8 +1495,13 @@ exit 42
     expect(baseCompose).toContain("${PANDA_CORE_SECRETS_HOST_ROOT:-${HOME}/.panda-core-secrets}:/run/secrets/panda-core:ro");
     expect(baseCompose.match(/PANDA_SCHEDULED_COMMAND_INTEGRITY_KEY: ""/g)).toHaveLength(3);
     expect(baseCompose.match(/PANDA_SCHEDULED_COMMAND_INTEGRITY_KEY_FILE: ""/g)).toHaveLength(3);
+    expect(baseCompose.match(/PANDA_RUNNER_TOKEN_MASTER_KEY: ""/g)).toHaveLength(4);
+    expect(baseCompose.match(/PANDA_RUNNER_TOKEN_MASTER_KEY_FILE:/g)).toHaveLength(4);
+    expect(baseCompose.match(/BASH_SERVER_AUTH_TOKEN: ""/g)).toHaveLength(4);
+    expect(baseCompose.match(/BASH_SERVER_AUTH_TOKEN_FILE: ""/g)).toHaveLength(4);
+    expect(baseCompose.match(/BASH_SERVER_SHARED_SECRET: ""/g)).toHaveLength(4);
+    expect(baseCompose.match(/\.panda-core-secrets/g)).toHaveLength(1);
     expect(baseCompose).toContain("${PANDA_ENVIRONMENTS_HOST_ROOT:-${HOME}/.panda/environments}:${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}");
-    expect(baseCompose).toContain("BASH_SERVER_SHARED_SECRET: ${BASH_SERVER_SHARED_SECRET:-}");
     expect(baseCompose).not.toContain("  panda-telegram:\n    build:");
     expect(baseCompose).not.toContain("  panda-discord:\n    build:");
     expect(baseCompose).not.toContain("  panda-whatsapp:\n    build:");
@@ -1416,6 +1524,29 @@ exit 42
     });
     expect(logsResult.exitCode).toBe(0);
     expect(await readFile(logPath, "utf8")).toContain("logs -f panda-runner-luna");
+  });
+
+  it("allows operators to explicitly remove every persistent runner from the shared workspace", async () => {
+    const logPath = path.join(await makeTempDir("panda-docker-log-"), "docker.log");
+    const dockerBin = await createDockerStub(logPath);
+    const envFile = await createEnvFile([
+      "DATABASE_URL=postgresql://example/panda",
+      "WIKI_DB_URL=postgresql://example/wiki",
+      "BROWSER_RUNNER_SHARED_SECRET=secret",
+      "PANDA_AGENTS=claw,luna",
+      "PANDA_SHARED_WORKSPACE_AGENTS=",
+    ].join("\n"));
+
+    const result = await runScript(["up"], {
+      envFile,
+      dockerBin,
+      homeDir: await makeTempDir("panda-home-"),
+    });
+
+    expect(result.exitCode, JSON.stringify(result)).toBe(0);
+    const generatedCompose = await readFile(generatedComposePath, "utf8");
+    expect(generatedCompose.match(/\/workspace\/shared/g)).toHaveLength(1);
+    expect(generatedCompose).toContain('PANDA_SHARED_WORKSPACE_AGENTS: "${PANDA_SHARED_WORKSPACE_AGENTS:-}"');
   });
 
   it("enables discord explicitly, orders wiki after discord, and maps discord logs", async () => {
@@ -1740,13 +1871,12 @@ exit 42
     const caddySection = generatedCompose.slice(caddyStart, browserStart);
     const browserSection = generatedCompose.slice(browserStart, networksStart);
     expect(gatewaySection).toContain("gateway_edge_net");
-    expect(gatewaySection).not.toContain("disposable_runner_net");
+    expect(gatewaySection).not.toContain("runner_control_net");
     expect(gatewaySection).not.toContain("execution_manager_net");
     expect(caddySection).toContain("gateway_edge_net");
-    expect(caddySection).not.toContain("disposable_runner_net");
+    expect(caddySection).not.toContain("runner_control_net");
     expect(caddySection).not.toContain("execution_manager_net");
-    expect(browserSection).toMatch(/^\s+- runner_net$/m);
-    expect(browserSection).toMatch(/^\s+- disposable_runner_net$/m);
+    expect(browserSection).not.toContain("runner_control_net");
   });
 
   it("rejects unsafe public gateway edge settings", async () => {

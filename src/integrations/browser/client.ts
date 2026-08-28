@@ -209,9 +209,15 @@ function resolveWorkerPreviewAction(
     return {action};
   }
 
-  const containerName = readStringField(executionEnvironment.metadata, "containerName");
-  const network = readStringField(executionEnvironment.metadata, "network");
-  if (!containerName || !network) {
+  const workspaceContainer = isRecord(executionEnvironment.metadata)
+    && isRecord(executionEnvironment.metadata.workspaceContainer)
+    ? executionEnvironment.metadata.workspaceContainer
+    : null;
+  const containerName = workspaceContainer ? readStringField(workspaceContainer, "name") : undefined;
+  const network = readStringField(executionEnvironment.metadata, "workspaceNetwork");
+  const browserPreviewConnected = isRecord(executionEnvironment.metadata)
+    && executionEnvironment.metadata.browserPreviewConnected === true;
+  if (!containerName || !network || !browserPreviewConnected) {
     throw new ToolError(
       "Worker browser preview is unavailable because the disposable environment is missing Docker network metadata.",
       {details: {environmentId: executionEnvironment.id}},

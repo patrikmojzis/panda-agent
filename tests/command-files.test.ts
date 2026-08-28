@@ -1,4 +1,4 @@
-import {mkdir, mkdtemp, realpath, rm, writeFile} from "node:fs/promises";
+import {mkdir, mkdtemp, readFile, realpath, rm, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -65,16 +65,16 @@ describe("RuntimeCommandFileResolver", () => {
       },
     };
 
-    const expectedPath = await realpath(path.join(root, "workspace", "note.txt"));
-    await expect(new RuntimeCommandFileResolver().resolveReadablePath({
+    const dataDir = path.join(root, "core-data");
+    const resolved = await new RuntimeCommandFileResolver({...process.env, DATA_DIR: dataDir}).resolveReadablePath({
       request,
       file: {
         path: "../note.txt",
       },
-    })).resolves.toEqual({
-      displayPath: "../note.txt",
-      path: expectedPath,
     });
+    expect(resolved.displayPath).toBe("../note.txt");
+    expect(resolved.path).toContain(path.join(dataDir, "outbound-file-spool"));
+    await expect(readFile(resolved.path, "utf8")).resolves.toBe("hello");
   });
 
   it("maps workspace-relative command paths to core-writable files", async () => {

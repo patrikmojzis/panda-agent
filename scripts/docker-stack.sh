@@ -80,6 +80,25 @@ expand_home_variable() {
   printf '%s\n' "$value"
 }
 
+paths_overlap() {
+  local left right
+  left="${1%/}"
+  right="${2%/}"
+  [[ "$left" == "$right" || "$left" == "$right/"* || "$right" == "$left/"* ]]
+}
+
+require_secrets_outside_untrusted_roots() {
+  local secrets_label=$1 secrets_root=$2 untrusted_label=$3 untrusted_root=$4
+  local canonical_secrets canonical_untrusted
+  canonical_secrets="$(cd "$secrets_root" && pwd -P)" \
+    || die "could not resolve $secrets_label: $secrets_root"
+  canonical_untrusted="$(cd "$untrusted_root" && pwd -P)" \
+    || die "could not resolve $untrusted_label: $untrusted_root"
+  if paths_overlap "$canonical_secrets" "$canonical_untrusted"; then
+    die "$secrets_label must not overlap $untrusted_label ($canonical_untrusted)."
+  fi
+}
+
 resolve_environment_host_root() {
   local value expanded
   value="${PANDA_ENVIRONMENTS_HOST_ROOT:-$HOME/.panda/environments}"
@@ -112,6 +131,22 @@ resolve_core_secrets_host_root() {
   esac
 }
 
+resolve_disposable_runner_secrets_host_root() {
+  local value expanded
+  value="${PANDA_DISPOSABLE_RUNNER_SECRETS_HOST_ROOT:-$HOME/.panda-runner-secrets/disposable}"
+  expanded="$(expand_home "$(expand_home_variable "$value")")"
+  [[ "$expanded" != *'$'* ]] \
+    || die "PANDA_DISPOSABLE_RUNNER_SECRETS_HOST_ROOT must not contain shell variables other than HOME."
+  case "$expanded" in
+    /*)
+      printf '%s\n' "$expanded"
+      ;;
+    *)
+      die "PANDA_DISPOSABLE_RUNNER_SECRETS_HOST_ROOT must be an absolute path."
+      ;;
+  esac
+}
+
 resolve_command_socket_host_dir() {
   local value expanded
   value="${PANDA_COMMAND_SOCKET_HOST_DIR:-$HOME/.panda/run/command}"
@@ -130,7 +165,7 @@ resolve_command_socket_host_dir() {
 
 resolve_command_transport() {
   local value
-  value="$(printf '%s' "$(trim "${PANDA_COMMAND_TRANSPORT:-http}")" | tr '[:upper:]' '[:lower:]')"
+  value="$(printf '%s' "$(trim "${PANDA_COMMAND_TRANSPORT:-socket}")" | tr '[:upper:]' '[:lower:]')"
   case "$value" in
     http|socket)
       printf '%s\n' "$value"
@@ -217,6 +252,8 @@ generated_wiki_compose="$generated_dir/docker-compose.wiki.ssl.yml"
 generated_public_caddyfile="$generated_dir/Caddyfile.public-edge"
 command_socket_container_dir="/run/panda-command"
 command_socket_container_path="$command_socket_container_dir/command.sock"
+runner_token_master_container_file="/run/secrets/panda-core/runner-token-master-key"
+runner_auth_token_container_file="/run/secrets/panda-runner/token"
 docker_bin="${PANDA_DOCKER_BIN:-docker}"
 docker_compose_bin="${PANDA_DOCKER_COMPOSE_BIN:-}"
 wiki_local_script="${PANDA_WIKI_LOCAL_SCRIPT:-$repo_root/scripts/wiki-local.sh}"
@@ -319,6 +356,10 @@ normalized_environment_host_root="$(resolve_environment_host_root)" || exit "$?"
 export PANDA_ENVIRONMENTS_HOST_ROOT="$normalized_environment_host_root"
 normalized_core_secrets_host_root="$(resolve_core_secrets_host_root)" || exit "$?"
 export PANDA_CORE_SECRETS_HOST_ROOT="$normalized_core_secrets_host_root"
+runner_token_master_host_file="$PANDA_CORE_SECRETS_HOST_ROOT/runner-token-master-key"
+runner_auth_token_host_dir="$PANDA_CORE_SECRETS_HOST_ROOT/runner-auth"
+normalized_disposable_runner_secrets_host_root="$(resolve_disposable_runner_secrets_host_root)" || exit "$?"
+export PANDA_DISPOSABLE_RUNNER_SECRETS_HOST_ROOT="$normalized_disposable_runner_secrets_host_root"
 command_transport="$(resolve_command_transport)" || exit "$?"
 export PANDA_COMMAND_TRANSPORT="$command_transport"
 command_socket_host_dir=""
@@ -328,6 +369,7 @@ if [[ "$command_transport" == "socket" ]]; then
 fi
 
 declare -a normalized_agents=()
+declare -a shared_workspace_agents=()
 declare -a panda_trace_services=()
 declare -a panda_trace_source_ids=()
 
@@ -352,6 +394,35 @@ parse_agents() {
 }
 
 parse_agents
+
+parse_shared_workspace_agents() {
+  local raw_list token normalized
+  if [[ ${PANDA_SHARED_WORKSPACE_AGENTS+x} == x ]]; then
+    raw_list="$(trim "$PANDA_SHARED_WORKSPACE_AGENTS")"
+  else
+    raw_list="$(trim "${PANDA_AGENTS:-}")"
+  fi
+  if [[ -z "$raw_list" ]]; then
+    export PANDA_SHARED_WORKSPACE_AGENTS=""
+    return
+  fi
+  local IFS=','
+  read -r -a raw_shared_agents <<< "$raw_list"
+  for token in "${raw_shared_agents[@]}"; do
+    token="$(trim "$token")"
+    [[ -n "$token" ]] || continue
+    normalized="$(normalize_agent_key "$token")"
+    array_contains "$normalized" "${normalized_agents[@]}" \
+      || die "PANDA_SHARED_WORKSPACE_AGENTS contains undeclared agent: $normalized"
+    if ((${#shared_workspace_agents[@]} > 0)) && array_contains "$normalized" "${shared_workspace_agents[@]}"; then
+      die "PANDA_SHARED_WORKSPACE_AGENTS contains duplicate agent key: $normalized"
+    fi
+    shared_workspace_agents+=("$normalized")
+  done
+  export PANDA_SHARED_WORKSPACE_AGENTS="$(IFS=,; printf '%s' "${shared_workspace_agents[*]}")"
+}
+
+parse_shared_workspace_agents
 
 resolve_wiki_ssl_cert_file() {
   local explicit
@@ -963,7 +1034,7 @@ configure_disposable_environment_defaults() {
   fi
 
   compose_project="$(default_compose_project_name)"
-  export PANDA_DISPOSABLE_RUNNER_NETWORK="${PANDA_DISPOSABLE_RUNNER_NETWORK:-${compose_project}_disposable_runner_net}"
+  export PANDA_DISPOSABLE_RUNNER_CONTROL_NETWORK="${PANDA_DISPOSABLE_RUNNER_CONTROL_NETWORK:-${compose_project}_runner_control_net}"
   export PANDA_EXECUTION_ENVIRONMENT_MANAGER_NETWORK="${PANDA_EXECUTION_ENVIRONMENT_MANAGER_NETWORK:-${compose_project}_execution_manager_net}"
   if (( use_managed_environment_manager )); then
     export PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL="http://panda-environment-manager:${PANDA_EXECUTION_ENVIRONMENT_MANAGER_PORT:-8095}"
@@ -975,6 +1046,9 @@ validate_disposable_environment_config() {
   if (( ! enable_disposable_environments )); then
     return
   fi
+
+  [[ ${PANDA_DISPOSABLE_RUNNER_NETWORK+x} != x ]] \
+    || die "PANDA_DISPOSABLE_RUNNER_NETWORK was replaced by PANDA_DISPOSABLE_RUNNER_CONTROL_NETWORK; remove the old variable."
 
   token="$(trim "${PANDA_EXECUTION_ENVIRONMENT_MANAGER_TOKEN:-}")"
   [[ -n "$token" ]] \
@@ -1151,9 +1225,44 @@ ensure_host_dirs() {
   browser_root="$(expand_home "${BROWSER_RUNNER_ROOT:-$HOME/.panda-browser-runner}")"
   environments_root="$(expand_home "${PANDA_ENVIRONMENTS_HOST_ROOT:-$HOME/.panda/environments}")"
 
-  mkdir -p "$core_root" "$shared_root" "$browser_root" "$environments_root" "$PANDA_CORE_SECRETS_HOST_ROOT"
+  mkdir -p "$core_root/agents" "$shared_root" "$browser_root" "$environments_root"
+  mkdir -p "$PANDA_CORE_SECRETS_HOST_ROOT" "$runner_auth_token_host_dir"
+  ensure_private_managed_directory "$PANDA_CORE_SECRETS_HOST_ROOT" || exit "$?"
+  ensure_private_managed_directory "$runner_auth_token_host_dir" || exit "$?"
+  if (( enable_disposable_environments )); then
+    ensure_private_managed_directory "$PANDA_DISPOSABLE_RUNNER_SECRETS_HOST_ROOT" || exit "$?"
+  fi
+  local untrusted_label untrusted_root
+  while IFS='|' read -r untrusted_label untrusted_root; do
+    require_secrets_outside_untrusted_roots \
+      "PANDA_CORE_SECRETS_HOST_ROOT" "$PANDA_CORE_SECRETS_HOST_ROOT" \
+      "$untrusted_label" "$untrusted_root"
+    if (( enable_disposable_environments )); then
+      require_secrets_outside_untrusted_roots \
+        "PANDA_DISPOSABLE_RUNNER_SECRETS_HOST_ROOT" "$PANDA_DISPOSABLE_RUNNER_SECRETS_HOST_ROOT" \
+        "$untrusted_label" "$untrusted_root"
+    fi
+  done <<EOF
+agent homes|$core_root/agents
+shared workspace|$shared_root
+execution environments|$environments_root
+browser state|$browser_root
+EOF
+  if (( enable_disposable_environments )); then
+    require_secrets_outside_untrusted_roots \
+      "PANDA_CORE_SECRETS_HOST_ROOT" "$PANDA_CORE_SECRETS_HOST_ROOT" \
+      "PANDA_DISPOSABLE_RUNNER_SECRETS_HOST_ROOT" "$PANDA_DISPOSABLE_RUNNER_SECRETS_HOST_ROOT"
+  fi
   if [[ "$command_transport" == "socket" ]]; then
     mkdir -p "$command_socket_host_dir"
+    require_secrets_outside_untrusted_roots \
+      "PANDA_CORE_SECRETS_HOST_ROOT" "$PANDA_CORE_SECRETS_HOST_ROOT" \
+      "command socket mount" "$command_socket_host_dir"
+    if (( enable_disposable_environments )); then
+      require_secrets_outside_untrusted_roots \
+        "PANDA_DISPOSABLE_RUNNER_SECRETS_HOST_ROOT" "$PANDA_DISPOSABLE_RUNNER_SECRETS_HOST_ROOT" \
+        "command socket mount" "$command_socket_host_dir"
+    fi
   fi
   if ! agents_declared; then
     return
@@ -1161,6 +1270,30 @@ ensure_host_dirs() {
 
   for agent_key in "${normalized_agents[@]}"; do
     mkdir -p "$core_root/agents/$agent_key" "$environments_root/$agent_key"
+  done
+}
+
+ensure_runner_auth_material() {
+  local agent_key token_file temporary_file
+  if [[ ! -f "$runner_token_master_host_file" ]]; then
+    temporary_file="$(mktemp "$PANDA_CORE_SECRETS_HOST_ROOT/.runner-token-master.XXXXXX")"
+    node -e 'const {randomBytes}=require("node:crypto"); process.stdout.write(`base64:${randomBytes(48).toString("base64")}\n`)' > "$temporary_file"
+    chmod 600 "$temporary_file"
+    mv "$temporary_file" "$runner_token_master_host_file"
+  fi
+  secure_private_managed_file "$runner_token_master_host_file" 0 || exit "$?"
+
+  if ! agents_declared; then
+    return
+  fi
+  for agent_key in "${normalized_agents[@]}"; do
+    token_file="$runner_auth_token_host_dir/$agent_key.token"
+    temporary_file="$(mktemp "$runner_auth_token_host_dir/.${agent_key}.XXXXXX")"
+    node "$repo_root/scripts/derive-runner-token.mjs" \
+      "$runner_token_master_host_file" persistent-agent "$agent_key" "$agent_key" > "$temporary_file"
+    printf '\n' >> "$temporary_file"
+    chmod 600 "$temporary_file"
+    mv "$temporary_file" "$token_file"
   done
 }
 
@@ -1185,12 +1318,12 @@ EOF
 
   {
     printf 'services:\n'
-    if (( enable_apps_edge || enable_apps_tailnet || enable_disposable_environments || enable_control )) || [[ "$command_transport" == "socket" ]]; then
+    if (( enable_apps_edge || enable_apps_tailnet || enable_disposable_environments || enable_control )) || agents_declared || [[ "$command_transport" == "socket" ]]; then
       cat <<EOF
   panda-core:
 EOF
       render_trace_labels "panda-core" "    "
-      if (( enable_apps_edge || enable_apps_tailnet || enable_disposable_environments || enable_control )) || [[ "$command_transport" == "socket" ]]; then
+      if (( enable_apps_edge || enable_apps_tailnet || enable_disposable_environments || enable_control )) || agents_declared || [[ "$command_transport" == "socket" ]]; then
         cat <<EOF
     environment:
 EOF
@@ -1219,6 +1352,17 @@ EOF
       PANDA_RUNNER_ENVIRONMENTS_ROOT: \${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}
 EOF
       fi
+      cat <<EOF
+      PANDA_RUNNER_TOKEN_MASTER_KEY: ""
+      PANDA_RUNNER_TOKEN_MASTER_KEY_FILE: $runner_token_master_container_file
+      BASH_SERVER_AUTH_TOKEN: ""
+      BASH_SERVER_AUTH_TOKEN_FILE: ""
+      BASH_SERVER_SHARED_SECRET: ""
+EOF
+      cat <<EOF
+      PANDA_CORE_SHARED_ROOT: /workspace/shared
+      PANDA_SHARED_WORKSPACE_AGENTS: "\${PANDA_SHARED_WORKSPACE_AGENTS:-}"
+EOF
       if [[ "$command_transport" == "socket" ]]; then
         cat <<EOF
       PANDA_COMMAND_SERVER_ENABLED: "true"
@@ -1255,7 +1399,7 @@ EOF
         condition: service_healthy
 EOF
       fi
-      if (( enable_apps_edge || enable_disposable_environments )); then
+      if (( enable_apps_edge || enable_disposable_environments )) || agents_declared; then
         cat <<EOF
     networks:
 EOF
@@ -1272,8 +1416,15 @@ EOF
       fi
       if (( enable_disposable_environments )); then
         cat <<EOF
-      - disposable_runner_net
+      - runner_control_net
 EOF
+      fi
+      if agents_declared; then
+        for agent_key in "${normalized_agents[@]}"; do
+          cat <<EOF
+      - runner_${agent_key}_net
+EOF
+        done
       fi
     fi
 
@@ -1301,9 +1452,12 @@ EOF
       PANDA_DOCKER_HOST: \${PANDA_DOCKER_HOST:-unix:///var/run/docker.sock}
       PANDA_DISPOSABLE_CONTROL_RUNNER_IMAGE: \${PANDA_DISPOSABLE_CONTROL_RUNNER_IMAGE:-\${PANDA_DISPOSABLE_RUNNER_IMAGE:-panda-runner:latest}}
       PANDA_DISPOSABLE_WORKSPACE_IMAGE: \${PANDA_DISPOSABLE_WORKSPACE_IMAGE:-$workspace_image_default}
-      PANDA_DISPOSABLE_RUNNER_NETWORK: \${PANDA_DISPOSABLE_RUNNER_NETWORK}
+      PANDA_DISPOSABLE_RUNNER_CONTROL_NETWORK: \${PANDA_DISPOSABLE_RUNNER_CONTROL_NETWORK}
+      PANDA_DISPOSABLE_BROWSER_CONTAINER_NAME: \${PANDA_BROWSER_RUNNER_CONTAINER_NAME:-panda-browser-runner}
       PANDA_DISPOSABLE_RUNNER_PORT: \${PANDA_DISPOSABLE_RUNNER_PORT:-8080}
       PANDA_DISPOSABLE_RUNNER_CWD: \${PANDA_DISPOSABLE_RUNNER_CWD:-/workspace}
+      PANDA_DISPOSABLE_RUNNER_SECRETS_HOST_ROOT: $PANDA_DISPOSABLE_RUNNER_SECRETS_HOST_ROOT
+      PANDA_DISPOSABLE_RUNNER_SECRETS_ROOT: \${PANDA_DISPOSABLE_RUNNER_SECRETS_ROOT:-/run/panda-runner-secrets}
       PANDA_ENVIRONMENTS_HOST_ROOT: $PANDA_ENVIRONMENTS_HOST_ROOT
       PANDA_ENVIRONMENTS_ROOT: \${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}
       PANDA_CORE_ENVIRONMENTS_ROOT: \${PANDA_CORE_ENVIRONMENTS_ROOT:-\${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}}
@@ -1311,7 +1465,6 @@ EOF
       PANDA_DISPOSABLE_CONTAINER_PREFIX: \${PANDA_DISPOSABLE_CONTAINER_PREFIX:-panda-env}
       PANDA_DISPOSABLE_CREATE_TIMEOUT_MS: \${PANDA_DISPOSABLE_CREATE_TIMEOUT_MS:-300000}
       PANDA_COMMAND_SOCKET_HOST_DIR: \${PANDA_COMMAND_SOCKET_HOST_DIR:-}
-      BASH_SERVER_SHARED_SECRET: \${BASH_SERVER_SHARED_SECRET:-}
       TZ: \${TZ:-UTC}
     volumes:
 EOF
@@ -1322,6 +1475,7 @@ EOF
       fi
       cat <<EOF
       - "$PANDA_ENVIRONMENTS_HOST_ROOT:\${PANDA_ENVIRONMENTS_ROOT:-/root/.panda/environments}"
+      - "$PANDA_DISPOSABLE_RUNNER_SECRETS_HOST_ROOT:\${PANDA_DISPOSABLE_RUNNER_SECRETS_ROOT:-/run/panda-runner-secrets}"
 EOF
       if [[ "$command_transport" == "socket" ]]; then
         cat <<EOF
@@ -1331,7 +1485,7 @@ EOF
       cat <<EOF
     networks:
       - execution_manager_net
-      - disposable_runner_net
+      - runner_control_net
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:\${PANDA_EXECUTION_ENVIRONMENT_MANAGER_PORT:-8095}/health"]
       interval: 10s
@@ -1474,9 +1628,7 @@ EOF
 EOF
       render_trace_labels "panda-browser-runner" "    "
       cat <<'EOF'
-    networks:
-      - runner_net
-      - disposable_runner_net
+    container_name: ${PANDA_BROWSER_RUNNER_CONTAINER_NAME:-panda-browser-runner}
 EOF
     fi
 
@@ -1494,14 +1646,19 @@ EOF
     environment:
       BASH_SERVER_AGENT_KEY: $agent_key
       BASH_SERVER_PORT: 8080
-      BASH_SERVER_SHARED_SECRET: \${BASH_SERVER_SHARED_SECRET:-}
+      BASH_SERVER_AUTH_TOKEN_FILE: $runner_auth_token_container_file
       BASH_SERVER_ALLOWED_ROOTS: \${BASH_SERVER_ALLOWED_ROOTS:-}
       TZ: \${TZ:-UTC}
     volumes:
       - \${HOME}/.panda/agents/$agent_key:/root/.panda/agents/$agent_key
-      - \${SHARED_ROOT:-\${HOME}/.panda/shared}:/workspace/shared
       - "$PANDA_ENVIRONMENTS_HOST_ROOT/$agent_key:\${PANDA_RUNNER_ENVIRONMENTS_ROOT:-/environments}"
+      - "$runner_auth_token_host_dir/$agent_key.token:$runner_auth_token_container_file:ro"
 EOF
+        if ((${#shared_workspace_agents[@]} > 0)) && array_contains "$agent_key" "${shared_workspace_agents[@]}"; then
+          cat <<EOF
+      - \${SHARED_ROOT:-\${HOME}/.panda/shared}:/workspace/shared
+EOF
+        fi
         if [[ "$command_transport" == "socket" ]]; then
           cat <<EOF
       - "$command_socket_host_dir:$command_socket_container_dir:ro"
@@ -1509,7 +1666,7 @@ EOF
         fi
         cat <<EOF
     networks:
-      - runner_net
+      - runner_${agent_key}_net
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
       interval: 10s
@@ -1522,7 +1679,7 @@ EOF
 
     render_trace_label_only_services
 
-    if (( enable_apps_edge || enable_gateway_edge || enable_disposable_environments )); then
+    if (( enable_apps_edge || enable_gateway_edge || enable_disposable_environments )) || agents_declared; then
       printf '\nnetworks:\n'
       if (( enable_apps_edge )); then
         cat <<'EOF'
@@ -1538,9 +1695,17 @@ EOF
       fi
       if (( enable_disposable_environments )); then
         cat <<'EOF'
-  disposable_runner_net:
-    name: ${PANDA_DISPOSABLE_RUNNER_NETWORK}
+  runner_control_net:
+    name: ${PANDA_DISPOSABLE_RUNNER_CONTROL_NETWORK}
+    internal: true
 EOF
+      fi
+      if agents_declared; then
+        for agent_key in "${normalized_agents[@]}"; do
+          cat <<EOF
+  runner_${agent_key}_net:
+EOF
+        done
       fi
       if (( enable_gateway_edge )); then
         cat <<'EOF'
@@ -1780,6 +1945,7 @@ run_up() {
   local build_flag=$1
   validate_disposable_environment_config
   ensure_host_dirs
+  ensure_runner_auth_material
   render_generated_public_caddyfile
   render_generated_compose
   if (( build_flag )); then

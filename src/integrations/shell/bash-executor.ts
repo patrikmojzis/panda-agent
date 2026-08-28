@@ -15,10 +15,6 @@ import {
   parseBashRunnerAbortResponse,
   parseBashRunnerExecResponse,
   parseBashRunnerResponse,
-  RUNNER_AGENT_KEY_HEADER,
-  RUNNER_AUTHORIZATION_HEADER,
-  RUNNER_EXPECTED_PATH_HEADER,
-  RUNNER_PATH_SCOPED_HEADER,
 } from "./bash-protocol.js";
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
 import {assertNoDeprecatedBashServerEnv, CORE_BASH_SERVER_ENV_NAMES} from "./bash-server-env.js";
@@ -33,11 +29,12 @@ import {
   resolveRemoteInitialCwd,
   resolveRunnerCwd,
   resolveRunnerCwdTemplate,
-  resolveRunnerSharedSecret,
   resolveRunnerUrl,
   resolveRunnerUrlTemplate,
   type BashExecutionMode,
 } from "../../domain/execution-environments/runner-config.js";
+import {buildRunnerRequestHeaders, RunnerTransport} from "./runner-transport.js";
+import type {RunnerTokenAuthority} from "./runner-auth.js";
 
 export {
   buildRunnerEndpoint,
@@ -46,9 +43,9 @@ export {
   resolveRemoteInitialCwd,
   resolveRunnerCwd,
   resolveRunnerCwdTemplate,
-  resolveRunnerSharedSecret,
   resolveRunnerUrl,
   resolveRunnerUrlTemplate,
+  buildRunnerRequestHeaders,
   type BashExecutionMode,
 };
 
@@ -94,6 +91,9 @@ export interface RemoteShellExecutorOptions {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   runnerUrlTemplate?: string;
+  tokenAuthority?: RunnerTokenAuthority | null;
+  legacySharedSecret?: string | null;
+  transport?: RunnerTransport;
 }
 
 interface BashDiagnosticSanitizationOptions {
@@ -127,44 +127,6 @@ function readAgentKey(context: ShellExecutionContext | undefined): string {
 
   return agentKey;
 }
-
-function normalizeUrlPathname(pathname: string): string {
-  const normalized = pathname.replace(/\/+$/, "");
-  return normalized || "/";
-}
-
-function isPathScopedRunnerTemplate(template: string): boolean {
-  const marker = "__RUNTIME_AGENT_KEY__";
-  const url = new URL(template.replaceAll("{agentKey}", marker));
-  return url.pathname.includes(marker);
-}
-
-export function buildRunnerRequestHeaders(
-  agentKey: string,
-  runnerUrlTemplate: string,
-  runnerUrl: string,
-  sharedSecret?: string | null,
-): Record<string, string> {
-  const pathScoped = isPathScopedRunnerTemplate(runnerUrlTemplate);
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-    [RUNNER_AGENT_KEY_HEADER]: agentKey,
-    [RUNNER_PATH_SCOPED_HEADER]: pathScoped ? "1" : "0",
-  };
-
-  if (pathScoped) {
-    // The runner compares this against the request URL so agent-aware routes
-    // still fail loudly even when {agentKey} is buried inside a longer path.
-    headers[RUNNER_EXPECTED_PATH_HEADER] = normalizeUrlPathname(new URL(runnerUrl).pathname);
-  }
-
-  if (sharedSecret) {
-    headers[RUNNER_AUTHORIZATION_HEADER] = `Bearer ${sharedSecret}`;
-  }
-
-  return headers;
-}
-
 
 export async function parseRunnerResponse(response: Response): Promise<BashRunnerResponse> {
   return parseBashRunnerResponse(await response.json());
@@ -248,26 +210,30 @@ export class LocalShellExecutor implements BashExecutor {
 }
 
 export class RemoteShellExecutor implements BashExecutor {
-  private readonly fetchImpl: typeof fetch;
+  private readonly transport: RunnerTransport;
   private readonly runnerUrlTemplate: string | null;
-  private readonly sharedSecret: string | null;
 
   constructor(options: RemoteShellExecutorOptions = {}) {
     const env = options.env ?? process.env;
     assertNoDeprecatedBashServerEnv(env, CORE_BASH_SERVER_ENV_NAMES);
-    this.fetchImpl = options.fetchImpl ?? fetch;
     this.runnerUrlTemplate = options.runnerUrlTemplate ?? resolveRunnerUrlTemplate(env);
-    this.sharedSecret = resolveRunnerSharedSecret(env);
+    this.transport = options.transport ?? new RunnerTransport({
+      env,
+      fetchImpl: options.fetchImpl,
+      tokenAuthority: options.tokenAuthority,
+      legacySharedSecret: options.legacySharedSecret,
+    });
   }
 
-  private async sendAbort(requestId: string, runnerUrl: string, headers: Record<string, string>): Promise<void> {
-    const response = await this.fetchImpl(buildRunnerEndpoint(runnerUrl, "abort"), {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
+  private async sendAbort(
+    requestId: string,
+    target: ReturnType<RunnerTransport["resolveTarget"]>,
+  ): Promise<void> {
+    const response = await this.transport.request(target, "abort", {
+      body: {
         requestId,
-      } satisfies BashRunnerAbortRequest),
-      signal: makeNetworkTimeoutSignal(DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS),
+      } satisfies BashRunnerAbortRequest,
+      timeoutMs: DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS,
     });
 
     if (!response.ok) {
@@ -282,15 +248,12 @@ export class RemoteShellExecutor implements BashExecutor {
 
   private async sendExecRequest(
     requestId: string,
-    runnerUrl: string,
-    headers: Record<string, string>,
+    target: ReturnType<RunnerTransport["resolveTarget"]>,
     options: BashExecutorOptions,
     cwd: string,
   ): Promise<BashExecutionResult> {
-    const response = await this.fetchImpl(buildRunnerEndpoint(runnerUrl, "exec"), {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
+    const response = await this.transport.request(target, "exec", {
+      body: {
         requestId,
         command: options.command,
         cwd,
@@ -302,8 +265,8 @@ export class RemoteShellExecutor implements BashExecutor {
           ...(options.shellEnv ?? {}),
           ...(options.env ?? {}),
         },
-      } satisfies BashRunnerExecRequest),
-      signal: makeNetworkTimeoutSignal(options.timeoutMs + DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS),
+      } satisfies BashRunnerExecRequest,
+      timeoutMs: options.timeoutMs + DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS,
     });
 
     if (!response.ok) {
@@ -321,19 +284,21 @@ export class RemoteShellExecutor implements BashExecutor {
     }
 
     const agentKey = readAgentKey(options.run.context);
-    const runnerUrl = options.executionEnvironment?.runnerUrl
-      ?? resolveRunnerUrl(this.runnerUrlTemplate ?? "", agentKey);
-    const runnerUrlTemplate = this.runnerUrlTemplate ?? runnerUrl;
-    const headers = buildRunnerRequestHeaders(agentKey, runnerUrlTemplate, runnerUrl, this.sharedSecret);
-    let requestId = randomUUID();
+    const target = this.transport.resolveTarget({
+      agentKey,
+      runnerUrlTemplate: this.runnerUrlTemplate,
+      runnerUrl: options.executionEnvironment?.runnerUrl,
+      executionEnvironment: options.executionEnvironment,
+    });
+    const requestId = randomUUID();
     const abortHandler = (): void => {
-      void this.sendAbort(requestId, runnerUrl, headers).catch(() => {});
+      void this.sendAbort(requestId, target).catch(() => {});
     };
 
     options.run.signal?.addEventListener("abort", abortHandler, { once: true });
 
     try {
-      return await this.sendExecRequest(requestId, runnerUrl, headers, options, options.cwd);
+      return await this.sendExecRequest(requestId, target, options, options.cwd);
     } catch (error) {
       if (error instanceof ToolError) {
         throw error;

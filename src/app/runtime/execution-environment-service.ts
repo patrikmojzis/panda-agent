@@ -25,6 +25,10 @@ import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution
 import type {ExecutionEnvironmentSetupRunner} from "./execution-environment-setup-runner.js";
 import {readExecutionEnvironmentSetupErrorMetadata} from "./execution-environment-setup-runner.js";
 import type {CommandLeaseIssuer} from "./command-leases.js";
+import {
+  executionEnvironmentRunnerAuthScope,
+  type RunnerTokenAuthority,
+} from "../../integrations/shell/runner-auth.js";
 
 const DEFAULT_DISPOSABLE_ALIAS = "self";
 export const DEFAULT_DISPOSABLE_ENVIRONMENT_TTL_MS = 24 * 60 * 60 * 1_000;
@@ -123,6 +127,8 @@ export interface ExecutionEnvironmentLifecycleServiceOptions {
   setupRunner?: ExecutionEnvironmentSetupRunner | null;
   commandLeases?: CommandLeaseIssuer | null;
   fallbackRunnerCommandSocketAccess?: boolean;
+  runnerTokenAuthority?: RunnerTokenAuthority | null;
+  legacyRunnerSharedSecret?: string | null;
 }
 
 export type ExecutionEnvironmentStopStore = Pick<
@@ -220,6 +226,8 @@ export class ExecutionEnvironmentLifecycleService {
   private readonly setupRunner: ExecutionEnvironmentSetupRunner | null;
   private readonly commandLeases: CommandLeaseIssuer | null;
   private readonly fallbackRunnerCommandSocketAccess: boolean;
+  private readonly runnerTokenAuthority: RunnerTokenAuthority | null;
+  private readonly legacyRunnerSharedSecret: string | null;
 
   constructor(options: ExecutionEnvironmentLifecycleServiceOptions) {
     this.store = options.store;
@@ -227,6 +235,14 @@ export class ExecutionEnvironmentLifecycleService {
     this.setupRunner = options.setupRunner ?? null;
     this.commandLeases = options.commandLeases ?? null;
     this.fallbackRunnerCommandSocketAccess = options.fallbackRunnerCommandSocketAccess === true;
+    this.runnerTokenAuthority = options.runnerTokenAuthority ?? null;
+    this.legacyRunnerSharedSecret = trimToUndefined(options.legacyRunnerSharedSecret ?? undefined) ?? null;
+  }
+
+  private resolveRunnerAuthToken(agentKey: string, environmentId: string): string | undefined {
+    return this.runnerTokenAuthority?.derive(executionEnvironmentRunnerAuthScope(agentKey, environmentId))
+      ?? this.legacyRunnerSharedSecret
+      ?? undefined;
   }
 
   async refreshSessionCommandAccess(
@@ -368,10 +384,12 @@ export class ExecutionEnvironmentLifecycleService {
         socketAccessAllowed: true,
         ...(input.ttlMs === undefined ? {} : {ttlMs: input.ttlMs}),
       });
+      const runnerAuthToken = this.resolveRunnerAuthToken(input.session.agentKey, environmentId);
       created = await this.manager.createDisposableEnvironment({
         agentKey: input.session.agentKey,
         sessionId: input.session.id,
         environmentId,
+        ...(runnerAuthToken ? {runnerAuthToken} : {}),
         ...(input.ttlMs === undefined ? {} : {ttlMs: input.ttlMs}),
         ...(input.metadata === undefined ? {} : {metadata: input.metadata}),
         ...(commandLease
@@ -468,10 +486,12 @@ export class ExecutionEnvironmentLifecycleService {
 
     let created: DisposableEnvironmentCreateResult | null = null;
     try {
+      const runnerAuthToken = this.resolveRunnerAuthToken(agentKey, environmentId);
       created = await this.manager.createDisposableEnvironment({
         agentKey,
         sessionId: ownerSessionId,
         environmentId,
+        ...(runnerAuthToken ? {runnerAuthToken} : {}),
         ...(input.ttlMs === undefined ? {} : {ttlMs: input.ttlMs}),
         ...(input.metadata === undefined ? {} : {metadata: input.metadata}),
       });
@@ -697,10 +717,12 @@ export class ExecutionEnvironmentLifecycleService {
     try {
       const ttlMs = options.ttlMs ?? remainingTtlMs(environment);
       const expiresAt = options.ttlMs === undefined ? environment.expiresAt : Date.now() + options.ttlMs;
+      const runnerAuthToken = this.resolveRunnerAuthToken(environment.agentKey, environment.id);
       created = await this.manager.createDisposableEnvironment({
         agentKey: environment.agentKey,
         sessionId: managerSessionId,
         environmentId: environment.id,
+        ...(runnerAuthToken ? {runnerAuthToken} : {}),
         ...(ttlMs === undefined ? {} : {ttlMs}),
         ...(environment.metadata === undefined ? {} : {metadata: environment.metadata}),
       });

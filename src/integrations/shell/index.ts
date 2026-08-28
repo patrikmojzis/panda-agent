@@ -51,3 +51,16 @@ export {
   HttpExecutionEnvironmentManagerClient,
   type HttpExecutionEnvironmentManagerClientOptions,
 } from "./execution-environment-manager-client.js";
+export {
+  executionEnvironmentRunnerAuthScope,
+  HmacRunnerTokenAuthority,
+  loadRunnerTokenAuthority,
+  runnerAuthScopeForEnvironment,
+  type RunnerAuthScope,
+  type RunnerTokenAuthority,
+} from "./runner-auth.js";
+export {
+  RunnerTransport,
+  type RunnerTransportOptions,
+  type RunnerTransportTarget,
+} from "./runner-transport.js";

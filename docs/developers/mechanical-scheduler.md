@@ -74,6 +74,11 @@ The scheduler accepts any shell command available inside the current default rem
 
 Each occurrence resolves the session's current default environment at the last responsible moment. V1 accepts only the owning agent's persistent remote runner. Local execution could escape into `panda-core`, while disposable workspaces intentionally carry an interactive Panda command-access file; both are rejected. The persistent runner receives the command, scheduler metadata, and explicitly requested credential values. Its constrained child environment does not receive the HMAC key or a Panda command-access token.
 
+Cron uses the same scoped runner transport as interactive foreground and
+background bash. The owning agent's derived runner token is selected from the
+resolved environment; a token copied from another agent or environment is
+rejected before the command reaches the executor.
+
 Occurrence delivery is at least once. A crash after the runner accepts a command but before settlement can replay that occurrence, so scripts must use `PANDA_CRON_RUN_ID` as an idempotency key when side effects matter. `PANDA_CRON_ID` and `PANDA_CRON_SCHEDULED_FOR` are also injected.
 
 Missed intervals are coalesced into one occurrence, and one command can have at most one active or undelivered-notification run. Output is capped, sanitized, secret-redacted, and stored in Postgres; raw output files are not persisted.

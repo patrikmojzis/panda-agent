@@ -9,6 +9,7 @@ import {afterAll, beforeAll, describe, expect, it} from "vitest";
 
 import {RemoteExecutionEnvironmentSetupRunner} from "../../src/app/runtime/execution-environment-setup-runner.js";
 import {buildRunnerEndpoint, buildRunnerRequestHeaders} from "../../src/integrations/shell/bash-executor.js";
+import {executionEnvironmentRunnerAuthScope, HmacRunnerTokenAuthority} from "../../src/integrations/shell/runner-auth.js";
 import type {BashExecutionResult, BashJobSnapshot} from "../../src/integrations/shell/bash-protocol.js";
 import {
   DockerExecutionEnvironmentManager,
@@ -36,7 +37,7 @@ interface Harness {
   managerUrlForContainers: string;
   lifecycleSecret: string;
   workspaceExecSecret: string;
-  runnerSecret: string;
+  runnerMasterKey: string;
   environments: CreatedEnvironment[];
 }
 
@@ -107,7 +108,11 @@ async function postJson(url: string, body: unknown, headers: Record<string, stri
 }
 
 function runnerHeaders(env: Harness, runnerUrl: string): Record<string, string> {
-  return buildRunnerRequestHeaders(agentKey, runnerUrl, runnerUrl, env.runnerSecret);
+  const environment = env.environments.find((entry) => entry.runnerUrl === runnerUrl);
+  if (!environment) throw new Error(`Unknown runner URL: ${runnerUrl}`);
+  const token = new HmacRunnerTokenAuthority(Buffer.from(env.runnerMasterKey))
+    .derive(executionEnvironmentRunnerAuthScope(agentKey, environment.environmentId));
+  return buildRunnerRequestHeaders(agentKey, runnerUrl, runnerUrl, token);
 }
 
 async function runnerPost<T>(env: Harness, runnerUrl: string, endpoint: string, body: unknown): Promise<T> {
@@ -119,11 +124,14 @@ async function runnerPost<T>(env: Harness, runnerUrl: string, endpoint: string, 
 }
 
 async function createEnvironment(env: Harness, environmentId: string): Promise<CreatedEnvironment> {
+  const runnerAuthToken = new HmacRunnerTokenAuthority(Buffer.from(env.runnerMasterKey))
+    .derive(executionEnvironmentRunnerAuthScope(agentKey, environmentId));
   const created = await env.manager.createDisposableEnvironment({
     agentKey,
     environmentId,
     sessionId: `session-${env.suffix}`,
     ttlMs: 20 * 60 * 1000,
+    runnerAuthToken,
   });
   const withId = {...created, environmentId};
   env.environments.push(withId);
@@ -189,7 +197,7 @@ describeLive("B2b real Docker paired workspace exec smoke", () => {
 
     const lifecycleSecret = `lifecycle-${suffix}`;
     const workspaceExecSecret = `workspace-${suffix}`;
-    const runnerSecret = `runner-${suffix}`;
+    const runnerMasterKey = `runner-master-key-${suffix}`;
     const gateway = await findBridgeGateway();
     const realServer = await startExecutionEnvironmentManager({
       host: "0.0.0.0",
@@ -198,7 +206,8 @@ describeLive("B2b real Docker paired workspace exec smoke", () => {
       controlRunnerImage: runnerImage,
       workspaceImage,
       workspaceExecSecret,
-      runnerSharedSecret: runnerSecret,
+      hostRunnerSecretsRoot: path.join(tempRoot, "runner-secrets"),
+      managerRunnerSecretsRoot: path.join(tempRoot, "runner-secrets"),
       hostEnvironmentsRoot: path.join(tempRoot, "environments"),
       managerEnvironmentsRoot: path.join(tempRoot, "environments"),
       coreEnvironmentsRoot: path.join(tempRoot, "environments-core"),
@@ -215,7 +224,8 @@ describeLive("B2b real Docker paired workspace exec smoke", () => {
       controlRunnerImage: runnerImage,
       workspaceImage,
       workspaceExecSecret,
-      runnerSharedSecret: runnerSecret,
+      hostRunnerSecretsRoot: path.join(tempRoot, "runner-secrets"),
+      managerRunnerSecretsRoot: path.join(tempRoot, "runner-secrets"),
       hostEnvironmentsRoot: path.join(tempRoot, "environments"),
       managerEnvironmentsRoot: path.join(tempRoot, "environments"),
       coreEnvironmentsRoot: path.join(tempRoot, "environments-core"),
@@ -236,7 +246,7 @@ describeLive("B2b real Docker paired workspace exec smoke", () => {
       managerUrlForContainers: `http://${gateway}:${realServer.port}`,
       lifecycleSecret,
       workspaceExecSecret,
-      runnerSecret,
+      runnerMasterKey,
       environments: [],
     };
   }, 600_000);
@@ -266,6 +276,23 @@ describeLive("B2b real Docker paired workspace exec smoke", () => {
     const controlName = envA.metadata.controlContainer.name;
     const workspaceName = envA.metadata.workspaceContainer.name;
     expect(runnerUrl).toMatch(/^http:\/\/127\.0\.0\.1:/);
+    expect(await dockerExecStatus(workspaceName, "test -e /run/secrets/panda-runner/token")).not.toBe(0);
+    expect(await dockerExecStatus(
+      workspaceName,
+      `curl -fsS --connect-timeout 1 http://${controlName}:8080/health`,
+    )).not.toBe(0);
+    const envBToken = new HmacRunnerTokenAuthority(Buffer.from(harness.runnerMasterKey))
+      .derive(executionEnvironmentRunnerAuthScope(agentKey, envB.environmentId));
+    const wrongScope = await postJson(buildRunnerEndpoint(runnerUrl, "exec"), {
+      requestId: `wrong-scope-${harness.suffix}`,
+      command: "touch /workspace/wrong-scope-ran",
+      cwd: "/workspace",
+      timeoutMs: 30_000,
+      trackedEnvKeys: [],
+      maxOutputChars: 20_000,
+    }, buildRunnerRequestHeaders(agentKey, runnerUrl, runnerUrl, envBToken));
+    expect(wrongScope.status).toBe(403);
+    expect(await dockerExecStatus(workspaceName, "test -e /workspace/wrong-scope-ran")).not.toBe(0);
 
     for (const endpoint of ["exec", "abort", "jobs/start", "jobs/status", "jobs/wait", "jobs/cancel"] as const) {
       const response = await postJson(`${harness.managerUrlForHost}/${endpoint}`, {}, {authorization: `Bearer ${harness.lifecycleSecret}`});
@@ -294,7 +321,9 @@ describeLive("B2b real Docker paired workspace exec smoke", () => {
 
     const setupScript = path.join(harness.tempRoot, "setup.sh");
     await writeFile(setupScript, "#!/usr/bin/env bash\nset -euo pipefail\nsetup_hostname=$(hostname)\nprintf '%s\\n' \"$setup_hostname\"\nprintf '%s\\n' \"$setup_hostname\" > /artifacts/setup-hostname.txt\ntouch /workspace/setup-ran-from-workspace\n", "utf8");
-    const setupRunner = new RemoteExecutionEnvironmentSetupRunner({env: {BASH_SERVER_SHARED_SECRET: harness.runnerSecret}});
+    const setupRunner = new RemoteExecutionEnvironmentSetupRunner({
+      env: {PANDA_RUNNER_TOKEN_MASTER_KEY: harness.runnerMasterKey},
+    });
     await setupRunner.runSetup({
       agentKey,
       environmentId: envA.environmentId,
@@ -539,4 +568,6 @@ describeLive("B2b real Docker paired workspace exec smoke", () => {
     expect(await dockerStatus(["inspect", envAControl])).not.toBe(0);
     expect(await dockerStatus(["inspect", envAWorkspace])).not.toBe(0);
   }, 600_000);
+
+  it.todo("routes public workspace egress through a broker that blocks host and private-network destinations");
 });

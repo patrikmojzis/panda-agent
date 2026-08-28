@@ -372,8 +372,9 @@ describe("browser runner transport", () => {
           state: "ready",
           executionMode: "remote",
           metadata: {
-            containerName: "panda-env-worker-abc",
-            network: "panda_disposable_runner_net",
+            workspaceContainer: {name: "panda-env-worker-abc"},
+            workspaceNetwork: "panda-env-worker-net",
+            browserPreviewConnected: true,
           },
           credentialPolicy: {mode: "allowlist", envKeys: []},
           skillPolicy: {mode: "allowlist", skillKeys: []},
@@ -422,8 +423,9 @@ describe("browser runner transport", () => {
         state: "ready",
         executionMode: "remote",
         metadata: {
-          containerName: "panda-env-worker-abc",
-          network: "panda_disposable_runner_net",
+          workspaceContainer: {name: "panda-env-worker-abc"},
+          workspaceNetwork: "panda-env-worker-net",
+          browserPreviewConnected: true,
         },
         credentialPolicy: {mode: "allowlist", envKeys: []},
         skillPolicy: {mode: "allowlist", skillKeys: []},

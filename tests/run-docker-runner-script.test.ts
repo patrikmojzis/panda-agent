@@ -45,6 +45,12 @@ function runScript(env: Record<string, string | undefined>): Promise<ScriptResul
 describe("run-docker-runner.sh", () => {
   const directories: string[] = [];
 
+  async function createDockerStub(directory: string): Promise<string> {
+    const dockerPath = path.join(directory, "docker");
+    await writeFile(dockerPath, "#!/bin/sh\nexit 0\n", {mode: 0o755});
+    return `${directory}:/usr/bin:/bin`;
+  }
+
   afterEach(async () => {
     while (directories.length > 0) {
       await rm(directories.pop() ?? "", {recursive: true, force: true});
@@ -81,5 +87,45 @@ describe("run-docker-runner.sh", () => {
     expect(result.stderr).toContain("refusing to load secret-bearing env file");
     expect(result.stderr).toContain("current mode: 0644");
     expect(result.stderr).toContain(`chmod 600 ${await realpath(envFile)}`);
+  });
+
+  it("mounts a private scoped token file without exposing its value in Docker metadata", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "panda-runner-token-"));
+    directories.push(directory);
+    const tokenFile = path.join(directory, "panda.token");
+    await writeFile(tokenFile, "scoped-runner-token\n", {mode: 0o600});
+    const result = await runScript({
+      BASH_SERVER_ENV_FILE: path.join(directory, "missing.env"),
+      BASH_SERVER_AUTH_TOKEN_FILE: tokenFile,
+      BASH_SERVER_SHARED_SECRET: "legacy-global-token",
+      HOME: directory,
+      PATH: await createDockerStub(directory),
+    });
+
+    expect(result.exitCode, JSON.stringify(result)).toBe(0);
+    expect(result.stdout).toContain("runner auth: scoped token file");
+    expect(result.stdout).toContain("BASH_SERVER_AUTH_TOKEN_FILE=/run/secrets/panda-runner/token");
+    expect(result.stdout).toContain(`${tokenFile}:/run/secrets/panda-runner/token:ro`);
+    expect(result.stdout).toContain("--network panda-runner-panda-net");
+    expect(result.stdout).toContain("-p 127.0.0.1:8080:8080");
+    expect(result.stdout).not.toContain("scoped-runner-token");
+    expect(result.stdout).not.toContain("BASH_SERVER_SHARED_SECRET");
+    expect(result.stdout).not.toContain("legacy-global-token");
+  });
+
+  it("rejects inline scoped tokens rather than exposing them through Docker inspect", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "panda-runner-token-"));
+    directories.push(directory);
+    const result = await runScript({
+      BASH_SERVER_ENV_FILE: path.join(directory, "missing.env"),
+      BASH_SERVER_AUTH_TOKEN: "scoped-runner-token",
+      HOME: directory,
+      PATH: await createDockerStub(directory),
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("does not pass inline runner tokens through Docker metadata");
+    expect(result.stdout).not.toContain("scoped-runner-token");
+    expect(result.stderr).not.toContain("scoped-runner-token");
   });
 });

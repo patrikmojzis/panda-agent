@@ -1,9 +1,10 @@
-import {mkdtemp, readFile, rm, stat} from "node:fs/promises";
+import {lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile} from "node:fs/promises";
+import {createHash} from "node:crypto";
 import {PassThrough, Readable} from "node:stream";
 import os from "node:os";
 import path from "node:path";
 
-import {afterEach, describe, expect, it, vi} from "vitest";
+import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 
 import type {
     DisposableEnvironmentCreateRequest,
@@ -37,6 +38,10 @@ function stdcopyFrame(streamId: 1 | 2, payload: string): Buffer {
 }
 
 class FakeDockerClient implements DockerClient {
+  readonly networks: Array<{name: string; config: import("../src/integrations/shell/docker-execution-environment-manager.js").DockerNetworkCreateConfig}> = [];
+  readonly networkConnections: Array<{network: string; container: string; aliases: readonly string[]}> = [];
+  readonly networkDisconnections: Array<{network: string; container: string}> = [];
+  readonly removedNetworks: string[] = [];
   readonly created: Array<{name: string; config: DockerContainerCreateConfig}> = [];
   readonly started: string[] = [];
   readonly stopped: string[] = [];
@@ -60,6 +65,37 @@ class FakeDockerClient implements DockerClient {
   stopErrors = new Map<string, Error>();
   removeErrors = new Map<string, Error>();
   removeError?: Error;
+  createNetworkError?: Error;
+  inspectNetworkLabels?: Record<string, string>;
+
+  async createNetwork(name: string, config: import("../src/integrations/shell/docker-execution-environment-manager.js").DockerNetworkCreateConfig): Promise<{Id: string}> {
+    if (this.createNetworkError) {
+      throw this.createNetworkError;
+    }
+    this.networks.push({name, config});
+    return {Id: `network-${name}`};
+  }
+
+  async inspectNetwork(network: string) {
+    if (this.inspectNetworkLabels) {
+      return {Id: `network-${network}`, Name: network, Labels: this.inspectNetworkLabels};
+    }
+    const created = this.networks.find((entry) => entry.name === network);
+    if (!created) throw new DockerApiError("network not found", 404);
+    return {Id: `network-${network}`, Name: network, Labels: created.config.Labels};
+  }
+
+  async connectNetwork(network: string, container: string, aliases: readonly string[] = []): Promise<void> {
+    this.networkConnections.push({network, container, aliases});
+  }
+
+  async disconnectNetwork(network: string, container: string): Promise<void> {
+    this.networkDisconnections.push({network, container});
+  }
+
+  async removeNetwork(network: string): Promise<void> {
+    this.removedNetworks.push(network);
+  }
 
   async createContainer(name: string, config: DockerContainerCreateConfig): Promise<{Id: string}> {
     if (this.createError) {
@@ -236,8 +272,17 @@ function findCreatedContainer(
   return created;
 }
 
+function expectedRunnerAuthTokenFile(root: string, agentKey: string, environmentId: string): string {
+  const digest = createHash("sha256").update(environmentId).digest("hex").slice(0, 10);
+  return path.join(root, agentKey, `${environmentId}-${digest}`, "token");
+}
+
 describe("DockerExecutionEnvironmentManager", () => {
   const directories: string[] = [];
+
+  beforeEach(() => {
+    vi.stubEnv("BASH_SERVER_SHARED_SECRET", "runner-test-secret");
+  });
 
   it("rejects deprecated RUNNER_SHARED_SECRET when resolving manager options", () => {
     expect(() => resolveDockerExecutionEnvironmentManagerOptions({
@@ -246,7 +291,14 @@ describe("DockerExecutionEnvironmentManager", () => {
     })).toThrow("RUNNER_SHARED_SECRET was renamed to BASH_SERVER_SHARED_SECRET");
   });
 
+  it("rejects the old shared disposable runner network option", () => {
+    expect(() => resolveDockerExecutionEnvironmentManagerOptions({
+      PANDA_DISPOSABLE_RUNNER_NETWORK: "shared-runner-net",
+    })).toThrow("replaced by PANDA_DISPOSABLE_RUNNER_CONTROL_NETWORK");
+  });
+
   afterEach(async () => {
+    vi.unstubAllEnvs();
     while (directories.length > 0) {
       await rm(directories.pop() ?? "", {recursive: true, force: true});
     }
@@ -261,6 +313,7 @@ describe("DockerExecutionEnvironmentManager", () => {
   it("creates disposable runners without mounting the agent home", async () => {
     const dockerClient = new FakeDockerClient();
     const environmentsRoot = await makeEnvironmentRoot();
+    const managerRunnerSecretsRoot = path.join(environmentsRoot, ".manager-only-runner-secrets");
     const commandSocketHostDir = await makeEnvironmentRoot();
     const manager = new DockerExecutionEnvironmentManager({
       dockerClient,
@@ -270,10 +323,12 @@ describe("DockerExecutionEnvironmentManager", () => {
       managerUrl: "http://panda-environment-manager:8095",
       hostEnvironmentsRoot: environmentsRoot,
       managerEnvironmentsRoot: environmentsRoot,
+      hostRunnerSecretsRoot: "/host/runner-secrets",
+      managerRunnerSecretsRoot,
       coreEnvironmentsRoot: "/core/environments",
       parentRunnerEnvironmentsRoot: "/environments",
       commandSocketHostDir,
-      runnerSharedSecret: "runner-secret",
+      runnerSharedSecret: "sensitive-auth-value",
       createTimeoutMs: 10,
     });
 
@@ -400,12 +455,22 @@ describe("DockerExecutionEnvironmentManager", () => {
       "BASH_SERVER_AGENT_KEY=panda",
       "BASH_SERVER_PORT=8080",
       "BASH_SERVER_ALLOWED_ROOTS=/workspace",
-      "BASH_SERVER_SHARED_SECRET=runner-secret",
+      "BASH_SERVER_AUTH_TOKEN_FILE=/run/secrets/panda-runner/token",
       "PANDA_WORKSPACE_EXEC_MANAGER_URL=http://panda-environment-manager:8095",
       "PANDA_WORKSPACE_EXEC_ENVIRONMENT_ID=env-worker",
       `PANDA_WORKSPACE_CONTAINER_NAME=${workspace.name}`,
     ]));
     expect(created.config.Env).not.toContain("PANDA_COMMAND_TOKEN=command-token");
+    const runnerAuthTokenFile = expectedRunnerAuthTokenFile(
+      managerRunnerSecretsRoot,
+      "panda",
+      "env-worker",
+    );
+    expect(runnerAuthTokenFile).toMatch(/\.manager-only-runner-secrets\/panda\/env-worker-[a-f0-9]{10}\/token$/);
+    await expect(readFile(runnerAuthTokenFile, "utf8"))
+      .resolves.toBe("sensitive-auth-value\n");
+    await expect(readFile(path.join(filesystem.root.hostPath, "runner-auth-token"), "utf8"))
+      .rejects.toMatchObject({code: "ENOENT"});
     const tokenEnv = created.config.Env.find((value) => value.startsWith("PANDA_WORKSPACE_EXEC_TOKEN="));
     expect(tokenEnv).toBeDefined();
     expect(validateWorkspaceExecCredential({
@@ -426,17 +491,31 @@ describe("DockerExecutionEnvironmentManager", () => {
       `${filesystem.workspace.hostPath}:/workspace`,
       `${filesystem.inbox.hostPath}:/inbox`,
       `${filesystem.artifacts.hostPath}:/artifacts`,
+      expect.stringMatching(/^\/host\/runner-secrets\/panda\/env-worker-[a-f0-9]{10}\/token:\/run\/secrets\/panda-runner\/token:ro$/),
     ];
     const expectedWorkspaceBinds = [
-      ...expectedControlBinds,
+      `${filesystem.workspace.hostPath}:/workspace`,
+      `${filesystem.inbox.hostPath}:/inbox`,
+      `${filesystem.artifacts.hostPath}:/artifacts`,
       `${commandSocketHostDir}:/run/panda-command:ro`,
     ];
     expect(created.config.HostConfig.Binds).toEqual(expectedControlBinds);
     expect(workspace.config.HostConfig.Binds).toEqual(expectedWorkspaceBinds);
     expect(workspace.config.HostConfig.Binds).not.toContain("/run/panda-command:/run/panda-command");
+    expect(workspace.config.HostConfig.Binds).not.toContainEqual(expect.stringContaining("runner-auth-token"));
+    expect(JSON.stringify(workspace.config)).not.toContain("manager-only-runner-secrets");
+    expect(JSON.stringify(workspace.config)).not.toContain("sensitive-auth-value");
+    expect(JSON.stringify(created.config)).not.toContain("sensitive-auth-value");
+    expect(JSON.stringify(result.metadata)).not.toContain("sensitive-auth-value");
     expect(dockerClient.started).toEqual([`container-${workspace.name}`, `container-${created.name}`]);
     expect(JSON.stringify(created.config)).not.toContain("/root/.panda");
     expect(JSON.stringify(created.config)).not.toContain("Mounts");
+    await manager.stopEnvironment("env-worker");
+    expect(dockerClient.removedNetworks).toEqual([
+      expect.stringMatching(/^panda-env-env-worker-workspace-net-[a-f0-9]{10}$/),
+    ]);
+    await expect(readFile(runnerAuthTokenFile, "utf8"))
+      .rejects.toMatchObject({code: "ENOENT"});
   });
 
   it("rejects socket command access without a configured host socket directory", async () => {
@@ -449,6 +528,8 @@ describe("DockerExecutionEnvironmentManager", () => {
       workspaceExecSecret: "workspace-secret",
       hostEnvironmentsRoot: environmentsRoot,
       managerEnvironmentsRoot: environmentsRoot,
+      hostRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
+      managerRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
       coreEnvironmentsRoot: "/core/environments",
       parentRunnerEnvironmentsRoot: "/environments",
       createTimeoutMs: 10,
@@ -465,14 +546,92 @@ describe("DockerExecutionEnvironmentManager", () => {
     })).rejects.toThrow("PANDA_COMMAND_SOCKET_HOST_DIR is required when command access uses a Unix socket.");
   });
 
+  it("rejects disposable runner secrets inside a per-agent environment mount", async () => {
+    const dockerClient = new FakeDockerClient();
+    const environmentsRoot = await makeEnvironmentRoot();
+    const manager = new DockerExecutionEnvironmentManager({
+      dockerClient,
+      hostEnvironmentsRoot: environmentsRoot,
+      managerEnvironmentsRoot: environmentsRoot,
+      hostRunnerSecretsRoot: environmentsRoot,
+      managerRunnerSecretsRoot: environmentsRoot,
+      createTimeoutMs: 10,
+    });
+
+    await expect(manager.createDisposableEnvironment({
+      agentKey: "panda",
+      sessionId: "session-worker",
+      environmentId: "env-worker",
+    })).rejects.toThrow("outside the per-agent environment tree");
+    expect(dockerClient.created).toHaveLength(0);
+  });
+
+  it("rejects runner-secret roots whose ancestor symlink resolves into an agent environment", async () => {
+    const dockerClient = new FakeDockerClient();
+    const root = await makeEnvironmentRoot();
+    const environmentsRoot = path.join(root, "environments");
+    const aliasRoot = path.join(root, "secrets-alias");
+    await mkdir(path.join(environmentsRoot, "panda"), {recursive: true});
+    await symlink(path.join(environmentsRoot, "panda"), aliasRoot);
+    const manager = new DockerExecutionEnvironmentManager({
+      dockerClient,
+      hostEnvironmentsRoot: environmentsRoot,
+      managerEnvironmentsRoot: environmentsRoot,
+      hostRunnerSecretsRoot: aliasRoot,
+      managerRunnerSecretsRoot: aliasRoot,
+      runnerSharedSecret: "runner-secret",
+      createTimeoutMs: 10,
+    });
+
+    await expect(manager.createDisposableEnvironment({
+      agentKey: "panda",
+      sessionId: "session-worker",
+      environmentId: "env-worker",
+    })).rejects.toThrow("outside the per-agent environment tree");
+    expect(dockerClient.created).toHaveLength(0);
+  });
+
+  it("atomically replaces a stale token symlink without writing through it", async () => {
+    const dockerClient = new FakeDockerClient();
+    const environmentsRoot = await makeEnvironmentRoot();
+    const runnerSecretsRoot = path.join(environmentsRoot, ".manager-only-runner-secrets");
+    const tokenFile = expectedRunnerAuthTokenFile(runnerSecretsRoot, "panda", "env-worker");
+    const outsideFile = path.join(environmentsRoot, "outside-secret");
+    await mkdir(path.dirname(tokenFile), {recursive: true});
+    await writeFile(outsideFile, "do-not-overwrite", {mode: 0o600});
+    await symlink(outsideFile, tokenFile);
+    const manager = new DockerExecutionEnvironmentManager({
+      dockerClient,
+      hostEnvironmentsRoot: environmentsRoot,
+      managerEnvironmentsRoot: environmentsRoot,
+      hostRunnerSecretsRoot: runnerSecretsRoot,
+      managerRunnerSecretsRoot: runnerSecretsRoot,
+      runnerSharedSecret: "runner-secret",
+      createTimeoutMs: 10,
+    });
+
+    await manager.createDisposableEnvironment({
+      agentKey: "panda",
+      sessionId: "session-worker",
+      environmentId: "env-worker",
+    });
+
+    await expect(readFile(outsideFile, "utf8")).resolves.toBe("do-not-overwrite");
+    expect((await lstat(tokenFile)).isSymbolicLink()).toBe(false);
+    await expect(readFile(tokenFile, "utf8")).resolves.toBe("runner-secret\n");
+  });
+
   it("returns container-network URLs when a Docker network is configured", async () => {
     const dockerClient = new FakeDockerClient();
     const environmentsRoot = await makeEnvironmentRoot();
     const manager = new DockerExecutionEnvironmentManager({
       dockerClient,
       network: "panda_runner_net",
+      browserContainerName: "panda-browser-runner",
       hostEnvironmentsRoot: environmentsRoot,
       managerEnvironmentsRoot: environmentsRoot,
+      hostRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
+      managerRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
       createTimeoutMs: 10,
     });
 
@@ -485,10 +644,70 @@ describe("DockerExecutionEnvironmentManager", () => {
     const created = findCreatedContainer(dockerClient, "control");
     const workspace = findCreatedContainer(dockerClient, "workspace");
     expect(created.config.HostConfig.NetworkMode).toBe("panda_runner_net");
-    expect(workspace.config.HostConfig.NetworkMode).toBe("panda_runner_net");
+    expect(workspace.config.HostConfig.NetworkMode).toMatch(/^panda-env-env-worker-workspace-net-[a-f0-9]{10}$/);
     expect(created.config.HostConfig.PortBindings).toBeUndefined();
     expect(workspace.config.HostConfig.PortBindings).toBeUndefined();
     expect(result.runnerUrl).toMatch(/^http:\/\/panda-env-env-worker-control-[a-f0-9]{10}:8080$/);
+    expect(dockerClient.networks).toHaveLength(1);
+    expect(dockerClient.networks[0]?.config).toMatchObject({
+      CheckDuplicate: true,
+      Internal: false,
+      Labels: {
+        "panda.managed": "true",
+        "panda.environment.id": "env-worker",
+        "panda.environment.role": "workspace-network",
+      },
+    });
+    expect(dockerClient.networkConnections).toEqual([{
+      network: workspace.config.HostConfig.NetworkMode,
+      container: "panda-browser-runner",
+      aliases: ["panda-browser-runner"],
+    }]);
+    expect(result.metadata).toMatchObject({
+      workspaceContainer: {name: workspace.name},
+      workspaceNetwork: workspace.config.HostConfig.NetworkMode,
+      browserPreviewConnected: true,
+    });
+    await manager.stopEnvironment("env-worker");
+    expect(dockerClient.networkDisconnections).toEqual([{
+      network: workspace.config.HostConfig.NetworkMode,
+      container: "panda-browser-runner",
+    }]);
+  });
+
+  it("refuses to reuse a workspace network owned by another agent session", async () => {
+    const dockerClient = new FakeDockerClient();
+    const environmentsRoot = await makeEnvironmentRoot();
+    dockerClient.createNetworkError = new DockerApiError("network already exists", 409);
+    dockerClient.inspectNetworkLabels = {
+      "panda.managed": "true",
+      "panda.environment.id": "env-worker",
+      "panda.agent.key": "other-agent",
+      "panda.session.id": "other-session",
+      "panda.environment.role": "workspace-network",
+    };
+    const manager = new DockerExecutionEnvironmentManager({
+      dockerClient,
+      network: "panda_runner_net",
+      hostEnvironmentsRoot: environmentsRoot,
+      managerEnvironmentsRoot: environmentsRoot,
+      hostRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
+      managerRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
+      createTimeoutMs: 10,
+    });
+
+    await expect(manager.createDisposableEnvironment({
+      agentKey: "panda",
+      sessionId: "session-worker",
+      environmentId: "env-worker",
+    })).rejects.toThrow("network already exists");
+    expect(dockerClient.created).toHaveLength(0);
+    expect(dockerClient.removedNetworks).toHaveLength(0);
+    await expect(readFile(expectedRunnerAuthTokenFile(
+      path.join(environmentsRoot, ".manager-only-runner-secrets"),
+      "panda",
+      "env-worker",
+    ), "utf8")).rejects.toMatchObject({code: "ENOENT"});
   });
 
   it("keeps container-network runner hostnames within Docker DNS label limits", async () => {
@@ -499,6 +718,8 @@ describe("DockerExecutionEnvironmentManager", () => {
       network: "panda_runner_net",
       hostEnvironmentsRoot: environmentsRoot,
       managerEnvironmentsRoot: environmentsRoot,
+      hostRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
+      managerRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
       createTimeoutMs: 10,
     });
     const environmentId = "worker:38fd8ac4-06e8-4219-bebc-c98b73944bf6";
@@ -570,6 +791,7 @@ describe("DockerExecutionEnvironmentManager", () => {
 
   it("rejects existing disposable container name collisions across agents", async () => {
     const dockerClient = new FakeDockerClient();
+    const environmentsRoot = await makeEnvironmentRoot();
     dockerClient.createError = new DockerApiError("Conflict. The container name is already in use.", 409);
     dockerClient.inspectLabels = {
       "panda.managed": "true",
@@ -579,6 +801,10 @@ describe("DockerExecutionEnvironmentManager", () => {
     };
     const manager = new DockerExecutionEnvironmentManager({
       dockerClient,
+      hostEnvironmentsRoot: environmentsRoot,
+      managerEnvironmentsRoot: environmentsRoot,
+      hostRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
+      managerRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
       createTimeoutMs: 10,
     });
 
@@ -620,6 +846,8 @@ describe("DockerExecutionEnvironmentManager", () => {
       dockerClient,
       hostEnvironmentsRoot: environmentsRoot,
       managerEnvironmentsRoot: environmentsRoot,
+      hostRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
+      managerRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
       createTimeoutMs: 10,
     });
 
@@ -633,6 +861,16 @@ describe("DockerExecutionEnvironmentManager", () => {
     expect(dockerClient.stopped[0]).toMatch(/^panda-env-env-worker-control-[a-f0-9]{10}$/);
     expect(dockerClient.stopped[1]).toMatch(/^panda-env-env-worker-workspace-[a-f0-9]{10}$/);
     expect(dockerClient.removed).toEqual(dockerClient.stopped);
+    expect(dockerClient.removedNetworks).toEqual([
+      expect.stringMatching(/^panda-env-env-worker-workspace-net-[a-f0-9]{10}$/),
+    ]);
+    const runnerAuthTokenFile = expectedRunnerAuthTokenFile(
+      path.join(environmentsRoot, ".manager-only-runner-secrets"),
+      "panda",
+      "env-worker",
+    );
+    await expect(readFile(runnerAuthTokenFile, "utf8"))
+      .rejects.toMatchObject({code: "ENOENT"});
   });
 });
 
@@ -655,6 +893,7 @@ describe("execution environment manager HTTP boundary", () => {
         agentKey: "panda",
         sessionId: "session-worker",
         environmentId: "env-worker",
+        runnerAuthToken: "runner-token",
       })).resolves.toMatchObject({
         runnerUrl: "http://worker:8080",
         runnerCwd: "/workspace",
@@ -749,6 +988,7 @@ describe("execution environment manager HTTP boundary", () => {
       agentKey: "panda",
       sessionId: "session-worker",
       environmentId: "env-worker",
+      runnerAuthToken: "runner-token",
       metadata: Number.NaN,
     })).rejects.toThrow("Execution environment manager request metadata must be JSON-serializable.");
 
@@ -769,6 +1009,7 @@ describe("execution environment manager HTTP boundary", () => {
       agentKey: "panda",
       sessionId: "session-worker",
       environmentId: "env-worker",
+      runnerAuthToken: "runner-token",
     })).rejects.toThrow("Execution environment manager response metadata must be JSON-serializable.");
   });
 
@@ -790,6 +1031,7 @@ describe("execution environment manager HTTP boundary", () => {
           agentKey: "panda",
           sessionId: "session-worker",
           environmentId: "env-worker",
+          runnerAuthToken: "runner-token",
         }),
       });
 
@@ -874,11 +1116,13 @@ describe("execution environment manager HTTP boundary", () => {
       managerUrl: "http://manager:8095",
       hostEnvironmentsRoot: environmentsRoot,
       managerEnvironmentsRoot: environmentsRoot,
+      hostRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
+      managerRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
       coreEnvironmentsRoot: "/core/environments",
       parentRunnerEnvironmentsRoot: "/environments",
       createTimeoutMs: 10,
     });
-    await manager.createDisposableEnvironment({agentKey: "panda", sessionId: "session-worker", environmentId: "env-a"});
+    await manager.createDisposableEnvironment({agentKey: "panda", sessionId: "session-worker", environmentId: "env-a", runnerAuthToken: "runner-token"});
     const server = await startExecutionEnvironmentManager({host: "127.0.0.1", port: 0, sharedSecret: "lifecycle-secret", manager});
     const execToken = createWorkspaceExecCredential({environmentId: "env-a", secret: "workspace-secret"});
     try {
@@ -922,12 +1166,14 @@ describe("execution environment manager HTTP boundary", () => {
       managerUrl: "http://manager:8095",
       hostEnvironmentsRoot: environmentsRoot,
       managerEnvironmentsRoot: environmentsRoot,
+      hostRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
+      managerRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
       coreEnvironmentsRoot: "/core/environments",
       parentRunnerEnvironmentsRoot: "/environments",
       createTimeoutMs: 10,
     });
     try {
-      await manager.createDisposableEnvironment({agentKey: "panda", sessionId: "session-worker", environmentId: "env-a"});
+      await manager.createDisposableEnvironment({agentKey: "panda", sessionId: "session-worker", environmentId: "env-a", runnerAuthToken: "runner-token"});
 
       await expect(manager.handleWorkspaceExecAction({
         action: "start",
@@ -957,12 +1203,14 @@ describe("execution environment manager HTTP boundary", () => {
       managerUrl: "http://manager:8095",
       hostEnvironmentsRoot: environmentsRoot,
       managerEnvironmentsRoot: environmentsRoot,
+      hostRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
+      managerRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
       coreEnvironmentsRoot: "/core/environments",
       parentRunnerEnvironmentsRoot: "/environments",
       createTimeoutMs: 10,
     });
     try {
-      await manager.createDisposableEnvironment({agentKey: "panda", sessionId: "session-worker", environmentId: "env-a"});
+      await manager.createDisposableEnvironment({agentKey: "panda", sessionId: "session-worker", environmentId: "env-a", runnerAuthToken: "runner-token"});
 
       await expect(manager.handleWorkspaceExecAction({
         action: "start",
@@ -991,12 +1239,14 @@ describe("execution environment manager HTTP boundary", () => {
       managerUrl: "http://manager:8095",
       hostEnvironmentsRoot: environmentsRoot,
       managerEnvironmentsRoot: environmentsRoot,
+      hostRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
+      managerRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
       coreEnvironmentsRoot: "/core/environments",
       parentRunnerEnvironmentsRoot: "/environments",
       createTimeoutMs: 10,
     });
     try {
-      await manager.createDisposableEnvironment({agentKey: "panda", sessionId: "session-worker", environmentId: "env-a"});
+      await manager.createDisposableEnvironment({agentKey: "panda", sessionId: "session-worker", environmentId: "env-a", runnerAuthToken: "runner-token"});
 
       const snapshot = await manager.handleWorkspaceExecAction({
         action: "start",
@@ -1041,12 +1291,14 @@ describe("execution environment manager HTTP boundary", () => {
       managerUrl: "http://manager:8095",
       hostEnvironmentsRoot: environmentsRoot,
       managerEnvironmentsRoot: environmentsRoot,
+      hostRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
+      managerRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
       coreEnvironmentsRoot: "/core/environments",
       parentRunnerEnvironmentsRoot: "/environments",
       createTimeoutMs: 10,
     });
     try {
-      await manager.createDisposableEnvironment({agentKey: "panda", sessionId: "session-worker", environmentId: "env-a"});
+      await manager.createDisposableEnvironment({agentKey: "panda", sessionId: "session-worker", environmentId: "env-a", runnerAuthToken: "runner-token"});
       await manager.handleWorkspaceExecAction({
         action: "start",
         environmentId: "env-a",
@@ -1074,12 +1326,14 @@ describe("execution environment manager HTTP boundary", () => {
       managerUrl: "http://manager:8095",
       hostEnvironmentsRoot: environmentsRoot,
       managerEnvironmentsRoot: environmentsRoot,
+      hostRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
+      managerRunnerSecretsRoot: path.join(environmentsRoot, ".manager-only-runner-secrets"),
       coreEnvironmentsRoot: "/core/environments",
       parentRunnerEnvironmentsRoot: "/environments",
       createTimeoutMs: 10,
     });
     try {
-      await manager.createDisposableEnvironment({agentKey: "panda", sessionId: "session-worker", environmentId: "env-a"});
+      await manager.createDisposableEnvironment({agentKey: "panda", sessionId: "session-worker", environmentId: "env-a", runnerAuthToken: "runner-token"});
       const started = await manager.handleWorkspaceExecAction({
         action: "start",
         environmentId: "env-a",

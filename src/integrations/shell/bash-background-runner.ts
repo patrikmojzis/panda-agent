@@ -6,15 +6,11 @@ import type {
 } from "../../domain/threads/runtime/tool-job-service.js";
 import type {JsonObject} from "../../lib/json.js";
 import {
-    buildRunnerEndpoint,
-    buildRunnerRequestHeaders,
-    makeNetworkTimeoutSignal,
     readRunnerError,
     resolveBashExecutionMode,
-    resolveRunnerSharedSecret,
-    resolveRunnerUrl,
     resolveRunnerUrlTemplate,
 } from "./bash-executor.js";
+import {RunnerTransport, type RunnerTransportTarget} from "./runner-transport.js";
 import {ManagedBashJob} from "./bash-background-job.js";
 import {buildShellProcessEnv, SAFE_SHELL} from "./environment.js";
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
@@ -151,22 +147,19 @@ async function parseJobResponse(response: Response): Promise<BashRunnerJobRespon
 }
 
 async function compensateAmbiguousRemoteStart(input: {
-  fetchImpl: typeof fetch;
-  runnerUrl: string;
-  headers: Record<string, string>;
+  transport: RunnerTransport;
+  target: RunnerTransportTarget;
   jobId: string;
 }): Promise<void> {
-  const response = await input.fetchImpl(buildRunnerEndpoint(input.runnerUrl, "jobs/cancel"), {
-    method: "POST",
-    headers: input.headers,
-    body: JSON.stringify({
+  const response = await input.transport.request(input.target, "jobs/cancel", {
+    body: {
       jobId: input.jobId,
       timeoutMs: DEFAULT_REMOTE_CANCEL_WAIT_TIMEOUT_MS,
       reserveIfMissing: true,
-    } satisfies BashRunnerJobCancelRequest),
+    } satisfies BashRunnerJobCancelRequest,
     // The startup signal is already aborted. Compensation needs an independent
     // bounded request or it would be cancelled before reaching the runner.
-    signal: makeNetworkTimeoutSignal(DEFAULT_REMOTE_TIMEOUT_BUFFER_MS),
+    timeoutMs: DEFAULT_REMOTE_TIMEOUT_BUFFER_MS,
   });
   if (!response.ok) {
     await readRunnerError(response);
@@ -236,15 +229,13 @@ export async function startBashBackgroundJob<TContext extends ShellExecutionCont
   }
 
   const agentKey = readAgentKey(options.context);
-  const runnerUrl = options.executionEnvironment?.runnerUrl
-    ?? resolveRunnerUrl(runnerUrlTemplate ?? "", agentKey);
-  const requestTemplate = runnerUrlTemplate ?? runnerUrl;
-  const headers = buildRunnerRequestHeaders(
+  const transport = new RunnerTransport({env: processEnv, fetchImpl});
+  const target = transport.resolveTarget({
     agentKey,
-    requestTemplate,
-    runnerUrl,
-    resolveRunnerSharedSecret(processEnv),
-  );
+    runnerUrlTemplate,
+    runnerUrl: options.executionEnvironment?.runnerUrl,
+    executionEnvironment: options.executionEnvironment,
+  });
   const request: BashRunnerJobStartRequest = {
     jobId: options.jobId,
     command: options.command,
@@ -269,17 +260,14 @@ export async function startBashBackgroundJob<TContext extends ShellExecutionCont
 
   let response: Response;
   try {
-    response = await fetchImpl(buildRunnerEndpoint(runnerUrl, "jobs/start"), {
-      method: "POST",
-      headers,
-      body: JSON.stringify(request),
-      signal: options.signal
-        ? AbortSignal.any([options.signal, makeNetworkTimeoutSignal(DEFAULT_REMOTE_TIMEOUT_BUFFER_MS)])
-        : makeNetworkTimeoutSignal(DEFAULT_REMOTE_TIMEOUT_BUFFER_MS),
+    response = await transport.request(target, "jobs/start", {
+      body: request,
+      timeoutMs: DEFAULT_REMOTE_TIMEOUT_BUFFER_MS,
+      signal: options.signal,
     });
   } catch (error) {
     try {
-      await compensateAmbiguousRemoteStart({fetchImpl, runnerUrl, headers, jobId: options.jobId});
+      await compensateAmbiguousRemoteStart({transport, target, jobId: options.jobId});
     } catch (compensationError) {
       throw new AggregateError(
         [error, compensationError],
@@ -296,7 +284,7 @@ export async function startBashBackgroundJob<TContext extends ShellExecutionCont
       startError = error;
     }
     try {
-      await compensateAmbiguousRemoteStart({fetchImpl, runnerUrl, headers, jobId: options.jobId});
+      await compensateAmbiguousRemoteStart({transport, target, jobId: options.jobId});
     } catch (compensationError) {
       throw new AggregateError(
         [startError, compensationError],
@@ -311,7 +299,7 @@ export async function startBashBackgroundJob<TContext extends ShellExecutionCont
     initial = sanitizeSnapshot(await parseJobResponse(response), options);
   } catch (error) {
     try {
-      await compensateAmbiguousRemoteStart({fetchImpl, runnerUrl, headers, jobId: options.jobId});
+      await compensateAmbiguousRemoteStart({transport, target, jobId: options.jobId});
     } catch (compensationError) {
       throw new AggregateError(
         [error, compensationError],
@@ -333,11 +321,9 @@ export async function startBashBackgroundJob<TContext extends ShellExecutionCont
       : {
         jobId: options.jobId,
       } satisfies BashRunnerJobQueryRequest;
-    const nextResponse = await fetchImpl(buildRunnerEndpoint(runnerUrl, requestMode === "wait" ? "jobs/wait" : "jobs/status"), {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: makeNetworkTimeoutSignal(timeoutMs + DEFAULT_REMOTE_TIMEOUT_BUFFER_MS),
+    const nextResponse = await transport.request(target, requestMode === "wait" ? "jobs/wait" : "jobs/status", {
+      body,
+      timeoutMs: timeoutMs + DEFAULT_REMOTE_TIMEOUT_BUFFER_MS,
     });
     if (!nextResponse.ok) {
       await readRunnerError(nextResponse);
@@ -362,14 +348,12 @@ export async function startBashBackgroundJob<TContext extends ShellExecutionCont
     snapshot: async () => snapshotToJobSnapshot(await readRemoteSnapshot("status", 15_000), mode),
     done,
     cancel: async () => {
-      const cancelResponse = await fetchImpl(buildRunnerEndpoint(runnerUrl, "jobs/cancel"), {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
+      const cancelResponse = await transport.request(target, "jobs/cancel", {
+        body: {
           jobId: options.jobId,
           timeoutMs: DEFAULT_REMOTE_CANCEL_WAIT_TIMEOUT_MS,
-        } satisfies BashRunnerJobCancelRequest),
-        signal: makeNetworkTimeoutSignal(DEFAULT_REMOTE_TIMEOUT_BUFFER_MS),
+        } satisfies BashRunnerJobCancelRequest,
+        timeoutMs: DEFAULT_REMOTE_TIMEOUT_BUFFER_MS,
       });
       if (!cancelResponse.ok) {
         await readRunnerError(cancelResponse);

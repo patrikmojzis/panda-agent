@@ -1,4 +1,4 @@
-import {mkdir, mkdtemp, rm, stat, writeFile} from "node:fs/promises";
+import {mkdir, mkdtemp, realpath, rm, stat, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 
@@ -237,6 +237,7 @@ describe("MediaTool", () => {
         {path: originalPath},
         createRunContext({agentKey: "jozef"}),
       ) as ToolResultPayload;
+      const resolvedLocalImagePath = await realpath(localImagePath);
 
       expect(result.content[1]).toMatchObject({
         type: "image",
@@ -244,12 +245,12 @@ describe("MediaTool", () => {
       });
       expect(result.details).toMatchObject({
         kind: "image",
-        path: localImagePath,
+        path: resolvedLocalImagePath,
         originalPath,
         artifact: {
           kind: "image",
           source: "view_media",
-          path: localImagePath,
+          path: resolvedLocalImagePath,
           mimeType: "image/png",
           originalPath,
         },

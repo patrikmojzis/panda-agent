@@ -584,6 +584,14 @@ describe("Session create CLI", () => {
       sessionId: "session-targets",
     });
     const environments = new PostgresExecutionEnvironmentStore({pool});
+    await environments.createEnvironment({
+      id: "persistent-vps",
+      agentKey: "panda",
+      kind: "persistent_agent_runner",
+      state: "ready",
+      runnerUrl: "http://runner.internal:8080",
+      runnerCwd: "/srv/panda",
+    });
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const healthFetch = vi.fn(async () => new Response(JSON.stringify({ok: true}), {status: 200}));
     vi.stubGlobal("fetch", healthFetch);
@@ -596,12 +604,10 @@ describe("Session create CLI", () => {
       "VPS",
       "--agent",
       "panda",
-      "--runner-url",
-      "http://runner.internal:8080",
-      "--runner-cwd",
-      "/srv/panda",
-	      "--allow-tools",
-	      "bash,view_media",
+      "--environment-id",
+      "persistent-vps",
+      "--allow-tools",
+      "bash,view_media",
       "--db-url",
       "postgres://session-create-test",
     ], {from: "user"});
@@ -610,7 +616,7 @@ describe("Session create CLI", () => {
     await expect(environments.getBindingByAlias("session-targets", "vps")).resolves.toMatchObject({
       alias: "vps",
       isDefault: false,
-	      toolPolicy: {allowedTools: ["bash", "view_media"]},
+      toolPolicy: {allowedTools: ["bash", "view_media"]},
     });
 
     write.mockClear();

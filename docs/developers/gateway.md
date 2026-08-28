@@ -415,7 +415,7 @@ The stack runs gateway as its own process:
 - `panda-gateway` handles `/oauth/token`, `/v1/events`, `/v2/attachments`, `/v2/events`, and `/health`
 - Caddy terminates TLS on the public URL
 - `panda-gateway` and Caddy share `gateway_edge_net`
-- `panda-gateway` never joins `runner_net`
+- `panda-gateway` never joins browser, per-agent runner, or disposable control networks
 - `panda-gateway` runs with `DATA_DIR=/root/.panda` and mounts `${HOME}/.panda/agents:/root/.panda/agents` read-write so attachment paths match Panda core and runners
 
 Minimal `.env` shape:

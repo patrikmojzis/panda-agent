@@ -43,7 +43,9 @@ For remote background jobs, `panda-core` sends the same snapshot precedence at s
 
 Those values exist only for that process execution. The runner does not store them in Postgres, files, or long-lived process env.
 
-That also means the core-to-runner link is sensitive. Keep it private; `BASH_SERVER_SHARED_SECRET` is defense-in-depth, not permission to expose it publicly.
+That also means the core-to-runner link is sensitive. Keep it private. Core
+derives a different bearer token for each persistent agent or bound execution
+environment; possession of one runner token must not authorize another runner.
 
 ## Mental Model
 
@@ -81,8 +83,8 @@ Set this in `panda-core`:
 BASH_EXECUTION_MODE=remote
 BASH_SERVER_URL_TEMPLATE=http://panda-runner-{agentKey}:8080
 BASH_SERVER_CWD_TEMPLATE=/root/.panda/agents/{agentKey}
-# Optional: set the same value on core and bash servers to require bearer auth on POST endpoints.
-BASH_SERVER_SHARED_SECRET=<long-random-secret>
+# Required for remote execution. Keep the master only in core.
+PANDA_RUNNER_TOKEN_MASTER_KEY_FILE=/run/secrets/panda-core/runner-token-master-key
 PANDA_APPS_HOST=0.0.0.0
 PANDA_APPS_PORT=8092
 PANDA_APPS_INTERNAL_BASE_URL=http://panda-core:8092
@@ -111,9 +113,14 @@ BASH_SERVER_AGENT_KEY=panda
 BASH_SERVER_PORT=8080
 # Optional initial-cwd guard; include every expected starting root.
 BASH_SERVER_ALLOWED_ROOTS=/root/.panda/agents/panda:/workspace/shared:/environments
-# Optional bearer auth for POST /exec and /jobs/*; /health stays unauthenticated.
-BASH_SERVER_SHARED_SECRET=<same-long-random-secret-as-core>
+# Required bearer auth for POST /exec, /abort, and /jobs/*; /health stays open.
+BASH_SERVER_AUTH_TOKEN_FILE=/run/secrets/panda-runner/token
 ```
+
+The bash server receives only its derived token, never the master key. The
+migration-only `BASH_SERVER_SHARED_SECRET` fallback remains for custom
+deployments during rollout, but the generated stack does not use it. The bash
+server fails startup when neither scoped nor legacy authentication is present.
 
 The bash server serves one agent. Container mounts and sandboxing decide what files it can touch. `BASH_SERVER_ALLOWED_ROOTS` only validates the requested starting cwd; it is not a filesystem sandbox.
 
@@ -135,16 +142,32 @@ This is the nicest day-to-day dev setup:
 Easy path:
 
 ```bash
+umask 077
+install -d -m 700 "$HOME/.panda-core-secrets" "$HOME/.panda-runner-secrets/persistent"
+node -e 'process.stdout.write(`base64:${require("node:crypto").randomBytes(48).toString("base64")}\n`)' \
+  > "$HOME/.panda-core-secrets/runner-token-master-key"
+node scripts/derive-runner-token.mjs \
+  "$HOME/.panda-core-secrets/runner-token-master-key" persistent-agent panda panda \
+  > "$HOME/.panda-runner-secrets/persistent/panda.token"
+chmod 600 "$HOME/.panda-core-secrets/runner-token-master-key" \
+  "$HOME/.panda-runner-secrets/persistent/panda.token"
+
+PANDA_RUNNER_TOKEN_MASTER_KEY_FILE="$HOME/.panda-core-secrets/runner-token-master-key" \
+BASH_SERVER_AUTH_TOKEN_FILE="$HOME/.panda-runner-secrets/persistent/panda.token" \
 ./scripts/run-docker-runner.sh panda
 ```
 
 Manual path:
 
 ```bash
-docker run --rm -p 8080:8080 \
+docker network inspect panda-runner-panda-net >/dev/null 2>&1 \
+  || docker network create panda-runner-panda-net
+docker run --rm --network panda-runner-panda-net -p 127.0.0.1:8080:8080 \
   -e BASH_SERVER_AGENT_KEY=panda \
+  -e BASH_SERVER_AUTH_TOKEN_FILE=/run/secrets/panda-runner/token \
   -v "$HOME/.panda/agents/panda:/root/.panda/agents/panda" \
   -v "$HOME/.panda/shared:/workspace/shared" \
+  -v "$HOME/.panda-runner-secrets/persistent/panda.token:/run/secrets/panda-runner/token:ro" \
   panda:latest bash-server
 ```
 
@@ -154,6 +177,7 @@ Then start Panda locally against that runner:
 export BASH_EXECUTION_MODE=remote
 export BASH_SERVER_URL_TEMPLATE=http://127.0.0.1:8080
 export BASH_SERVER_CWD_TEMPLATE=/root/.panda/agents/{agentKey}
+export PANDA_RUNNER_TOKEN_MASTER_KEY_FILE="$HOME/.panda-core-secrets/runner-token-master-key"
 
 pnpm dev run --db-url postgresql://localhost:5432/panda
 pnpm dev chat --db-url postgresql://localhost:5432/panda --agent panda
@@ -208,14 +232,29 @@ That wrapper:
 - generates one `panda-runner-<agentKey>` service per agent running `panda bash-server`
 - auto-runs `panda agent ensure <agentKey>` inside core after startup
 - enables the `panda-telegram` worker when `TELEGRAM_ENABLED=true`; it runs all enabled Telegram connector accounts
+- creates an owner-only Core master key and distinct runner token files under
+  `PANDA_CORE_SECRETS_HOST_ROOT`, which channel and workspace containers do not mount
+- places every persistent runner on its own network with Core as the only shared peer
+
+By default every declared `PANDA_AGENTS` member still mounts
+`/workspace/shared`, preserving multi-agent repository collaboration. Set
+`PANDA_SHARED_WORKSPACE_AGENTS` to a comma-separated subset to narrow that trust
+group, or set it explicitly empty to mount the shared workspace into no runner.
+Members of that list intentionally share the repository and can modify each
+other's work there; it is a collaboration boundary, not private storage.
 
 For `openai-codex`, the Docker examples mount a host Codex home read-only into `panda-core` and set `CODEX_HOME=/root/.codex` inside the container. That is better than baking `OPENAI_OAUTH_TOKEN` into the image or env because Panda reads the token from `auth.json` at request time, while a raw env token goes stale and then just sits there like a brick.
 
 The base compose file it builds on is still [examples/docker-compose.remote-bash.external-db.yml](../../examples/docker-compose.remote-bash.external-db.yml).
 
-CLI-backed Panda tools use a private command HTTP server in this stack. `panda-core` binds it on `0.0.0.0:8096`, advertises it to runners as `http://panda-core:8096`, and does not publish that port to the host. Runners receive scoped command access per bash call, so you do not need to add `PANDA_COMMAND_SERVER_*` values to `.env` for the normal single-host Docker stack. Static command-server env tokens are not supported; Panda injects short-lived command access automatically when a shell call needs it.
-
-For same-host Docker deployments, you can opt into Unix socket transport with `PANDA_COMMAND_TRANSPORT=socket`. The wrapper mounts `${PANDA_COMMAND_SOCKET_HOST_DIR:-$HOME/.panda/run/command}` into core and runners, and runners call `/run/panda-command/command.sock` instead of `http://panda-core:8096`. Keep HTTP for remote runners. The wrapper also sets `PANDA_COMMAND_SOCKET_MOUNTED_RUNNERS=true` so fallback `panda-runner-<agent>` services can receive socket-only access; named or DB-bound persistent targets still fail closed in socket-only mode.
+CLI-backed Panda tools use a Unix socket by default in the same-host Docker
+stack. The wrapper mounts
+`${PANDA_COMMAND_SOCKET_HOST_DIR:-$HOME/.panda/run/command}` into Core and the
+declared runners; it does not put a command-control HTTP endpoint on runner
+networks. Runners receive scoped command access per bash call. Set
+`PANDA_COMMAND_TRANSPORT=http` only for an explicitly remote runner topology;
+named or DB-bound targets fail closed when the selected transport cannot reach
+their command-access endpoint.
 
 ## External Postgres
 
@@ -273,18 +312,17 @@ A session can bind named runner targets so the model can call tools with
 This is the attach/register/bind/list/status/detach operator flow:
 
 ```bash
-# Personal PC/Mac attach: register + bind the runner and print matching core/runner env.
+# Personal PC/Mac attach: register + bind the runner and write its derived token to a private file.
 panda runner attach <sessionRef> mac \
   --agent panda \
   --runner-url http://mac-mini.tailnet:8080 \
   --runner-cwd /Users/patrik/.panda/agents/panda \
   --allow-tools bash
 
-# Existing runner endpoint: bind it directly to one session.
+# Already-provisioned environment: bind it to another session alias.
 panda session targets bind <sessionRef> vps \
   --agent panda \
-  --runner-url http://panda-runner-panda:8080 \
-  --runner-cwd /root/.panda/agents/panda \
+  --environment-id <existingEnvironmentId> \
   --allow-tools bash
 
 # See default + named targets and runner reachability.
@@ -303,7 +341,7 @@ switches the session default; after that, the old alias can be detached.
 
 Control also shows session execution targets on the session overview. The health
 badge means **reachable** only: it is an unauthenticated runner `/health` probe,
-not proof that the runner shared secret or target agent header will authorize a
+not proof that the runner token or target agent header will authorize a
 real tool call. A wrong-secret or wrong-agent runner may be reachable and still
 fail at execution time.
 
@@ -342,7 +380,10 @@ Remote background jobs add:
 - `POST /jobs/wait`
 - `POST /jobs/cancel`
 
-Those endpoints are runner-internal plumbing for Panda core. They are not meant as a public API contract for random clients. When `BASH_SERVER_SHARED_SECRET` is set on both sides, all POST endpoints require `Authorization: Bearer <secret>`; `/health` remains open inside the private network.
+Those endpoints are runner-internal plumbing for Panda core. They are not meant
+as a public API contract for random clients. Every POST requires the bearer
+token derived for that exact agent/environment scope; `/health` remains open
+inside the private network.
 
 ## Disposable Runners
 
@@ -364,8 +405,9 @@ Current compatibility aliases:
 - do not put provider API keys in runner env
 - do not mount the Docker socket into `panda-core`
 - do not mount the Docker socket into runners
+- do not place disposable runner token files below an environment or workspace mount
 - do not let runners reach Postgres over the network
-- do not expose the core-to-runner HTTP hop on a public network, even with `BASH_SERVER_SHARED_SECRET`
+- do not expose the core-to-runner HTTP hop on a public network, even with scoped tokens
 - do not mount a giant shared parent directory unless you really want the runner to see all of it
 - shared workspaces are opt-in and collisions are expected if multiple agents use them at the same time
 

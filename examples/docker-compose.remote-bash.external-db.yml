@@ -20,10 +20,14 @@ services:
       PANDA_APPS_RATE_LIMIT_PER_MINUTE: ${PANDA_APPS_RATE_LIMIT_PER_MINUTE:-300}
       PANDA_APPS_INTERNAL_BASE_URL: ${PANDA_APPS_INTERNAL_BASE_URL:-http://panda-core:${PANDA_APPS_PORT:-8092}}
       BASH_EXECUTION_MODE: remote
+      PANDA_RUNNER_TOKEN_MASTER_KEY: ""
+      PANDA_RUNNER_TOKEN_MASTER_KEY_FILE: /run/secrets/panda-core/runner-token-master-key
+      BASH_SERVER_AUTH_TOKEN: ""
+      BASH_SERVER_AUTH_TOKEN_FILE: ""
+      BASH_SERVER_SHARED_SECRET: ""
       CODEX_HOME: /root/.codex
       BASH_SERVER_URL_TEMPLATE: http://panda-runner-{agentKey}:8080
       BASH_SERVER_CWD_TEMPLATE: /root/.panda/agents/{agentKey}
-      BASH_SERVER_SHARED_SECRET: ${BASH_SERVER_SHARED_SECRET:-}
       PANDA_COMMAND_SERVER_ENABLED: ${PANDA_COMMAND_SERVER_ENABLED:-true}
       PANDA_COMMAND_SERVER_HOST: ${PANDA_COMMAND_SERVER_HOST:-0.0.0.0}
       PANDA_COMMAND_SERVER_PORT: ${PANDA_COMMAND_SERVER_PORT:-8096}
@@ -44,7 +48,8 @@ services:
       panda-browser-runner:
         condition: service_healthy
     networks:
-      - runner_net
+      - browser_runner_net
+      - service_net
       - wiki_net
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:${PANDA_CORE_HEALTH_PORT:-8090}/health"]
@@ -60,6 +65,7 @@ services:
       context: ..
       target: browser-runner
     image: panda-browser-runner:latest
+    container_name: ${PANDA_BROWSER_RUNNER_CONTAINER_NAME:-panda-browser-runner}
     command: ["browser-runner"]
     restart: unless-stopped
     init: true
@@ -77,7 +83,7 @@ services:
     volumes:
       - ${BROWSER_RUNNER_ROOT:-${HOME}/.panda-browser-runner}:/home/pwuser/.panda/browser-runner
     networks:
-      - runner_net
+      - browser_runner_net
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
       interval: 10s
@@ -98,6 +104,11 @@ services:
       CREDENTIALS_MASTER_KEY: ${CREDENTIALS_MASTER_KEY:-}
       PANDA_SCHEDULED_COMMAND_INTEGRITY_KEY: ""
       PANDA_SCHEDULED_COMMAND_INTEGRITY_KEY_FILE: ""
+      PANDA_RUNNER_TOKEN_MASTER_KEY: ""
+      PANDA_RUNNER_TOKEN_MASTER_KEY_FILE: ""
+      BASH_SERVER_AUTH_TOKEN: ""
+      BASH_SERVER_AUTH_TOKEN_FILE: ""
+      BASH_SERVER_SHARED_SECRET: ""
       PANDA_TELEGRAM_DB_POOL_MAX: ${PANDA_TELEGRAM_DB_POOL_MAX:-2}
       PANDA_TELEGRAM_HEALTH_PORT: ${PANDA_TELEGRAM_HEALTH_PORT:-8091}
       TZ: ${TZ:-UTC}
@@ -108,7 +119,7 @@ services:
       panda-core:
         condition: service_healthy
     networks:
-      - runner_net
+      - service_net
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:${PANDA_TELEGRAM_HEALTH_PORT:-8091}/health"]
       interval: 30s
@@ -129,6 +140,11 @@ services:
       CREDENTIALS_MASTER_KEY: ${CREDENTIALS_MASTER_KEY:-}
       PANDA_SCHEDULED_COMMAND_INTEGRITY_KEY: ""
       PANDA_SCHEDULED_COMMAND_INTEGRITY_KEY_FILE: ""
+      PANDA_RUNNER_TOKEN_MASTER_KEY: ""
+      PANDA_RUNNER_TOKEN_MASTER_KEY_FILE: ""
+      BASH_SERVER_AUTH_TOKEN: ""
+      BASH_SERVER_AUTH_TOKEN_FILE: ""
+      BASH_SERVER_SHARED_SECRET: ""
       PANDA_DISCORD_DB_POOL_MAX: ${PANDA_DISCORD_DB_POOL_MAX:-2}
       PANDA_DISCORD_VOICE_EXPERIMENTAL: ${PANDA_DISCORD_VOICE_EXPERIMENTAL:-false}
       PANDA_DISCORD_VOICE_VOICE: ${PANDA_DISCORD_VOICE_VOICE:-cove}
@@ -144,7 +160,7 @@ services:
       panda-core:
         condition: service_healthy
     networks:
-      - runner_net
+      - service_net
 
   panda-whatsapp:
     image: panda-app:latest
@@ -159,6 +175,11 @@ services:
       CREDENTIALS_MASTER_KEY: ${CREDENTIALS_MASTER_KEY:-}
       PANDA_SCHEDULED_COMMAND_INTEGRITY_KEY: ""
       PANDA_SCHEDULED_COMMAND_INTEGRITY_KEY_FILE: ""
+      PANDA_RUNNER_TOKEN_MASTER_KEY: ""
+      PANDA_RUNNER_TOKEN_MASTER_KEY_FILE: ""
+      BASH_SERVER_AUTH_TOKEN: ""
+      BASH_SERVER_AUTH_TOKEN_FILE: ""
+      BASH_SERVER_SHARED_SECRET: ""
       PANDA_WHATSAPP_DB_POOL_MAX: ${PANDA_WHATSAPP_DB_POOL_MAX:-2}
       PANDA_WHATSAPP_MAX_MEDIA_BYTES: ${PANDA_WHATSAPP_MAX_MEDIA_BYTES:-26214400}
       PANDA_WHATSAPP_MEDIA_DOWNLOAD_TIMEOUT_MS: ${PANDA_WHATSAPP_MEDIA_DOWNLOAD_TIMEOUT_MS:-30000}
@@ -173,7 +194,7 @@ services:
       panda-core:
         condition: service_healthy
     networks:
-      - runner_net
+      - service_net
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:${PANDA_WHATSAPP_HEALTH_PORT:-8093}/health"]
       interval: 30s
@@ -182,5 +203,6 @@ services:
       start_period: 45s
 
 networks:
-  runner_net:
+  browser_runner_net:
+  service_net:
   wiki_net:

@@ -15,15 +15,13 @@ import {
   type SetupToolName,
 } from "../../domain/execution-environments/setup.js";
 import {
-  buildRunnerEndpoint,
-  buildRunnerRequestHeaders,
-  makeNetworkTimeoutSignal,
   readRunnerError,
-  resolveRunnerSharedSecret,
 } from "../../integrations/shell/bash-executor.js";
 import type {BashExecutionResult, BashRunnerExecRequest} from "../../integrations/shell/bash-protocol.js";
 import {parseBashRunnerExecResponse} from "../../integrations/shell/bash-protocol.js";
 import {redactSecretsInString} from "../../integrations/shell/redaction.js";
+import {executionEnvironmentRunnerAuthScope} from "../../integrations/shell/runner-auth.js";
+import {RunnerTransport} from "../../integrations/shell/runner-transport.js";
 
 const SETUP_TIMEOUT_MS = 300_000;
 const SETUP_MAX_OUTPUT_CHARS = 512 * 1024;
@@ -134,6 +132,7 @@ interface SetupArtifactPaths {
 
 interface RemoteExecInput {
   agentKey: string;
+  environmentId: string;
   runnerUrl: string;
   command: string;
   cwd: string;
@@ -364,13 +363,14 @@ export function readExecutionEnvironmentSetupErrorMetadata(error: unknown): Json
 
 export class RemoteExecutionEnvironmentSetupRunner implements ExecutionEnvironmentSetupRunner {
   private readonly credentialResolver: EnvironmentSetupCredentialResolver | null;
-  private readonly fetchImpl: typeof fetch;
-  private readonly sharedSecret: string | null;
+  private readonly transport: RunnerTransport;
 
   constructor(options: ExecutionEnvironmentSetupRunnerOptions = {}) {
     this.credentialResolver = options.credentialResolver ?? null;
-    this.fetchImpl = options.fetchImpl ?? fetch;
-    this.sharedSecret = resolveRunnerSharedSecret(options.env ?? process.env);
+    this.transport = new RunnerTransport({
+      env: options.env ?? process.env,
+      fetchImpl: options.fetchImpl,
+    });
   }
 
   async runSetup(input: ExecutionEnvironmentSetupRunnerInput): Promise<JsonObject> {
@@ -426,6 +426,7 @@ export class RemoteExecutionEnvironmentSetupRunner implements ExecutionEnvironme
     try {
       setupResult = await this.exec({
         agentKey: input.agentKey,
+        environmentId: input.environmentId,
         runnerUrl: input.runnerUrl,
         command: `bash ${artifacts.worker.script}`,
         cwd: input.runnerCwd,
@@ -455,6 +456,7 @@ export class RemoteExecutionEnvironmentSetupRunner implements ExecutionEnvironme
     try {
       probeResult = await this.exec({
         agentKey: input.agentKey,
+        environmentId: input.environmentId,
         runnerUrl: input.runnerUrl,
         command: TOOLCHAIN_PROBE_COMMAND,
         cwd: input.runnerCwd,
@@ -500,13 +502,15 @@ export class RemoteExecutionEnvironmentSetupRunner implements ExecutionEnvironme
   }
 
   private async exec(input: RemoteExecInput): Promise<BashExecutionResult> {
-    const headers = buildRunnerRequestHeaders(input.agentKey, input.runnerUrl, input.runnerUrl, this.sharedSecret);
+    const target = this.transport.resolveTarget({
+      agentKey: input.agentKey,
+      runnerUrl: input.runnerUrl,
+      authScope: executionEnvironmentRunnerAuthScope(input.agentKey, input.environmentId),
+    });
     let response: Response;
     try {
-      response = await this.fetchImpl(buildRunnerEndpoint(input.runnerUrl, "exec"), {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
+      response = await this.transport.request(target, "exec", {
+        body: {
           requestId: randomUUID(),
           command: input.command,
           cwd: input.cwd,
@@ -514,8 +518,8 @@ export class RemoteExecutionEnvironmentSetupRunner implements ExecutionEnvironme
           trackedEnvKeys: [],
           maxOutputChars: input.maxOutputChars,
           ...(input.env ? {env: input.env} : {}),
-        } satisfies BashRunnerExecRequest),
-        signal: makeNetworkTimeoutSignal(input.timeoutMs + FETCH_TIMEOUT_BUFFER_MS),
+        } satisfies BashRunnerExecRequest,
+        timeoutMs: input.timeoutMs + FETCH_TIMEOUT_BUFFER_MS,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

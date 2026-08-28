@@ -21,6 +21,28 @@ Disposable isolated environments mount:
 The parent runner sees the same environment under `/environments/<envDir>/...`.
 Use `/inbox` and `/artifacts` for coordination; do not rely on transcript copying.
 
+Each disposable environment has two trust zones. The untrusted workspace
+container gets its own per-environment network and the workspace files. The
+control runner joins only the private Core/manager control network and receives
+the environment-scoped runner token through an owner-only file. The workspace
+container receives neither that token nor a route to any control runner.
+For local-app previews, the manager attaches the shared browser runner to only
+that workspace network; the browser runner remains outside the control network.
+The stack stores these files under the manager-only
+`PANDA_DISPOSABLE_RUNNER_SECRETS_HOST_ROOT` (default
+`~/.panda-runner-secrets/disposable`), outside the environment tree mounted into
+persistent runners.
+
+`PANDA_DISPOSABLE_RUNNER_NETWORK` is intentionally rejected. Replace it with
+`PANDA_DISPOSABLE_RUNNER_CONTROL_NETWORK`; workspace networks are created and
+removed per environment.
+
+These per-environment networks prevent runner/workspace lateral addressing but
+currently keep public egress for setup scripts and Git. They do not filter host
+or private-LAN destinations. Keep host services unexposed to Docker and run
+Panda under the dedicated non-admin macOS user until a restricted egress broker
+is available.
+
 ## Setup scripts and default toolchain
 
 Disposable workspace containers are intentionally minimal. By default, an
@@ -82,7 +104,7 @@ from CLI or Control:
 
 ```bash
 panda runner attach <sessionRef> mac --agent <agentKey> --runner-url http://mac:8080 --allow-tools bash
-panda session targets bind <sessionRef> vps --agent <agentKey> --runner-url http://runner:8080 --allow-tools bash
+panda session targets bind <sessionRef> vps --agent <agentKey> --environment-id <existingEnvironmentId> --allow-tools bash
 panda session targets list <sessionRef> --agent <agentKey>
 panda session targets detach <sessionRef> vps --agent <agentKey>
 ```

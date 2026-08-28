@@ -1,4 +1,4 @@
-import {mkdtemp, mkdir, realpath, rm, writeFile} from "node:fs/promises";
+import {mkdtemp, mkdir, readFile, rm, writeFile} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 
@@ -57,7 +57,6 @@ describe("environment commands", () => {
     const setupPath = path.join(workspaceNested, "setup.sh");
     await mkdir(workspaceNested, {recursive: true});
     await writeFile(setupPath, "#!/usr/bin/env bash\necho ready\n", "utf8");
-    const resolvedSetupPath = await realpath(setupPath);
 
     const createStandaloneDisposableEnvironment = vi.fn(async (input) => ({
       id: "environment:session-a:created",
@@ -84,7 +83,7 @@ describe("environment commands", () => {
       lifecycle: {
         createStandaloneDisposableEnvironment,
       },
-    }, new RuntimeCommandFileResolver());
+    }, new RuntimeCommandFileResolver({...process.env, DATA_DIR: path.join(root, "core-data")}));
 
     const result = await command.execute({
       command: ENVIRONMENT_CREATE_COMMAND_NAME,
@@ -108,6 +107,10 @@ describe("environment commands", () => {
       },
     });
 
+    const createInput = createStandaloneDisposableEnvironment.mock.calls[0]?.[0];
+    const snapshotPath = createInput?.setupScript?.resolvedPath;
+    expect(snapshotPath).toContain(path.join(root, "core-data", "outbound-file-spool"));
+    await expect(readFile(snapshotPath!, "utf8")).resolves.toContain("echo ready");
     expect(createStandaloneDisposableEnvironment).toHaveBeenCalledWith(expect.objectContaining({
       agentKey: "panda",
       createdBySessionId: "session-a",
@@ -117,7 +120,7 @@ describe("environment commands", () => {
       },
       setupScript: {
         requestedPath: "setup.sh",
-        resolvedPath: resolvedSetupPath,
+        resolvedPath: snapshotPath,
       },
     }));
     expect(result.output).toMatchObject({

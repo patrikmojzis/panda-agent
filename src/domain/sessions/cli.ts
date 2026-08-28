@@ -79,7 +79,6 @@ interface SessionTargetListCliOptions extends ScopedSessionRefCliOptions {
 interface SessionTargetBindCliOptions extends ScopedSessionRefCliOptions {
   environmentId?: string;
   runnerUrl?: string;
-  runnerCwd?: string;
   default?: boolean;
   allowTools?: string;
 }
@@ -254,10 +253,6 @@ function parseAllowedToolsOption(value: string | undefined): ExecutionToolPolicy
     throw new Error("Session target bind requires --allow-tools so selected targets fail closed.");
   }
   return {allowedTools: [...new Set(allowedTools)]};
-}
-
-function defaultTargetEnvironmentId(sessionId: string, alias: string): string {
-  return `persistent_agent_runner:${sessionId}:${alias}`;
 }
 
 function formatRunnerUrl(value: string | undefined): string {
@@ -761,29 +756,20 @@ async function bindSessionTargetCommand(
   options: SessionTargetBindCliOptions,
 ): Promise<void> {
   const alias = normalizeExecutionEnvironmentAlias(aliasInput);
-  if (!options.runnerUrl && !options.environmentId?.trim()) {
-    throw new Error("Session target bind requires --runner-url unless --environment-id is provided.");
+  if (options.runnerUrl) {
+    throw new Error(
+      "Direct --runner-url binding cannot provision scoped runner authentication. Use `panda runner attach`, or bind an already-provisioned --environment-id.",
+    );
+  }
+  if (!options.environmentId?.trim()) {
+    throw new Error("Session target bind requires an already-provisioned --environment-id. Use `panda runner attach` for a new runner URL.");
   }
 
   await withSessionStores(options, async ({sessionStore, executionEnvironmentStore}) => {
     const session = await resolveSessionCliRef(sessionStore, sessionRef, options);
-    const requestedEnvironmentId = options.environmentId?.trim() || undefined;
-    const environmentId = requestedEnvironmentId ?? defaultTargetEnvironmentId(session.id, alias);
-    let environment: ExecutionEnvironmentRecord;
-    if (options.runnerUrl) {
-      environment = await executionEnvironmentStore.createEnvironment({
-        id: environmentId,
-        agentKey: session.agentKey,
-        kind: "persistent_agent_runner",
-        state: "ready",
-        runnerUrl: options.runnerUrl,
-        runnerCwd: options.runnerCwd,
-      });
-    } else {
-      environment = await executionEnvironmentStore.getEnvironment(environmentId);
-      if (environment.agentKey !== session.agentKey) {
-        throw new Error(`Execution environment ${environment.id} belongs to agent ${environment.agentKey}, not ${session.agentKey}.`);
-      }
+    const environment = await executionEnvironmentStore.getEnvironment(options.environmentId!.trim());
+    if (environment.agentKey !== session.agentKey) {
+      throw new Error(`Execution environment ${environment.id} belongs to agent ${environment.agentKey}, not ${session.agentKey}.`);
     }
 
     const binding = await executionEnvironmentStore.bindSession({
@@ -1019,13 +1005,12 @@ export function registerSessionManagementCommands(sessionProgram: Command): void
 
   targetsProgram
     .command("bind")
-    .description("Register a persistent runner endpoint and bind it to a session alias")
+    .description("Bind an already-provisioned execution environment to a session alias")
     .argument("<sessionRef>", "Session id, or alias when --agent is provided")
     .argument("<alias>", "Target alias, for example vps")
     .option("--agent <agentKey>", "Agent key for alias lookup", parseAgentKeyOption)
-    .option("--environment-id <id>", "Existing or desired execution environment id")
-    .option("--runner-url <url>", "Runner base URL for this target")
-    .option("--runner-cwd <path>", "Initial cwd inside the runner")
+    .option("--environment-id <id>", "Existing execution environment id")
+    .option("--runner-url <url>", "Rejected for secure provisioning; use panda runner attach")
     .option("--default", "Make this binding the session default target")
     .option("--allow-tools <csv>", "Restrict this target to comma-separated tool names")
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)

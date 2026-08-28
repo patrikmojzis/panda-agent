@@ -156,6 +156,8 @@ export interface DisposableEnvironmentCreateRequest {
   agentKey: string;
   sessionId: string;
   environmentId: string;
+  /** Ephemeral control-plane credential. Managers must not persist it in application records. */
+  runnerAuthToken?: string;
   ttlMs?: number;
   metadata?: JsonValue;
   commandAccess?: {

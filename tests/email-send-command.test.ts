@@ -213,7 +213,6 @@ describe("email.send command", () => {
     const reportPath = path.join(workspaceNested, "report.txt");
     await mkdir(workspaceNested, {recursive: true});
     await writeFile(reportPath, "hello", "utf8");
-    const resolvedReportPath = await realpath(reportPath);
 
     const store: EmailSendCommandStore = {
       getAccount: vi.fn(async () => createAccount()),
@@ -234,7 +233,7 @@ describe("email.send command", () => {
       queue: {
         enqueueDelivery,
       },
-    }, new RuntimeCommandFileResolver());
+    }, new RuntimeCommandFileResolver({...process.env, DATA_DIR: path.join(root, "core-data")}));
 
     const result = await command.execute({
       command: EMAIL_SEND_COMMAND_NAME,
@@ -267,6 +266,10 @@ describe("email.send command", () => {
       sessionId: "session-a",
     });
     expect(store.assertRecipientsAllowed).toHaveBeenCalledWith("panda", "work", ["alice@example.com"]);
+    const queuedInput = enqueueDelivery.mock.calls[0]?.[0];
+    const snapshotPath = (queuedInput?.items[1] as {path?: string} | undefined)?.path;
+    expect(snapshotPath).toContain(path.join(root, "core-data", "outbound-file-spool"));
+    await expect(readFile(snapshotPath!, "utf8")).resolves.toBe("hello");
     expect(enqueueDelivery).toHaveBeenCalledWith({
       sessionId: "session-a",
       threadId: "thread-a",
@@ -278,7 +281,7 @@ describe("email.send command", () => {
       },
       items: [
         {type: "text", text: "Attached."},
-        {type: "file", path: resolvedReportPath, filename: "report.txt"},
+        {type: "file", path: snapshotPath, filename: "report.txt"},
       ],
       metadata: {
         email: expect.objectContaining({
@@ -291,7 +294,7 @@ describe("email.send command", () => {
           cc: [],
           subject: "Report",
           text: "Attached.",
-          attachments: [{path: resolvedReportPath, filename: "report.txt"}],
+          attachments: [{path: snapshotPath, filename: "report.txt"}],
           threadKey: "Report",
         }),
       },

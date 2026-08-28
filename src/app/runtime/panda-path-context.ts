@@ -1,5 +1,6 @@
-import {existsSync, realpathSync} from "node:fs";
-import {realpath} from "node:fs/promises";
+import {randomUUID} from "node:crypto";
+import {constants, existsSync, realpathSync} from "node:fs";
+import {chmod, mkdir, open, realpath, rename, rm, stat} from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -9,6 +10,11 @@ import {
   readExecutionEnvironmentFilesystemMetadata,
 } from "../../domain/execution-environments/filesystem.js";
 import {mapRunnerAgentPathToHost} from "../../integrations/shell/path-mapping.js";
+import {
+  resolveBashExecutionMode,
+  resolveRunnerCwd,
+  resolveRunnerCwdTemplate,
+} from "../../domain/execution-environments/runner-config.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import {isJsonValue} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
@@ -17,6 +23,8 @@ import type {ShellSession} from "../../integrations/shell/types.js";
 import {resolveDataDir} from "./data-dir.js";
 
 const DEFAULT_SHELL_ENVIRONMENT_ID = "default";
+const RUNNER_SHARED_WORKSPACE_ROOT = "/workspace/shared";
+const MAX_MATERIALIZED_READABLE_FILE_BYTES = 100 * 1024 * 1024;
 
 interface ResolvedPath {
   path: string;
@@ -53,6 +61,64 @@ function resolveAgentEnvironmentPath(
   const targetRoot = path.join(resolveCoreEnvironmentsRoot(env), agentKey);
   const mapped = mapPathBetweenRoots(resolvedPath, sourceRoot, targetRoot);
   return mapped ? {path: mapped, containmentRoot: targetRoot} : null;
+}
+
+function resolveSharedWorkspacePath(
+  resolvedPath: string,
+  agentKey: string,
+  env: NodeJS.ProcessEnv,
+): ResolvedPath | null {
+  if (!isPathWithinRoot(RUNNER_SHARED_WORKSPACE_ROOT, resolvedPath)) {
+    return null;
+  }
+  if (env.PANDA_SHARED_WORKSPACE_AGENTS !== undefined) {
+    const members = new Set(env.PANDA_SHARED_WORKSPACE_AGENTS
+      .split(",")
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean));
+    if (!members.has(agentKey.toLowerCase())) {
+      return {
+        path: resolvedPath,
+        blockedReason: "Agent is not authorised for the shared collaboration workspace.",
+      };
+    }
+  }
+  const targetRoot = path.resolve(
+    trimToUndefined(env.PANDA_CORE_SHARED_ROOT)
+    ?? trimToUndefined(env.SHARED_ROOT)
+    ?? RUNNER_SHARED_WORKSPACE_ROOT,
+  );
+  const mapped = mapPathBetweenRoots(resolvedPath, RUNNER_SHARED_WORKSPACE_ROOT, targetRoot);
+  return mapped ? {path: mapped, containmentRoot: targetRoot} : null;
+}
+
+function resolvePersistentAgentPath(
+  resolvedPath: string,
+  agentKey: string,
+  env: NodeJS.ProcessEnv,
+): ResolvedPath {
+  if (resolveBashExecutionMode(env) !== "remote") {
+    return {path: resolvedPath};
+  }
+  const runnerCwdTemplate = resolveRunnerCwdTemplate(env);
+  if (!runnerCwdTemplate) {
+    return {
+      path: resolvedPath,
+      blockedReason: "Remote agent file paths require BASH_SERVER_CWD_TEMPLATE.",
+    };
+  }
+  const runnerAgentRoot = path.resolve(resolveRunnerCwd(runnerCwdTemplate, agentKey));
+  if (!isPathWithinRoot(runnerAgentRoot, resolvedPath)) {
+    return {
+      path: resolvedPath,
+      blockedReason: "Path is outside this agent's mounted filesystem roots.",
+    };
+  }
+  const coreAgentRoot = mapRunnerAgentPathToHost(runnerAgentRoot, agentKey, env);
+  return {
+    path: mapRunnerAgentPathToHost(resolvedPath, agentKey, env),
+    containmentRoot: coreAgentRoot,
+  };
 }
 
 function resolveBoundEnvironmentPath(resolvedPath: string, context: Record<string, unknown>): ResolvedPath | null {
@@ -112,9 +178,18 @@ function resolveMountedAgentPath(
     if (
       isRecord(executionEnvironment)
       && executionEnvironment.source !== "fallback"
-      && executionEnvironment.kind !== "persistent_agent_runner"
+      && executionEnvironment.kind === "disposable_container"
     ) {
-      return {path: resolvedPath};
+      if (isPathWithinRoot(RUNNER_SHARED_WORKSPACE_ROOT, resolvedPath)) {
+        return {
+          path: resolvedPath,
+          blockedReason: "This isolated execution environment is not attached to the shared collaboration workspace.",
+        };
+      }
+      return {
+        path: resolvedPath,
+        blockedReason: "This isolated execution environment has no verified Core filesystem mapping.",
+      };
     }
   }
 
@@ -122,9 +197,14 @@ function resolveMountedAgentPath(
     return {path: resolvedPath};
   }
 
+  const sharedWorkspacePath = resolveSharedWorkspacePath(resolvedPath, agentKey, env);
+  if (sharedWorkspacePath) {
+    return sharedWorkspacePath;
+  }
+
   // Remote bash sees the agent home through the runner mount, but file tools
   // still run in panda-core and need the host-visible mirror path.
-  return {path: mapRunnerAgentPathToHost(resolvedPath, agentKey, env)};
+  return resolvePersistentAgentPath(resolvedPath, agentKey, env);
 }
 
 function normalizeShellSession(shellSession: ShellSession): ShellSession {
@@ -397,4 +477,81 @@ export async function resolveReadableContextPath(
   }
 
   return targetRealPath;
+}
+
+export async function materializeReadableContextPath(
+  rawPath: string,
+  context: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string> {
+  const resolved = resolveContextPathDetails(rawPath, context, env);
+  if (resolved.blockedReason) {
+    throw new ToolError(`${resolved.blockedReason} Path: ${rawPath}`);
+  }
+  if (!resolved.containmentRoot) {
+    return resolved.path;
+  }
+
+  const rootRealPath = await realpathIfPossible(resolved.containmentRoot);
+  const source = await open(
+    resolved.path,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+  ).catch(() => {
+    throw new ToolError(`Could not open readable file: ${rawPath}`);
+  });
+  let temporaryPath: string | undefined;
+  try {
+    const openedStat = await source.stat();
+    if (!openedStat.isFile()) {
+      throw new ToolError(`Readable path is not a regular file: ${rawPath}`);
+    }
+    if (openedStat.size > MAX_MATERIALIZED_READABLE_FILE_BYTES) {
+      throw new ToolError(`Readable file exceeds the 100 MiB Core snapshot limit: ${rawPath}`);
+    }
+    const targetRealPath = await realpath(resolved.path);
+    if (!isPathWithinRoot(rootRealPath, targetRealPath)) {
+      throw new ToolError(`Resolved path escapes the execution environment root: ${rawPath}`);
+    }
+    const targetStat = await stat(targetRealPath);
+    if (targetStat.dev !== openedStat.dev || targetStat.ino !== openedStat.ino) {
+      throw new ToolError(`Readable path changed while it was being secured: ${rawPath}`);
+    }
+
+    const spoolRoot = path.join(resolveDataDir(env), "outbound-file-spool");
+    await mkdir(spoolRoot, {recursive: true, mode: 0o700});
+    await chmod(spoolRoot, 0o700);
+    const safeName = path.basename(targetRealPath).replace(/[^A-Za-z0-9._-]/g, "_") || "file";
+    const finalPath = path.join(spoolRoot, `${randomUUID()}-${safeName}`);
+    temporaryPath = `${finalPath}.tmp`;
+    const destination = await open(temporaryPath, "wx", 0o600);
+    try {
+      const buffer = Buffer.allocUnsafe(64 * 1024);
+      let totalBytes = 0;
+      while (true) {
+        const {bytesRead} = await source.read(buffer, 0, buffer.byteLength, null);
+        if (bytesRead === 0) break;
+        totalBytes += bytesRead;
+        if (totalBytes > MAX_MATERIALIZED_READABLE_FILE_BYTES) {
+          throw new ToolError(`Readable file exceeds the 100 MiB Core snapshot limit: ${rawPath}`);
+        }
+        let written = 0;
+        while (written < bytesRead) {
+          const result = await destination.write(buffer, written, bytesRead - written);
+          if (result.bytesWritten === 0) {
+            throw new ToolError(`Could not snapshot readable file: ${rawPath}`);
+          }
+          written += result.bytesWritten;
+        }
+      }
+      await destination.sync();
+    } finally {
+      await destination.close();
+    }
+    await rename(temporaryPath, finalPath);
+    temporaryPath = undefined;
+    return finalPath;
+  } finally {
+    await source.close();
+    if (temporaryPath) await rm(temporaryPath, {force: true}).catch(() => {});
+  }
 }

@@ -5,6 +5,8 @@ import type {
   ScheduledCommandRecord,
   ScheduledCommandRunRecord,
 } from "../src/domain/scheduling/scheduled-commands/types.js";
+import {RUNNER_AUTHORIZATION_HEADER} from "../src/integrations/shell/bash-protocol.js";
+import {HmacRunnerTokenAuthority} from "../src/integrations/shell/runner-auth.js";
 
 const now = Date.parse("2026-08-28T10:00:00.000Z");
 
@@ -113,8 +115,24 @@ describe("runtime scheduled command executor", () => {
     })).rejects.toMatchObject({failureCode: "environment_not_supported"});
   });
 
-  it("sends only explicit credentials to the remote runner and redacts stored output", async () => {
+  it.each([
+    {
+      source: "fallback" as const,
+      environmentId: "runner:panda",
+      expectedScope: {kind: "persistent-agent" as const, agentKey: "panda", scopeId: "panda"},
+    },
+    {
+      source: "binding" as const,
+      environmentId: "env-scheduled-vps",
+      expectedScope: {kind: "execution-environment" as const, agentKey: "panda", scopeId: "env-scheduled-vps"},
+    },
+  ])("sends only explicit credentials with the $source runner token and redacts stored output", async ({
+    source,
+    environmentId,
+    expectedScope,
+  }) => {
     const secret = "gas-api-secret-value";
+    const runnerMasterKey = "scheduled-command-runner-master-key-value";
     const fetchImpl = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       ok: true,
       shell: "/bin/bash",
@@ -144,7 +162,7 @@ describe("runtime scheduled command executor", () => {
     const executor = new RuntimeScheduledCommandExecutor({
       sessions: {getSession: vi.fn(async () => session())},
       environments: {resolveDefault: vi.fn(async () => ({
-        id: "runner:panda",
+        id: environmentId,
         agentKey: "panda",
         kind: "persistent_agent_runner" as const,
         state: "ready" as const,
@@ -154,7 +172,7 @@ describe("runtime scheduled command executor", () => {
         credentialPolicy: {mode: "allowlist" as const, envKeys: ["GAS_API_TOKEN"]},
         skillPolicy: {mode: "all_agent" as const},
         toolPolicy: {bash: {allowed: true}},
-        source: "fallback" as const,
+        source,
       }))},
       credentials: {resolveCredential: vi.fn(async () => ({
         id: "credential-1",
@@ -165,6 +183,7 @@ describe("runtime scheduled command executor", () => {
         createdAt: now,
         updatedAt: now,
       }))},
+      env: {PANDA_RUNNER_TOKEN_MASTER_KEY: runnerMasterKey},
       fetchImpl,
     });
 
@@ -175,10 +194,15 @@ describe("runtime scheduled command executor", () => {
       onPrepared,
     });
 
-    expect(onPrepared).toHaveBeenCalledWith({environmentId: "runner:panda", cwd: "/workspace/jobs"});
+    expect(onPrepared).toHaveBeenCalledWith({environmentId, cwd: "/workspace/jobs"});
     expect(result.stdout).not.toContain(secret);
     expect(result.stdout).toContain("[redacted]");
     const request = fetchImpl.mock.calls[0]?.[1];
+    const expectedRunnerToken = new HmacRunnerTokenAuthority(Buffer.from(runnerMasterKey))
+      .derive(expectedScope);
+    expect(request?.headers).toMatchObject({
+      [RUNNER_AUTHORIZATION_HEADER]: `Bearer ${expectedRunnerToken}`,
+    });
     const body = JSON.parse(String(request?.body)) as {env: Record<string, string>};
     expect(body.env).toEqual({
       GAS_API_TOKEN: secret,

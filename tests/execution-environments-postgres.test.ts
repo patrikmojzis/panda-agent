@@ -26,6 +26,7 @@ import type {
 import {ExecutionEnvironmentSetupError} from "../src/app/runtime/execution-environment-setup-runner.js";
 import {buildSubagentSessionMetadata} from "../src/domain/subagents/index.js";
 import type {JsonObject, JsonValue} from "../src/lib/json.js";
+import {HmacRunnerTokenAuthority} from "../src/integrations/shell/runner-auth.js";
 
 function createFilesystemMetadata(envDir = "env-worker"): JsonObject {
   return {
@@ -1063,6 +1064,26 @@ describe("PostgresExecutionEnvironmentStore", () => {
       credentialPolicy: {mode: "allowlist", envKeys: ["MCP_TOKEN"]},
       allowedCommands: ["mcp.tools", "mcp.call"],
     });
+  });
+
+  it("delivers only the environment-scoped runner token to the manager", async () => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const session = await sessionStore.getSession("session-worker");
+    const manager = new FakeEnvironmentManager();
+    const authority = new HmacRunnerTokenAuthority(Buffer.alloc(32, 9));
+    const service = new ExecutionEnvironmentLifecycleService({
+      store: environmentStore,
+      manager,
+      runnerTokenAuthority: authority,
+    });
+
+    await service.createDisposableForSession({session, environmentId: "env-scoped"});
+
+    expect(manager.requests[0]?.runnerAuthToken).toBe(authority.derive({
+      kind: "execution-environment",
+      agentKey: "panda",
+      scopeId: "env-scoped",
+    }));
   });
 
   it("refreshes disposable command access with current input identity scope", async () => {

@@ -1,3 +1,5 @@
+import {createHash, timingSafeEqual} from "node:crypto";
+import {lstatSync, readFileSync} from "node:fs";
 import {realpath} from "node:fs/promises";
 import {createServer, type IncomingMessage, type Server} from "node:http";
 import os from "node:os";
@@ -162,7 +164,12 @@ export interface BashRunnerOptions {
   env?: NodeJS.ProcessEnv;
   shell?: string;
   outputDirectory?: string;
+  authToken?: string | null;
+  legacySharedSecret?: string | null;
+  /** @deprecated Migration-only alias for legacy programmatic callers. */
   sharedSecret?: string | null;
+  /** Test-only escape hatch for protocol tests that intentionally exercise an unauthenticated server. */
+  allowUnauthenticatedForTests?: boolean;
   allowedRoots?: readonly string[];
   commandExecutor?: CommandExecutor;
 }
@@ -443,19 +450,38 @@ function readHeaderValue(value: string | string[] | undefined): string | null {
   return trimToNull(value);
 }
 
-function requireRunnerAuthorization(request: IncomingMessage, sharedSecret: string | null): void {
-  if (!sharedSecret) {
-    return;
-  }
-
+function requireRunnerAuthorization(request: IncomingMessage, acceptedTokens: readonly string[]): void {
   const header = readHeaderValue(request.headers[RUNNER_AUTHORIZATION_HEADER]);
   if (!header) {
     throw new ToolError("Missing runner Authorization header.", {details: {statusCode: 401}});
   }
-
-  if (header !== `Bearer ${sharedSecret}`) {
+  const supplied = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
+  const suppliedDigest = createHash("sha256").update(supplied).digest();
+  const accepted = acceptedTokens.some((token) => timingSafeEqual(
+    suppliedDigest,
+    createHash("sha256").update(token).digest(),
+  ));
+  if (!supplied || !accepted) {
     throw new ToolError("Invalid runner Authorization header.", {details: {statusCode: 403}});
   }
+}
+
+function readRunnerAuthTokenFile(filePath: string): string {
+  if (!path.isAbsolute(filePath)) {
+    throw new Error("BASH_SERVER_AUTH_TOKEN_FILE must be an absolute path.");
+  }
+  const file = lstatSync(filePath);
+  if (!file.isFile() || file.isSymbolicLink()) {
+    throw new Error("Runner auth token path must be a regular file, not a symlink.");
+  }
+  if ((file.mode & 0o077) !== 0) {
+    throw new Error("Runner auth token file permissions must deny group and other access.");
+  }
+  const token = trimToNull(readFileSync(filePath, "utf8"));
+  if (!token) {
+    throw new Error("Runner auth token file must not be empty.");
+  }
+  return token;
 }
 
 function readRequestPathSegments(rawUrl: string | undefined): string[] {
@@ -601,11 +627,24 @@ async function resolveRequestCwd(cwd: string, allowedRoots: readonly string[]): 
 export function resolveBashRunnerOptions(env: NodeJS.ProcessEnv = process.env): BashRunnerOptions {
   assertNoDeprecatedBashServerEnv(env, BASH_SERVER_PROCESS_ENV_NAMES);
   const agentKey = normalizeAgentKey(trimToNull(env.BASH_SERVER_AGENT_KEY) ?? "");
+  const inlineAuthToken = trimToNull(env.BASH_SERVER_AUTH_TOKEN);
+  const authTokenFile = trimToNull(env.BASH_SERVER_AUTH_TOKEN_FILE);
+  if (inlineAuthToken && authTokenFile) {
+    throw new Error("Set BASH_SERVER_AUTH_TOKEN or BASH_SERVER_AUTH_TOKEN_FILE, not both.");
+  }
+  const authToken = inlineAuthToken ?? (authTokenFile ? readRunnerAuthTokenFile(authTokenFile) : null);
+  const legacySharedSecret = trimToNull(env.BASH_SERVER_SHARED_SECRET);
+  if (!authToken && !legacySharedSecret) {
+    throw new Error(
+      "Runner authentication is required. Set BASH_SERVER_AUTH_TOKEN_FILE (preferred) or BASH_SERVER_AUTH_TOKEN; BASH_SERVER_SHARED_SECRET is migration-only.",
+    );
+  }
   return {
     agentKey,
     port: parsePort(trimToNull(env.BASH_SERVER_PORT), DEFAULT_RUNNER_PORT),
     host: trimToNull(env.BASH_SERVER_HOST) ?? DEFAULT_RUNNER_HOST,
-    sharedSecret: trimToNull(env.BASH_SERVER_SHARED_SECRET),
+    authToken,
+    legacySharedSecret,
     allowedRoots: parseAllowedRoots(trimToNull(env.BASH_SERVER_ALLOWED_ROOTS)),
     env,
   };
@@ -618,7 +657,12 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
   const env = options.env ?? process.env;
   const shell = options.shell ?? SAFE_SHELL;
   const outputDirectory = path.resolve(options.outputDirectory ?? path.join(os.tmpdir(), "runtime-runner-results"));
-  const sharedSecret = trimToNull(options.sharedSecret ?? null);
+  const authToken = trimToNull(options.authToken ?? null);
+  const legacyToken = trimToNull(options.legacySharedSecret ?? options.sharedSecret ?? null);
+  const acceptedTokens = [...new Set([authToken, legacyToken].filter((token): token is string => Boolean(token)))];
+  if (acceptedTokens.length === 0 && options.allowUnauthenticatedForTests !== true) {
+    throw new Error("Runner authentication is required.");
+  }
   const allowedRoots = await resolveAllowedRoots(options.allowedRoots);
   const activeRequests = new Map<string, ActiveRunnerRequest>();
   const commandExecutor = options.commandExecutor ?? new LocalCommandExecutor({env, shell, outputDirectory});
@@ -898,7 +942,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       }
 
       if (request.method === "POST" && matchesEndpoint(request.url, "abort")) {
-        requireRunnerAuthorization(request, sharedSecret);
+        if (acceptedTokens.length > 0) requireRunnerAuthorization(request, acceptedTokens);
         validateRunnerRequestTarget(request, agentKey, "abort");
         if (closing) {
           throw runnerClosingError();
@@ -926,7 +970,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       }
 
       if (request.method === "POST" && matchesEndpoint(request.url, "exec")) {
-        requireRunnerAuthorization(request, sharedSecret);
+        if (acceptedTokens.length > 0) requireRunnerAuthorization(request, acceptedTokens);
         validateRunnerRequestTarget(request, agentKey, "exec");
         if (closing) {
           throw runnerClosingError();
@@ -999,7 +1043,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       }
 
       if (request.method === "POST" && matchesEndpoint(request.url, "jobs/start")) {
-        requireRunnerAuthorization(request, sharedSecret);
+        if (acceptedTokens.length > 0) requireRunnerAuthorization(request, acceptedTokens);
         validateRunnerRequestTarget(request, agentKey, "jobs/start");
         if (closing) {
           throw runnerClosingError();
@@ -1124,7 +1168,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       }
 
       if (request.method === "POST" && matchesEndpoint(request.url, "jobs/status")) {
-        requireRunnerAuthorization(request, sharedSecret);
+        if (acceptedTokens.length > 0) requireRunnerAuthorization(request, acceptedTokens);
         validateRunnerRequestTarget(request, agentKey, "jobs/status");
         if (closing) {
           throw runnerClosingError();
@@ -1155,7 +1199,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       }
 
       if (request.method === "POST" && matchesEndpoint(request.url, "jobs/wait")) {
-        requireRunnerAuthorization(request, sharedSecret);
+        if (acceptedTokens.length > 0) requireRunnerAuthorization(request, acceptedTokens);
         validateRunnerRequestTarget(request, agentKey, "jobs/wait");
         if (closing) {
           throw runnerClosingError();
@@ -1196,7 +1240,7 @@ export async function startBashRunner(options: BashRunnerOptions): Promise<BashR
       }
 
       if (request.method === "POST" && matchesEndpoint(request.url, "jobs/cancel")) {
-        requireRunnerAuthorization(request, sharedSecret);
+        if (acceptedTokens.length > 0) requireRunnerAuthorization(request, acceptedTokens);
         validateRunnerRequestTarget(request, agentKey, "jobs/cancel");
         if (closing) {
           throw runnerClosingError();
