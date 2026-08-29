@@ -559,7 +559,7 @@ export const whatsappSendCommandDescriptor: CommandDescriptor = {
     },
     {
       name: "text",
-      description: "Text message body. Use --stdin or --text @file for longer bodies. Repeat to send multiple text items.",
+      description: "Text message body. Use --stdin or --text @file for longer or multiline bodies. Repeat to send multiple text items.",
       valueType: "string",
       valueName: "text|@file|@-",
       valueSources: ["literal", "file", "stdin"] as const,
