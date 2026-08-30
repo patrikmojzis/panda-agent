@@ -19,7 +19,7 @@ overrides:
 
 patchedDependencies:
   baileys@7.0.0-rc14:
-    hash: eaa14e177445e9576568a412e16f6308d4c092b13b3f337961273834695f3655
+    hash: e6b1f0ce0f0975804e3ac2b47800b7986678ee372df55658f4b8a05fe6181689
     path: patches/baileys@7.0.0-rc14.patch
 
 importers:
@@ -46,7 +46,7 @@ importers:
         version: 3.0.0
       baileys:
         specifier: 7.0.0-rc14
-        version: 7.0.0-rc14(patch_hash=eaa14e177445e9576568a412e16f6308d4c092b13b3f337961273834695f3655)(sharp@0.35.3(@types/node@25.9.5))
+        version: 7.0.0-rc14(patch_hash=e6b1f0ce0f0975804e3ac2b47800b7986678ee372df55658f4b8a05fe6181689)(sharp@0.35.3(@types/node@25.9.5))
       commander:
         specifier: ^14.0.3
         version: 14.0.3
@@ -7899,7 +7899,7 @@ snapshots:
 
   aws-ssl-profiles@1.1.2: {}
 
-  baileys@7.0.0-rc14(patch_hash=eaa14e177445e9576568a412e16f6308d4c092b13b3f337961273834695f3655)(sharp@0.35.3(@types/node@25.9.5)):
+  baileys@7.0.0-rc14(patch_hash=e6b1f0ce0f0975804e3ac2b47800b7986678ee372df55658f4b8a05fe6181689)(sharp@0.35.3(@types/node@25.9.5)):
     dependencies:
       '@cacheable/node-cache': 1.7.6
       '@hapi/boom': 9.1.4

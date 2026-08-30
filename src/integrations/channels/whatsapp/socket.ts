@@ -8,7 +8,7 @@ import {
 } from "baileys";
 
 import type {WhatsAppAuthStateHandle} from "./auth-store.js";
-import {WHATSAPP_LOGGER} from "./transport.js";
+import {WHATSAPP_LOGGER, type WhatsAppLoggerLike} from "./transport.js";
 
 const TRANSACTION_OPTIONS = {
   maxCommitRetries: 5,
@@ -22,19 +22,21 @@ export interface CreateWhatsAppSocketOptions {
   socketVersion?: WAVersion;
   queryTimeoutMs?: number;
   persistCredsOnUpdate?: boolean;
+  logger?: WhatsAppLoggerLike;
 }
 
 export function createWhatsAppSocket(options: CreateWhatsAppSocketOptions): WASocket {
+  const logger = options.logger ?? WHATSAPP_LOGGER;
   const socket = makeWASocket({
     auth: {
       creds: options.authHandle.state.creds,
       keys: addTransactionCapability(
-        makeCacheableSignalKeyStore(options.authHandle.state.keys, WHATSAPP_LOGGER),
-        WHATSAPP_LOGGER,
+        makeCacheableSignalKeyStore(options.authHandle.state.keys, logger),
+        logger,
         TRANSACTION_OPTIONS,
       ),
     },
-    logger: WHATSAPP_LOGGER,
+    logger,
     browser: Browsers.ubuntu(WHATSAPP_BROWSER_NAME),
     ...(options.socketVersion ? {version: options.socketVersion} : {}),
     syncFullHistory: false,

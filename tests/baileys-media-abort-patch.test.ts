@@ -36,4 +36,12 @@ describe("Baileys media abort patch", () => {
 
     expect(source).toContain("}, config.defaultQueryTimeoutMs)");
   });
+
+  it("acknowledges pre-login notifications without requiring registered credentials", async () => {
+    const sourcePath = fileURLToPath(import.meta.resolve("baileys/lib/Socket/messages-recv.js"));
+    const source = await readFile(sourcePath, "utf8");
+
+    expect(source).toContain("buildAckStanza(node, errorCode, authState.creds.me?.id)");
+    expect(source).toContain("'panda pairing notification'");
+  });
 });

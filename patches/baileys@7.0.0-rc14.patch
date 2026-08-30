@@ -22,3 +22,26 @@ index 66f822d..101df8d 100644
              ]);
              if (error) {
                  throw error;
+diff --git a/lib/Socket/messages-recv.js b/lib/Socket/messages-recv.js
+--- a/lib/Socket/messages-recv.js
++++ b/lib/Socket/messages-recv.js
+@@ -359,6 +359,6 @@ export const makeMessagesRecvSocket = (config) => {
+     };
+     const sendMessageAck = async (node, errorCode) => {
+-        const stanza = buildAckStanza(node, errorCode, authState.creds.me.id);
++        const stanza = buildAckStanza(node, errorCode, authState.creds.me?.id);
+         logger.debug({ recv: { tag: node.tag, attrs: node.attrs }, sent: stanza.attrs }, 'sent ack');
+         await sendNode(stanza);
+     };
+@@ -797,6 +797,11 @@ export const makeMessagesRecvSocket = (config) => {
+         const [child] = getAllBinaryNodeChildren(node);
+         const nodeType = node.attrs.type;
+         const from = jidNormalizedUser(node.attrs.from);
++        logger.info({
++            notificationType: nodeType,
++            childTags: getAllBinaryNodeChildren(node).map(item => item.tag).slice(0, 8),
++            registered: authState.creds.registered === true
++        }, 'panda pairing notification');
+         switch (nodeType) {
+             case 'newsletter':
+                 await handleNewsletterNotification(node);

@@ -46,6 +46,7 @@ import {
 import {waitForWhatsAppSocketCycle} from "./runtime-cycle.js";
 import {createWhatsAppSocket} from "./socket.js";
 import {createWhatsAppTypingAdapter} from "./typing.js";
+import {createWhatsAppPairingLogger, type WhatsAppLoggerLike} from "./transport.js";
 import {runInBackground, sleep} from "../../../lib/async.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
 import {
@@ -156,6 +157,7 @@ export class WhatsAppService {
     authHandle?: WhatsAppAuthStateHandle;
     queryTimeoutMs?: number;
     persistCredsOnUpdate?: boolean;
+    logger?: WhatsAppLoggerLike;
   } = {}): Promise<{
     authHandle: WhatsAppAuthStateHandle;
     socket: WASocket;
@@ -168,6 +170,7 @@ export class WhatsAppService {
       authHandle,
       socketVersion,
       persistCredsOnUpdate,
+      logger: options.logger,
     });
 
     this.socket = socket;
@@ -370,6 +373,10 @@ export class WhatsAppService {
     const {socket} = await this.createSocket({
       authHandle,
       persistCredsOnUpdate: false,
+      logger: createWhatsAppPairingLogger((event, payload) => this.log(event, {
+        connectorKey: this.options.connectorKey,
+        ...payload,
+      })),
     });
     try {
       return await waitForWhatsAppPairingCycle({

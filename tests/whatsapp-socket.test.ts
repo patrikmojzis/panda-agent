@@ -104,4 +104,31 @@ describe("WhatsApp socket factory", () => {
 
     expect(whatsappSocketMocks.socket.ev.on).not.toHaveBeenCalledWith("creds.update", expect.any(Function));
   });
+
+  it("uses a pairing-scoped logger for the complete Baileys socket", () => {
+    const logger = {
+      level: "info",
+      child: vi.fn(),
+      trace: vi.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+
+    createWhatsAppSocket({authHandle: createAuthHandle(), logger});
+
+    expect(whatsappSocketMocks.makeCacheableSignalKeyStore).toHaveBeenCalledWith(
+      expect.anything(),
+      logger,
+    );
+    expect(whatsappSocketMocks.addTransactionCapability).toHaveBeenCalledWith(
+      expect.anything(),
+      logger,
+      expect.anything(),
+    );
+    expect(whatsappSocketMocks.makeWASocket).toHaveBeenCalledWith(
+      expect.objectContaining({logger}),
+    );
+  });
 });
