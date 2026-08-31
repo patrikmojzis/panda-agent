@@ -30,7 +30,7 @@ import {
   connectorToEmailFormValues,
   discordActorPairingDefaults,
   discordConnectorDefaults,
-  emailAllowedRecipientDefaults,
+  emailRecipientAllowRuleDefaults,
   emailConnectorDefaults,
   telegramConnectorDefaults,
   whatsappConnectorDefaults,
@@ -42,7 +42,7 @@ import {
   channelActorPairingPayload,
   discordActorPairingPayload,
   discordConnectorPayload,
-  emailAllowedRecipientPayload,
+  emailRecipientAllowRulePayload,
   emailConnectorPayload,
   telegramConnectorPayload,
   whatsappConnectorPayload,
@@ -53,7 +53,7 @@ import {
   useChannelActorPairingSheet,
   useDiscordActorPairingSheet,
   useDiscordConnectorSheet,
-  useEmailAllowedRecipientSheet,
+  useEmailRecipientAllowRuleSheet,
   useEmailConnectorSheet,
   useTelegramConnectorSheet,
   useWhatsAppConnectorSheet,
@@ -62,7 +62,7 @@ import {
   type ChannelActorPairingFormValues,
   type DiscordActorPairingFormValues,
   type DiscordConnectorFormValues,
-  type EmailAllowedRecipientFormValues,
+  type EmailRecipientAllowRuleFormValues,
   type EmailConnectorFormValues,
   type TelegramConnectorFormValues,
   type WhatsAppConnectorFormValues,
@@ -210,10 +210,54 @@ const emailRouteSchema = z.object({
   sessionId: z.string().trim().min(1, "Session is required."),
 })
 
-const emailAllowedRecipientSchema = z.object({
-  accountKey: z.string().trim().min(1, "Email account is required."),
-  address: z.string().trim().email("Enter a valid recipient address."),
-})
+const emailAccountKeySchema = z
+  .string()
+  .trim()
+  .min(1, "Email account is required.")
+
+const emailRecipientDomainSchema = z
+  .string()
+  .trim()
+  .min(1, "Recipient domain is required.")
+  .refine((value) => {
+    if (
+      value.length > 253 ||
+      value.startsWith(".") ||
+      value.endsWith(".") ||
+      /[@*\/\\:#?\[\]\s]/u.test(value)
+    ) {
+      return false
+    }
+    let ascii: string
+    try {
+      ascii = new URL(`http://${value}`).hostname.toLowerCase()
+    } catch {
+      return false
+    }
+    const labels = ascii.split(".")
+    return (
+      ascii.length <= 253 &&
+      labels.length >= 2 &&
+      !/^\d+(?:\.\d+)+$/.test(ascii) &&
+      labels.every(
+        (label) =>
+          /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label)
+      )
+    )
+  }, "Enter a bare domain such as company.com.")
+
+const emailRecipientAllowRuleSchema = z.discriminatedUnion("kind", [
+  z.object({
+    accountKey: emailAccountKeySchema,
+    kind: z.literal("address"),
+    value: z.string().trim().email("Enter a valid recipient address."),
+  }),
+  z.object({
+    accountKey: emailAccountKeySchema,
+    kind: z.literal("domain"),
+    value: emailRecipientDomainSchema,
+  }),
+])
 
 const discordActorPairingSchema = z.object({
   accountKey: z.string().trim().min(1, "Discord account is required."),
@@ -328,11 +372,20 @@ const emailRouteErrorFields = {
   "target session": "sessionId",
 }
 
-const emailAllowedRecipientErrorFields = {
+const emailRecipientAllowRuleErrorFields = {
   "email allowlist account key": "accountKey",
   "email account": "accountKey",
-  "email allowlist recipient address": "address",
+  "email allowlist rule kind": "kind",
+  "email recipient allow rule kind": "kind",
+  "email allowlist rule value": "value",
+  "email address": "value",
+  "email domain": "value",
 }
+
+const emailRecipientAllowRuleKindOptions = [
+  { label: "Exact address", value: "address" },
+  { label: "Entire domain", value: "domain" },
+]
 
 const discordActorPairingErrorFields = {
   "discord account key": "accountKey",
@@ -1783,13 +1836,13 @@ export function ChannelActorPairingSheet() {
   )
 }
 
-export function EmailAllowedRecipientSheet() {
+export function EmailRecipientAllowRuleSheet() {
   const auth = useAuth()
   const { context, defaultData, isOpen, setOpen } =
-    useEmailAllowedRecipientSheet()
+    useEmailRecipientAllowRuleSheet()
   const invalidate = useInvalidateAgent(context?.agentKey)
   const resetValues = React.useMemo(
-    () => mergedValues(emailAllowedRecipientDefaults, defaultData),
+    () => mergedValues(emailRecipientAllowRuleDefaults, defaultData),
     [defaultData]
   )
   const accountPicker = useEmailAccountOptions(
@@ -1798,29 +1851,29 @@ export function EmailAllowedRecipientSheet() {
     resetValues.accountKey
   )
   const mutation = useMutation({
-    mutationFn: (values: EmailAllowedRecipientFormValues) => {
+    mutationFn: (values: EmailRecipientAllowRuleFormValues) => {
       const current = requireContext(context)
-      return controlApi.addEmailAllowedRecipient(
+      return controlApi.addEmailRecipientAllowRule(
         current.agentKey,
-        emailAllowedRecipientPayload(values),
+        emailRecipientAllowRulePayload(values),
         auth.csrfToken
       )
     },
     onSuccess: async () => {
-      toast.success("Allowed recipient saved")
+      toast.success("Email recipient allow rule saved")
       setOpen(false)
       await invalidate(agentCacheKey(context?.agentKey))
     },
   })
   const form = useControlForm({
     defaultValues: resetValues,
-    validators: { onSubmit: emailAllowedRecipientSchema },
+    validators: { onSubmit: emailRecipientAllowRuleSchema },
     onSubmit: async ({ value, formApi }) => {
       try {
         await mutation.mutateAsync(value)
       } catch (error) {
         await handleControlFormError(error, formApi, {
-          messageFieldMap: emailAllowedRecipientErrorFields,
+          messageFieldMap: emailRecipientAllowRuleErrorFields,
         })
       }
     },
@@ -1829,12 +1882,12 @@ export function EmailAllowedRecipientSheet() {
   return (
     <FormSheet
       confirmSubmit={{
-        title: "Allow email recipient",
+        title: "Allow email recipients",
         description:
-          "This permits the selected email account to send to this exact recipient address.",
-        confirmLabel: "Allow recipient",
+          "An exact address permits one mailbox. An entire-domain rule permits every current and future mailbox at that exact domain, but not its subdomains.",
+        confirmLabel: "Allow recipients",
       }}
-      description="Choose the email account and exact recipient address."
+      description="Allow one exact address or every mailbox at one exact domain."
       form={form}
       isOpen={isOpen}
       resetValues={resetValues}
@@ -1842,8 +1895,8 @@ export function EmailAllowedRecipientSheet() {
       submitDisabled={
         accountPicker.isLoading || accountPicker.options.length === 0
       }
-      submitLabel="Allow recipient"
-      title="Email recipient allowlist"
+      submitLabel="Add allow rule"
+      title="Email recipient allow rule"
     >
       <form.AppField name="accountKey">
         {(field) => (
@@ -1864,17 +1917,40 @@ export function EmailAllowedRecipientSheet() {
           />
         )}
       </form.AppField>
-      <form.AppField name="address">
+      <form.AppField name="kind">
         {(field) => (
-          <field.TextField
-            label="Recipient address"
-            autoComplete="email"
-            description="Exact address this account may send to."
-            placeholder="ops@example.com"
+          <field.SelectField
+            label="Rule type"
+            description="Domain rules include every mailbox at that exact domain."
+            options={emailRecipientAllowRuleKindOptions}
+            onValueChange={() => form.setFieldValue("value", "")}
             required
           />
         )}
       </form.AppField>
+      <form.Subscribe
+        selector={(state: { values: EmailRecipientAllowRuleFormValues }) =>
+          state.values.kind
+        }
+      >
+        {(kind: EmailRecipientAllowRuleFormValues["kind"]) => (
+          <form.AppField name="value">
+            {(field) => (
+              <field.TextField
+                label={kind === "domain" ? "Recipient domain" : "Recipient address"}
+                autoComplete={kind === "domain" ? "off" : "email"}
+                description={
+                  kind === "domain"
+                    ? "Every current and future mailbox at this exact domain is allowed; subdomains are excluded."
+                    : "Only this exact address is allowed."
+                }
+                placeholder={kind === "domain" ? "company.com" : "person@company.com"}
+                required
+              />
+            )}
+          </form.AppField>
+        )}
+      </form.Subscribe>
     </FormSheet>
   )
 }

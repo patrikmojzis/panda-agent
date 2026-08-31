@@ -326,10 +326,12 @@ export type EmailRouteRow = {
   updatedAt: string
 }
 
-export type EmailAllowedRecipientRow = {
+export type EmailRecipientAllowRuleRow = {
+  id: string
   agentKey: string
   accountKey: string
-  address: string
+  kind: "address" | "domain"
+  value: string
   createdAt: string
 }
 
@@ -1341,29 +1343,29 @@ export const controlApi = {
       `/agents/${encodeURIComponent(agentKey)}/email/routes/${encodeURIComponent(row.accountKey)}`,
       { method: "DELETE", body: { mailbox: row.mailbox }, csrfToken }
     ),
-  emailAllowedRecipients: (agentKey: string, params: TableParams) =>
-    apiGet<PaginatedResponse<EmailAllowedRecipientRow>>(
+  emailRecipientAllowRules: (agentKey: string, params: TableParams) =>
+    apiGet<PaginatedResponse<EmailRecipientAllowRuleRow>>(
       `/agents/${encodeURIComponent(agentKey)}/email/allowlist${qs(params)}`
     ),
-  addEmailAllowedRecipient: (
+  addEmailRecipientAllowRule: (
     agentKey: string,
     body: Record<string, unknown>,
     csrfToken?: string | null
   ) =>
-    apiWrite<{ recipient: EmailAllowedRecipientRow }>(
+    apiWrite<{ rule: EmailRecipientAllowRuleRow }>(
       `/agents/${encodeURIComponent(agentKey)}/email/allowlist`,
       {
         body,
         csrfToken,
       }
     ),
-  deleteEmailAllowedRecipient: (
+  deleteEmailRecipientAllowRule: (
     agentKey: string,
-    row: Pick<EmailAllowedRecipientRow, "accountKey" | "address">,
+    ruleId: string,
     csrfToken?: string | null
   ) =>
     apiWrite<{ deleted: boolean }>(
-      `/agents/${encodeURIComponent(agentKey)}/email/allowlist/${encodeURIComponent(row.accountKey)}/${encodeURIComponent(row.address)}`,
+      `/agents/${encodeURIComponent(agentKey)}/email/allowlist/${encodeURIComponent(ruleId)}`,
       { method: "DELETE", csrfToken }
     ),
   discordActorPairings: (agentKey: string, params: TableParams) =>

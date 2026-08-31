@@ -8,7 +8,13 @@ import {writeCommandDescriptorHelp} from "../commands/cli.js";
 import {parseAgentKey} from "../agents/cli.js";
 import {PostgresSessionStore} from "../sessions/postgres.js";
 import {parseLabeledPortOption} from "../../lib/cli.js";
-import {DEFAULT_EMAIL_MAILBOXES, normalizeEmailAddress, normalizeEmailMailbox} from "./shared.js";
+import {
+  DEFAULT_EMAIL_MAILBOXES,
+  normalizeEmailAddress,
+  normalizeEmailDomain,
+  normalizeEmailMailbox,
+  normalizeEmailRecipientAllowRuleValue,
+} from "./shared.js";
 import {
   emailAccountListCommandDescriptor,
   emailAttachmentsFetchCommandDescriptor,
@@ -18,7 +24,7 @@ import {
   emailSendCommandDescriptor,
 } from "./commands.js";
 import {PostgresEmailStore} from "./postgres.js";
-import type {EmailEndpointConfig} from "./types.js";
+import type {EmailEndpointConfig, EmailRecipientAllowRuleKind} from "./types.js";
 
 interface EmailCliOptions {
   dbUrl?: string;
@@ -47,7 +53,9 @@ interface EmailAccountLookupOptions extends EmailCliOptions {
   agent: string;
 }
 
-interface EmailAllowOptions extends EmailAccountLookupOptions {}
+interface EmailAllowOptions extends EmailAccountLookupOptions {
+  json?: boolean;
+}
 
 interface EmailRouteSetOptions extends EmailAccountLookupOptions {
   session: string;
@@ -151,39 +159,58 @@ async function emailAccountDisableCommand(accountKey: string, options: EmailAcco
 }
 
 async function emailAllowAddCommand(
+  kind: EmailRecipientAllowRuleKind,
   accountKey: string,
-  address: string,
+  value: string,
   options: EmailAllowOptions,
 ): Promise<void> {
   await withEmailStores(options, async ({email: store}) => {
-    const recipient = await store.addAllowedRecipient(options.agent, accountKey, address);
-    process.stdout.write(`Allowed ${recipient.address} for email account ${recipient.accountKey}.\n`);
+    const rule = await store.addRecipientAllowRule({
+      agentKey: options.agent,
+      accountKey,
+      kind,
+      value,
+    });
+    process.stdout.write(`Allowed ${rule.kind} ${rule.value} for email account ${rule.accountKey}.\n`);
   });
 }
 
 async function emailAllowRemoveCommand(
+  kind: EmailRecipientAllowRuleKind,
   accountKey: string,
-  address: string,
+  value: string,
   options: EmailAllowOptions,
 ): Promise<void> {
   await withEmailStores(options, async ({email: store}) => {
-    const normalized = normalizeEmailAddress(address);
-    const removed = await store.removeAllowedRecipient(options.agent, accountKey, normalized);
+    const normalized = normalizeEmailRecipientAllowRuleValue(kind, value);
+    const removed = await store.removeRecipientAllowRule({
+      agentKey: options.agent,
+      accountKey,
+      kind,
+      value: normalized,
+    });
     process.stdout.write(removed
-      ? `Removed ${normalized} from email account ${accountKey}.\n`
-      : `No allowlist entry removed for ${normalized}.\n`);
+      ? `Removed ${kind} ${normalized} from email account ${accountKey}.\n`
+      : `No ${kind} allow rule removed for ${normalized}.\n`);
   });
 }
 
 async function emailAllowListCommand(accountKey: string, options: EmailAllowOptions): Promise<void> {
   await withEmailStores(options, async ({email: store}) => {
-    const recipients = await store.listAllowedRecipients(options.agent, accountKey);
-    if (recipients.length === 0) {
-      process.stdout.write("No allowed recipients.\n");
+    const rules = await store.listRecipientAllowRules(options.agent, accountKey);
+    if (options.json) {
+      process.stdout.write(`${JSON.stringify(rules, null, 2)}\n`);
+      return;
+    }
+    if (rules.length === 0) {
+      process.stdout.write("No email recipient allow rules.\n");
       return;
     }
 
-    process.stdout.write(recipients.map((recipient) => recipient.address).join("\n") + "\n");
+    process.stdout.write([
+      "ID\tKIND\tVALUE",
+      ...rules.map((rule) => [rule.id, rule.kind, rule.value].join("\t")),
+    ].join("\n") + "\n");
   });
 }
 
@@ -404,35 +431,58 @@ export function registerEmailCommands(program: Command): void {
 
   const allowProgram = emailProgram
     .command("allow")
-    .description("Manage exact send-recipient allowlists");
+    .description("Manage typed email recipient address and domain allow rules");
 
   allowProgram
     .command("add")
-    .description("Allow one recipient for an email account")
+    .description("Allow one exact recipient address for an email account")
     .argument("<accountKey>", "Stable email account key")
     .argument("<email>", "Recipient email address", normalizeEmailAddress)
     .requiredOption("--agent <agentKey>", "Agent that owns the account", parseAgentKey)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((accountKey: string, address: string, options: EmailAllowOptions) => {
-      return emailAllowAddCommand(accountKey, address, options);
+      return emailAllowAddCommand("address", accountKey, address, options);
+    });
+
+  allowProgram
+    .command("add-domain")
+    .description("Allow every recipient at one exact domain; subdomains are excluded")
+    .argument("<accountKey>", "Stable email account key")
+    .argument("<domain>", "Bare recipient domain", normalizeEmailDomain)
+    .requiredOption("--agent <agentKey>", "Agent that owns the account", parseAgentKey)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((accountKey: string, domain: string, options: EmailAllowOptions) => {
+      return emailAllowAddCommand("domain", accountKey, domain, options);
     });
 
   allowProgram
     .command("remove")
-    .description("Remove one recipient from an email account allowlist")
+    .description("Remove one exact recipient address allow rule")
     .argument("<accountKey>", "Stable email account key")
     .argument("<email>", "Recipient email address", normalizeEmailAddress)
     .requiredOption("--agent <agentKey>", "Agent that owns the account", parseAgentKey)
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((accountKey: string, address: string, options: EmailAllowOptions) => {
-      return emailAllowRemoveCommand(accountKey, address, options);
+      return emailAllowRemoveCommand("address", accountKey, address, options);
+    });
+
+  allowProgram
+    .command("remove-domain")
+    .description("Remove one exact recipient domain allow rule")
+    .argument("<accountKey>", "Stable email account key")
+    .argument("<domain>", "Bare recipient domain", normalizeEmailDomain)
+    .requiredOption("--agent <agentKey>", "Agent that owns the account", parseAgentKey)
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((accountKey: string, domain: string, options: EmailAllowOptions) => {
+      return emailAllowRemoveCommand("domain", accountKey, domain, options);
     });
 
   allowProgram
     .command("list")
-    .description("List allowed recipients for an email account")
+    .description("List recipient address and domain allow rules for an email account")
     .argument("<accountKey>", "Stable email account key")
     .requiredOption("--agent <agentKey>", "Agent that owns the account", parseAgentKey)
+    .option("--json", "Write a stable JSON array")
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((accountKey: string, options: EmailAllowOptions) => {
       return emailAllowListCommand(accountKey, options);

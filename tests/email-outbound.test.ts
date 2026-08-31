@@ -307,13 +307,15 @@ describe("Email outbound adapter", () => {
     expect(sendMail).not.toHaveBeenCalled();
   });
 
-  it("checks the allowlist again in the adapter", async () => {
+  it("blocks SMTP when a recipient rule is revoked after queue admission", async () => {
     const store = new MemoryEmailStore();
+    const sendMail = vi.fn(async () => ({messageId: "<sent@example.com>"}));
     const adapter = createEmailOutboundAdapter({
       store,
       credentialResolver: fakeResolver(),
-      sendMail: async () => ({messageId: "<sent@example.com>"}),
+      sendMail,
     });
+    store.allowed.clear();
 
     await expect(adapter.send({
       channel: "email",
@@ -330,7 +332,7 @@ describe("Email outbound adapter", () => {
           accountKey: "work",
           sessionId: "session-1",
           fromAddress: "panda@example.com",
-          to: [{address: "mallory@example.com"}],
+          to: [{address: "alice@example.com"}],
           cc: [],
           subject: "Hello",
           text: "Hello",
@@ -339,6 +341,7 @@ describe("Email outbound adapter", () => {
         },
       },
     })).rejects.toThrow("not allowed");
+    expect(sendMail).not.toHaveBeenCalled();
   });
 
   it("rejects queued email metadata that spoofs the configured from address", async () => {

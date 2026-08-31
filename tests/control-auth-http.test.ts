@@ -2579,40 +2579,48 @@ describe("Control operator HTTP", () => {
       meta: {total: 1},
     });
 
-    const allowRecipient = await fetch(`${base}/api/control/agents/panda/email/allowlist`, {
+    const allowRule = await fetch(`${base}/api/control/agents/panda/email/allowlist`, {
       method: "POST",
       headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
       body: JSON.stringify({
         accountKey: "work",
-        address: "ops@example.com",
+        kind: "domain",
+        value: "company.com",
       }),
     });
-    expect(allowRecipient.status).toBe(200);
-    await expect(allowRecipient.json()).resolves.toMatchObject({
-      recipient: {
+    expect(allowRule.status).toBe(200);
+    const allowRuleBody = await allowRule.json() as {rule: {id: string}};
+    expect(allowRuleBody).toMatchObject({
+      rule: {
         agentKey: "panda",
         accountKey: "work",
-        address: "ops@example.com",
+        kind: "domain",
+        value: "company.com",
       },
     });
 
-    const allowlist = await fetch(`${base}/api/control/agents/panda/email/allowlist?accountKey=work&search=ops`, {headers: {cookie: auth.cookies}});
+    const allowlist = await fetch(`${base}/api/control/agents/panda/email/allowlist?accountKey=work&kind=domain&search=company`, {headers: {cookie: auth.cookies}});
     expect(allowlist.status).toBe(200);
     await expect(allowlist.json()).resolves.toMatchObject({
-      data: [expect.objectContaining({accountKey: "work", address: "ops@example.com"})],
+      data: [expect.objectContaining({accountKey: "work", kind: "domain", value: "company.com"})],
       meta: {total: 1},
     });
-    await expect(harness.emailStore.listAllowedRecipients("panda", "work")).resolves.toMatchObject([
-      expect.objectContaining({address: "ops@example.com"}),
+    await expect(harness.emailStore.listRecipientAllowRules("panda", "work")).resolves.toMatchObject([
+      expect.objectContaining({kind: "domain", value: "company.com"}),
     ]);
+    const invalidAllowlistKind = await fetch(`${base}/api/control/agents/panda/email/allowlist?kind=regex`, {headers: {cookie: auth.cookies}});
+    expect(invalidAllowlistKind.status).toBe(400);
+    await expect(invalidAllowlistKind.json()).resolves.toEqual({
+      error: "Control email allowlist kind must be address or domain.",
+    });
 
-    const deleteAllowedRecipient = await fetch(`${base}/api/control/agents/panda/email/allowlist/work/${encodeURIComponent("ops@example.com")}`, {
+    const deleteAllowRule = await fetch(`${base}/api/control/agents/panda/email/allowlist/${encodeURIComponent(allowRuleBody.rule.id)}`, {
       method: "DELETE",
       headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
     });
-    expect(deleteAllowedRecipient.status).toBe(200);
-    await expect(deleteAllowedRecipient.json()).resolves.toEqual({deleted: true});
-    await expect(harness.emailStore.listAllowedRecipients("panda", "work")).resolves.toEqual([]);
+    expect(deleteAllowRule.status).toBe(200);
+    await expect(deleteAllowRule.json()).resolves.toEqual({deleted: true});
+    await expect(harness.emailStore.listRecipientAllowRules("panda", "work")).resolves.toEqual([]);
 
     const deleteRoute = await fetch(`${base}/api/control/agents/panda/email/routes/work`, {
       method: "DELETE",

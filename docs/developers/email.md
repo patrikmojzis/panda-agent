@@ -6,7 +6,9 @@ Panda email is a first-class channel:
 - send through `panda email send`
 - read history from Postgres session views
 
-Runtime config lives in `runtime.email_accounts`.
+Runtime config lives in `runtime.email_accounts`. Typed outbound recipient policy
+lives in `runtime.email_recipient_allow_rules` with `address` and `domain` rule
+kinds.
 Secrets are credential env-key refs and resolve through the normal credential resolver.
 
 The sync runner polls enabled account mailboxes read-only, stores messages in `runtime.email_messages`, and wakes the agent only for mail observed after initial backfill. Mail wakes target the routed durable session, or the agent's main session when no route matches, and re-resolves the current thread at wake time.
@@ -17,8 +19,17 @@ V1 does not do live DNS verification or trusted-auth-server matching itself; it 
 Newly observed non-inline attachments are stored under `DATA_DIR/agents/<agent-key>/media/email/<account-key>/<YYYY-MM>/` and fetched explicitly with `panda email attachments fetch`. Initial-backfill attachments and inline/related MIME parts remain metadata-only. Inbound storage uses the same limits as outbound mail: 10 eligible attachments, 20 MB per file, and 50 MB stored per message. Policy-rejected attachments retain a stable storage reason, and stored files are retained indefinitely with their email history.
 
 Outbound mail goes through `runtime.outbound_deliveries` with `channel = "email"` and connector key `smtp`.
-The email adapter verifies the configured from address, enforces recipient allowlists and attachment limits again before SMTP send, and records successful outbound mail into email history.
+The email adapter verifies the configured from address, enforces recipient allow rules and attachment limits again before SMTP send, and records successful outbound mail into email history.
 Queued email metadata uses the internal `email_send` payload kind and must pass the `EmailSendPayload` contract in `src/domain/email/send-payload.ts`; do not cast outbound metadata directly inside the adapter.
+
+Address rules match one normalized address. Domain rules match one canonical
+domain exactly: `company.com` includes plus-addresses and every current or future
+mailbox at `company.com`, but not `staff.company.com` or suffix lookalikes. Panda
+does not interpret wildcards or regex. In particular, `*@company.com` remains a
+literal address value and is not shorthand for a domain rule. One blocked
+recipient rejects the entire send, and policy is checked both before queueing
+and again immediately before SMTP delivery. Downstream aliases and forwarding
+are controlled by the recipient mail system, not Panda.
 
 Configure:
 
@@ -43,6 +54,8 @@ panda email account set work \
   --smtp-password-key WORK_SMTP_PASSWORD
 
 panda email allow add work alice@example.com --agent panda
+panda email allow add-domain work company.com --agent panda
+panda email allow list work --agent panda --json
 ```
 
 Routes:
@@ -79,7 +92,7 @@ Fresh sends are allowed from the main session when the account has no account ro
 
 Readonly email views are session-scoped:
 
-- `session.email_accounts` and `session.email_allowed_recipients` expose accounts/allowlists visible to the current session; account-level routes hide that account from main unless main owns the route
+- `session.email_accounts` and `session.email_recipient_allow_rules` expose accounts/rules visible to the current session; account-level routes hide that account from main unless main owns the route
 - `session.email_routes` exposes only routes whose `session_id` is the current session
 - `session.email_messages`, `session.email_message_recipients`, and `session.email_attachments` expose rows for the current session, plus legacy null-session rows only to main
 
@@ -92,5 +105,6 @@ Email event prompts include authentication fields and warning text whenever `aut
 - [src/domain/email/cli.ts](../../src/domain/email/cli.ts) owns `panda email account`, `panda email allow`, and `panda email route`
 - [src/domain/email/postgres.ts](../../src/domain/email/postgres.ts) owns route resolution, session ownership checks, and email persistence
 - [src/integrations/channels/email/sync-runner.ts](../../src/integrations/channels/email/sync-runner.ts) resolves routes and wakes current session threads
-- [src/domain/threads/runtime/postgres-readonly.ts](../../src/domain/threads/runtime/postgres-readonly.ts) owns `session.email_*` visibility
+- [src/app/database/migrations/0014-email-recipient-allow-rules.ts](../../src/app/database/migrations/0014-email-recipient-allow-rules.ts) cuts the recipient policy view over to `session.email_recipient_allow_rules`
+- [src/integrations/postgres/readonly-session-views.ts](../../src/integrations/postgres/readonly-session-views.ts) owns the current readonly-role view catalog
 - [src/prompts/runtime/email-events.ts](../../src/prompts/runtime/email-events.ts) renders auth warning prompts

@@ -14,6 +14,7 @@ import {REFRESH_ARCHIVED_SESSION_VIEW_MIGRATION} from "./migrations/0010-refresh
 import {BOUND_SECRET_ENVELOPES_MIGRATION} from "./migrations/0011-bound-secret-envelopes.js";
 import {CONTROL_IDENTITY_REVOCATION_MIGRATION} from "./migrations/0012-control-identity-revocation.js";
 import {SCHEDULED_COMMANDS_MIGRATION} from "./migrations/0013-scheduled-commands.js";
+import {EMAIL_RECIPIENT_ALLOW_RULES_MIGRATION} from "./migrations/0014-email-recipient-allow-rules.js";
 import {reconcileReadonlySessionRole} from "./readonly-role.js";
 
 export const PANDA_SCHEMA_MIGRATIONS = Object.freeze([
@@ -30,6 +31,7 @@ export const PANDA_SCHEMA_MIGRATIONS = Object.freeze([
   BOUND_SECRET_ENVELOPES_MIGRATION,
   CONTROL_IDENTITY_REVOCATION_MIGRATION,
   SCHEDULED_COMMANDS_MIGRATION,
+  EMAIL_RECIPIENT_ALLOW_RULES_MIGRATION,
 ]);
 
 /** Entry points bundled by CI to prove every persisted checksum matches code. */
@@ -47,6 +49,7 @@ export const PANDA_SCHEMA_MIGRATION_SOURCES: Readonly<Record<string, string>> = 
   "0011_bound_secret_envelopes": "src/app/database/migrations/0011-bound-secret-envelopes.ts",
   "0012_control_identity_revocation": "src/app/database/migrations/0012-control-identity-revocation.ts",
   "0013_scheduled_commands": "src/app/database/migrations/0013-scheduled-commands.ts",
+  "0014_email_recipient_allow_rules": "src/app/database/migrations/0014-email-recipient-allow-rules.ts",
 });
 
 export interface CreatePandaSchemaMigratorOptions {

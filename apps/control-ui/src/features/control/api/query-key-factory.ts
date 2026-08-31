@@ -70,7 +70,7 @@ export const controlKeys = {
       [...controlKeys.agents.detail(agentKey), "bindings", params] as const,
     emailRoutes: (agentKey: string, params: TableParams) =>
       [...controlKeys.agents.detail(agentKey), "email-routes", params] as const,
-    emailAllowedRecipients: (agentKey: string, params: TableParams) =>
+    emailRecipientAllowRules: (agentKey: string, params: TableParams) =>
       [...controlKeys.agents.detail(agentKey), "email-allowlist", params] as const,
     discordActorPairings: (agentKey: string, params: TableParams) =>
       [...controlKeys.agents.detail(agentKey), "discord-actor-pairings", params] as const,

@@ -3,11 +3,12 @@ import {readdir, readFile} from "node:fs/promises";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
 
-import {READONLY_SESSION_VIEW_BASENAMES} from "../../src/domain/threads/runtime/index.js";
+import {CURRENT_READONLY_SESSION_VIEW_BASENAMES} from "../../src/integrations/postgres/readonly-session-views.js";
 import {createPandaSchemaMigrator, PANDA_SCHEMA_MIGRATIONS} from "../../src/app/database/migration-catalog.js";
 import {runPandaDatabaseIntegrityChecks} from "../../src/app/database/integrity-catalog.js";
 import {recreateSmokeDatabase} from "../../src/app/smoke/database.js";
 import {createPostgresPool} from "../../src/app/runtime/database.js";
+import {createPostgresMigrator} from "../../src/lib/postgres-migrations.js";
 import {
   createPostgresReadonlyQueryCommand,
   POSTGRES_READONLY_QUERY_EXAMPLES,
@@ -82,7 +83,7 @@ async function assertCoreRelations(pool: ReturnType<typeof createPostgresPool>):
     "runtime.tool_jobs",
     "runtime.session_routes",
     "runtime.credentials",
-    ...READONLY_SESSION_VIEW_BASENAMES.map((name) => `session.${name}`),
+    ...CURRENT_READONLY_SESSION_VIEW_BASENAMES.map((name) => `session.${name}`),
   ]);
 }
 
@@ -310,6 +311,101 @@ async function runRejectedLegacyScenario(
   }
 }
 
+async function runEmailRecipientAllowRuleUpgradeScenario(): Promise<void> {
+  const target = await recreateSmokeDatabase(requireTestDatabaseUrl());
+  const pool = createPostgresPool({
+    connectionString: target.connectionString,
+    applicationName: "panda/ci-postgres-email-allow-rule-upgrade",
+    max: 1,
+  });
+
+  try {
+    const beforeEmailAllowRules = PANDA_SCHEMA_MIGRATIONS.slice(0, -1);
+    await createPostgresMigrator({
+      pool,
+      migrations: beforeEmailAllowRules,
+      schemaName: "runtime",
+      tableName: "schema_migrations",
+      lockName: "panda:ci-email-allow-rule-upgrade",
+    }).migrate();
+
+    await pool.query(`
+      INSERT INTO runtime.agents (agent_key, display_name)
+      VALUES ('panda', 'Panda');
+
+      INSERT INTO runtime.email_accounts (
+        id,
+        agent_key,
+        account_key,
+        from_address,
+        imap_config,
+        smtp_config,
+        mailboxes,
+        sync_state
+      ) VALUES (
+        '00000000-0000-4000-8000-000000000013',
+        'panda',
+        'work',
+        'panda@example.com',
+        '{"host":"imap.example.com","usernameCredentialEnvKey":"IMAP_USER","passwordCredentialEnvKey":"IMAP_PASS"}',
+        '{"host":"smtp.example.com","usernameCredentialEnvKey":"SMTP_USER","passwordCredentialEnvKey":"SMTP_PASS"}',
+        '["INBOX"]',
+        '{}'
+      );
+
+      INSERT INTO runtime.email_allowed_recipients (
+        id,
+        agent_key,
+        account_key,
+        address,
+        created_at
+      ) VALUES (
+        '00000000-0000-4000-8000-000000000014',
+        'panda',
+        'work',
+        '*@company.com',
+        '2026-08-31T10:00:00.000Z'
+      );
+    `);
+
+    await createPandaSchemaMigrator({pool, readonlyRole: null}).migrate();
+    const migrated = await pool.query(`
+      SELECT id::TEXT, agent_key, account_key, rule_kind, rule_value, created_at
+      FROM runtime.email_recipient_allow_rules
+    `);
+    const row = migrated.rows[0];
+    if (
+      migrated.rows.length !== 1
+      || row?.id !== "00000000-0000-4000-8000-000000000014"
+      || row?.agent_key !== "panda"
+      || row?.account_key !== "work"
+      || row?.rule_kind !== "address"
+      || row?.rule_value !== "*@company.com"
+      || new Date(row.created_at).toISOString() !== "2026-08-31T10:00:00.000Z"
+    ) {
+      throw new Error("Expected the email allow-rule migration to preserve the legacy row as one exact-address rule.");
+    }
+    const relations = await pool.query(`
+      SELECT to_regclass('runtime.email_allowed_recipients') AS old_table,
+             to_regclass('session.email_allowed_recipients') AS old_view,
+             to_regclass('runtime.email_recipient_allow_rules') AS current_table,
+             to_regclass('session.email_recipient_allow_rules') AS current_view
+    `);
+    const relation = relations.rows[0];
+    if (
+      relation?.old_table !== null
+      || relation?.old_view !== null
+      || !relation?.current_table
+      || !relation.current_view
+    ) {
+      throw new Error("Expected the email allow-rule migration to hard-cut both runtime and session relation names.");
+    }
+    process.stdout.write("Postgres startup rehearsal preserved legacy email recipient rules\n");
+  } finally {
+    await pool.end();
+  }
+}
+
 async function main(): Promise<void> {
   await runScenario("fresh");
   for (const fixturePath of await listFixtures()) {
@@ -322,6 +418,7 @@ async function main(): Promise<void> {
     "rejected-malformed-typed-checkpoint.sql",
     "malformed compaction checkpoints",
   );
+  await runEmailRecipientAllowRuleUpgradeScenario();
 }
 
 main().catch((error: unknown) => {

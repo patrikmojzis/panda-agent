@@ -6,7 +6,7 @@ import {
   ChannelActorPairingSheet,
   DiscordActorPairingSheet,
   DiscordConnectorSheet,
-  EmailAllowedRecipientSheet,
+  EmailRecipientAllowRuleSheet,
   EmailConnectorSheet,
   TelegramConnectorSheet,
   WhatsAppConnectorSheet,
@@ -56,7 +56,7 @@ export function ControlFormSheets() {
       <WhatsAppConnectorSheet />
       <BindingSheet />
       <EmailRouteSheet />
-      <EmailAllowedRecipientSheet />
+      <EmailRecipientAllowRuleSheet />
       <SkillSheet />
       <SubagentSheet />
       <GatewayFormSheets />

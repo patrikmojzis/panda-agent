@@ -2366,6 +2366,23 @@ describe("Panda command CLI discovery", () => {
     });
   });
 
+  it("discovers explicit email address and domain allow-rule commands", () => {
+    const email = createProgram().commands.find((command) => command.name() === "email");
+    const allow = email?.commands.find((command) => command.name() === "allow");
+
+    expect(allow?.commands.map((command) => command.name())).toEqual([
+      "add",
+      "add-domain",
+      "remove",
+      "remove-domain",
+      "list",
+    ]);
+    expect(allow?.commands.find((command) => command.name() === "add-domain")?.description())
+      .toContain("subdomains are excluded");
+    expect(allow?.commands.find((command) => command.name() === "list")?.options)
+      .toEqual(expect.arrayContaining([expect.objectContaining({long: "--json"})]));
+  });
+
   it("prints descriptor-backed JSON help for email account/list/read/search/attachments fetch", async () => {
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 

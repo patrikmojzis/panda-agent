@@ -204,10 +204,10 @@ export function useAgentEmailRoutes(agentKey: string, params: TableParams) {
   })
 }
 
-export function useAgentEmailAllowedRecipients(agentKey: string, params: TableParams) {
+export function useAgentEmailRecipientAllowRules(agentKey: string, params: TableParams) {
   return useQuery({
-    queryKey: controlKeys.agents.emailAllowedRecipients(agentKey, params),
-    queryFn: () => controlApi.emailAllowedRecipients(agentKey, params),
+    queryKey: controlKeys.agents.emailRecipientAllowRules(agentKey, params),
+    queryFn: () => controlApi.emailRecipientAllowRules(agentKey, params),
     enabled: Boolean(agentKey),
     placeholderData: keepPrevious,
   })

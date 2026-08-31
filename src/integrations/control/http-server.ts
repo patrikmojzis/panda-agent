@@ -17,7 +17,7 @@ import type {
     ControlChannelActorPairingTableInput,
     ControlConnectorTableInput,
     ControlDiscordActorPairingTableInput,
-    ControlEmailAllowedRecipientTableInput,
+    ControlEmailRecipientAllowRuleTableInput,
     ControlEmailRouteTableInput,
     ControlGatewayDeviceTableInput,
     ControlIdentityTableInput,
@@ -467,11 +467,17 @@ function parseEmailRouteTableInput(params: URLSearchParams): ControlEmailRouteTa
   };
 }
 
-function parseEmailAllowedRecipientTableInput(params: URLSearchParams): ControlEmailAllowedRecipientTableInput {
+function parseEmailRecipientAllowRuleTableInput(params: URLSearchParams): ControlEmailRecipientAllowRuleTableInput {
   const accountKey = params.get("accountKey")?.trim();
+  const rawKind = params.get("kind")?.trim();
+  if (rawKind && rawKind !== "address" && rawKind !== "domain") {
+    throw new Error("Control email allowlist kind must be address or domain.");
+  }
+  const kind = rawKind === "address" || rawKind === "domain" ? rawKind : undefined;
   return {
     ...parseTableInput(params),
     ...(accountKey ? {accountKey} : {}),
+    ...(kind ? {kind} : {}),
   };
 }
 
@@ -837,13 +843,12 @@ function matchEmailRoutePath(path: string): {agentKey: string; accountKey: strin
   return {agentKey: decodeURIComponent(match[1]!), accountKey: decodeURIComponent(match[2]!)};
 }
 
-function matchEmailAllowedRecipientPath(path: string): {agentKey: string; accountKey: string; address: string} | null {
-  const match = /^\/agents\/([^/]+)\/email\/allowlist\/([^/]+)\/([^/]+)$/.exec(path);
+function matchEmailRecipientAllowRulePath(path: string): {agentKey: string; ruleId: string} | null {
+  const match = /^\/agents\/([^/]+)\/email\/allowlist\/([^/]+)$/.exec(path);
   if (!match) return null;
   return {
     agentKey: decodeURIComponent(match[1]!),
-    accountKey: decodeURIComponent(match[2]!),
-    address: decodeURIComponent(match[3]!),
+    ruleId: decodeURIComponent(match[2]!),
   };
 }
 
@@ -2035,10 +2040,13 @@ export async function startControlServer(options: StartControlServerOptions): Pr
       const emailAllowlistPath = matchAgentResourcePath(path, "email/allowlist");
       if (emailAllowlistPath && request.method === "GET") {
         try {
-          writeJsonResponse(response, 200, await options.operator.listEmailAllowedRecipients(session, emailAllowlistPath.agentKey, parseEmailAllowedRecipientTableInput(url.searchParams)));
+          writeJsonResponse(response, 200, await options.operator.listEmailRecipientAllowRules(session, emailAllowlistPath.agentKey, parseEmailRecipientAllowRuleTableInput(url.searchParams)));
         } catch (error) {
           const message = error instanceof Error ? error.message : "Control email allowlist read failed.";
-          if (message === "Control table pagination values must be positive integers.") throw new ControlHttpError(400, message);
+          if (
+            message === "Control table pagination values must be positive integers."
+            || message === "Control email allowlist kind must be address or domain."
+          ) throw new ControlHttpError(400, message);
           throw new ControlHttpError(404, "Control email allowlist target agent was not found or is not visible.");
         }
         return;
@@ -2046,19 +2054,19 @@ export async function startControlServer(options: StartControlServerOptions): Pr
       if (emailAllowlistPath && request.method === "POST") {
         requireCsrf(request, options.auth, session);
         try {
-          const result = await options.operator.addEmailAllowedRecipient(session, emailAllowlistPath.agentKey, await readBody(request));
+          const result = await options.operator.addEmailRecipientAllowRule(session, emailAllowlistPath.agentKey, await readBody(request));
           await recordOperatorAudit(options.auth, session, result.audit);
-          writeJsonResponse(response, 200, {recipient: result.recipient});
+          writeJsonResponse(response, 200, {rule: result.rule});
         } catch (error) {
           throw new ControlHttpError(400, error instanceof Error ? error.message : "Control email allowlist write failed.");
         }
         return;
       }
-      const emailAllowedRecipientPath = matchEmailAllowedRecipientPath(path);
-      if (emailAllowedRecipientPath && request.method === "DELETE") {
+      const emailRecipientAllowRulePath = matchEmailRecipientAllowRulePath(path);
+      if (emailRecipientAllowRulePath && request.method === "DELETE") {
         requireCsrf(request, options.auth, session);
         try {
-          const result = await options.operator.deleteEmailAllowedRecipient(session, emailAllowedRecipientPath.agentKey, emailAllowedRecipientPath.accountKey, emailAllowedRecipientPath.address);
+          const result = await options.operator.deleteEmailRecipientAllowRule(session, emailRecipientAllowRulePath.agentKey, emailRecipientAllowRulePath.ruleId);
           await recordOperatorAudit(options.auth, session, result.audit);
           writeJsonResponse(response, 200, {deleted: result.deleted});
         } catch (error) {

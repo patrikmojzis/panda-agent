@@ -144,6 +144,18 @@ class PgMemReadonlySchemaQueryable {
         continue;
       }
 
+      if (/^CREATE VIEW "session"."email_allowed_recipients"/i.test(statement)) {
+        await this.pool.query(`
+          CREATE TABLE IF NOT EXISTS "runtime"."email_allowed_recipients" (
+            id UUID PRIMARY KEY,
+            agent_key TEXT NOT NULL,
+            account_key TEXT NOT NULL,
+            address TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          )
+        `);
+      }
+
       const sanitized = statement.replace(
         /\bWITH\s*\(security_barrier\s*=\s*true\)\s+AS\b/gi,
         "AS",

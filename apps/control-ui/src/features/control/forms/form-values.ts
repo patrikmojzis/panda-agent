@@ -10,7 +10,7 @@ import type {
   ControlGrantFormValues,
   DiscordConnectorFormValues,
   DiscordActorPairingFormValues,
-  EmailAllowedRecipientFormValues,
+  EmailRecipientAllowRuleFormValues,
   EmailRouteFormValues,
   EmailConnectorFormValues,
   TelegramConnectorFormValues,
@@ -139,9 +139,10 @@ export const emailRouteDefaults: EmailRouteFormValues = {
   sessionId: "",
 }
 
-export const emailAllowedRecipientDefaults: EmailAllowedRecipientFormValues = {
+export const emailRecipientAllowRuleDefaults: EmailRecipientAllowRuleFormValues = {
   accountKey: "",
-  address: "",
+  kind: "address",
+  value: "",
 }
 
 export const discordActorPairingDefaults: DiscordActorPairingFormValues = {

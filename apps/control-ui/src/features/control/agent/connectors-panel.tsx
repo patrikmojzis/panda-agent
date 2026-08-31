@@ -38,7 +38,7 @@ import {
   useAgentChannelActorPairings,
   useAgentConnectors,
   useAgentDiscordActorPairings,
-  useAgentEmailAllowedRecipients,
+  useAgentEmailRecipientAllowRules,
   useAgentEmailRoutes,
   useAgentSessions,
 } from "@/features/control/api/queries"
@@ -60,7 +60,7 @@ import {
   useChannelActorPairingSheet,
   useDiscordActorPairingSheet,
   useDiscordConnectorSheet,
-  useEmailAllowedRecipientSheet,
+  useEmailRecipientAllowRuleSheet,
   useEmailConnectorSheet,
   useTelegramConnectorSheet,
   useWhatsAppConnectorSheet,
@@ -76,7 +76,7 @@ import {
   type ChannelActorPairingRow,
   type ConnectorRow,
   type DiscordActorPairingRow,
-  type EmailAllowedRecipientRow,
+  type EmailRecipientAllowRuleRow,
   type EmailRouteRow,
 } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
@@ -365,7 +365,7 @@ export function ConnectorsPanel({ agentKey }: { agentKey: string }) {
       <DiscordActorPairingsPanel agentKey={agentKey} />
       <ChannelActorPairingsPanel agentKey={agentKey} />
       <EmailRoutesPanel agentKey={agentKey} />
-      <EmailAllowedRecipientsPanel agentKey={agentKey} />
+      <EmailRecipientAllowRulesPanel agentKey={agentKey} />
     </div>
   )
 }
@@ -907,12 +907,12 @@ function EmailRoutesPanel({ agentKey }: { agentKey: string }) {
   }
 }
 
-function EmailAllowedRecipientsPanel({ agentKey }: { agentKey: string }) {
+function EmailRecipientAllowRulesPanel({ agentKey }: { agentKey: string }) {
   const auth = useAuth()
-  const allowSheet = useEmailAllowedRecipientSheet()
+  const allowSheet = useEmailRecipientAllowRuleSheet()
   const emailSheet = useEmailConnectorSheet()
   const table = useDataTableState(`agent:${agentKey}:email-allowlist`)
-  const recipients = useAgentEmailAllowedRecipients(agentKey, table.params)
+  const rules = useAgentEmailRecipientAllowRules(agentKey, table.params)
   const emailAccounts = useAgentConnectors(
     agentKey,
     {
@@ -936,12 +936,12 @@ function EmailAllowedRecipientsPanel({ agentKey }: { agentKey: string }) {
   )
   const hasEmailAccounts = (emailAccounts.data?.meta.total ?? 0) > 0
   const remove = useToastMutation({
-    mutationFn: (row: EmailAllowedRecipientRow) =>
-      controlApi.deleteEmailAllowedRecipient(agentKey, row, auth.csrfToken),
-    success: "Allowed recipient removed",
+    mutationFn: (row: EmailRecipientAllowRuleRow) =>
+      controlApi.deleteEmailRecipientAllowRule(agentKey, row.id, auth.csrfToken),
+    success: "Email recipient allow rule removed",
     invalidate: controlKeys.agents.detail(agentKey),
   })
-  const columns: ColumnDef<EmailAllowedRecipientRow>[] = [
+  const columns: ColumnDef<EmailRecipientAllowRuleRow>[] = [
     {
       accessorKey: "accountKey",
       meta: { label: "Account", maxWidthClassName: "max-w-64" },
@@ -955,12 +955,20 @@ function EmailAllowedRecipientsPanel({ agentKey }: { agentKey: string }) {
       ),
     },
     {
-      accessorKey: "address",
-      meta: { label: "Recipient", maxWidthClassName: "max-w-80" },
+      accessorKey: "kind",
+      meta: { label: "Type", maxWidthClassName: "max-w-40" },
       header: renderColumnHeader,
       enableSorting: true,
       enableHiding: false,
-      cell: ({ row }) => <Cell>{row.original.address}</Cell>,
+      cell: ({ row }) => <Cell>{humanize(row.original.kind)}</Cell>,
+    },
+    {
+      accessorKey: "value",
+      meta: { label: "Value", maxWidthClassName: "max-w-80" },
+      header: renderColumnHeader,
+      enableSorting: true,
+      enableHiding: false,
+      cell: ({ row }) => <Cell>{row.original.value}</Cell>,
     },
     {
       accessorKey: "createdAt",
@@ -977,7 +985,7 @@ function EmailAllowedRecipientsPanel({ agentKey }: { agentKey: string }) {
       meta: { linkEnabled: false, align: "right" },
       cell: ({ row }) => (
         <RowActionsMenu
-          triggerLabel={`Open actions for allowed recipient ${row.original.address}`}
+          triggerLabel={`Open actions for email recipient allow rule ${row.original.value}`}
           actions={[
             {
               label: "Delete",
@@ -985,12 +993,14 @@ function EmailAllowedRecipientsPanel({ agentKey }: { agentKey: string }) {
               destructive: true,
               pending: remove.isPending,
               confirm: {
-                title: "Remove allowed recipient",
+                title: "Remove recipient allow rule",
                 description:
-                  "This prevents the selected email account from sending to this exact address.",
-                confirmLabel: "Remove recipient",
-                entityLabel: "Recipient",
-                itemLabel: `${row.original.accountKey}:${row.original.address}`,
+                  row.original.kind === "domain"
+                    ? "This prevents the selected email account from sending to every mailbox covered by this exact domain rule."
+                    : "This prevents the selected email account from sending to this exact address unless another rule permits it.",
+                confirmLabel: "Remove rule",
+                entityLabel: "Rule",
+                itemLabel: `${row.original.accountKey}:${row.original.kind}:${row.original.value}`,
               },
               onSelect: () => remove.mutateAsync(row.original),
             },
@@ -1005,21 +1015,21 @@ function EmailAllowedRecipientsPanel({ agentKey }: { agentKey: string }) {
       <h2 className="text-sm font-semibold">Email send allowlist</h2>
       <DataTableView
         columns={columns}
-        response={recipients.data}
+        response={rules.data}
         state={table}
-        error={recipients.error}
+        error={rules.error}
         filters={
           <EmailAccountFilter state={table} accountOptions={accountOptions} />
         }
-        isFetching={recipients.isFetching}
-        isLoading={recipients.isLoading}
-        isPlaceholderData={recipients.isPlaceholderData}
-        onRetry={() => void recipients.refetch()}
-        rowKey={(row) => `${row.accountKey}:${row.address}`}
-        emptyLabel="No allowed email recipients."
+        isFetching={rules.isFetching}
+        isLoading={rules.isLoading}
+        isPlaceholderData={rules.isPlaceholderData}
+        onRetry={() => void rules.refetch()}
+        rowKey={(row) => row.id}
+        emptyLabel="No email recipient allow rules."
         emptyDescription={
           hasEmailAccounts
-            ? "Add exact recipient addresses that this agent may send to."
+            ? "Add an exact recipient address or an exact recipient domain."
             : "Add an email account before managing send allowlists."
         }
         emptyAction={
@@ -1028,9 +1038,9 @@ function EmailAllowedRecipientsPanel({ agentKey }: { agentKey: string }) {
               Checking accounts
             </Button>
           ) : hasEmailAccounts ? (
-            <Button size="sm" onClick={openAllowedRecipient}>
+            <Button size="sm" onClick={openAllowRule}>
               <ShieldCheck className="size-4" />
-              Add recipient
+              Add rule
             </Button>
           ) : (
             <Button
@@ -1053,9 +1063,9 @@ function EmailAllowedRecipientsPanel({ agentKey }: { agentKey: string }) {
               Checking accounts
             </Button>
           ) : hasEmailAccounts ? (
-            <Button size="sm" onClick={openAllowedRecipient}>
+            <Button size="sm" onClick={openAllowRule}>
               <ShieldCheck className="size-4" />
-              Add recipient
+              Add rule
             </Button>
           ) : (
             <Button
@@ -1074,7 +1084,7 @@ function EmailAllowedRecipientsPanel({ agentKey }: { agentKey: string }) {
     </section>
   )
 
-  function openAllowedRecipient() {
+  function openAllowRule() {
     allowSheet.setOpen(true, { context: { agentKey } })
   }
 }

@@ -154,6 +154,22 @@ class PgMemReadonlySchemaQueryable {
         continue;
       }
 
+      if (/^CREATE VIEW "session"."email_allowed_recipients"/i.test(statement)) {
+        try {
+          await this.pool.query(`
+            CREATE TABLE "runtime"."email_allowed_recipients" (
+              id UUID PRIMARY KEY,
+              agent_key TEXT NOT NULL,
+              account_key TEXT NOT NULL,
+              address TEXT NOT NULL,
+              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+          `);
+        } catch (error) {
+          if (!String(error).includes("already exists")) throw error;
+        }
+      }
+
       const sanitized = statement.replace(
         /\bWITH\s*\(security_barrier\s*=\s*true\)\s+AS\b/gi,
         "AS",
@@ -302,6 +318,7 @@ describe("ensureReadonlySessionQuerySchema", () => {
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"watch_runs\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"watch_events\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"email_accounts\"");
+    expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"email_allowed_recipients\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"email_routes\"");
     expect(queryable.queries[0]).toContain("CREATE VIEW \"session\".\"email_messages\"");
     expect(queryable.queries[0]).toContain("FROM \"session\".\"messages_raw\" AS raw");
@@ -716,7 +733,19 @@ describe("ensureReadonlySessionQuerySchema", () => {
       imap: endpoint,
       smtp: endpoint,
     });
-    await emailStore.addAllowedRecipient("panda", "work", "alice@example.com");
+    await pool.query(`
+      CREATE TABLE "runtime"."email_allowed_recipients" (
+        id UUID PRIMARY KEY,
+        agent_key TEXT NOT NULL,
+        account_key TEXT NOT NULL,
+        address TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await pool.query(`
+      INSERT INTO "runtime"."email_allowed_recipients" (id, agent_key, account_key, address)
+      VALUES ('00000000-0000-4000-8000-000000000001', 'panda', 'work', 'alice@example.com')
+    `);
     const branchRoute = await emailStore.setRoute({
       agentKey: "panda",
       accountKey: "work",

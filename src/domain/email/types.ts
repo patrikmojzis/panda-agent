@@ -41,12 +41,23 @@ export interface UpsertEmailAccountInput {
   enabled?: boolean;
 }
 
-export interface EmailAllowedRecipientRecord {
+export type EmailRecipientAllowRuleKind = "address" | "domain";
+
+export interface EmailRecipientAllowRuleInput {
   agentKey: string;
   accountKey: string;
-  address: string;
+  kind: EmailRecipientAllowRuleKind;
+  value: string;
+}
+
+export interface EmailRecipientAllowRuleRecord extends EmailRecipientAllowRuleInput {
+  id: string;
   createdAt: number;
 }
+
+export type EmailRecipientAllowRuleSelector =
+  | {agentKey: string; ruleId: string}
+  | EmailRecipientAllowRuleInput;
 
 export interface EmailRouteRecord {
   id: string;
@@ -219,9 +230,9 @@ export interface EmailStore {
   getAccount(agentKey: string, accountKey: string): Promise<EmailAccountRecord>;
   listEnabledAccounts(): Promise<readonly EmailAccountRecord[]>;
   updateAccountSyncState(agentKey: string, accountKey: string, syncState: EmailAccountSyncState): Promise<EmailAccountRecord>;
-  addAllowedRecipient(agentKey: string, accountKey: string, address: string): Promise<EmailAllowedRecipientRecord>;
-  removeAllowedRecipient(agentKey: string, accountKey: string, address: string): Promise<boolean>;
-  listAllowedRecipients(agentKey: string, accountKey: string): Promise<readonly EmailAllowedRecipientRecord[]>;
+  addRecipientAllowRule(input: EmailRecipientAllowRuleInput): Promise<EmailRecipientAllowRuleRecord>;
+  removeRecipientAllowRule(input: EmailRecipientAllowRuleSelector): Promise<EmailRecipientAllowRuleRecord | null>;
+  listRecipientAllowRules(agentKey: string, accountKey: string): Promise<readonly EmailRecipientAllowRuleRecord[]>;
   assertRecipientsAllowed(agentKey: string, accountKey: string, addresses: readonly string[]): Promise<void>;
   setRoute(input: SetEmailRouteInput): Promise<EmailRouteRecord>;
   removeRoute(input: EmailRouteLookupInput): Promise<boolean>;

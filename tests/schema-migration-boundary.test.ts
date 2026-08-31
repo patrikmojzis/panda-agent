@@ -50,6 +50,7 @@ describe("database migration boundary", () => {
       "app/database/migrations/0010-refresh-archived-session-view.ts",
       "app/database/migrations/0011-bound-secret-envelopes.ts",
       "app/database/migrations/0013-scheduled-commands.ts",
+      "app/database/migrations/0014-email-recipient-allow-rules.ts",
       "app/database/readonly-role.ts",
       "domain/threads/requests/postgres-operation-schema.ts",
       "lib/postgres-migrations.ts",

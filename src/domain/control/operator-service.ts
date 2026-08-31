@@ -20,11 +20,13 @@ import type {ConnectorAccountRecord} from "../connectors/types.js";
 import type {SecretCrypto} from "../secrets/crypto.js";
 import type {
     EmailAccountRecord,
-    EmailAllowedRecipientRecord,
     EmailEndpointConfig,
+    EmailRecipientAllowRuleKind,
+    EmailRecipientAllowRuleRecord,
     EmailRouteRecord,
     EmailStore
 } from "../email/types.js";
+import {normalizeEmailRecipientAllowRuleKind} from "../email/shared.js";
 import {buildCredentialTableNames} from "../credentials/postgres-shared.js";
 import {buildConnectorAccountTableNames} from "../connectors/postgres-shared.js";
 import {PostgresGatewayStore} from "../gateway/postgres.js";
@@ -122,8 +124,9 @@ export interface ControlEmailRouteTableInput extends ControlTableInput {
   accountKey?: string;
 }
 
-export interface ControlEmailAllowedRecipientTableInput extends ControlTableInput {
+export interface ControlEmailRecipientAllowRuleTableInput extends ControlTableInput {
   accountKey?: string;
+  kind?: EmailRecipientAllowRuleKind;
 }
 
 export interface ControlDiscordActorPairingTableInput extends ControlTableInput {
@@ -293,10 +296,12 @@ export interface ControlEmailRouteRow {
   updatedAt: string;
 }
 
-export interface ControlEmailAllowedRecipientRow {
+export interface ControlEmailRecipientAllowRuleRow {
+  id: string;
   agentKey: string;
   accountKey: string;
-  address: string;
+  kind: EmailRecipientAllowRuleKind;
+  value: string;
   createdAt: string;
 }
 
@@ -678,9 +683,9 @@ type ControlEmailStore = Pick<
   | "setRoute"
   | "removeRoute"
   | "listRoutes"
-  | "addAllowedRecipient"
-  | "removeAllowedRecipient"
-  | "listAllowedRecipients"
+  | "addRecipientAllowRule"
+  | "removeRecipientAllowRule"
+  | "listRecipientAllowRules"
 >;
 
 type ControlWikiBindingStore = {
@@ -839,12 +844,14 @@ function publicEmailRoute(route: EmailRouteRecord, session?: SessionRecord): Con
   };
 }
 
-function publicEmailAllowedRecipient(recipient: EmailAllowedRecipientRecord): ControlEmailAllowedRecipientRow {
+function publicEmailRecipientAllowRule(rule: EmailRecipientAllowRuleRecord): ControlEmailRecipientAllowRuleRow {
   return {
-    agentKey: recipient.agentKey,
-    accountKey: recipient.accountKey,
-    address: recipient.address,
-    createdAt: iso(recipient.createdAt)!,
+    id: rule.id,
+    agentKey: rule.agentKey,
+    accountKey: rule.accountKey,
+    kind: rule.kind,
+    value: rule.value,
+    createdAt: iso(rule.createdAt)!,
   };
 }
 
@@ -3177,55 +3184,69 @@ export class ControlOperatorService {
     };
   }
 
-  async listEmailAllowedRecipients(session: ControlSessionRecord, agentKey: string, input: ControlEmailAllowedRecipientTableInput = {}): Promise<ControlPaginatedResponse<ControlEmailAllowedRecipientRow>> {
+  async listEmailRecipientAllowRules(session: ControlSessionRecord, agentKey: string, input: ControlEmailRecipientAllowRuleTableInput = {}): Promise<ControlPaginatedResponse<ControlEmailRecipientAllowRuleRow>> {
     const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
     const accounts = (await this.connectorAccounts.listAccounts({source: "email", ownerKind: "agent"}))
       .filter((account) => account.ownerAgentKey === normalizedAgentKey)
       .filter((account) => !input.accountKey || account.accountKey === input.accountKey);
-    const recipients = await Promise.all(accounts.map((account) => this.email.listAllowedRecipients(normalizedAgentKey, account.accountKey)));
+    const rules = await Promise.all(accounts.map((account) => this.email.listRecipientAllowRules(normalizedAgentKey, account.accountKey)));
     const search = normalizeSearch(input.search);
-    const rows = recipients
+    const rows = rules
       .flat()
-      .map((recipient) => publicEmailAllowedRecipient(recipient))
+      .filter((rule) => !input.kind || rule.kind === input.kind)
+      .map((rule) => publicEmailRecipientAllowRule(rule))
       .filter((row) => includesSearch(row as unknown as Record<string, unknown>, search));
-    return tableResponse(sortRows(rows as unknown as Record<string, unknown>[], input, "createdAt") as unknown as ControlEmailAllowedRecipientRow[], input);
+    return tableResponse(sortRows(rows as unknown as Record<string, unknown>[], input, "createdAt") as unknown as ControlEmailRecipientAllowRuleRow[], input);
   }
 
-  async addEmailAllowedRecipient(session: ControlSessionRecord, agentKey: string, input: {
+  async addEmailRecipientAllowRule(session: ControlSessionRecord, agentKey: string, input: {
     accountKey?: unknown;
-    address?: unknown;
-  }): Promise<{recipient: ControlEmailAllowedRecipientRow; audit: Record<string, unknown>}> {
+    kind?: unknown;
+    value?: unknown;
+  }): Promise<{rule: ControlEmailRecipientAllowRuleRow; audit: Record<string, unknown>}> {
     const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
     const accountKey = requireNonEmptyString(input.accountKey, "Email allowlist account key is required.");
     const existing = await existingEmailAccount(this.email, normalizedAgentKey, accountKey);
     if (!existing) throw new Error("Control email account was not found or is not visible.");
-    const address = requireNonEmptyString(input.address, "Email allowlist recipient address is required.");
-    const recipient = await this.email.addAllowedRecipient(normalizedAgentKey, accountKey, address);
+    const kind = normalizeEmailRecipientAllowRuleKind(
+      requireNonEmptyString(input.kind, "Email allowlist rule kind is required."),
+    );
+    const value = requireNonEmptyString(input.value, "Email allowlist rule value is required.");
+    const rule = await this.email.addRecipientAllowRule({
+      agentKey: normalizedAgentKey,
+      accountKey,
+      kind,
+      value,
+    });
     return {
-      recipient: publicEmailAllowedRecipient(recipient),
+      rule: publicEmailRecipientAllowRule(rule),
       audit: {
-        action: "add_email_allowed_recipient",
+        action: "add_email_recipient_allow_rule",
+        ruleId: rule.id,
         agentKey: normalizedAgentKey,
         accountKey,
-        address: recipient.address,
+        kind: rule.kind,
+        value: rule.value,
       },
     };
   }
 
-  async deleteEmailAllowedRecipient(session: ControlSessionRecord, agentKey: string, accountKey: string, address: string): Promise<{deleted: boolean; audit: Record<string, unknown>}> {
+  async deleteEmailRecipientAllowRule(session: ControlSessionRecord, agentKey: string, ruleId: string): Promise<{deleted: boolean; audit: Record<string, unknown>}> {
     const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
-    const normalizedAccountKey = requireNonEmptyString(accountKey, "Email allowlist account key is required.");
-    const existing = await existingEmailAccount(this.email, normalizedAgentKey, normalizedAccountKey);
-    if (!existing) throw new Error("Control email account was not found or is not visible.");
-    const normalizedAddress = requireNonEmptyString(address, "Email allowlist recipient address is required.");
-    const deleted = await this.email.removeAllowedRecipient(normalizedAgentKey, normalizedAccountKey, normalizedAddress);
+    const normalizedRuleId = requireNonEmptyString(ruleId, "Email allowlist rule id is required.");
+    const removed = await this.email.removeRecipientAllowRule({
+      agentKey: normalizedAgentKey,
+      ruleId: normalizedRuleId,
+    });
     return {
-      deleted,
+      deleted: Boolean(removed),
       audit: {
-        action: "delete_email_allowed_recipient",
+        action: "delete_email_recipient_allow_rule",
+        ruleId: normalizedRuleId,
         agentKey: normalizedAgentKey,
-        accountKey: normalizedAccountKey,
-        address: normalizedAddress,
+        accountKey: removed?.accountKey ?? null,
+        kind: removed?.kind ?? null,
+        value: removed?.value ?? null,
       },
     };
   }

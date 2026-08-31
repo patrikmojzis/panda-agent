@@ -162,9 +162,48 @@ describe("PostgresEmailStore", () => {
       mailboxes: ["INBOX\nBad"],
     })).rejects.toThrow("control characters");
 
-    await email.addAllowedRecipient("panda", "work", "ALICE@Example.com");
+    await email.addRecipientAllowRule({
+      agentKey: "panda",
+      accountKey: "work",
+      kind: "address",
+      value: "ALICE@Example.com",
+    });
     await email.assertRecipientsAllowed("panda", "work", ["alice@example.com"]);
     await expect(email.assertRecipientsAllowed("panda", "work", ["bob@example.com"]))
+      .rejects.toThrow("not allowed");
+
+    await email.addRecipientAllowRule({
+      agentKey: "panda",
+      accountKey: "work",
+      kind: "address",
+      value: "*@company.com",
+    });
+    await expect(email.assertRecipientsAllowed("panda", "work", ["person@company.com"]))
+      .rejects.toThrow("not allowed");
+
+    const domainRule = await email.addRecipientAllowRule({
+      agentKey: "panda",
+      accountKey: "work",
+      kind: "domain",
+      value: "Company.COM",
+    });
+    expect(domainRule).toMatchObject({kind: "domain", value: "company.com"});
+    await email.assertRecipientsAllowed("panda", "work", ["person+tag@company.com"]);
+    await expect(email.assertRecipientsAllowed("panda", "work", ["person@staff.company.com"]))
+      .rejects.toThrow("not allowed");
+    await expect(email.assertRecipientsAllowed("panda", "work", ["person@company.com.evil.example"]))
+      .rejects.toThrow("not allowed");
+    await expect(email.assertRecipientsAllowed("panda", "work", [
+      "alice@example.com",
+      "blocked@other.example",
+    ])).rejects.toThrow("blocked@other.example");
+    await expect(email.removeRecipientAllowRule({
+      agentKey: "panda",
+      accountKey: "work",
+      kind: "domain",
+      value: "COMPANY.com",
+    })).resolves.toMatchObject({id: domainRule.id, kind: "domain", value: "company.com"});
+    await expect(email.assertRecipientsAllowed("panda", "work", ["person@company.com"]))
       .rejects.toThrow("not allowed");
 
     const inbound = await email.recordMessage({

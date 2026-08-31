@@ -1,3 +1,8 @@
+import {isIP} from "node:net";
+import {domainToASCII} from "node:url";
+
+import type {EmailRecipientAllowRuleKind} from "./types.js";
+
 export const EMAIL_SOURCE = "email";
 export const EMAIL_CONNECTOR_KEY = "smtp";
 export const DEFAULT_EMAIL_MAILBOXES = ["INBOX"] as const;
@@ -25,6 +30,59 @@ export function normalizeEmailAddress(value: string): string {
   }
 
   return trimmed;
+}
+
+/** Canonicalizes a bare DNS domain used by an email recipient allow rule. */
+export function normalizeEmailDomain(value: string): string {
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed
+    || trimmed.startsWith(".")
+    || trimmed.endsWith(".")
+    || /[@*\/\\:#?\[\]\s]/u.test(trimmed)) {
+    throw new Error(`Invalid email domain ${value}`);
+  }
+
+  const ascii = domainToASCII(trimmed).toLowerCase();
+  const labels = ascii.split(".");
+  if (!ascii
+    || ascii.length > 253
+    || labels.length < 2
+    || isIP(ascii) !== 0
+    || labels.some((label) => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))) {
+    throw new Error(`Invalid email domain ${value}`);
+  }
+
+  return ascii;
+}
+
+/** Extracts the canonical DNS domain from a normalized Panda email address. */
+export function normalizeEmailAddressDomain(value: string): string {
+  const address = normalizeEmailAddress(value);
+  return normalizeEmailDomain(address.slice(address.lastIndexOf("@") + 1));
+}
+
+/** Normalizes a typed recipient allow rule without interpreting pattern syntax. */
+export function normalizeEmailRecipientAllowRuleValue(
+  kind: EmailRecipientAllowRuleKind,
+  value: string,
+): string {
+  if (kind === "address") {
+    return normalizeEmailAddress(value);
+  }
+  if (kind === "domain") {
+    return normalizeEmailDomain(value);
+  }
+
+  throw new Error(`Unsupported email recipient allow rule kind ${String(kind)}`);
+}
+
+/** Rejects persisted or user-supplied recipient rule kinds outside the closed policy set. */
+export function normalizeEmailRecipientAllowRuleKind(value: string): EmailRecipientAllowRuleKind {
+  if (value === "address" || value === "domain") {
+    return value;
+  }
+
+  throw new Error(`Unsupported email recipient allow rule kind ${value}`);
 }
 
 export function normalizeOptionalEmailAddress(value: string | undefined): string | undefined {

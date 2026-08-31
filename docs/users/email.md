@@ -27,12 +27,23 @@ panda email account set work \
   --smtp-password-key WORK_SMTP_PASSWORD
 
 panda email allow add work alice@example.com --agent panda
+panda email allow add-domain work company.com --agent panda
 panda email allow list work --agent panda
 ```
 
 Use `--mailbox <name>` on `panda email account set` to choose mailboxes to sync. Repeat it for multiple mailboxes. If omitted, Panda syncs `INBOX`.
 
-Recipients must be allowlisted before Panda can send fresh mail to them. Use `--smtp-port 587 --smtp-secure` for common STARTTLS-style SMTP providers; if your provider requires another TLS port, use that documented provider value instead.
+Recipients must be allowed before Panda can send fresh mail or a reply. Use an
+exact address rule for one mailbox. A domain rule such as `company.com` permits
+every current and future mailbox and plus-address at exactly `company.com`; it
+does not include `staff.company.com`. Panda does not support wildcard, regex or
+exclusion syntax, so do not enter `*@company.com`. Remove rules explicitly with
+`panda email allow remove` or `panda email allow remove-domain`. One blocked
+recipient blocks the whole message, and Panda checks current rules again before
+SMTP delivery. Recipient-side aliases and forwarding remain outside Panda's
+control.
+
+Use `--smtp-port 587 --smtp-secure` for common STARTTLS-style SMTP providers; if your provider requires another TLS port, use that documented provider value instead.
 
 ## Route Accounts And Mailboxes To Sessions
 
@@ -62,7 +73,7 @@ Mailbox routes win over account routes for that mailbox. If no route matches, ma
 Agents see email through these readonly views:
 
 - `session.email_accounts`
-- `session.email_allowed_recipients`
+- `session.email_recipient_allow_rules`
 - `session.email_routes`
 - `session.email_messages`
 - `session.email_message_recipients`

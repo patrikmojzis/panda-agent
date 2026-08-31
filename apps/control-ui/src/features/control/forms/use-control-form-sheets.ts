@@ -113,9 +113,10 @@ export type EmailRouteFormValues = {
   sessionId: string
 }
 
-export type EmailAllowedRecipientFormValues = {
+export type EmailRecipientAllowRuleFormValues = {
   accountKey: string
-  address: string
+  kind: "address" | "domain"
+  value: string
 }
 
 export type DiscordActorPairingFormValues = {
@@ -206,7 +207,7 @@ export const useWhatsAppConnectorSheet = createUpdateFormSheetStore<ConnectorRow
 export const useBindingSheet = createUpdateFormSheetStore<BindingRow, BindingFormValues>()
 export const useA2ABindingSheet = createUpdateFormSheetStore<A2ABindingRow, A2ABindingFormValues>()
 export const useEmailRouteSheet = createUpdateFormSheetStore<EmailRouteRow, EmailRouteFormValues>()
-export const useEmailAllowedRecipientSheet = createFormSheetStore<EmailAllowedRecipientFormValues>()
+export const useEmailRecipientAllowRuleSheet = createFormSheetStore<EmailRecipientAllowRuleFormValues>()
 export const useDiscordActorPairingSheet = createFormSheetStore<DiscordActorPairingFormValues>()
 export const useChannelActorPairingSheet = createFormSheetStore<ChannelActorPairingFormValues>()
 export const useAgentPairingSheet = createFormSheetStore<AgentPairingFormValues>()

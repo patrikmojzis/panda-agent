@@ -256,7 +256,7 @@ Treat these views as the public interface:
 - `session.watch_runs`
 - `session.watch_events`
 - `session.email_accounts`
-- `session.email_allowed_recipients`
+- `session.email_recipient_allow_rules`
 - `session.email_routes`
 - `session.email_messages`
 - `session.email_message_recipients`

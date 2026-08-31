@@ -4,10 +4,10 @@ import {addConstraint, assertIntegrityChecks, type IntegrityCheckGroup} from "..
 import {buildAgentTableNames} from "../agents/postgres-shared.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import type {PgQueryable} from "../../lib/postgres-query.js";
-import {buildEmailTableNames} from "./postgres-shared.js";
+import {buildCurrentEmailTableNames} from "./postgres-current-shared.js";
 
 export function buildEmailIntegrityChecks(): IntegrityCheckGroup {
-  const tables = buildEmailTableNames();
+  const tables = buildCurrentEmailTableNames();
   const agentTableName = buildAgentTableNames().agents;
   const sessionTableName = buildSessionTableNames().sessions;
   return {
@@ -49,7 +49,7 @@ export function buildEmailIntegrityChecks(): IntegrityCheckGroup {
 }
 
 export async function ensurePostgresEmailSchema(pool: PgQueryable): Promise<void> {
-  const tables = buildEmailTableNames();
+  const tables = buildCurrentEmailTableNames();
   const agentTableName = buildAgentTableNames().agents;
   const sessionTableName = buildSessionTableNames().sessions;
   await pool.query(CREATE_RUNTIME_SCHEMA_SQL);
@@ -70,11 +70,12 @@ export async function ensurePostgresEmailSchema(pool: PgQueryable): Promise<void
     )
   `);
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS ${tables.emailAllowedRecipients} (
+    CREATE TABLE IF NOT EXISTS ${tables.emailRecipientAllowRules} (
       id UUID PRIMARY KEY,
       agent_key TEXT NOT NULL,
       account_key TEXT NOT NULL,
-      address TEXT NOT NULL,
+      rule_kind TEXT NOT NULL CHECK (rule_kind IN ('address', 'domain')),
+      rule_value TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
@@ -192,8 +193,8 @@ export async function ensurePostgresEmailSchema(pool: PgQueryable): Promise<void
     ON ${tables.emailAccounts} (agent_key, account_key)
   `);
   await pool.query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_email_allowed_key_idx`)}
-    ON ${tables.emailAllowedRecipients} (agent_key, account_key, address)
+    CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_email_recipient_allow_rules_key_idx`)}
+    ON ${tables.emailRecipientAllowRules} (agent_key, account_key, rule_kind, rule_value)
   `);
   await pool.query(`
     CREATE UNIQUE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_email_routes_account_idx`)}
@@ -243,8 +244,8 @@ export async function ensurePostgresEmailSchema(pool: PgQueryable): Promise<void
     ON DELETE CASCADE
   `);
   await addConstraint(pool, `
-    ALTER TABLE ${tables.emailAllowedRecipients}
-    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_email_allowed_account_fk`)}
+    ALTER TABLE ${tables.emailRecipientAllowRules}
+    ADD CONSTRAINT ${quoteIdentifier(`${tables.prefix}_email_recipient_allow_rules_account_fk`)}
     FOREIGN KEY (agent_key, account_key)
     REFERENCES ${tables.emailAccounts}(agent_key, account_key)
     ON DELETE CASCADE

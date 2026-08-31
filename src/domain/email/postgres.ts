@@ -7,19 +7,21 @@ import type {PgClientLike, PgPoolLike, PgQueryable} from "../../lib/postgres-que
 import {withTransaction} from "../../lib/postgres-transaction.js";
 import {requireTrimmedString, trimToUndefined} from "../../lib/strings.js";
 import {
-    DEFAULT_EMAIL_MAILBOXES,
-    normalizeEmailAccountKey,
-    normalizeEmailAddress,
-    normalizeEmailMailbox,
+  DEFAULT_EMAIL_MAILBOXES,
+  normalizeEmailAccountKey,
+  normalizeEmailAddress,
+  normalizeEmailAddressDomain,
+  normalizeEmailMailbox,
+  normalizeEmailRecipientAllowRuleKind,
+  normalizeEmailRecipientAllowRuleValue,
 } from "./shared.js";
 import {normalizeEmailMessageInput, type NormalizedEmailAttachmentInput} from "./message-input.js";
-import {buildEmailTableNames, type EmailTableNames} from "./postgres-shared.js";
+import {buildCurrentEmailTableNames, type CurrentEmailTableNames} from "./postgres-current-shared.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import type {
     EmailAccountRecord,
     EmailAccountSendOwnershipInput,
     EmailAccountSyncState,
-    EmailAllowedRecipientRecord,
     EmailAttachmentRecord,
     EmailAttachmentStorageReason,
     EmailAttachmentStorageStatus,
@@ -34,6 +36,9 @@ import type {
     EmailMessageSearchInput,
     EmailRecipientRole,
     EmailRecipientInput,
+    EmailRecipientAllowRuleInput,
+    EmailRecipientAllowRuleRecord,
+    EmailRecipientAllowRuleSelector,
     EmailRouteLookupInput,
     EmailRouteRecord,
     EmailStore,
@@ -239,12 +244,18 @@ function parseAccountRow(row: Record<string, unknown>): EmailAccountRecord {
   };
 }
 
-function parseAllowedRecipientRow(row: Record<string, unknown>): EmailAllowedRecipientRecord {
+function parseRecipientAllowRuleRow(row: Record<string, unknown>): EmailRecipientAllowRuleRecord {
+  const kind = normalizeEmailRecipientAllowRuleKind(requireTrimmed("recipient allow rule kind", row.rule_kind));
   return {
-    agentKey: requireTrimmed("allowed recipient agent key", row.agent_key),
-    accountKey: normalizeEmailAccountKey(requireTrimmed("allowed recipient account key", row.account_key)),
-    address: normalizeEmailAddress(requireTrimmed("allowed recipient address", row.address)),
-    createdAt: requireTimestampMillis(row.created_at, "Email allowed recipient created_at must be a valid timestamp."),
+    id: requireTrimmed("recipient allow rule id", row.id),
+    agentKey: requireTrimmed("recipient allow rule agent key", row.agent_key),
+    accountKey: normalizeEmailAccountKey(requireTrimmed("recipient allow rule account key", row.account_key)),
+    kind,
+    value: normalizeEmailRecipientAllowRuleValue(
+      kind,
+      requireTrimmed("recipient allow rule value", row.rule_value),
+    ),
+    createdAt: requireTimestampMillis(row.created_at, "Email recipient allow rule created_at must be a valid timestamp."),
   };
 }
 
@@ -342,12 +353,12 @@ function parseAttachmentRow(row: Record<string, unknown>): EmailAttachmentRecord
 
 export class PostgresEmailStore implements EmailStore {
   private readonly pool: PgPoolLike;
-  private readonly tables: EmailTableNames;
+  private readonly tables: CurrentEmailTableNames;
   private readonly sessionTableName: string;
 
   constructor(options: PostgresEmailStoreOptions) {
     this.pool = options.pool;
-    this.tables = buildEmailTableNames();
+    this.tables = buildCurrentEmailTableNames();
     this.sessionTableName = buildSessionTableNames().sessions;
   }
 
@@ -479,52 +490,69 @@ export class PostgresEmailStore implements EmailStore {
     return parseAccountRow(row as Record<string, unknown>);
   }
 
-  async addAllowedRecipient(agentKey: string, accountKey: string, address: string): Promise<EmailAllowedRecipientRecord> {
+  async addRecipientAllowRule(input: EmailRecipientAllowRuleInput): Promise<EmailRecipientAllowRuleRecord> {
+    const kind = normalizeEmailRecipientAllowRuleKind(input.kind);
     const result = await this.pool.query(`
-      INSERT INTO ${this.tables.emailAllowedRecipients} (
+      INSERT INTO ${this.tables.emailRecipientAllowRules} (
         id,
         agent_key,
         account_key,
-        address
-      ) VALUES ($1, $2, $3, $4)
-      ON CONFLICT (agent_key, account_key, address)
-      DO UPDATE SET address = EXCLUDED.address
+        rule_kind,
+        rule_value
+      ) VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (agent_key, account_key, rule_kind, rule_value)
+      DO UPDATE SET rule_value = EXCLUDED.rule_value
       RETURNING *
     `, [
       randomUUID(),
-      requireTrimmed("agent key", agentKey),
-      normalizeEmailAccountKey(accountKey),
-      normalizeEmailAddress(address),
+      requireTrimmed("agent key", input.agentKey),
+      normalizeEmailAccountKey(input.accountKey),
+      kind,
+      normalizeEmailRecipientAllowRuleValue(kind, input.value),
     ]);
-    return parseAllowedRecipientRow(result.rows[0] as Record<string, unknown>);
+    return parseRecipientAllowRuleRow(result.rows[0] as Record<string, unknown>);
   }
 
-  async removeAllowedRecipient(agentKey: string, accountKey: string, address: string): Promise<boolean> {
-    const result = await this.pool.query(`
-      DELETE FROM ${this.tables.emailAllowedRecipients}
-      WHERE agent_key = $1
-        AND account_key = $2
-        AND address = $3
-    `, [
-      requireTrimmed("agent key", agentKey),
-      normalizeEmailAccountKey(accountKey),
-      normalizeEmailAddress(address),
-    ]);
-    return (result.rowCount ?? 0) > 0;
+  async removeRecipientAllowRule(input: EmailRecipientAllowRuleSelector): Promise<EmailRecipientAllowRuleRecord | null> {
+    const result = "ruleId" in input
+      ? await this.pool.query(`
+          DELETE FROM ${this.tables.emailRecipientAllowRules}
+          WHERE agent_key = $1
+            AND id = $2
+          RETURNING *
+        `, [
+          requireTrimmed("agent key", input.agentKey),
+          requireTrimmed("recipient allow rule id", input.ruleId),
+        ])
+      : await this.pool.query(`
+          DELETE FROM ${this.tables.emailRecipientAllowRules}
+          WHERE agent_key = $1
+            AND account_key = $2
+            AND rule_kind = $3
+            AND rule_value = $4
+          RETURNING *
+        `, [
+          requireTrimmed("agent key", input.agentKey),
+          normalizeEmailAccountKey(input.accountKey),
+          normalizeEmailRecipientAllowRuleKind(input.kind),
+          normalizeEmailRecipientAllowRuleValue(input.kind, input.value),
+        ]);
+    const row = result.rows[0];
+    return row ? parseRecipientAllowRuleRow(row as Record<string, unknown>) : null;
   }
 
-  async listAllowedRecipients(agentKey: string, accountKey: string): Promise<readonly EmailAllowedRecipientRecord[]> {
+  async listRecipientAllowRules(agentKey: string, accountKey: string): Promise<readonly EmailRecipientAllowRuleRecord[]> {
     const result = await this.pool.query(`
       SELECT *
-      FROM ${this.tables.emailAllowedRecipients}
+      FROM ${this.tables.emailRecipientAllowRules}
       WHERE agent_key = $1
         AND account_key = $2
-      ORDER BY address ASC
+      ORDER BY rule_kind ASC, rule_value ASC
     `, [
       requireTrimmed("agent key", agentKey),
       normalizeEmailAccountKey(accountKey),
     ]);
-    return result.rows.map((row) => parseAllowedRecipientRow(row as Record<string, unknown>));
+    return result.rows.map((row) => parseRecipientAllowRuleRow(row as Record<string, unknown>));
   }
 
   async assertRecipientsAllowed(agentKey: string, accountKey: string, addresses: readonly string[]): Promise<void> {
@@ -533,9 +561,23 @@ export class PostgresEmailStore implements EmailStore {
       return;
     }
 
-    const allowed = await this.listAllowedRecipients(agentKey, accountKey);
-    const allowedSet = new Set(allowed.map((recipient) => recipient.address));
-    const blocked = normalized.filter((address) => !allowedSet.has(address));
+    const rules = await this.listRecipientAllowRules(agentKey, accountKey);
+    const allowedAddresses = new Set(rules
+      .filter((rule) => rule.kind === "address")
+      .map((rule) => rule.value));
+    const allowedDomains = new Set(rules
+      .filter((rule) => rule.kind === "domain")
+      .map((rule) => rule.value));
+    const blocked = normalized.filter((address) => {
+      if (allowedAddresses.has(address)) {
+        return false;
+      }
+      try {
+        return !allowedDomains.has(normalizeEmailAddressDomain(address));
+      } catch {
+        return true;
+      }
+    });
     if (blocked.length > 0) {
       throw new Error(`Email account ${accountKey} is not allowed to send to ${blocked.join(", ")}.`);
     }

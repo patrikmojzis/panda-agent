@@ -8,7 +8,7 @@ import type {
   ControlGrantFormValues,
   DiscordActorPairingFormValues,
   DiscordConnectorFormValues,
-  EmailAllowedRecipientFormValues,
+  EmailRecipientAllowRuleFormValues,
   EmailConnectorFormValues,
   TelegramConnectorFormValues,
   WhatsAppConnectorFormValues,
@@ -184,10 +184,11 @@ export function emailRoutePayload(values: EmailRouteFormValues) {
   }
 }
 
-export function emailAllowedRecipientPayload(values: EmailAllowedRecipientFormValues) {
+export function emailRecipientAllowRulePayload(values: EmailRecipientAllowRuleFormValues) {
   return {
     accountKey: values.accountKey.trim(),
-    address: values.address.trim(),
+    kind: values.kind,
+    value: values.value.trim(),
   }
 }
 
