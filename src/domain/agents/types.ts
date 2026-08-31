@@ -7,10 +7,12 @@ export interface CreateAgentInput {
   displayName: string;
   status?: AgentStatus;
   metadata?: JsonValue;
+  liveVoice?: string;
 }
 
-export interface AgentRecord extends CreateAgentInput {
+export interface AgentRecord extends Omit<CreateAgentInput, "liveVoice" | "status"> {
   status: AgentStatus;
+  liveVoice: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -53,6 +55,7 @@ export const MAX_AGENT_SKILL_DESCRIPTION_CHARS = 255;
 export const MAX_AGENT_SKILL_CONTENT_CHARS = 1_000_000;
 export const MAX_AGENT_SKILL_TAGS = 20;
 export const MAX_AGENT_SKILL_TAG_CHARS = 64;
+export const MAX_AGENT_LIVE_VOICE_CHARS = 64;
 
 export function normalizeAgentKey(value: string): string {
   const normalized = value.trim().toLowerCase();
@@ -64,6 +67,16 @@ export function normalizeAgentKey(value: string): string {
     throw new Error("Agent key must use lowercase letters, numbers, hyphens, or underscores.");
   }
 
+  return normalized;
+}
+
+/** Normalizes the persisted provider voice identifier without owning a provider catalogue. */
+export function normalizeAgentLiveVoice(value: string): string {
+  const normalized = value.trim();
+  if (!normalized) throw new Error("Agent live voice must not be empty.");
+  if (normalized.length > MAX_AGENT_LIVE_VOICE_CHARS) {
+    throw new Error(`Agent live voice must be at most ${MAX_AGENT_LIVE_VOICE_CHARS} characters.`);
+  }
   return normalized;
 }
 

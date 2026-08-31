@@ -22,10 +22,12 @@ import {type AgentRecord, normalizeAgentKey} from "./types.js";
 
 interface AgentCliOptions {
   dbUrl?: string;
+  json?: boolean;
 }
 
 interface CreateAgentCliOptions extends AgentCliOptions {
   name?: string;
+  voice?: string;
 }
 
 interface PairAgentCliOptions extends AgentCliOptions {}
@@ -41,12 +43,26 @@ interface AgentCliStores {
 export interface EnsureAgentResult {
   agentKey: string;
   displayName: string;
+  liveVoice: string;
   createdAgent: boolean;
   createdMainSession: boolean;
   createdMainThread: boolean;
   sessionId: string;
   threadId: string;
   homeDir: string;
+}
+
+export interface AgentLiveVoiceCliCatalog {
+  provider: string;
+  model: string;
+  sourceVersion?: string;
+  defaultVoice: string;
+  voices: readonly string[];
+  parse(value: unknown): string;
+}
+
+export interface RegisterAgentCommandsOptions {
+  liveVoice: AgentLiveVoiceCliCatalog;
 }
 
 function createAgentCliStores(pool: Pool): AgentCliStores {
@@ -122,7 +138,7 @@ async function createMainSessionThread(
 export async function ensureAgent(
   stores: Pick<AgentCliStores, "agentStore" | "sessionStore" | "threadStore"> & {pool?: Pool},
   agentKey: string,
-  options: {name?: string; env?: NodeJS.ProcessEnv} = {},
+  options: {name?: string; voice?: string; env?: NodeJS.ProcessEnv} = {},
 ): Promise<EnsureAgentResult> {
   const normalizedAgentKey = normalizeAgentKey(agentKey);
   const env = options.env ?? process.env;
@@ -141,8 +157,13 @@ export async function ensureAgent(
     agent = await stores.agentStore.bootstrapAgent({
       agentKey: normalizedAgentKey,
       displayName: options.name?.trim() || normalizedAgentKey,
+      ...(options.voice ? {liveVoice: options.voice} : {}),
     });
     createdAgent = true;
+  }
+
+  if (!createdAgent && options.voice !== undefined && agent.liveVoice !== options.voice) {
+    agent = await stores.agentStore.setLiveVoice(agent.agentKey, options.voice);
   }
 
   const homeDir = resolveAgentDir(agent.agentKey, env);
@@ -202,6 +223,7 @@ export async function ensureAgent(
   return {
     agentKey: agent.agentKey,
     displayName: agent.displayName,
+    liveVoice: agent.liveVoice,
     createdAgent,
     createdMainSession,
     createdMainThread,
@@ -239,6 +261,7 @@ export async function createAgentCommand(agentKey: string, options: CreateAgentC
     const created = await agentStore.bootstrapAgent({
       agentKey,
       displayName: options.name?.trim() || agentKey,
+      ...(options.voice ? {liveVoice: options.voice} : {}),
     });
     const agentHome = resolveAgentDir(created.agentKey);
     const {sessionId, threadId} = await createMainSessionThread(
@@ -251,6 +274,7 @@ export async function createAgentCommand(agentKey: string, options: CreateAgentC
       [
         `Created agent ${created.agentKey}.`,
         `name ${created.displayName}`,
+        `live voice ${created.liveVoice}`,
         `main session ${sessionId}`,
         `initial thread ${threadId}`,
         `home ${agentHome}`,
@@ -264,13 +288,14 @@ export async function ensureAgentCommand(agentKey: string, options: CreateAgentC
     const ensured = await ensureAgent(
       {agentStore, sessionStore, threadStore},
       agentKey,
-      {name: options.name, env: process.env},
+      {name: options.name, voice: options.voice, env: process.env},
     );
 
     process.stdout.write(
       [
         `Ensured agent ${ensured.agentKey}.`,
         `name ${ensured.displayName}`,
+        `live voice ${ensured.liveVoice}`,
         `agent created ${ensured.createdAgent ? "yes" : "no"}`,
         `main session created ${ensured.createdMainSession ? "yes" : "no"}`,
         `main thread created ${ensured.createdMainThread ? "yes" : "no"}`,
@@ -279,6 +304,53 @@ export async function ensureAgentCommand(agentKey: string, options: CreateAgentC
         `home ${ensured.homeDir}`,
       ].join("\n") + "\n",
     );
+  });
+}
+
+function parseLiveVoice(catalog: AgentLiveVoiceCliCatalog, value: string): string {
+  try {
+    return catalog.parse(value);
+  } catch (error) {
+    throw new InvalidArgumentError(error instanceof Error ? error.message : String(error));
+  }
+}
+
+async function listLiveVoicesCommand(catalog: AgentLiveVoiceCliCatalog, options: AgentCliOptions): Promise<void> {
+  const result = {
+    provider: catalog.provider,
+    model: catalog.model,
+    ...(catalog.sourceVersion ? {sourceVersion: catalog.sourceVersion} : {}),
+    defaultVoice: catalog.defaultVoice,
+    voices: [...catalog.voices],
+  };
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  process.stdout.write([
+    `${catalog.provider} · ${catalog.model}`,
+    ...catalog.voices.map((voice) => `${voice === catalog.defaultVoice ? "*" : " "} ${voice}`),
+    `* default: ${catalog.defaultVoice}`,
+  ].join("\n") + "\n");
+}
+
+async function getLiveVoiceCommand(agentKey: string, options: AgentCliOptions, catalog: AgentLiveVoiceCliCatalog): Promise<void> {
+  await withAgentStores(options, async ({agentStore}) => {
+    const agent = await agentStore.getAgent(agentKey);
+    const result = {agentKey: agent.agentKey, liveVoice: agent.liveVoice, provider: catalog.provider, model: catalog.model, defaultVoice: catalog.defaultVoice};
+    process.stdout.write(options.json
+      ? `${JSON.stringify(result, null, 2)}\n`
+      : [`agent ${agent.agentKey}`, `live voice ${agent.liveVoice}`, `provider ${catalog.provider}`, `model ${catalog.model}`].join("\n") + "\n");
+  });
+}
+
+async function setLiveVoiceCommand(agentKey: string, voice: string, options: AgentCliOptions, catalog: AgentLiveVoiceCliCatalog): Promise<void> {
+  await withAgentStores(options, async ({agentStore}) => {
+    const agent = await agentStore.setLiveVoice(agentKey, catalog.parse(voice));
+    const result = {agentKey: agent.agentKey, liveVoice: agent.liveVoice, provider: catalog.provider, model: catalog.model};
+    process.stdout.write(options.json
+      ? `${JSON.stringify(result, null, 2)}\n`
+      : `Set ${agent.agentKey} live voice to ${agent.liveVoice}.\n`);
   });
 }
 
@@ -329,7 +401,7 @@ async function listPairingsCommand(agentKey: string, options: PairAgentCliOption
   });
 }
 
-export function registerAgentCommands(program: Command): void {
+export function registerAgentCommands(program: Command, options: RegisterAgentCommandsOptions): void {
   const agentProgram = program
     .command("agent")
     .description("Manage Panda agents");
@@ -347,6 +419,7 @@ export function registerAgentCommands(program: Command): void {
     .description("Create a Panda agent")
     .argument("<agentKey>", "Agent key", parseAgentKey)
     .option("--name <displayName>", "Display name to show in UIs")
+    .option("--voice <voice>", "Live voice for new calls", (value) => parseLiveVoice(options.liveVoice, value))
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((agentKey: string, options: CreateAgentCliOptions) => {
       return createAgentCommand(agentKey, options);
@@ -357,6 +430,7 @@ export function registerAgentCommands(program: Command): void {
     .description("Create a Panda agent if missing and repair its main session scaffold")
     .argument("<agentKey>", "Agent key", parseAgentKey)
     .option("--name <displayName>", "Display name to use when the agent is created")
+    .option("--voice <voice>", "Set the agent live voice", (value) => parseLiveVoice(options.liveVoice, value))
     .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
     .action((agentKey: string, options: CreateAgentCliOptions) => {
       return ensureAgentCommand(agentKey, options);
@@ -390,4 +464,31 @@ export function registerAgentCommands(program: Command): void {
     .action((agentKey: string, options: PairAgentCliOptions) => {
       return listPairingsCommand(agentKey, options);
     });
+
+  const voiceProgram = agentProgram
+    .command("voice")
+    .description("Manage per-agent live-call voices");
+
+  voiceProgram
+    .command("list")
+    .description("List voices supported by the live-call provider")
+    .option("--json", "Write stable JSON output")
+    .action((commandOptions: AgentCliOptions) => listLiveVoicesCommand(options.liveVoice, commandOptions));
+
+  voiceProgram
+    .command("get")
+    .description("Show an agent's configured live voice")
+    .argument("<agentKey>", "Agent key", parseAgentKey)
+    .option("--json", "Write stable JSON output")
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((agentKey: string, commandOptions: AgentCliOptions) => getLiveVoiceCommand(agentKey, commandOptions, options.liveVoice));
+
+  voiceProgram
+    .command("set")
+    .description("Set an agent's live voice for future calls")
+    .argument("<agentKey>", "Agent key", parseAgentKey)
+    .argument("<voice>", "Provider voice", (value) => parseLiveVoice(options.liveVoice, value))
+    .option("--json", "Write stable JSON output")
+    .option("--db-url <url>", DB_URL_OPTION_DESCRIPTION)
+    .action((agentKey: string, voice: string, commandOptions: AgentCliOptions) => setLiveVoiceCommand(agentKey, voice, commandOptions, options.liveVoice));
 }

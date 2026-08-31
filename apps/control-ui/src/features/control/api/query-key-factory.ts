@@ -32,6 +32,7 @@ export const controlKeys = {
   me: () => [...controlKeys.auth(), "me"] as const,
   search: (search: string, perPage = 8) =>
     [...controlKeys.all, "search", { per_page: perPage, search }] as const,
+  liveVoiceCatalog: () => [...controlKeys.all, "live-voice", "voices"] as const,
   failures: {
     all: () => [...controlKeys.all, "failures"] as const,
     list: (params: FailureParams) =>

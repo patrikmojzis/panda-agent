@@ -9,6 +9,8 @@ The reusable boundary has four parts:
 - `src/integrations/voice/provider.ts` is the provider-session contract and provider-definition seam. `src/integrations/providers/openai-live/provider.ts` binds OpenAI configuration once; transports do not construct the bridge or map provider callbacks themselves. The OpenAI Live adapter owns private call creation, WebRTC, sideband parsing, authentication, and provider wire shape.
 - A call transport supplies decoded 24 kHz mono PCM and a `LiveVoiceOutput`. Discord owns guild joins, participant provenance, Discord Opus, Gateway/voice lifecycle, commands, and `discord_voice_controls`.
 
+The agent owns its `liveVoice` preference. A transport reads it when a new call starts, validates it through the provider catalogue, and stores the canonical value on `runtime.live_voice_sessions`. That snapshot is immutable for the call and every provider recovery generation. An idempotent rejoin returns the existing snapshot; moving rooms starts a new call and rereads the agent. Historical session rows keep `voice = NULL` rather than claiming a value that was never recorded.
+
 The daemon's generic handoff resolves the owning Panda session's current thread at delivery time. Source-specific prompt rendering is injected at that boundary; the Discord renderer remains under the Discord integration. Runtime input metadata uses `liveVoice`, so run correlation does not depend on a transport-specific shape.
 
 The important lifecycle rule is that transcript completion, provider response completion, and transport media drain are different facts. Frameless `turn.done` updates transient history and attribution only. Discord playback seals from media quiet and player drain; it never sends EOF because a transcript completed.
@@ -28,7 +30,9 @@ Whole-provider replacement is reserved for media failure or provider desynchroni
 
 Diagnostics have the same split. Generic health, provider, capture, playback, delegation, and Postgres facts live in `src/integrations/voice/health.ts`. The snapshot's `transport` object carries Discord Gateway and voice-connection facts rendered by `voice-transport-health.ts`. Operator status therefore stays comparable across future transports without erasing native details.
 
-The supported `panda/integrations/live-voice` package entrypoint exposes the channel-neutral call/provider contracts for the standalone voice lab and future call transports. `panda/integrations/openai-live` exposes only the OpenAI provider definition. Discord internals and provider wire classes remain private.
+The supported `panda/integrations/live-voice` package entrypoint exposes the channel-neutral call/provider contracts for the standalone voice lab and future call transports. `panda/integrations/openai-live` exposes the OpenAI provider definition plus its versioned V1/V3 voice catalogue and parser. Discord internals and provider wire classes remain private.
+
+`PANDA_LIVE_VOICE_ENABLED` is the channel-neutral deployment kill switch and stays disabled by default. Provider tuning uses `PANDA_OPENAI_LIVE_*`; voice choice is never an environment setting. Operators configure it per agent through Control or `panda agent voice`.
 
 A future Telegram, WhatsApp, or custom call adapter should create a generic session record, feed `LiveVoiceCall` with participant-attributed PCM, implement `LiveVoiceOutput`, inject a `LiveVoiceProviderDefinition`, render its source-specific delegation instructions, and own its native control/join lifecycle. Do not move connector controls, guild/chat identifiers, codecs, or provider wire details into the reusable module. Add a broader transport interface only after a second real adapter proves the common shape.
 

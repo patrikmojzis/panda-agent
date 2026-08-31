@@ -19,6 +19,7 @@ import {
   sessionContextMessages,
   type OpenAILiveRequestIds,
 } from "./wire.js";
+import {DEFAULT_OPENAI_LIVE_VOICE} from "./voices.js";
 
 const CONNECT_TIMEOUT_MS = 30_000;
 const SESSION_TTL_MS = 30 * 60_000;
@@ -292,10 +293,10 @@ export class OpenAILiveRealtimeVoiceBridge implements LiveVoiceProviderSession {
     const auth = (this.options.resolveAuth ?? (() => resolveOpenAILiveAuth(this.options.env)))();
     this.ids = createRequestIds();
     const call = await createOpenAILiveCall({
-      auth, ids: this.ids, offerSdp, voice: this.options.voice ?? "cove",
+      auth, ids: this.ids, offerSdp, voice: this.options.voice ?? DEFAULT_OPENAI_LIVE_VOICE,
       ...(this.options.initialItems ? {initialItems: this.options.initialItems} : {}),
       delegationAckFiller: this.options.delegationAckFiller
-        ?? optionalBoolean(this.options.env?.PANDA_DISCORD_VOICE_DELEGATION_ACK_FILLER),
+        ?? optionalBoolean(this.options.env?.PANDA_OPENAI_LIVE_DELEGATION_ACK_FILLER),
       signal, fetchImpl: this.options.fetchImpl,
     });
     this.sidebandUrl = call.sidebandUrl;
@@ -591,7 +592,7 @@ export class OpenAILiveRealtimeVoiceBridge implements LiveVoiceProviderSession {
   private startSidebandPing(socket: WebSocket): void {
     if (this.sidebandPing) clearInterval(this.sidebandPing);
     const configured = this.options.sidebandPingMs
-      ?? Number.parseInt(this.options.env?.PANDA_DISCORD_VOICE_SIDEBAND_PING_MS ?? "0", 10);
+      ?? Number.parseInt(this.options.env?.PANDA_OPENAI_LIVE_SIDEBAND_PING_MS ?? "0", 10);
     if (!Number.isFinite(configured) || configured <= 0 || typeof socket.ping !== "function") return;
     socket.on("pong", () => { this.lastPongAt = this.options.now?.() ?? Date.now(); });
     this.sidebandPing = setInterval(() => {

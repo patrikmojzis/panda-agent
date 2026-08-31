@@ -19,6 +19,11 @@ function createHarness(options: {connectError?: Error; sidebandState?: "connecti
     destroy: vi.fn(),
   });
   let bridgeOptions!: LiveVoiceProviderCallbacks;
+  const createProvider = vi.fn((voice: string) => ({
+    id: "openai-live",
+    model: "gpt-live-1-codex",
+    createSession: (created: LiveVoiceProviderCallbacks) => { bridgeOptions = created; return bridge; },
+  }));
   const bridge = {
     connect: vi.fn(async () => { if (options.connectError) throw options.connectError; }),
     sendAudio: vi.fn(),
@@ -28,6 +33,7 @@ function createHarness(options: {connectError?: Error; sidebandState?: "connecti
     close: vi.fn(),
   };
   const turns = new Map<string, Record<string, unknown>>();
+  const agentVoices = new Map<string, string>([["panda", "cove"]]);
   const controls = {failRunningControls: vi.fn(async () => 0)};
   const voice = {
     markConnectorSessionsDisconnected: vi.fn(async () => 0),
@@ -51,13 +57,14 @@ function createHarness(options: {connectError?: Error; sidebandState?: "connecti
   const manager = new DiscordVoiceSessionManager({
     connectorKey: "bot-1", botToken: "secret",
     gatewayAdapter: vi.fn(() => (() => ({sendPayload: () => true, destroy: () => undefined}))),
-    restClient: {getChannelMetadata: vi.fn(async () => ({id: "12345", type: 2, guildId: "guild-1"}))},
+    restClient: {getChannelMetadata: vi.fn(async (_token: string, channelId: string) => ({id: channelId, type: 2, guildId: channelId === "99999" ? "guild-2" : "guild-1"}))},
     controls: controls as never, voice: voice as never, log: vi.fn(),
+    agents: {getAgent: vi.fn(async (agentKey: string) => ({agentKey, displayName: agentKey, status: "active" as const, liveVoice: agentVoices.get(agentKey) ?? "cove", createdAt: 1, updatedAt: 1}))},
     openVoiceTransport: vi.fn(async () => ({connection: connection as never, player: player as never, outputEncoder: encoder as never})),
     createInputDecoder: vi.fn(async () => ({decode: vi.fn(() => new Int16Array(1_920).fill(100)), free: vi.fn()})) as never,
-    provider: {id: "openai-live", model: "gpt-live-1-codex", createSession: (created) => { bridgeOptions = created; return bridge; }},
+    createProvider,
   });
-  return {manager, connection, streams, bridge, get bridgeOptions() { return bridgeOptions; }, voice, turns};
+  return {manager, connection, streams, bridge, createProvider, setAgentVoice(voice: string, agentKey = "panda") { agentVoices.set(agentKey, voice); }, get bridgeOptions() { return bridgeOptions; }, voice, turns};
 }
 
 describe("DiscordVoiceSessionManager", () => {
@@ -65,8 +72,9 @@ describe("DiscordVoiceSessionManager", () => {
     const harness = createHarness();
     await harness.manager.start();
     const joined = await harness.manager.handle({id: "join", connectorKey: "bot-1", operation: "join", sessionId: "session-1", agentKey: "panda", channelId: "12345", status: "running", createdAt: 1, updatedAt: 1});
-    expect(joined).toMatchObject({state: "connected", guildId: "guild-1", channelId: "12345"});
-    expect(harness.voice.upsertSession).toHaveBeenCalledWith(expect.objectContaining({source: "discord", scopeKey: "guild-1", roomKey: "12345", provider: "openai-live"}));
+    expect(joined).toMatchObject({state: "connected", guildId: "guild-1", channelId: "12345", voice: "cove"});
+    expect(harness.createProvider).toHaveBeenCalledWith("cove");
+    expect(harness.voice.upsertSession).toHaveBeenCalledWith(expect.objectContaining({source: "discord", scopeKey: "guild-1", roomKey: "12345", provider: "openai-live", voice: "cove"}));
 
     harness.connection.receiver.speaking.emit("start", "user-1");
     await vi.waitFor(() => expect(harness.streams).toHaveLength(1));
@@ -94,6 +102,42 @@ describe("DiscordVoiceSessionManager", () => {
     await expect(harness.manager.handle({id: "join", connectorKey: "bot-1", operation: "join", sessionId: "session-1", agentKey: "panda", channelId: "12345", status: "running", createdAt: 1, updatedAt: 1}))
       .rejects.toThrow('"failureCode":"provider_startup_failed"');
     expect(harness.voice.markSessionDisconnected).toHaveBeenCalledWith(expect.any(String), "error", "provider_startup_failed");
+  });
+
+  it("keeps an idempotent join snapshot and rereads voice when moving channels", async () => {
+    const harness = createHarness();
+    await harness.manager.start();
+    const join = (id: string, channelId: string) => harness.manager.handle({id, connectorKey: "bot-1", operation: "join", sessionId: "session-1", agentKey: "panda", channelId, status: "running", createdAt: 1, updatedAt: 1});
+    await expect(join("join-1", "12345")).resolves.toMatchObject({voice: "cove"});
+    harness.setAgentVoice("juniper");
+    await expect(join("join-2", "12345")).resolves.toMatchObject({voice: "cove"});
+    expect(harness.createProvider).toHaveBeenCalledTimes(1);
+    await expect(join("join-3", "67890")).resolves.toMatchObject({voice: "juniper", channelId: "67890"});
+    expect(harness.createProvider).toHaveBeenNthCalledWith(2, "juniper");
+    await harness.manager.stop();
+  });
+
+  it("starts concurrent guild calls with each agent's configured voice", async () => {
+    const harness = createHarness();
+    harness.setAgentVoice("juniper", "luna");
+    await harness.manager.start();
+    await expect(harness.manager.handle({id: "join-panda", connectorKey: "bot-1", operation: "join", sessionId: "session-panda", agentKey: "panda", channelId: "12345", status: "running", createdAt: 1, updatedAt: 1}))
+      .resolves.toMatchObject({guildId: "guild-1", voice: "cove"});
+    await expect(harness.manager.handle({id: "join-luna", connectorKey: "bot-1", operation: "join", sessionId: "session-luna", agentKey: "luna", channelId: "99999", status: "running", createdAt: 1, updatedAt: 1}))
+      .resolves.toMatchObject({guildId: "guild-2", voice: "juniper"});
+    expect(harness.createProvider).toHaveBeenCalledWith("cove");
+    expect(harness.createProvider).toHaveBeenCalledWith("juniper");
+    await harness.manager.stop();
+  });
+
+  it("rejects an unsupported stored voice before provider or transport startup", async () => {
+    const harness = createHarness();
+    harness.setAgentVoice("marin");
+    await harness.manager.start();
+    await expect(harness.manager.handle({id: "join", connectorKey: "bot-1", operation: "join", sessionId: "session-1", agentKey: "panda", channelId: "12345", status: "running", createdAt: 1, updatedAt: 1}))
+      .rejects.toThrow('"failureCode":"unsupported_voice"');
+    expect(harness.createProvider).not.toHaveBeenCalled();
+    expect(harness.connection.subscribe).not.toHaveBeenCalled();
   });
 
   it("reports same-call sideband reattachment as provider recovery", async () => {

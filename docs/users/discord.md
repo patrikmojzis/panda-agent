@@ -138,15 +138,16 @@ Discord voice creates private `gpt-live-1-codex` calls through the ChatGPT Codex
 Opt in explicitly and mount the Codex OAuth home read-only:
 
 ```bash
-PANDA_DISCORD_VOICE_EXPERIMENTAL=true
-PANDA_DISCORD_VOICE_VOICE=cove
-PANDA_DISCORD_VOICE_DELEGATION_ACK_FILLER=
-PANDA_DISCORD_VOICE_SIDEBAND_PING_MS=0
+PANDA_LIVE_VOICE_ENABLED=true
+PANDA_OPENAI_LIVE_DELEGATION_ACK_FILLER=
+PANDA_OPENAI_LIVE_SIDEBAND_PING_MS=0
 CODEX_HOST_HOME=/home/you/.codex
 PANDA_DISCORD_DB_POOL_MAX=2
 ```
 
 The worker reads `CODEX_HOME/auth.json` afresh for every provider connection and requires ChatGPT/Codex OAuth with a `chatgpt_account_id`. The mount is read-only: Panda never refreshes, stores, or logs that token and has no API-key or public Realtime fallback. An expired token or HTTP 401 disconnects voice with `auth_unavailable`; the backend's overloaded HTTP 403 is reported as `provider_startup_failed`, not as a Discord permission error. Sideband ping frames are disabled by default; enable them only when the deployment's network path needs them.
+
+Live voice is configured per agent and defaults to `cove`. Change it in Control under **Agent → Settings**, or use `panda agent voice list`, `panda agent voice get <agent-key>`, and `panda agent voice set <agent-key> <voice>`. The setting is read when a new call starts; active calls keep their existing voice.
 
 From a Discord-bound Panda session:
 
@@ -167,7 +168,7 @@ The private GPT-Live sideband can reset independently of Discord. Panda follows 
 
 WebRTC media failure or a missing provider `turn.done` requires a fresh provider call. Panda keeps the Discord connection and any active receiver capture alive and tries replacement sessions after 0, 500, and 1,500 milliseconds. A replacement receives a bounded in-memory tail of completed user and assistant transcripts as role-bearing history. That history is never persisted or replayed as executable input. Durable Panda work continues; a result from an older provider generation is spoken through standalone session context rather than discarded. Four whole-provider failures within five minutes open the room circuit and disconnect it.
 
-`PANDA_DISCORD_VOICE_DELEGATION_ACK_FILLER` may be `true`, `false`, or empty to preserve the provider default. It changes provider delegation acknowledgement only; it does not change Panda's prompts. Leave sideband pings disabled unless a live network-path comparison proves they help.
+`PANDA_OPENAI_LIVE_DELEGATION_ACK_FILLER` may be `true`, `false`, or empty to preserve the provider default. It changes provider delegation acknowledgement only; it does not change Panda's prompts. Leave sideband pings disabled unless a live network-path comparison proves they help.
 
 `discord voice status` reports lifecycle state plus `ready`, `degraded`, `recovering`, or `error` health and the latest bounded diagnostic snapshot. Generic provider, playback, capture, delegation, and Postgres facts are separate from the `transport` object containing Gateway and Discord voice state. Bounded generic reasons are `transport_not_ready`, `provider_connecting`, `provider_recovering`, `provider_unavailable`, `notification_listener_reconnecting`, `postgres_pool_waiting`, `audio_dropped`, and `playback_failed`. Useful structured events are `discord_voice_health`, `live_voice_provider_reconnected`, `live_voice_provider_reconnect_failed`, `live_voice_delegation_queued`, `live_voice_playback_failed`, `voice_utterance_dropped`, and `voice_disconnected`.
 

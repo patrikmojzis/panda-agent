@@ -92,6 +92,7 @@ import {ControlReadService} from "../../domain/control/read-service.js";
 import {ControlHomeService} from "../../domain/control/home-service.js";
 import {ControlMcpService} from "../../domain/control/mcp-service.js";
 import {ControlOperatorService} from "../../domain/control/operator-service.js";
+import {OPENAI_LIVE_VOICE_CATALOG} from "../../integrations/providers/openai-live/voices.js";
 import {createTelegramBotIdentityClient} from "../../integrations/channels/telegram/account.js";
 import {ControlBriefingService} from "../../domain/control/briefing-service.js";
 import {ControlHeartbeatService} from "../../domain/control/heartbeat-service.js";
@@ -696,6 +697,7 @@ export async function bootstrapRuntime(
       reads: controlReads,
       a2aBindings,
       agents: agentStore,
+      liveVoice: OPENAI_LIVE_VOICE_CATALOG,
       sessions: sessionStore,
       executionEnvironments,
       identities: identityStore,

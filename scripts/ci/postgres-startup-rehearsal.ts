@@ -87,6 +87,37 @@ async function assertCoreRelations(pool: ReturnType<typeof createPostgresPool>):
   ]);
 }
 
+async function assertLiveVoiceUpgrade(pool: ReturnType<typeof createPostgresPool>): Promise<void> {
+  const columns = await pool.query(`
+    SELECT table_name, is_nullable, column_default
+    FROM information_schema.columns
+    WHERE table_schema = 'runtime'
+      AND (table_name, column_name) IN (
+        ('agents', 'live_voice'),
+        ('live_voice_sessions', 'voice')
+      )
+    ORDER BY table_name
+  `);
+  const agentColumn = columns.rows.find((row) => row.table_name === "agents");
+  const sessionColumn = columns.rows.find((row) => row.table_name === "live_voice_sessions");
+  if (
+    agentColumn?.is_nullable !== "NO"
+    || !String(agentColumn.column_default).includes("cove")
+    || sessionColumn?.is_nullable !== "YES"
+  ) {
+    throw new Error("Expected per-agent live voice and nullable historical call snapshots after migration.");
+  }
+
+  const backfill = await pool.query(`
+    SELECT
+      (SELECT COUNT(*)::int FROM runtime.agents WHERE live_voice IS DISTINCT FROM 'cove') AS invalid_agents,
+      (SELECT COUNT(*)::int FROM runtime.live_voice_sessions WHERE voice IS NOT NULL) AS rewritten_sessions
+  `);
+  if (Number(backfill.rows[0]?.invalid_agents) !== 0 || Number(backfill.rows[0]?.rewritten_sessions) !== 0) {
+    throw new Error("Expected legacy agents to backfill to cove without inventing voices for historical calls.");
+  }
+}
+
 async function assertBaselineCutover(pool: ReturnType<typeof createPostgresPool>): Promise<void> {
   const expectedIndexes = new Map([
     ["runtime_agent_pairings_agent_created_idx", "(agent_key, created_at, identity_id)"],
@@ -253,6 +284,7 @@ async function runScenario(name: string, fixturePath?: string): Promise<void> {
       throw new Error("Expected a second migration pass to be a no-op.");
     }
     await assertCoreRelations(pool);
+    await assertLiveVoiceUpgrade(pool);
     await assertBaselineCutover(pool);
     await assertLegacyThreadContextColumnDropped(pool);
     await assertReadonlyExamplesExecute(pool);
@@ -320,7 +352,9 @@ async function runEmailRecipientAllowRuleUpgradeScenario(): Promise<void> {
   });
 
   try {
-    const beforeEmailAllowRules = PANDA_SCHEMA_MIGRATIONS.slice(0, -1);
+    const emailAllowRuleIndex = PANDA_SCHEMA_MIGRATIONS.findIndex(({id}) => id === "0014_email_recipient_allow_rules");
+    if (emailAllowRuleIndex < 0) throw new Error("Email recipient allow-rule migration is missing from the catalog.");
+    const beforeEmailAllowRules = PANDA_SCHEMA_MIGRATIONS.slice(0, emailAllowRuleIndex);
     await createPostgresMigrator({
       pool,
       migrations: beforeEmailAllowRules,

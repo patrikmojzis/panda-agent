@@ -15,6 +15,7 @@ import type {
 } from "./types.js";
 import {
   AgentSkillNotEditableError,
+  normalizeAgentLiveVoice,
   normalizeAgentKey,
   normalizeAgentSkillContent,
   normalizeAgentSkillDescription,
@@ -43,6 +44,9 @@ function parseAgentRow(row: Record<string, unknown>): AgentRecord {
     displayName: requireNonEmptyString(row.display_name, "Agent row is missing display name."),
     status: parseAgentStatus(row.status),
     metadata: readOptionalJsonValue(row.metadata, "Agent metadata"),
+    liveVoice: normalizeAgentLiveVoice(
+      requireNonEmptyString(row.live_voice, "Agent row is missing live voice."),
+    ),
     createdAt: requireTimestampMillis(row.created_at, "Agent created_at must be a valid timestamp."),
     updatedAt: requireTimestampMillis(row.updated_at, "Agent updated_at must be a valid timestamp."),
   };
@@ -127,11 +131,15 @@ export class PostgresAgentStore implements AgentStore {
 
   async bootstrapAgent(input: BootstrapAgentInput): Promise<AgentRecord> {
     const agentKey = normalizeAgentKey(input.agentKey);
+    const liveVoice = input.liveVoice === undefined
+      ? undefined
+      : normalizeAgentLiveVoice(input.liveVoice);
     const client = await this.pool.connect();
 
     try {
       await client.query("BEGIN");
-      const created = await client.query(`
+      const created = liveVoice === undefined
+        ? await client.query(`
         INSERT INTO ${this.tables.agents} (
           agent_key,
           display_name,
@@ -149,6 +157,28 @@ export class PostgresAgentStore implements AgentStore {
         input.displayName.trim() || agentKey,
         parseAgentStatus(input.status ?? "active"),
         stringifyOptionalJsonValue(input.metadata, "Agent metadata"),
+      ])
+        : await client.query(`
+        INSERT INTO ${this.tables.agents} (
+          agent_key,
+          display_name,
+          status,
+          metadata,
+          live_voice
+        ) VALUES (
+          $1,
+          $2,
+          $3,
+          $4::jsonb,
+          $5
+        )
+        RETURNING *
+      `, [
+        agentKey,
+        input.displayName.trim() || agentKey,
+        parseAgentStatus(input.status ?? "active"),
+        stringifyOptionalJsonValue(input.metadata, "Agent metadata"),
+        liveVoice,
       ]);
 
       await client.query("COMMIT");
@@ -183,6 +213,19 @@ export class PostgresAgentStore implements AgentStore {
     `);
 
     return result.rows.map((row) => parseAgentRow(row as Record<string, unknown>));
+  }
+
+  async setLiveVoice(agentKey: string, voice: string): Promise<AgentRecord> {
+    const normalizedKey = normalizeAgentKey(agentKey);
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.agents}
+      SET live_voice = $2, updated_at = NOW()
+      WHERE agent_key = $1
+      RETURNING *
+    `, [normalizedKey, normalizeAgentLiveVoice(voice)]);
+    const row = result.rows[0];
+    if (!row) throw missingAgentError(normalizedKey);
+    return parseAgentRow(row as Record<string, unknown>);
   }
 
   async ensurePairing(agentKey: string, identityId: string): Promise<AgentPairingRecord> {

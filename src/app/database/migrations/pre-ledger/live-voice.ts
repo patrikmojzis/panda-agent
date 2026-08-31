@@ -15,7 +15,7 @@ export async function installPreLedgerLiveVoiceSchema(pool: PgQueryable): Promis
     CREATE TABLE IF NOT EXISTS ${tables.sessions} (
       id UUID PRIMARY KEY, source TEXT NOT NULL, connector_key TEXT NOT NULL,
       scope_key TEXT NOT NULL, room_key TEXT NOT NULL, session_id TEXT NOT NULL,
-      agent_key TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL,
+      agent_key TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, voice TEXT,
       state TEXT NOT NULL, transport_context JSONB, last_error TEXT,
       health_state TEXT, health_reasons JSONB NOT NULL DEFAULT '[]'::jsonb,
       health_observed_at TIMESTAMPTZ, diagnostics JSONB,

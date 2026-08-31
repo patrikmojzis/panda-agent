@@ -68,6 +68,7 @@ import {
 } from "@/features/control/gateway/gateway-form-model"
 import { GatewayPanel } from "@/features/control/gateway/gateway-panel"
 import { SessionsPanel } from "@/features/control/session/sessions-panel"
+import { AgentSettingsPanel } from "@/features/control/agent/agent-settings-panel"
 import type { AgentDetail } from "@/lib/api"
 
 function AgentPage() {
@@ -541,6 +542,8 @@ function agentDetailTabs(
 
 function agentTabContent(agentKey: string, value: string) {
   switch (value) {
+    case "settings":
+      return <AgentSettingsPanel agentKey={agentKey} />
     case "sessions":
       return <SessionsPanel agentKey={agentKey} />
     case "access":

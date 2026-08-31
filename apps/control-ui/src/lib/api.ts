@@ -61,6 +61,7 @@ export type AgentRow = {
 }
 
 export type AgentDetail = AgentRow & {
+  liveVoice: string
   credentialCount: number
   connectorCount: number
   pairingCount: number
@@ -68,6 +69,14 @@ export type AgentDetail = AgentRow & {
   subagentCount: number
   gatewaySourceCount: number
   wikiBindingSet: boolean
+}
+
+export type LiveVoiceCatalog = {
+  provider: string
+  model: string
+  sourceVersion: string
+  defaultVoice: string
+  voices: string[]
 }
 
 export type McpValueSource = { value: string } | { credentialEnvKey: string }
@@ -934,6 +943,16 @@ export const controlApi = {
     ),
   agent: (agentKey: string) =>
     apiGet<{ agent: AgentDetail }>(`/agents/${encodeURIComponent(agentKey)}`),
+  liveVoiceCatalog: () => apiGet<LiveVoiceCatalog>("/live-voice/voices"),
+  setAgentLiveVoice: (
+    agentKey: string,
+    voice: string,
+    csrfToken?: string | null
+  ) =>
+    apiWrite<{ agent: AgentDetail }>(
+      `/agents/${encodeURIComponent(agentKey)}/live-voice`,
+      { method: "PATCH", body: { voice }, csrfToken }
+    ),
   agentPairings: (agentKey: string, params: TableParams) =>
     apiGet<PaginatedResponse<AgentPairingRow>>(
       `/agents/${encodeURIComponent(agentKey)}/pairings${qs(params)}`

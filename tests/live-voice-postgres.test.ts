@@ -40,7 +40,7 @@ describe("LiveVoiceRepo", () => {
   }
 
   async function createSession(repo: LiveVoiceRepo) {
-    return repo.upsertSession({id: liveVoiceSessionId, source: "discord", connectorKey: "bot-1", scopeKey: "guild-1", roomKey: "12345", sessionId: "session-1", agentKey: "panda", provider: "openai-live", model: "gpt-live-1-codex", state: "connected", transportContext: {guildId: "guild-1", channelId: "12345"}});
+    return repo.upsertSession({id: liveVoiceSessionId, source: "discord", connectorKey: "bot-1", scopeKey: "guild-1", roomKey: "12345", sessionId: "session-1", agentKey: "panda", provider: "openai-live", model: "gpt-live-1-codex", voice: "cove", state: "connected", transportContext: {guildId: "guild-1", channelId: "12345"}});
   }
 
   it("owns channel-neutral session health and exact-once delegated turns", async () => {

@@ -121,6 +121,18 @@ describe("ensureAgent", () => {
     });
   });
 
+  it("updates the live voice of an existing agent when requested", async () => {
+    const {agentStore, sessionStore, threadStore, env} = await createStores();
+    await ensureAgent({agentStore, sessionStore, threadStore}, "claw", {env});
+    const ensured = await ensureAgent(
+      {agentStore, sessionStore, threadStore},
+      "claw",
+      {env, voice: "juniper"},
+    );
+    expect(ensured).toMatchObject({createdAgent: false, liveVoice: "juniper"});
+    await expect(agentStore.getAgent("claw")).resolves.toMatchObject({liveVoice: "juniper"});
+  });
+
   it("repairs missing main session, missing thread, and missing home without recreating the agent", async () => {
     const {pool, agentStore, sessionStore, threadStore, env} = await createStores();
 

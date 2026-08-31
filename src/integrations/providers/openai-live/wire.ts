@@ -4,6 +4,7 @@ import {isRecord} from "../../../lib/records.js";
 import type {LiveVoiceHistoryItem} from "../../voice/live-voice-session.js";
 import type {OpenAILiveAuth} from "./auth.js";
 import {OPENAI_LIVE_MODEL} from "./types.js";
+import {DEFAULT_OPENAI_LIVE_VOICE, parseOpenAILiveVoice} from "./voices.js";
 
 const CALL_URL = "https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas";
 const PANDA_LIVE_VERSION = "0.1.0";
@@ -14,7 +15,6 @@ const APPEND_BYTES = 500;
 const RESULT_CHARS = 1_800;
 const MAX_INITIAL_ITEMS = 32;
 const MAX_INITIAL_CHARS = 8_192;
-const VOICES = new Set(["juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol", "cove"]);
 
 export interface OpenAILiveRequestIds {realtimeSessionId: string; sessionId: string; threadId: string}
 export type OpenAILiveContextChannel = "commentary" | "speakable";
@@ -55,8 +55,8 @@ export function buildHeaders(auth: OpenAILiveAuth, ids: OpenAILiveRequestIds): R
   };
 }
 
-export function buildSession(voice = "cove", options: {initialItems?: readonly LiveVoiceHistoryItem[]; delegationAckFiller?: boolean} = {}): OpenAILiveSession {
-  if (!VOICES.has(voice)) throw new Error("Unsupported GPT-Live V3 voice.");
+export function buildSession(voice: string = DEFAULT_OPENAI_LIVE_VOICE, options: {initialItems?: readonly LiveVoiceHistoryItem[]; delegationAckFiller?: boolean} = {}): OpenAILiveSession {
+  const selectedVoice = parseOpenAILiveVoice(voice);
   const initialItems = boundedInitialItems(options.initialItems ?? []);
   return {
     model: OPENAI_LIVE_MODEL,
@@ -67,7 +67,7 @@ export function buildSession(voice = "cove", options: {initialItems?: readonly L
       "If a participant asks you to leave or disconnect from voice, delegate that request to the client; you cannot leave the channel yourself.",
       "Never claim an action succeeded unless the client result says so. Keep spoken replies concise.",
     ].join(" "),
-    audio: {output: {voice}},
+    audio: {output: {voice: selectedVoice}},
     delegation: {type: "client", ...(options.delegationAckFiller === undefined ? {} : {ack_filler: options.delegationAckFiller})},
     ...(initialItems.length === 0 ? {} : {initial_items: initialItems}),
   };

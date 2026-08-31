@@ -15,6 +15,7 @@ import {BOUND_SECRET_ENVELOPES_MIGRATION} from "./migrations/0011-bound-secret-e
 import {CONTROL_IDENTITY_REVOCATION_MIGRATION} from "./migrations/0012-control-identity-revocation.js";
 import {SCHEDULED_COMMANDS_MIGRATION} from "./migrations/0013-scheduled-commands.js";
 import {EMAIL_RECIPIENT_ALLOW_RULES_MIGRATION} from "./migrations/0014-email-recipient-allow-rules.js";
+import {AGENT_LIVE_VOICE_MIGRATION} from "./migrations/0015-agent-live-voice.js";
 import {reconcileReadonlySessionRole} from "./readonly-role.js";
 
 export const PANDA_SCHEMA_MIGRATIONS = Object.freeze([
@@ -32,6 +33,7 @@ export const PANDA_SCHEMA_MIGRATIONS = Object.freeze([
   CONTROL_IDENTITY_REVOCATION_MIGRATION,
   SCHEDULED_COMMANDS_MIGRATION,
   EMAIL_RECIPIENT_ALLOW_RULES_MIGRATION,
+  AGENT_LIVE_VOICE_MIGRATION,
 ]);
 
 /** Entry points bundled by CI to prove every persisted checksum matches code. */
@@ -50,6 +52,7 @@ export const PANDA_SCHEMA_MIGRATION_SOURCES: Readonly<Record<string, string>> = 
   "0012_control_identity_revocation": "src/app/database/migrations/0012-control-identity-revocation.ts",
   "0013_scheduled_commands": "src/app/database/migrations/0013-scheduled-commands.ts",
   "0014_email_recipient_allow_rules": "src/app/database/migrations/0014-email-recipient-allow-rules.ts",
+  "0015_agent_live_voice": "src/app/database/migrations/0015-agent-live-voice.ts",
 });
 
 export interface CreatePandaSchemaMigratorOptions {

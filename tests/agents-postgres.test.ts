@@ -51,6 +51,7 @@ describe("PostgresAgentStore", () => {
       agentKey: "panda",
       displayName: "Panda",
       status: "active",
+      liveVoice: "cove",
     });
     await expect(agentStore.getAgent("panda")).resolves.toMatchObject({
       agentKey: "panda",
@@ -69,6 +70,7 @@ describe("PostgresAgentStore", () => {
         agent_key: "panda",
         display_name: "Panda",
         status: "active",
+        live_voice: "cove",
         metadata: Number.NaN,
         created_at: new Date(),
         updated_at: new Date(),
@@ -95,6 +97,7 @@ describe("PostgresAgentStore", () => {
           agent_key: "panda",
           display_name: "Panda",
           status: "active",
+          live_voice: "cove",
           metadata: {},
           created_at: "eventually",
           updated_at: new Date(),
@@ -124,6 +127,15 @@ describe("PostgresAgentStore", () => {
     await expect(agentStore.listAgentPairings("panda")).rejects.toThrow(
       "Agent pairing updated_at must be a valid timestamp.",
     );
+  });
+
+  it("stores a bounded per-agent live voice", async () => {
+    const {agentStore} = await createStores();
+    await expect(agentStore.bootstrapAgent({agentKey: "panda", displayName: "Panda", liveVoice: " juniper "}))
+      .resolves.toMatchObject({liveVoice: "juniper"});
+    await expect(agentStore.setLiveVoice("panda", " cove "))
+      .resolves.toMatchObject({liveVoice: "cove"});
+    await expect(agentStore.setLiveVoice("panda", "x".repeat(65))).rejects.toThrow("at most 64");
   });
 
   it("stores pairings per identity", async () => {

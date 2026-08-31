@@ -172,7 +172,7 @@ pnpm ci:prompt-contracts
 Run the opt-in secret-safe live transport probe with `codex app-server` stopped:
 
 ```bash
-PANDA_DISCORD_VOICE_LIVE_TEST=true pnpm exec vitest run --config vitest.live.config.ts tests/live/openai-live-backend.live.test.ts
+PANDA_OPENAI_LIVE_TEST=true pnpm exec vitest run --config vitest.live.config.ts tests/live/openai-live-backend.live.test.ts
 ```
 
 Then perform a real Discord join, casual exchange, delegation, barge-in, and

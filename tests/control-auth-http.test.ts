@@ -333,6 +333,13 @@ async function createHarness(options: {
     reads,
     a2aBindings,
     agents,
+    liveVoice: {
+      provider: "openai-live",
+      model: "gpt-live-1-codex",
+      sourceVersion: "test",
+      defaultVoice: "cove",
+      voices: ["juniper", "cove"],
+    },
     sessions,
     executionEnvironments,
     identities,
@@ -1052,6 +1059,59 @@ describe("Control operator HTTP", () => {
     await expect(sessions.json()).resolves.toMatchObject({
       data: [{id: "session-panda", agentKey: "panda", currentThreadId: "thread-panda"}],
     });
+  });
+
+  it("lists and updates the per-agent live voice with CSRF, JSON, validation, and safe audit", async () => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    expect((await fetch(`${base}/api/control/live-voice/voices`)).status).toBe(401);
+    const auth = await login(base, harness);
+    const headers = {cookie: auth.cookies, "content-type": "application/json", "x-control-csrf": auth.csrfToken};
+
+    const catalog = await fetch(`${base}/api/control/live-voice/voices`, {headers: {cookie: auth.cookies}});
+    expect(catalog.status).toBe(200);
+    await expect(catalog.json()).resolves.toEqual({
+      provider: "openai-live",
+      model: "gpt-live-1-codex",
+      sourceVersion: "test",
+      defaultVoice: "cove",
+      voices: ["juniper", "cove"],
+    });
+
+    const detail = await fetch(`${base}/api/control/agents/panda`, {headers: {cookie: auth.cookies}});
+    await expect(detail.json()).resolves.toMatchObject({agent: {liveVoice: "cove"}});
+
+    const missingCsrf = await fetch(`${base}/api/control/agents/panda/live-voice`, {
+      method: "PATCH",
+      headers: {cookie: auth.cookies, "content-type": "application/json"},
+      body: JSON.stringify({voice: "juniper"}),
+    });
+    expect(missingCsrf.status).toBe(403);
+
+    const wrongContentType = await fetch(`${base}/api/control/agents/panda/live-voice`, {
+      method: "PATCH",
+      headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      body: JSON.stringify({voice: "juniper"}),
+    });
+    expect(wrongContentType.status).toBe(415);
+
+    const invalid = await fetch(`${base}/api/control/agents/panda/live-voice`, {
+      method: "PATCH", headers, body: JSON.stringify({voice: "marin"}),
+    });
+    expect(invalid.status).toBe(400);
+    await expect(harness.agents.getAgent("panda")).resolves.toMatchObject({liveVoice: "cove"});
+
+    const updated = await fetch(`${base}/api/control/agents/panda/live-voice`, {
+      method: "PATCH", headers, body: JSON.stringify({voice: " JUNIPER "}),
+    });
+    expect(updated.status).toBe(200);
+    await expect(updated.json()).resolves.toMatchObject({agent: {agentKey: "panda", liveVoice: "juniper"}});
+    const audit = await harness.pool.query(`
+      SELECT event_type, metadata
+      FROM "runtime"."control_audit_events"
+      WHERE event_type = 'agent_live_voice_updated'
+    `);
+    expect(audit.rows).toEqual([{event_type: "agent_live_voice_updated", metadata: {agentKey: "panda", oldVoice: "cove", newVoice: "juniper"}}]);
   });
 
   it("manages agent identity pairings through the agent access route", async () => {

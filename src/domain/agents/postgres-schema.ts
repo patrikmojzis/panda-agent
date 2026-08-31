@@ -13,6 +13,7 @@ export async function ensurePostgresAgentTableSchema(pool: PgQueryable): Promise
       display_name TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'active',
       metadata JSONB,
+      live_voice TEXT NOT NULL DEFAULT 'cove',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )

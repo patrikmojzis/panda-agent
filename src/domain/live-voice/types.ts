@@ -24,6 +24,7 @@ export interface LiveVoiceSessionInput {
   agentKey: string;
   provider: string;
   model: string;
+  voice: string;
   state: LiveVoiceSessionState;
   transportContext?: JsonObject;
   lastError?: string;
@@ -32,7 +33,8 @@ export interface LiveVoiceSessionInput {
   healthObservedAt?: number;
 }
 
-export interface LiveVoiceSessionRecord extends LiveVoiceSessionInput {
+export interface LiveVoiceSessionRecord extends Omit<LiveVoiceSessionInput, "voice"> {
+  voice?: string;
   healthReasons: readonly LiveVoiceHealthReason[];
   diagnostics?: JsonObject;
   startedAt: number;

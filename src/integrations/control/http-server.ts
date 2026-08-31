@@ -344,6 +344,14 @@ async function readBody(request: IncomingMessage): Promise<Record<string, unknow
   return typeof body === "object" && body !== null && !Array.isArray(body) ? body as Record<string, unknown> : {};
 }
 
+function requireJsonContentType(request: IncomingMessage): void {
+  const contentType = request.headers["content-type"];
+  const value = Array.isArray(contentType) ? contentType[0] : contentType;
+  if (!value || value.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+    throw new ControlHttpError(415, "Control JSON writes require Content-Type: application/json.");
+  }
+}
+
 async function authenticate(request: IncomingMessage, auth: PostgresControlAuthService): Promise<ControlSessionRecord> {
   const token = parseCookies(request.headers.cookie)[CONTROL_SESSION_COOKIE];
   if (!token) throw new ControlHttpError(401, "Control authentication required.");
@@ -1036,6 +1044,15 @@ async function recordOperatorAudit(auth: PostgresControlAuthService, session: Co
   });
 }
 
+async function recordLiveVoiceAudit(auth: PostgresControlAuthService, session: ControlSessionRecord, metadata: unknown): Promise<void> {
+  await auth.recordAudit({
+    identityId: session.identityId,
+    sessionId: session.id,
+    eventType: "agent_live_voice_updated",
+    metadata,
+  });
+}
+
 function requireCsrf(request: IncomingMessage, auth: PostgresControlAuthService, session: ControlSessionRecord): void {
   const token = request.headers["x-control-csrf"] ?? request.headers["x-csrf-token"];
   const value = Array.isArray(token) ? token[0] : token;
@@ -1227,6 +1244,10 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         writeJsonResponse(response, 200, await options.operator.listAgents(session, parseTableInput(url.searchParams)));
         return;
       }
+      if (request.method === "GET" && path === "/live-voice/voices") {
+        writeJsonResponse(response, 200, options.operator.getLiveVoiceCatalog());
+        return;
+      }
       if (request.method === "GET" && path === "/identities") {
         writeJsonResponse(response, 200, await options.operator.listIdentities(session, parseIdentityTableInput(url.searchParams)));
         return;
@@ -1316,6 +1337,19 @@ export async function startControlServer(options: StartControlServerOptions): Pr
           writeJsonResponse(response, 200, {agent: await options.operator.getAgent(session, agentPath.agentKey)});
         } catch {
           throw new ControlHttpError(404, "Control target agent was not found or is not visible.");
+        }
+        return;
+      }
+      const agentLiveVoicePath = matchAgentResourcePath(path, "live-voice");
+      if (agentLiveVoicePath && request.method === "PATCH") {
+        requireCsrf(request, options.auth, session);
+        requireJsonContentType(request);
+        try {
+          const result = await options.operator.setAgentLiveVoice(session, agentLiveVoicePath.agentKey, await readBody(request));
+          await recordLiveVoiceAudit(options.auth, session, result.audit);
+          writeJsonResponse(response, 200, {agent: result.agent});
+        } catch (error) {
+          throw new ControlHttpError(400, error instanceof Error ? error.message : "Control live voice update failed.");
         }
         return;
       }

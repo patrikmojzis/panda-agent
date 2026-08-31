@@ -64,6 +64,10 @@ import {DEFAULT_AGENT_COMMAND_CATALOG} from "../panda/commands/agent-command-mod
 import {registerImageCommandHelpCommands} from "../panda/commands/image-cli.js";
 import {registerDatabaseCommands} from "./database/cli.js";
 import {createPandaSchemaVerifier} from "../integrations/postgres/schema-version.js";
+import {
+  OPENAI_LIVE_VOICE_CATALOG,
+  parseOpenAILiveVoice,
+} from "../integrations/providers/openai-live/voices.js";
 
 try {
   (process as NodeJS.Process & { loadEnvFile?: (path?: string) => void }).loadEnvFile?.();
@@ -547,7 +551,12 @@ program
     return runEnvironmentManagerCommand(options);
   });
 
-registerAgentCommands(program);
+registerAgentCommands(program, {
+  liveVoice: {
+    ...OPENAI_LIVE_VOICE_CATALOG,
+    parse: parseOpenAILiveVoice,
+  },
+});
 registerA2ACommands(program);
 registerCredentialCommands(program);
 registerConnectorCommands(program);

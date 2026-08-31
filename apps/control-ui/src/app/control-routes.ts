@@ -17,6 +17,7 @@ import {
   Plug,
   RadioTower,
   ShieldCheck,
+  SlidersHorizontal,
   UserCheck,
   Users,
   Wrench,
@@ -53,6 +54,7 @@ export const CONSOLE_NAVIGATION: ConsoleNavItem[] = [
 ]
 
 export const AGENT_RESOURCE_TABS: ControlTabDefinition[] = [
+  { value: "settings", label: "Settings", icon: SlidersHorizontal },
   {
     value: "sessions",
     label: "Sessions",

@@ -168,6 +168,13 @@ function safeOperatorSummary(value: unknown): Record<string, unknown> {
 
 function sanitizedAuditMetadata(eventType: string, value: unknown): Record<string, unknown> {
   const raw = asRecord(value);
+  if (eventType === "agent_live_voice_updated") {
+    return {
+      ...(typeof raw.agentKey === "string" ? {agentKey: raw.agentKey} : {}),
+      ...(typeof raw.oldVoice === "string" ? {oldVoice: raw.oldVoice} : {}),
+      ...(typeof raw.newVoice === "string" ? {newVoice: raw.newVoice} : {}),
+    };
+  }
   if (eventType === "session_briefing_write" || eventType === "session_prompt_write") {
     return {
       ...(raw.action === "put" || raw.action === "delete" ? {action: raw.action} : {}),

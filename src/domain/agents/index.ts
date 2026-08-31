@@ -28,4 +28,4 @@ export type {
   BootstrapAgentInput,
   CreateAgentInput,
 } from "./types.js";
-export { normalizeAgentKey, normalizeSkillKey } from "./types.js";
+export { normalizeAgentKey, normalizeAgentLiveVoice, normalizeSkillKey } from "./types.js";

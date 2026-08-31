@@ -44,10 +44,18 @@ describe("experimental OpenAI GPT-Live wire", () => {
     })).resolves.toEqual({answerSdp: "answer-sdp", sidebandUrl: "wss://api.openai.com/v1/live/rtc_test"});
   });
 
-  it("rejects unsupported V3 voices before making a provider request", async () => {
+  it("rejects unsupported V1/V3 voices before making a provider request", async () => {
     const fetchImpl = vi.fn();
-    await expect(createOpenAILiveCall({auth: {token: "secret", accountId: "acct-1"}, ids: createRequestIds(), offerSdp: "offer-sdp", voice: "marin", signal: new AbortController().signal, fetchImpl})).rejects.toThrow("Unsupported GPT-Live V3 voice");
+    await expect(createOpenAILiveCall({auth: {token: "secret", accountId: "acct-1"}, ids: createRequestIds(), offerSdp: "offer-sdp", voice: "marin", signal: new AbortController().signal, fetchImpl})).rejects.toThrow("Unsupported GPT-Live V1/V3 voice");
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("bounds rejected voice values", () => {
+    const rejected = "x".repeat(1_000);
+    expect(() => buildSession(rejected)).toThrow(expect.objectContaining({code: "unsupported_voice", voice: "x".repeat(64)}));
+    try { buildSession(rejected); } catch (error) {
+      expect(error instanceof Error ? error.message.length : 0).toBeLessThan(300);
+    }
   });
 
   it("keeps backend failures secret-safe", async () => {

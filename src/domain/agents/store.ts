@@ -10,6 +10,7 @@ export interface AgentStore {
   bootstrapAgent(input: BootstrapAgentInput): Promise<AgentRecord>;
   getAgent(agentKey: string): Promise<AgentRecord>;
   listAgents(): Promise<readonly AgentRecord[]>;
+  setLiveVoice(agentKey: string, voice: string): Promise<AgentRecord>;
   ensurePairing(agentKey: string, identityId: string): Promise<AgentPairingRecord>;
   deletePairing(agentKey: string, identityId: string): Promise<boolean>;
   listAgentPairings(agentKey: string): Promise<readonly AgentPairingRecord[]>;

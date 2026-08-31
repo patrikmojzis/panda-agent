@@ -460,6 +460,7 @@ describe("atomic runtime persistence on PostgreSQL", () => {
       agentKey: "panda",
       provider: "openai-live",
       model: "gpt-live-1-codex",
+      voice: "cove",
       state: "connected",
     });
     const input = {

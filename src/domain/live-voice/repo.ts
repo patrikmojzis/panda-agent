@@ -85,6 +85,7 @@ function parseSession(row: Record<string, unknown>): LiveVoiceSessionRecord {
     agentKey: requiredString(row.agent_key, "Live voice agent key is missing."),
     provider: requiredString(row.provider, "Live voice provider is missing."),
     model: requiredString(row.model, "Live voice model is missing."),
+    voice: optionalString(row.voice),
     state: parseSessionState(row.state),
     transportContext: parseJsonObject(row.transport_context),
     lastError: optionalString(row.last_error),
@@ -145,11 +146,11 @@ export class LiveVoiceRepo {
     return withTransaction(this.pool, async (client) => {
       await lockActiveAgentSession(client, input.sessionId);
       const result = await client.query(`
-        INSERT INTO ${tables.sessions} (id,source,connector_key,scope_key,room_key,session_id,agent_key,provider,model,state,transport_context,last_error,health_state,health_reasons,health_observed_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14::jsonb,$15)
-        ON CONFLICT (id) DO UPDATE SET room_key=EXCLUDED.room_key,session_id=EXCLUDED.session_id,agent_key=EXCLUDED.agent_key,provider=EXCLUDED.provider,model=EXCLUDED.model,state=EXCLUDED.state,transport_context=EXCLUDED.transport_context,last_error=EXCLUDED.last_error,health_state=EXCLUDED.health_state,health_reasons=EXCLUDED.health_reasons,health_observed_at=EXCLUDED.health_observed_at,updated_at=NOW()
+        INSERT INTO ${tables.sessions} (id,source,connector_key,scope_key,room_key,session_id,agent_key,provider,model,voice,state,transport_context,last_error,health_state,health_reasons,health_observed_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13,$14,$15::jsonb,$16)
+        ON CONFLICT (id) DO UPDATE SET room_key=EXCLUDED.room_key,session_id=EXCLUDED.session_id,agent_key=EXCLUDED.agent_key,provider=EXCLUDED.provider,model=EXCLUDED.model,voice=EXCLUDED.voice,state=EXCLUDED.state,transport_context=EXCLUDED.transport_context,last_error=EXCLUDED.last_error,health_state=EXCLUDED.health_state,health_reasons=EXCLUDED.health_reasons,health_observed_at=EXCLUDED.health_observed_at,updated_at=NOW()
         RETURNING *
-      `, [input.id,input.source,input.connectorKey,input.scopeKey,input.roomKey,input.sessionId,input.agentKey,input.provider,input.model,input.state,input.transportContext ? JSON.stringify(input.transportContext) : null,input.lastError ?? null,input.health ?? null,JSON.stringify(input.healthReasons ?? []),input.healthObservedAt ? new Date(input.healthObservedAt) : null]);
+      `, [input.id,input.source,input.connectorKey,input.scopeKey,input.roomKey,input.sessionId,input.agentKey,input.provider,input.model,requiredString(input.voice, "Live voice is missing."),input.state,input.transportContext ? JSON.stringify(input.transportContext) : null,input.lastError ?? null,input.health ?? null,JSON.stringify(input.healthReasons ?? []),input.healthObservedAt ? new Date(input.healthObservedAt) : null]);
       return parseSession(result.rows[0] as Record<string, unknown>);
     });
   }

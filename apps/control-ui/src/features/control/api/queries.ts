@@ -103,6 +103,15 @@ export function useAgent(agentKey: string, options?: QueryFlags) {
   })
 }
 
+export function useLiveVoiceCatalog(options?: QueryFlags) {
+  return useQuery({
+    queryKey: controlKeys.liveVoiceCatalog(),
+    queryFn: controlApi.liveVoiceCatalog,
+    enabled: options?.enabled,
+    staleTime: options?.staleTime ?? Number.POSITIVE_INFINITY,
+  })
+}
+
 export function useAgentPairings(
   agentKey: string,
   params: TableParams,

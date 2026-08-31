@@ -1938,7 +1938,7 @@ describe("agent command shim", () => {
       getTurn: vi.fn(async () => voiceTurn),
       listRunningTurns: vi.fn(async () => []),
     };
-    const voiceServices = {env: {PANDA_DISCORD_VOICE_EXPERIMENTAL: "true"}, connectorAccounts: store, conversations: store, voice: {controls: voiceControls, live: liveVoice}};
+    const voiceServices = {env: {PANDA_LIVE_VOICE_ENABLED: "true"}, connectorAccounts: store, conversations: store, voice: {controls: voiceControls, live: liveVoice}};
     const server = await startCommandHttpServer({
       executor: new RuntimeCommandDispatcher({
         commands: [

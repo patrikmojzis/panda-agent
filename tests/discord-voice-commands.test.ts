@@ -12,7 +12,7 @@ import {
 function services(options: {enabled?: boolean; connectors?: string[]; sessions?: unknown[]; turns?: unknown[]} = {}): DiscordVoiceCommandServices {
   const connectors = options.connectors ?? ["bot-1"];
   return {
-    env: {PANDA_DISCORD_VOICE_EXPERIMENTAL: options.enabled === false ? "false" : "true"},
+    env: {PANDA_LIVE_VOICE_ENABLED: options.enabled === false ? "false" : "true"},
     connectorAccounts: {listAccounts: vi.fn(async () => connectors.map((connectorKey, index) => ({id: `a-${index}`, source: "discord", accountKey: `account-${index}`, connectorKey, ownerKind: "system" as const, ownerIdentityId: null, ownerAgentKey: null, status: "enabled" as const, config: {}, createdAt: 1, updatedAt: 1})))},
     conversations: {listConversationBindings: vi.fn(async ({connectorKey}) => [{source: "discord", connectorKey, externalConversationId: "text-1", sessionId: "session-1", createdAt: 1, updatedAt: 1}])},
     voice: {

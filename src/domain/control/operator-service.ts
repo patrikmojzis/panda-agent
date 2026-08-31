@@ -174,6 +174,7 @@ export interface ControlAgentRow {
 }
 
 export interface ControlAgentDetail extends ControlAgentRow {
+  liveVoice: string;
   credentialCount: number;
   connectorCount: number;
   pairingCount: number;
@@ -181,6 +182,14 @@ export interface ControlAgentDetail extends ControlAgentRow {
   subagentCount: number;
   gatewaySourceCount: number;
   wikiBindingSet: boolean;
+}
+
+export interface ControlLiveVoiceCatalog {
+  provider: string;
+  model: string;
+  sourceVersion: string;
+  defaultVoice: string;
+  voices: readonly string[];
 }
 
 export interface ControlSessionRow {
@@ -542,6 +551,7 @@ export interface ControlOperatorServiceOptions {
   reads: Pick<ControlReadService, "listAgents" | "listAuditEvents">;
   a2aBindings: ControlA2ABindingStore;
   agents: AgentStore;
+  liveVoice: ControlLiveVoiceCatalog;
   sessions: SessionStore;
   executionEnvironments: Pick<ExecutionEnvironmentStore, "bindSession" | "createEnvironment" | "deleteBindingByAlias" | "getBindingByAlias" | "getDefaultBinding" | "getEnvironment" | "listBindingsForSession">;
   identities: Pick<
@@ -1252,6 +1262,7 @@ export class ControlOperatorService {
   private readonly reads: Pick<ControlReadService, "listAgents" | "listAuditEvents">;
   private readonly a2aBindings: ControlA2ABindingStore;
   private readonly agents: AgentStore;
+  private readonly liveVoice: ControlLiveVoiceCatalog;
   private readonly sessions: SessionStore;
   private readonly executionEnvironments: Pick<ExecutionEnvironmentStore, "bindSession" | "createEnvironment" | "deleteBindingByAlias" | "getBindingByAlias" | "getDefaultBinding" | "getEnvironment" | "listBindingsForSession">;
   private readonly identities: ControlOperatorServiceOptions["identities"];
@@ -1284,6 +1295,7 @@ export class ControlOperatorService {
     this.reads = options.reads;
     this.a2aBindings = options.a2aBindings;
     this.agents = options.agents;
+    this.liveVoice = Object.freeze({...options.liveVoice, voices: Object.freeze([...options.liveVoice.voices])});
     this.sessions = options.sessions;
     this.executionEnvironments = options.executionEnvironments;
     this.identities = options.identities;
@@ -1698,7 +1710,8 @@ export class ControlOperatorService {
     const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
     const agent = (await this.reads.listAgents(session)).find((candidate) => candidate.agentKey === normalizedAgentKey);
     if (!agent) throw new Error("Control target agent was not found or is not visible.");
-    const [connectorResult, pairingRows, skillRows, subagentRows, gatewaySources, wikiBinding] = await Promise.all([
+    const [agentRecord, connectorResult, pairingRows, skillRows, subagentRows, gatewaySources, wikiBinding] = await Promise.all([
+      this.agents.getAgent(normalizedAgentKey),
       this.pool.query(`SELECT COUNT(*)::int AS count FROM ${this.connectorTables.connectorAccounts} WHERE owner_kind = 'agent' AND owner_agent_key = $1`, [normalizedAgentKey]).catch(() => ({rows: [{count: 0}]})),
       this.agents.listAgentPairings(normalizedAgentKey).catch(() => [] as readonly AgentPairingRecord[]),
       this.agents.listAgentSkills(normalizedAgentKey).catch(() => [] as readonly AgentSkillRecord[]),
@@ -1709,6 +1722,7 @@ export class ControlOperatorService {
     const credentials = await this.listCredentials(session, normalizedAgentKey);
     return {
       ...agent,
+      liveVoice: agentRecord.liveVoice,
       credentialCount: credentials.meta.total,
       connectorCount: Number((connectorResult.rows[0] as Record<string, unknown> | undefined)?.count ?? 0),
       pairingCount: pairingRows.length,
@@ -1716,6 +1730,33 @@ export class ControlOperatorService {
       subagentCount: subagentRows.length,
       gatewaySourceCount: gatewaySources.filter((source) => source.agentKey === normalizedAgentKey).length,
       wikiBindingSet: Boolean(wikiBinding),
+    };
+  }
+
+  getLiveVoiceCatalog(): ControlLiveVoiceCatalog {
+    return this.liveVoice;
+  }
+
+  async setAgentLiveVoice(
+    session: ControlSessionRecord,
+    agentKey: string,
+    input: {voice?: unknown},
+  ): Promise<{agent: ControlAgentDetail; audit: Record<string, unknown>}> {
+    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    if (typeof input.voice !== "string") throw new Error("Live voice is required.");
+    const voice = input.voice.trim().toLowerCase();
+    if (!this.liveVoice.voices.includes(voice)) {
+      throw new Error(`Unsupported live voice ${JSON.stringify(voice.slice(0, 64))}. Allowed voices: ${this.liveVoice.voices.join(", ")}.`);
+    }
+    const previous = await this.agents.getAgent(normalizedAgentKey);
+    await this.agents.setLiveVoice(normalizedAgentKey, voice);
+    return {
+      agent: await this.getAgent(session, normalizedAgentKey),
+      audit: {
+        agentKey: normalizedAgentKey,
+        oldVoice: previous.liveVoice,
+        newVoice: voice,
+      },
     };
   }
 

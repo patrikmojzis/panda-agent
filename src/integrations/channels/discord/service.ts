@@ -23,6 +23,7 @@ import {PostgresSessionStore} from "../../../domain/sessions/postgres.js";
 import {RuntimeRequestRepo} from "../../../domain/threads/requests/repo.js";
 import {deriveRuntimeRequestIngressIdempotencyKey} from "../../../domain/threads/requests/ordering-key.js";
 import {LiveVoiceRepo} from "../../../domain/live-voice/repo.js";
+import {PostgresAgentStore} from "../../../domain/agents/postgres.js";
 import {PostgresThreadRuntimeStore} from "../../../domain/threads/runtime/postgres.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
 import type {PgListenClient, PgPoolLike} from "../../../lib/postgres-query.js";
@@ -48,6 +49,7 @@ import {createDiscordOutboundAdapter} from "./outbound.js";
 import {sendDiscordStickerAction} from "./stickers.js";
 import {DiscordVoiceControlRepo} from "./voice-postgres.js";
 import {DiscordVoiceControlWorker, DiscordVoiceSessionManager} from "./voice-manager.js";
+import {isLiveVoiceEnabled} from "../../voice/config.js";
 import type {DiscordGatewayAdapterCreator} from "@discordjs/voice";
 import type {DiscordVoiceGatewayHealth} from "./voice-transport-health.js";
 import {
@@ -80,6 +82,7 @@ export interface DiscordWorkerStores {
   threadStore: PostgresThreadRuntimeStore;
   voiceControls?: DiscordVoiceControlRepo;
   liveVoice?: LiveVoiceRepo;
+  agents: PostgresAgentStore;
 }
 
 export interface DiscordServiceGateway {
@@ -183,6 +186,7 @@ export function createDiscordWorkerStores(pool: DiscordPostgresPool, dataDir: st
     threadStore: new PostgresThreadRuntimeStore({pool}),
     voiceControls: new DiscordVoiceControlRepo({pool}),
     liveVoice: new LiveVoiceRepo({pool}),
+    agents: new PostgresAgentStore({pool}),
   };
   return stores;
 }
@@ -564,7 +568,7 @@ export class DiscordService {
         stores,
       });
       await this.gateway.start();
-      if (process.env.PANDA_DISCORD_VOICE_EXPERIMENTAL?.trim().toLowerCase() === "true") {
+      if (isLiveVoiceEnabled(process.env)) {
         const gateway = this.gateway;
         if (!gateway.createVoiceAdapterCreator) throw new Error("Discord Gateway voice adapter is unavailable.");
         if (!stores.voiceControls || !stores.liveVoice) throw new Error("Discord voice repositories are unavailable.");
@@ -586,6 +590,7 @@ export class DiscordService {
             restClient,
             controls: stores.voiceControls,
             voice: stores.liveVoice,
+            agents: stores.agents,
             getInfrastructureHealth: () => ({
               ...(gateway.getHealthSnapshot ? {gateway: gateway.getHealthSnapshot()} : {}),
               listener: this.runtime.getNotificationSnapshot(),
