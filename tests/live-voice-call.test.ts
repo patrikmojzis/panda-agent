@@ -3,7 +3,7 @@ import {describe, expect, it, vi} from "vitest";
 import {LiveVoiceCall} from "../src/integrations/voice/live-call.js";
 import type {LiveVoiceProviderCallbacks, LiveVoiceProviderSession} from "../src/integrations/voice/provider.js";
 
-function createHarness(options: {providers?: LiveVoiceProviderSession[]} = {}) {
+function createHarness(options: {providers?: LiveVoiceProviderSession[]; authorizeDelegation?: () => Promise<boolean>} = {}) {
   const providerCallbacks: LiveVoiceProviderCallbacks[] = [];
   const provider: LiveVoiceProviderSession = {
     connect: vi.fn(async () => undefined), sendAudio: vi.fn(),
@@ -27,11 +27,12 @@ function createHarness(options: {providers?: LiveVoiceProviderSession[]} = {}) {
   const call = new LiveVoiceCall({
     liveVoiceSessionId: "22222222-2222-4222-8222-222222222222", sessionId: "session-1", agentKey: "panda",
     voice: voice as never,
-    createProvider: (created) => {
+    createProvider: (_config, created) => {
       providerCallbacks.push(created);
       return options.providers?.[providerCallbacks.length - 1] ?? provider;
     },
-    output, log: vi.fn(), onTerminalFailure,
+    providerConfig: {voice: "cove", instructions: "Test instructions."},
+    output, log: vi.fn(), authorizeDelegation: options.authorizeDelegation, onTerminalFailure,
   });
   return {call, provider, providerCallbacks, output, voice, turns, onTerminalFailure, get callbacks() { return providerCallbacks.at(-1)!; }};
 }
@@ -76,6 +77,41 @@ describe("LiveVoiceCall", () => {
     expect(harness.voice.completeReservedFinal).toHaveBeenCalledWith(turnId, "final");
     await expect(harness.call.deliver({controlId: "proactive", text: "One more thing.", mode: "final"})).resolves.toEqual({delivery: "session"});
     expect(harness.provider.appendSessionContext).toHaveBeenCalledWith("One more thing.", "speakable");
+  });
+
+  it("persists transport authority with every continuation of one utterance", async () => {
+    const harness = createHarness();
+    const authority = {identityId: "identity-1", agentKey: "panda", actorBindingId: "11111111-1111-4111-8111-111111111111", authorizationVersion: "a".repeat(64)};
+    await harness.call.start();
+    const capture = harness.call.beginCapture("caller", 1, "identity-1", null, authority);
+    if (capture.status !== "accepted") throw new Error("expected accepted utterance");
+    harness.call.pushAudio(capture.captureId, Buffer.alloc(960, 1));
+    harness.call.endCapture(capture.captureId);
+    const continuation = harness.call.beginCapture("caller", 2, "identity-1", null, authority);
+    if (continuation.status !== "accepted") throw new Error("expected continued utterance");
+    harness.call.pushAudio(continuation.captureId, Buffer.alloc(960, 1));
+    harness.call.endCapture(continuation.captureId);
+    harness.callbacks.onTurnDone({role: "user"});
+    await harness.callbacks.onDelegation({id: "delegation-authorized", prompt: "private request"});
+    expect(harness.voice.createOrGetTurnAndEnqueueDelegation).toHaveBeenCalledWith(expect.objectContaining({
+      identityId: "identity-1",
+      transportAuthorization: authority,
+    }));
+    await harness.call.close("test_done");
+  });
+
+  it("fails closed before durable delegation when transport authorization is revoked", async () => {
+    const harness = createHarness({authorizeDelegation: vi.fn(async () => false)});
+    await harness.call.start();
+    const utterance = harness.call.beginCapture("user-1");
+    if (utterance.status !== "accepted") throw new Error("expected accepted utterance");
+    harness.call.pushAudio(utterance.captureId, Buffer.alloc(960, 1));
+    harness.call.endCapture(utterance.captureId);
+    harness.callbacks.onTurnDone({role: "user"});
+    await harness.callbacks.onDelegation({id: "delegation-revoked", prompt: "private request"});
+    expect(harness.voice.createOrGetTurnAndEnqueueDelegation).not.toHaveBeenCalled();
+    expect(harness.call.getSnapshot()).toMatchObject({connected: false, terminalReason: "authorization_revoked"});
+    expect(harness.onTerminalFailure).toHaveBeenCalledWith("authorization_revoked");
   });
 
   it("retains the delegation binding while atomic persistence retries", async () => {

@@ -6552,9 +6552,15 @@ Usage:
   panda whatsapp history --chat <jid-or-phone> --connector <key> [--direction inbound|outbound|all] [--limit <n>]
   panda whatsapp send --help [--json]
   panda whatsapp send --chat <jid-or-phone> --connector <key> (--text <text|@file|@->|--stdin|--image <path>|--file <path>)...
+  panda whatsapp call status [--connector <key>]
+  panda whatsapp call send --text <message> [--mode progress|final] [--call <id>] [--turn <id>] [--connector <key>]
+  panda whatsapp call hangup [--call <id>] [--turn <id>] [--connector <key>]
   panda whatsapp chat list --json @payload.json
   panda whatsapp history --json @payload.json
   panda whatsapp send --json @payload.json
+  panda whatsapp call status --json @payload.json
+  panda whatsapp call send --json @payload.json
+  panda whatsapp call hangup --json @payload.json
 USAGE
 	        exit 0
 	        ;;
@@ -6576,6 +6582,18 @@ USAGE
 	        command_name="whatsapp.chat.list"
 	        subcommand="chat list"
 	        shift
+	        ;;
+	      call)
+	        shift
+	        call_subcommand="${1:-}"
+	        case "$call_subcommand" in
+	          status|send|hangup)
+	            command_name="whatsapp.call.${call_subcommand}"
+	            subcommand="call ${call_subcommand}"
+	            shift
+	            ;;
+	          *) die "Unknown panda whatsapp call command. Try: panda whatsapp call status --help" ;;
+	        esac
 	        ;;
 	      *) die "Unknown panda whatsapp command. Try: panda whatsapp chat list --help" ;;
 	    esac
@@ -6660,6 +6678,67 @@ USAGE
 	        + (if $connectorKey != "" then {connectorKey: $connectorKey} else {} end)
 	        + (if $direction != "" then {direction: $direction} else {} end)
 	        + (if $limit != "" then {limit: ($limit | tonumber)} else {} end)')"
+	      execute_json_command "$command_name" "$payload"
+	      exit $?
+	    fi
+	    if [ "$subcommand" = "call status" ] || [ "$subcommand" = "call send" ] || [ "$subcommand" = "call hangup" ]; then
+	      connector_key=""
+	      call_id=""
+	      voice_turn_id=""
+	      text=""
+	      mode=""
+	      while [ "$#" -gt 0 ]; do
+	        case "$1" in
+	          --connector)
+	            [ "$#" -gt 1 ] || die "panda whatsapp ${subcommand} --connector requires a key."
+	            connector_key="$2"
+	            shift 2
+	            ;;
+	          --call)
+	            [ "$subcommand" != "call status" ] || die "panda whatsapp call status does not accept --call."
+	            [ "$#" -gt 1 ] || die "panda whatsapp ${subcommand} --call requires a call id."
+	            call_id="$2"
+	            shift 2
+	            ;;
+	          --turn)
+	            [ "$subcommand" != "call status" ] || die "panda whatsapp call status does not accept --turn."
+	            [ "$#" -gt 1 ] || die "panda whatsapp ${subcommand} --turn requires a voice turn id."
+	            voice_turn_id="$2"
+	            shift 2
+	            ;;
+	          --text)
+	            [ "$subcommand" = "call send" ] || die "panda whatsapp ${subcommand} does not accept --text."
+	            [ "$#" -gt 1 ] || die "panda whatsapp call send --text requires a message."
+	            text="$2"
+	            shift 2
+	            ;;
+	          --mode)
+	            [ "$subcommand" = "call send" ] || die "panda whatsapp ${subcommand} does not accept --mode."
+	            [ "$#" -gt 1 ] || die "panda whatsapp call send --mode requires progress or final."
+	            case "$2" in
+	              progress|final) mode="$2" ;;
+	              *) die "panda whatsapp call send --mode must be progress or final." ;;
+	            esac
+	            shift 2
+	            ;;
+	          *) die "Unknown panda whatsapp ${subcommand} option: $1" ;;
+	        esac
+	      done
+	      if [ "$subcommand" = "call send" ]; then
+	        [ -n "$text" ] || die "panda whatsapp call send requires --text <message>."
+	      fi
+	      payload="$(jq -n \
+	        --arg connectorKey "$connector_key" \
+	        --arg callId "$call_id" \
+	        --arg voiceTurnId "$voice_turn_id" \
+	        --arg text "$text" \
+	        --arg mode "$mode" \
+	        '{}
+	        + (if $connectorKey != "" then {connectorKey: $connectorKey} else {} end)
+	        + (if $callId != "" then {callId: $callId} else {} end)
+	        + (if $voiceTurnId != "" then {voiceTurnId: $voiceTurnId} else {} end)
+	        + (if $text != "" then {text: $text} else {} end)
+	        + (if $mode != "" then {mode: $mode} else {} end)')"
 	      execute_json_command "$command_name" "$payload"
 	      exit $?
 	    fi

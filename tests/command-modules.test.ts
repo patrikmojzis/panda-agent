@@ -144,6 +144,9 @@ const factoryBackedCommandNames = [
   "whatsapp.chat.list",
   "whatsapp.history",
   "whatsapp.send",
+  "whatsapp.call.status",
+  "whatsapp.call.send",
+  "whatsapp.call.hangup",
   "env.list",
   "env.set",
   "env.clear",
@@ -261,6 +264,7 @@ function defaultModuleDependencies(): AgentCommandModuleDependencies {
     discordStickers: {} as AgentCommandModuleDependencies["discordStickers"],
     discordGifs: {} as AgentCommandModuleDependencies["discordGifs"],
     discordVoice: {} as AgentCommandModuleDependencies["discordVoice"],
+    whatsappCalls: {} as AgentCommandModuleDependencies["whatsappCalls"],
     telegramStickers: {} as AgentCommandModuleDependencies["telegramStickers"],
     email: {} as AgentCommandModuleDependencies["email"],
     a2aMessaging: {} as AgentCommandModuleDependencies["a2aMessaging"],
@@ -494,6 +498,9 @@ describe("command modules", () => {
       "whatsapp.chat.list",
       "whatsapp.history",
       "whatsapp.send",
+      "whatsapp.call.status",
+      "whatsapp.call.send",
+      "whatsapp.call.hangup",
     ]);
   });
 

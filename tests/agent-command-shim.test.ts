@@ -157,6 +157,11 @@ import {
   createDiscordVoiceStatusCommand,
 } from "../src/integrations/channels/discord/voice-commands.js";
 import {createWhatsAppChatListCommand, createWhatsAppHistoryCommand, createWhatsAppSendCommand} from "../src/integrations/channels/whatsapp/commands.js";
+import {
+  whatsappCallHangupCommandDescriptor,
+  whatsappCallSendCommandDescriptor,
+  whatsappCallStatusCommandDescriptor,
+} from "../src/integrations/channels/whatsapp/calls/commands.js";
 import {createVentSendCommand} from "../src/integrations/panda-trace/vent-commands.js";
 import {
   createBraveImageSearchCommand,
@@ -1950,6 +1955,9 @@ describe("agent command shim", () => {
             telegramStickerListCommandDescriptor,
             telegramStickerSetShowCommandDescriptor,
             telegramStickerSetSaveCommandDescriptor,
+            whatsappCallStatusCommandDescriptor,
+            whatsappCallSendCommandDescriptor,
+            whatsappCallHangupCommandDescriptor,
           ].map(echoInputCommand),
           createTimeNowCommand({
             now: () => new Date("2026-06-24T12:34:56.000Z"),
@@ -3642,6 +3650,9 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     expect(whatsapp.stdout).toContain("panda whatsapp chat list --help");
     expect(whatsapp.stdout).toContain("panda whatsapp history --help");
     expect(whatsapp.stdout).toContain("panda whatsapp send --help");
+    expect(whatsapp.stdout).toContain("panda whatsapp call status");
+    expect(whatsapp.stdout).toContain("panda whatsapp call send");
+    expect(whatsapp.stdout).toContain("panda whatsapp call hangup");
     const email = await execFileAsync(shimPath, ["email", "--help"]);
     expect(email.stdout).toContain("panda email account list --help");
     expect(email.stdout).toContain("panda email send --help");
@@ -7536,6 +7547,36 @@ printf '{"ok":true,"output":%s}\\n' "$body"
         conversationId: "421900000000@s.whatsapp.net",
       },
     });
+  });
+
+  it("executes WhatsApp call controls through native args", async () => {
+    const server = await startWatchServer();
+    const env = shimEnv(server);
+
+    const status = await execFileAsync(shimPath, [
+      "whatsapp", "call", "status", "--connector", "cloud-main",
+    ], {env});
+    const send = await execFileAsync(shimPath, [
+      "whatsapp", "call", "send",
+      "--connector", "cloud-main",
+      "--call", "call-1",
+      "--turn", "11111111-1111-4111-8111-111111111111",
+      "--mode", "progress",
+      "--text", "Still checking.",
+    ], {env});
+    const hangup = await execFileAsync(shimPath, [
+      "whatsapp", "call", "hangup", "--connector", "cloud-main", "--call", "call-1",
+    ], {env});
+
+    expect(JSON.parse(status.stdout)).toEqual({connectorKey: "cloud-main"});
+    expect(JSON.parse(send.stdout)).toEqual({
+      connectorKey: "cloud-main",
+      callId: "call-1",
+      voiceTurnId: "11111111-1111-4111-8111-111111111111",
+      text: "Still checking.",
+      mode: "progress",
+    });
+    expect(JSON.parse(hangup.stdout)).toEqual({connectorKey: "cloud-main", callId: "call-1"});
   });
 
   it("executes telegram.react JSON payloads through the transport", async () => {

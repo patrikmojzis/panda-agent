@@ -50,6 +50,7 @@ export interface LiveVoiceTurnInput {
   agentKey: string;
   externalActorId?: string;
   identityId?: string;
+  transportAuthorization?: JsonObject;
   prompt: string;
 }
 

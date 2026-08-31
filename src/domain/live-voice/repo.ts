@@ -108,6 +108,7 @@ function parseTurn(row: Record<string, unknown>): LiveVoiceTurnRecord {
     agentKey: requiredString(row.agent_key, "Live voice agent key is missing."),
     externalActorId: optionalString(row.external_actor_id),
     identityId: optionalString(row.identity_id),
+    transportAuthorization: parseJsonObject(row.transport_authorization),
     prompt: requiredString(row.prompt, "Live voice delegation prompt is missing."),
     status: parseTurnStatus(row.status),
     threadId: optionalString(row.thread_id),
@@ -189,10 +190,10 @@ export class LiveVoiceRepo {
     return withTransaction(this.pool, async (client) => {
       await lockActiveAgentSession(client, input.sessionId);
       const result = await client.query(`
-        INSERT INTO ${tables.turns} (id,live_voice_session_id,provider_delegation_id,source_utterance_id,session_id,agent_key,external_actor_id,identity_id,prompt,status)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending')
+        INSERT INTO ${tables.turns} (id,live_voice_session_id,provider_delegation_id,source_utterance_id,session_id,agent_key,external_actor_id,identity_id,transport_authorization,prompt,status)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,'pending')
         ON CONFLICT DO NOTHING RETURNING *
-      `, [input.id,input.liveVoiceSessionId,input.providerDelegationId,input.sourceUtteranceId,input.sessionId,input.agentKey,input.externalActorId ?? null,input.identityId ?? null,input.prompt]);
+      `, [input.id,input.liveVoiceSessionId,input.providerDelegationId,input.sourceUtteranceId,input.sessionId,input.agentKey,input.externalActorId ?? null,input.identityId ?? null,input.transportAuthorization ? JSON.stringify(input.transportAuthorization) : null,input.prompt]);
       if (result.rows[0]) return {turn: parseTurn(result.rows[0] as Record<string, unknown>), created: true};
       const existing = await client.query(`SELECT * FROM ${tables.turns} WHERE live_voice_session_id=$1 AND (source_utterance_id=$2 OR provider_delegation_id=$3) ORDER BY created_at LIMIT 1`, [input.liveVoiceSessionId,input.sourceUtteranceId,input.providerDelegationId]);
       if (!existing.rows[0]) throw new Error("Live voice turn conflict could not be resolved.");
@@ -221,12 +222,12 @@ export class LiveVoiceRepo {
       const turnResult = await client.query(`
         INSERT INTO ${tables.turns} (
           id, live_voice_session_id, provider_delegation_id, source_utterance_id,
-          session_id, agent_key, external_actor_id, identity_id, prompt, status
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending')
+          session_id, agent_key, external_actor_id, identity_id, transport_authorization, prompt, status
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,'pending')
         ON CONFLICT (live_voice_session_id, source_utterance_id) DO UPDATE
         SET updated_at = ${tables.turns}.updated_at
         RETURNING *
-      `, [input.id,input.liveVoiceSessionId,input.providerDelegationId,input.sourceUtteranceId,input.sessionId,input.agentKey,input.externalActorId ?? null,input.identityId ?? null,input.prompt]);
+      `, [input.id,input.liveVoiceSessionId,input.providerDelegationId,input.sourceUtteranceId,input.sessionId,input.agentKey,input.externalActorId ?? null,input.identityId ?? null,input.transportAuthorization ? JSON.stringify(input.transportAuthorization) : null,input.prompt]);
       const turn = parseTurn(turnResult.rows[0] as Record<string, unknown>);
       const requestPayload = {liveVoiceTurnId: turn.id, sessionId: turn.sessionId};
       const requestResult = await client.query(`

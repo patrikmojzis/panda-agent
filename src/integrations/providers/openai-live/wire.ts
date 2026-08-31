@@ -15,6 +15,7 @@ const APPEND_BYTES = 500;
 const RESULT_CHARS = 1_800;
 const MAX_INITIAL_ITEMS = 32;
 const MAX_INITIAL_CHARS = 8_192;
+const MAX_INSTRUCTIONS_CHARS = 8_192;
 
 export interface OpenAILiveRequestIds {realtimeSessionId: string; sessionId: string; threadId: string}
 export type OpenAILiveContextChannel = "commentary" | "speakable";
@@ -55,16 +56,18 @@ export function buildHeaders(auth: OpenAILiveAuth, ids: OpenAILiveRequestIds): R
   };
 }
 
-export function buildSession(voice: string = DEFAULT_OPENAI_LIVE_VOICE, options: {initialItems?: readonly LiveVoiceHistoryItem[]; delegationAckFiller?: boolean} = {}): OpenAILiveSession {
+export function buildSession(voice: string = DEFAULT_OPENAI_LIVE_VOICE, options: {instructions?: string; initialItems?: readonly LiveVoiceHistoryItem[]; delegationAckFiller?: boolean} = {}): OpenAILiveSession {
   const selectedVoice = parseOpenAILiveVoice(voice);
   const initialItems = boundedInitialItems(options.initialItems ?? []);
+  const instructions = options.instructions?.trim();
+  if (instructions && instructions.length > MAX_INSTRUCTIONS_CHARS) throw new Error("GPT-Live instructions exceeded the configured limit.");
   return {
     model: OPENAI_LIVE_MODEL,
-    instructions: [
-      "You are Panda's low-latency voice front end in a Discord voice channel.",
+    instructions: instructions ?? [
+      "You are Panda's low-latency voice front end in a live voice conversation.",
       "Wait silently until a participant speaks; do not greet merely because the session connected.",
       "Respond naturally to casual conversation. Delegate substantive requests, memory questions, and every action requiring tools to the client.",
-      "If a participant asks you to leave or disconnect from voice, delegate that request to the client; you cannot leave the channel yourself.",
+      "If a participant asks you to leave, hang up, or disconnect, delegate that request to the client; you cannot end the call yourself.",
       "Never claim an action succeeded unless the client result says so. Keep spoken replies concise.",
     ].join(" "),
     audio: {output: {voice: selectedVoice}},
@@ -113,9 +116,9 @@ async function boundedText(response: Response, maxBytes: number): Promise<string
   return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString("utf8");
 }
 
-export async function createOpenAILiveCall(input: {auth: OpenAILiveAuth; ids: OpenAILiveRequestIds; offerSdp: string; voice: string; initialItems?: readonly LiveVoiceHistoryItem[]; delegationAckFiller?: boolean; signal: AbortSignal; fetchImpl?: typeof fetch}): Promise<{answerSdp: string; sidebandUrl: string}> {
+export async function createOpenAILiveCall(input: {auth: OpenAILiveAuth; ids: OpenAILiveRequestIds; offerSdp: string; voice: string; instructions?: string; initialItems?: readonly LiveVoiceHistoryItem[]; delegationAckFiller?: boolean; signal: AbortSignal; fetchImpl?: typeof fetch}): Promise<{answerSdp: string; sidebandUrl: string}> {
   if (Buffer.byteLength(input.offerSdp) > MAX_SDP_BYTES) throw new Error("GPT-Live SDP offer exceeded the configured limit.");
-  const body = JSON.stringify({sdp: input.offerSdp, session: buildSession(input.voice, {initialItems: input.initialItems, delegationAckFiller: input.delegationAckFiller})});
+  const body = JSON.stringify({sdp: input.offerSdp, session: buildSession(input.voice, {instructions: input.instructions, initialItems: input.initialItems, delegationAckFiller: input.delegationAckFiller})});
   const response = await (input.fetchImpl ?? fetch)(CALL_URL, {method: "POST", headers: {...buildHeaders(input.auth, input.ids), "Content-Type": "application/json"}, body, signal: input.signal});
   if (!response.ok) {
     await boundedText(response, MAX_ERROR_BYTES).catch(() => "");

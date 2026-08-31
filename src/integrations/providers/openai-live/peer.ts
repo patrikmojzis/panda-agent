@@ -1,6 +1,7 @@
 import {randomInt} from "node:crypto";
 
 import {resamplePcm16} from "../../voice/pcm.js";
+import {RtpReorderBuffer, type RtpReorderOutput} from "../../voice/rtp-reorder.js";
 
 const PROVIDER_RATE = 48_000;
 const RELAY_RATE = 24_000;
@@ -9,8 +10,6 @@ const FRAME_SAMPLES = 960;
 const FRAME_MS = 20;
 const RELAY_FRAME_BYTES = 960;
 const MAX_PENDING_BYTES = RELAY_RATE * 2 * 5;
-const RTP_SEQUENCE_MOD = 0x1_0000;
-const RTP_SEQUENCE_HALF = 0x8000;
 const RTP_REORDER_DEPTH = 4;
 const RTP_REORDER_FLUSH_MS = 40;
 const RTP_CLEAR_QUARANTINE_MS = 200;
@@ -48,91 +47,9 @@ export interface OpenAILiveAudioCallbacks {onAudio(pcm24kMono: Buffer): void; on
 
 function errorOf(error: unknown): Error { return error instanceof Error ? error : new Error(String(error)); }
 
-export type OpenAILiveRtpOutput<T> = {kind: "packet"; packet: T} | {kind: "loss"};
-
-/** Bounded RTP sequence reorder buffer with packet-loss markers for Opus PLC. */
-export class OpenAILiveRtpReorderBuffer<T> {
-  private expected?: number;
-  private readonly pending = new Map<number, T>();
-  private discardUntil = 0;
-
-  get hasPending(): boolean { return this.pending.size > 0; }
-
-  push(sequence: number, packet: T, now = Date.now()): OpenAILiveRtpOutput<T>[] {
-    const normalized = sequence & 0xffff;
-    if (now < this.discardUntil) {
-      this.advancePast(normalized);
-      return [];
-    }
-    this.expected ??= normalized;
-    const distance = this.distance(normalized);
-    if (distance >= RTP_SEQUENCE_HALF || this.pending.has(normalized)) return [];
-    this.pending.set(normalized, packet);
-    const ready = this.drainReady();
-    if (this.pending.size >= RTP_REORDER_DEPTH) ready.push(...this.flush());
-    return ready;
-  }
-
-  flush(): OpenAILiveRtpOutput<T>[] {
-    if (this.expected === undefined || this.pending.size === 0) return [];
-    const nearest = [...this.pending.keys()].reduce((best, sequence) => Math.min(best, this.distance(sequence)), RTP_SEQUENCE_MOD);
-    const output: OpenAILiveRtpOutput<T>[] = [];
-    for (let index = 0; index < Math.min(nearest, RTP_REORDER_DEPTH); index += 1) {
-      output.push({kind: "loss"});
-      this.expected = (this.expected + 1) & 0xffff;
-    }
-    if (nearest > RTP_REORDER_DEPTH) this.expected = [...this.pending.keys()].reduce((best, sequence) => this.distance(sequence) < this.distance(best) ? sequence : best);
-    output.push(...this.drainReady());
-    return output;
-  }
-
-  reset(): void {
-    this.expected = undefined;
-    this.pending.clear();
-    this.discardUntil = 0;
-  }
-
-  /** Drops queued packets while preserving a watermark that rejects late packets from the cleared output. */
-  discardPending(now = Date.now(), quarantineMs = 0): void {
-    if (this.expected !== undefined && this.pending.size > 0) {
-      let furthest = this.expected;
-      let furthestDistance = 0;
-      for (const sequence of this.pending.keys()) {
-        const distance = this.distance(sequence);
-        if (distance < RTP_SEQUENCE_HALF && distance >= furthestDistance) {
-          furthest = sequence;
-          furthestDistance = distance;
-        }
-      }
-      this.expected = (furthest + 1) & 0xffff;
-    }
-    this.pending.clear();
-    this.discardUntil = Math.max(this.discardUntil, now + Math.max(0, quarantineMs));
-  }
-
-  private advancePast(sequence: number): void {
-    if (this.expected === undefined) {
-      this.expected = (sequence + 1) & 0xffff;
-      return;
-    }
-    const distance = this.distance(sequence);
-    if (distance < RTP_SEQUENCE_HALF) this.expected = (sequence + 1) & 0xffff;
-  }
-
-  private distance(sequence: number): number {
-    return (sequence - (this.expected ?? sequence) + RTP_SEQUENCE_MOD) % RTP_SEQUENCE_MOD;
-  }
-
-  private drainReady(): OpenAILiveRtpOutput<T>[] {
-    const output: OpenAILiveRtpOutput<T>[] = [];
-    while (this.expected !== undefined && this.pending.has(this.expected)) {
-      const packet = this.pending.get(this.expected)!;
-      this.pending.delete(this.expected);
-      output.push({kind: "packet", packet});
-      this.expected = (this.expected + 1) & 0xffff;
-    }
-    return output;
-  }
+export type OpenAILiveRtpOutput<T> = RtpReorderOutput<T>;
+export class OpenAILiveRtpReorderBuffer<T> extends RtpReorderBuffer<T> {
+  constructor() { super(RTP_REORDER_DEPTH); }
 }
 
 function bufferToSamples(buffer: Buffer): Int16Array {

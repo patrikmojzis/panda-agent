@@ -22,6 +22,8 @@ import {
 import {ChannelOutboundDeliveryWorker} from "../../../domain/channels/deliveries/worker.js";
 import {PostgresConnectorAccountStore} from "../../../domain/connectors/postgres.js";
 import type {SecretCrypto} from "../../../domain/secrets/crypto.js";
+import type {ConnectorAccountRecord} from "../../../domain/connectors/types.js";
+import type {WhatsAppCallWebhookServer} from "./calls/webhook.js";
 import {
   resolveWhatsAppIngressLimits,
   resolveWhatsAppSocketVersion,
@@ -67,6 +69,9 @@ export interface WhatsAppServiceOptions {
   runtime?: ConnectorDaemonRuntimeHandle;
   mediaQueue?: WhatsAppMediaWorkQueue;
   disableHealthServer?: boolean;
+  account?: ConnectorAccountRecord;
+  callWebhook?: WhatsAppCallWebhookServer;
+  env?: NodeJS.ProcessEnv;
 }
 
 const RECONNECT_DELAY_MS = 1_000;

@@ -1,10 +1,10 @@
 {
   "files": [
     {
-      "bytes": 136215,
-      "lines": 4551,
+      "bytes": 139218,
+      "lines": 4647,
       "path": "scripts/agent-command-shim/routes.generated.sh",
-      "sha256": "412887aa0c3cca09ddb55ce61be90419ebcc249a52b64d62f3b749ef351fcb3d"
+      "sha256": "72c3aee9dbb666fa6290d42c360b1ff39352e5842769dcc761977a854532ec6b"
     },
     {
       "bytes": 1166,
@@ -19,10 +19,10 @@
       "sha256": "1a1004c51544a7e25b32abafe0e8ad5afe42350f599fcf125434ba3a56382faf"
     },
     {
-      "bytes": 20412,
-      "lines": 515,
+      "bytes": 20684,
+      "lines": 519,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "96a2a7f7de967cf694d045560d8061d955c1fbcb4d32ecf1d8c96cb3787b0614"
+      "sha256": "6e1c8d46d8fc6bf3c39e3fb7ea0dd85ac12752fa3934e19a51932d46890234ea"
     },
     {
       "bytes": 17911,
@@ -67,10 +67,10 @@
       "sha256": "c6d98f315f2cfc237bbf5fdd6eb957112e92238bedd6e16956056d0a7939fb56"
     },
     {
-      "bytes": 65230,
-      "lines": 1817,
+      "bytes": 66842,
+      "lines": 1853,
       "path": "src/panda/commands/agent-command-modules.ts",
-      "sha256": "dccc06688c262af06844347a0dd1df94dae0c2b53604d1db5b310e43fe161db4"
+      "sha256": "31f8096638c2eaf893d30485998ca91186d45c54238170f7577481891a221df7"
     },
     {
       "bytes": 572,
@@ -211,6 +211,12 @@
       "sha256": "5bff11189e06545f0af3093016fece6d529547fd922abd35459d3dad91361fbd"
     },
     {
+      "bytes": 881,
+      "lines": 14,
+      "path": "src/prompts/channels/live-voice.ts",
+      "sha256": "a0c1014b4b06191efa978f5541afd310bcb074d232ef9d1e4760093b3817eb47"
+    },
+    {
       "bytes": 450,
       "lines": 16,
       "path": "src/prompts/channels/shared.ts",
@@ -227,6 +233,12 @@
       "lines": 29,
       "path": "src/prompts/channels/tui.ts",
       "sha256": "48cf4e4bf7f8fee0d17ba6247f991456f0d45a113bd7dd15b86b85ea2ab10312"
+    },
+    {
+      "bytes": 1128,
+      "lines": 21,
+      "path": "src/prompts/channels/whatsapp-voice.ts",
+      "sha256": "ccf073c40511d719e409c6ee521301098f2fe1bccec0e67e8174bdec830f4b5a"
     },
     {
       "bytes": 3175,
@@ -436,7 +448,10 @@
         "discord.send",
         "whatsapp.chat.list",
         "whatsapp.history",
-        "whatsapp.send"
+        "whatsapp.send",
+        "whatsapp.call.status",
+        "whatsapp.call.send",
+        "whatsapp.call.hangup"
       ]
     },
     "core": {

@@ -1,13 +1,14 @@
 # Live Voice
 
-Discord is the first call transport, not the owner of live-call semantics.
+Discord and WhatsApp are call transports, not owners of live-call semantics.
 
 The reusable boundary has four parts:
 
 - `src/domain/live-voice` owns generic `runtime.live_voice_sessions` and `runtime.live_voice_turns` records. Sessions use opaque `source`, `connectorKey`, `scopeKey`, and `roomKey` transport identity. Turns reference the generic live session and provider delegation, never Discord columns.
 - `src/integrations/voice/live-call.ts` owns first-speaker arbitration, audible input admission, provider-authoritative output clearing, provider replacement, exact-once delegation, and progress/final delivery.
 - `src/integrations/voice/provider.ts` is the provider-session contract and provider-definition seam. `src/integrations/providers/openai-live/provider.ts` binds OpenAI configuration once; transports do not construct the bridge or map provider callbacks themselves. The OpenAI Live adapter owns private call creation, WebRTC, sideband parsing, authentication, and provider wire shape.
-- A call transport supplies decoded 24 kHz mono PCM and a `LiveVoiceOutput`. Discord owns guild joins, participant provenance, Discord Opus, Gateway/voice lifecycle, commands, and `discord_voice_controls`.
+- `src/integrations/voice/call-start.ts` resolves and validates the agent voice, persists the immutable provider snapshot, and constructs a call with transport-rendered instructions.
+- A call transport supplies decoded 24 kHz mono PCM and a `LiveVoiceOutput`. Discord owns guild joins and `discord_voice_controls`; WhatsApp owns signed Meta webhooks, Graph signalling, Werift media, and `whatsapp_call_controls`.
 
 The agent owns its `liveVoice` preference. A transport reads it when a new call starts, validates it through the provider catalogue, and stores the canonical value on `runtime.live_voice_sessions`. That snapshot is immutable for the call and every provider recovery generation. An idempotent rejoin returns the existing snapshot; moving rooms starts a new call and rereads the agent. Historical session rows keep `voice = NULL` rather than claiming a value that was never recorded.
 
@@ -34,6 +35,6 @@ The supported `panda/integrations/live-voice` package entrypoint exposes the cha
 
 `PANDA_LIVE_VOICE_ENABLED` is the channel-neutral deployment kill switch and stays disabled by default. Provider tuning uses `PANDA_OPENAI_LIVE_*`; voice choice is never an environment setting. Operators configure it per agent through Control or `panda agent voice`.
 
-A future Telegram, WhatsApp, or custom call adapter should create a generic session record, feed `LiveVoiceCall` with participant-attributed PCM, implement `LiveVoiceOutput`, inject a `LiveVoiceProviderDefinition`, render its source-specific delegation instructions, and own its native control/join lifecycle. Do not move connector controls, guild/chat identifiers, codecs, or provider wire details into the reusable module. Add a broader transport interface only after a second real adapter proves the common shape.
+A future Telegram or custom call adapter should use `prepareLiveVoiceCall`, feed `LiveVoiceCall` with participant-attributed PCM, implement `LiveVoiceOutput`, render source-specific delegation instructions, and own its native signalling and controls. Do not move connector controls, room identifiers, codecs, or provider wire details into the reusable module.
 
 The previous experimental `runtime.discord_voice_sessions` and `runtime.discord_voice_turns` tables are migrated once by the daemon and removed. Completed history is preserved; in-flight legacy turns are failed because their spoken outcome is unknowable after restart. Obsolete `discord_voice_delegation` queue records are removed during the same transaction. `runtime.discord_voice_controls` deliberately remains transport-specific.

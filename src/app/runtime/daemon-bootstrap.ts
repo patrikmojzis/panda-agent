@@ -50,6 +50,7 @@ import {createDiscordRestClient} from "../../integrations/channels/discord/api.j
 import {createDiscordStickerCatalogReader} from "../../integrations/channels/discord/stickers.js";
 import {createDiscordGifService} from "../../integrations/channels/discord/gifs.js";
 import {DiscordVoiceControlRepo} from "../../integrations/channels/discord/voice-postgres.js";
+import {WhatsAppCallControlRepo} from "../../integrations/channels/whatsapp/calls/postgres.js";
 import {LiveVoiceRepo} from "../../domain/live-voice/repo.js";
 import {createLiveVoiceRuntimeEventHandler} from "../../integrations/voice/request-handler.js";
 import {resolveAgentMediaDir, resolveDataDir} from "./data-dir.js";
@@ -297,6 +298,8 @@ export async function bootstrapDaemonContext(
       live: liveVoice,
       async close(): Promise<void> { await Promise.all([discordVoiceControls.close(), liveVoice.close()]); },
     };
+    const whatsappCallControls = new WhatsAppCallControlRepo(runtime.pool);
+    const whatsappCalls = {controls: whatsappCallControls, live: liveVoice};
 
     sessionRoutes = new SessionRouteRepo({
       pool: runtime.pool,
@@ -322,6 +325,7 @@ export async function bootstrapDaemonContext(
         discordStickers,
         discordGifs,
         discordVoice,
+        whatsappCalls,
         telegramStickers,
         email: runtime.email,
       }),

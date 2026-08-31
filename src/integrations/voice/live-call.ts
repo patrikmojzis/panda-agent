@@ -12,6 +12,7 @@ import type {
   LiveVoiceProviderFailure,
   LiveVoiceProviderHealth,
   LiveVoiceProviderSession,
+  LiveVoiceProviderSessionConfig,
 } from "./provider.js";
 
 const MAX_UTTERANCES_PER_MINUTE = 30;
@@ -29,6 +30,7 @@ export interface LiveVoiceOutputSnapshot {
   responseEpoch: number;
   queuedMs: number;
   overruns: number;
+  droppedMs?: number;
   transport?: JsonObject;
 }
 
@@ -55,6 +57,9 @@ interface LiveVoiceTurnBinding {
 interface LiveVoiceUtterance {
   id: string;
   actorId: string;
+  externalActorId?: string;
+  identityId?: string;
+  transportAuthorization?: JsonObject;
   startedAt: number;
   providerGeneration: number;
   committed: boolean;
@@ -108,9 +113,11 @@ export interface LiveVoiceCallOptions {
   agentKey: string;
   voice: LiveVoiceStore;
   createProvider: LiveVoiceProviderFactory;
+  providerConfig: LiveVoiceProviderSessionConfig;
   output: LiveVoiceOutput;
   log(event: string, payload: Record<string, unknown>): void;
   onStateChange?(): void;
+  authorizeDelegation?(): Promise<boolean>;
   onTerminalFailure(reason: string): void;
 }
 
@@ -202,7 +209,7 @@ export class LiveVoiceCall {
     this.changed();
   }
 
-  beginCapture(actorId: string, now = Date.now()): LiveVoiceCaptureDecision {
+  beginCapture(actorId: string, now = Date.now(), identityId?: string, externalActorId: string | null = actorId, transportAuthorization?: JsonObject): LiveVoiceCaptureDecision {
     if (this.closing || !this.connected || !this.provider) return {status: "provider_unavailable"};
     if (this.activeCapture?.actorId === actorId) return {status: "continued", captureId: this.activeCapture.id};
     if (this.activeCapture) return {status: "overlap"};
@@ -211,7 +218,7 @@ export class LiveVoiceCall {
       if (utterance.actorId !== actorId) return {status: "overlap"};
       this.clearProviderTurnTimeout();
     } else {
-      utterance = this.reserveUtterance(actorId, now);
+      utterance = this.reserveUtterance(actorId, now, identityId, externalActorId ?? undefined, transportAuthorization);
       if (!utterance) return {status: "rate_limit"};
     }
     const capture: LiveVoiceCapture = {
@@ -236,7 +243,7 @@ export class LiveVoiceCall {
       this.live.beginInput();
     }
     if (capture.utterance.turnDone) {
-      const continuation = this.reserveUtterance(capture.actorId, Date.now());
+      const continuation = this.reserveUtterance(capture.actorId, Date.now(), capture.utterance.identityId, capture.utterance.externalActorId, capture.utterance.transportAuthorization);
       if (!continuation) {
         this.noteCaptureDrop(1, Math.round(pcm24kMono.length / (24_000 * 2) * 1_000));
         return false;
@@ -369,7 +376,7 @@ export class LiveVoiceCall {
       playbackFailed: this.playbackFailed,
       playbackUnderruns: this.playbackUnderruns,
       providerOutputClears: this.providerOutputClears,
-      outputDroppedMs: output.overruns * 5_000,
+      outputDroppedMs: output.droppedMs ?? output.overruns * 5_000,
       ...(this.lastOutputAt === undefined ? {} : {lastOutputAt: this.lastOutputAt}),
       ...(this.activeCapture ? {captureActorId: this.activeCapture.actorId, captureId: this.activeCapture.id} : {}),
       captureDroppedMs: this.captureDroppedMs,
@@ -428,7 +435,7 @@ export class LiveVoiceCall {
       capture.utterance.delegated = false;
       this.pendingUtterance = capture.utterance;
     }
-    return this.options.createProvider({
+    return this.options.createProvider(this.options.providerConfig, {
       initialItems: this.live.initialItems(),
       onAudio: (audio) => {
         if (!this.currentGeneration(generation)) return;
@@ -473,12 +480,12 @@ export class LiveVoiceCall {
     return !this.closing && !this.terminalReason && generation === this.providerGeneration;
   }
 
-  private reserveUtterance(actorId: string, now: number): LiveVoiceUtterance | undefined {
+  private reserveUtterance(actorId: string, now: number, identityId?: string, externalActorId?: string, transportAuthorization?: JsonObject): LiveVoiceUtterance | undefined {
     while (this.acceptedAt.length > 0 && this.acceptedAt[0]! <= now - 60_000) this.acceptedAt.shift();
     if (this.acceptedAt.length >= MAX_UTTERANCES_PER_MINUTE) return undefined;
     this.acceptedAt.push(now);
     const utterance: LiveVoiceUtterance = {
-      id: randomUUID(), actorId, startedAt: now, providerGeneration: this.providerGeneration,
+      id: randomUUID(), actorId, ...(externalActorId ? {externalActorId} : {}), ...(identityId ? {identityId} : {}), ...(transportAuthorization ? {transportAuthorization} : {}), startedAt: now, providerGeneration: this.providerGeneration,
       committed: false, turnDone: false, delegated: false,
     };
     this.pendingUtterance = utterance;
@@ -592,6 +599,16 @@ export class LiveVoiceCall {
   }
 
   private async delegate(providerGeneration: number, providerDelegationId: string, prompt: string, attribution: LiveVoiceUtterance): Promise<void> {
+    if (this.options.authorizeDelegation) {
+      let authorized = false;
+      try { authorized = await this.options.authorizeDelegation(); }
+      catch (error) { this.options.log("live_voice_delegation_authorization_failed", {message: safeFailureMessage(error)}); }
+      if (!authorized) {
+        this.options.log("live_voice_delegation_dropped", {reason: "authorization_revoked"});
+        this.failTerminal("authorization_revoked");
+        return;
+      }
+    }
     const existing = this.turnBindingsByUtterance.get(attribution.id);
     if (existing) {
       if (existing.creating || isActiveLiveVoiceTurn(await this.options.voice.getTurn(existing.liveVoiceTurnId))) {
@@ -624,7 +641,9 @@ export class LiveVoiceCall {
         sourceUtteranceId: attribution.id,
         sessionId: this.options.sessionId,
         agentKey: this.options.agentKey,
-        externalActorId: attribution.actorId,
+        ...(attribution.externalActorId ? {externalActorId: attribution.externalActorId} : {}),
+        ...(attribution.identityId ? {identityId: attribution.identityId} : {}),
+        ...(attribution.transportAuthorization ? {transportAuthorization: attribution.transportAuthorization} : {}),
         prompt,
       };
       let turn: LiveVoiceTurnRecord;

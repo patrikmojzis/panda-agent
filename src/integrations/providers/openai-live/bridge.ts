@@ -39,6 +39,7 @@ type SidebandTerminal = {kind: "error"; error: Error} | {kind: "close"; code: nu
 export interface OpenAILiveRealtimeVoiceBridgeOptions {
   env?: NodeJS.ProcessEnv;
   voice?: string;
+  instructions?: string;
   initialItems?: readonly LiveVoiceHistoryItem[];
   delegationAckFiller?: boolean;
   connectTimeoutMs?: number;
@@ -294,6 +295,7 @@ export class OpenAILiveRealtimeVoiceBridge implements LiveVoiceProviderSession {
     this.ids = createRequestIds();
     const call = await createOpenAILiveCall({
       auth, ids: this.ids, offerSdp, voice: this.options.voice ?? DEFAULT_OPENAI_LIVE_VOICE,
+      instructions: this.options.instructions,
       ...(this.options.initialItems ? {initialItems: this.options.initialItems} : {}),
       delegationAckFiller: this.options.delegationAckFiller
         ?? optionalBoolean(this.options.env?.PANDA_OPENAI_LIVE_DELEGATION_ACK_FILLER),

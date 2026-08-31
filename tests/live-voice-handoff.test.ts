@@ -66,6 +66,28 @@ describe("live voice durable handoff", () => {
     expect((submitSessionInput.mock.calls[0]![1] as {metadata?: unknown}).metadata).not.toHaveProperty("route");
   });
 
+  it("fails a durable turn when transport authority changed before daemon delivery", async () => {
+    const voice = {
+      getTurn: vi.fn(async () => ({...turn(), identityId: "identity-1", externalActorId: undefined, transportAuthorization: {identityId: "identity-1"}})),
+      getSession: vi.fn(async () => ({...liveSession(), source: "whatsapp", connectorKey: "wa-1"})),
+      markTurnQueued: vi.fn(),
+      failTurn: vi.fn(async () => undefined),
+    };
+    const submitSessionInput = vi.fn();
+    await expect(handleLiveVoiceDelegationRequest({liveVoiceTurnId: turn().id}, {
+      voice: voice as never,
+      enqueueOptions: {inputId: "input-1"},
+      store: {findInput: vi.fn(), getThread: vi.fn()} as never,
+      sessions: {getSession: vi.fn(async () => ({id: "session-1", agentKey: "panda", currentThreadId: "thread-1"}))},
+      coordinator: {submitSessionInput},
+      identityStore: {resolveIdentityBinding: vi.fn()},
+      authorizeTurn: vi.fn(async () => false),
+      renderDelegation: vi.fn(),
+    })).resolves.toEqual({status: "dropped", reason: "authorization_revoked"});
+    expect(voice.failTurn).toHaveBeenCalledWith(turn().id, "authorization_revoked");
+    expect(submitSessionInput).not.toHaveBeenCalled();
+  });
+
   it("correlates generic metadata with the Panda run and awaits explicit final delivery", async () => {
     const voice = {
       assignTurnsToRun: vi.fn(async () => undefined),

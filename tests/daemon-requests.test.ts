@@ -269,6 +269,7 @@ function createRequestContext(input: {
             actorBindingId: "binding-1",
             authorizationVersion: "grant-1",
           }),
+      reauthorizeCall: vi.fn(async () => true),
     },
   };
 }

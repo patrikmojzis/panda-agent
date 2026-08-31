@@ -1,6 +1,6 @@
 import {describe, expect, it, vi} from "vitest";
 
-import {createWhatsAppActorAuthorizer} from "../src/integrations/channels/whatsapp/authorization.js";
+import {createWhatsAppActorAuthorizer, parseWhatsAppAuthorizationSnapshot} from "../src/integrations/channels/whatsapp/authorization.js";
 
 function authorizedRow(overrides: Record<string, unknown> = {}) {
   return {
@@ -69,5 +69,32 @@ describe("WhatsApp actor authorization", () => {
 
     expect(first.authorized && first.authorizationVersion)
       .not.toBe(second.authorized && second.authorizationVersion);
+  });
+
+  it("reauthorizes a call by non-PII binding snapshot and durable session", async () => {
+    const bindingId = "11111111-1111-4111-8111-111111111111";
+    const row = authorizedRow({binding_id: bindingId});
+    const query = vi.fn(async () => ({rows: [row]}));
+    const authorizer = createWhatsAppActorAuthorizer({pool: {query}});
+    const authorizationVersion = parseWhatsAppAuthorizationSnapshot({
+      identityId: "identity-1", agentKey: "panda", actorBindingId: bindingId,
+      authorizationVersion: "a".repeat(64),
+    })?.authorizationVersion;
+    const current = await authorizer.authorizeActor({connectorKey: "connector-1", externalActorId: "actor-1"});
+    if (!current.authorized) throw new Error("expected authorized actor");
+
+    await expect(authorizer.reauthorizeCall({
+      connectorKey: "connector-1",
+      sessionId: "session-1",
+      authorization: {...current, actorBindingId: bindingId},
+    })).resolves.toBe(true);
+    expect(authorizationVersion).toBe("a".repeat(64));
+    expect(query.mock.calls[1]?.[0]).toContain("binding.id = $2::uuid");
+    expect(query.mock.calls[1]?.[0]).toContain("conversation.session_id = $4");
+    expect(query.mock.calls[1]?.[1]).toEqual(["whatsapp", bindingId, "connector-1", "session-1", "identity-1", "panda"]);
+  });
+
+  it("rejects malformed persisted call authority before querying", () => {
+    expect(parseWhatsAppAuthorizationSnapshot({identityId: "identity-1", agentKey: "panda", actorBindingId: "not-a-uuid", authorizationVersion: "a".repeat(64)})).toBeNull();
   });
 });

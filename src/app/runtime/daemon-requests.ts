@@ -20,6 +20,7 @@ import type {SessionStore} from "../../domain/sessions/store.js";
 import {handleA2AMessageRequest} from "../../integrations/channels/a2a/request-handler.js";
 import {handleDiscordMessageRequest} from "../../integrations/channels/discord/request-handler.js";
 import {renderDiscordLiveVoiceDelegation} from "../../integrations/channels/discord/voice-delegation.js";
+import {authorizeWhatsAppLiveVoiceDelegation, renderWhatsAppLiveVoiceDelegation} from "../../integrations/channels/whatsapp/calls/delegation.js";
 import {handleLiveVoiceDelegationRequest} from "../../integrations/voice/request-handler.js";
 import type {LiveVoiceRepo} from "../../domain/live-voice/repo.js";
 import {
@@ -471,7 +472,12 @@ export function createDaemonRequestProcessor(
           store: context.runtime.store,
           sessions: context.runtime.sessionStore,
           identityStore: context.runtime.identityStore,
-          renderDelegation: renderDiscordLiveVoiceDelegation,
+          authorizeTurn: (input) => authorizeWhatsAppLiveVoiceDelegation(input, context.whatsAppAuthorizer),
+          renderDelegation: (input) => input.liveSession.source === "discord"
+            ? renderDiscordLiveVoiceDelegation(input)
+            : input.liveSession.source === "whatsapp"
+              ? renderWhatsAppLiveVoiceDelegation(input)
+              : (() => { throw new Error(`Unsupported live voice source ${input.liveSession.source}.`); })(),
         });
       case "telegram_message":
         return handleTelegramRuntimeMessageRequest(request.payload, {

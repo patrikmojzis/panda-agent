@@ -54,12 +54,21 @@ export interface LiveVoiceProviderCallbacks {
   onFailure(failure: LiveVoiceProviderFailure): void;
 }
 
+export interface LiveVoiceProviderSessionConfig {
+  voice: string;
+  instructions: string;
+}
+
 /** Creates one provider session while keeping provider auth and wire options outside the call core. */
-export type LiveVoiceProviderFactory = (callbacks: LiveVoiceProviderCallbacks) => LiveVoiceProviderSession;
+export type LiveVoiceProviderFactory = (
+  config: LiveVoiceProviderSessionConfig,
+  callbacks: LiveVoiceProviderCallbacks,
+) => LiveVoiceProviderSession;
 
 /** Describes a reusable provider without exposing its wire/auth configuration to call transports. */
 export interface LiveVoiceProviderDefinition {
   id: string;
   model: string;
+  validateVoice(voice: string): string;
   createSession: LiveVoiceProviderFactory;
 }

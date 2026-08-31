@@ -74,6 +74,9 @@ describe("subagent tool groups", () => {
             "whatsapp.chat.list",
             "whatsapp.history",
             "whatsapp.send",
+            "whatsapp.call.status",
+            "whatsapp.call.send",
+            "whatsapp.call.hangup",
           ],
         },
         "core": {

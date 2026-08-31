@@ -1492,6 +1492,10 @@ exit 42
     expect(baseCompose).toContain("  panda-whatsapp:\n    image: panda-app:latest");
     expect(baseCompose).toContain("CREDENTIALS_MASTER_KEY: ${CREDENTIALS_MASTER_KEY:-}");
     expect(baseCompose).toContain("PANDA_WHATSAPP_DB_POOL_MAX: ${PANDA_WHATSAPP_DB_POOL_MAX:-2}");
+    expect(baseCompose).toContain("PANDA_WHATSAPP_CALL_WEBHOOK_PORT: ${PANDA_WHATSAPP_CALL_WEBHOOK_PORT:-8096}");
+    expect(baseCompose).toContain("PANDA_LIVE_VOICE_ENABLED: ${PANDA_LIVE_VOICE_ENABLED:-false}");
+    expect(baseCompose).toContain("${CODEX_HOST_HOME:-${HOME}/.codex}:/root/.codex:ro");
+    expect(baseCompose).toContain("${PANDA_WHATSAPP_CALL_WEBHOOK_PUBLISH_HOST:-127.0.0.1}:${PANDA_WHATSAPP_CALL_WEBHOOK_PUBLISH_PORT:-${PANDA_WHATSAPP_CALL_WEBHOOK_PORT:-8096}}:${PANDA_WHATSAPP_CALL_WEBHOOK_PORT:-8096}");
     expect(baseCompose).toContain("${PANDA_CORE_SECRETS_HOST_ROOT:-${HOME}/.panda-core-secrets}:/run/secrets/panda-core:ro");
     expect(baseCompose.match(/PANDA_SCHEDULED_COMMAND_INTEGRITY_KEY: ""/g)).toHaveLength(3);
     expect(baseCompose.match(/PANDA_SCHEDULED_COMMAND_INTEGRITY_KEY_FILE: ""/g)).toHaveLength(3);

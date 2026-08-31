@@ -35,7 +35,7 @@ describe("experimental OpenAI GPT-Live wire", () => {
         }),
       });
       expect(JSON.parse(String(init?.body)).session).not.toHaveProperty("initial_items");
-      expect(JSON.parse(String(init?.body)).session.instructions).toContain("asks you to leave or disconnect from voice");
+      expect(JSON.parse(String(init?.body)).session.instructions).toContain("asks you to leave, hang up, or disconnect");
       return new Response("answer-sdp", {status: 201, headers: {Location: "/v1/live/rtc_test"}});
     });
     await expect(createOpenAILiveCall({
@@ -132,5 +132,11 @@ describe("experimental OpenAI GPT-Live wire", () => {
     expect(text.reduce((total, item) => total + item.length, 0)).toBeLessThanOrEqual(8_192);
     expect(text.at(-1)).toContain("39:");
     expect(text.some((item) => item.includes("0:"))).toBe(false);
+  });
+
+  it("uses transport-rendered instructions instead of provider-owned channel wording", () => {
+    const session = buildSession("cove", {instructions: "You are speaking over WhatsApp. Delegate tool work."});
+    expect(session.instructions).toBe("You are speaking over WhatsApp. Delegate tool work.");
+    expect(session.instructions).not.toContain("Discord");
   });
 });

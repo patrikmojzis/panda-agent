@@ -362,6 +362,15 @@ import {
   whatsappSendCommandDescriptor,
 } from "../../integrations/channels/whatsapp/commands.js";
 import {
+  createWhatsAppCallHangupCommand,
+  createWhatsAppCallSendCommand,
+  createWhatsAppCallStatusCommand,
+  whatsappCallHangupCommandDescriptor,
+  whatsappCallSendCommandDescriptor,
+  whatsappCallStatusCommandDescriptor,
+  type WhatsAppCallCommandServices,
+} from "../../integrations/channels/whatsapp/calls/commands.js";
+import {
   createVentSendCommand,
   ventSendCommandDescriptor,
 } from "../../integrations/panda-trace/vent-commands.js";
@@ -475,6 +484,7 @@ export interface AgentCommandModuleDependencies {
   discordStickers?: DiscordStickerCatalogReader;
   discordGifs?: DiscordGifService;
   discordVoice?: DiscordVoiceCommandServices["voice"];
+  whatsappCalls?: WhatsAppCallCommandServices["calls"];
   telegramStickers?: TelegramStickerLibrary;
   email?: EmailCommandStore;
   a2aMessaging?: MessageAgentCommandQueue;
@@ -757,6 +767,11 @@ function discordVoiceCommandServices(dependencies: AgentCommandModuleDependencie
     conversations: requireConversations(dependencies),
     voice: dependencies.discordVoice,
   };
+}
+
+function whatsappCallCommandServices(dependencies: AgentCommandModuleDependencies): WhatsAppCallCommandServices {
+  if (!dependencies.whatsappCalls) throw new Error("Agent command module requires whatsappCalls.");
+  return {env: dependencies.env ?? process.env, connectorAccounts: requireConnectorAccounts(dependencies), conversations: requireConversations(dependencies), calls: dependencies.whatsappCalls};
 }
 
 function requireTelegramStickers(dependencies: AgentCommandModuleDependencies): TelegramStickerLibrary {
@@ -1652,6 +1667,27 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
       requireOutboundDeliveries(dependencies),
       requireCommandFileResolver(dependencies),
     ),
+  ),
+  daemonChannelCommandModule(
+    whatsappCallStatusCommandDescriptor,
+    ["whatsapp", "call", "status"],
+    "{}",
+    agentCommandPolicy(["communicate_human"]),
+    (dependencies) => createWhatsAppCallStatusCommand(whatsappCallCommandServices(dependencies)),
+  ),
+  daemonChannelCommandModule(
+    whatsappCallSendCommandDescriptor,
+    ["whatsapp", "call", "send"],
+    "@payload.json",
+    agentCommandPolicy(["communicate_human"]),
+    (dependencies) => createWhatsAppCallSendCommand(whatsappCallCommandServices(dependencies)),
+  ),
+  daemonChannelCommandModule(
+    whatsappCallHangupCommandDescriptor,
+    ["whatsapp", "call", "hangup"],
+    "@payload.json",
+    agentCommandPolicy(["communicate_human"]),
+    (dependencies) => createWhatsAppCallHangupCommand(whatsappCallCommandServices(dependencies)),
   ),
   agentCommandModule(
     envListCommandDescriptor,

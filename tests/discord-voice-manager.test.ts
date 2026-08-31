@@ -19,10 +19,15 @@ function createHarness(options: {connectError?: Error; sidebandState?: "connecti
     destroy: vi.fn(),
   });
   let bridgeOptions!: LiveVoiceProviderCallbacks;
-  const createProvider = vi.fn((voice: string) => ({
+  const validateVoice = vi.fn((voice: string) => {
+    if (voice === "marin") throw Object.assign(new Error("Unsupported GPT-Live V1/V3 voice: marin."), {code: "unsupported_voice"});
+    return voice;
+  });
+  const createProvider = vi.fn(() => ({
     id: "openai-live",
     model: "gpt-live-1-codex",
-    createSession: (created: LiveVoiceProviderCallbacks) => { bridgeOptions = created; return bridge; },
+    validateVoice,
+    createSession: (_config: unknown, created: LiveVoiceProviderCallbacks) => { bridgeOptions = created; return bridge; },
   }));
   const bridge = {
     connect: vi.fn(async () => { if (options.connectError) throw options.connectError; }),
@@ -64,7 +69,7 @@ function createHarness(options: {connectError?: Error; sidebandState?: "connecti
     createInputDecoder: vi.fn(async () => ({decode: vi.fn(() => new Int16Array(1_920).fill(100)), free: vi.fn()})) as never,
     createProvider,
   });
-  return {manager, connection, streams, bridge, createProvider, setAgentVoice(voice: string, agentKey = "panda") { agentVoices.set(agentKey, voice); }, get bridgeOptions() { return bridgeOptions; }, voice, turns};
+  return {manager, connection, streams, bridge, createProvider, validateVoice, setAgentVoice(voice: string, agentKey = "panda") { agentVoices.set(agentKey, voice); }, get bridgeOptions() { return bridgeOptions; }, voice, turns};
 }
 
 describe("DiscordVoiceSessionManager", () => {
@@ -73,7 +78,8 @@ describe("DiscordVoiceSessionManager", () => {
     await harness.manager.start();
     const joined = await harness.manager.handle({id: "join", connectorKey: "bot-1", operation: "join", sessionId: "session-1", agentKey: "panda", channelId: "12345", status: "running", createdAt: 1, updatedAt: 1});
     expect(joined).toMatchObject({state: "connected", guildId: "guild-1", channelId: "12345", voice: "cove"});
-    expect(harness.createProvider).toHaveBeenCalledWith("cove");
+    expect(harness.createProvider).toHaveBeenCalledWith();
+    expect(harness.validateVoice).toHaveBeenCalledWith("cove");
     expect(harness.voice.upsertSession).toHaveBeenCalledWith(expect.objectContaining({source: "discord", scopeKey: "guild-1", roomKey: "12345", provider: "openai-live", voice: "cove"}));
 
     harness.connection.receiver.speaking.emit("start", "user-1");
@@ -113,7 +119,8 @@ describe("DiscordVoiceSessionManager", () => {
     await expect(join("join-2", "12345")).resolves.toMatchObject({voice: "cove"});
     expect(harness.createProvider).toHaveBeenCalledTimes(1);
     await expect(join("join-3", "67890")).resolves.toMatchObject({voice: "juniper", channelId: "67890"});
-    expect(harness.createProvider).toHaveBeenNthCalledWith(2, "juniper");
+    expect(harness.createProvider).toHaveBeenCalledTimes(2);
+    expect(harness.validateVoice).toHaveBeenLastCalledWith("juniper");
     await harness.manager.stop();
   });
 
@@ -125,8 +132,8 @@ describe("DiscordVoiceSessionManager", () => {
       .resolves.toMatchObject({guildId: "guild-1", voice: "cove"});
     await expect(harness.manager.handle({id: "join-luna", connectorKey: "bot-1", operation: "join", sessionId: "session-luna", agentKey: "luna", channelId: "99999", status: "running", createdAt: 1, updatedAt: 1}))
       .resolves.toMatchObject({guildId: "guild-2", voice: "juniper"});
-    expect(harness.createProvider).toHaveBeenCalledWith("cove");
-    expect(harness.createProvider).toHaveBeenCalledWith("juniper");
+    expect(harness.validateVoice).toHaveBeenCalledWith("cove");
+    expect(harness.validateVoice).toHaveBeenCalledWith("juniper");
     await harness.manager.stop();
   });
 
@@ -136,7 +143,7 @@ describe("DiscordVoiceSessionManager", () => {
     await harness.manager.start();
     await expect(harness.manager.handle({id: "join", connectorKey: "bot-1", operation: "join", sessionId: "session-1", agentKey: "panda", channelId: "12345", status: "running", createdAt: 1, updatedAt: 1}))
       .rejects.toThrow('"failureCode":"unsupported_voice"');
-    expect(harness.createProvider).not.toHaveBeenCalled();
+    expect(harness.createProvider).toHaveBeenCalledOnce();
     expect(harness.connection.subscribe).not.toHaveBeenCalled();
   });
 

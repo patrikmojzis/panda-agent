@@ -3,6 +3,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {SecretCrypto} from "../src/domain/secrets/crypto.js";
 import {
   whatsappAccountCreateCommand,
+  whatsappAccountConfigureCallingCommand,
   whatsappAccountDisableCommand,
   whatsappAccountLinkCommand,
   whatsappAccountResetCommand,
@@ -34,6 +35,7 @@ const mocks = vi.hoisted(() => {
     getAccountByKey: vi.fn(async () => account),
     listAccounts: vi.fn(async () => []),
     setAccountExternalIdentity: vi.fn(async () => account),
+    setSecret: vi.fn(async () => undefined),
     upsertAccount: vi.fn(async (input: Record<string, unknown>) => ({...account, ...input})),
   };
   const agents = {
@@ -48,7 +50,11 @@ const mocks = vi.hoisted(() => {
     ensureIdentityBinding: vi.fn(async (input: Record<string, unknown>) => ({id: "binding-1", ...input})),
     getIdentityByHandle: vi.fn(async () => ({id: "identity-alice", handle: "alice"})),
   };
-  return {account, accounts, agents, auth, identities};
+  const sessions = {
+    getMainSession: vi.fn(async () => ({id: "session-main", agentKey: "panda", kind: "main", currentThreadId: "thread-main", createdAt: 1, updatedAt: 1})),
+  };
+  const conversations = {bindConversation: vi.fn(async (input: Record<string, unknown>) => ({binding: input}))};
+  return {account, accounts, agents, auth, identities, sessions, conversations};
 });
 
 vi.mock("../src/lib/postgres-database.js", () => ({
@@ -62,6 +68,12 @@ vi.mock("../src/domain/agents/postgres.js", () => ({
 }));
 vi.mock("../src/domain/identity/postgres.js", () => ({
   PostgresIdentityStore: class { constructor() { return mocks.identities; } },
+}));
+vi.mock("../src/domain/sessions/postgres.js", () => ({
+  PostgresSessionStore: class { constructor() { return mocks.sessions; } },
+}));
+vi.mock("../src/domain/sessions/conversations/repo.js", () => ({
+  ConversationRepo: class { constructor() { return mocks.conversations; } },
 }));
 vi.mock("../src/integrations/channels/whatsapp/auth-store.js", () => ({
   PostgresWhatsAppAuthStore: class { constructor() { return mocks.auth; } },
@@ -130,6 +142,35 @@ describe("WhatsApp account CLI", () => {
 
     expect(write).toHaveBeenCalledWith(expect.stringContaining("pairing code ABCD-EFGH"));
     expect(write).toHaveBeenCalledWith(expect.stringContaining("Linked WhatsApp account main"));
+  });
+
+  it("configures Meta Calling from encrypted file-backed secrets", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "panda-whatsapp-calling-"));
+    const accessTokenFile = path.join(directory, "access-token");
+    const appSecretFile = path.join(directory, "app-secret");
+    const verifyTokenFile = path.join(directory, "verify-token");
+    await Promise.all([
+      writeFile(accessTokenFile, "access-token\n", "utf8"),
+      writeFile(appSecretFile, "app-secret\n", "utf8"),
+      writeFile(verifyTokenFile, "verify-token\n", "utf8"),
+    ]);
+    try {
+      await whatsappAccountConfigureCallingCommand("main", {
+        phoneNumberId: "123", wabaId: "456", graphVersion: "v23.0",
+        accessTokenFile, appSecretFile, verifyTokenFile,
+      }, dependencies());
+    } finally { await rm(directory, {recursive: true, force: true}); }
+
+    expect(mocks.accounts.setSecret).toHaveBeenCalledTimes(3);
+    expect(mocks.accounts.setSecret.mock.calls.map((call) => call.slice(1, 3))).toEqual([
+      ["meta_access_token", "access-token"],
+      ["meta_app_secret", "app-secret"],
+      ["meta_verify_token", "verify-token"],
+    ]);
+    expect(mocks.accounts.upsertAccount).toHaveBeenCalledWith(expect.objectContaining({
+      status: "enabled",
+      config: {mode: "meta_cloud", calling: {enabled: true, phoneNumberId: "123", wabaId: "456", graphVersion: "v23.0"}},
+    }));
   });
 
   it("reports, disables, and resets the selected account", async () => {
@@ -249,6 +290,18 @@ describe("WhatsApp account CLI", () => {
     }));
   });
 
+  it("binds an authorized Meta caller to the owning agent's main session", async () => {
+    mocks.accounts.getAccountByKey.mockResolvedValueOnce({...mocks.account, status: "enabled", config: {mode: "meta_cloud", calling: {enabled: true, phoneNumberId: "123", wabaId: "456", graphVersion: "v23.0"}}} as never);
+    await whatsappPairCommand({account: "main", actor: "421911111111", identity: "alice"}, dependencies());
+    expect(mocks.conversations.bindConversation).toHaveBeenCalledWith({
+      source: "whatsapp",
+      connectorKey: mocks.account.connectorKey,
+      externalConversationId: "421911111111@s.whatsapp.net",
+      sessionId: "session-main",
+      metadata: {channelAuthorization: {identityId: "identity-alice", agentKey: "panda", actorBindingId: "binding-1"}},
+    });
+  });
+
   it("rejects an identity that is not paired to the account owner", async () => {
     mocks.agents.listIdentityPairings.mockResolvedValueOnce([]);
     await expect(whatsappPairCommand({
@@ -267,3 +320,6 @@ describe("WhatsApp account CLI", () => {
     });
   });
 });
+import {mkdtemp, rm, writeFile} from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";

@@ -1,4 +1,3 @@
-import {randomUUID} from "node:crypto";
 import {
   AudioPlayerStatus,
   EndBehaviorType,
@@ -16,12 +15,13 @@ import {isActiveLiveVoiceTurn} from "../../../domain/live-voice/types.js";
 import type {AgentStore} from "../../../domain/agents/store.js";
 import {DrainLoop} from "../../../lib/drain-loop.js";
 import {deriveLiveVoiceHealth, type LiveVoiceDiagnosticSnapshot} from "../../voice/health.js";
-import {LiveVoiceCall} from "../../voice/live-call.js";
+import {prepareLiveVoiceCall, resolveLiveVoiceSelection} from "../../voice/call-start.js";
+import type {LiveVoiceCall} from "../../voice/live-call.js";
 import type {LiveVoiceProviderDefinition} from "../../voice/provider.js";
+import {renderLiveVoiceProviderInstructions} from "../../../prompts/channels/live-voice.js";
 import {resamplePcm16} from "../../voice/pcm.js";
 import type {DiscordChannelMetadata, DiscordWorkerRestClient} from "./api.js";
 import {createOpenAILiveVoiceProvider} from "../../providers/openai-live/provider.js";
-import {parseOpenAILiveVoice} from "../../providers/openai-live/voices.js";
 import type {DiscordVoiceControlRepo} from "./voice-postgres.js";
 import type {DiscordVoiceControlRecord} from "./voice-types.js";
 import {DISCORD_SOURCE} from "./config.js";
@@ -85,7 +85,7 @@ export interface DiscordVoiceManagerOptions {
   agents: Pick<AgentStore, "getAgent">;
   log(event: string, payload: Record<string, unknown>): void;
   getInfrastructureHealth?: () => DiscordVoiceInfrastructureHealth;
-  createProvider?: (voice: string) => LiveVoiceProviderDefinition;
+  createProvider?: () => LiveVoiceProviderDefinition;
   createInputDecoder?: typeof createDecoder;
   sessionTtlMs?: number;
   openVoiceTransport?: (input: {channelId: string; guildId: string; adapterCreator: DiscordGatewayAdapterCreator; group: string}) => Promise<{
@@ -246,19 +246,14 @@ export class DiscordVoiceSessionManager {
       if (current.sessionId !== control.sessionId) throw new Error(controlError("session_conflict", "Another Panda session owns voice in this guild."));
       if (current.channelId === channel.channelId) return this.result(current, "connected");
     }
-    let selectedVoice: string;
     let provider: LiveVoiceProviderDefinition;
+    let selectedVoice: string;
     try {
-      const agent = await this.options.agents.getAgent(control.agentKey);
-      if (agent.status !== "active") {
-        throw Object.assign(new Error(`Agent ${agent.agentKey} is not active.`), {code: "agent_unavailable"});
-      }
-      selectedVoice = parseOpenAILiveVoice(agent.liveVoice);
-      provider = (this.options.createProvider ?? ((voice) => createOpenAILiveVoiceProvider({
+      provider = (this.options.createProvider ?? (() => createOpenAILiveVoiceProvider({
         env: this.options.env,
-        voice,
         log: this.options.log,
-      })))(selectedVoice);
+      })))();
+      selectedVoice = await resolveLiveVoiceSelection({agentKey: control.agentKey, agents: this.options.agents, provider});
     } catch (error) {
       throw new Error(controlError(classifyFailure(error), errorMessage(error)));
     }
@@ -271,22 +266,7 @@ export class DiscordVoiceSessionManager {
     slot.abort = abort;
     const epoch = slot.epoch;
 
-    const liveVoiceSessionId = randomUUID();
-    const sessionRecord = {
-      id: liveVoiceSessionId,
-      source: DISCORD_SOURCE,
-      connectorKey: control.connectorKey,
-      scopeKey: channel.guildId,
-      roomKey: channel.channelId,
-      sessionId: control.sessionId,
-      agentKey: control.agentKey,
-      provider: provider.id,
-      model: provider.model,
-      voice: selectedVoice,
-      state: "connecting" as const,
-      transportContext: {guildId: channel.guildId, channelId: channel.channelId},
-    };
-    await this.options.voice.upsertSession(sessionRecord);
+    let liveVoiceSessionId: string | undefined;
     let connection: VoiceConnection | undefined;
     let session: ActiveVoiceSession | undefined;
     try {
@@ -300,16 +280,25 @@ export class DiscordVoiceSessionManager {
         encoder: outputEncoder,
         onError: (error) => call?.noteOutputFailure(error),
       });
-      call = new LiveVoiceCall({
-        liveVoiceSessionId,
+      const prepared = await prepareLiveVoiceCall({
+        source: DISCORD_SOURCE,
+        connectorKey: control.connectorKey,
+        scopeKey: channel.guildId,
+        roomKey: channel.channelId,
         sessionId: control.sessionId,
         agentKey: control.agentKey,
+        transportContext: {guildId: channel.guildId, channelId: channel.channelId},
+        instructions: renderLiveVoiceProviderInstructions({transport: "Discord"}),
+        provider,
+        resolvedVoice: selectedVoice,
+        agents: this.options.agents,
         voice: this.options.voice,
-        createProvider: provider.createSession,
         output: playback,
         log: (event, payload) => this.options.log(event, {connectorKey: control.connectorKey, guildId: channel.guildId, channelId: channel.channelId, ...payload}),
         onTerminalFailure: (reason) => this.stopGuildSafely(channel.guildId, reason),
       });
+      call = prepared.call;
+      liveVoiceSessionId = prepared.sessionRecord.id;
       session = {
         connectorKey: control.connectorKey,
         guildId: channel.guildId,
@@ -325,7 +314,7 @@ export class DiscordVoiceSessionManager {
         lifecycleEpoch: epoch,
         health: {discordVoiceStateAt: Date.now(), playerState: player.state.status, captureQueuedMs: 0, lastPersistedAt: 0},
         model: provider.model,
-        voice: selectedVoice,
+        voice: prepared.voice,
         closing: false,
       };
       connection.subscribe(player);
@@ -333,7 +322,7 @@ export class DiscordVoiceSessionManager {
       if (abort.signal.aborted || slot.epoch !== epoch || this.stopped) throw abortError(abort.signal);
       // The connected row is the enqueue fence. Do not expose participant
       // audio until atomic turn/request creation can lock that durable state.
-      await this.options.voice.upsertSession({...sessionRecord, state: "connected"});
+      await this.options.voice.upsertSession({...prepared.sessionRecord, state: "connected"});
       this.sessions.set(channel.guildId, session);
       this.startHealthReporter(session);
       this.attachPlayerLifecycle(session);
@@ -351,7 +340,7 @@ export class DiscordVoiceSessionManager {
       else {
         if (session) await this.disposeSessionResources(session, failureCode);
         else if (connection) destroyVoiceConnection(connection);
-        await this.options.voice.markSessionDisconnected(liveVoiceSessionId, "error", failureCode);
+        if (liveVoiceSessionId) await this.options.voice.markSessionDisconnected(liveVoiceSessionId, "error", failureCode);
       }
       throw new Error(controlError(failureCode, errorMessage(error)));
     }

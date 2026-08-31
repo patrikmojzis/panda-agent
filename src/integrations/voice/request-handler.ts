@@ -26,6 +26,7 @@ export async function handleLiveVoiceDelegationRequest(
     store: Pick<ThreadRuntimeStore, "findInput" | "getThread">;
     sessions: Pick<SessionStore, "getSession">;
     identityStore: Pick<IdentityStore, "resolveIdentityBinding">;
+    authorizeTurn?(input: LiveVoiceDelegationRenderInput): Promise<boolean>;
     renderDelegation(input: LiveVoiceDelegationRenderInput): string;
   },
 ): Promise<Record<string, unknown>> {
@@ -48,6 +49,10 @@ export async function handleLiveVoiceDelegationRequest(
     if (liveSession.state !== "connected") {
       await options.voice.failTurn(turn.id, "live_voice_session_closed");
       return {status: "dropped", reason: "live_voice_session_closed"};
+    }
+    if (options.authorizeTurn && !(await options.authorizeTurn({liveSession, turn}))) {
+      await options.voice.failTurn(turn.id, "authorization_revoked");
+      return {status: "dropped", reason: "authorization_revoked"};
     }
     const binding = turn.externalActorId
       ? await options.identityStore.resolveIdentityBinding({source: liveSession.source, connectorKey: liveSession.connectorKey, externalActorId: turn.externalActorId})

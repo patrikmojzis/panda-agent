@@ -368,6 +368,15 @@ agent_command_shim_lookup_route() {
     'whatsapp send')
       printf '%s\t%s\n' 'whatsapp.send' 'whatsapp send'
       ;;
+    'whatsapp call status')
+      printf '%s\t%s\n' 'whatsapp.call.status' 'whatsapp call status'
+      ;;
+    'whatsapp call send')
+      printf '%s\t%s\n' 'whatsapp.call.send' 'whatsapp call send'
+      ;;
+    'whatsapp call hangup')
+      printf '%s\t%s\n' 'whatsapp.call.hangup' 'whatsapp call hangup'
+      ;;
     'env list')
       printf '%s\t%s\n' 'env.list' 'env list'
       ;;
@@ -552,6 +561,9 @@ agent_command_shim_print_root_usage_commands() {
   panda whatsapp chat list --connector <key>
   panda whatsapp history --chat <jid-or-phone> --connector <key> [--direction inbound|outbound|all] [--limit <n>]
   panda whatsapp send --chat <jid-or-phone> --connector <key> (--text <text|@file|@->|--stdin|--image <path>|--file <path>)...
+  panda whatsapp call status [--connector <key>]
+  panda whatsapp call send --text <message> [--mode progress|final] [--call <id>] [--turn <id>] [--connector <key>]
+  panda whatsapp call hangup [--call <id>] [--turn <id>] [--connector <key>]
   panda env list [--prefix <prefix>]
   panda env set <key> (--stdin|--from-file <path>)
   panda env clear <key>
@@ -1830,6 +1842,36 @@ Detailed help is available only through the current agent command lease.
 Usage:
   panda whatsapp send --json @payload.json
 PANDA_COMMAND_HELP_whatsapp_send
+      ;;
+    'whatsapp.call.status')
+      cat <<'PANDA_COMMAND_HELP_whatsapp_call_status'
+Panda command: whatsapp.call.status
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda whatsapp call status --json @payload.json
+PANDA_COMMAND_HELP_whatsapp_call_status
+      ;;
+    'whatsapp.call.send')
+      cat <<'PANDA_COMMAND_HELP_whatsapp_call_send'
+Panda command: whatsapp.call.send
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda whatsapp call send --json @payload.json
+PANDA_COMMAND_HELP_whatsapp_call_send
+      ;;
+    'whatsapp.call.hangup')
+      cat <<'PANDA_COMMAND_HELP_whatsapp_call_hangup'
+Panda command: whatsapp.call.hangup
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda whatsapp call hangup --json @payload.json
+PANDA_COMMAND_HELP_whatsapp_call_hangup
       ;;
     'env.list')
       cat <<'PANDA_COMMAND_HELP_env_list'
@@ -4218,6 +4260,60 @@ PANDA_COMMAND_HELP_JSON_whatsapp_history
   "examples": []
 }
 PANDA_COMMAND_HELP_JSON_whatsapp_send
+      ;;
+    'whatsapp.call.status')
+      cat <<'PANDA_COMMAND_HELP_JSON_whatsapp_call_status'
+{
+  "name": "whatsapp.call.status",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda whatsapp call status --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_whatsapp_call_status
+      ;;
+    'whatsapp.call.send')
+      cat <<'PANDA_COMMAND_HELP_JSON_whatsapp_call_send'
+{
+  "name": "whatsapp.call.send",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda whatsapp call send --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_whatsapp_call_send
+      ;;
+    'whatsapp.call.hangup')
+      cat <<'PANDA_COMMAND_HELP_JSON_whatsapp_call_hangup'
+{
+  "name": "whatsapp.call.hangup",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda whatsapp call hangup --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_whatsapp_call_hangup
       ;;
     'env.list')
       cat <<'PANDA_COMMAND_HELP_JSON_env_list'
