@@ -1,6 +1,9 @@
 import {requireNonEmptyString} from "../../lib/strings.js";
 import type {ChannelTypingRequest} from "./types.js";
 
+/** Queue validity for transient typing presence; connector display duration is protocol-owned. */
+export const CHANNEL_TYPING_ACTION_TTL_MS = 10_000;
+
 export interface ChannelTypingAdapter {
   channel: string;
   send(request: ChannelTypingRequest): Promise<void>;

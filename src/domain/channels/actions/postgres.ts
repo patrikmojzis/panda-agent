@@ -40,6 +40,9 @@ export interface PostgresChannelActionStoreOptions {
 
 export const parseActionNotification: (payload: string) => ActionNotification | null = parseChannelNotification;
 
+const ACTION_EXPIRED_BEFORE_DISPATCH_ERROR = "Action expired before dispatch.";
+const MAX_CANDIDATES_PER_CLAIM = 100;
+
 function parseKind(value: unknown): ChannelActionKind {
   if (
     value === "typing"
@@ -58,7 +61,13 @@ function parseKind(value: unknown): ChannelActionKind {
 }
 
 function parseStatus(value: unknown): ChannelActionStatus {
-  if (value === "pending" || value === "sending" || value === "sent" || value === "failed") {
+  if (
+    value === "pending"
+    || value === "sending"
+    || value === "sent"
+    || value === "failed"
+    || value === "expired"
+  ) {
     return value;
   }
 
@@ -109,6 +118,18 @@ function readOptionalPayloadBoolean(
   return value;
 }
 
+function readOptionalPayloadTimestamp(
+  kind: ChannelActionKind,
+  value: unknown,
+  field: string,
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`Channel action ${kind} payload ${field} must be a finite timestamp.`);
+  }
+  return value;
+}
+
 function readOptionalRowString(value: unknown, field: string): string | undefined {
   return optionalTrimmedString(value, `Channel action ${field} must be a string.`);
 }
@@ -127,10 +148,12 @@ function parseTypingPayload(value: unknown): ChannelTypingRequest {
   }
 
   const externalActorId = readOptionalPayloadString(kind, target.externalActorId, "target external actor id");
+  const expiresAt = readOptionalPayloadTimestamp(kind, payload.expiresAt, "expiry");
   return {
     ...(typeof payload.threadId === "string" ? {threadId: payload.threadId} : {}),
     channel: readRequiredPayloadString(kind, payload.channel, "channel"),
     phase,
+    ...(expiresAt !== undefined ? {expiresAt} : {}),
     target: {
       source: readRequiredPayloadString(kind, target.source, "target source"),
       connectorKey: readRequiredPayloadString(kind, target.connectorKey, "target connector key"),
@@ -269,6 +292,7 @@ function parseRecord(row: Record<string, unknown>): ChannelActionRecord {
     lastError: readOptionalRowString(row.last_error, "last error"),
     claimedAt: optionalTimestampMillis(row.claimed_at, "Channel action claimed_at must be a finite timestamp."),
     completedAt: optionalTimestampMillis(row.completed_at, "Channel action completed_at must be a finite timestamp."),
+    expiresAt: optionalTimestampMillis(row.expires_at, "Channel action expires_at must be a finite timestamp."),
     createdAt: requireTimestampMillis(row.created_at, "Channel action created_at must be a finite timestamp."),
     updatedAt: requireTimestampMillis(row.updated_at, "Channel action updated_at must be a finite timestamp."),
   };
@@ -380,18 +404,42 @@ export class PostgresChannelActionStore {
     ]);
   }
 
+  private normalizeExpiration(expiresAt: number | undefined): string | null {
+    if (expiresAt === undefined) return null;
+    if (!Number.isFinite(expiresAt)) {
+      throw new Error("Channel action expiresAt must be a finite timestamp.");
+    }
+    return new Date(expiresAt).toISOString();
+  }
+
   async enqueueAction<K extends ChannelActionKind>(input: ChannelActionInput<K>): Promise<ChannelActionRecord<K>> {
     const channel = requireNonEmptyString(input.channel, "Channel action channel must not be empty.");
     const connectorKey = requireNonEmptyString(input.connectorKey, "Channel action connector key must not be empty.");
+    const expiration = this.normalizeExpiration(input.expiresAt);
     if (!input.sessionId && !input.threadId) {
       const global = await this.pool.query(`
         INSERT INTO ${this.tables.channelActions} (
-          id, channel, connector_key, kind, payload, status
-        ) VALUES ($1, $2, $3, $4, $5::jsonb, 'pending')
+          id, channel, connector_key, kind, payload, expires_at,
+          status, last_error, completed_at
+        ) VALUES (
+          $1, $2, $3, $4, $5::jsonb, $6::timestamptz,
+          CASE WHEN $6::timestamptz <= NOW() THEN 'expired' ELSE 'pending' END,
+          CASE WHEN $6::timestamptz <= NOW() THEN '${ACTION_EXPIRED_BEFORE_DISPATCH_ERROR}' END,
+          CASE WHEN $6::timestamptz <= NOW() THEN NOW() END
+        )
         RETURNING *
-      `, [randomUUID(), channel, connectorKey, input.kind, JSON.stringify(input.payload)]);
+      `, [
+        randomUUID(),
+        channel,
+        connectorKey,
+        input.kind,
+        JSON.stringify(input.payload),
+        expiration,
+      ]);
       const record = requireRecordKind(parseRecord(global.rows[0] as Record<string, unknown>), input.kind);
-      await this.notify({channel: record.channel, connectorKey: record.connectorKey});
+      if (record.status === "pending") {
+        await this.notify({channel: record.channel, connectorKey: record.connectorKey});
+      }
       return record;
     }
     const record = await withTransaction(this.pool, async (client) => {
@@ -414,8 +462,14 @@ export class PostgresChannelActionStore {
       if (lifecycleRow.archived_at !== null) throw new SessionArchivedError(ownerRow.session_id);
       const result = await client.query(`
         INSERT INTO ${this.tables.channelActions} (
-          id, session_id, thread_id, channel, connector_key, kind, payload, status
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,'pending')
+          id, session_id, thread_id, channel, connector_key, kind, payload,
+          expires_at, status, last_error, completed_at
+        ) VALUES (
+          $1,$2,$3,$4,$5,$6,$7::jsonb,$8::timestamptz,
+          CASE WHEN $8::timestamptz <= NOW() THEN 'expired' ELSE 'pending' END,
+          CASE WHEN $8::timestamptz <= NOW() THEN '${ACTION_EXPIRED_BEFORE_DISPATCH_ERROR}' END,
+          CASE WHEN $8::timestamptz <= NOW() THEN NOW() END
+        )
         RETURNING *
       `, [
         randomUUID(),
@@ -425,92 +479,139 @@ export class PostgresChannelActionStore {
         connectorKey,
         input.kind,
         JSON.stringify(input.payload),
+        expiration,
       ]);
       return requireRecordKind(parseRecord(result.rows[0] as Record<string, unknown>), input.kind);
     });
-    await this.notify({
-      channel: record.channel,
-      connectorKey: record.connectorKey,
-    });
+    if (record.status === "pending") {
+      await this.notify({
+        channel: record.channel,
+        connectorKey: record.connectorKey,
+      });
+    }
     return record;
   }
 
   async claimNextPendingAction(lookup: ActionWorkerLookup): Promise<ChannelActionRecord | null> {
     const normalized = normalizeChannelWorkerLookup(lookup, "Channel action");
+    // Idle reconciliation is the common path; avoid a three-statement
+    // transaction and pool checkout when the indexed queue is empty.
+    const pending = await this.pool.query(`
+      SELECT 1
+      FROM ${this.tables.channelActions}
+      WHERE channel = $1
+        AND connector_key = $2
+        AND status = 'pending'
+      LIMIT 1
+    `, [normalized.channel, normalized.connectorKey]);
+    if (!pending.rows[0]) return null;
+
     const client = await this.pool.connect();
 
     try {
-      // Real Postgres should skip already-locked rows so overlapping workers do not
-      // stall on the same oldest pending action. pg-mem does not parse SKIP LOCKED,
-      // so tests fall back to plain FOR UPDATE.
-      for (const useSkipLocked of [true, false] as const) {
-        let inTransaction = false;
-        try {
-          await client.query("BEGIN");
-          inTransaction = true;
+      let useSkipLocked = true;
+      let candidatesProcessed = 0;
+      while (candidatesProcessed < MAX_CANDIDATES_PER_CLAIM) {
+        let retryCandidate = true;
+        while (retryCandidate) {
+          retryCandidate = false;
+          let inTransaction = false;
+          try {
+            await client.query("BEGIN");
+            inTransaction = true;
 
-          const candidateResult = await client.query(`
-            SELECT id, session_id
-            FROM ${this.tables.channelActions}
-            WHERE channel = $1 AND connector_key = $2 AND status = 'pending'
-            ORDER BY created_at ASC, id ASC
-            LIMIT 1
-          `, [normalized.channel, normalized.connectorKey]);
-          const candidate = candidateResult.rows[0] as {id?: unknown; session_id?: unknown} | undefined;
-          if (!candidate || typeof candidate.id !== "string") {
-            await client.query("COMMIT");
-            return null;
-          }
-          if (typeof candidate.session_id === "string") {
-            const active = await client.query(`
-              SELECT id FROM ${this.sessionTables.sessions}
-              WHERE id = $1 AND archived_at IS NULL
-              FOR UPDATE
-            `, [candidate.session_id]);
-            if (!active.rows[0]) {
-              await client.query(`
-                UPDATE ${this.tables.channelActions}
-                SET status = 'failed', last_error = 'Session archived.', completed_at = NOW(), updated_at = NOW()
-                WHERE id = $1 AND status = 'pending'
-              `, [candidate.id]);
+            // Session lifecycle owns the session -> action lock order. Choose the
+            // candidate first, then preserve that order before locking the row.
+            const candidateResult = await client.query(`
+              SELECT id, session_id,
+                     expires_at IS NOT NULL AND expires_at <= NOW() AS deadline_expired
+              FROM ${this.tables.channelActions}
+              WHERE channel = $1
+                AND connector_key = $2
+                AND status = 'pending'
+              ORDER BY created_at ASC, id ASC
+              LIMIT 1
+            `, [normalized.channel, normalized.connectorKey]);
+            const candidate = candidateResult.rows[0] as Record<string, unknown> | undefined;
+            if (!candidate || typeof candidate.id !== "string") {
               await client.query("COMMIT");
               return null;
             }
-          }
-          const selectResult = await client.query(
-            buildLockPendingActionQuery(this.tables.channelActions, useSkipLocked),
-            [candidate.id],
-          );
-          const row = selectResult.rows[0];
-          if (!row) {
+            candidatesProcessed += 1;
+            if (candidate.deadline_expired === true) {
+              await client.query(`
+                UPDATE ${this.tables.channelActions}
+                SET status = 'expired',
+                    last_error = '${ACTION_EXPIRED_BEFORE_DISPATCH_ERROR}',
+                    completed_at = NOW(),
+                    updated_at = NOW()
+                WHERE id = $1
+                  AND status = 'pending'
+                  AND expires_at IS NOT NULL
+                  AND expires_at <= NOW()
+              `, [candidate.id]);
+              await client.query("COMMIT");
+              continue;
+            }
+            if (typeof candidate.session_id === "string") {
+              const active = await client.query(`
+                SELECT id FROM ${this.sessionTables.sessions}
+                WHERE id = $1 AND archived_at IS NULL
+                FOR UPDATE
+              `, [candidate.session_id]);
+              if (!active.rows[0]) {
+                await client.query(`
+                  UPDATE ${this.tables.channelActions}
+                  SET status = 'failed', last_error = 'Session archived.', completed_at = NOW(), updated_at = NOW()
+                  WHERE id = $1 AND status = 'pending'
+                `, [candidate.id]);
+                await client.query("COMMIT");
+                continue;
+              }
+            }
+            const locked = await client.query(
+              buildLockPendingActionQuery(this.tables.channelActions, useSkipLocked),
+              [candidate.id],
+            );
+            const lockedRow = locked.rows[0];
+            if (!lockedRow) {
+              await client.query("COMMIT");
+              return null;
+            }
+            const selected = parseRecord(lockedRow as Record<string, unknown>);
+
+            const updateResult = await client.query(`
+              UPDATE ${this.tables.channelActions}
+              SET status = 'sending',
+                  attempt_count = attempt_count + 1,
+                  claimed_at = NOW(),
+                  updated_at = NOW()
+              WHERE id = $1
+                AND status = 'pending'
+                AND (expires_at IS NULL OR expires_at > NOW())
+              RETURNING *
+            `, [selected.id]);
+            const updatedRow = updateResult.rows[0];
+            if (!updatedRow) {
+              await client.query("COMMIT");
+              continue;
+            }
+
             await client.query("COMMIT");
-            return null;
+            return parseRecord(updatedRow as Record<string, unknown>);
+          } catch (error) {
+            if (inTransaction) {
+              await client.query("ROLLBACK");
+            }
+
+            if (useSkipLocked && isSkipLockedSyntaxUnsupported(error)) {
+              useSkipLocked = false;
+              retryCandidate = true;
+              continue;
+            }
+
+            throw error;
           }
-          const selected = parseRecord(row as Record<string, unknown>);
-
-          const updateResult = await client.query(`
-            UPDATE ${this.tables.channelActions}
-            SET status = 'sending',
-                attempt_count = attempt_count + 1,
-                claimed_at = NOW(),
-                updated_at = NOW()
-            WHERE id = $1
-            RETURNING *
-          `, [selected.id]);
-
-          await client.query("COMMIT");
-          const updatedRow = updateResult.rows[0];
-          return updatedRow ? parseRecord(updatedRow as Record<string, unknown>) : null;
-        } catch (error) {
-          if (inTransaction) {
-            await client.query("ROLLBACK");
-          }
-
-          if (useSkipLocked && isSkipLockedSyntaxUnsupported(error)) {
-            continue;
-          }
-
-          throw error;
         }
       }
 
@@ -547,6 +648,25 @@ export class PostgresChannelActionStore {
       error,
     ]);
     return parseRecord(result.rows[0] as Record<string, unknown>);
+  }
+
+  async expireActionIfDue(id: string): Promise<ChannelActionRecord | null> {
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.channelActions}
+      SET status = 'expired',
+          attempt_count = GREATEST(attempt_count - 1, 0),
+          claimed_at = NULL,
+          completed_at = NOW(),
+          updated_at = NOW(),
+          last_error = '${ACTION_EXPIRED_BEFORE_DISPATCH_ERROR}'
+      WHERE id = $1
+        AND status = 'sending'
+        AND expires_at IS NOT NULL
+        AND expires_at <= NOW()
+      RETURNING *
+    `, [requireNonEmptyString(id, "Channel action id must not be empty.")]);
+    const row = result.rows[0];
+    return row ? parseRecord(row as Record<string, unknown>) : null;
   }
 
   async failSendingActions(lookup: ActionWorkerLookup, error: string): Promise<number> {

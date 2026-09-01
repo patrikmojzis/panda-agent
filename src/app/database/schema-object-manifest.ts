@@ -816,6 +816,7 @@ export const PANDA_EXPECTED_COLUMNS = Object.freeze([
   ["runtime","channel_actions","completed_at","timestamp with time zone","false","d41d8cd98f00b204e9800998ecf8427e","","",""],
   ["runtime","channel_actions","connector_key","text","true","d41d8cd98f00b204e9800998ecf8427e","","","default"],
   ["runtime","channel_actions","created_at","timestamp with time zone","true","75230039beb12ce952f24927f2bfa2f2","","",""],
+  ["runtime","channel_actions","expires_at","timestamp with time zone","false","d41d8cd98f00b204e9800998ecf8427e","","",""],
   ["runtime","channel_actions","id","uuid","true","d41d8cd98f00b204e9800998ecf8427e","","",""],
   ["runtime","channel_actions","kind","text","true","d41d8cd98f00b204e9800998ecf8427e","","","default"],
   ["runtime","channel_actions","last_error","text","false","d41d8cd98f00b204e9800998ecf8427e","","","default"],

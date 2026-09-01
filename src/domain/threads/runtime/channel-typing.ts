@@ -1,6 +1,7 @@
 import {resolveChannelRouteTarget, type ResolvedChannelRouteTarget} from "../../channels/route-target.js";
 import type {ChannelTypingTarget} from "../../channels/types.js";
 import type {ChannelTypingDispatcher} from "../../channels/typing.js";
+import {CHANNEL_TYPING_ACTION_TTL_MS} from "../../channels/typing.js";
 import type {ThreadRuntimeEvent} from "./coordinator.js";
 import type {ThreadMessageRecord} from "./types.js";
 
@@ -71,6 +72,7 @@ class ChannelTypingEventHandler {
       channel: resolved.channel,
       target: resolved.target,
       phase: "start",
+      expiresAt: Date.now() + CHANNEL_TYPING_ACTION_TTL_MS,
     });
     if (!started) {
       return;
@@ -117,6 +119,7 @@ class ChannelTypingEventHandler {
       channel: string;
       target: ChannelTypingTarget;
       phase: "start" | "keepalive" | "stop";
+      expiresAt?: number;
     },
   ): Promise<boolean> {
     try {

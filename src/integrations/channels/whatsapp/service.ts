@@ -243,6 +243,20 @@ export class WhatsAppService {
           message: error instanceof Error ? error.message : String(error),
         });
       },
+      onEvent: (event) => {
+        this.log(
+          event.type === "recovered_by_poll"
+            ? "channel_action_recovered_by_poll"
+            : "channel_action_expired",
+          {
+            actionId: event.action.id,
+            ageMs: event.ageMs,
+            cause: event.cause,
+            channel: event.action.channel,
+            kind: event.action.kind,
+          },
+        );
+      },
     });
   }
 

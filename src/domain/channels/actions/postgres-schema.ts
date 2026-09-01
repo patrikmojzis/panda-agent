@@ -25,6 +25,7 @@ export async function ensurePostgresChannelActionSchema(pool: PgQueryable): Prom
       last_error TEXT,
       claimed_at TIMESTAMPTZ,
       completed_at TIMESTAMPTZ,
+      expires_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
@@ -32,7 +33,8 @@ export async function ensurePostgresChannelActionSchema(pool: PgQueryable): Prom
   await pool.query(`
     ALTER TABLE ${tables.channelActions}
     ADD COLUMN IF NOT EXISTS session_id TEXT,
-    ADD COLUMN IF NOT EXISTS thread_id TEXT
+    ADD COLUMN IF NOT EXISTS thread_id TEXT,
+    ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ
   `);
   await pool.query(`
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_channel_actions_pending_idx`)}

@@ -16,10 +16,11 @@ class RecordingQueryable implements PgQueryable {
 describe("email recipient allow-rules migration", () => {
   it("hard-cuts legacy rows to typed address rules before exposing the new view", async () => {
     const ids = PANDA_SCHEMA_MIGRATIONS.map(({id}) => id);
-    expect(ids.at(-4)).toBe("0013_scheduled_commands");
-    expect(ids.at(-3)).toBe("0014_email_recipient_allow_rules");
-    expect(ids.at(-2)).toBe("0015_agent_live_voice");
-    expect(ids.at(-1)).toBe("0016_whatsapp_call_controls");
+    expect(ids.at(-5)).toBe("0013_scheduled_commands");
+    expect(ids.at(-4)).toBe("0014_email_recipient_allow_rules");
+    expect(ids.at(-3)).toBe("0015_agent_live_voice");
+    expect(ids.at(-2)).toBe("0016_whatsapp_call_controls");
+    expect(ids.at(-1)).toBe("0017_channel_action_expiry");
 
     const queryable = new RecordingQueryable();
     await EMAIL_RECIPIENT_ALLOW_RULES_MIGRATION.apply({queryable});

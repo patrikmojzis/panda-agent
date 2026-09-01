@@ -6,6 +6,7 @@ export {
 export {buildActionNotificationChannel} from "./postgres-shared.js";
 export {
   ChannelActionWorker,
+  DEFAULT_CHANNEL_ACTION_POLL_INTERVAL_MS,
   type ChannelActionWorkerOptions,
 } from "./worker.js";
 export type {

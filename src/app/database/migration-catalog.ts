@@ -17,6 +17,7 @@ import {SCHEDULED_COMMANDS_MIGRATION} from "./migrations/0013-scheduled-commands
 import {EMAIL_RECIPIENT_ALLOW_RULES_MIGRATION} from "./migrations/0014-email-recipient-allow-rules.js";
 import {AGENT_LIVE_VOICE_MIGRATION} from "./migrations/0015-agent-live-voice.js";
 import {WHATSAPP_CALL_CONTROLS_MIGRATION} from "./migrations/0016-whatsapp-call-controls.js";
+import {CHANNEL_ACTION_EXPIRY_MIGRATION} from "./migrations/0017-channel-action-expiry.js";
 import {reconcileReadonlySessionRole} from "./readonly-role.js";
 
 export const PANDA_SCHEMA_MIGRATIONS = Object.freeze([
@@ -36,6 +37,7 @@ export const PANDA_SCHEMA_MIGRATIONS = Object.freeze([
   EMAIL_RECIPIENT_ALLOW_RULES_MIGRATION,
   AGENT_LIVE_VOICE_MIGRATION,
   WHATSAPP_CALL_CONTROLS_MIGRATION,
+  CHANNEL_ACTION_EXPIRY_MIGRATION,
 ]);
 
 /** Entry points bundled by CI to prove every persisted checksum matches code. */
@@ -56,6 +58,7 @@ export const PANDA_SCHEMA_MIGRATION_SOURCES: Readonly<Record<string, string>> = 
   "0014_email_recipient_allow_rules": "src/app/database/migrations/0014-email-recipient-allow-rules.ts",
   "0015_agent_live_voice": "src/app/database/migrations/0015-agent-live-voice.ts",
   "0016_whatsapp_call_controls": "src/app/database/migrations/0016-whatsapp-call-controls.ts",
+  "0017_channel_action_expiry": "src/app/database/migrations/0017-channel-action-expiry.ts",
 });
 
 export interface CreatePandaSchemaMigratorOptions {

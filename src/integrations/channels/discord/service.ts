@@ -209,6 +209,7 @@ function createDefaultActionWorker(options: {
   connectorKey: string;
   store: PostgresChannelActionStore;
   onError: (error: unknown, actionId?: string) => void;
+  onEvent: ConstructorParameters<typeof ChannelActionWorker>[0]["onEvent"];
 }): DiscordServiceActionWorker {
   return new ChannelActionWorker({
     store: options.store,
@@ -226,6 +227,7 @@ function createDefaultActionWorker(options: {
       });
     },
     onError: options.onError,
+    onEvent: options.onEvent,
   });
 }
 
@@ -414,6 +416,20 @@ export class DiscordService {
           actionId: actionId ?? null,
           message: errorMessage(error, this.botTokenForRedaction),
         });
+      },
+      onEvent: (event) => {
+        this.log(
+          event.type === "recovered_by_poll"
+            ? "channel_action_recovered_by_poll"
+            : "channel_action_expired",
+          {
+            actionId: event.action.id,
+            ageMs: event.ageMs,
+            cause: event.cause,
+            channel: event.action.channel,
+            kind: event.action.kind,
+          },
+        );
       },
     })))(
       {

@@ -44,7 +44,7 @@ export interface ConnectorWorkerRuntimeHandle<
 }
 
 interface ConnectorWorkerNotificationTarget {
-  triggerDrain(): Promise<void>;
+  triggerDrain(cause?: "startup" | "notification" | "listener_reconnect"): Promise<void>;
 }
 
 export interface ConnectorWorkerRuntimeNotificationRegistration {
@@ -114,9 +114,14 @@ export function createConnectorOutboundWorker(
 
 function drainTarget(
   target: ConnectorWorkerNotificationTarget,
-  input: {connectorKey: string; kind: string; log: ConnectorWorkerLogger},
+  input: {
+    cause: "startup" | "notification" | "listener_reconnect";
+    connectorKey: string;
+    kind: string;
+    log: ConnectorWorkerLogger;
+  },
 ): void {
-  void target.triggerDrain().catch((error) => input.log("worker_notification_drain_failed", {
+  void target.triggerDrain(input.cause).catch((error) => input.log("worker_notification_drain_failed", {
     connectorKey: input.connectorKey,
     kind: input.kind,
     message: errorMessage(error),
@@ -159,23 +164,28 @@ export async function startConnectorDaemonRuntime(input: {
   let listener: PostgresNotificationListenerHandle | null = null;
   let closed = false;
 
-  const drainRegistration = (registration: ConnectorNotificationRegistration): void => {
+  const drainRegistration = (
+    registration: ConnectorNotificationRegistration,
+    cause: "startup" | "notification" | "listener_reconnect",
+  ): void => {
     drainTarget(registration.actionWorker, {
+      cause,
       connectorKey: registration.connectorKey,
       kind: "action",
       log: input.log,
     });
     drainTarget(registration.outboundWorker, {
+      cause,
       connectorKey: registration.connectorKey,
       kind: "delivery",
       log: input.log,
     });
     for (const [kind, target] of Object.entries(registration.additionalTargets)) {
-      drainTarget(target, {connectorKey: registration.connectorKey, kind, log: input.log});
+      drainTarget(target, {cause, connectorKey: registration.connectorKey, kind, log: input.log});
     }
   };
-  const drainAll = (): void => {
-    for (const registration of registrations.values()) drainRegistration(registration);
+  const drainAll = (cause: "listener_reconnect"): void => {
+    for (const registration of registrations.values()) drainRegistration(registration, cause);
   };
 
   const additionalChannels = (input.additionalNotifications ?? []).map((notification) => ({
@@ -187,7 +197,12 @@ export async function startConnectorDaemonRuntime(input: {
       if (!connectorKey) return;
       const registration = registrations.get(connectorKey);
       const target = registration?.additionalTargets[notification.key];
-      if (target) drainTarget(target, {connectorKey, kind: notification.key, log: input.log});
+      if (target) drainTarget(target, {
+        cause: "notification",
+        connectorKey,
+        kind: notification.key,
+        log: input.log,
+      });
     },
   }));
 
@@ -210,6 +225,7 @@ export async function startConnectorDaemonRuntime(input: {
         if (notification.channel !== input.source) return;
         const registration = registrations.get(notification.connectorKey);
         if (registration) drainTarget(registration.actionWorker, {
+          cause: "notification",
           connectorKey: notification.connectorKey,
           kind: "action",
           log: input.log,
@@ -219,6 +235,7 @@ export async function startConnectorDaemonRuntime(input: {
         if (notification.channel !== input.source) return;
         const registration = registrations.get(notification.connectorKey);
         if (registration) drainTarget(registration.outboundWorker, {
+          cause: "notification",
           connectorKey: notification.connectorKey,
           kind: "delivery",
           log: input.log,
@@ -229,7 +246,7 @@ export async function startConnectorDaemonRuntime(input: {
         source: input.source,
       }),
       onStateChange: async (snapshot) => {
-        if (snapshot.status === "listening") drainAll();
+        if (snapshot.status === "listening") drainAll("listener_reconnect");
       },
       reconnectDelayMs: input.reconnectDelayMs,
     });
@@ -250,7 +267,7 @@ export async function startConnectorDaemonRuntime(input: {
         additionalTargets: registrationInput.additionalTargets ?? {},
       };
       registrations.set(registrationInput.connectorKey, registration);
-      if (listener?.getSnapshot().listening) drainRegistration(registration);
+      if (listener?.getSnapshot().listening) drainRegistration(registration, "startup");
       return {
         unregister(): void {
           if (registrations.get(registrationInput.connectorKey) === registration) {

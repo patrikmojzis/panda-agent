@@ -98,6 +98,7 @@ export interface ChannelTypingRequest {
   channel: string;
   target: ChannelTypingTarget;
   phase: ChannelTypingPhase;
+  expiresAt?: number;
 }
 
 export interface OutboundSentItem {

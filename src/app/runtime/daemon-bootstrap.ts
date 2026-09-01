@@ -128,6 +128,7 @@ export async function bootstrapDaemonContext(
           connectorKey: request.target.connectorKey,
           kind: "typing",
           payload: request,
+          expiresAt: request.expiresAt,
         });
       },
     },
@@ -140,6 +141,7 @@ export async function bootstrapDaemonContext(
           connectorKey: request.target.connectorKey,
           kind: "typing",
           payload: request,
+          expiresAt: request.expiresAt,
         });
       },
     },

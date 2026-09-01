@@ -1,6 +1,6 @@
 import type {ChannelTypingRequest} from "../types.js";
 
-export type ChannelActionStatus = "pending" | "sending" | "sent" | "failed";
+export type ChannelActionStatus = "pending" | "sending" | "sent" | "failed" | "expired";
 
 export interface TelegramReactionActionPayload {
   conversationId: string;
@@ -74,6 +74,7 @@ export type ChannelActionInput<K extends ChannelActionKind = ChannelActionKind> 
     connectorKey: string;
     kind: Kind;
     payload: ChannelActionPayloadByKind[Kind];
+    expiresAt?: number;
   };
 }[K];
 
@@ -90,6 +91,7 @@ type ChannelActionRecordForKind<K extends ChannelActionKind> = {
   lastError?: string;
   claimedAt?: number;
   completedAt?: number;
+  expiresAt?: number;
   createdAt: number;
   updatedAt: number;
 };

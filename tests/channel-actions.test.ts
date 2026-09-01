@@ -170,6 +170,102 @@ describe("PostgresChannelActionStore", () => {
     });
   });
 
+  it("persists deadlines and terminalizes already-expired actions without an attempt", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const store = new PostgresChannelActionStore({pool});
+    await ensurePostgresChannelActionSchema(pool);
+    const futureExpiry = Date.now() + 60_000;
+    const pending = await store.enqueueAction({
+      channel: "telegram",
+      connectorKey: "bot-1",
+      kind: "typing",
+      payload: createTypingPayload("telegram", "bot-1"),
+      expiresAt: futureExpiry,
+    });
+    const expired = await store.enqueueAction({
+      channel: "telegram",
+      connectorKey: "bot-1",
+      kind: "typing",
+      payload: createTypingPayload("telegram", "bot-1"),
+      expiresAt: Date.now() - 1,
+    });
+
+    expect(pending).toMatchObject({status: "pending", expiresAt: futureExpiry});
+    expect(expired).toMatchObject({
+      status: "expired",
+      attemptCount: 0,
+      lastError: "Action expired before dispatch.",
+      completedAt: expect.any(Number),
+    });
+    await expect(store.enqueueAction({
+      channel: "telegram",
+      connectorKey: "bot-1",
+      kind: "typing",
+      payload: createTypingPayload("telegram", "bot-1"),
+      expiresAt: Number.NaN,
+    })).rejects.toThrow("Channel action expiresAt must be a finite timestamp.");
+  });
+
+  it("expires a stale head row and continues to the next dispatchable action", async () => {
+    const db = newDb();
+    db.public.registerFunction({
+      name: "pg_notify",
+      args: [DataType.text, DataType.text],
+      returns: DataType.text,
+      implementation: () => "",
+    });
+    const adapter = db.adapters.createPg();
+    const pool = new adapter.Pool();
+    pools.push(pool);
+
+    const store = new PostgresChannelActionStore({pool});
+    await ensurePostgresChannelActionSchema(pool);
+    await pool.query(`
+      INSERT INTO "runtime"."channel_actions" (
+        id, channel, connector_key, kind, payload, status, expires_at, created_at
+      ) VALUES (
+        '00000000-0000-0000-0000-000000000001',
+        'telegram',
+        'bot-1',
+        'typing',
+        $1::jsonb,
+        'pending',
+        NOW() - INTERVAL '1 second',
+        NOW() - INTERVAL '2 seconds'
+      )
+    `, [JSON.stringify(createTypingPayload("telegram", "bot-1"))]);
+    const valid = await store.enqueueAction({
+      channel: "telegram",
+      connectorKey: "bot-1",
+      kind: "telegram_reaction",
+      payload: {conversationId: "chat-1", messageId: "message-1", emoji: "👍"},
+    });
+
+    await expect(store.claimNextPendingAction({
+      channel: "telegram",
+      connectorKey: "bot-1",
+    })).resolves.toMatchObject({id: valid.id, status: "sending", attemptCount: 1});
+    await expect(pool.query(`
+      SELECT status, attempt_count, last_error
+      FROM "runtime"."channel_actions"
+      WHERE id = '00000000-0000-0000-0000-000000000001'
+    `)).resolves.toMatchObject({rows: [{
+      status: "expired",
+      attempt_count: 0,
+      last_error: "Action expired before dispatch.",
+    }]});
+  });
+
   it("round-trips telegram reaction payloads through persisted actions", async () => {
     const db = newDb();
     db.public.registerFunction({
@@ -401,6 +497,18 @@ describe("PostgresChannelActionStore", () => {
     await expect(badTimestamp.markActionSent("action-1")).rejects.toThrow(
       "Channel action updated_at must be a finite timestamp.",
     );
+
+    const badExpiry = new PostgresChannelActionStore({
+      pool: {
+        query: vi.fn(async () => ({
+          rows: [persistedActionRow({expires_at: "eventually"})],
+        })),
+        connect: vi.fn(),
+      },
+    });
+    await expect(badExpiry.markActionSent("action-1")).rejects.toThrow(
+      "Channel action expires_at must be a finite timestamp.",
+    );
   });
 
   it("marks abandoned sending actions as failed", async () => {
@@ -446,6 +554,21 @@ describe("PostgresChannelActionStore", () => {
     });
   });
 
+  it("keeps idle reconciliation to one indexed query without a pool checkout", async () => {
+    const query = vi.fn(async () => ({rows: []}));
+    const connect = vi.fn();
+    const store = new PostgresChannelActionStore({pool: {query, connect}});
+
+    await expect(store.claimNextPendingAction({
+      channel: "telegram",
+      connectorKey: "bot-1",
+    })).resolves.toBeNull();
+
+    expect(query).toHaveBeenCalledOnce();
+    expect(String(query.mock.calls[0]?.[0])).toContain("status = 'pending'");
+    expect(connect).not.toHaveBeenCalled();
+  });
+
   it("prefers SKIP LOCKED and falls back only for parser-limited adapters", async () => {
     const parserError = new Error("Unexpected kw_skip token: \"skip\"");
     const pendingRow = {
@@ -459,6 +582,7 @@ describe("PostgresChannelActionStore", () => {
       last_error: null,
       claimed_at: null,
       completed_at: null,
+      expires_at: null,
       created_at: new Date(1),
       updated_at: new Date(1),
     } as const;
@@ -477,7 +601,7 @@ describe("PostgresChannelActionStore", () => {
 
       if (text.includes("SELECT id, session_id")) {
         expect(values).toEqual(["telegram", "bot-1"]);
-        return {rows: [pendingRow]};
+        return {rows: [{id: "action-1", session_id: null, deadline_expired: false}]};
       }
 
       if (text.includes("FOR UPDATE SKIP LOCKED")) {
@@ -510,7 +634,7 @@ describe("PostgresChannelActionStore", () => {
       },
     };
     const pool: ChannelActionPool = {
-      query: vi.fn(),
+      query: vi.fn(async () => ({rows: [{exists: 1}]})),
       connect: vi.fn(async () => client),
     };
 
@@ -542,8 +666,8 @@ class MemoryActionStore {
       id: `action-${this.counter}`,
       status: "pending",
       attemptCount: 0,
-      createdAt: this.counter,
-      updatedAt: this.counter,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
       ...input,
     };
     this.actions.push(action);
@@ -578,6 +702,15 @@ class MemoryActionStore {
     const action = this.getAction(id);
     action.status = "failed";
     action.lastError = error;
+    return action;
+  }
+
+  async expireActionIfDue(id: string): Promise<ChannelActionRecord | null> {
+    const action = this.getAction(id);
+    if (action.expiresAt === undefined || action.expiresAt > Date.now()) return null;
+    action.status = "expired";
+    action.attemptCount = Math.max(0, action.attemptCount - 1);
+    action.lastError = "Action expired before dispatch.";
     return action;
   }
 
@@ -711,5 +844,156 @@ describe("ChannelActionWorker", () => {
     await worker.stop();
 
     expect(store.listener).toBeNull();
+  });
+
+  it("recovers a durable action by polling when no notification is delivered", async () => {
+    const store = new MemoryActionStore();
+    const dispatch = vi.fn(async () => {});
+    const onEvent = vi.fn();
+    const worker = new ChannelActionWorker({
+      store,
+      lookup: {channel: "telegram", connectorKey: "bot-1"},
+      dispatch,
+      onEvent,
+      pollIntervalMs: 10,
+    });
+
+    await worker.start({subscribeToNotifications: false});
+    await worker.triggerDrain("startup");
+    const action = await store.enqueueAction({
+      channel: "telegram",
+      connectorKey: "bot-1",
+      kind: "telegram_reaction",
+      payload: {conversationId: "chat-1", messageId: "message-1", emoji: "👍"},
+    });
+    await waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
+    await worker.stop();
+
+    expect(store.actions[0]).toMatchObject({id: action.id, status: "sent", attemptCount: 1});
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: "recovered_by_poll",
+      action: expect.objectContaining({id: action.id}),
+      cause: "poll",
+    }));
+  });
+
+  it("expires a claimed action at the last responsible moment without connector dispatch", async () => {
+    const store = new MemoryActionStore();
+    await store.enqueueAction({
+      channel: "telegram",
+      connectorKey: "bot-1",
+      kind: "typing",
+      payload: createTypingPayload("telegram", "bot-1"),
+      expiresAt: 999,
+    });
+    const dispatch = vi.fn(async () => {});
+    const onEvent = vi.fn();
+    const worker = new ChannelActionWorker({
+      store,
+      lookup: {channel: "telegram", connectorKey: "bot-1"},
+      dispatch,
+      onEvent,
+    });
+
+    await worker.start();
+    await waitFor(() => expect(store.actions[0]?.status).toBe("expired"));
+    await worker.stop();
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(store.actions[0]).toMatchObject({
+      status: "expired",
+      attemptCount: 0,
+      lastError: "Action expired before dispatch.",
+    });
+    expect(onEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: "expired_before_dispatch",
+      cause: "startup",
+    }));
+  });
+
+  it("coalesces overlapping notification and poll wakes into one dispatch", async () => {
+    const store = new MemoryActionStore();
+    const dispatch = vi.fn(async () => {});
+    const worker = new ChannelActionWorker({
+      store,
+      lookup: {channel: "telegram", connectorKey: "bot-1"},
+      dispatch,
+      pollIntervalMs: 60_000,
+    });
+
+    await worker.start({subscribeToNotifications: false});
+    await worker.triggerDrain("startup");
+    await store.enqueueAction({
+      channel: "telegram",
+      connectorKey: "bot-1",
+      kind: "telegram_reaction",
+      payload: {conversationId: "chat-1", messageId: "message-1", emoji: "👍"},
+    });
+    await Promise.all([
+      worker.triggerDrain("notification"),
+      worker.triggerDrain("poll"),
+    ]);
+    await worker.stop();
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(store.actions[0]).toMatchObject({status: "sent", attemptCount: 1});
+  });
+
+  it("cancels future polling after stop", async () => {
+    const store = new MemoryActionStore();
+    const dispatch = vi.fn(async () => {});
+    const worker = new ChannelActionWorker({
+      store,
+      lookup: {channel: "telegram", connectorKey: "bot-1"},
+      dispatch,
+      pollIntervalMs: 10,
+    });
+
+    await worker.start({subscribeToNotifications: false});
+    await worker.triggerDrain("startup");
+    await worker.stop();
+    await store.enqueueAction({
+      channel: "telegram",
+      connectorKey: "bot-1",
+      kind: "telegram_reaction",
+      payload: {conversationId: "chat-1", messageId: "message-1", emoji: "👍"},
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(store.actions[0]?.status).toBe("pending");
+  });
+
+  it("waits for an in-flight dispatch before stopping", async () => {
+    const store = new MemoryActionStore();
+    await store.enqueueAction({
+      channel: "telegram",
+      connectorKey: "bot-1",
+      kind: "telegram_reaction",
+      payload: {conversationId: "chat-1", messageId: "message-1", emoji: "👍"},
+    });
+    let releaseDispatch!: () => void;
+    const dispatchStarted = new Promise<void>((resolve) => {
+      releaseDispatch = resolve;
+    });
+    const dispatch = vi.fn(async () => dispatchStarted);
+    const worker = new ChannelActionWorker({
+      store,
+      lookup: {channel: "telegram", connectorKey: "bot-1"},
+      dispatch,
+    });
+
+    await worker.start();
+    await waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
+    let stopped = false;
+    const stopping = worker.stop().then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    releaseDispatch();
+    await stopping;
+
+    expect(store.actions[0]?.status).toBe("sent");
   });
 });

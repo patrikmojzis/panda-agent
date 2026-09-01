@@ -4,6 +4,7 @@ export interface DrainLoopOptions {
   label: string;
   drain(): Promise<void>;
   pollIntervalMs?: number;
+  onPoll?: () => void;
   onError?: (error: unknown) => Promise<void> | void;
 }
 
@@ -14,6 +15,7 @@ export class DrainLoop {
   private readonly label: string;
   private readonly drainFn: () => Promise<void>;
   private readonly pollIntervalMs?: number;
+  private readonly onPoll?: () => void;
   private readonly onError?: (error: unknown) => Promise<void> | void;
 
   private timer: NodeJS.Timeout | null = null;
@@ -25,6 +27,7 @@ export class DrainLoop {
     this.label = options.label;
     this.drainFn = options.drain;
     this.pollIntervalMs = options.pollIntervalMs;
+    this.onPoll = options.onPoll;
     this.onError = options.onError;
   }
 
@@ -41,6 +44,7 @@ export class DrainLoop {
     this.pendingDrain = false;
     if (this.pollIntervalMs !== undefined) {
       this.timer = setInterval(() => {
+        this.onPoll?.();
         this.kick();
       }, this.pollIntervalMs);
       this.timer.unref?.();

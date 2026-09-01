@@ -131,6 +131,7 @@ describe("channel typing core", () => {
 
 describe("createChannelTypingEventHandler", () => {
   it("starts typing once on inputs_applied and keeps run-finish cleanup local", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_000);
     const send = vi.fn(async () => {});
     const handler = createChannelTypingEventHandler(new ChannelTypingDispatcher([{
       channel: "telegram",
@@ -154,6 +155,7 @@ describe("createChannelTypingEventHandler", () => {
         externalActorId: "user-1",
       },
       phase: "start",
+      expiresAt: 11_000,
     });
 
     await handler(createRunFinishedEvent());
@@ -162,6 +164,7 @@ describe("createChannelTypingEventHandler", () => {
   });
 
   it("re-targets typing within the same run without emitting a visible stop", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(1_000);
     const send = vi.fn(async () => {});
     const handler = createChannelTypingEventHandler(new ChannelTypingDispatcher([{
       channel: "telegram",
@@ -202,6 +205,7 @@ describe("createChannelTypingEventHandler", () => {
           externalActorId: "user-1",
         },
         phase: "start",
+        expiresAt: 11_000,
       }],
       [{
         threadId: "thread-1",
@@ -213,6 +217,7 @@ describe("createChannelTypingEventHandler", () => {
           externalActorId: "user-2",
         },
         phase: "start",
+        expiresAt: 11_000,
       }],
     ]);
   });

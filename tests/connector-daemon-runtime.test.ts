@@ -106,6 +106,12 @@ describe("connector daemon runtime", () => {
       expect(two.outboundWorker.triggerDrain).toHaveBeenCalledTimes(2);
       expect(two.voice.triggerDrain).toHaveBeenCalledTimes(2);
     });
+    expect(one.actionWorker.triggerDrain).toHaveBeenNthCalledWith(1, "startup");
+    expect(one.actionWorker.triggerDrain).toHaveBeenNthCalledWith(2, "notification");
+    expect(two.outboundWorker.triggerDrain).toHaveBeenNthCalledWith(1, "startup");
+    expect(two.outboundWorker.triggerDrain).toHaveBeenNthCalledWith(2, "notification");
+    expect(two.voice.triggerDrain).toHaveBeenNthCalledWith(1, "startup");
+    expect(two.voice.triggerDrain).toHaveBeenNthCalledWith(2, "notification");
 
     oneRegistration.unregister();
     const replacement = {actionWorker: target(), outboundWorker: target()};
@@ -123,6 +129,8 @@ describe("connector daemon runtime", () => {
       expect(replacement.actionWorker.triggerDrain).toHaveBeenCalledTimes(3);
       expect(two.actionWorker.triggerDrain).toHaveBeenCalledTimes(2);
     });
+    expect(replacement.actionWorker.triggerDrain).toHaveBeenNthCalledWith(3, "listener_reconnect");
+    expect(two.actionWorker.triggerDrain).toHaveBeenNthCalledWith(2, "listener_reconnect");
 
     await runtime.close();
     await runtime.close();

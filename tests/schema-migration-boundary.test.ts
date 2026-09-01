@@ -53,6 +53,7 @@ describe("database migration boundary", () => {
       "app/database/migrations/0014-email-recipient-allow-rules.ts",
       "app/database/migrations/0015-agent-live-voice.ts",
       "app/database/migrations/0016-whatsapp-call-controls.ts",
+      "app/database/migrations/0017-channel-action-expiry.ts",
       "app/database/readonly-role.ts",
       "domain/threads/requests/postgres-operation-schema.ts",
       "lib/postgres-migrations.ts",
