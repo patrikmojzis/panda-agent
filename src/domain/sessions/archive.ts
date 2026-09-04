@@ -130,6 +130,9 @@ export class PostgresSessionArchive {
             updated_at = NOW()
         WHERE session_id = $1
       `, [input.sessionId]);
+      await client.query(`
+        DELETE FROM "runtime"."session_compaction_requests" WHERE session_id = $1
+      `, [input.sessionId]);
 
       const cancelledTaskRuns = await client.query(`
         UPDATE ${taskTables.scheduledTaskRuns}

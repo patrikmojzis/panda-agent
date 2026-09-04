@@ -240,6 +240,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
   );
   const coordinator = new ThreadRuntimeCoordinator({
     store: runtime.store,
+    sessionCompactionRequests: runtime.sessionCompactionRequests,
     maxConcurrentRuns: readPositiveIntegerEnv(
       "PANDA_CORE_THREAD_RUN_CONCURRENCY",
       DEFAULT_THREAD_RUN_CONCURRENCY,

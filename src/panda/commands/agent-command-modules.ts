@@ -136,6 +136,8 @@ import {
   sessionPromptTransformCommandDescriptor,
   type SessionPromptCommandStore,
 } from "../../domain/sessions/prompt-commands.js";
+import {createSessionCompactCommand, sessionCompactCommandDescriptor} from "../../domain/sessions/compaction-commands.js";
+import type {SessionCompactionStore} from "../../domain/sessions/compaction.js";
 import {
   createTodoAddCommand,
   createTodoBlockCommand,
@@ -474,6 +476,7 @@ export interface AgentCommandModuleDependencies {
   sessionTodos?: SessionTodoCommandStore;
   sessionHeartbeats?: Pick<SessionStore, "getHeartbeat" | "updateHeartbeatConfig">;
   heartbeatBounds?: HeartbeatCadenceBounds;
+  sessionCompactionRequests?: Pick<SessionCompactionStore, "request">;
   subagentProfiles?: SubagentProfileCommandStore;
   subagentInventory?: SubagentInventoryReader;
   credentials?: EnvCommandService;
@@ -1250,6 +1253,15 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
     "@payload.json",
     agentCommandPolicy(["operate"]),
     (dependencies) => createSessionPromptReadCommand(requireSessionPrompts(dependencies)),
+  ),
+  agentCommandModule(
+    sessionCompactCommandDescriptor,
+    ["session", "compact", "current"],
+    "{}",
+    agentCommandPolicy(["core"]),
+    (dependencies) => dependencies.sessionCompactionRequests
+      ? createSessionCompactCommand(dependencies.sessionCompactionRequests)
+      : null,
   ),
   agentCommandModule(
     sessionPromptSetCommandDescriptor,

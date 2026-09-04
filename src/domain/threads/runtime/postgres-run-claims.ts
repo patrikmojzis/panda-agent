@@ -396,7 +396,7 @@ async function failOwnedThreadRunWithWakePolicy(
       WHERE run.id = active_run.id
       RETURNING run.*
     ), changed_threads AS (
-      -- Normal failure re-arms only an admitted pending cutoff. A claim that
+      -- Normal failure re-arms admitted input or unfinished session compaction. A claim that
       -- never reached execution must also restore a consumed wake-only edge.
       -- Input rows stay immutable; an explicit abort leaves both dormant.
       SELECT thread.id AS thread_id, thread.session_id
@@ -409,6 +409,10 @@ async function failOwnedThreadRunWithWakePolicy(
       WHERE active_run.abort_requested_at IS NULL
         AND (
           $4::boolean
+          OR EXISTS (
+            SELECT 1 FROM "runtime"."session_compaction_requests" AS compaction
+            WHERE compaction.session_id = thread.session_id
+          )
           OR EXISTS (
             SELECT 1
             FROM ${input.tables.inputs} AS pending_input
@@ -510,14 +514,17 @@ export async function failOrphanedThreadRuns(input: {
        AND session.current_thread_id = thread.id
        AND session.archived_at IS NULL
       WHERE failed_runs.abort_requested_at IS NULL
-        AND EXISTS (
+        AND (EXISTS (
           SELECT 1
           FROM ${input.tables.inputs} AS pending_input
           WHERE pending_input.thread_id = failed_runs.thread_id
             AND pending_input.applied_at IS NULL
             AND pending_input.discarded_at IS NULL
             AND pending_input.input_order <= failed_runs.admitted_through_input_order
-        )
+        ) OR EXISTS (
+          SELECT 1 FROM "runtime"."session_compaction_requests" AS compaction
+          WHERE compaction.session_id = thread.session_id
+        ))
     ), woken_sessions AS (
       INSERT INTO ${input.sessionTables.sessionRuntimeConfig} (
         session_id,

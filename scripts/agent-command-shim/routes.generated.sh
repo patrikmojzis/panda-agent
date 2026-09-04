@@ -212,6 +212,9 @@ agent_command_shim_lookup_route() {
     'session prompt current read')
       printf '%s\t%s\n' 'session.prompt.read' 'session prompt current read'
       ;;
+    'session compact current')
+      printf '%s\t%s\n' 'session.compact' 'session compact current'
+      ;;
     'session prompt current set')
       printf '%s\t%s\n' 'session.prompt.set' 'session prompt current set'
       ;;
@@ -515,6 +518,7 @@ agent_command_shim_print_root_usage_commands() {
   panda wiki fetch asset <asset-path>
   panda wiki delete asset <asset-path> --yes
   panda session prompt current read <brief|memory|heartbeat> [--raw]
+  panda session compact current [--instructions <text>]
   panda session prompt current set <brief|memory|heartbeat> --content <text|@file|@->
   panda session prompt current transform <brief|memory|heartbeat> (--append <text|@file|@->|--prepend <text|@file|@->|--replace <pattern> --with <text|@file|@->|--expression <expr|@file|@->)
   panda todo add <text|@file|@-> [--status pending|in_progress|blocked]
@@ -1330,6 +1334,16 @@ Detailed help is available only through the current agent command lease.
 Usage:
   panda session prompt current read --json @payload.json
 PANDA_COMMAND_HELP_session_prompt_read
+      ;;
+    'session.compact')
+      cat <<'PANDA_COMMAND_HELP_session_compact'
+Panda command: session.compact
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda session compact current --json @payload.json
+PANDA_COMMAND_HELP_session_compact
       ;;
     'session.prompt.set')
       cat <<'PANDA_COMMAND_HELP_session_prompt_set'
@@ -3352,6 +3366,24 @@ PANDA_COMMAND_HELP_JSON_wiki_delete_asset
   "examples": []
 }
 PANDA_COMMAND_HELP_JSON_session_prompt_read
+      ;;
+    'session.compact')
+      cat <<'PANDA_COMMAND_HELP_JSON_session_compact'
+{
+  "name": "session.compact",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda session compact current --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_session_compact
       ;;
     'session.prompt.set')
       cat <<'PANDA_COMMAND_HELP_JSON_session_prompt_set'

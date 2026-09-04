@@ -18,6 +18,7 @@ import {EMAIL_RECIPIENT_ALLOW_RULES_MIGRATION} from "./migrations/0014-email-rec
 import {AGENT_LIVE_VOICE_MIGRATION} from "./migrations/0015-agent-live-voice.js";
 import {WHATSAPP_CALL_CONTROLS_MIGRATION} from "./migrations/0016-whatsapp-call-controls.js";
 import {CHANNEL_ACTION_EXPIRY_MIGRATION} from "./migrations/0017-channel-action-expiry.js";
+import {SESSION_COMPACTION_REQUESTS_MIGRATION} from "./migrations/0018-session-compaction-requests.js";
 import {HEARTBEAT_CADENCE_MIGRATION} from "./migrations/0019-heartbeat-cadence.js";
 import {reconcileReadonlySessionRole} from "./readonly-role.js";
 
@@ -39,6 +40,7 @@ export const PANDA_SCHEMA_MIGRATIONS = Object.freeze([
   AGENT_LIVE_VOICE_MIGRATION,
   WHATSAPP_CALL_CONTROLS_MIGRATION,
   CHANNEL_ACTION_EXPIRY_MIGRATION,
+  SESSION_COMPACTION_REQUESTS_MIGRATION,
   HEARTBEAT_CADENCE_MIGRATION,
 ]);
 
@@ -61,6 +63,7 @@ export const PANDA_SCHEMA_MIGRATION_SOURCES: Readonly<Record<string, string>> = 
   "0015_agent_live_voice": "src/app/database/migrations/0015-agent-live-voice.ts",
   "0016_whatsapp_call_controls": "src/app/database/migrations/0016-whatsapp-call-controls.ts",
   "0017_channel_action_expiry": "src/app/database/migrations/0017-channel-action-expiry.ts",
+  "0018_session_compaction_requests": "src/app/database/migrations/0018-session-compaction-requests.ts",
   "0019_heartbeat_cadence": "src/app/database/migrations/0019-heartbeat-cadence.ts",
 });
 

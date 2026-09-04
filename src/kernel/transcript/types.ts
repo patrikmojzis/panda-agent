@@ -42,6 +42,8 @@ export type CompactBoundaryMetadata = JsonObject & {
   tokensBefore: number | null;
   tokensAfter: number | null;
   diagnostics?: CompactAttemptDiagnostics;
+  /** Opaque runtime-owned provenance restored when older inputs leave replay. */
+  replayContext?: JsonObject;
 };
 
 export type CompactFailureNoticeMetadata = JsonObject & {

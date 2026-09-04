@@ -1,4 +1,5 @@
 import type {Message, ThinkingLevel} from "@earendil-works/pi-ai";
+import type {JsonObject} from "../../lib/json.js";
 
 import {PiAiRuntime} from "../../integrations/providers/shared/runtime.js";
 import {formatToolCallFallback, formatToolResultFallback} from "../agent/tool.js";
@@ -8,7 +9,7 @@ import {stringToUserMessage} from "../agent/helpers/input.js";
 import {joinMessageTextParts} from "../agent/helpers/message-text.js";
 import {resolveModelRuntimeBudget} from "../models/model-context-policy.js";
 import {resolveModelSelector} from "../models/model-selector.js";
-import {renderCompactionPrompt} from "../../prompts/runtime/compaction.js";
+import {COMPACT_PRESERVED_REQUEST_PREFIX, renderCompactionPrompt} from "../../prompts/runtime/compaction.js";
 import {readMissingApiKeyMessage} from "../../integrations/providers/shared/missing-api-key.js";
 import type {LlmRuntime} from "../agent/runtime.js";
 import {estimateReplayMessageTokens, estimateVisibleMessageTokens} from "./token-estimation.js";
@@ -44,6 +45,7 @@ export interface CompactTranscriptSplit {
   summaryRecords: readonly ThreadMessageRecord[];
   preservedTail: readonly ThreadMessageRecord[];
   compactedThroughSequence: number;
+  preservedRequest?: Extract<Message, {role: "user"}>;
 }
 
 export interface CompactThreadOptions {
@@ -64,6 +66,10 @@ export interface CompactThreadOptions {
   owningRunId?: string;
   runtime?: Pick<LlmRuntime, "complete">;
   signal?: AbortSignal;
+  /** Agent-requested compaction may cut a long turn between complete tool exchanges. */
+  allowPartialTurn?: boolean;
+  replayContext?: JsonObject;
+  preservedRequest?: Extract<Message, {role: "user"}>;
 }
 
 export interface CompactThreadResult {
@@ -140,6 +146,54 @@ export function splitTranscriptForCompaction(
     summaryRecords,
     preservedTail,
     compactedThroughSequence: lastSummarized.sequence,
+  };
+}
+
+/** Keeps recent complete exchanges and carries the latest task request into the checkpoint verbatim. */
+function splitLongTurnForCompaction(
+  transcript: readonly ThreadMessageRecord[],
+  previousRequest?: Extract<Message, {role: "user"}>,
+): CompactTranscriptSplit | null {
+  const boundaries: number[] = [];
+  const pendingCalls = new Set<string>();
+  let latestRequest = previousRequest;
+  let latestRequestIndex = -1;
+  for (const [index, record] of transcript.entries()) {
+    if (record.source === "compact") continue;
+    const message = record.message;
+    if (message.role === "user" && record.origin === "input") {
+      latestRequest = message;
+      latestRequestIndex = index;
+    }
+    if (message.role === "assistant") {
+      if (pendingCalls.size === 0) boundaries.push(index);
+      for (const block of message.content) {
+        if (block.type === "toolCall") pendingCalls.add(block.id);
+      }
+    } else if (message.role === "toolResult") {
+      pendingCalls.delete(message.toolCallId);
+    }
+  }
+  // Retain two complete assistant exchanges. An unfinished batch must never be compacted.
+  if (pendingCalls.size > 0 || boundaries.length < 3) return null;
+  const cutoff = boundaries[boundaries.length - 2]!;
+  return {
+    summaryRecords: transcript.slice(0, cutoff),
+    preservedTail: transcript.slice(cutoff),
+    compactedThroughSequence: transcript[cutoff - 1]!.sequence,
+    ...(latestRequest && latestRequestIndex < cutoff ? {preservedRequest: latestRequest} : {}),
+  };
+}
+
+function buildCheckpointMessage(summary: string, request?: Extract<Message, {role: "user"}>) {
+  const message = createCompactBoundaryMessage(summary);
+  if (!request) return message;
+  const prefix = `${message.content}${COMPACT_PRESERVED_REQUEST_PREFIX}`;
+  return {
+    ...message,
+    content: typeof request.content === "string"
+      ? `${prefix}${request.content}`
+      : [{type: "text" as const, text: prefix}, ...request.content],
   };
 }
 
@@ -443,7 +497,9 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
     activeTranscript,
     activeTranscriptTokens: tokensBefore,
   });
-  const split = splitTranscriptForCompaction(activeTranscript);
+  const split = options.allowPartialTurn
+    ? splitLongTurnForCompaction(activeTranscript, options.preservedRequest) ?? splitTranscriptForCompaction(activeTranscript)
+    : splitTranscriptForCompaction(activeTranscript);
   if (!split) {
     if (options.trigger === "auto") {
       throw new CompactThreadError("Not enough older context to compact while preserving the recent turns.", {
@@ -477,7 +533,13 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
     replayToolArtifacts: true,
   });
   const runtimeBudget = resolveModelRuntimeBudget(options.model);
-  const summaryTokenBudget = runtimeBudget.operatingWindow - preservedTailTokens;
+  const preservedRequestTokens = split.preservedRequest
+    ? estimateVisibleMessageTokens(buildCheckpointMessage("", split.preservedRequest))
+    : 0;
+  const summaryTokenBudget = Math.min(
+    runtimeBudget.operatingWindow - preservedTailTokens - preservedRequestTokens,
+    ...(options.allowPartialTurn ? [Math.max(1, Math.floor((tokensBefore - preservedTailTokens - preservedRequestTokens) / 2))] : []),
+  );
   const splitDiagnostics: CompactAttemptDiagnostics = {
     ...baseDiagnostics,
     summaryRecordCount: split.summaryRecords.length,
@@ -511,9 +573,9 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
   options.signal?.throwIfAborted();
   const {summary} = summaryResult;
 
-  const compactMessage = createCompactBoundaryMessage(summary);
+  const compactMessage = buildCheckpointMessage(summary, split.preservedRequest);
   const summaryTokens = estimateVisibleMessageTokens(compactMessage);
-  if (summaryTokens > summaryTokenBudget) {
+  if (summaryTokens > summaryTokenBudget + preservedRequestTokens) {
     throw new CompactThreadError(
       "Compaction summary was too large to fit alongside the preserved recent turns. Try stricter instructions or use a model policy with a larger operating window.",
       {
@@ -525,18 +587,23 @@ export async function compactThread(options: CompactThreadOptions): Promise<Comp
   }
 
   const tokensAfter = summaryTokens + preservedTailTokens;
+  if (options.allowPartialTurn && tokensAfter >= tokensBefore) return null;
   const diagnostics: CompactAttemptDiagnostics = {
     ...summaryResult.diagnostics,
     parsedSummaryChars: summary.length,
   };
+  const replayContext = options.replayContext ?? activeTranscript.find(isCompactBoundaryRecord)?.metadata.replayContext;
   const metadata: CompactBoundaryMetadata = {
     kind: "compact_boundary",
     compactedThroughSequence: split.compactedThroughSequence,
-    preservedTailUserTurns: DEFAULT_COMPACT_PRESERVED_USER_TURNS,
+    preservedTailUserTurns: options.allowPartialTurn
+      ? split.preservedTail.filter((record) => record.message.role === "user" && record.source !== "compact").length
+      : DEFAULT_COMPACT_PRESERVED_USER_TURNS,
     trigger: options.trigger,
     tokensBefore,
     tokensAfter,
     diagnostics,
+    ...(replayContext ? {replayContext} : {}),
   };
 
   const record = await options.store.commitCompaction(options.thread.id, {

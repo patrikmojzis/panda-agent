@@ -549,6 +549,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
       toolPolicy: {
         allowedTools: expect.arrayContaining([
           "bash",
+          "session.compact",
           "view_media",
           "mcp.*",
           "discord.voice.join",

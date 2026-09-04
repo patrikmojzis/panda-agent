@@ -152,6 +152,36 @@ transcript, and audit history remain editable and preserved throughout.
 The exact boundary is recorded in
 [ADR 0002](./adr/0002-session-archive-lifecycle.md).
 
+## Agent-requested compaction
+
+`panda session compact current [--instructions <text>]` is the `session.compact`
+CLI Tool in the `core` group. Its authenticated run scope selects the session;
+the input accepts only optional instructions, capped at 4096 characters.
+
+The command durably records one pending request per session and returns
+`{status: "requested", applyAt: "next_model_boundary"}` immediately. Repeated
+requests while one is pending retain the first request and its instructions.
+The coordinator handles it after tool results are persisted, before the next
+model call, using the owning run's compaction fence. It then reloads replay and
+continues the task. It never waits for its own exclusive scheduler lane.
+
+The runtime records a `compacted`, `skipped`, or `failed` outcome in the transcript.
+Compacted outcomes include estimated transcript tokens before and after. Full
+history remains append-only. A checkpoint receipt makes an interrupted commit
+replayable; outcome insertion and pending-request removal are atomic. Non-abort
+run failure and orphan recovery rearm the normal session wake latch when a
+request remains. Reset preserves the request; the next run resolves the current
+thread. An explicit abort does not restart work. Archiving clears the request.
+
+Agent-requested compaction can summarize part of a long turn, retaining the two
+latest complete assistant exchanges and carrying the latest task request,
+including image content, verbatim into the checkpoint. Incomplete tool batches
+are not split. Checkpoint replay context retains input identity and reply-route
+provenance; repeated compaction retrieves the original task by its message id.
+A summary that does not reduce estimated context is skipped.
+Automatic compaction and operator compaction retain their existing six-user-turn
+policy.
+
 ## Routing
 
 External conversation binding is session-first:

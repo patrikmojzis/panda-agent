@@ -2,6 +2,9 @@ import type {Message, ThinkingLevel} from "@earendil-works/pi-ai";
 
 import {runInBackground, sleep, withFallbackTimeout} from "../../../lib/async.js";
 import {runThreadStep, Thread, type ThreadResumeState, type ThreadStepResult} from "../../../kernel/agent/thread.js";
+import {processSessionCompaction} from "./session-compaction.js";
+import {captureReplayContext, readRunInputContext} from "./input-context.js";
+import type {SessionCompactionStore} from "../../sessions/compaction.js";
 import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
 import {resolveModelRuntimeBudget} from "../../../kernel/models/model-context-policy.js";
 import {ContextWindowExceededError, ProviderRuntimeError} from "../../../kernel/agent/exceptions.js";
@@ -83,6 +86,7 @@ export function formatOrphanedRunRecoveryReason(input: {
 
 export interface ThreadRuntimeCoordinatorOptions {
   store: ThreadRuntimeStore;
+  sessionCompactionRequests?: Pick<SessionCompactionStore, "read" | "complete">;
   resolveDefinition: ThreadDefinitionResolver;
   maxConcurrentRuns: number;
   shutdownDrainTimeoutMs?: number;
@@ -160,68 +164,14 @@ function grantsIdleReroll(input: Pick<ThreadMessageRecord, "source">): boolean {
   return !IDLE_REROLL_SUPPRESSED_INPUT_SOURCES.has(input.source);
 }
 
-interface RunInputContext {
-  messageId: string;
-  source: string;
-  channelId?: string;
-  externalMessageId?: string;
-  actorId?: string;
-  identityId?: string;
-  metadata?: ThreadMessageRecord["metadata"];
-}
-
-function buildInputContext(entry: ThreadMessageRecord): RunInputContext {
-  return {
-    messageId: entry.id,
-    source: entry.source,
-    channelId: entry.channelId,
-    externalMessageId: entry.externalMessageId,
-    actorId: entry.actorId,
-    identityId: entry.identityId,
-    metadata: entry.metadata,
-  };
-}
-
-function hasRouteMetadata(entry: ThreadMessageRecord): boolean {
-  return isRecord(entry.metadata) && isRecord(entry.metadata.route);
-}
-
-function buildCurrentInputContext(
-  messages: readonly ThreadMessageRecord[],
-): RunInputContext | undefined {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const entry = messages[index];
-    if (!entry || entry.origin !== "input") {
-      continue;
-    }
-    return buildInputContext(entry);
-  }
-
-  return undefined;
-}
-
-function buildCurrentRouteInputContext(
-  messages: readonly ThreadMessageRecord[],
-): RunInputContext | undefined {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const entry = messages[index];
-    if (!entry || entry.origin !== "input" || !hasRouteMetadata(entry)) {
-      continue;
-    }
-    return buildInputContext(entry);
-  }
-
-  return undefined;
-}
-
 function buildRunContextValue(
   baseContext: unknown,
   messages: readonly ThreadMessageRecord[],
   runId?: string,
   routeMessages: readonly ThreadMessageRecord[] = messages,
 ): unknown {
-  const currentInput = buildCurrentInputContext(messages);
-  const currentRouteInput = buildCurrentRouteInputContext(routeMessages);
+  const currentInput = readRunInputContext(messages);
+  const currentRouteInput = readRunInputContext(routeMessages, true);
   if (!currentInput && !currentRouteInput && runId === undefined) {
     return baseContext;
   }
@@ -314,7 +264,7 @@ export class ThreadRuntimeCoordinator {
   private stopped = true;
   private closed = false;
 
-  constructor(options: ThreadRuntimeCoordinatorOptions) {
+  constructor(private readonly options: ThreadRuntimeCoordinatorOptions) {
     this.store = options.store;
     this.resolveDefinition = options.resolveDefinition;
     this.modelCallObserver = options.modelCallObserver;
@@ -1140,6 +1090,7 @@ export class ThreadRuntimeCoordinator {
         store: this.store,
         thread,
         transcript: options.transcript,
+        replayContext: captureReplayContext(options.transcript.records),
         model: modelConfig.model,
         thinking: modelConfig.thinking,
         trigger: "auto",
@@ -1182,6 +1133,7 @@ export class ThreadRuntimeCoordinator {
         store: this.store,
         thread: options.thread,
         transcript: options.transcript,
+        replayContext: captureReplayContext(options.transcript.records),
         model: modelConfig.model,
         thinking: modelConfig.thinking,
         trigger: "auto",
@@ -1397,6 +1349,24 @@ export class ThreadRuntimeCoordinator {
         const thread = await this.store.getThread(threadId);
         const definition = await this.resolveDefinition(thread);
         const transcript = await this.store.loadActiveTranscript(threadId);
+        if (this.options.sessionCompactionRequests) {
+          const compacted = await processSessionCompaction({
+            requests: this.options.sessionCompactionRequests,
+            threads: this.store,
+            thread,
+            run,
+            transcript,
+            ...this.resolveModelConfig(definition),
+            signal,
+          });
+          if (compacted) {
+            autoCompactionAttemptedThisRun = true;
+            if (compacted.message) {
+              await this.emit({type: "inputs_applied", threadId, runId: run.id, messages: [compacted.message]});
+            }
+            continue;
+          }
+        }
         const preflight = await this.handleAutoCompactionPreflight({
           run,
           thread,

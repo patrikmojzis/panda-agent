@@ -74,6 +74,7 @@ import {RuntimeCommandLeaseService} from "./command-leases.js";
 import {resolveRuntimeCommandScope} from "./command-scope.js";
 import {buildCommandServerBaseUrl, resolveOptionalCommandServerBinding} from "../../integrations/commands/config.js";
 import {buildRuntimeCommandDependencies} from "./command-dependencies.js";
+import {PostgresSessionCompactionStore} from "../../domain/sessions/compaction-postgres.js";
 import type {RuntimeOptions} from "./create-runtime.js";
 import {ExecutionEnvironmentResolver} from "./execution-environment-resolver.js";
 import {ExecutionEnvironmentLifecycleService} from "./execution-environment-service.js";
@@ -181,6 +182,7 @@ interface RuntimeBootstrapResult {
   executionEnvironmentService: ExecutionEnvironmentLifecycleService;
   identityStore: IdentityStore;
   sessionStore: SessionStore;
+  sessionCompactionRequests: PostgresSessionCompactionStore;
   subagentProfiles: SubagentProfileStore;
   store: ThreadRuntimeStore;
   shellStateStore: ThreadShellStateStore;
@@ -738,6 +740,7 @@ export async function bootstrapRuntime(
         pool: postgresPool,
     };
     const commandFileResolver = new RuntimeCommandFileResolver(process.env);
+    const sessionCompactionRequests = new PostgresSessionCompactionStore(postgresPool);
     const braveThrottleGate = new BraveThrottleGate();
     const commandDependencies = buildRuntimeCommandDependencies({
       env: process.env,
@@ -754,6 +757,7 @@ export async function bootstrapRuntime(
       sessionPrompts: sessionStore,
       sessionTodos: sessionStore,
       sessionHeartbeats: sessionStore,
+      sessionCompactionRequests,
       subagentProfiles,
       subagentInventory,
       credentials: credentialService ?? undefined,
@@ -851,6 +855,7 @@ export async function bootstrapRuntime(
       sessionStore,
       subagentProfiles,
       store,
+      sessionCompactionRequests,
       shellStateStore: store,
       scheduledTasks,
       scheduledCommands,

@@ -143,6 +143,7 @@ function defaultPersistentToolPolicy(session: Pick<SessionRecord, "kind">): Exec
       "heartbeat.show",
       "heartbeat.set",
       "session.prompt.read",
+      "session.compact",
       "session.prompt.set",
       "session.prompt.transform",
       "env.clear",

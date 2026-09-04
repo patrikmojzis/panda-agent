@@ -3483,6 +3483,7 @@ USAGE
 	      ""|--help|-h)
 	        cat <<'USAGE'
 Usage:
+  panda session compact current [--instructions <text>]
   panda session prompt current read --help [--json]
   panda session prompt current set --help [--json]
   panda session prompt current transform --help [--json]
@@ -3496,7 +3497,43 @@ USAGE
 	        exit 0
 	        ;;
 	    esac
-	    [ "${1:-}" = "prompt" ] || die "Unknown panda session command. Try: panda session prompt current read --help"
+	    if [ "${1:-}" = "compact" ]; then
+	      shift
+	      [ "${1:-}" = "current" ] || die "panda session compact targets current only."
+	      shift
+	      command_name="session.compact"
+	      payload='{}'
+	      input_set="false"
+	      while [ "$#" -gt 0 ]; do
+	        option="$1"
+	        shift
+	        case "$option" in
+	          --help|-h)
+	            if [ "${1:-}" = "--json" ]; then
+	              curl_command "$(command_url "/commands/${command_name}/help?format=json")"
+	            else
+	              curl_command "$(command_url "/commands/${command_name}/help")"
+	            fi
+	            exit $?
+	            ;;
+	          --instructions|--json)
+	            [ "$input_set" = "false" ] || die "Use --instructions or --json once."
+	            [ "$#" -gt 0 ] || die "panda session compact current ${option} requires a value."
+	            input_set="true"
+	            if [ "$option" = "--json" ]; then
+	              payload="$(read_json_input "$1")"
+	            else
+	              payload="$(jq -n --arg instructions "$1" '{instructions: $instructions}')"
+	            fi
+	            shift
+	            ;;
+	          *) die "Unknown panda session compact current option: $option" ;;
+	        esac
+	      done
+	      execute_json_command "$command_name" "$payload"
+	      exit $?
+	    fi
+	    [ "${1:-}" = "prompt" ] || die "Unknown panda session command. Try: panda session --help"
 	    shift
 	    [ "${1:-}" = "current" ] || die "Unknown panda session prompt command. Try: panda session prompt current read --help"
 	    shift

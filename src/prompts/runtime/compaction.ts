@@ -1,5 +1,19 @@
 export const COMPACT_SUMMARY_PREFIX = "[Conversation compacted. Summary of earlier context follows.]";
 
+export const COMPACT_PRESERVED_REQUEST_PREFIX = "\n\nMost recent task request (preserved verbatim):\n";
+export const SESSION_COMPACTION_SKIPPED_REASON = "No safe cut reduced the context. Continue working before requesting compaction again.";
+export const SESSION_COMPACTION_FAILED_REASON = "Compaction could not produce a usable summary. Existing context is intact; retry later or ask the operator to check model access.";
+
+export function renderSessionCompactionOutcome(outcome:
+  | {status: "compacted"; tokensBefore: number; tokensAfter: number}
+  | {status: "skipped" | "failed"; reason: string},
+): string {
+  const detail = outcome.status === "compacted"
+    ? `Estimated transcript tokens: ${outcome.tokensBefore} -> ${outcome.tokensAfter}.`
+    : outcome.reason;
+  return `[Session compaction ${outcome.status}. ${detail} Continue your unfinished work; compaction does not complete the task.]`;
+}
+
 export function renderCompactSummaryMessage(summary: string): string {
   const trimmed = summary.trim();
   return trimmed

@@ -26,6 +26,7 @@ export interface RuntimeCommandDependenciesInput {
   sessionPrompts: RequiredCommandDependency<"sessionPrompts">;
   sessionTodos: RequiredCommandDependency<"sessionTodos">;
   sessionHeartbeats: RequiredCommandDependency<"sessionHeartbeats">;
+  sessionCompactionRequests?: AgentCommandModuleDependencies["sessionCompactionRequests"];
   subagentProfiles: RequiredCommandDependency<"subagentProfiles">;
   subagentInventory: RequiredCommandDependency<"subagentInventory">;
   credentials?: AgentCommandModuleDependencies["credentials"];
@@ -93,6 +94,7 @@ export function buildRuntimeCommandDependencies(
     sessionTodos: input.sessionTodos,
     sessionHeartbeats: input.sessionHeartbeats,
     heartbeatBounds: resolveHeartbeatCadenceBounds(input.env),
+    sessionCompactionRequests: input.sessionCompactionRequests,
     subagentProfiles: input.subagentProfiles,
     subagentInventory: input.subagentInventory,
     credentials: input.credentials,

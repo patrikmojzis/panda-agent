@@ -15,7 +15,7 @@ interface SubagentToolGroupDefinition {
 
 export const SUBAGENT_TOOL_GROUP_DEFINITIONS = {
   core: {
-    description: "Universal command transport, local artifact preview, and parent A2A updates.",
+    description: "Universal command transport, session compaction, local artifact preview, and parent A2A updates.",
     nativeToolNames: [
       "bash",
       "background_job_status",

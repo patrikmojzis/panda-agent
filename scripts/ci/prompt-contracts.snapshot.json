@@ -1,10 +1,10 @@
 {
   "files": [
     {
-      "bytes": 140987,
-      "lines": 4711,
+      "bytes": 141939,
+      "lines": 4743,
       "path": "scripts/agent-command-shim/routes.generated.sh",
-      "sha256": "45b5027e491e795f9dc98bfcb14e327833149a1ea07146c49619932325006505"
+      "sha256": "8b739834359d4b6cda7f6501c19b16c14c09445cb0d3c3002aaac16ae184d78b"
     },
     {
       "bytes": 1166,
@@ -13,10 +13,10 @@
       "sha256": "5bdd27237cdbea0029962f848523647def7fb81053ec670d6d708d4eb51a8c10"
     },
     {
-      "bytes": 17067,
-      "lines": 399,
+      "bytes": 17133,
+      "lines": 400,
       "path": "src/app/runtime/create-runtime.ts",
-      "sha256": "1a1004c51544a7e25b32abafe0e8ad5afe42350f599fcf125434ba3a56382faf"
+      "sha256": "fe9b093971422f35719c505df2a78610a0df66ae83f5109595dba04fa236149e"
     },
     {
       "bytes": 20914,
@@ -37,10 +37,10 @@
       "sha256": "033685d9e20dc15874865f8bf3e8b9c0d4244ede32cd871ea21590f8b47c45c4"
     },
     {
-      "bytes": 34718,
-      "lines": 903,
+      "bytes": 35026,
+      "lines": 908,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "aaaff83f73d549297bce514e00a731f35c84e785a35191c09284ab2b5ed1808a"
+      "sha256": "943ca528b107d9d1aa54320ebe79c11b2d404f03544df39c7febc6af4f458aaf"
     },
     {
       "bytes": 10873,
@@ -55,10 +55,10 @@
       "sha256": "5d0e246a9d83fbfbc7dd073b6422cf7351c6c2742fecd2a9298b28afdfe51002"
     },
     {
-      "bytes": 5790,
+      "bytes": 5810,
       "lines": 151,
       "path": "src/domain/subagents/tool-groups.ts",
-      "sha256": "4b5506257862a0e4e56dded0522ad0c2c56f3504f14142ab67c9dd0dd262e678"
+      "sha256": "b52827bd88c846db4488e0c9c3929a1fdc534d8d0ec2118fa77d37e35cbfc7bc"
     },
     {
       "bytes": 433,
@@ -67,10 +67,10 @@
       "sha256": "c6d98f315f2cfc237bbf5fdd6eb957112e92238bedd6e16956056d0a7939fb56"
     },
     {
-      "bytes": 68003,
-      "lines": 1881,
+      "bytes": 68576,
+      "lines": 1893,
       "path": "src/panda/commands/agent-command-modules.ts",
-      "sha256": "406328096969ac73065204cd76a4cd9ff301076abb8bd7e3953fc1a20a8fd009"
+      "sha256": "0afcb38b1a3c42336e80f6620ef7d419f0f45bed1b80e7a01a9660c731fff88f"
     },
     {
       "bytes": 572,
@@ -349,10 +349,10 @@
       "sha256": "434adb5c367450ceb6241b0a85b20dacdbaba6ea75ac6289ef4e43278ae4e531"
     },
     {
-      "bytes": 3409,
-      "lines": 89,
+      "bytes": 4315,
+      "lines": 103,
       "path": "src/prompts/runtime/compaction.ts",
-      "sha256": "cad5b2b991230740617070b6e628d49803d08242741e790ee444d5c9635c5df3"
+      "sha256": "5bd899c378ebae1107de331b9150b3cc401391622c9c32e4e6bbc0f5daeaf393"
     },
     {
       "bytes": 15899,
@@ -458,7 +458,7 @@
       "agentSkillOperations": [
         "load"
       ],
-      "description": "Universal command transport, local artifact preview, and parent A2A updates.",
+      "description": "Universal command transport, session compaction, local artifact preview, and parent A2A updates.",
       "toolNames": [
         "bash",
         "background_job_status",
@@ -468,6 +468,7 @@
         "skill.list",
         "skill.show",
         "skill.load",
+        "session.compact",
         "todo.add",
         "todo.list",
         "todo.show",

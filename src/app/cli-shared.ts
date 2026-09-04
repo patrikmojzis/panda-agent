@@ -4,6 +4,8 @@ export {DB_URL_OPTION_DESCRIPTION} from "../lib/cli.js";
 
 /** Whether an action command or its non-root command group declares Postgres access. */
 export function commandUsesDatabase(actionCommand: Command, rootCommand: Command): boolean {
+  // Agent command help is an action, including beneath operator groups with DB options.
+  if (actionCommand.opts().help === true) return false;
   let current: Command | null = actionCommand;
   while (current) {
     // Root options configure the root action. Commander also exposes them to
