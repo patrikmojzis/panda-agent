@@ -1,5 +1,8 @@
 # Control session heartbeat writes
 
+> **Status: past.** Historical implementation record. Verify current behaviour
+> against code, tests and current documentation before relying on it.
+
 Control exposes a narrow write surface for session heartbeat configuration. It updates only future scheduled heartbeat wakes; it does not fire now, wake a runner immediately, or accept caller-supplied scheduling timestamps.
 
 ## API

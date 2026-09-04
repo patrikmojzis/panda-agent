@@ -22,6 +22,22 @@ Useful background docs:
 - [Remote Bash](./remote-bash.md)
 - [Sessions](./sessions.md)
 
+### GPT-6 Astra
+
+Use `openai/gpt-6-astra` with `OPENAI_API_KEY`, or
+`openai-codex/gpt-6-astra` with Codex OAuth. The account must have model access.
+Panda supplies a local catalog fallback until pi-ai includes Astra.
+
+Both selectors support text, images, and function tools. Panda omits temperature
+and maps omitted or `minimal` thinking to `low`; `low`, `medium`, `high`,
+`xhigh`, and `max` pass through. Existing defaults and aliases stay unchanged.
+Panda keeps its conservative 200k operating context window for Astra; the
+fallback transport limits are 1.05M for the API and 272k for Codex.
+Codex's Astra catalog defaults to 272k and permits configuration overrides up
+to 872k; Panda uses the default, not that larger ceiling. This was verified
+against Codex commit `de7874067f` on 2026-09-04.
+See [OpenAI's Astra documentation](https://developers.openai.com/api/docs/models/gpt-6-astra).
+
 ## The Model
 
 Panda keeps these separate on purpose:

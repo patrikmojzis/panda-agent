@@ -37,6 +37,13 @@ function buildRuntimeOptions(request: LlmRuntimeRequest): SimpleStreamOptions {
     runtimeOptions.reasoning = request.thinking;
   }
 
+  if (request.modelId === "gpt-6-astra"
+    && (request.providerName === "openai" || request.providerName === "openai-codex")) {
+    // Astra rejects temperature and reasoning below low, including pi-ai's API default of none.
+    delete runtimeOptions.temperature;
+    runtimeOptions.reasoning = !request.thinking || request.thinking === "minimal" ? "low" : request.thinking;
+  }
+
   if (request.promptCacheKey) {
     runtimeOptions.sessionId = request.promptCacheKey;
   }

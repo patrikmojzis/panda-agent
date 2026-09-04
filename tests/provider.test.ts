@@ -194,4 +194,28 @@ describe("model selector", () => {
       'Unknown model "gpt-not-real" for provider "openai".',
     );
   });
+
+  it.each([
+    ["openai", "openai-responses", "https://api.openai.com/v1", 1_050_000],
+    ["openai-codex", "openai-codex-responses", "https://chatgpt.com/backend-api", 272_000],
+  ] as const)("resolves Astra through %s", (providerName, api, baseUrl, contextWindow) => {
+    const selector = resolveModelSelector(`${providerName}/gpt-6-astra`);
+    expect(resolveProviderModel(selector.providerName, selector.modelId)).toMatchObject({
+      id: "gpt-6-astra",
+      provider: providerName,
+      api,
+      baseUrl,
+      reasoning: true,
+      input: ["text", "image"],
+      contextWindow,
+      maxTokens: 128_000,
+    });
+  });
+
+  it.each(["anthropic", "anthropic-oauth", "kimi-coding", "zai"] as const)(
+    "does not enable Astra for %s",
+    (providerName) => {
+      expect(() => resolveProviderModel(providerName, "gpt-6-astra")).toThrowError(ConfigurationError);
+    },
+  );
 });

@@ -20,4 +20,3 @@ export function buildEmailTableNames(): EmailTableNames {
     emailAttachments: "email_attachments",
   });
 }
-

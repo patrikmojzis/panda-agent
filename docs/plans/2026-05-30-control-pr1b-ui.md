@@ -1,5 +1,8 @@
 # Panda Control PR1B UI
 
+> **Status: past.** Historical implementation record. Verify current behaviour
+> against code, tests and current documentation before relying on it.
+
 PR1B adds a React operator shell for the Control API. Control is still an explicit opt-in operator surface: enable it, grant an existing identity, then open the private URL and paste the one-time login token.
 
 ## Local development quick start

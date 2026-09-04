@@ -1,5 +1,8 @@
 # Control session prompt writes
 
+> **Status: past.** Historical implementation record. Verify current behaviour
+> against code, tests and current documentation before relying on it.
+
 Control exposes write-capable session prompt endpoints for `brief`, `memory`, and `heartbeat`. The old `/briefing` endpoint stays as a compatibility alias for `brief`.
 
 ## API

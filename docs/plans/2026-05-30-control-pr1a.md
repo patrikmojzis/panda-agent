@@ -1,5 +1,8 @@
 # Panda Control PR1A
 
+> **Status: past.** Historical implementation record. Verify current behaviour
+> against code, tests and current documentation before relying on it.
+
 Panda Control is a separate operator HTTP surface from Gateway and micro-apps. PR1A exposes only the backend seam, cookie auth, explicit Control grants, and minimal read APIs under `/api/control/*`.
 
 ## Enable the server

@@ -1,5 +1,8 @@
 # Control vs Panda CLI coverage
 
+> **Status: past.** Point-in-time audit. Its commit and coverage claims are
+> stale by design; regenerate them before making product decisions.
+
 This audit maps Panda CLI command groups to current Control UI/API coverage on
 `origin/main` (`9d60016`). Update it whenever `src/app/cli.ts` registers a new
 command group or Control adds/removes operator surfaces.
