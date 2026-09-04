@@ -4,7 +4,7 @@ import {z} from "zod";
 
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import type {BackgroundToolJobService} from "../../domain/threads/runtime/tool-job-service.js";
-import type {CommandFileResolver} from "../../domain/commands/files.js";
+import type {CommandFileResolver, ResolvedCommandReadableFile} from "../../domain/commands/files.js";
 import type {CommandDescriptor, CommandRequest, CommandSuccess, RegisteredCommand} from "../../domain/commands/types.js";
 import {
     type GenerateOpenAIImageRequest,
@@ -250,29 +250,27 @@ async function resolveCommandReferenceImages(
   args: ImageGenerateInput,
   request: CommandRequest,
   fileResolver: CommandFileResolver | undefined,
-): Promise<ImageGenerateInput> {
-  if (!fileResolver || !args.images || args.images.length === 0) {
-    return args;
+): Promise<readonly ResolvedCommandReadableFile[]> {
+  if (!args.images || args.images.length === 0) {
+    return [];
+  }
+  if (!fileResolver) {
+    throw new ToolError("image.generate reference images require a command file resolver.");
   }
 
-  const images = await Promise.all(args.images.map(async (imagePath) => {
-    const resolved = await fileResolver.resolveReadablePath({
+  return Promise.all(args.images.map((imagePath) => (
+    fileResolver.resolveReadablePath({
       request,
       file: {
         path: imagePath,
       },
-    });
-    return resolved.path;
-  }));
-
-  return {
-    ...args,
-    images,
-  };
+    })
+  )));
 }
 
 async function runImageGeneration(params: {
   args: ImageGenerateInput;
+  referenceImages: readonly ResolvedCommandReadableFile[];
   context: unknown;
   emitProgress(progress: JsonObject): void;
   signal?: AbortSignal;
@@ -290,16 +288,11 @@ async function runImageGeneration(params: {
   const outputCompression = params.args.outputCompression;
   validateImageOptions({background, outputFormat, outputCompression});
 
-  const referencePaths = params.args.images ?? [];
   params.emitProgress({
     status: "loading_reference_images",
-    count: referencePaths.length,
+    count: params.referenceImages.length,
   });
-  const inputImages = await loadReferenceImages({
-    paths: referencePaths,
-    context: params.context,
-    env: params.env,
-  });
+  const inputImages = await loadReferenceImages(params.referenceImages);
 
   params.emitProgress({
     status: "generating_image",
@@ -400,13 +393,14 @@ export function createImageGenerateCommand(options: {
         throw new Error("image.generate requires resolved command thread scope.");
       }
 
-      const parsed = imageGenerateInputSchema.parse(request.input);
-      const args = await resolveCommandReferenceImages(parsed, request, fileResolver);
+      const args = imageGenerateInputSchema.parse(request.input);
       validateImageOptions({
         background: args.background ?? defaultImageGenerateArgs().background,
         outputFormat: args.outputFormat ?? defaultImageGenerateArgs().outputFormat,
         outputCompression: args.outputCompression,
       });
+
+      const referenceImages = await resolveCommandReferenceImages(args, request, fileResolver);
 
       const context: Partial<DefaultAgentSessionContext> = {
         agentKey: request.scope.agentKey,
@@ -424,6 +418,7 @@ export function createImageGenerateCommand(options: {
           },
           done: runImageGeneration({
             args,
+            referenceImages,
             context,
             emitProgress,
             signal,

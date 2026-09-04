@@ -234,6 +234,10 @@ export class BackgroundToolJobService {
       throw error;
     }
 
+    // A job can reject while startup awaits persistence or cancellation. Observe
+    // it immediately; watchJob still consumes the original rejection and records failure.
+    void handle.done.catch(() => undefined);
+
     if (this.closed || controller.signal.aborted) {
       try {
         // Some adapters cannot interrupt handle acquisition. Once they do

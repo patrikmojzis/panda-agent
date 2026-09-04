@@ -2,8 +2,8 @@ import {randomUUID} from "node:crypto";
 import {mkdir, readFile, stat, writeFile} from "node:fs/promises";
 import path from "node:path";
 
-import {resolveContextPath} from "../../app/runtime/panda-path-context.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
+import type {ResolvedCommandReadableFile} from "../../domain/commands/files.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {ToolArtifactDescriptor} from "../../kernel/agent/tool-artifacts.js";
 import type {JsonObject} from "../../lib/json.js";
@@ -60,20 +60,18 @@ async function ensureReadableReferenceImage(filePath: string): Promise<void> {
   }
 }
 
-export async function loadReferenceImages(params: {
-  paths: readonly string[];
-  context: unknown;
-  env: NodeJS.ProcessEnv;
-}): Promise<readonly OpenAIImageInputImage[]> {
+/** Read authorized resolver snapshots; their Core paths are not agent-visible paths. */
+export async function loadReferenceImages(
+  files: readonly ResolvedCommandReadableFile[],
+): Promise<readonly OpenAIImageInputImage[]> {
   const images: OpenAIImageInputImage[] = [];
-  for (const inputPath of params.paths) {
-    const resolvedPath = resolveContextPath(inputPath, params.context, params.env);
-    const mimeType = inferReferenceMimeType(resolvedPath);
-    await ensureReadableReferenceImage(resolvedPath);
+  for (const file of files) {
+    const mimeType = inferReferenceMimeType(file.path);
+    await ensureReadableReferenceImage(file.path);
     images.push({
-      fileName: path.basename(resolvedPath),
+      fileName: path.basename(file.displayPath),
       mimeType,
-      buffer: await readFile(resolvedPath),
+      buffer: await readFile(file.path),
     });
   }
 
