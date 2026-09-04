@@ -196,6 +196,7 @@ export async function bootstrapDaemonContext(
         fallbackContext,
         executionEnvironment,
         agentStore,
+        credentials: credentialResolver,
         pairedIdentities,
         sessionStore,
         subagentProfiles,

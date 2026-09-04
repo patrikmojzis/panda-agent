@@ -67,6 +67,12 @@ Blocked names include runtime-owned or dangerous keys such as:
 
 `BashTool` resolves credentials on every execution using the thread `agentKey`.
 
+The default LLM context includes an `Available Credentials` section listing the
+agent's stored env names for the default bash target. It reads only `env_key`
+from Postgres on each context build, without fetching or decrypting values.
+The list follows the target's credential policy, including subagent allowlists;
+other targets can have different grants. Empty lists render `(none)`.
+
 Local bash merges env in this order:
 
 `process env -> stored credentials -> persisted shell session env -> bash.env`

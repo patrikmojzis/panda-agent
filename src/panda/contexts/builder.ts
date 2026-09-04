@@ -1,6 +1,7 @@
 import type {LlmContext} from "../../kernel/agent/llm-context.js";
 import type {PairedIdentityDirectoryReader} from "../../domain/agents/paired-identity-directory.js";
 import type {CommandDescriptor} from "../../domain/commands/types.js";
+import type {CredentialResolver} from "../../domain/credentials/resolver.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import type {ExecutionSkillPolicy} from "../../domain/execution-environments/types.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
@@ -12,6 +13,7 @@ import {AgentProfileContext, type AgentProfileContextSection, type AgentProfileS
 import {BackgroundJobsContext} from "./background-jobs-context.js";
 import {BashTargetsContext} from "./bash-targets-context.js";
 import {CommandCatalogContext} from "./command-catalog-context.js";
+import {CredentialsContext} from "./credentials-context.js";
 import {DateTimeContext} from "./datetime-context.js";
 import {EnvironmentContext} from "./environment-context.js";
 import {
@@ -30,6 +32,7 @@ export type DefaultAgentLlmContextSection =
   | "datetime"
   | "environment"
   | "bash_targets"
+  | "credentials"
   | "paired_identities"
   | "command_catalog"
   | "scheduled_reminders"
@@ -47,6 +50,7 @@ const PROFILE_SECTIONS = new Set<AgentProfileContextSection>([
 export const DEFAULT_AGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = [
   "environment",
   "bash_targets",
+  "credentials",
   "paired_identities",
   "command_catalog",
   "wiki_overview",
@@ -61,6 +65,7 @@ export const DEFAULT_AGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContext
 export interface BuildDefaultAgentLlmContextsOptions {
   context?: DefaultAgentSessionContext;
   agentStore?: AgentProfileStore;
+  credentials?: Pick<CredentialResolver, "listCredentialNames">;
   pairedIdentities?: PairedIdentityDirectoryReader;
   sessionStore?: Partial<Pick<SessionStore, "listSessionPrompts" | "readSessionTodo">>;
   subagentProfiles?: Pick<SubagentProfileStore, "listProfiles">;
@@ -118,6 +123,15 @@ export function buildDefaultAgentLlmContexts(
     llmContexts.push(new BashTargetsContext({
       environments: options.executionEnvironments,
       sessionId: options.context.sessionId,
+    }));
+  }
+
+  if (uniqueSections.has("credentials") && options.agentKey && options.credentials) {
+    llmContexts.push(new CredentialsContext({
+      credentials: options.credentials,
+      agentKey: options.agentKey,
+      credentialPolicy: options.context?.executionEnvironment?.credentialPolicy
+        ?? (options.context?.sessionKind === "subagent" ? {mode: "none"} : undefined),
     }));
   }
 

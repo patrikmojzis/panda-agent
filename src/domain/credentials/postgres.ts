@@ -89,6 +89,19 @@ export class PostgresCredentialStore {
     this.tables = buildCredentialTableNames();
   }
 
+  async listCredentialNames(input: {agentKey: string}): Promise<readonly string[]> {
+    const result = await this.pool.query(`
+      SELECT env_key
+      FROM ${this.tables.credentials}
+      WHERE agent_key = $1
+      ORDER BY env_key ASC
+    `, [normalizeCredentialAgentKey(input.agentKey)]);
+
+    return result.rows.map((row) => normalizeCredentialEnvKey(
+      requireNonEmptyString((row as Record<string, unknown>).env_key, "Credential row is missing env key."),
+    ));
+  }
+
   async listCredentials(filter: CredentialListFilter = {}): Promise<readonly CredentialRecord[]> {
     const conditions: string[] = [];
     const values: unknown[] = [];

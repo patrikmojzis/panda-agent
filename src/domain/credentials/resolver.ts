@@ -16,6 +16,7 @@ import {
 } from "./types.js";
 
 export interface CredentialResolverStore {
+  listCredentialNames(input: {agentKey: string}): Promise<readonly string[]>;
   listResolvableCredentials(context: CredentialResolutionContext): Promise<readonly CredentialRecord[]>;
   resolveCredential(envKey: string, context: CredentialResolutionContext): Promise<CredentialRecord | null>;
 }
@@ -61,6 +62,10 @@ export class CredentialResolver {
     }
 
     return this.crypto;
+  }
+
+  async listCredentialNames(input: {agentKey: string}): Promise<readonly string[]> {
+    return this.store.listCredentialNames(input);
   }
 
   async resolveEnvironment(context: CredentialResolutionContext): Promise<Record<string, string>> {

@@ -4,6 +4,7 @@ import {mergeInferenceProjection} from "../../kernel/transcript/inference-projec
 import type {PairedIdentityDirectoryReader} from "../../domain/agents/paired-identity-directory.js";
 import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
 import type {CommandDescriptor} from "../../domain/commands/types.js";
+import type {CredentialResolver} from "../../domain/credentials/resolver.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 import {isExecutionToolAllowedByPolicy} from "../../domain/execution-environments/policy.js";
@@ -35,6 +36,7 @@ const LEGACY_WORKER_SPAWN_TOOL_NAME = ["worker", "spawn"].join("_");
 const SUBAGENT_LLM_CONTEXT_SECTIONS: readonly DefaultAgentLlmContextSection[] = [
   "environment",
   "bash_targets",
+  "credentials",
   "command_catalog",
   "background_jobs",
   "skills",
@@ -48,6 +50,7 @@ export interface CreateThreadDefinitionOptions {
   session: Pick<SessionRecord, "id" | "agentKey" | "metadata"> & {kind?: AgentSessionKind};
   fallbackContext: Pick<DefaultAgentSessionContext, "cwd">;
   agentStore?: AgentProfileStore;
+  credentials?: Pick<CredentialResolver, "listCredentialNames">;
   pairedIdentities?: PairedIdentityDirectoryReader;
   sessionStore?: Pick<SessionStore, "readSessionTodo">;
   subagentProfiles?: Pick<SubagentProfileStore, "listProfiles">;
@@ -219,6 +222,7 @@ export function createThreadDefinition(
   const llmContexts: LlmContext[] = buildDefaultAgentLlmContexts({
     context,
     agentStore: options.agentStore,
+    credentials: options.credentials,
     pairedIdentities: options.pairedIdentities,
     sessionStore: options.sessionStore,
     subagentProfiles: options.subagentProfiles,

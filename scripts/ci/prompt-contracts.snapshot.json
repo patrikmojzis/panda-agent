@@ -19,10 +19,10 @@
       "sha256": "fe9b093971422f35719c505df2a78610a0df66ae83f5109595dba04fa236149e"
     },
     {
-      "bytes": 20914,
-      "lines": 524,
+      "bytes": 20955,
+      "lines": 525,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "24bd07dc25de76738073b71332b478774ce23e81db88e16c16a48a8f90fa6191"
+      "sha256": "2319676faf3dbe1542ceaa8373bee1e268a32d1cfe935323dbaceb1cddcac44c"
     },
     {
       "bytes": 17911,
@@ -43,10 +43,10 @@
       "sha256": "943ca528b107d9d1aa54320ebe79c11b2d404f03544df39c7febc6af4f458aaf"
     },
     {
-      "bytes": 10873,
-      "lines": 262,
+      "bytes": 11071,
+      "lines": 266,
       "path": "src/app/runtime/thread-definition.ts",
-      "sha256": "25a60854cd51fdc67172824985cd9fc9dcc63e66378ef08071f919c713fc9663"
+      "sha256": "c38d90db9e9c479faa0e233052e82489b99f064cc37af691d414d687d92fe473"
     },
     {
       "bytes": 1490,
@@ -97,16 +97,22 @@
       "sha256": "3072f55b56c701de2cc2653f7f2b5437fed8ad19f49a13648cb4d0592bf7f2b8"
     },
     {
-      "bytes": 8047,
-      "lines": 215,
+      "bytes": 8673,
+      "lines": 229,
       "path": "src/panda/contexts/builder.ts",
-      "sha256": "260e417eb335820c0c37ddb59d6040395f9874c281306b6bb9dd2645023173ac"
+      "sha256": "79f1cd9fab3acd0b5f3cebb251b4ab9e34f32baad42a3e4b4eb5424a1a2c1fbd"
     },
     {
       "bytes": 958,
       "lines": 27,
       "path": "src/panda/contexts/command-catalog-context.ts",
       "sha256": "98fb2ddf0ebdba55bc2c2867a1a6ff9755d46bbd957d717a3b2272dfe87b8c67"
+    },
+    {
+      "bytes": 1211,
+      "lines": 31,
+      "path": "src/panda/contexts/credentials-context.ts",
+      "sha256": "4506a1c840cbd63aa5177e360d6e2c3b1ec5e9ff4fbc74b33ca7f8cd7dfccb17"
     },
     {
       "bytes": 1541,
@@ -269,6 +275,12 @@
       "lines": 49,
       "path": "src/prompts/contexts/command-catalog.ts",
       "sha256": "b21907a0413ac1923f73bf352431ee5cdb78f19f7426d6c2aaf14748d984a033"
+    },
+    {
+      "bytes": 386,
+      "lines": 7,
+      "path": "src/prompts/contexts/credentials.ts",
+      "sha256": "47178eba0d9e05889f43f3f591f30847162fcb68c75327b199664593b48adcec"
     },
     {
       "bytes": 310,
