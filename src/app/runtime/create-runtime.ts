@@ -2,6 +2,7 @@ import {Pool} from "pg";
 
 import type {AgentStore} from "../../domain/agents/store.js";
 import type {A2ASessionBindingRepo} from "../../domain/a2a/repo.js";
+import type {SessionLifecycle} from "../../domain/sessions/lifecycle.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
 import type {SubagentProfileStore} from "../../domain/subagents/store.js";
 import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
@@ -58,7 +59,7 @@ import type {ExecutionEnvironmentLifecycleService} from "./execution-environment
 import {SubagentSessionService} from "./subagent-session-service.js";
 import type {CommandCatalog} from "../../domain/commands/modules.js";
 import type {CommandCatalogModule} from "../../domain/commands/types.js";
-import {buildSubagentCommandDependencies} from "./command-dependencies.js";
+import type {AgentCommandModuleDependencies} from "../../panda/commands/agent-command-modules.js";
 import {SessionCompactionService} from "./session-compaction-service.js";
 import {SessionArchiveService} from "./session-archive-service.js";
 import {PostgresSessionArchive} from "../../domain/sessions/archive.js";
@@ -71,6 +72,7 @@ import {
   type PairedIdentityDirectoryReader,
 } from "../../domain/agents/paired-identity-directory.js";
 import {closePiAiRuntimeResources} from "../../integrations/providers/shared/runtime.js";
+import {resolveDefaultAgentModelSelector} from "../../panda/defaults.js";
 
 const DEFAULT_THREAD_RUN_CONCURRENCY = 8;
 const DEFAULT_THREAD_RUN_DRAIN_TIMEOUT_MS = 30_000;
@@ -100,21 +102,6 @@ export {
 
 export type {CreateThreadDefinitionOptions};
 
-function mergeToolsByName(toolGroups: readonly (readonly Tool[])[]): readonly Tool[] {
-  const seen = new Set<string>();
-  const merged: Tool[] = [];
-  for (const tools of toolGroups) {
-    for (const tool of tools) {
-      if (seen.has(tool.name)) {
-        continue;
-      }
-      seen.add(tool.name);
-      merged.push(tool);
-    }
-  }
-  return merged;
-}
-
 export interface DefinitionResolverContext {
   agentStore: AgentStore;
   backgroundJobService: BackgroundToolJobService;
@@ -142,6 +129,7 @@ export interface RuntimeOptions {
   dbUrl?: string;
   readOnlyDbUrl?: string;
   cwd?: string;
+  /** @deprecated Ignored. Durable subagents cannot spawn nested subagents. */
   maxSubagentDepth?: number;
   commandCatalog?: CommandCatalog<any, CommandCatalogModule<any>>;
   /** @deprecated Prefer commandCatalog. */
@@ -154,6 +142,7 @@ export interface RuntimeOptions {
 }
 
 export interface RuntimeServices {
+  sessionLifecycle: SessionLifecycle;
   agentStore: AgentStore;
   apps: AgentAppService;
   appAuth: AgentAppAuthService;
@@ -247,11 +236,14 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     ),
     shutdownDrainTimeoutMs: coordinatorDrainTimeoutMs,
     modelCallObserver: runtime.modelCallRecorder,
-    resolveDefinition: (thread) => options.resolveDefinition(thread, resolverContext),
+    resolveDefinition: async (thread) => {
+      const definition = await options.resolveDefinition(thread, resolverContext);
+      return {...definition, model: definition.model ?? resolveDefaultAgentModelSelector()};
+    },
     onEvent: options.onEvent,
   });
   const subagentSessions = new SubagentSessionService({
-    pool: runtime.pool,
+    sessionLifecycle: runtime.sessionLifecycle,
     sessions: runtime.sessionStore,
     threads: runtime.store,
     profiles: runtime.subagentProfiles,
@@ -276,19 +268,10 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     coordinator,
     backgroundJobs: runtime.backgroundJobService,
   });
-  runtime.commandExecutor.registerCommands([
-    ...runtime.commandCatalog.createCommands(
-      buildSubagentCommandDependencies(subagentSessions),
-      {registrationPhase: "runtime.subagent", requireAll: true},
-    ),
-  ]);
-  const mainTools: readonly Tool[] = runtime.mainTools;
-  const subagentTools: readonly Tool[] = mergeToolsByName([
-    mainTools,
-    runtime.subagentTools,
-  ]);
-  resolverContext.mainTools = mainTools;
-  resolverContext.subagentTools = subagentTools;
+  runtime.commandExecutor.registerCommands(runtime.commandCatalog.createCommands(
+    {subagentSessions} satisfies Required<Pick<AgentCommandModuleDependencies, "subagentSessions">>,
+    {registrationPhase: "runtime.subagent", requireAll: true},
+  ));
 
   runtime.backgroundJobService.setBackgroundCompletionHandler(async (record) => {
     await coordinator.submitInput(record.threadId, buildBackgroundToolThreadInput(record), "wake");
@@ -387,12 +370,13 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     commandCatalog: runtime.commandCatalog,
     commandModules: runtime.commandModules,
     subagentSessions,
+    sessionLifecycle: runtime.sessionLifecycle,
     sessionCompaction,
     sessionArchive,
     a2aBindings: runtime.a2aBindings,
     coordinator,
-    mainTools,
-    subagentTools,
+    mainTools: runtime.mainTools,
+    subagentTools: runtime.subagentTools,
     pool: runtime.pool,
     notificationPool: runtime.notificationPool,
     close,

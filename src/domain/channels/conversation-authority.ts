@@ -1,9 +1,8 @@
-import type {ConversationBinding, ConversationBindingListFilter} from "../sessions/conversations/types.js";
+import type {ConversationRepo} from "../sessions/conversations/repo.js";
+import type {ConversationBinding} from "../sessions/conversations/types.js";
 import {commandScopeDenied} from "../commands/errors.js";
 
-export interface ConversationBindingAuthorizer {
-  listConversationBindings(filter: ConversationBindingListFilter): Promise<readonly ConversationBinding[]>;
-}
+export type ConversationBindingAuthorizer = Pick<ConversationRepo, "getConversationBinding">;
 
 export async function assertCurrentSessionConversationBinding(input: {
   conversations: ConversationBindingAuthorizer;
@@ -13,16 +12,13 @@ export async function assertCurrentSessionConversationBinding(input: {
   sessionId: string;
   commandName: string;
 }): Promise<ConversationBinding> {
-  const bindings = await input.conversations.listConversationBindings({
+  const binding = await input.conversations.getConversationBinding({
     source: input.source,
     connectorKey: input.connectorKey,
+    externalConversationId: input.externalConversationId,
   });
-  const binding = bindings.find((candidate) =>
-    candidate.sessionId === input.sessionId
-    && candidate.externalConversationId === input.externalConversationId,
-  );
 
-  if (!binding) {
+  if (!binding || binding.sessionId !== input.sessionId) {
     throw commandScopeDenied(
       `${input.commandName} target conversation is not bound to the current session.`,
       "resource_scope_denied",

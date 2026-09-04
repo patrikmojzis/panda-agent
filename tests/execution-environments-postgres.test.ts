@@ -1,3 +1,4 @@
+import {createDefaultExecutionToolPolicy} from "../src/panda/commands/agent-command-policy.js";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
@@ -24,7 +25,7 @@ import type {
   ExecutionEnvironmentSetupRunnerInput,
 } from "../src/app/runtime/execution-environment-setup-runner.js";
 import {ExecutionEnvironmentSetupError} from "../src/app/runtime/execution-environment-setup-runner.js";
-import {buildSubagentSessionMetadata} from "../src/domain/subagents/index.js";
+import {buildSubagentSessionMetadata} from "../src/domain/subagents/session-metadata.js";
 import type {JsonObject, JsonValue} from "../src/lib/json.js";
 import {HmacRunnerTokenAuthority} from "../src/integrations/shell/runner-auth.js";
 
@@ -445,7 +446,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
     });
 
     const session = await sessionStore.getSession("session-main");
-    const resolver = new ExecutionEnvironmentResolver({store: environmentStore});
+    const resolver = new ExecutionEnvironmentResolver({defaultToolPolicy: createDefaultExecutionToolPolicy(DEFAULT_AGENT_COMMAND_CATALOG), store: environmentStore});
 
     await expect(resolver.resolve(session)).resolves.toMatchObject({id: "env-default", alias: "self"});
     await expect(resolver.resolve(session, "default")).resolves.toMatchObject({id: "env-default", alias: "self"});
@@ -529,6 +530,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
     const {environmentStore, sessionStore} = await createHarness();
     const session = await sessionStore.getSession("session-main");
     const resolver = new ExecutionEnvironmentResolver({
+      defaultToolPolicy: createDefaultExecutionToolPolicy(DEFAULT_AGENT_COMMAND_CATALOG),
       store: environmentStore,
       env: {
         BASH_EXECUTION_MODE: "remote",
@@ -567,6 +569,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
     const {environmentStore, sessionStore} = await createHarness();
     const session = await sessionStore.getSession("session-worker");
     const resolver = new ExecutionEnvironmentResolver({
+      defaultToolPolicy: createDefaultExecutionToolPolicy(DEFAULT_AGENT_COMMAND_CATALOG),
       store: environmentStore,
       env: {
         BASH_EXECUTION_MODE: "remote",
@@ -614,6 +617,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
     });
     const session = await sessionStore.getSession("session-subagent");
     const resolver = new ExecutionEnvironmentResolver({
+      defaultToolPolicy: createDefaultExecutionToolPolicy(DEFAULT_AGENT_COMMAND_CATALOG),
       store: environmentStore,
       env: {
         BASH_EXECUTION_MODE: "remote",
@@ -693,6 +697,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
       manager,
     });
     const resolver = new ExecutionEnvironmentResolver({
+      defaultToolPolicy: createDefaultExecutionToolPolicy(DEFAULT_AGENT_COMMAND_CATALOG),
       store: environmentStore,
       lifecycle: service,
       env: {} as NodeJS.ProcessEnv,
@@ -714,6 +719,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
     });
     const ensureSpy = vi.spyOn(service, "ensureBoundEnvironmentReady");
     const resolver = new ExecutionEnvironmentResolver({
+      defaultToolPolicy: createDefaultExecutionToolPolicy(DEFAULT_AGENT_COMMAND_CATALOG),
       store: environmentStore,
       lifecycle: service,
       env: {} as NodeJS.ProcessEnv,
@@ -846,6 +852,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
     });
     const ensureSpy = vi.spyOn(service, "ensureBoundEnvironmentReady");
     const resolver = new ExecutionEnvironmentResolver({
+      defaultToolPolicy: createDefaultExecutionToolPolicy(DEFAULT_AGENT_COMMAND_CATALOG),
       store: environmentStore,
       lifecycle: service,
       env: {} as NodeJS.ProcessEnv,
@@ -885,6 +892,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
     });
     const session = await sessionStore.getSession("session-main");
     const resolver = new ExecutionEnvironmentResolver({
+      defaultToolPolicy: createDefaultExecutionToolPolicy(DEFAULT_AGENT_COMMAND_CATALOG),
       store: environmentStore,
       env: {} as NodeJS.ProcessEnv,
     });
@@ -921,6 +929,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
     });
     const session = await sessionStore.getSession("session-main");
     const resolver = new ExecutionEnvironmentResolver({
+      defaultToolPolicy: createDefaultExecutionToolPolicy(DEFAULT_AGENT_COMMAND_CATALOG),
       store: environmentStore,
       env: {} as NodeJS.ProcessEnv,
     });
@@ -955,6 +964,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
       manager,
     });
     const resolver = new ExecutionEnvironmentResolver({
+      defaultToolPolicy: createDefaultExecutionToolPolicy(DEFAULT_AGENT_COMMAND_CATALOG),
       store: environmentStore,
       lifecycle: service,
       env: {} as NodeJS.ProcessEnv,

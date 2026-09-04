@@ -16,6 +16,7 @@ import type {
   DiscordVoiceSendMode,
 } from "./voice-types.js";
 import {buildSessionTableNames} from "../../../domain/sessions/postgres-shared.js";
+import {VoiceControlWaitTimeoutError} from "../../voice/control-errors.js";
 
 export const DISCORD_VOICE_NOTIFICATION_CHANNEL = "runtime_discord_voice_events";
 const tables = buildRuntimeRelationNames({controls: "discord_voice_controls"});
@@ -164,7 +165,7 @@ export class DiscordVoiceControlRepo {
     }
     const finalRecord = await this.getControl(id);
     if (finalRecord.status === "completed" || finalRecord.status === "failed") return finalRecord;
-    throw new Error(`Timed out waiting for Discord voice control ${id}.`);
+    throw new VoiceControlWaitTimeoutError(`Timed out waiting for Discord voice control ${id}.`);
   }
 
   async close(): Promise<void> {
@@ -174,13 +175,18 @@ export class DiscordVoiceControlRepo {
 
 function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    const onAbort = () => finish(signal?.reason instanceof Error ? signal.reason : new Error("Discord voice control wait was aborted."));
-    const finish = (error?: Error) => {
+    const cleanup = () => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
-      error ? reject(error) : resolve();
     };
-    const timer = setTimeout(finish, ms);
+    const onAbort = () => {
+      cleanup();
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
     timer.unref?.();
     signal?.addEventListener("abort", onAbort, {once: true});
     if (signal?.aborted) onAbort();

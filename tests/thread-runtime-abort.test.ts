@@ -1,7 +1,7 @@
 import {describe, expect, it, vi} from "vitest";
 
 import {Agent, type LlmRuntime, stringToUserMessage} from "../src/index.js";
-import {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/coordinator.js";
+import {ThreadRuntimeCoordinator} from "../src/app/sdk/thread-runtime.js";
 import type {ThreadRunOwner} from "../src/domain/threads/runtime/types.js";
 import type {LlmRuntimeRequest} from "../src/kernel/agent/runtime.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";

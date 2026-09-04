@@ -4,7 +4,7 @@ import {CommandStructuredError, commandScopeDenied} from "../../../domain/comman
 import type {CommandDescriptor, CommandRequest, RegisteredCommand} from "../../../domain/commands/types.js";
 import type {ConnectorAccountListFilter, ConnectorAccountRecord} from "../../../domain/connectors/types.js";
 import type {LiveVoiceRepo} from "../../../domain/live-voice/repo.js";
-import {isActiveLiveVoiceTurn, type LiveVoiceSessionRecord, type LiveVoiceTurnRecord} from "../../../domain/live-voice/types.js";
+import {isActiveLiveVoiceTurn, LiveVoiceTurnNotFoundError, type LiveVoiceSessionRecord, type LiveVoiceTurnRecord} from "../../../domain/live-voice/types.js";
 import type {ConversationBinding, ConversationBindingListFilter} from "../../../domain/sessions/conversations/types.js";
 import {isJsonObject, type JsonObject} from "../../../lib/json.js";
 import {isRecord} from "../../../lib/records.js";
@@ -12,6 +12,7 @@ import {DISCORD_SOURCE} from "./config.js";
 import type {DiscordVoiceControlRepo} from "./voice-postgres.js";
 import {DISCORD_VOICE_MODEL, type DiscordVoiceControlInput, type DiscordVoiceControlRecord, type DiscordVoiceSendMode} from "./voice-types.js";
 import {isLiveVoiceEnabled} from "../../voice/config.js";
+import {VoiceControlWaitTimeoutError, voiceStateUnavailable} from "../../voice/control-errors.js";
 
 export const DISCORD_VOICE_JOIN_COMMAND_NAME = "discord.voice.join";
 export const DISCORD_VOICE_LEAVE_COMMAND_NAME = "discord.voice.leave";
@@ -164,8 +165,9 @@ async function enqueueAndWait(input: DiscordVoiceControlInput, services: Discord
   let terminal: DiscordVoiceControlRecord;
   try {
     terminal = await services.voice.controls.waitForControl(control.id, {timeoutMs: 60_000, signal});
-  } catch {
-    const aborted = signal?.aborted === true;
+  } catch (error) {
+    const aborted = signal?.aborted === true && error === signal.reason;
+    if (!aborted && !(error instanceof VoiceControlWaitTimeoutError)) throw voiceStateUnavailable(error, control.id);
     throw new CommandStructuredError("command_failed", aborted ? "Discord voice command was cancelled." : "Timed out waiting for the Discord voice worker.", {
       failureCode: aborted ? "worker_unavailable" : "timeout",
       retryable: true,
@@ -179,7 +181,10 @@ async function enqueueAndWait(input: DiscordVoiceControlInput, services: Discord
 
 async function resolveActiveTurn(input: {voiceTurnId?: string}, request: CommandRequest, services: DiscordVoiceCommandServices, session: LiveVoiceSessionRecord): Promise<LiveVoiceTurnRecord | undefined> {
   if (input.voiceTurnId) {
-    const turn = await services.voice.live.getTurn(input.voiceTurnId).catch(() => undefined);
+    const turn = await services.voice.live.getTurn(input.voiceTurnId).catch((error: unknown) => {
+      if (error instanceof LiveVoiceTurnNotFoundError) return undefined;
+      throw voiceStateUnavailable(error);
+    });
     if (!turn || !isActiveLiveVoiceTurn(turn) || turn.sessionId !== request.scope.sessionId || turn.agentKey !== request.scope.agentKey || turn.liveVoiceSessionId !== session.id) {
       throw new CommandStructuredError("conflict", "The requested Discord voice turn is not active in this voice session.", {failureCode: "voice_turn_conflict", retryable: false});
     }

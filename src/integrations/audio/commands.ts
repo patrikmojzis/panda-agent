@@ -110,10 +110,6 @@ function parseAudioTextPayload(
   };
 }
 
-export function hasOpenAiApiKey(env: NodeJS.ProcessEnv = process.env): boolean {
-  return trimToNull(env.OPENAI_API_KEY) !== null;
-}
-
 export const whisperTranscribeCommandDescriptor: CommandDescriptor = {
   name: WHISPER_TRANSCRIBE_COMMAND_NAME,
   summary: "Transcribe a local audio file with Whisper.",

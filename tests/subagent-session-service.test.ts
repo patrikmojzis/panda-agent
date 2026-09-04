@@ -1,3 +1,4 @@
+import {createPostgresSessionLifecycle} from "../src/domain/sessions/lifecycle.js";
 import {randomUUID} from "node:crypto";
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
@@ -14,7 +15,7 @@ import {ensurePostgresIdentitySchema} from "../src/domain/identity/postgres-sche
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 import {ensurePostgresSessionSchema} from "../src/domain/sessions/postgres-schema.js";
 import {buildSessionTableNames} from "../src/domain/sessions/postgres-shared.js";
-import {PostgresSubagentProfileStore} from "../src/domain/subagents/index.js";
+import {PostgresSubagentProfileStore} from "../src/domain/subagents/postgres.js";
 import {buildSubagentTableNames} from "../src/domain/subagents/postgres-shared.js";
 import {ensurePostgresSubagentSchema} from "../src/domain/subagents/postgres-schema.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/postgres.js";
@@ -183,7 +184,7 @@ describe("SubagentSessionService", () => {
       options.commandModules ? undefined : createDefaultAgentCommandCatalog()
     );
     const service = new SubagentSessionService({
-      pool,
+      sessionLifecycle: createPostgresSessionLifecycle({pool, sessionStore, threadStore}),
       sessions: sessionStore,
       threads: threadStore,
       profiles: profileStore,

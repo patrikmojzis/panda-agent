@@ -31,7 +31,7 @@ import {
     type ThreadRunOwner,
     ThreadRuntimeCoordinator,
     type ThreadRuntimeCoordinatorOptions,
-} from "../src/domain/threads/runtime/index.js";
+} from "../src/app/sdk/thread-runtime.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 import type {DefaultAgentSessionContext} from "../src/app/runtime/panda-session-context.js";
@@ -88,7 +88,7 @@ vi.mock("../src/kernel/models/model-context-policy.js", async (importOriginal) =
 
   return {
     ...actual,
-    resolveModelRuntimeBudget(model?: string) {
+    resolveModelRuntimeBudget(model: string) {
       const operatingWindow = model ? TEST_MODELS.operatingWindowByModel.get(model) : undefined;
       if (operatingWindow === undefined) {
         return actual.resolveModelRuntimeBudget(model);

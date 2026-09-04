@@ -1,15 +1,15 @@
 import {describe, expect, it} from "vitest";
 
 import {createCommandCatalog} from "../src/domain/commands/index.js";
+import {BUILTIN_SUBAGENT_PROFILES} from "../src/domain/subagents/builtins.js";
 import {
-  BUILTIN_SUBAGENT_PROFILES,
   describeSubagentToolGroups,
   expandSubagentToolGroups,
   normalizeSubagentToolGroups,
   resolveSubagentToolPolicy,
   SUBAGENT_TOOL_GROUP_DEFINITIONS,
   SUBAGENT_TOOL_GROUP_KEYS,
-} from "../src/domain/subagents/index.js";
+} from "../src/domain/subagents/tool-groups.js";
 import {DEFAULT_AGENT_COMMAND_CATALOG} from "../src/panda/commands/agent-command-modules.js";
 
 describe("subagent tool groups", () => {

@@ -1,18 +1,12 @@
-import {stringToUserMessage} from "../../kernel/agent/helpers/input.js";
-import type {JsonObject} from "../../lib/json.js";
 import {DrainLoop} from "../../lib/drain-loop.js";
 import {resolveCurrentSessionThread, type CurrentSessionThread} from "../sessions/current-thread.js";
 import type {SessionStore} from "../sessions/store.js";
-import type {ThreadRuntimeCoordinator} from "../threads/runtime/coordinator.js";
-import {renderWatchEventPrompt} from "../../prompts/runtime/watch-events.js";
 import type {WatchStore} from "./store.js";
-import type {ClaimWatchResult, WatchEvaluationResult, WatchRecord, WatchThreadInputMetadata,} from "./types.js";
+import type {ClaimWatchResult, WatchEvaluationResult, WatchRecord,} from "./types.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 15_000;
 const DEFAULT_CLAIM_TTL_MS = 10 * 60_000;
 const DEFAULT_BATCH_SIZE = 25;
-const WATCH_EVENT_SOURCE = "watch_event";
-type WatchCoordinator = Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
 type WatchSessionStore = Pick<SessionStore, "getSession">;
 
 export type WatchEvaluator = (
@@ -26,7 +20,6 @@ export type WatchEvaluator = (
 export interface WatchRunnerOptions {
   watches: WatchRunnerStore;
   sessions: WatchSessionStore;
-  coordinator: WatchCoordinator;
   evaluateWatch: WatchEvaluator;
   pollIntervalMs?: number;
   claimTtlMs?: number;
@@ -36,50 +29,15 @@ export interface WatchRunnerOptions {
 type WatchRunnerStore = Pick<
   WatchStore,
   | "claimWatch"
-  | "completeWatchRun"
+  | "acceptWatchEvaluation"
+  | "renewWatchClaim"
   | "failWatchRun"
   | "listDueWatches"
-  | "recordEvent"
   | "startWatchRun"
 >;
 
 function computeNextPollAt(watch: ClaimWatchResult["watch"], nowMs: number): number {
   return nowMs + watch.intervalMinutes * 60_000;
-}
-
-function buildWatchEventMetadata(claim: ClaimWatchResult, eventId: string): WatchThreadInputMetadata {
-  return {
-    watchEvent: {
-      watchId: claim.watch.id,
-      title: claim.watch.title,
-      eventId,
-      eventKind: claim.watch.detector.kind,
-      occurredAt: new Date(claim.run.scheduledFor).toISOString(),
-    },
-  };
-}
-
-function buildWatchEventPrompt(options: {
-  claim: ClaimWatchResult;
-  summary: string;
-  eventId: string;
-  payload?: JsonObject;
-}): string {
-  const promptPayload: JsonObject = {
-    watchId: options.claim.watch.id,
-    eventId: options.eventId,
-  };
-  if (options.payload) {
-    promptPayload.details = options.payload;
-  }
-
-  return renderWatchEventPrompt({
-    title: options.claim.watch.title,
-    eventKind: options.claim.watch.detector.kind,
-    summary: options.summary,
-    occurredIso: new Date(options.claim.run.scheduledFor).toISOString(),
-    payload: promptPayload,
-  });
 }
 
 function describeWatchFailure(error: unknown): string {
@@ -89,7 +47,6 @@ function describeWatchFailure(error: unknown): string {
 export class WatchRunner {
   private readonly watches: WatchRunnerStore;
   private readonly sessions: WatchSessionStore;
-  private readonly coordinator: WatchCoordinator;
   private readonly evaluateWatchFn: WatchEvaluator;
   private readonly claimTtlMs: number;
   private readonly onError?: (error: unknown, watchId?: string) => Promise<void> | void;
@@ -99,7 +56,6 @@ export class WatchRunner {
   constructor(options: WatchRunnerOptions) {
     this.watches = options.watches;
     this.sessions = options.sessions;
-    this.coordinator = options.coordinator;
     this.evaluateWatchFn = options.evaluateWatch;
     this.claimTtlMs = options.claimTtlMs ?? DEFAULT_CLAIM_TTL_MS;
     this.onError = options.onError;
@@ -167,106 +123,62 @@ export class WatchRunner {
     if (!target) {
       return;
     }
-    const {session, threadId: resolvedThreadId} = target;
+    const {session} = target;
 
-    await this.watches.startWatchRun({
-      runId: claim.run.id,
-      resolvedThreadId,
-    });
+    const started = await this.watches.startWatchRun({runId: claim.run.id});
+    if (!started) return;
 
-    let evaluation;
+    let owned = true;
+    let renewal = Promise.resolve();
+    let renewing = false;
+    const timer = setInterval(() => {
+      if (renewing || !owned) return;
+      renewing = true;
+      renewal = Promise.resolve().then(async () => {
+        if (!owned) return;
+        owned = await this.watches.renewWatchClaim({runId: claim.run.id, claimTtlMs: this.claimTtlMs});
+      }).catch(async (error) => {
+        owned = false;
+        await this.onError?.(error, claim.watch.id);
+      }).finally(() => { renewing = false; });
+    }, Math.max(1, Math.floor(this.claimTtlMs / 3)));
+    let evaluation: WatchEvaluationResult;
     try {
       evaluation = await this.evaluateWatchFn(claim.watch, {
         agentKey: session.agentKey,
         identityId: claim.watch.createdByIdentityId ?? session.createdByIdentityId,
       });
     } catch (error) {
-      await this.failClaimRun(claim, error, {resolvedThreadId});
+      clearInterval(timer);
+      await renewal;
+      if (owned) await this.failClaimRun(claim, error);
       return;
+    } finally {
+      clearInterval(timer);
     }
-
-    if (!evaluation.changed || !evaluation.event) {
-      await this.watches.completeWatchRun({
-        runId: claim.run.id,
-        status: "no_change",
-        resolvedThreadId,
-        state: evaluation.nextState,
-        lastError: null,
-      });
-      return;
+    await renewal;
+    if (!owned) return;
+    // Retrying acceptance reads the committed run receipt; it never reevaluates or invents a new occurrence.
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await this.watches.acceptWatchEvaluation({runId: claim.run.id, evaluation});
+        return;
+      } catch (error) {
+        if (attempt === 2) throw error;
+      }
     }
-
-    const deliveryTarget = await this.resolveClaimTarget(claim, {resolvedThreadId});
-    if (!deliveryTarget) {
-      return;
-    }
-    let deliveryThreadId = deliveryTarget.threadId;
-
-    const event = await this.watches.recordEvent({
-      watchId: claim.watch.id,
-      sessionId: claim.watch.sessionId,
-      createdByIdentityId: claim.watch.createdByIdentityId,
-      resolvedThreadId: deliveryThreadId,
-      eventKind: evaluation.event.eventKind,
-      summary: evaluation.event.summary,
-      dedupeKey: evaluation.event.dedupeKey,
-      payload: evaluation.event.payload,
-    });
-
-    try {
-      const enqueue = await this.coordinator.submitSessionInput(claim.watch.sessionId, {
-        message: stringToUserMessage(buildWatchEventPrompt({
-          claim,
-          eventId: event.event.id,
-          summary: event.event.summary,
-          payload: event.event.payload,
-        })),
-        source: WATCH_EVENT_SOURCE,
-        externalMessageId: event.event.id,
-        identityId: claim.watch.createdByIdentityId ?? session.createdByIdentityId,
-        metadata: buildWatchEventMetadata(claim, event.event.id),
-      });
-      deliveryThreadId = enqueue.input.threadId;
-    } catch (error) {
-      await this.failClaimRun(claim, error, {resolvedThreadId: deliveryThreadId});
-      return;
-    }
-
-    await this.watches.completeWatchRun({
-      runId: claim.run.id,
-      status: "changed",
-      resolvedThreadId: deliveryThreadId,
-      emittedEventId: event.event.id,
-      state: evaluation.nextState,
-      lastError: null,
-    });
   }
 
-  private async resolveClaimTarget(
-    claim: ClaimWatchResult,
-    details: {
-      resolvedThreadId?: string;
-    } = {},
-  ): Promise<CurrentSessionThread | null> {
+  private async resolveClaimTarget(claim: ClaimWatchResult): Promise<CurrentSessionThread | null> {
     try {
       return await resolveCurrentSessionThread(this.sessions, claim.watch.sessionId);
     } catch (error) {
-      await this.failClaimRun(claim, error, details);
+      await this.failClaimRun(claim, error);
       return null;
     }
   }
 
-  private async failClaimRun(
-    claim: ClaimWatchResult,
-    error: unknown,
-    details: {
-      resolvedThreadId?: string;
-    } = {},
-  ): Promise<void> {
-    await this.watches.failWatchRun({
-      runId: claim.run.id,
-      error: describeWatchFailure(error),
-      ...(details.resolvedThreadId ? {resolvedThreadId: details.resolvedThreadId} : {}),
-    });
+  private async failClaimRun(claim: ClaimWatchResult, error: unknown): Promise<void> {
+    await this.watches.failWatchRun({runId: claim.run.id, error: describeWatchFailure(error)});
   }
 }

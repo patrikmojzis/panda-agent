@@ -169,6 +169,14 @@ function fixture() {
       }]),
     },
     conversations: {
+      getConversationBinding: vi.fn(async () => ({
+        source: "telegram",
+        connectorKey: "telegram-main",
+        externalConversationId: "1615376408",
+        sessionId: "session-1",
+        createdAt: 1,
+        updatedAt: 1,
+      })),
       listConversationBindings: vi.fn(async () => [{
         source: "telegram",
         connectorKey: "telegram-main",
@@ -317,7 +325,7 @@ describe("Telegram stickers", () => {
       enqueueAction: vi.fn(async (action) => {
         actions.push(action);
       }),
-      listConversationBindings: services.conversations.listConversationBindings,
+      getConversationBinding: services.conversations.getConversationBinding,
     }, {
       resolveReadablePath: vi.fn(),
     }, library);

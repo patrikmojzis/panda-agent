@@ -23,6 +23,7 @@ import type {
   LiveVoiceTurnRecord,
   LiveVoiceTurnStatus,
 } from "./types.js";
+import {LiveVoiceTurnNotFoundError} from "./types.js";
 
 const tables = buildRuntimeRelationNames({sessions: "live_voice_sessions", turns: "live_voice_turns"});
 const requestTables = buildRuntimeRequestTableNames();
@@ -250,7 +251,7 @@ export class LiveVoiceRepo {
 
   async getTurn(id: string): Promise<LiveVoiceTurnRecord> {
     const result = await this.pool.query(`SELECT * FROM ${tables.turns} WHERE id=$1`, [id]);
-    if (!result.rows[0]) throw new Error(`Unknown live voice turn ${id}.`);
+    if (!result.rows[0]) throw new LiveVoiceTurnNotFoundError(id);
     return parseTurn(result.rows[0] as Record<string, unknown>);
   }
 

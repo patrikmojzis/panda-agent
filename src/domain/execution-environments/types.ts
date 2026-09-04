@@ -83,6 +83,8 @@ export interface ExecutionEnvironmentRecord {
   agentKey: string;
   kind: ExecutionEnvironmentKind;
   state: ExecutionEnvironmentState;
+  /** Identifies the current operation and its terminal receipt; it is never reclaimed by time. */
+  operationId?: string;
   runnerUrl?: string;
   runnerCwd?: string;
   rootPath?: string;
@@ -116,6 +118,27 @@ export interface CreateExecutionEnvironmentInput {
   rootPath?: string;
   createdBySessionId?: string;
   createdForSessionId?: string;
+  expiresAt?: number;
+  metadata?: JsonValue;
+}
+
+export interface ClaimExecutionEnvironmentOperationInput {
+  environmentId: string;
+  operationId: string;
+  expectedOperationId?: string;
+  expectedState: "ready" | "failed" | "stopped";
+  state: "provisioning" | "stopping";
+  expiresBefore?: number;
+}
+
+export interface SettleExecutionEnvironmentOperationInput {
+  environmentId: string;
+  operationId: string;
+  operationState: "provisioning" | "stopping";
+  state: "ready" | "failed" | "stopped";
+  runnerUrl?: string;
+  runnerCwd?: string;
+  rootPath?: string;
   expiresAt?: number;
   metadata?: JsonValue;
 }

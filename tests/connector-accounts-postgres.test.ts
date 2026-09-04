@@ -4,7 +4,7 @@ import {afterEach, describe, expect, it} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
-import {PostgresConnectorAccountStore} from "../src/domain/connectors/index.js";
+import {PostgresConnectorAccountStore} from "../src/domain/connectors/postgres.js";
 import {ensurePostgresConnectorAccountSchema} from "../src/domain/connectors/postgres-schema.js";
 import {SecretCrypto} from "../src/domain/secrets/crypto.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";

@@ -72,7 +72,7 @@ function readA2AOptionalString(value: unknown, field: string): string | undefine
 }
 
 function parseA2ADeliveryStatus(value: unknown): A2ADeliveryRecord["status"] {
-  if (value === "pending" || value === "sending" || value === "sent" || value === "failed") {
+  if (value === "pending" || value === "sending" || value === "sent" || value === "failed" || value === "unknown") {
     return value;
   }
 

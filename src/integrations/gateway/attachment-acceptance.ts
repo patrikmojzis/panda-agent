@@ -1,62 +1,16 @@
-import * as fs from "node:fs/promises";
-import path from "node:path";
 import type {IncomingMessage} from "node:http";
 
-import {FileSystemMediaStore} from "../../domain/channels/media-store.js";
-import type {GatewayAttachmentRecord, GatewaySourceRecord} from "../../domain/gateway/types.js";
-import {
-  GatewayAttachmentConflictError,
-  sameIdempotentAttachmentUpload,
-} from "../../domain/gateway/postgres.js";
-import {resolveAgentMediaDir} from "../../lib/data-dir.js";
-import type {JsonValue} from "../../lib/json.js";
+import {inferMediaExtension} from "../../domain/channels/media-store.js";
+import type {GatewayAttachmentRecord, GatewaySourceRecord, GatewayAttachmentUploadInput} from "../../domain/gateway/types.js";
+import {sameIdempotentAttachmentUpload, type PostgresGatewayStore} from "../../domain/gateway/postgres.js";
 import {GatewayHttpError} from "./http-body.js";
 import {readGatewayBearerToken} from "./event-request.js";
-import {readGatewayAttachmentUploadRequest} from "./attachment-request.js";
+import {readGatewayAttachmentUploadHeaders, streamGatewayAttachmentUploadRequest} from "./attachment-request.js";
+import {cleanGatewayUploadDirectory, createGatewayUploadDirectory} from "./attachment-storage.js";
 
-interface GatewayAttachmentAcceptanceStore {
-  countPendingAttachmentsForSource(sourceId: string): Promise<number>;
-  getAttachmentByIdempotencyKey(sourceId: string, idempotencyKey: string): Promise<GatewayAttachmentRecord | null>;
-  resolveAccessToken(token: string): Promise<GatewaySourceRecord | null>;
-  resolveDeviceToken(token: string): Promise<{
-    device: {
-      capabilities: readonly string[];
-      deviceId: string;
-      sourceId: string;
-    };
-    source: GatewaySourceRecord;
-  } | null>;
-  touchDeviceSeen(input: {sourceId: string; deviceId: string}): Promise<void>;
-  storeAttachmentUpload(input: {
-    descriptor: {
-      id: string;
-      source: string;
-      connectorKey: string;
-      mimeType: string;
-      sizeBytes: number;
-      localPath: string;
-      originalFilename?: string;
-      metadata?: JsonValue;
-      createdAt: number;
-    };
-    expiresAt: number;
-    filename?: string;
-    idempotencyKey: string;
-    mimeType: string;
-    sha256: string;
-    sniffedMimeType?: string;
-    sourceId: string;
-  }): Promise<{
-    attachment: GatewayAttachmentRecord;
-    inserted: boolean;
-  }>;
-  useRateLimit(input: {
-    cost?: number;
-    key: string;
-    limit: number;
-    windowMs: number;
-  }): Promise<{allowed: boolean}>;
-}
+type GatewayAttachmentAcceptanceStore = Pick<PostgresGatewayStore,
+  "resolveAccessToken" | "resolveDeviceToken" | "touchDeviceSeen" | "reserveAttachmentUpload" | "completeAttachmentUpload"
+  | "discardAttachmentUpload" | "removeAttachmentUploadReservation" | "getAttachmentByIdempotencyKey">;
 
 function serializeAttachmentResponse(attachment: GatewayAttachmentRecord): {
   attachmentId: string;
@@ -78,20 +32,6 @@ function serializeAttachmentResponse(attachment: GatewayAttachmentRecord): {
     status: attachment.status,
     expiresAt: new Date(attachment.expiresAt).toISOString(),
   };
-}
-
-async function safeUnlink(localPath: string): Promise<void> {
-  await fs.unlink(localPath).catch((error: unknown) => {
-    if (
-      typeof error === "object"
-      && error !== null
-      && "code" in error
-      && (error as NodeJS.ErrnoException).code === "ENOENT"
-    ) {
-      return;
-    }
-    throw error;
-  });
 }
 
 async function requireGatewaySource(input: {
@@ -121,102 +61,66 @@ export async function acceptGatewayAttachmentUploadRequest(input: {
   allowedMimeTypes: readonly string[];
   attachmentBytesPerHour: number;
   attachmentUploadTtlMs: number;
+  attachmentRequestTimeoutMs: number;
+  deadline?: number;
+  maxConcurrentAttachmentUploads: number;
   env?: NodeJS.ProcessEnv;
   maxBytes: number;
   maxPendingAttachmentsPerSource: number;
   request: IncomingMessage;
   store: GatewayAttachmentAcceptanceStore;
-}): Promise<{
-  body: ReturnType<typeof serializeAttachmentResponse>;
-  status: 200 | 201;
-}> {
-  const resolved = await requireGatewaySource({
-    request: input.request,
-    store: input.store,
-  });
-  const source = resolved.source;
-  const upload = await readGatewayAttachmentUploadRequest({
-    allowedMimeTypes: input.allowedMimeTypes,
-    maxBytes: input.maxBytes,
-    request: input.request,
-  });
-
-  const existing = await input.store.getAttachmentByIdempotencyKey(source.sourceId, upload.idempotencyKey);
-  if (existing) {
-    if (!sameIdempotentAttachmentUpload(existing, {
-      descriptor: {sizeBytes: upload.sizeBytes},
-      mimeType: upload.mimeType,
-      sha256: upload.sha256,
-    })) {
-      throw new GatewayAttachmentConflictError(existing);
-    }
-    return {
-      status: 200,
-      body: serializeAttachmentResponse(existing),
-    };
-  }
-
-  const pending = await input.store.countPendingAttachmentsForSource(source.sourceId);
-  if (pending >= input.maxPendingAttachmentsPerSource) {
-    throw new GatewayHttpError(429, "Pending attachment limit exceeded.");
-  }
-
-  const byteBudget = await input.store.useRateLimit({
-    key: `gateway:source:${source.sourceId}:attachment_bytes`,
-    windowMs: 60 * 60_000,
-    cost: upload.sizeBytes,
-    limit: input.attachmentBytesPerHour,
-  });
-  if (!byteBudget.allowed) {
-    throw new GatewayHttpError(429, "Attachment byte budget exceeded.");
-  }
-
-  const mediaStore = new FileSystemMediaStore({
-    rootDir: resolveAgentMediaDir(source.agentKey, input.env),
-  });
-  const deviceId = resolved.device?.deviceId;
-  const descriptor = await mediaStore.writeMedia({
-    bytes: upload.bytes,
-    source: "gateway",
-    connectorKey: deviceId ? `${source.sourceId}__${deviceId}` : source.sourceId,
-    mimeType: upload.mimeType,
-    sizeBytes: upload.sizeBytes,
-    hintFilename: upload.filename,
-    metadata: {
-      schemaVersion: 1,
-      gateway: {
-        sourceId: source.sourceId,
-        ...(deviceId ? {deviceId} : {}),
-        sha256: upload.sha256,
-        scanStatus: "not_scanned",
-        trust: "external_untrusted",
-      },
-    },
-  });
-  const filename = upload.filename ?? path.basename(descriptor.localPath);
+}): Promise<{body: ReturnType<typeof serializeAttachmentResponse>; status: 200 | 201}> {
+  const expiresAt = input.deadline ?? Date.now() + input.attachmentRequestTimeoutMs;
+  const remainingMs = expiresAt - Date.now();
+  if (remainingMs <= 0) throw new GatewayHttpError(408, "Attachment upload deadline exceeded.");
+  // Cover authentication/admission waits too. A stalled DB must not keep the HTTP body open forever.
+  const onRequestError = () => {};
+  input.request.on("error", onRequestError);
+  const timer = setTimeout(() => input.request.destroy(new GatewayHttpError(408, "Attachment upload deadline exceeded.")), remainingMs);
+  timer.unref();
   try {
-    const stored = await input.store.storeAttachmentUpload({
-      sourceId: source.sourceId,
-      idempotencyKey: upload.idempotencyKey,
-      descriptor: {
-        ...descriptor,
-        originalFilename: filename,
-      },
-      sha256: upload.sha256,
-      mimeType: upload.mimeType,
-      sniffedMimeType: upload.sniffedMimeType,
-      filename,
-      expiresAt: Date.now() + Math.max(1, Math.floor(input.attachmentUploadTtlMs)),
-    });
-    if (!stored.inserted && stored.attachment.localPath !== descriptor.localPath) {
-      await safeUnlink(descriptor.localPath);
+    const {source, device} = await requireGatewaySource(input);
+    const headers = readGatewayAttachmentUploadHeaders(input);
+    const connectorKey = device ? `${source.sourceId}__${device.deviceId}` : source.sourceId;
+    const directory = await createGatewayUploadDirectory({sourceId: source.sourceId, agentKey: source.agentKey,
+      connectorKey, expiresAt, env: input.env});
+    let completedInput: GatewayAttachmentUploadInput | undefined;
+    try {
+      const reservation = await input.store.reserveAttachmentUpload({id: directory.id, sourceId: source.sourceId,
+        directory: directory.directory, idempotencyKey: headers.idempotencyKey, reservedBytes: headers.contentLength ?? input.maxBytes,
+        maxConcurrent: input.maxConcurrentAttachmentUploads, maxPending: input.maxPendingAttachmentsPerSource,
+        byteLimit: input.attachmentBytesPerHour, expiresAt});
+      const upload = await streamGatewayAttachmentUploadRequest({headers, localPath: directory.localPath,
+        maxBytes: input.maxBytes, expiresAt: Math.min(expiresAt, reservation.expiresAt), request: input.request});
+      const filename = upload.filename ?? `${directory.id}${inferMediaExtension(upload.mimeType)}`;
+      completedInput = {sourceId: source.sourceId, idempotencyKey: upload.idempotencyKey,
+        descriptor: {id: directory.id, source: "gateway", connectorKey, mimeType: upload.mimeType, sizeBytes: upload.sizeBytes,
+          localPath: directory.localPath, originalFilename: filename, createdAt: Date.now(),
+          metadata: {schemaVersion: 1, gateway: {sourceId: source.sourceId, ...(device ? {deviceId: device.deviceId} : {}),
+            sha256: upload.sha256, scanStatus: "not_scanned", trust: "external_untrusted"}}},
+        sha256: upload.sha256, mimeType: upload.mimeType, sniffedMimeType: upload.sniffedMimeType, filename,
+        expiresAt: Date.now() + input.attachmentUploadTtlMs};
+      const stored = await input.store.completeAttachmentUpload(directory.id, completedInput);
+      await cleanGatewayUploadDirectory({upload: directory, store: input.store}).catch(reportCleanupError);
+      return {status: stored.inserted ? 201 : 200, body: serializeAttachmentResponse(stored.attachment)};
+    } catch (error) {
+      // The transaction may have committed despite a lost acknowledgement. Read the durable receipt;
+      // cleanup separately proves revocation/absence under the same lock used by metadata acceptance.
+      const receipt = completedInput
+        ? await input.store.getAttachmentByIdempotencyKey(source.sourceId, headers.idempotencyKey).catch(() => null)
+        : null;
+      await cleanGatewayUploadDirectory({upload: directory, store: input.store}).catch(reportCleanupError);
+      if (receipt && completedInput && sameIdempotentAttachmentUpload(receipt, completedInput)) {
+        return {status: receipt.id === directory.id ? 201 : 200, body: serializeAttachmentResponse(receipt)};
+      }
+      throw error;
     }
-    return {
-      status: stored.inserted ? 201 : 200,
-      body: serializeAttachmentResponse(stored.attachment),
-    };
-  } catch (error) {
-    await safeUnlink(descriptor.localPath).catch(() => undefined);
-    throw error;
+  } finally {
+    clearTimeout(timer);
+    input.request.off("error", onRequestError);
   }
+}
+
+function reportCleanupError(error: unknown): void {
+  console.error("Gateway upload cleanup deferred", {error: error instanceof Error ? error.message : String(error)});
 }

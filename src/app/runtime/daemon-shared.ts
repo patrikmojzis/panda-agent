@@ -11,6 +11,7 @@ export interface DaemonOptions {
   cwd: string;
   dbUrl?: string;
   readOnlyDbUrl?: string;
+  /** @deprecated Ignored. Durable subagents cannot spawn nested subagents. */
   maxSubagentDepth?: number;
   commandCatalog?: CommandCatalog<any, CommandCatalogModule<any>>;
   /** @deprecated Prefer commandCatalog. */

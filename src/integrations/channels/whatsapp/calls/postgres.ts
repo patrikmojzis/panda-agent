@@ -8,6 +8,7 @@ import {optionalTimestampMillis, requireTimestampMillis} from "../../../../lib/p
 import {requireNonEmptyString, trimToUndefined} from "../../../../lib/strings.js";
 import {buildSessionTableNames} from "../../../../domain/sessions/postgres-shared.js";
 import {SessionArchivedError} from "../../../../domain/threads/runtime/store.js";
+import {VoiceControlWaitTimeoutError} from "../../../voice/control-errors.js";
 import type {WhatsAppCallControlInput, WhatsAppCallControlRecord, WhatsAppCallControlStatus, WhatsAppCallNotification, WhatsAppCallSendMode} from "./types.js";
 
 export const WHATSAPP_CALL_NOTIFICATION_CHANNEL = "runtime_whatsapp_call_events";
@@ -99,7 +100,7 @@ export class WhatsAppCallControlRepo {
       options.signal?.throwIfAborted();
       const record = await this.getControl(id);
       if (record.status === "completed" || record.status === "failed") return record;
-      if (Date.now() >= deadline) throw new Error(`Timed out waiting for WhatsApp call control ${id}.`);
+      if (Date.now() >= deadline) throw new VoiceControlWaitTimeoutError(`Timed out waiting for WhatsApp call control ${id}.`);
       await new Promise<void>((resolve) => { const timer = setTimeout(resolve, 250); timer.unref?.(); });
     }
   }

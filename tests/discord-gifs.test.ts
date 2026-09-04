@@ -241,7 +241,7 @@ describe("discord.gif.send command", () => {
   it("requires exactly one source before queueing", async () => {
     const enqueueDelivery = vi.fn();
     const command = createDiscordGifSendCommand({
-      listConversationBindings: vi.fn(async () => [binding()]),
+      getConversationBinding: vi.fn(async () => binding()),
       enqueueDelivery,
     }, {resolveReadablePath: vi.fn()}, createDiscordGifService());
 
@@ -261,7 +261,7 @@ describe("discord.gif.send command", () => {
       downloadRemoteGif: vi.fn(),
     };
     const command = createDiscordGifSendCommand({
-      listConversationBindings: vi.fn(async () => [binding()]),
+      getConversationBinding: vi.fn(async () => binding()),
       enqueueDelivery,
     }, {
       resolveReadablePath: vi.fn(async () => ({path: "/safe/reaction.gif", displayPath: "reaction.gif"})),
@@ -302,7 +302,7 @@ describe("discord.gif.send command", () => {
   it("does not persist the remote source URL in the queued delivery or result", async () => {
     const enqueueDelivery = vi.fn(async () => ({id: "delivery-1"}));
     const command = createDiscordGifSendCommand({
-      listConversationBindings: vi.fn(async () => [binding()]),
+      getConversationBinding: vi.fn(async () => binding()),
       enqueueDelivery,
     }, {resolveReadablePath: vi.fn()}, {
       validateLocalFile: vi.fn(),
@@ -323,7 +323,7 @@ describe("discord.gif.send command", () => {
   it("rejects captions over Discord's 2000-character limit", async () => {
     const enqueueDelivery = vi.fn();
     const command = createDiscordGifSendCommand({
-      listConversationBindings: vi.fn(async () => [binding()]),
+      getConversationBinding: vi.fn(async () => binding()),
       enqueueDelivery,
     }, {resolveReadablePath: vi.fn()}, createDiscordGifService());
     await expect(command.execute(request({

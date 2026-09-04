@@ -5,10 +5,8 @@ import {PostgresAgentStore} from "../src/domain/agents/index.js";
 import {ensurePostgresAgentSchema} from "../src/domain/agents/postgres-schema.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
 import {ensurePostgresIdentitySchema} from "../src/domain/identity/postgres-schema.js";
-import {
-  BUILTIN_SUBAGENT_PROFILES,
-  PostgresSubagentProfileStore,
-} from "../src/domain/subagents/index.js";
+import {BUILTIN_SUBAGENT_PROFILES} from "../src/domain/subagents/builtins.js";
+import {PostgresSubagentProfileStore} from "../src/domain/subagents/postgres.js";
 import {buildSubagentTableNames} from "../src/domain/subagents/postgres-shared.js";
 import {ensurePostgresSubagentSchema} from "../src/domain/subagents/postgres-schema.js";
 

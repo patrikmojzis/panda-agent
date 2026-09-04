@@ -1,4 +1,5 @@
 import {requireTimestampMillis, toJson} from "../../../lib/postgres-values.js";
+import {summarizeRuntimeError} from "../../../lib/runtime-error-summary.js";
 import {randomUUID} from "node:crypto";
 
 import {
@@ -15,7 +16,7 @@ import {
 import {
     applyPendingThreadInputs,
     discardPendingThreadInputs,
-    enqueueSessionThreadInput,
+    enqueueSessionInputWithClient,
     enqueueThreadInput,
     wakePendingThreadInputs,
 } from "./postgres-inputs.js";
@@ -932,18 +933,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
     deliveryMode: ThreadInputDeliveryMode = "wake",
     options?: ThreadEnqueueOptions,
   ): Promise<ThreadEnqueueResult> {
-    return enqueueSessionThreadInput({
-      pool: this.pool,
-      tables: this.tables,
-      sessionTable: this.sessionTables.sessions,
-      sessionRuntimeConfigTable: this.sessionTables.sessionRuntimeConfig,
-      sessionRouteTable: this.sessionRouteTables.sessionRoutes,
-      notificationChannel: this.notificationChannel,
-      sessionId,
-      payload,
-      deliveryMode,
-      enqueueOptions: options,
-    });
+    return enqueueSessionInputWithClient(this.pool, sessionId, payload, deliveryMode, options);
   }
 
   async applyPendingInputs(
@@ -1698,6 +1688,8 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
     options: {blocksNewRuns?: boolean} = {},
   ): Promise<ThreadRunRecord | null> {
     const blocksNewRuns = options.blocksNewRuns ?? false;
+    // Snapshot the first abort reason's safe summary with its request. Completion can
+    // then settle that stored reason atomically without reinterpreting it in SQL.
     if (blocksNewRuns && !operationId) {
       throw new Error("A run-blocking abort requires a durable operation id.");
     }
@@ -1718,7 +1710,8 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
         ), aborted AS (
           UPDATE ${this.tables.runs} AS run
           SET abort_requested_at = COALESCE(run.abort_requested_at, NOW()),
-              abort_reason = COALESCE(run.abort_reason, $2)
+              abort_reason = COALESCE(run.abort_reason, $2),
+              error_summary = CASE WHEN run.abort_reason IS NULL THEN $4 ELSE run.error_summary END
           FROM target_run
           WHERE run.id = target_run.id
             AND run.thread_id = target_run.thread_id
@@ -1740,7 +1733,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
           (SELECT COUNT(*) FROM notified) AS notification_count
         FROM (VALUES (1)) AS singleton(value)
         LEFT JOIN aborted ON TRUE
-      `, [threadId, reason, this.notificationChannel]);
+      `, [threadId, reason, this.notificationChannel, summarizeRuntimeError(reason)]);
       const row = direct.rows[0] as Record<string, unknown> | undefined;
       if (!row || row.thread_found !== true) {
         throw missingThreadError(threadId);
@@ -1802,7 +1795,8 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
       ), aborted AS (
         UPDATE ${this.tables.runs} AS run
         SET abort_requested_at = COALESCE(run.abort_requested_at, NOW()),
-            abort_reason = COALESCE(run.abort_reason, inserted_operation.reason)
+            abort_reason = COALESCE(run.abort_reason, inserted_operation.reason),
+            error_summary = CASE WHEN run.abort_reason IS NULL THEN $6 ELSE run.error_summary END
         FROM inserted_operation
         WHERE inserted_operation.thread_id = $1
           AND inserted_operation.reason = $2
@@ -1840,7 +1834,7 @@ export class PostgresThreadRuntimeStore implements ThreadRuntimeStore, ThreadShe
         (SELECT COUNT(*) FROM notified) AS notification_count
       FROM (VALUES (1)) AS singleton(value)
       LEFT JOIN resolved_run ON TRUE
-      `, [threadId, reason, operationId, this.notificationChannel, blocksNewRuns]);
+      `, [threadId, reason, operationId, this.notificationChannel, blocksNewRuns, summarizeRuntimeError(reason)]);
       const row = result.rows[0] as Record<string, unknown> | undefined;
       if (!row || row.thread_found !== true) {
         throw missingThreadError(threadId);

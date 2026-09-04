@@ -117,6 +117,7 @@ interface CandidateRow {
   environment_agent_key: string;
   kind: ExecutionEnvironmentRecord["kind"];
   state: ExecutionEnvironmentState;
+  operation_id: string | null;
   runner_url: string | null;
   runner_cwd: string | null;
   root_path: string | null;
@@ -187,6 +188,7 @@ function parseCandidateRow(row: Record<string, unknown>): CandidateRow {
     environment_agent_key: requireTrimmed("subagent environment agent key", row.environment_agent_key),
     kind: parseEnvironmentKind(row.kind),
     state: parseEnvironmentState(row.state),
+    operation_id: nullableString("environment operation id", row.operation_id),
     runner_url: nullableString("subagent runner url", row.runner_url),
     runner_cwd: nullableString("subagent runner cwd", row.runner_cwd),
     root_path: nullableString("subagent root path", row.root_path),
@@ -205,6 +207,7 @@ function parseEnvironmentRow(row: CandidateRow): ExecutionEnvironmentRecord {
     agentKey: row.environment_agent_key,
     kind: row.kind,
     state: row.state,
+    ...(row.operation_id ? {operationId: row.operation_id} : {}),
     ...(row.runner_url ? {runnerUrl: row.runner_url} : {}),
     ...(row.runner_cwd ? {runnerCwd: row.runner_cwd} : {}),
     ...(row.root_path ? {rootPath: row.root_path} : {}),
@@ -596,25 +599,32 @@ export class SubagentPurgeService {
       }
     }
 
+    const receipts = new Map<string, string | undefined>();
     for (const candidate of plan.candidates) {
       if (shouldStopEnvironment(candidate.environment)) {
-        await this.stopEnvironment(candidate.environment.id);
+        const stopped = await this.stopEnvironment(candidate.environment.id);
+        receipts.set(candidate.environment.id, stopped.operationId);
+      } else {
+        receipts.set(candidate.environment.id, candidate.environment.operationId);
       }
     }
 
     await withTransaction(this.pool, async (client) => {
+      const deleted: SubagentPurgeCandidate[] = [];
       for (const candidate of plan.candidates) {
-        await this.deleteDbRows(client, candidate);
-      }
-    });
-
-    if (!input.skipFiles) {
-      for (const candidate of plan.candidates) {
-        if (candidate.filesystem.status === "safe" && candidate.filesystem.rootPath) {
-          await rm(candidate.filesystem.rootPath, {recursive: true, force: false});
+        if (await this.deleteDbRows(client, candidate, receipts.get(candidate.environment.id))) {
+          deleted.push(candidate);
         }
       }
-    }
+      // Keep the deleted rows locked until their roots are gone; reusing an ID must wait.
+      if (!input.skipFiles) {
+        for (const candidate of deleted) {
+          if (candidate.filesystem.status === "safe" && candidate.filesystem.rootPath) {
+            await rm(candidate.filesystem.rootPath, {recursive: true, force: false});
+          }
+        }
+      }
+    });
 
     return {
       ...plan,
@@ -622,11 +632,11 @@ export class SubagentPurgeService {
     };
   }
 
-  private async stopEnvironment(environmentId: string): Promise<void> {
+  private async stopEnvironment(environmentId: string): Promise<ExecutionEnvironmentRecord> {
     if (!this.manager) {
       throw new Error("Purge needs an execution environment manager to stop active disposable subagents.");
     }
-    await stopExecutionEnvironment({
+    return stopExecutionEnvironment({
       environmentId,
       manager: this.manager,
       store: this.environmentStore,
@@ -677,6 +687,7 @@ export class SubagentPurgeService {
         env.agent_key AS environment_agent_key,
         env.kind,
         env.state,
+        env.operation_id,
         env.runner_url,
         env.runner_cwd,
         env.root_path,
@@ -968,7 +979,19 @@ export class SubagentPurgeService {
     }
   }
 
-  private async deleteDbRows(client: PgClientLike, candidate: SubagentPurgeCandidate): Promise<void> {
+  private async deleteDbRows(client: PgClientLike, candidate: SubagentPurgeCandidate, operationId: string | undefined): Promise<boolean> {
+    const current = await client.query(`
+      SELECT state, operation_id FROM ${this.environments.executionEnvironments} WHERE id = $1 FOR UPDATE
+    `, [candidate.environment.id]);
+    const row = current.rows[0] as {state: string; operation_id: string | null} | undefined;
+    if (!row) return false;
+    const state = row.state;
+    if (state !== "stopped" && state !== "failed") {
+      throw new Error(`Refusing to purge execution environment ${candidate.environment.id}: it became ${state} after planning.`);
+    }
+    if ((row.operation_id ?? undefined) !== operationId) {
+      throw new Error(`Refusing to purge execution environment ${candidate.environment.id}: its operation changed after planning.`);
+    }
     await this.deleteOutboundDeliveries(client, candidate);
     await this.deleteRuntimeRequests(client, candidate);
     await client.query(`DELETE FROM ${this.environments.executionEnvironments} WHERE id = $1`, [
@@ -979,6 +1002,7 @@ export class SubagentPurgeService {
       const sessionClause = buildTextInClause("id", candidate.sessionIds, values);
       await client.query(`DELETE FROM ${this.sessions.sessions} WHERE ${sessionClause} AND kind = 'subagent'`, values);
     }
+    return true;
   }
 
   private async deleteOutboundDeliveries(client: PgClientLike, candidate: SubagentPurgeCandidate): Promise<void> {

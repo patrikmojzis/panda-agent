@@ -10,7 +10,7 @@ import {
   Thread,
 } from "../src/index.js";
 import {resolveProviderModel} from "../src/integrations/providers/shared/model.js";
-import {resolveDefaultAgentModelSelector, resolveDefaultAgentSubagentModelSelector,} from "../src/panda/defaults.js";
+import {resolveDefaultAgentModelSelector} from "../src/panda/defaults.js";
 
 describe("model selector", () => {
   afterEach(() => {
@@ -128,14 +128,15 @@ describe("model selector", () => {
     expect(thread.model).toBe("anthropic-oauth/claude-opus-4-7");
   });
 
-  it.each([
-    ["workspace", "WORKSPACE_SUBAGENT_MODEL", "opus", "anthropic-oauth/claude-opus-4-7"],
-    ["memory", "MEMORY_SUBAGENT_MODEL", "gpt", "openai-codex/gpt-5.5"],
-    ["browser", "BROWSER_SUBAGENT_MODEL", "opus", "anthropic-oauth/claude-opus-4-7"],
-    ["skill_maintainer", "SKILL_MAINTAINER_SUBAGENT_MODEL", "gpt", "openai-codex/gpt-5.5"],
-  ] as const)("resolves the %s subagent selector from %s", (role, envKey, configured, expected) => {
-    expect(resolveDefaultAgentSubagentModelSelector(role, {[envKey]: configured})).toBe(expected);
-    expect(resolveDefaultAgentSubagentModelSelector(role, {})).toBeUndefined();
+  it("honours an explicit model when the unused environment default is invalid", () => {
+    vi.stubEnv("DEFAULT_MODEL", "invalid-unused-default");
+
+    const thread = new Thread({
+      agent: new Agent({name: "core", instructions: "Be helpful"}),
+      model: "openai/gpt-5.4",
+    });
+
+    expect(thread.model).toBe("openai/gpt-5.4");
   });
 
   it.each([

@@ -1,4 +1,4 @@
-import {describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {
   DEFAULT_MODEL_CONTEXT_POLICY,
@@ -9,6 +9,25 @@ import {
 } from "../src/kernel/models/model-context-policy.js";
 
 describe("model context policy", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("resolves an explicit model budget independently of the environment default", () => {
+    vi.stubEnv("DEFAULT_MODEL", "invalid-unused-default");
+
+    expect(resolveModelRuntimeBudget("openai/gpt-5.4")).toMatchObject({
+      canonicalModel: "openai/gpt-5.4",
+      operatingWindow: 272_000,
+    });
+  });
+
+  it("rejects an empty model instead of selecting one implicitly", () => {
+    vi.stubEnv("DEFAULT_MODEL", "openai-codex/gpt-6-astra");
+
+    expect(() => resolveModelContextPolicy(" ")).toThrow("Model context policy requires a model selector.");
+  });
+
   it("prefers exact matches over family prefixes", () => {
     const rules: readonly ModelContextPolicyRule[] = [
       {

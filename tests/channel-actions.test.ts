@@ -163,7 +163,7 @@ describe("PostgresChannelActionStore", () => {
       attemptCount: 1,
     });
 
-    const sent = await store.markActionSent(action.id);
+    const sent = await store.markActionSent(action.id, claimed!.claimToken!);
     expect(sent).toMatchObject({
       id: action.id,
       status: "sent",
@@ -468,7 +468,7 @@ describe("PostgresChannelActionStore", () => {
       },
     });
 
-    await expect(store.markActionSent("action-1")).rejects.toThrow(
+    await expect(store.markActionSent("action-1", "claim-1")).rejects.toThrow(
       "Channel action connector key must not be empty.",
     );
   });
@@ -482,7 +482,7 @@ describe("PostgresChannelActionStore", () => {
         connect: vi.fn(),
       },
     });
-    await expect(badCount.markActionSent("action-1")).rejects.toThrow(
+    await expect(badCount.markActionSent("action-1", "claim-1")).rejects.toThrow(
       "Channel action attempt count must be a non-negative integer.",
     );
 
@@ -494,7 +494,7 @@ describe("PostgresChannelActionStore", () => {
         connect: vi.fn(),
       },
     });
-    await expect(badTimestamp.markActionSent("action-1")).rejects.toThrow(
+    await expect(badTimestamp.markActionSent("action-1", "claim-1")).rejects.toThrow(
       "Channel action updated_at must be a finite timestamp.",
     );
 
@@ -506,12 +506,12 @@ describe("PostgresChannelActionStore", () => {
         connect: vi.fn(),
       },
     });
-    await expect(badExpiry.markActionSent("action-1")).rejects.toThrow(
+    await expect(badExpiry.markActionSent("action-1", "claim-1")).rejects.toThrow(
       "Channel action expires_at must be a finite timestamp.",
     );
   });
 
-  it("marks abandoned sending actions as failed", async () => {
+  it("preserves abandoned sending actions as unknown outcomes", async () => {
     const db = newDb();
     db.public.registerFunction({
       name: "pg_notify",
@@ -537,7 +537,7 @@ describe("PostgresChannelActionStore", () => {
       channel: "telegram",
       connectorKey: "bot-1",
     });
-    const recovered = await store.failSendingActions({
+    const recovered = await store.markSendingActionsUnknown({
       channel: "telegram",
       connectorKey: "bot-1",
     }, "worker died");
@@ -549,7 +549,7 @@ describe("PostgresChannelActionStore", () => {
       [action.id],
     );
     expect(rows.rows[0]).toMatchObject({
-      status: "failed",
+      status: "unknown",
       last_error: "worker died",
     });
   });
@@ -615,8 +615,8 @@ describe("PostgresChannelActionStore", () => {
       }
 
       if (text.includes("RETURNING *")) {
-        expect(values).toEqual(["action-1"]);
-        return {rows: [sendingRow]};
+        expect(values).toEqual(["action-1", expect.stringMatching(/^[0-9a-f-]{36}$/)]);
+        return {rows: [{...sendingRow, claim_token: values?.[1]}]};
       }
 
       throw new Error(`Unexpected query in test: ${text}`);
@@ -688,25 +688,26 @@ class MemoryActionStore {
     }
 
     action.status = "sending";
+    action.claimToken = `claim-${action.id}`;
     action.attemptCount += 1;
     return action;
   }
 
-  async markActionSent(id: string): Promise<ChannelActionRecord> {
-    const action = this.getAction(id);
+  async markActionSent(id: string, _claimToken: string): Promise<ChannelActionRecord> {
+    const action = await this.getAction(id);
     action.status = "sent";
     return action;
   }
 
-  async markActionFailed(id: string, error: string): Promise<ChannelActionRecord> {
-    const action = this.getAction(id);
+  async markActionFailed(id: string, _claimToken: string, error: string): Promise<ChannelActionRecord> {
+    const action = await this.getAction(id);
     action.status = "failed";
     action.lastError = error;
     return action;
   }
 
-  async expireActionIfDue(id: string): Promise<ChannelActionRecord | null> {
-    const action = this.getAction(id);
+  async expireActionIfDue(id: string, _claimToken: string): Promise<ChannelActionRecord | null> {
+    const action = await this.getAction(id);
     if (action.expiresAt === undefined || action.expiresAt > Date.now()) return null;
     action.status = "expired";
     action.attemptCount = Math.max(0, action.attemptCount - 1);
@@ -714,7 +715,16 @@ class MemoryActionStore {
     return action;
   }
 
-  async failSendingActions(lookup: ActionWorkerLookup, error: string): Promise<number> {
+  async markActionUnknown(id: string, claimToken: string, error: string): Promise<ChannelActionRecord> {
+    const action = await this.getAction(id);
+    if (action.status === "sending" && action.claimToken === claimToken) {
+      action.status = "unknown";
+      action.lastError = error;
+    }
+    return action;
+  }
+
+  async markSendingActionsUnknown(lookup: ActionWorkerLookup, error: string): Promise<number> {
     let count = 0;
     for (const action of this.actions) {
       if (
@@ -722,7 +732,7 @@ class MemoryActionStore {
         && action.channel === lookup.channel
         && action.connectorKey === lookup.connectorKey
       ) {
-        action.status = "failed";
+        action.status = "unknown";
         action.lastError = error;
         count += 1;
       }
@@ -740,7 +750,7 @@ class MemoryActionStore {
     };
   }
 
-  private getAction(id: string): ChannelActionRecord {
+  async getAction(id: string): Promise<ChannelActionRecord> {
     const action = this.actions.find((candidate) => candidate.id === id);
     if (!action) {
       throw new Error(`Unknown action ${id}`);
@@ -995,5 +1005,63 @@ describe("ChannelActionWorker", () => {
     await stopping;
 
     expect(store.actions[0]?.status).toBe("sent");
+  });
+});
+
+describe("action receipt settlement", () => {
+  async function prepare() {
+    const store = new MemoryActionStore();
+    const action = await store.enqueueAction({
+      channel: "telegram", connectorKey: "bot", kind: "telegram_reaction",
+      payload: {conversationId: "chat", messageId: "message", emoji: "✅"},
+    });
+    const dispatch = vi.fn(async () => {});
+    const onError = vi.fn();
+    const options = {store, lookup: {channel: "telegram", connectorKey: "bot"}, dispatch, onError};
+    return {store, action, dispatch, onError, options};
+  }
+
+  it.each(["write rejected", "acknowledgement lost"] as const)("settles one dispatch when its receipt %s", async (mode) => {
+    const h = await prepare();
+    const write = h.store.markActionSent.bind(h.store);
+    vi.spyOn(h.store, "markActionSent").mockImplementationOnce(async (id, token) => {
+      if (mode === "acknowledgement lost") await write(id, token);
+      throw new Error("database response lost");
+    });
+    const worker = new ChannelActionWorker(h.options);
+    await worker.start({subscribeToNotifications: false});
+    await worker.triggerDrain();
+    await worker.stop();
+    expect(h.action).toMatchObject({status: "sent", attemptCount: 1});
+    expect(h.dispatch).toHaveBeenCalledOnce();
+    expect(h.onError).not.toHaveBeenCalled();
+  });
+
+  it("preserves an unknown receipt through restart without dispatching again", async () => {
+    const h = await prepare();
+    vi.spyOn(h.store, "markActionSent").mockRejectedValue(new Error("receipt write unavailable"));
+    const worker = new ChannelActionWorker(h.options);
+    await worker.start({subscribeToNotifications: false});
+    await worker.triggerDrain();
+    await worker.stop();
+    const restarted = new ChannelActionWorker(h.options);
+    await restarted.start({subscribeToNotifications: false});
+    await restarted.triggerDrain();
+    await restarted.stop();
+    expect(h.action).toMatchObject({status: "unknown", attemptCount: 1});
+    expect(h.dispatch).toHaveBeenCalledOnce();
+    expect(h.onError).toHaveBeenCalledWith(expect.objectContaining({message: expect.stringContaining("sent receipt could not be confirmed")}), h.action.id);
+  });
+
+  it("does not call an interrupted sending action expired merely because its deadline passed", async () => {
+    const h = await prepare();
+    await h.store.claimNextPendingAction(h.options.lookup);
+    h.action.expiresAt = Date.now() - 1;
+    const worker = new ChannelActionWorker(h.options);
+    await worker.start({subscribeToNotifications: false});
+    await worker.triggerDrain();
+    await worker.stop();
+    expect(h.action).toMatchObject({status: "unknown", attemptCount: 1});
+    expect(h.dispatch).not.toHaveBeenCalled();
   });
 });

@@ -134,10 +134,8 @@ describe.sequential("channel-action runtime with PostgreSQL", () => {
       payload: {conversationId: "valid-chat", messageId: "valid-message", emoji: "✅"},
     });
 
-    await expect(actions.claimNextPendingAction({
-      channel: "telegram",
-      connectorKey: "bot-archive",
-    })).resolves.toMatchObject({id: valid.id, status: "sending"});
+    const validClaim = await actions.claimNextPendingAction({channel: "telegram", connectorKey: "bot-archive"});
+    expect(validClaim).toMatchObject({id: valid.id, status: "sending"});
     await expect(producerPool.query(`
       SELECT status, last_error
       FROM "runtime"."channel_actions"
@@ -145,7 +143,7 @@ describe.sequential("channel-action runtime with PostgreSQL", () => {
     `, [archived.id])).resolves.toMatchObject({
       rows: [{status: "failed", last_error: "Session archived."}],
     });
-    await actions.markActionSent(valid.id);
+    await actions.markActionSent(valid.id, validClaim!.claimToken!);
   });
 
   liveIt("allows only one concurrent claimer to take a pending action", async () => {
@@ -163,7 +161,7 @@ describe.sequential("channel-action runtime with PostgreSQL", () => {
       secondStore.claimNextPendingAction({channel: "telegram", connectorKey: "bot-concurrent"}),
     ]);
     expect(claims.filter((claim) => claim?.id === action.id)).toHaveLength(1);
-    await firstStore.markActionSent(action.id);
+    await firstStore.markActionSent(action.id, claims.find((claim) => claim?.id === action.id)!.claimToken!);
   });
 
   liveIt("routes real notifications to the matching account and resumes after LISTEN reconnect", async () => {

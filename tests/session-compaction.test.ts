@@ -5,7 +5,7 @@ import {Agent, PiAiRuntime, RunContext, Tool, z} from "../src/index.js";
 import {createSessionCompactCommand} from "../src/domain/sessions/compaction-commands.js";
 import type {SessionCompactionOutcome, SessionCompactionRequest, SessionCompactionStore} from "../src/domain/sessions/compaction.js";
 import {processSessionCompaction} from "../src/domain/threads/runtime/session-compaction.js";
-import {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/coordinator.js";
+import {ThreadRuntimeCoordinator} from "../src/app/sdk/thread-runtime.js";
 import {compactThread} from "../src/kernel/transcript/compaction.js";
 import {renderSessionCompactionOutcome} from "../src/prompts/runtime/compaction.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";

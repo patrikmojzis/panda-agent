@@ -1,6 +1,7 @@
 import type {ActionNotification, ActionWorkerLookup, ChannelActionRecord} from "./types.js";
 import {isMatchingChannelNotification} from "../worker-shared.js";
 import {DrainLoop} from "../../../lib/drain-loop.js";
+import {settleChannelReceipt} from "../receipt-settlement.js";
 
 export const DEFAULT_CHANNEL_ACTION_POLL_INTERVAL_MS = 15_000;
 
@@ -14,14 +15,16 @@ export type ChannelActionWorkerEvent = {
 };
 
 type ChannelActionWorkerStore = {
-  failSendingActions(lookup: ActionWorkerLookup, error: string): Promise<number>;
+  markSendingActionsUnknown(lookup: ActionWorkerLookup, error: string): Promise<number>;
+  getAction(id: string): Promise<ChannelActionRecord>;
   listenPendingActions?(
     listener: (notification: ActionNotification) => Promise<void> | void,
   ): Promise<() => Promise<void>>;
   claimNextPendingAction(lookup: ActionWorkerLookup): Promise<ChannelActionRecord | null>;
-  markActionSent(id: string): Promise<ChannelActionRecord>;
-  markActionFailed(id: string, error: string): Promise<ChannelActionRecord>;
-  expireActionIfDue(id: string): Promise<ChannelActionRecord | null>;
+  markActionSent(id: string, claimToken: string): Promise<ChannelActionRecord>;
+  markActionFailed(id: string, claimToken: string, error: string): Promise<ChannelActionRecord>;
+  markActionUnknown(id: string, claimToken: string, error: string): Promise<ChannelActionRecord>;
+  expireActionIfDue(id: string, claimToken: string): Promise<ChannelActionRecord | null>;
 };
 
 export interface ChannelActionWorkerStartOptions {
@@ -63,7 +66,7 @@ export class ChannelActionWorker {
   }
 
   async start(options: ChannelActionWorkerStartOptions = {}): Promise<void> {
-    await this.store.failSendingActions(this.lookup, "Channel action worker stopped before completion.");
+    await this.store.markSendingActionsUnknown(this.lookup, "Channel action worker stopped before its outcome was recorded.");
     if (options.subscribeToNotifications ?? true) {
       if (!this.store.listenPendingActions) {
         throw new Error("Channel action worker store does not support pending-action subscriptions.");
@@ -104,10 +107,12 @@ export class ChannelActionWorker {
       if (!action) {
         return;
       }
+      const claimToken = action.claimToken;
+      if (!claimToken) throw new Error(`Channel action ${action.id} has no claim token.`);
 
       const now = Date.now();
       if (action.expiresAt !== undefined) {
-        const expired = await this.store.expireActionIfDue(action.id);
+        const expired = await this.store.expireActionIfDue(action.id, claimToken);
         if (expired) {
           await this.emitEvent({
             type: "expired_before_dispatch",
@@ -128,12 +133,35 @@ export class ChannelActionWorker {
         });
       }
 
+      const receipt = {
+        label: "Channel action",
+        claimToken,
+        read: () => this.store.getAction(action.id),
+        markUnknown: (error: string) => this.store.markActionUnknown(action.id, claimToken, error),
+      };
       try {
         await this.dispatchAction(action);
-        await this.store.markActionSent(action.id);
       } catch (error) {
-        await this.store.markActionFailed(action.id, error instanceof Error ? error.message : String(error));
+        try {
+          await settleChannelReceipt({
+            ...receipt,
+            status: "failed",
+            write: () => this.store.markActionFailed(action.id, claimToken, error instanceof Error ? error.message : String(error)),
+          });
+        } catch (receiptError) {
+          await this.onError?.(receiptError, action.id);
+        }
         await this.onError?.(error, action.id);
+        continue;
+      }
+      try {
+        await settleChannelReceipt({
+          ...receipt,
+          status: "sent",
+          write: () => this.store.markActionSent(action.id, claimToken),
+        });
+      } catch (receiptError) {
+        await this.onError?.(receiptError, action.id);
       }
     }
   }

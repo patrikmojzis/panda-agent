@@ -205,15 +205,6 @@ export type SessionCompactionResult = {
   tokensAfter?: number
 }
 
-export type ExecutionTarget = {
-  alias: string
-  kind: "persistent_agent_runner" | "disposable_container" | "local" | string
-  state: "provisioning" | "ready" | "failed" | "stopping" | "stopped" | string
-  label: string
-  health: "reachable" | "unreachable" | "unknown" | "not_applicable" | string
-  isDefaultBinding?: boolean
-}
-
 export type WorkFailure = {
   id: string
   kind: string
@@ -226,6 +217,10 @@ export type WorkFailure = {
   detail?: string
   targetRoute: string
   createdAt: string
+}
+
+export type WorkFailureSnapshot = PaginatedResponse<WorkFailure> & {
+  counts: { total: number; critical: number; warning: number }
 }
 
 export type GlobalSearchResult = {
@@ -389,51 +384,6 @@ export type ChannelActorPairingRow = {
   identityStatus: string
   createdAt: string
   updatedAt: string
-}
-
-export type TelegramSetupStatus = {
-  agentKey: string
-  accountKey: string
-  account: {
-    exists: boolean
-    enabled: boolean
-    status?: string
-    ownerAgentKey?: string
-    connectorKey?: string
-    displayName?: string
-    externalUsername?: string
-    tokenStored: boolean
-    tokenValid:
-      | "not_checked"
-      | "valid"
-      | "invalid"
-      | "missing_secret"
-      | "unavailable"
-    validationError?: string
-  }
-  sessionBindings: { total: number; bindings: BindingRow[] }
-  actorPairings: { total: number; pairings: ChannelActorPairingRow[] }
-  agentPairings: { total: number; identities: AgentPairingRow[] }
-  worker: {
-    enabled: boolean
-    reloadRequired: boolean
-    detail: string
-    smokeCommand: string
-  }
-  trace: {
-    collectorEnabled: boolean
-    serviceSelected: boolean
-    sourceEnvKey: string
-    sourceConfigured: boolean
-    detail: string
-  }
-  checklist: Array<{
-    key: string
-    label: string
-    status: "done" | "warning" | "blocked" | "info"
-    detail: string
-    action?: string
-  }>
 }
 
 export type WhatsAppLinkAttempt = {
@@ -888,7 +838,6 @@ export async function apiWrite<T>(
 
 export const controlApi = {
   me: () => apiGet<{ session: ControlSession }>("/me"),
-  bootstrap: () => apiGet<{ hasGrant: boolean }>("/bootstrap"),
   login: (input: { token: string; remember?: boolean }) =>
     apiWrite<{ session: ControlSession; csrfToken: string }>("/login", {
       body: input,
@@ -900,7 +849,7 @@ export const controlApi = {
   logout: (csrfToken?: string | null) =>
     apiWrite<{ ok: true }>("/logout", { csrfToken }),
   failures: (params: TableParams) =>
-    apiGet<PaginatedResponse<WorkFailure>>(`/work-failures${qs(params)}`),
+    apiGet<WorkFailureSnapshot>(`/work-failures${qs(params)}`),
   search: (params: Pick<TableParams, "search" | "per_page">) =>
     apiGet<PaginatedResponse<GlobalSearchResult>>(`/search${qs(params)}`),
   agents: (params: TableParams) =>
@@ -985,30 +934,6 @@ export const controlApi = {
   session: (agentKey: string, sessionId: string) =>
     apiGet<{ session: SessionDetail }>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}`
-    ),
-  sessionTargets: (agentKey: string, sessionId: string) =>
-    apiGet<{ targets: ExecutionTarget[] }>(
-      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/targets`
-    ),
-  bindSessionTarget: (
-    agentKey: string,
-    sessionId: string,
-    body: Record<string, unknown>,
-    csrfToken?: string | null
-  ) =>
-    apiWrite<{ target: ExecutionTarget; targets: ExecutionTarget[] }>(
-      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/targets`,
-      { body, csrfToken }
-    ),
-  deleteSessionTarget: (
-    agentKey: string,
-    sessionId: string,
-    alias: string,
-    csrfToken?: string | null
-  ) =>
-    apiWrite<{ deleted: boolean; targets: ExecutionTarget[] }>(
-      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/targets/${encodeURIComponent(alias)}`,
-      { method: "DELETE", csrfToken }
     ),
   createSession: (
     agentKey: string,
@@ -1247,10 +1172,6 @@ export const controlApi = {
   connectors: (agentKey: string, params: TableParams) =>
     apiGet<PaginatedResponse<ConnectorRow>>(
       `/agents/${encodeURIComponent(agentKey)}/connectors${qs(params)}`
-    ),
-  telegramSetupStatus: (agentKey: string, accountKey: string) =>
-    apiGet<{ status: TelegramSetupStatus }>(
-      `/agents/${encodeURIComponent(agentKey)}/telegram/setup-status?account_key=${encodeURIComponent(accountKey)}`
     ),
   whatsappSetupStatus: (agentKey: string, accountKey: string) =>
     apiGet<{ status: WhatsAppSetupStatus }>(
@@ -1617,37 +1538,6 @@ export const controlApi = {
   ) =>
     apiGet<PaginatedResponse<GatewayEventRow>>(
       `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/gateway-events${qs(params)}`
-    ),
-  briefing: (agentKey: string, sessionId: string) =>
-    apiGet<{ briefing: Briefing }>(
-      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`
-    ),
-  setBriefing: (
-    agentKey: string,
-    sessionId: string,
-    content: string,
-    csrfToken?: string | null
-  ) =>
-    apiWrite<{ briefing: Briefing }>(
-      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`,
-      {
-        method: "PUT",
-        body: { content },
-        csrfToken,
-      }
-    ),
-  deleteBriefing: (
-    agentKey: string,
-    sessionId: string,
-    csrfToken?: string | null
-  ) =>
-    apiWrite<{ briefing: Briefing }>(
-      `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}/briefing`,
-      {
-        method: "DELETE",
-        body: { confirm: "clear-session-briefing" },
-        csrfToken,
-      }
     ),
   sessionPrompts: (agentKey: string, sessionId: string) =>
     apiGet<{ prompts: SessionPrompt[] }>(

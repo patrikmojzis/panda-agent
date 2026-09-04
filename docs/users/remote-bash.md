@@ -339,8 +339,8 @@ If a selected target has no allowlist, or omits `bash`, the tool fails before it
 touches the runner or target filesystem. Binding another target with `--default`
 switches the session default; after that, the old alias can be detached.
 
-Control also shows session execution targets on the session overview. The health
-badge means **reachable** only: it is an unauthenticated runner `/health` probe,
+Use `panda session targets list` or `status` to inspect session execution targets.
+The health result means **reachable** only: it is an unauthenticated runner `/health` probe,
 not proof that the runner token or target agent header will authorize a
 real tool call. A wrong-secret or wrong-agent runner may be reachable and still
 fail at execution time.

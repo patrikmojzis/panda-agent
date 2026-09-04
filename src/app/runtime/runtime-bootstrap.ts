@@ -1,3 +1,5 @@
+import {createPostgresSessionLifecycle, type SessionLifecycle} from "../../domain/sessions/lifecycle.js";
+import {createDefaultExecutionToolPolicy} from "../../panda/commands/agent-command-policy.js";
 import {Pool} from "pg";
 
 import {PostgresAgentStore} from "../../domain/agents/postgres.js";
@@ -157,6 +159,7 @@ interface RuntimeBootstrapOptions extends Omit<RuntimeOptions, "dbUrl"> {
 }
 
 interface RuntimeBootstrapResult {
+  sessionLifecycle: SessionLifecycle;
   agentStore: AgentStore;
   apps: AgentAppService;
   appAuth: AgentAppAuthService;
@@ -675,6 +678,7 @@ export async function bootstrapRuntime(
       fallbackRunnerCommandSocketAccess: trimToNull(process.env.PANDA_COMMAND_SOCKET_MOUNTED_RUNNERS)?.toLowerCase() === "true",
     });
     const executionEnvironmentResolver = new ExecutionEnvironmentResolver({
+      defaultToolPolicy: createDefaultExecutionToolPolicy(commandCatalog),
       store: executionEnvironments,
       lifecycle: executionEnvironmentService,
       env: process.env,
@@ -828,6 +832,7 @@ export async function bootstrapRuntime(
     ]);
 
     return {
+      sessionLifecycle: createPostgresSessionLifecycle({pool: postgresPool, sessionStore, threadStore: store}),
       agentStore,
       apps,
       appAuth,

@@ -244,12 +244,6 @@ describe("Panda feature surface", () => {
       "view_media",
       "browser",
     ]);
-    expect(toolsets.worker.map((tool) => tool.name)).toEqual([
-      "bash",
-      "view_media",
-      "browser",
-      "thinking_set",
-    ]);
     expect(toolsets.skill_maintainer.map((tool) => tool.name)).toEqual([
       "view_media",
     ]);

@@ -346,7 +346,7 @@ same device connector key, still `uploaded`, and unexpired; completion marks the
   event, skips delivery, and strikes the source.
 - Trusted events bypass only the LLM guard. Authentication, request validation,
   budgets, allowlisting, attachment ownership, source suspension, and durable
-  delivery reservation still apply.
+  delivery admission still apply.
 - Guarded input is wrapped as untrusted external data. Trusted input and its
   attachment descriptors are marked trusted with `guardStatus: bypassed`; the
   attachment scan status remains factual and may still be `not_scanned`.
@@ -354,6 +354,23 @@ same device connector key, still `uploaded`, and unexpired; completion marks the
 - Attachment bytes have separate upload, retention, quarantine, and scrub status; `panda gateway attachment-scrub-expired` deletes expired bytes while keeping metadata.
 - Gateway Postgres table creation lives in `src/domain/gateway/postgres-schema.ts`; keep public-ingress behavior in `PostgresGatewayStore` and HTTP/worker adapters.
 - Files are not v1. Text-only clients stay on `/v1/events`.
+
+Guard acceptance persists its decision and a separate input UUID while the
+event remains `processing`. Gateway then commits the session's current-thread
+input, wake state, delivered receipt, text scrubbing and attachment retention in
+one transaction. Session locks precede source/event/attachment locks. Input IDs
+survive reset; event IDs remain text and are never blindly cast to UUIDs.
+
+On an uncertain commit acknowledgement, read the delivered receipt. Otherwise
+leave the event retryable under its saved guard decision. Unexpected database
+errors do not quarantine or scrub the event. Historical `delivering` rows have
+no new receipt and remain excluded from automatic reclaim; reconcile them from
+existing input evidence before changing their status or retention.
+
+Attachment admission checks availability under row locks. Explicit expiry
+scrubbing takes the same attachment lock and rechecks retention before unlinking,
+so an earlier sweep candidate cannot delete media whose delivery extended its
+lifetime. Upload-reservation cleanup is separate from retained delivery media.
 
 ## Network Controls
 
@@ -380,6 +397,39 @@ Attachment defaults:
 - `GATEWAY_ATTACHMENT_RETENTION_MS=604800000`
 - `GATEWAY_ATTACHMENT_QUARANTINE_TTL_MS=86400000`
 - `GATEWAY_ATTACHMENT_ALLOWED_MIME_TYPES` defaults to plain text, JSON, PDF, common images, and common audio MIME types.
+
+Uploads reserve a durable receiving slot before reading bytes. The default global cap is
+`GATEWAY_MAX_CONCURRENT_ATTACHMENT_UPLOADS=8`; each request has a finite
+`GATEWAY_ATTACHMENT_REQUEST_TIMEOUT_MS=60000` deadline, established before any
+HTTP admission database wait. A matching process-local cap retains each slot until
+its database work, file writes, and cleanup finish; expiry cannot cancel an in-flight
+filesystem operation. The immutable deadline is checked against current database
+time after admission locks, so a delayed reservation cannot revive an expired
+pre-admission directory. Bodies stream directly to one reserved file while hashing and validating MIME incrementally. No complete
+body buffer, copy, or dedicated database connection is held per upload. Admission,
+completion, and revocation serialize through short transactions on the existing
+Gateway pool (maximum 5 connections, including its command notification listener).
+
+New objects reserve their declared Content-Length, or the per-file maximum for
+chunked requests, against the source's hourly byte budget. Successful verified
+uploads refund unused bytes only into their original hourly bucket. Aborted or
+invalid uploads retain their reserved charge. Rejections before admission consume no
+body and no byte quota; this replaces the old post-buffer rejection charge. Pending
+capacity counts both accepted unbound uploads and active new reservations. An identical-key retry still verifies
+its bounded body and takes a validation slot, but works even when pending capacity
+or the hourly byte budget is exhausted. The hourly budget accounts for new objects;
+existing HTTP IP/request rate controls also apply to retries.
+
+Each new upload has an explicit marker under its connector's `.uploads` directory.
+The startup/periodic janitor visits at most 64 directory entries per five-second
+pass, revokes expired receiving claims, and checks the durable attachment receipt
+before removing the two owned files. It shares the Gateway pool and adds no pool or
+LISTEN client. Legacy unmarked files are skipped. Bound, delivered, and expired
+attachment metadata retain ownership of their files until the ordinary attachment
+scrubber runs. A lost metadata acknowledgement never authorizes deletion: failed
+receipt reads leave the marker for reconciliation. Cleanup first renames an aborted
+directory, preventing a late body writer from publishing under its former path;
+metadata acceptance also rejects revoked or expired reservations.
 
 `GATEWAY_GUARD_MODEL` is required. The gateway guard defaults to a high timeout. Override with `GATEWAY_GUARD_TIMEOUT_MS` once the model/provider path is stable.
 

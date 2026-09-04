@@ -6,6 +6,7 @@ import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
 function createPool() {
   const db = newDb();
+  db.public.registerFunction({name: "clock_timestamp", returns: DataType.timestamptz, impure: true, implementation: () => new Date()});
   db.public.registerFunction({
     name: "pg_notify",
     args: [DataType.text, DataType.text],
@@ -114,7 +115,7 @@ describe("PostgresWatchStore", () => {
     expect(disabled.lastError).toBe("finished");
   });
 
-  it("claims watches, persists run state, and de-duplicates events", async () => {
+  it("claims watches and atomically persists no-change state", async () => {
     const pool = createPool();
     pools.push(pool);
 
@@ -176,143 +177,15 @@ describe("PostgresWatchStore", () => {
     expect(running.status).toBe("running");
     expect(running.startedAt).toEqual(expect.any(Number));
 
-    const firstEvent = await watches.recordEvent({
-      watchId: created.id,
-      sessionId: "session-main",
-      createdByIdentityId: alice.id,
-      resolvedThreadId: "session-thread",
-      eventKind: "new_items",
-      summary: "Detected 2 new items.",
-      dedupeKey: "same-event",
-      payload: {
-        totalNewItems: 2,
-      },
+    const completed = await watches.acceptWatchEvaluation({
+      runId: claim!.run.id, evaluation: {changed: false, nextState: {kind: "new_items", lastIds: ["reg-2"]}},
     });
-    const duplicateEvent = await watches.recordEvent({
-      watchId: created.id,
-      sessionId: "session-main",
-      createdByIdentityId: alice.id,
-      resolvedThreadId: "session-thread",
-      eventKind: "new_items",
-      summary: "Detected 2 new items.",
-      dedupeKey: "same-event",
-      payload: {
-        totalNewItems: 2,
-      },
-    });
-
-    expect(firstEvent.created).toBe(true);
-    expect(firstEvent.event.payload).toEqual({
-      totalNewItems: 2,
-    });
-    expect(duplicateEvent.created).toBe(false);
-    expect(duplicateEvent.event.id).toBe(firstEvent.event.id);
-
-    await pool.query(
-      `
-        INSERT INTO "runtime"."watch_events" (
-          id,
-          watch_id,
-          session_id,
-          created_by_identity_id,
-          resolved_thread_id,
-          resolved_thread_session_id,
-          event_kind,
-          summary,
-          dedupe_key,
-          payload
-        ) VALUES (
-          $1,
-          $2,
-          $3,
-          $4,
-          $5,
-          $6,
-          $7,
-          $8,
-          $9,
-          $10::jsonb
-        )
-      `,
-      [
-        "00000000-0000-4000-8000-000000000001",
-        created.id,
-        "session-main",
-        alice.id,
-        "session-thread",
-        "session-main",
-        "new_items",
-        "Malformed payload",
-        "bad-payload",
-        JSON.stringify([]),
-      ],
-    );
-    await expect(watches.recordEvent({
-      watchId: created.id,
-      sessionId: "session-main",
-      createdByIdentityId: alice.id,
-      resolvedThreadId: "session-thread",
-      eventKind: "new_items",
-      summary: "Malformed payload",
-      dedupeKey: "bad-payload",
-      payload: {
-        ignored: true,
-      },
-    })).rejects.toThrow("Watch event payload must be a JSON object.");
-
-    const completed = await watches.completeWatchRun({
-      runId: claim!.run.id,
-      status: "changed",
-      resolvedThreadId: "session-thread",
-      emittedEventId: firstEvent.event.id,
-      state: {
-        kind: "new_items",
-        bootstrapped: true,
-        lastCursor: "2026-04-11T10:00:00.000Z",
-        lastIds: ["reg-2"],
-      },
-      lastError: null,
-    });
-
-    expect(completed.status).toBe("changed");
-    expect(completed.emittedEventId).toBe(firstEvent.event.id);
-
-    const latestRun = await watches.getLatestWatchRun(created.id);
-    expect(latestRun?.status).toBe("changed");
-
-    const history = await watches.listWatchRuns({
-      watchId: created.id,
-      sessionId: "session-main",
-      limit: 10,
-    });
-    expect(history).toHaveLength(1);
-    expect(history[0]).toMatchObject({
-      id: claim!.run.id,
-      watchId: created.id,
-      status: "changed",
-      event: {
-        id: firstEvent.event.id,
-        eventKind: "new_items",
-        summary: "Detected 2 new items.",
-        dedupeKey: "same-event",
-      },
-    });
-    expect(history[0]?.event).not.toHaveProperty("payload");
-
-    const reloaded = await watches.getWatch(created.id);
-    expect(reloaded.state).toMatchObject({
-      kind: "new_items",
-      lastIds: ["reg-2"],
-    });
-    expect(reloaded.claimedAt).toBeUndefined();
-
-    const eventRows = await pool.query(
-      `SELECT COUNT(*)::INTEGER AS count FROM "runtime"."watch_events" WHERE watch_id = $1 AND dedupe_key = $2`,
-      [created.id, "same-event"],
-    );
-    expect(eventRows.rows[0]).toMatchObject({
-      count: 1,
-    });
+    expect(completed?.status).toBe("no_change");
+    expect(await watches.acceptWatchEvaluation({runId: claim!.run.id, evaluation: {changed: false, nextState: {}}})).toEqual(completed);
+    expect((await watches.getWatch(created.id)).state).toMatchObject({lastIds: ["reg-2"]});
+    expect((await watches.getWatch(created.id)).claimRunId).toBeUndefined();
+    expect(await watches.listWatchRuns({watchId: created.id, sessionId: "session-main"})).toHaveLength(1);
+    expect((await pool.query(`SELECT COUNT(*)::INTEGER AS count FROM "runtime"."watch_events"`)).rows[0]).toMatchObject({count: 0});
   });
 
   it("rejects corrupted persisted watch states before returning records", async () => {
@@ -372,9 +245,7 @@ describe("PostgresWatchStore", () => {
     await expect(watches.getWatch("00000000-0000-0000-0000-000000000001")).rejects.toThrow(
       "Unsupported watch source kind unsupported.",
     );
-    await expect(watches.startWatchRun({
-      runId: "00000000-0000-0000-0000-000000000002",
-    })).rejects.toThrow("Unsupported watch run status stuck.");
+    await expect(watches.getLatestWatchRun("00000000-0000-0000-0000-000000000001")).rejects.toThrow("Unsupported watch run status stuck.");
   });
 
   it("rejects malformed persisted watch intervals before returning records", async () => {
@@ -607,15 +478,14 @@ describe("PostgresWatchStore", () => {
     });
     expect(claim).not.toBeNull();
 
-    await watches.completeWatchRun({
+    await watches.acceptWatchEvaluation({
       runId: claim!.run.id,
-      status: "no_change",
-      state: {
+      evaluation: {changed: false, nextState: {
         kind: "percent_change",
         baseline: 100,
         lastValue: 100,
       },
-      lastError: null,
+      },
     });
 
     const updated = await watches.updateWatch({
@@ -688,15 +558,14 @@ describe("PostgresWatchStore", () => {
     });
     expect(claim).not.toBeNull();
 
-    await watches.completeWatchRun({
+    await watches.acceptWatchEvaluation({
       runId: claim!.run.id,
-      status: "no_change",
-      state: {
+      evaluation: {changed: false, nextState: {
         kind: "snapshot_changed",
         fingerprint: "abc",
         excerpt: "before",
       },
-      lastError: null,
+      },
     });
 
     const beforeUpdate = Date.now();

@@ -16,6 +16,7 @@ import {seedPendingThreadInput} from "./helpers/thread-runtime-fixtures.js";
 
 function createPool() {
   const db = newDb({noAstCoverageCheck: true});
+  db.public.registerFunction({name: "clock_timestamp", returns: DataType.timestamptz, impure: true, implementation: () => new Date()});
   db.public.registerFunction({
     name: "pg_notify",
     args: [DataType.text, DataType.text],
@@ -466,53 +467,25 @@ describe("Database integrity hardening", () => {
     });
     expect(claim).not.toBeNull();
 
-    await expect(watches.startWatchRun({
-      runId: claim!.run.id,
-      resolvedThreadId: "thread-b",
-    })).rejects.toThrow();
-
-    await expect(watches.recordEvent({
-      watchId: watch.id,
-      sessionId: "session-a",
-      resolvedThreadId: "thread-b",
-      eventKind: "new_items",
-      summary: "Wrong thread",
-      dedupeKey: "wrong-thread",
-    })).rejects.toThrow();
-    const otherEvent = await watches.recordEvent({
-      watchId: otherWatch.id,
-      sessionId: "session-a",
-      resolvedThreadId: "thread-a",
-      eventKind: "new_items",
-      summary: "Wrong watch",
-      dedupeKey: "wrong-watch",
-    });
-    await expect(watches.completeWatchRun({
-      runId: claim!.run.id,
-      status: "changed",
-      resolvedThreadId: "thread-a",
-      emittedEventId: otherEvent.event.id,
-      lastError: null,
-    })).rejects.toThrow();
-
-    const event = await watches.recordEvent({
-      watchId: watch.id,
-      sessionId: "session-a",
-      resolvedThreadId: "thread-a",
-      eventKind: "new_items",
-      summary: "All good",
-      dedupeKey: "good-thread",
-    });
-    const completed = await watches.completeWatchRun({
-      runId: claim!.run.id,
-      status: "changed",
-      resolvedThreadId: "thread-a",
-      emittedEventId: event.event.id,
-      lastError: null,
-    });
-    expect(completed.emittedEventId).toBe(event.event.id);
-
-    await pool.query(`DELETE FROM "runtime"."watch_events" WHERE id = $1`, [event.event.id]);
+    const running = await watches.startWatchRun({runId: claim!.run.id});
+    expect(running?.resolvedThreadId).toBe("thread-a");
+    await expect(pool.query(`UPDATE runtime.watch_runs SET resolved_thread_id = 'thread-b'
+      WHERE id = $1`, [claim!.run.id])).rejects.toThrow();
+    const eventId = "00000000-0000-4000-8000-000000000004";
+    await expect(pool.query(`INSERT INTO runtime.watch_events
+      (id, watch_id, session_id, resolved_thread_id, resolved_thread_session_id, event_kind, summary, dedupe_key)
+      VALUES ($1, $2, 'session-a', 'thread-b', 'session-a', 'new_items', 'Wrong thread', 'wrong-thread')`,
+      [eventId, watch.id])).rejects.toThrow();
+    await pool.query(`INSERT INTO runtime.watch_events
+      (id, watch_id, session_id, resolved_thread_id, resolved_thread_session_id, event_kind, summary, dedupe_key)
+      VALUES ($1, $2, 'session-a', 'thread-a', 'session-a', 'new_items', 'Other watch', 'other-watch')`,
+      [eventId, otherWatch.id]);
+    await expect(pool.query(`UPDATE runtime.watch_runs SET emitted_event_id = $2, emitted_event_watch_id = watch_id
+      WHERE id = $1`, [claim!.run.id, eventId])).rejects.toThrow();
+    await pool.query(`UPDATE runtime.watch_events SET watch_id = $2 WHERE id = $1`, [eventId, watch.id]);
+    await pool.query(`UPDATE runtime.watch_runs SET emitted_event_id = $2, emitted_event_watch_id = watch_id
+      WHERE id = $1`, [claim!.run.id, eventId]);
+    await pool.query(`DELETE FROM "runtime"."watch_events" WHERE id = $1`, [eventId]);
     const runRows = await pool.query(`
       SELECT emitted_event_id
       FROM "runtime"."watch_runs"

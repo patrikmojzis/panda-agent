@@ -1,4 +1,3 @@
-import * as React from "react"
 import { useNavigate } from "react-router-dom"
 import type { ColumnDef } from "@tanstack/react-table"
 import { AlertTriangle, ExternalLink } from "lucide-react"
@@ -27,7 +26,6 @@ import {
 } from "@/features/control/control-display"
 import {
   useWorkFailures,
-  useWorkFailureSummary,
 } from "@/features/control/api/queries"
 import {
   formatDate,
@@ -46,6 +44,7 @@ const workFailureKindFilterOptions = [
   { label: "Runtime", value: "runtime_run" },
   { label: "Scheduled", value: "scheduled_task_run" },
   { label: "Outbound", value: "outbound_delivery" },
+  { label: "Channel action", value: "channel_action" },
   { label: "Gateway event", value: "gateway_event" },
   { label: "Gateway command", value: "gateway_device_command" },
   { label: "Connector", value: "connector_account" },
@@ -59,36 +58,8 @@ function HomePage() {
     sort_direction: "desc",
   })
   const failures = useWorkFailures(table.params)
-  const summaryParams = React.useMemo(
-    () => ({
-      kind:
-        typeof table.params.kind === "string" ? table.params.kind : undefined,
-      page: 1,
-      per_page: 1,
-      search: table.params.search,
-      sort_by: "createdAt",
-      sort_direction: "desc" as const,
-    }),
-    [table.params.kind, table.params.search]
-  )
-  const failureSummary = useWorkFailureSummary(summaryParams)
-  const criticalSummary = useWorkFailureSummary({
-    ...summaryParams,
-    severity: "critical",
-  })
-  const warningSummary = useWorkFailureSummary({
-    ...summaryParams,
-    severity: "warning",
-  })
-  const visibleFailures = failures.data?.data ?? []
-  const totalFailures =
-    failureSummary.data?.meta.total ?? failures.data?.meta.total ?? 0
-  const criticalCount =
-    criticalSummary.data?.meta.total ??
-    visibleFailures.filter((failure) => failure.severity === "critical").length
-  const warningCount =
-    warningSummary.data?.meta.total ??
-    visibleFailures.filter((failure) => failure.severity === "warning").length
+  const visibleFailures = failures.error ? [] : failures.data?.data ?? []
+  const counts = failures.error ? undefined : failures.data?.counts
   const latestFailure = visibleFailures.reduce<WorkFailure | undefined>(
     (latest, failure) => {
       if (!latest) return failure
@@ -217,7 +188,7 @@ function HomePage() {
             onRetry={() => void failures.refetch()}
             rowKey={(row) => row.id}
             getLink={(row) => row.targetRoute}
-            emptyLabel="No current work failures"
+            emptyLabel="No work failures match these filters"
             mobileColumnVisibility={mobileHiddenColumns(
               "source",
               "sessionLabel",
@@ -230,27 +201,24 @@ function HomePage() {
             <div className="min-w-0">
               <div className="text-sm font-medium">Triage snapshot</div>
               <div className="text-xs text-muted-foreground">
-                Counts reflect current search and type filters.
+                Counts cover retained failures matching search and type.
               </div>
             </div>
-            {failures.isFetching ||
-            failureSummary.isFetching ||
-            criticalSummary.isFetching ||
-            warningSummary.isFetching ? (
+            {failures.isFetching ? (
               <Badge variant="outline">Refreshing</Badge>
             ) : null}
           </div>
           <div className="mb-4 grid grid-cols-3 divide-x border-y">
-            <FailureStat label="Total" value={totalFailures} />
-            <FailureStat label="Critical" value={criticalCount} tone="critical" />
-            <FailureStat label="Warning" value={warningCount} />
+            <FailureStat label="Total" value={counts?.total} />
+            <FailureStat label="Critical" value={counts?.critical} tone="critical" />
+            <FailureStat label="Warning" value={counts?.warning} />
           </div>
           <div className="mb-4">
             <div className="text-xs font-medium text-muted-foreground uppercase">
-              Latest failure
+              Latest on this page
             </div>
             <div className="mt-1 truncate text-sm" title={latestFailure?.summary}>
-              {latestFailure?.summary ?? "None"}
+              {latestFailure?.summary ?? (counts ? "None on this page" : "Unavailable")}
             </div>
             <div className="mt-1 text-xs text-muted-foreground">
               {formatDate(latestFailure?.createdAt) ?? "-"}
@@ -293,7 +261,7 @@ function HomePage() {
             </div>
           ) : (
             <div className="border border-dashed p-4 text-sm text-muted-foreground">
-              No failures match the current filters.
+              {failures.error ? "Failure snapshot could not be loaded." : counts ? "No failures on this page." : "Loading failure snapshot…"}
             </div>
           )}
         </div>
@@ -309,7 +277,7 @@ function FailureStat({
 }: {
   label: string
   tone?: "critical"
-  value: number
+  value?: number
 }) {
   return (
     <div className="min-w-0 p-2">
@@ -319,10 +287,10 @@ function FailureStat({
       <div
         className={cn(
           "mt-1 text-lg font-semibold tabular-nums",
-          tone === "critical" && value > 0 && "text-destructive"
+          tone === "critical" && value !== undefined && value > 0 && "text-destructive"
         )}
       >
-        {formatNumber(value)}
+        {value === undefined ? "—" : formatNumber(value)}
       </div>
     </div>
   )

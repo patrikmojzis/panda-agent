@@ -32,7 +32,6 @@ const contractFiles = [
   "src/panda/commands/agent-command-descriptors.ts",
   "src/panda/commands/agent-command-shim-routes.ts",
   "src/panda/definition.ts",
-  "src/panda/subagents/policy.ts",
   "scripts/agent-command-shim/routes.generated.sh",
 ];
 

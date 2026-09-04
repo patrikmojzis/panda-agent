@@ -14,7 +14,7 @@ import {createClearEnvValueCommand, createSetEnvValueCommand} from "../src/domai
 import {PostgresCredentialStore} from "../src/domain/credentials/postgres.js";
 import {ensurePostgresCredentialSchema} from "../src/domain/credentials/postgres-schema.js";
 import {CredentialResolver, CredentialService} from "../src/domain/credentials/resolver.js";
-import {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/index.js";
+import {ThreadRuntimeCoordinator} from "../src/app/sdk/thread-runtime.js";
 import type {CommandExecutor} from "../src/domain/commands/types.js";
 import type {DefaultAgentSessionContext} from "../src/app/runtime/panda-session-context.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";

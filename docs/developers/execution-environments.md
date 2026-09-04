@@ -4,6 +4,30 @@ Panda V2 delegates through durable subagent sessions. Disposable execution
 environments are owned by the parent session and may be attached to isolated
 subagents. The old model-facing worker spawn surface is removed.
 
+## Lifecycle ownership
+
+Each disposable create, restart or stop reserves a unique `operation_id` before
+calling the manager. Completion changes only the fields owned by that operation;
+metadata is merged with the current row. Explicit stop, expiry sweep, resolver
+restart and purge share this fence. An expiry sweep rechecks expiry while
+claiming, so it cannot stop a runner whose TTL was extended after selection.
+
+`provisioning` and `stopping` reject further transitions, including after expiry.
+There is no timed takeover: a database lease cannot cancel an earlier Docker
+request. A manager timeout or disconnected response leaves the operation in
+progress with an explicitly unresolved outcome. Operators must establish that
+the old manager request has finished, inspect the actual runner, and reconcile
+its result before another operation can run. This release does not automate
+that reconciliation or provide a force-takeover command. A manager protocol
+that fences operation generations is required before safe automatic takeover.
+
+Database receipt retries never repeat manager calls. A lost acknowledgement
+is accepted only when the stored operation and terminal state match. Exhausted
+receipt failures leave an unresolved receipt and never trigger runner cleanup.
+Setup failure is different: after a confirmed create, cleanup runs under the
+same claim, and `failed` is recorded only after stop succeeds. Setup-created
+runners and isolated subagent environments retain their restart restrictions.
+
 ## Cleanup
 
 Use the subagent purge command:
@@ -18,6 +42,11 @@ and shared environments with multiple attached subagents. Execution optionally
 stops active/expired containers through the environment manager, validates safe
 environment roots, deletes non-cascading A2A/outbound/runtime-request rows,
 then hard-deletes attached subagent sessions and the environment row.
+Purge rechecks the terminal operation receipt under a row lock and retains that
+lock through filesystem removal, preventing restart or reuse of the ID during
+cleanup. Docker calls run before this transaction. A filesystem failure rolls
+back database deletion so the stopped environment remains available for repair
+or a later purge; filesystem removal itself cannot be rolled back.
 
 ## Session target operator surfaces
 
@@ -59,6 +88,18 @@ services to Docker-reachable addresses, and retain the dedicated non-admin host
 user as the outer privacy boundary until an egress broker is implemented.
 
 ## Tool policy
+
+Main and branch sessions without an explicit environment binding use the selected
+command catalog's `policy.defaultAllowed` capabilities. Extensions opt in with
+`defaultAllowed: true`; omitted or false eligibility does not grant fallback
+access. Panda owns the small native-tool policy separately. Runtime assembly
+passes this projected policy into environment resolution and heartbeat discovery.
+Catalog construction rejects shared-capability combinations that would grant a
+command excluded from defaults; eligibility cannot be bypassed by another command
+opting in to the same effective permission.
+Explicit binding policies and immutable subagent snapshots retain their own
+grants, including capabilities excluded from fallback defaults. Identity,
+credential mutation and readonly-Postgres gates still apply at command authority.
 
 Subagent tool access is profile driven:
 

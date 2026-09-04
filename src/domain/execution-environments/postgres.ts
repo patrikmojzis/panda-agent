@@ -1,6 +1,7 @@
 import {optionalTimestampMillis, requireTimestampMillis, toJson} from "../../lib/postgres-values.js";
 import {requireBoolean} from "../../lib/booleans.js";
-import {readOptionalJsonValue} from "../../lib/json.js";
+import {isJsonObject, readOptionalJsonValue} from "../../lib/json.js";
+import {withTransaction} from "../../lib/postgres-transaction.js";
 import type {PgPoolLike} from "../../lib/postgres-query.js";
 import {isRecord} from "../../lib/records.js";
 import {optionalTrimmedString, requireNonEmptyString, uniqueTrimmedStrings} from "../../lib/strings.js";
@@ -11,6 +12,8 @@ import {normalizeExecutionEnvironmentAlias} from "./types.js";
 import type {
   BindSessionEnvironmentInput,
   CreateExecutionEnvironmentInput,
+  ClaimExecutionEnvironmentOperationInput,
+  SettleExecutionEnvironmentOperationInput,
   ExecutionCredentialPolicy,
   ExecutionEnvironmentKind,
   ExecutionEnvironmentRecord,
@@ -131,6 +134,7 @@ function parseEnvironmentRow(row: Record<string, unknown>): ExecutionEnvironment
     agentKey: requireTrimmed("agent key", row.agent_key),
     kind: parseEnvironmentKind(row.kind),
     state: parseEnvironmentState(row.state),
+    operationId: optionalTrimmed("environment operation id", row.operation_id),
     runnerUrl: optionalTrimmed("environment runner url", row.runner_url),
     runnerCwd: optionalTrimmed("environment runner cwd", row.runner_cwd),
     rootPath: optionalTrimmed("environment root path", row.root_path),
@@ -195,6 +199,8 @@ export class PostgresExecutionEnvironmentStore implements ExecutionEnvironmentSt
         expires_at = EXCLUDED.expires_at,
         metadata = EXCLUDED.metadata,
         updated_at = NOW()
+      WHERE ${this.tables.executionEnvironments}.state NOT IN ('provisioning', 'stopping')
+        AND ${this.tables.executionEnvironments}.kind = EXCLUDED.kind
       RETURNING *
     `, [
       requireTrimmed("environment id", input.id),
@@ -210,7 +216,72 @@ export class PostgresExecutionEnvironmentStore implements ExecutionEnvironmentSt
       toJson(readOptionalJsonValue(input.metadata, "Execution environment metadata")),
     ]);
 
+    if (!result.rows[0]) {
+      throw new Error(`Execution environment ${input.id} cannot be replaced while an operation is in progress or its kind differs.`);
+    }
     return parseEnvironmentRow(result.rows[0] as Record<string, unknown>);
+  }
+
+  async reserveEnvironment(input: CreateExecutionEnvironmentInput & {operationId: string}): Promise<ExecutionEnvironmentRecord | null> {
+    const result = await this.pool.query(`
+      INSERT INTO ${this.tables.executionEnvironments} (
+        id, agent_key, kind, state, operation_id, created_by_session_id,
+        created_for_session_id, expires_at, metadata
+      ) VALUES ($1, $2, 'disposable_container', 'provisioning', $3, $4, $5, $6, $7::jsonb)
+      ON CONFLICT (id) DO NOTHING
+      RETURNING *
+    `, [
+      requireTrimmed("environment id", input.id),
+      requireTrimmed("agent key", input.agentKey),
+      requireTrimmed("environment operation id", input.operationId),
+      input.createdBySessionId ?? null,
+      input.createdForSessionId ?? null,
+      input.expiresAt === undefined ? null : new Date(input.expiresAt),
+      toJson(readOptionalJsonValue(input.metadata, "Execution environment metadata")),
+    ]);
+    return result.rows[0] ? parseEnvironmentRow(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  async claimEnvironmentOperation(input: ClaimExecutionEnvironmentOperationInput): Promise<ExecutionEnvironmentRecord | null> {
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.executionEnvironments}
+      SET state = $2, operation_id = $3, updated_at = NOW()
+      WHERE id = $1 AND kind = 'disposable_container' AND state = $4
+        AND (operation_id = $5 OR (operation_id IS NULL AND $5::text IS NULL))
+        AND ($6::timestamptz IS NULL OR expires_at <= $6::timestamptz)
+      RETURNING *
+    `, [input.environmentId, input.state, input.operationId, input.expectedState,
+      input.expectedOperationId ?? null, input.expiresBefore === undefined ? null : new Date(input.expiresBefore)]);
+    return result.rows[0] ? parseEnvironmentRow(result.rows[0] as Record<string, unknown>) : null;
+  }
+
+  async settleEnvironmentOperation(input: SettleExecutionEnvironmentOperationInput): Promise<ExecutionEnvironmentRecord | null> {
+    return withTransaction(this.pool, async (client) => {
+      const selected = await client.query(`
+        SELECT metadata FROM ${this.tables.executionEnvironments}
+        WHERE id = $1 AND operation_id = $2 AND state = $3 FOR UPDATE
+      `, [input.environmentId, input.operationId, input.operationState]);
+      if (!selected.rows[0]) return null;
+      const currentMetadata = readOptionalJsonValue((selected.rows[0] as {metadata?: unknown}).metadata, "Execution environment metadata");
+      const patch = readOptionalJsonValue(input.metadata, "Execution environment metadata");
+      const metadata = patch === undefined ? currentMetadata
+        : isJsonObject(currentMetadata) && isJsonObject(patch) ? {...currentMetadata, ...patch} : patch;
+      const result = await client.query(`
+        UPDATE ${this.tables.executionEnvironments}
+        SET state = $4,
+            runner_url = COALESCE($5, runner_url),
+            runner_cwd = COALESCE($6, runner_cwd),
+            root_path = COALESCE($7, root_path),
+            expires_at = COALESCE($8, expires_at),
+            metadata = $9::jsonb,
+            updated_at = NOW()
+        WHERE id = $1 AND operation_id = $2 AND state = $3
+        RETURNING *
+      `, [input.environmentId, input.operationId, input.operationState, input.state,
+        input.runnerUrl ?? null, input.runnerCwd ?? null, input.rootPath ?? null,
+        input.expiresAt === undefined ? null : new Date(input.expiresAt), toJson(metadata)]);
+      return result.rows[0] ? parseEnvironmentRow(result.rows[0] as Record<string, unknown>) : null;
+    });
   }
 
   async bindSession(input: BindSessionEnvironmentInput): Promise<SessionEnvironmentBindingRecord> {

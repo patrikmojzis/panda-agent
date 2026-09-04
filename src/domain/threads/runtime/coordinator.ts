@@ -8,7 +8,6 @@ import type {SessionCompactionStore} from "../../sessions/compaction.js";
 import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
 import {resolveModelRuntimeBudget} from "../../../kernel/models/model-context-policy.js";
 import {ContextWindowExceededError, ProviderRuntimeError} from "../../../kernel/agent/exceptions.js";
-import {resolveRuntimeDefaultModelSelector} from "../../../kernel/models/default-model.js";
 import type {ThreadRunEvent} from "../../../kernel/agent/types.js";
 import type {LlmModelCallObserver} from "../../../kernel/agent/runtime.js";
 import {stringifyUnknown} from "../../../kernel/agent/helpers/stringify.js";
@@ -16,7 +15,6 @@ import type {
   AutoCompactionRuntimeState,
   InferenceProjection,
   ResolvedThreadDefinition,
-  ThreadDefinitionResolver,
   ThreadEnqueueOptions,
   ThreadInputPayload,
   ThreadMessageRecord,
@@ -84,10 +82,12 @@ export function formatOrphanedRunRecoveryReason(input: {
   return `Run marked failed during orphaned-run recovery; recoveryTrigger=${input.recoveryTrigger}; recoveryMechanism=${ORPHANED_RUN_RECOVERY_MECHANISM}; probableCause=${probableCause}; recoveredAt=${recoveredAt}.`;
 }
 
+type RuntimeThreadDefinition = ResolvedThreadDefinition & {model: string};
+
 export interface ThreadRuntimeCoordinatorOptions {
   store: ThreadRuntimeStore;
   sessionCompactionRequests?: Pick<SessionCompactionStore, "read" | "complete">;
-  resolveDefinition: ThreadDefinitionResolver;
+  resolveDefinition: (thread: ThreadRecord) => Promise<RuntimeThreadDefinition> | RuntimeThreadDefinition;
   maxConcurrentRuns: number;
   shutdownDrainTimeoutMs?: number;
   modelCallObserver?: LlmModelCallObserver;
@@ -243,7 +243,7 @@ type AutoCompactionPreflightResult =
 
 export class ThreadRuntimeCoordinator {
   private readonly store: ThreadRuntimeStore;
-  private readonly resolveDefinition: ThreadDefinitionResolver;
+  private readonly resolveDefinition: ThreadRuntimeCoordinatorOptions["resolveDefinition"];
   private readonly modelCallObserver?: LlmModelCallObserver;
   private readonly onEvent?: (event: ThreadRuntimeEvent) => Promise<void> | void;
   private readonly scheduler: ThreadRunScheduler;
@@ -920,7 +920,7 @@ export class ThreadRuntimeCoordinator {
 
   private buildThreadOptions(
     run: ThreadRunRecord,
-    definition: ResolvedThreadDefinition,
+    definition: RuntimeThreadDefinition,
     messages: readonly ThreadMessageRecord[],
     signal?: AbortSignal,
     resumeState?: ThreadResumeState,
@@ -970,15 +970,14 @@ export class ThreadRuntimeCoordinator {
   }
 
   private resolveModelConfig(
-    definition: ResolvedThreadDefinition,
+    definition: RuntimeThreadDefinition,
   ): {
     model: string;
     thinking: ThinkingLevel | undefined;
     inferenceProjection: InferenceProjection | undefined;
   } {
-    const defaultModel = resolveRuntimeDefaultModelSelector();
     return {
-      model: definition.model ?? defaultModel,
+      model: definition.model,
       thinking: definition.thinking,
       inferenceProjection: definition.inferenceProjection,
     };
@@ -1048,7 +1047,7 @@ export class ThreadRuntimeCoordinator {
   private async handleAutoCompactionPreflight(options: {
     run: ThreadRunRecord;
     thread: ThreadRecord;
-    definition: ResolvedThreadDefinition;
+    definition: RuntimeThreadDefinition;
     transcript: ThreadTranscriptSnapshot;
     allowAttempt: boolean;
     signal: AbortSignal;
@@ -1122,7 +1121,7 @@ export class ThreadRuntimeCoordinator {
   private async recoverProviderContextOverflow(options: {
     run: ThreadRunRecord;
     thread: ThreadRecord;
-    definition: ResolvedThreadDefinition;
+    definition: RuntimeThreadDefinition;
     transcript: ThreadTranscriptSnapshot;
     signal: AbortSignal;
   }): Promise<boolean> {

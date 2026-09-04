@@ -34,6 +34,7 @@ describe("gateway device command HTTP endpoints", () => {
 
   async function createHarness(env?: NodeJS.ProcessEnv) {
     const db = newDb();
+    db.public.registerFunction({name: "clock_timestamp", returns: DataType.timestamptz, impure: true, implementation: () => new Date()});
     db.public.registerFunction({
       name: "pg_notify",
       args: [DataType.text, DataType.text],

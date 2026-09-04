@@ -419,6 +419,13 @@ import {
   imageGenerateCommandDescriptor,
 } from "./image-generate-command.js";
 
+type WatchCommandStore = Pick<WatchStore, "listWatches" | "getWatch" | "listWatchRuns" | "disableWatch">;
+type WatchCommandMutations = Pick<WatchMutationService, "createWatch" | "updateWatch">;
+type ScheduledTaskCommandStore = Pick<
+  ScheduledTaskStore,
+  "listTasks" | "getTask" | "listTaskRuns" | "createTask" | "updateTask" | "cancelTask"
+>;
+
 type AgentCommandFileResolver = CommandFileResolver & CommandWritableFileResolver;
 type SessionTodoCommandStore = TodoItemMutationCommandStore & TodoClearCommandStore & TodoReadCommandStore;
 type SubagentProfileCommandStore =
@@ -443,6 +450,7 @@ type ChannelCommandConnectorAccounts =
   & TelegramChatListCommandServices["connectorAccounts"]
   & DiscordChannelListCommandServices["connectorAccounts"];
 type ChannelCommandConversations =
+  TelegramHistoryCommandServices["conversations"]
   & TelegramChatListCommandServices["conversations"]
   & DiscordChannelListCommandServices["conversations"]
   & WhatsAppChatListCommandServices["conversations"];
@@ -463,9 +471,9 @@ export interface AgentCommandModuleDependencies {
   backgroundJobService?: BackgroundToolJobService;
   commandFileResolver?: AgentCommandFileResolver;
   commandUploads?: CommandUploadStore;
-  watchStore?: WatchStore;
-  watchMutations?: WatchMutationService;
-  scheduledTasks?: ScheduledTaskStore;
+  watchStore?: WatchCommandStore;
+  watchMutations?: WatchCommandMutations;
+  scheduledTasks?: ScheduledTaskCommandStore;
   scheduledCommands?: ScheduledCommandService;
   apps?: AgentAppCommandService;
   appAuth?: AgentAppCommandAuthService;
@@ -552,22 +560,6 @@ const runtimeSubagentCommandModule = agentCommandModuleForPhase("runtime.subagen
 const daemonChannelCommandModule = agentCommandModuleForPhase("daemon.channel");
 const daemonA2ACommandModule = agentCommandModuleForPhase("daemon.a2a");
 
-function requireMcpOptions(dependencies: AgentCommandModuleDependencies) {
-  if (!dependencies.mcpConfigs || !dependencies.mcpRunner || !dependencies.credentialResolver) {
-    throw new Error("Agent command module requires MCP registry, runner, and credential resolver.");
-  }
-  return {
-    configs: dependencies.mcpConfigs,
-    runner: dependencies.mcpRunner,
-    credentials: dependencies.credentialResolver,
-  };
-}
-
-function requireMcpManagement(dependencies: AgentCommandModuleDependencies): McpManagementService {
-  if (!dependencies.mcpManagement) throw new Error("Agent command module requires MCP management service.");
-  return dependencies.mcpManagement;
-}
-
 function mcpManagementCommandModule(
   descriptor: CommandDescriptor,
   helpArgv: readonly string[],
@@ -578,253 +570,369 @@ function mcpManagementCommandModule(
     descriptor,
     helpArgv,
     jsonInput,
-    agentCommandPolicy(["operate"], {capability: MCP_MANAGEMENT_CAPABILITY}),
-    (dependencies) => createCommand(requireMcpManagement(dependencies)),
+    agentCommandPolicy(["operate"], {defaultAllowed: false, capability: MCP_MANAGEMENT_CAPABILITY}),
+    (dependencies) => {
+      if (!dependencies.mcpManagement) throw new Error("Agent command module requires MCP management service.");
+      return createCommand(dependencies.mcpManagement);
+    },
   );
 }
 
-function requireBackgroundJobService(dependencies: AgentCommandModuleDependencies): BackgroundToolJobService {
-  if (!dependencies.backgroundJobService) {
-    throw new Error("Agent command module requires backgroundJobService.");
-  }
-
-  return dependencies.backgroundJobService;
+// Public catalog callers may supply only selected services. Family adapters validate that
+// compatibility boundary; their command constructors receive required, narrow services.
+function watchStoreCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  createCommand: (services: WatchCommandStore) => RegisteredCommand,
+  jsonInput = "@payload.json",
+): AgentCommandModule {
+  return agentCommandModule(descriptor, helpArgv, jsonInput, agentCommandPolicy(["operate"], {defaultAllowed: true}), (dependencies) => {
+    if (!dependencies.watchStore) throw new Error("Agent command module requires watchStore.");
+    return createCommand(dependencies.watchStore);
+  });
 }
 
-function requireCommandFileResolver(dependencies: AgentCommandModuleDependencies): AgentCommandFileResolver {
-  if (!dependencies.commandFileResolver) {
-    throw new Error("Agent command module requires commandFileResolver.");
-  }
-
-  return dependencies.commandFileResolver;
+function watchMutationCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  createCommand: (services: WatchCommandMutations) => RegisteredCommand,
+  jsonInput = "@payload.json",
+): AgentCommandModule {
+  return agentCommandModule(descriptor, helpArgv, jsonInput, agentCommandPolicy(["operate"], {defaultAllowed: true}), (dependencies) => {
+    if (!dependencies.watchMutations) throw new Error("Agent command module requires watchMutations.");
+    return createCommand(dependencies.watchMutations);
+  });
 }
 
-function requireCommandUploads(dependencies: AgentCommandModuleDependencies): CommandUploadStore {
-  if (!dependencies.commandUploads) {
-    throw new Error("Agent command module requires commandUploads.");
-  }
-  return dependencies.commandUploads;
+function scheduledTaskCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  createCommand: (services: ScheduledTaskCommandStore) => RegisteredCommand,
+  jsonInput = "@payload.json",
+): AgentCommandModule {
+  return agentCommandModule(descriptor, helpArgv, jsonInput, agentCommandPolicy(["operate"], {defaultAllowed: true}), (dependencies) => {
+    if (!dependencies.scheduledTasks) throw new Error("Agent command module requires scheduledTasks.");
+    return createCommand(dependencies.scheduledTasks);
+  });
 }
 
-function requireWatchStore(dependencies: AgentCommandModuleDependencies): WatchStore {
-  if (!dependencies.watchStore) {
-    throw new Error("Agent command module requires watchStore.");
-  }
-
-  return dependencies.watchStore;
+function agentSkillCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  policy: AgentCommandPolicy,
+  createCommand: (services: AgentSkillCommandStore) => RegisteredCommand,
+): AgentCommandModule {
+  return agentCommandModule(descriptor, helpArgv, "@payload.json", policy, (dependencies) => {
+    if (!dependencies.agentSkills) throw new Error("Agent command module requires agentSkills.");
+    return createCommand(dependencies.agentSkills);
+  });
 }
 
-function requireWatchMutations(dependencies: AgentCommandModuleDependencies): WatchMutationService {
-  if (!dependencies.watchMutations) {
-    throw new Error("Agent command module requires watchMutations.");
-  }
-
-  return dependencies.watchMutations;
+function sessionPromptCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  createCommand: (services: SessionPromptCommandStore) => RegisteredCommand,
+  jsonInput = "@payload.json",
+): AgentCommandModule {
+  return agentCommandModule(descriptor, helpArgv, jsonInput, agentCommandPolicy(["operate"], {defaultAllowed: true}), (dependencies) => {
+    if (!dependencies.sessionPrompts) throw new Error("Agent command module requires sessionPrompts.");
+    return createCommand(dependencies.sessionPrompts);
+  });
 }
 
-function requireScheduledTasks(dependencies: AgentCommandModuleDependencies): ScheduledTaskStore {
-  if (!dependencies.scheduledTasks) {
-    throw new Error("Agent command module requires scheduledTasks.");
-  }
-
-  return dependencies.scheduledTasks;
+function todoCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  createCommand: (services: SessionTodoCommandStore) => RegisteredCommand,
+  jsonInput = "@payload.json",
+): AgentCommandModule {
+  return agentCommandModule(descriptor, helpArgv, jsonInput, agentCommandPolicy(["core"], {defaultAllowed: true}), (dependencies) => {
+    if (!dependencies.sessionTodos) throw new Error("Agent command module requires sessionTodos.");
+    return createCommand(dependencies.sessionTodos);
+  });
 }
 
-function requireApps(dependencies: AgentCommandModuleDependencies): AgentAppCommandService {
-  if (!dependencies.apps) {
-    throw new Error("Agent command module requires apps.");
-  }
-
-  return dependencies.apps;
+function subagentProfileCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  createCommand: (services: SubagentProfileCommandStore) => RegisteredCommand,
+  jsonInput = "@payload.json",
+): AgentCommandModule {
+  return agentCommandModule(descriptor, helpArgv, jsonInput, agentCommandPolicy(["operate"], {defaultAllowed: true}), (dependencies) => {
+    if (!dependencies.subagentProfiles) throw new Error("Agent command module requires subagentProfiles.");
+    return createCommand(dependencies.subagentProfiles);
+  });
 }
 
-function requireAppAuth(dependencies: AgentCommandModuleDependencies): AgentAppCommandAuthService {
-  if (!dependencies.appAuth) {
-    throw new Error("Agent command module requires appAuth.");
-  }
-
-  return dependencies.appAuth;
+function subagentInventoryCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  createCommand: (services: SubagentInventoryReader) => RegisteredCommand,
+  jsonInput = "@payload.json",
+): AgentCommandModule {
+  return agentCommandModule(descriptor, helpArgv, jsonInput, agentCommandPolicy([], {defaultAllowed: true, capability: SUBAGENT_SPAWN_COMMAND_NAME}), (dependencies) => {
+    if (!dependencies.subagentInventory) throw new Error("Agent command module requires subagentInventory.");
+    return createCommand(dependencies.subagentInventory);
+  });
 }
 
-function requireAgentSkills(dependencies: AgentCommandModuleDependencies): AgentSkillCommandStore {
-  if (!dependencies.agentSkills) {
-    throw new Error("Agent command module requires agentSkills.");
-  }
-
-  return dependencies.agentSkills;
+function mcpCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  jsonInput: string,
+  policy: AgentCommandPolicy,
+  createCommand: (services: Parameters<typeof createMcpToolsCommand>[0]) => RegisteredCommand,
+): AgentCommandModule {
+  return agentCommandModule(descriptor, helpArgv, jsonInput, policy, (dependencies) => {
+    if (!dependencies.mcpConfigs || !dependencies.mcpRunner || !dependencies.credentialResolver) {
+      throw new Error("Agent command module requires MCP registry, runner, and credential resolver.");
+    }
+    return createCommand({configs: dependencies.mcpConfigs, runner: dependencies.mcpRunner, credentials: dependencies.credentialResolver});
+  });
 }
 
-function requireSessionPrompts(dependencies: AgentCommandModuleDependencies): SessionPromptCommandStore {
-  if (!dependencies.sessionPrompts) {
-    throw new Error("Agent command module requires sessionPrompts.");
-  }
-
-  return dependencies.sessionPrompts;
+function appCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  jsonInput: string,
+  policy: AgentCommandPolicy,
+  createCommand: (apps: AgentAppCommandService, options: AppCommandOptions) => RegisteredCommand,
+): AgentCommandModule {
+  return agentCommandModule(descriptor, helpArgv, jsonInput, policy, (dependencies) => {
+    if (!dependencies.apps) throw new Error("Agent command module requires apps.");
+    return createCommand(dependencies.apps, {resolveUrls: dependencies.resolveAppUrls});
+  });
 }
 
-function requireSessionTodos(dependencies: AgentCommandModuleDependencies): SessionTodoCommandStore {
-  if (!dependencies.sessionTodos) {
-    throw new Error("Agent command module requires sessionTodos.");
-  }
-
-  return dependencies.sessionTodos;
+function environmentReadCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  jsonInput: string,
+  policy: AgentCommandPolicy,
+  createCommand: (services: EnvironmentReadCommandServices) => RegisteredCommand,
+): AgentCommandModule {
+  return agentCommandModule(descriptor, helpArgv, jsonInput, policy, (dependencies) => {
+    if (!dependencies.executionEnvironments) throw new Error("Agent command module requires executionEnvironments.");
+    return createCommand({environments: dependencies.executionEnvironments});
+  });
 }
 
-function requireSubagentProfiles(dependencies: AgentCommandModuleDependencies): SubagentProfileCommandStore {
-  if (!dependencies.subagentProfiles) {
-    throw new Error("Agent command module requires subagentProfiles.");
-  }
-
-  return dependencies.subagentProfiles;
+function environmentControlCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  jsonInput: string,
+  policy: AgentCommandPolicy,
+  createCommand: (services: EnvironmentReadCommandServices & {lifecycle: EnvironmentCommandLifecycle}) => RegisteredCommand,
+): AgentCommandModule {
+  return agentCommandModule(descriptor, helpArgv, jsonInput, policy, (dependencies) => {
+    if (!dependencies.executionEnvironments) throw new Error("Agent command module requires executionEnvironments.");
+    if (!dependencies.environmentLifecycle) throw new Error("Agent command module requires environmentLifecycle.");
+    return createCommand({environments: dependencies.executionEnvironments, lifecycle: dependencies.environmentLifecycle});
+  });
 }
 
-function requireSubagentInventory(dependencies: AgentCommandModuleDependencies): SubagentInventoryReader {
-  if (!dependencies.subagentInventory) {
-    throw new Error("Agent command module requires subagentInventory.");
-  }
-
-  return dependencies.subagentInventory;
+function emailReadCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  jsonInput: string,
+  policy: AgentCommandPolicy,
+  createCommand: (services: {store: EmailCommandStore}) => RegisteredCommand,
+): AgentCommandModule {
+  return daemonChannelCommandModule(descriptor, helpArgv, jsonInput, policy, (dependencies) => {
+    if (!dependencies.email) throw new Error("Agent command module requires email.");
+    return createCommand({store: dependencies.email});
+  });
 }
 
-function requirePostgresReadonly(
-  dependencies: AgentCommandModuleDependencies,
-): PostgresReadonlyQueryCommandOptions {
-  if (!dependencies.postgresReadonly) {
-    throw new Error("Agent command module requires postgresReadonly.");
-  }
-
-  return dependencies.postgresReadonly;
+function channelDiscoveryCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  jsonInput: string,
+  policy: AgentCommandPolicy,
+  createCommand: (services: TelegramChatListCommandServices & {conversations: ChannelCommandConversations}) => RegisteredCommand,
+): AgentCommandModule {
+  return daemonChannelCommandModule(descriptor, helpArgv, jsonInput, policy, (dependencies) => {
+    if (!dependencies.connectorAccounts) throw new Error("Agent command module requires connectorAccounts.");
+    if (!dependencies.conversations) throw new Error("Agent command module requires conversations.");
+    return createCommand({connectorAccounts: dependencies.connectorAccounts, conversations: dependencies.conversations});
+  });
 }
 
-function requireExecutionEnvironments(
-  dependencies: AgentCommandModuleDependencies,
-): EnvironmentReadCommandServices["environments"] {
-  if (!dependencies.executionEnvironments) {
-    throw new Error("Agent command module requires executionEnvironments.");
-  }
-
-  return dependencies.executionEnvironments;
+function channelHistoryCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  jsonInput: string,
+  policy: AgentCommandPolicy,
+  createCommand: (services: TelegramHistoryCommandServices) => RegisteredCommand,
+): AgentCommandModule {
+  return daemonChannelCommandModule(descriptor, helpArgv, jsonInput, policy, (dependencies) => {
+    if (!dependencies.connectorAccounts) throw new Error("Agent command module requires connectorAccounts.");
+    if (!dependencies.conversations) throw new Error("Agent command module requires conversations.");
+    if (!dependencies.channelMessages) throw new Error("Agent command module requires channelMessages.");
+    if (!dependencies.outboundDeliveries) throw new Error("Agent command module requires outboundDeliveries.");
+    return createCommand({connectorAccounts: dependencies.connectorAccounts, conversations: dependencies.conversations, messages: dependencies.channelMessages, deliveries: dependencies.outboundDeliveries});
+  });
 }
 
-function requireEnvironmentLifecycle(dependencies: AgentCommandModuleDependencies): EnvironmentCommandLifecycle {
-  if (!dependencies.environmentLifecycle) {
-    throw new Error("Agent command module requires environmentLifecycle.");
-  }
-
-  return dependencies.environmentLifecycle;
+function channelActionCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  jsonInput: string,
+  policy: AgentCommandPolicy,
+  createCommand: (queue: ChannelActionCommandQueue) => RegisteredCommand,
+): AgentCommandModule {
+  return daemonChannelCommandModule(descriptor, helpArgv, jsonInput, policy, (dependencies) => {
+    if (!dependencies.channelActions) throw new Error("Agent command module requires channelActions.");
+    return createCommand(dependencies.channelActions);
+  });
 }
 
-function requireConnectorAccounts(
-  dependencies: AgentCommandModuleDependencies,
-): ChannelCommandConnectorAccounts {
-  if (!dependencies.connectorAccounts) {
-    throw new Error("Agent command module requires connectorAccounts.");
-  }
-
-  return dependencies.connectorAccounts;
+function channelSendCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  jsonInput: string,
+  policy: AgentCommandPolicy,
+  createCommand: (queue: ChannelCommandDeliveries, files: AgentCommandFileResolver) => RegisteredCommand,
+): AgentCommandModule {
+  return daemonChannelCommandModule(descriptor, helpArgv, jsonInput, policy, (dependencies) => {
+    if (!dependencies.outboundDeliveries) throw new Error("Agent command module requires outboundDeliveries.");
+    if (!dependencies.commandFileResolver) throw new Error("Agent command module requires commandFileResolver.");
+    return createCommand(dependencies.outboundDeliveries, dependencies.commandFileResolver);
+  });
 }
 
-function requireConversations(dependencies: AgentCommandModuleDependencies): ChannelCommandConversations {
-  if (!dependencies.conversations) {
-    throw new Error("Agent command module requires conversations.");
-  }
-
-  return dependencies.conversations;
+function telegramStickerCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  jsonInput: string,
+  policy: AgentCommandPolicy,
+  createCommand: (services: Parameters<typeof createTelegramStickerInspectCommand>[0]) => RegisteredCommand,
+): AgentCommandModule {
+  return daemonChannelCommandModule(descriptor, helpArgv, jsonInput, policy, (dependencies) => {
+    if (!dependencies.telegramStickers) throw new Error("Agent command module requires telegramStickers.");
+    if (!dependencies.channelMessages) throw new Error("Agent command module requires channelMessages.");
+    if (!dependencies.conversations) throw new Error("Agent command module requires conversations.");
+    if (!dependencies.connectorAccounts) throw new Error("Agent command module requires connectorAccounts.");
+    return createCommand({library: dependencies.telegramStickers, messages: dependencies.channelMessages, conversations: dependencies.conversations, connectorAccounts: dependencies.connectorAccounts});
+  });
 }
 
-function requireChannelMessages(dependencies: AgentCommandModuleDependencies): ChannelCommandMessages {
-  if (!dependencies.channelMessages) {
-    throw new Error("Agent command module requires channelMessages.");
-  }
-
-  return dependencies.channelMessages;
+function discordVoiceCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  jsonInput: string,
+  policy: AgentCommandPolicy,
+  createCommand: (services: DiscordVoiceCommandServices) => RegisteredCommand,
+): AgentCommandModule {
+  return daemonChannelCommandModule(descriptor, helpArgv, jsonInput, policy, (dependencies) => {
+    if (!dependencies.discordVoice) throw new Error("Agent command module requires discordVoice.");
+    if (!dependencies.connectorAccounts) throw new Error("Agent command module requires connectorAccounts.");
+    if (!dependencies.conversations) throw new Error("Agent command module requires conversations.");
+    return createCommand({env: dependencies.env ?? process.env, voice: dependencies.discordVoice, connectorAccounts: dependencies.connectorAccounts, conversations: dependencies.conversations});
+  });
 }
 
-function requireOutboundDeliveries(dependencies: AgentCommandModuleDependencies): ChannelCommandDeliveries {
-  if (!dependencies.outboundDeliveries) {
-    throw new Error("Agent command module requires outboundDeliveries.");
-  }
-
-  return dependencies.outboundDeliveries;
+function whatsappCallCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  jsonInput: string,
+  policy: AgentCommandPolicy,
+  createCommand: (services: WhatsAppCallCommandServices) => RegisteredCommand,
+): AgentCommandModule {
+  return daemonChannelCommandModule(descriptor, helpArgv, jsonInput, policy, (dependencies) => {
+    if (!dependencies.whatsappCalls) throw new Error("Agent command module requires whatsappCalls.");
+    if (!dependencies.connectorAccounts) throw new Error("Agent command module requires connectorAccounts.");
+    if (!dependencies.conversations) throw new Error("Agent command module requires conversations.");
+    return createCommand({env: dependencies.env ?? process.env, calls: dependencies.whatsappCalls, connectorAccounts: dependencies.connectorAccounts, conversations: dependencies.conversations});
+  });
 }
 
-function requireChannelActions(dependencies: AgentCommandModuleDependencies): ChannelActionCommandQueue {
-  if (!dependencies.channelActions) {
-    throw new Error("Agent command module requires channelActions.");
-  }
-
-  return dependencies.channelActions;
+function a2aReadCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  jsonInput: string,
+  policy: AgentCommandPolicy,
+  createCommand: (deliveries: A2ADeliveryReader) => RegisteredCommand,
+): AgentCommandModule {
+  return daemonA2ACommandModule(descriptor, helpArgv, jsonInput, policy, (dependencies) => {
+    if (!dependencies.a2aDeliveries) throw new Error("Agent command module requires a2aDeliveries.");
+    return createCommand(dependencies.a2aDeliveries);
+  });
 }
 
-function requireDiscordStickers(dependencies: AgentCommandModuleDependencies): DiscordStickerCatalogReader {
-  if (!dependencies.discordStickers) {
-    throw new Error("Agent command module requires discordStickers.");
-  }
-
-  return dependencies.discordStickers;
+function cronCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  jsonInput: string,
+  policy: AgentCommandPolicy,
+  createCommand: (service: ScheduledCommandService) => RegisteredCommand,
+): AgentCommandModule {
+  return agentCommandModule(descriptor, helpArgv, jsonInput, policy, (dependencies) => {
+    return dependencies.scheduledCommands ? createCommand(dependencies.scheduledCommands) : null;
+  });
 }
 
-function requireDiscordGifs(dependencies: AgentCommandModuleDependencies): DiscordGifService {
-  if (!dependencies.discordGifs) {
-    throw new Error("Agent command module requires discordGifs.");
-  }
-
-  return dependencies.discordGifs;
+function wikiCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  jsonInput: string,
+  policy: AgentCommandPolicy,
+  createCommand: (service: WikiCommandService) => RegisteredCommand,
+): AgentCommandModule {
+  return agentCommandModule(descriptor, helpArgv, jsonInput, policy, (dependencies) => {
+    return dependencies.wiki ? createCommand(dependencies.wiki) : null;
+  });
 }
 
-function discordVoiceCommandServices(dependencies: AgentCommandModuleDependencies): DiscordVoiceCommandServices {
-  if (!dependencies.discordVoice) throw new Error("Agent command module requires discordVoice.");
-  return {
-    env: dependencies.env ?? process.env,
-    connectorAccounts: requireConnectorAccounts(dependencies),
-    conversations: requireConversations(dependencies),
-    voice: dependencies.discordVoice,
-  };
+function credentialCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  jsonInput: string,
+  policy: AgentCommandPolicy,
+  createCommand: (service: EnvCommandService) => RegisteredCommand,
+): AgentCommandModule {
+  return agentCommandModule(descriptor, helpArgv, jsonInput, policy, (dependencies) => {
+    return dependencies.credentials ? createCommand(dependencies.credentials) : null;
+  });
 }
 
-function whatsappCallCommandServices(dependencies: AgentCommandModuleDependencies): WhatsAppCallCommandServices {
-  if (!dependencies.whatsappCalls) throw new Error("Agent command module requires whatsappCalls.");
-  return {env: dependencies.env ?? process.env, connectorAccounts: requireConnectorAccounts(dependencies), conversations: requireConversations(dependencies), calls: dependencies.whatsappCalls};
+function heartbeatCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  jsonInput: string,
+  policy: AgentCommandPolicy,
+  createCommand: (store: NonNullable<AgentCommandModuleDependencies["sessionHeartbeats"]>, bounds: HeartbeatCadenceBounds) => RegisteredCommand,
+): AgentCommandModule {
+  return agentCommandModule(descriptor, helpArgv, jsonInput, policy, (dependencies) => {
+    return dependencies.sessionHeartbeats && dependencies.heartbeatBounds
+      ? createCommand(dependencies.sessionHeartbeats, dependencies.heartbeatBounds)
+      : null;
+  });
 }
 
-function requireTelegramStickers(dependencies: AgentCommandModuleDependencies): TelegramStickerLibrary {
-  if (!dependencies.telegramStickers) {
-    throw new Error("Agent command module requires telegramStickers.");
-  }
-  return dependencies.telegramStickers;
+function audioCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  jsonInput: string,
+  policy: AgentCommandPolicy,
+  createCommand: (options: {env?: NodeJS.ProcessEnv}, files: AgentCommandFileResolver) => RegisteredCommand,
+): AgentCommandModule {
+  return agentCommandModule(descriptor, helpArgv, jsonInput, policy, (dependencies) => {
+    if (!dependencies.commandFileResolver) throw new Error("Agent command module requires commandFileResolver.");
+    return createCommand({env: dependencies.env}, dependencies.commandFileResolver);
+  });
 }
 
-function telegramStickerCommandServices(dependencies: AgentCommandModuleDependencies) {
-  return {
-    library: requireTelegramStickers(dependencies),
-    messages: requireChannelMessages(dependencies),
-    conversations: requireConversations(dependencies),
-    connectorAccounts: requireConnectorAccounts(dependencies),
-  };
-}
-
-function requireEmail(dependencies: AgentCommandModuleDependencies): EmailCommandStore {
-  if (!dependencies.email) {
-    throw new Error("Agent command module requires email.");
-  }
-
-  return dependencies.email;
-}
-
-function requireA2AMessaging(dependencies: AgentCommandModuleDependencies): MessageAgentCommandQueue {
-  if (!dependencies.a2aMessaging) {
-    throw new Error("Agent command module requires a2aMessaging.");
-  }
-
-  return dependencies.a2aMessaging;
-}
-
-function requireA2ADeliveries(dependencies: AgentCommandModuleDependencies): A2ADeliveryReader {
-  if (!dependencies.a2aDeliveries) {
-    throw new Error("Agent command module requires a2aDeliveries.");
-  }
-
-  return dependencies.a2aDeliveries;
+function braveCommandModule(
+  descriptor: CommandDescriptor,
+  helpArgv: readonly string[],
+  jsonInput: string,
+  policy: AgentCommandPolicy,
+  createCommand: (options: NonNullable<Parameters<typeof createBraveWebSearchCommand>[0]>) => RegisteredCommand,
+): AgentCommandModule {
+  return agentCommandModule(descriptor, helpArgv, jsonInput, policy, (dependencies) => {
+    return createCommand({env: dependencies.env, throttleGate: dependencies.braveThrottleGate});
+  });
 }
 
 /**
@@ -838,22 +946,22 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
     timeNowCommandDescriptor,
     ["time", "now"],
     "{}",
-    undefined,
+    agentCommandPolicy([], {defaultAllowed: true}),
     () => createTimeNowCommand(),
   ),
-  agentCommandModule(
+  mcpCommandModule(
     mcpToolsCommandDescriptor,
     ["mcp", "tools"],
     "@payload.json",
-    agentCommandPolicy(["mcp"], {capability: MCP_COMMAND_CAPABILITY}),
-    (dependencies) => createMcpToolsCommand(requireMcpOptions(dependencies)),
+    agentCommandPolicy(["mcp"], {defaultAllowed: true, capability: MCP_COMMAND_CAPABILITY}),
+    createMcpToolsCommand,
   ),
-  agentCommandModule(
+  mcpCommandModule(
     mcpCallCommandDescriptor,
     ["mcp", "call"],
     "@payload.json",
-    agentCommandPolicy(["mcp"], {capability: MCP_COMMAND_CAPABILITY}),
-    (dependencies) => createMcpCallCommand(requireMcpOptions(dependencies)),
+    agentCommandPolicy(["mcp"], {defaultAllowed: true, capability: MCP_COMMAND_CAPABILITY}),
+    createMcpCallCommand,
   ),
   mcpManagementCommandModule(mcpServerListCommandDescriptor, ["mcp", "server", "list"], createMcpServerListCommand, "{}"),
   mcpManagementCommandModule(mcpServerShowCommandDescriptor, ["mcp", "server", "show"], createMcpServerShowCommand),
@@ -867,899 +975,735 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
   mcpManagementCommandModule(mcpOauthStartCommandDescriptor, ["mcp", "oauth", "start"], createMcpOauthStartCommand),
   mcpManagementCommandModule(mcpOauthStatusCommandDescriptor, ["mcp", "oauth", "status"], createMcpOauthStatusCommand),
   mcpManagementCommandModule(mcpOauthDisconnectCommandDescriptor, ["mcp", "oauth", "disconnect"], createMcpOauthDisconnectCommand),
-  agentCommandModule(
+  heartbeatCommandModule(
     heartbeatShowCommandDescriptor,
     ["heartbeat", "show"],
     "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => dependencies.sessionHeartbeats && dependencies.heartbeatBounds
-      ? createHeartbeatShowCommand(dependencies.sessionHeartbeats, dependencies.heartbeatBounds)
-      : null,
+    agentCommandPolicy(["operate"], {defaultAllowed: true}),
+    createHeartbeatShowCommand,
   ),
-  agentCommandModule(
+  heartbeatCommandModule(
     heartbeatSetCommandDescriptor,
     ["heartbeat", "set"],
     "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => dependencies.sessionHeartbeats && dependencies.heartbeatBounds
-      ? createHeartbeatSetCommand(dependencies.sessionHeartbeats, dependencies.heartbeatBounds)
-      : null,
+    agentCommandPolicy(["operate"], {defaultAllowed: true}),
+    createHeartbeatSetCommand,
   ),
-  agentCommandModule(
-    watchListCommandDescriptor,
-    ["watch", "list"],
-    "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createWatchListCommand(requireWatchStore(dependencies)),
-  ),
-  agentCommandModule(
-    watchShowCommandDescriptor,
-    ["watch", "show"],
-    "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createWatchShowCommand(requireWatchStore(dependencies)),
-  ),
-  agentCommandModule(
-    watchRunsCommandDescriptor,
-    ["watch", "runs"],
-    "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createWatchRunsCommand(requireWatchStore(dependencies)),
-  ),
-  agentCommandModule(
-    watchCreateCommandDescriptor,
-    ["watch", "create"],
-    "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createWatchCreateCommand(requireWatchMutations(dependencies)),
-  ),
-  agentCommandModule(
-    watchUpdateCommandDescriptor,
-    ["watch", "update"],
-    "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createWatchUpdateCommand(requireWatchMutations(dependencies)),
-  ),
-  agentCommandModule(
-    watchDisableCommandDescriptor,
-    ["watch", "disable"],
-    "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createWatchDisableCommand(requireWatchStore(dependencies)),
-  ),
-  agentCommandModule(
-    scheduleListCommandDescriptor,
-    ["schedule", "list"],
-    "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createScheduleListCommand(requireScheduledTasks(dependencies)),
-  ),
-  agentCommandModule(
-    scheduleShowCommandDescriptor,
-    ["schedule", "show"],
-    "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createScheduleShowCommand(requireScheduledTasks(dependencies)),
-  ),
-  agentCommandModule(
-    scheduleRunsCommandDescriptor,
-    ["schedule", "runs"],
-    "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createScheduleRunsCommand(requireScheduledTasks(dependencies)),
-  ),
-  agentCommandModule(
-    scheduleCreateCommandDescriptor,
-    ["schedule", "create"],
-    "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createScheduleCreateCommand(requireScheduledTasks(dependencies)),
-  ),
-  agentCommandModule(
-    scheduleUpdateCommandDescriptor,
-    ["schedule", "update"],
-    "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createScheduleUpdateCommand(requireScheduledTasks(dependencies)),
-  ),
-  agentCommandModule(
-    scheduleCancelCommandDescriptor,
-    ["schedule", "cancel"],
-    "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createScheduleCancelCommand(requireScheduledTasks(dependencies)),
-  ),
-  agentCommandModule(
+  watchStoreCommandModule(watchListCommandDescriptor, ["watch", "list"], createWatchListCommand),
+  watchStoreCommandModule(watchShowCommandDescriptor, ["watch", "show"], createWatchShowCommand),
+  watchStoreCommandModule(watchRunsCommandDescriptor, ["watch", "runs"], createWatchRunsCommand),
+  watchMutationCommandModule(watchCreateCommandDescriptor, ["watch", "create"], createWatchCreateCommand),
+  watchMutationCommandModule(watchUpdateCommandDescriptor, ["watch", "update"], createWatchUpdateCommand),
+  watchStoreCommandModule(watchDisableCommandDescriptor, ["watch", "disable"], createWatchDisableCommand),
+  scheduledTaskCommandModule(scheduleListCommandDescriptor, ["schedule", "list"], createScheduleListCommand),
+  scheduledTaskCommandModule(scheduleShowCommandDescriptor, ["schedule", "show"], createScheduleShowCommand),
+  scheduledTaskCommandModule(scheduleRunsCommandDescriptor, ["schedule", "runs"], createScheduleRunsCommand),
+  scheduledTaskCommandModule(scheduleCreateCommandDescriptor, ["schedule", "create"], createScheduleCreateCommand),
+  scheduledTaskCommandModule(scheduleUpdateCommandDescriptor, ["schedule", "update"], createScheduleUpdateCommand),
+  scheduledTaskCommandModule(scheduleCancelCommandDescriptor, ["schedule", "cancel"], createScheduleCancelCommand),
+  cronCommandModule(
     cronListCommandDescriptor,
     ["cron", "list"],
     "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => dependencies.scheduledCommands ? createCronListCommand(dependencies.scheduledCommands) : null,
+    agentCommandPolicy(["operate"], {defaultAllowed: true}),
+    createCronListCommand,
   ),
-  agentCommandModule(
+  cronCommandModule(
     cronShowCommandDescriptor,
     ["cron", "show"],
     "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => dependencies.scheduledCommands ? createCronShowCommand(dependencies.scheduledCommands) : null,
+    agentCommandPolicy(["operate"], {defaultAllowed: true}),
+    createCronShowCommand,
   ),
-  agentCommandModule(
+  cronCommandModule(
     cronRunsCommandDescriptor,
     ["cron", "runs"],
     "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => dependencies.scheduledCommands ? createCronRunsCommand(dependencies.scheduledCommands) : null,
+    agentCommandPolicy(["operate"], {defaultAllowed: true}),
+    createCronRunsCommand,
   ),
-  agentCommandModule(
+  cronCommandModule(
     cronCreateCommandDescriptor,
     ["cron", "create"],
     "@payload.json",
-    agentCommandPolicy(["operate"], {requiresBash: true}),
-    (dependencies) => dependencies.scheduledCommands ? createCronCreateCommand(dependencies.scheduledCommands) : null,
+    agentCommandPolicy(["operate"], {defaultAllowed: true, requiresBash: true}),
+    createCronCreateCommand,
   ),
-  agentCommandModule(
+  cronCommandModule(
     cronUpdateCommandDescriptor,
     ["cron", "update"],
     "@payload.json",
-    agentCommandPolicy(["operate"], {requiresBash: true}),
-    (dependencies) => dependencies.scheduledCommands ? createCronUpdateCommand(dependencies.scheduledCommands) : null,
+    agentCommandPolicy(["operate"], {defaultAllowed: true, requiresBash: true}),
+    createCronUpdateCommand,
   ),
-  agentCommandModule(
+  cronCommandModule(
     cronEnableCommandDescriptor,
     ["cron", "enable"],
     "@payload.json",
-    agentCommandPolicy(["operate"], {requiresBash: true}),
-    (dependencies) => dependencies.scheduledCommands ? createCronEnableCommand(dependencies.scheduledCommands) : null,
+    agentCommandPolicy(["operate"], {defaultAllowed: true, requiresBash: true}),
+    createCronEnableCommand,
   ),
-  agentCommandModule(
+  cronCommandModule(
     cronDisableCommandDescriptor,
     ["cron", "disable"],
     "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => dependencies.scheduledCommands ? createCronDisableCommand(dependencies.scheduledCommands) : null,
+    agentCommandPolicy(["operate"], {defaultAllowed: true}),
+    createCronDisableCommand,
   ),
-  agentCommandModule(
+  cronCommandModule(
     cronDeleteCommandDescriptor,
     ["cron", "delete"],
     "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => dependencies.scheduledCommands ? createCronDeleteCommand(dependencies.scheduledCommands) : null,
+    agentCommandPolicy(["operate"], {defaultAllowed: true}),
+    createCronDeleteCommand,
   ),
-  agentCommandModule(
+  cronCommandModule(
     cronRunCommandDescriptor,
     ["cron", "run"],
     "@payload.json",
-    agentCommandPolicy(["operate"], {requiresBash: true}),
-    (dependencies) => dependencies.scheduledCommands ? createCronRunCommand(dependencies.scheduledCommands) : null,
+    agentCommandPolicy(["operate"], {defaultAllowed: true, requiresBash: true}),
+    createCronRunCommand,
   ),
-  agentCommandModule(
+  appCommandModule(
     appCheckCommandDescriptor,
     ["micro-app", "check"],
     "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createAppCheckCommand(requireApps(dependencies)),
+    agentCommandPolicy(["operate"], {defaultAllowed: true}),
+    createAppCheckCommand,
   ),
-  agentCommandModule(
+  appCommandModule(
     appCreateCommandDescriptor,
     ["micro-app", "create"],
     "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createAppCreateCommand(requireApps(dependencies), {
-      resolveUrls: dependencies.resolveAppUrls,
-    }),
+    agentCommandPolicy(["operate"], {defaultAllowed: true}),
+    createAppCreateCommand,
   ),
   agentCommandModule(
     appLinkCreateCommandDescriptor,
     ["micro-app", "link", "create"],
     "@payload.json",
     agentCommandPolicy(["operate"], {
+    defaultAllowed: true,
       requiresIdentity: true,
     }),
-    (dependencies) => createAppLinkCreateCommand(
-      requireApps(dependencies),
-      requireAppAuth(dependencies),
+    (dependencies) => {
+      if (!dependencies.apps) throw new Error("Agent command module requires apps.");
+      if (!dependencies.appAuth) throw new Error("Agent command module requires appAuth.");
+      return createAppLinkCreateCommand(
+      dependencies.apps,
+      dependencies.appAuth,
       {
         resolveLaunchUrls: dependencies.resolveAppLaunchUrls,
       },
-    ),
+    );
+    },
   ),
-  agentCommandModule(
+  appCommandModule(
     appListCommandDescriptor,
     ["micro-app", "list"],
     "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createAppListCommand(requireApps(dependencies), {
-      resolveUrls: dependencies.resolveAppUrls,
-    }),
+    agentCommandPolicy(["operate"], {defaultAllowed: true}),
+    createAppListCommand,
   ),
-  agentCommandModule(
+  appCommandModule(
     appViewCommandDescriptor,
     ["micro-app", "view"],
     "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createAppViewCommand(requireApps(dependencies)),
+    agentCommandPolicy(["operate"], {defaultAllowed: true}),
+    createAppViewCommand,
   ),
-  agentCommandModule(
+  appCommandModule(
     appActionCommandDescriptor,
     ["micro-app", "action"],
     "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createAppActionCommand(requireApps(dependencies)),
+    agentCommandPolicy(["operate"], {defaultAllowed: true}),
+    createAppActionCommand,
   ),
   agentCommandModule(
     environmentCreateCommandDescriptor,
     ["environment", "create"],
     "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createEnvironmentCreateCommand({
-      lifecycle: requireEnvironmentLifecycle(dependencies),
-    }, requireCommandFileResolver(dependencies)),
+    agentCommandPolicy(["operate"], {defaultAllowed: true}),
+    (dependencies) => {
+      if (!dependencies.environmentLifecycle) throw new Error("Agent command module requires environmentLifecycle.");
+      if (!dependencies.commandFileResolver) throw new Error("Agent command module requires commandFileResolver.");
+      return createEnvironmentCreateCommand({
+      lifecycle: dependencies.environmentLifecycle,
+    }, dependencies.commandFileResolver);
+    },
   ),
-  agentCommandModule(
+  environmentReadCommandModule(
     environmentListCommandDescriptor,
     ["environment", "list"],
     "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createEnvironmentListCommand({
-      environments: requireExecutionEnvironments(dependencies),
-    }),
+    agentCommandPolicy(["operate"], {defaultAllowed: true}),
+    createEnvironmentListCommand,
   ),
-  agentCommandModule(
+  environmentReadCommandModule(
     environmentShowCommandDescriptor,
     ["environment", "show"],
     "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createEnvironmentShowCommand({
-      environments: requireExecutionEnvironments(dependencies),
-    }),
+    agentCommandPolicy(["operate"], {defaultAllowed: true}),
+    createEnvironmentShowCommand,
   ),
-  agentCommandModule(
+  environmentControlCommandModule(
     environmentStopCommandDescriptor,
     ["environment", "stop"],
     "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createEnvironmentStopCommand({
-      environments: requireExecutionEnvironments(dependencies),
-      lifecycle: requireEnvironmentLifecycle(dependencies),
-    }),
+    agentCommandPolicy(["operate"], {defaultAllowed: true}),
+    createEnvironmentStopCommand,
   ),
-  agentCommandModule(
+  environmentControlCommandModule(
     environmentLogsCommandDescriptor,
     ["environment", "logs"],
     "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createEnvironmentLogsCommand({
-      environments: requireExecutionEnvironments(dependencies),
-      lifecycle: requireEnvironmentLifecycle(dependencies),
-    }),
+    agentCommandPolicy(["operate"], {defaultAllowed: true}),
+    createEnvironmentLogsCommand,
   ),
-  agentCommandModule(skillListCommandDescriptor, ["skill", "list"], "@payload.json", agentCommandPolicy(["core", "operate", "skill_maintenance"], {
+  agentSkillCommandModule(skillListCommandDescriptor, ["skill", "list"], agentCommandPolicy(["core", "operate", "skill_maintenance"], {
+    defaultAllowed: true,
     requiredAgentSkillOperation: "load",
-  }), (dependencies) => createSkillListCommand(requireAgentSkills(dependencies))),
-  agentCommandModule(skillShowCommandDescriptor, ["skill", "show"], "@payload.json", agentCommandPolicy(["core", "operate", "skill_maintenance"], {
+  }), createSkillListCommand),
+  agentSkillCommandModule(skillShowCommandDescriptor, ["skill", "show"], agentCommandPolicy(["core", "operate", "skill_maintenance"], {
+    defaultAllowed: true,
     requiredAgentSkillOperation: "load",
-  }), (dependencies) => createSkillShowCommand(requireAgentSkills(dependencies))),
-  agentCommandModule(skillLoadCommandDescriptor, ["skill", "load"], "@payload.json", agentCommandPolicy(["core", "operate", "skill_maintenance"], {
+  }), createSkillShowCommand),
+  agentSkillCommandModule(skillLoadCommandDescriptor, ["skill", "load"], agentCommandPolicy(["core", "operate", "skill_maintenance"], {
+    defaultAllowed: true,
     requiredAgentSkillOperation: "load",
-  }), (dependencies) => createSkillLoadCommand(requireAgentSkills(dependencies))),
-  agentCommandModule(skillSetCommandDescriptor, ["skill", "set"], "@payload.json", agentCommandPolicy(["operate", "skill_maintenance"], {
+  }), createSkillLoadCommand),
+  agentSkillCommandModule(skillSetCommandDescriptor, ["skill", "set"], agentCommandPolicy(["operate", "skill_maintenance"], {
+    defaultAllowed: true,
     requiredAgentSkillOperation: "set",
-  }), (dependencies) => createSkillSetCommand(requireAgentSkills(dependencies))),
-  agentCommandModule(skillPatchCommandDescriptor, ["skill", "patch"], "@payload.json", agentCommandPolicy(["operate", "skill_maintenance"], {
+  }), createSkillSetCommand),
+  agentSkillCommandModule(skillPatchCommandDescriptor, ["skill", "patch"], agentCommandPolicy(["operate", "skill_maintenance"], {
+    defaultAllowed: true,
     requiredAgentSkillOperation: "patch",
-  }), (dependencies) => createSkillPatchCommand(requireAgentSkills(dependencies))),
-  agentCommandModule(skillDeleteCommandDescriptor, ["skill", "delete"], "@payload.json", agentCommandPolicy(["operate", "skill_maintenance"], {
+  }), createSkillPatchCommand),
+  agentSkillCommandModule(skillDeleteCommandDescriptor, ["skill", "delete"], agentCommandPolicy(["operate", "skill_maintenance"], {
+    defaultAllowed: true,
     requiredAgentSkillOperation: "delete",
-  }), (dependencies) => createSkillDeleteCommand(requireAgentSkills(dependencies))),
+  }), createSkillDeleteCommand),
   agentCommandModule(postgresReadonlyQueryCommandDescriptor, ["postgres", "readonly", "query"], "@payload.json", agentCommandPolicy(["memory"], {
+    defaultAllowed: true,
     requiresReadonlyPostgres: true,
-  }), (dependencies) => createPostgresReadonlyQueryCommand(requirePostgresReadonly(dependencies))),
-  agentCommandModule(
+  }), (dependencies) => {
+      if (!dependencies.postgresReadonly) throw new Error("Agent command module requires postgresReadonly.");
+      return createPostgresReadonlyQueryCommand(dependencies.postgresReadonly);
+    }),
+  wikiCommandModule(
     wikiOverviewCommandDescriptor,
     ["wiki", "overview"],
     "{}",
-    agentCommandPolicy(["memory"]),
-    (dependencies) => dependencies.wiki ? createWikiOverviewCommand(dependencies.wiki) : null,
+    agentCommandPolicy(["memory"], {defaultAllowed: false}),
+    createWikiOverviewCommand,
   ),
-  agentCommandModule(
+  wikiCommandModule(
     wikiReadCommandDescriptor,
     ["wiki", "read"],
     "@payload.json",
-    agentCommandPolicy(["memory"]),
-    (dependencies) => dependencies.wiki ? createWikiReadCommand(dependencies.wiki) : null,
+    agentCommandPolicy(["memory"], {defaultAllowed: true}),
+    createWikiReadCommand,
   ),
-  agentCommandModule(
+  wikiCommandModule(
     wikiSearchCommandDescriptor,
     ["wiki", "search"],
     "@payload.json",
-    agentCommandPolicy(["memory"]),
-    (dependencies) => dependencies.wiki ? createWikiSearchCommand(dependencies.wiki) : null,
+    agentCommandPolicy(["memory"], {defaultAllowed: true}),
+    createWikiSearchCommand,
   ),
-  agentCommandModule(
+  wikiCommandModule(
     wikiListCommandDescriptor,
     ["wiki", "list"],
     "@payload.json",
-    agentCommandPolicy(["memory"]),
-    (dependencies) => dependencies.wiki ? createWikiListCommand(dependencies.wiki) : null,
+    agentCommandPolicy(["memory"], {defaultAllowed: true}),
+    createWikiListCommand,
   ),
-  agentCommandModule(
+  wikiCommandModule(
     wikiDiffCommandDescriptor,
     ["wiki", "diff"],
     "@payload.json",
-    agentCommandPolicy(["memory"]),
-    (dependencies) => dependencies.wiki ? createWikiDiffCommand(dependencies.wiki) : null,
+    agentCommandPolicy(["memory"], {defaultAllowed: true}),
+    createWikiDiffCommand,
   ),
-  agentCommandModule(
+  wikiCommandModule(
     wikiWriteCommandDescriptor,
     ["wiki", "write", "page"],
     "@payload.json",
-    agentCommandPolicy(["memory"]),
-    (dependencies) => dependencies.wiki ? createWikiWriteCommand(dependencies.wiki) : null,
+    agentCommandPolicy(["memory"], {defaultAllowed: true}),
+    createWikiWriteCommand,
   ),
-  agentCommandModule(
+  wikiCommandModule(
     wikiWriteSectionCommandDescriptor,
     ["wiki", "write", "section"],
     "@payload.json",
-    agentCommandPolicy(["memory"]),
-    (dependencies) => dependencies.wiki ? createWikiWriteSectionCommand(dependencies.wiki) : null,
+    agentCommandPolicy(["memory"], {defaultAllowed: true}),
+    createWikiWriteSectionCommand,
   ),
-  agentCommandModule(
+  wikiCommandModule(
     wikiMoveCommandDescriptor,
     ["wiki", "move"],
     "@payload.json",
-    agentCommandPolicy(["memory"]),
-    (dependencies) => dependencies.wiki ? createWikiMoveCommand(dependencies.wiki) : null,
+    agentCommandPolicy(["memory"], {defaultAllowed: true}),
+    createWikiMoveCommand,
   ),
-  agentCommandModule(
+  wikiCommandModule(
     wikiArchiveCommandDescriptor,
     ["wiki", "archive"],
     "@payload.json",
-    agentCommandPolicy(["memory"]),
-    (dependencies) => dependencies.wiki ? createWikiArchiveCommand(dependencies.wiki) : null,
+    agentCommandPolicy(["memory"], {defaultAllowed: true}),
+    createWikiArchiveCommand,
   ),
-  agentCommandModule(
+  wikiCommandModule(
     wikiRestoreCommandDescriptor,
     ["wiki", "restore"],
     "@payload.json",
-    agentCommandPolicy(["memory"]),
-    (dependencies) => dependencies.wiki ? createWikiRestoreCommand(dependencies.wiki) : null,
+    agentCommandPolicy(["memory"], {defaultAllowed: true}),
+    createWikiRestoreCommand,
   ),
   agentCommandModule(
     wikiAttachImageCommandDescriptor,
     ["wiki", "attach", "image"],
     "@payload.json",
-    agentCommandPolicy(["memory"]),
-    (dependencies) => dependencies.wiki
-      ? createWikiAttachImageCommand(dependencies.wiki, requireCommandFileResolver(dependencies))
-      : null,
+    agentCommandPolicy(["memory"], {defaultAllowed: true}),
+    (dependencies) => {
+      if (!dependencies.wiki) return null;
+      if (!dependencies.commandFileResolver) throw new Error("Agent command module requires commandFileResolver.");
+      return createWikiAttachImageCommand(dependencies.wiki, dependencies.commandFileResolver);
+    },
   ),
-  agentCommandModule(
+  wikiCommandModule(
     wikiFetchAssetCommandDescriptor,
     ["wiki", "fetch", "asset"],
     "@payload.json",
-    agentCommandPolicy(["memory"]),
-    (dependencies) => dependencies.wiki ? createWikiFetchAssetCommand(dependencies.wiki) : null,
+    agentCommandPolicy(["memory"], {defaultAllowed: true}),
+    createWikiFetchAssetCommand,
   ),
-  agentCommandModule(
+  wikiCommandModule(
     wikiDeleteAssetCommandDescriptor,
     ["wiki", "delete", "asset"],
     "@payload.json",
-    agentCommandPolicy(["memory"]),
-    (dependencies) => dependencies.wiki ? createWikiDeleteAssetCommand(dependencies.wiki) : null,
+    agentCommandPolicy(["memory"], {defaultAllowed: true}),
+    createWikiDeleteAssetCommand,
   ),
-  agentCommandModule(
-    sessionPromptReadCommandDescriptor,
-    ["session", "prompt", "current", "read"],
-    "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createSessionPromptReadCommand(requireSessionPrompts(dependencies)),
-  ),
+  sessionPromptCommandModule(sessionPromptReadCommandDescriptor, ["session", "prompt", "current", "read"], createSessionPromptReadCommand),
   agentCommandModule(
     sessionCompactCommandDescriptor,
     ["session", "compact", "current"],
     "{}",
-    agentCommandPolicy(["core"]),
+    agentCommandPolicy(["core"], {defaultAllowed: true}),
     (dependencies) => dependencies.sessionCompactionRequests
       ? createSessionCompactCommand(dependencies.sessionCompactionRequests)
       : null,
   ),
-  agentCommandModule(
-    sessionPromptSetCommandDescriptor,
-    ["session", "prompt", "current", "set"],
-    "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createSessionPromptSetCommand(requireSessionPrompts(dependencies)),
-  ),
-  agentCommandModule(
-    sessionPromptTransformCommandDescriptor,
-    ["session", "prompt", "current", "transform"],
-    "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createSessionPromptTransformCommand(requireSessionPrompts(dependencies)),
-  ),
-  agentCommandModule(
-    todoAddCommandDescriptor,
-    ["todo", "add"],
-    "@payload.json",
-    agentCommandPolicy(["core"]),
-    (dependencies) => createTodoAddCommand(requireSessionTodos(dependencies)),
-  ),
-  agentCommandModule(
-    todoListCommandDescriptor,
-    ["todo", "list"],
-    "{}",
-    agentCommandPolicy(["core"]),
-    (dependencies) => createTodoListCommand(requireSessionTodos(dependencies)),
-  ),
-  agentCommandModule(
-    todoShowCommandDescriptor,
-    ["todo", "show"],
-    "@payload.json",
-    agentCommandPolicy(["core"]),
-    (dependencies) => createTodoShowCommand(requireSessionTodos(dependencies)),
-  ),
-  agentCommandModule(
-    todoDoneCommandDescriptor,
-    ["todo", "done"],
-    "@payload.json",
-    agentCommandPolicy(["core"]),
-    (dependencies) => createTodoDoneCommand(requireSessionTodos(dependencies)),
-  ),
-  agentCommandModule(
-    todoBlockCommandDescriptor,
-    ["todo", "block"],
-    "@payload.json",
-    agentCommandPolicy(["core"]),
-    (dependencies) => createTodoBlockCommand(requireSessionTodos(dependencies)),
-  ),
-  agentCommandModule(
-    todoClearCommandDescriptor,
-    ["todo", "clear"],
-    "{}",
-    agentCommandPolicy(["core"]),
-    (dependencies) => createTodoClearCommand(requireSessionTodos(dependencies)),
-  ),
+  sessionPromptCommandModule(sessionPromptSetCommandDescriptor, ["session", "prompt", "current", "set"], createSessionPromptSetCommand),
+  sessionPromptCommandModule(sessionPromptTransformCommandDescriptor, ["session", "prompt", "current", "transform"], createSessionPromptTransformCommand),
+  todoCommandModule(todoAddCommandDescriptor, ["todo", "add"], createTodoAddCommand),
+  todoCommandModule(todoListCommandDescriptor, ["todo", "list"], createTodoListCommand, "{}"),
+  todoCommandModule(todoShowCommandDescriptor, ["todo", "show"], createTodoShowCommand),
+  todoCommandModule(todoDoneCommandDescriptor, ["todo", "done"], createTodoDoneCommand),
+  todoCommandModule(todoBlockCommandDescriptor, ["todo", "block"], createTodoBlockCommand),
+  todoCommandModule(todoClearCommandDescriptor, ["todo", "clear"], createTodoClearCommand, "{}"),
   runtimeSubagentCommandModule(
     subagentSpawnCommandDescriptor,
     ["subagent", "spawn"],
     "@payload.json",
-    undefined,
+    agentCommandPolicy([], {defaultAllowed: true}),
     (dependencies) => dependencies.subagentSessions
       ? createSubagentSpawnCommand(dependencies.subagentSessions)
       : null,
   ),
-  agentCommandModule(
-    subagentListCommandDescriptor,
-    ["subagent", "list"],
-    "@payload.json",
-    agentCommandPolicy([], {capability: SUBAGENT_SPAWN_COMMAND_NAME}),
-    (dependencies) => createSubagentListCommand(requireSubagentInventory(dependencies)),
-  ),
-  agentCommandModule(
-    subagentShowCommandDescriptor,
-    ["subagent", "show"],
-    "@payload.json",
-    agentCommandPolicy([], {capability: SUBAGENT_SPAWN_COMMAND_NAME}),
-    (dependencies) => createSubagentShowCommand(requireSubagentInventory(dependencies)),
-  ),
-  agentCommandModule(
-    subagentProfileListCommandDescriptor,
-    ["subagent", "profile", "list"],
-    "{}",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createSubagentProfileListCommand(requireSubagentProfiles(dependencies)),
-  ),
-  agentCommandModule(
-    subagentProfileShowCommandDescriptor,
-    ["subagent", "profile", "show"],
-    "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createSubagentProfileShowCommand(requireSubagentProfiles(dependencies)),
-  ),
-  agentCommandModule(
-    subagentProfileUpsertCommandDescriptor,
-    ["subagent", "profile", "upsert"],
-    "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createSubagentProfileUpsertCommand(requireSubagentProfiles(dependencies)),
-  ),
-  agentCommandModule(
-    subagentProfileEnableCommandDescriptor,
-    ["subagent", "profile", "enable"],
-    "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createSubagentProfileEnableCommand(requireSubagentProfiles(dependencies)),
-  ),
-  agentCommandModule(
-    subagentProfileDisableCommandDescriptor,
-    ["subagent", "profile", "disable"],
-    "@payload.json",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => createSubagentProfileDisableCommand(requireSubagentProfiles(dependencies)),
-  ),
+  subagentInventoryCommandModule(subagentListCommandDescriptor, ["subagent", "list"], createSubagentListCommand),
+  subagentInventoryCommandModule(subagentShowCommandDescriptor, ["subagent", "show"], createSubagentShowCommand),
+  subagentProfileCommandModule(subagentProfileListCommandDescriptor, ["subagent", "profile", "list"], createSubagentProfileListCommand, "{}"),
+  subagentProfileCommandModule(subagentProfileShowCommandDescriptor, ["subagent", "profile", "show"], createSubagentProfileShowCommand),
+  subagentProfileCommandModule(subagentProfileUpsertCommandDescriptor, ["subagent", "profile", "upsert"], createSubagentProfileUpsertCommand),
+  subagentProfileCommandModule(subagentProfileEnableCommandDescriptor, ["subagent", "profile", "enable"], createSubagentProfileEnableCommand),
+  subagentProfileCommandModule(subagentProfileDisableCommandDescriptor, ["subagent", "profile", "disable"], createSubagentProfileDisableCommand),
   daemonA2ACommandModule(
     a2aSendCommandDescriptor,
     ["a2a", "send"],
     "@payload.json",
-    agentCommandPolicy(["core"]),
-    (dependencies) => createA2ASendCommand(
-      requireA2AMessaging(dependencies),
-      requireCommandUploads(dependencies),
-    ),
+    agentCommandPolicy(["core"], {defaultAllowed: true}),
+    (dependencies) => {
+      if (!dependencies.a2aMessaging) throw new Error("Agent command module requires a2aMessaging.");
+      if (!dependencies.commandUploads) throw new Error("Agent command module requires commandUploads.");
+      return createA2ASendCommand(
+      dependencies.a2aMessaging,
+      dependencies.commandUploads,
+    );
+    },
   ),
-  daemonA2ACommandModule(
+  a2aReadCommandModule(
     a2aInspectCommandDescriptor,
     ["a2a", "inspect"],
     "@payload.json",
-    agentCommandPolicy(["core"]),
-    (dependencies) => createA2AInspectCommand(requireA2ADeliveries(dependencies)),
+    agentCommandPolicy(["core"], {defaultAllowed: true}),
+    createA2AInspectCommand,
   ),
-  daemonA2ACommandModule(
+  a2aReadCommandModule(
     a2aHistoryCommandDescriptor,
     ["a2a", "history"],
     "@payload.json",
-    agentCommandPolicy(["core"]),
-    (dependencies) => createA2AHistoryCommand(requireA2ADeliveries(dependencies)),
+    agentCommandPolicy(["core"], {defaultAllowed: true}),
+    createA2AHistoryCommand,
   ),
-  daemonChannelCommandModule(
+  emailReadCommandModule(
     emailAccountListCommandDescriptor,
     ["email", "account", "list"],
     "{}",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createEmailAccountListCommand({
-      store: requireEmail(dependencies),
-    }),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createEmailAccountListCommand,
   ),
-  daemonChannelCommandModule(
+  emailReadCommandModule(
     emailListCommandDescriptor,
     ["email", "list"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createEmailListCommand({
-      store: requireEmail(dependencies),
-    }),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createEmailListCommand,
   ),
-  daemonChannelCommandModule(
+  emailReadCommandModule(
     emailReadCommandDescriptor,
     ["email", "read"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createEmailReadCommand({
-      store: requireEmail(dependencies),
-    }),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createEmailReadCommand,
   ),
-  daemonChannelCommandModule(
+  emailReadCommandModule(
     emailSearchCommandDescriptor,
     ["email", "search"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createEmailSearchCommand({
-      store: requireEmail(dependencies),
-    }),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createEmailSearchCommand,
   ),
   daemonChannelCommandModule(
     emailAttachmentsFetchCommandDescriptor,
     ["email", "attachments", "fetch"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createEmailAttachmentsFetchCommand({
-      store: requireEmail(dependencies),
-    }, requireCommandFileResolver(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    (dependencies) => {
+      if (!dependencies.email) throw new Error("Agent command module requires email.");
+      if (!dependencies.commandFileResolver) throw new Error("Agent command module requires commandFileResolver.");
+      return createEmailAttachmentsFetchCommand({
+      store: dependencies.email,
+    }, dependencies.commandFileResolver);
+    },
   ),
   daemonChannelCommandModule(
     emailSendCommandDescriptor,
     ["email", "send"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createEmailSendCommand({
-      store: requireEmail(dependencies),
-      queue: requireOutboundDeliveries(dependencies),
-    }, requireCommandFileResolver(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    (dependencies) => {
+      if (!dependencies.email) throw new Error("Agent command module requires email.");
+      if (!dependencies.outboundDeliveries) throw new Error("Agent command module requires outboundDeliveries.");
+      if (!dependencies.commandFileResolver) throw new Error("Agent command module requires commandFileResolver.");
+      return createEmailSendCommand({
+      store: dependencies.email,
+      queue: dependencies.outboundDeliveries,
+    }, dependencies.commandFileResolver);
+    },
   ),
-  daemonChannelCommandModule(
+  channelDiscoveryCommandModule(
     telegramChatListCommandDescriptor,
     ["telegram", "chat", "list"],
     "{}",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createTelegramChatListCommand({
-      connectorAccounts: requireConnectorAccounts(dependencies),
-      conversations: requireConversations(dependencies),
-    }),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createTelegramChatListCommand,
   ),
-  daemonChannelCommandModule(
+  channelDiscoveryCommandModule(
     telegramChatInfoCommandDescriptor,
     ["telegram", "chat", "info"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createTelegramChatInfoCommand({
-      connectorAccounts: requireConnectorAccounts(dependencies),
-      conversations: requireConversations(dependencies),
-    }),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createTelegramChatInfoCommand,
   ),
-  daemonChannelCommandModule(
+  channelHistoryCommandModule(
     telegramHistoryCommandDescriptor,
     ["telegram", "history"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createTelegramHistoryCommand({
-      connectorAccounts: requireConnectorAccounts(dependencies),
-      conversations: requireConversations(dependencies),
-      messages: requireChannelMessages(dependencies),
-      deliveries: requireOutboundDeliveries(dependencies),
-    }),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createTelegramHistoryCommand,
   ),
   daemonChannelCommandModule(
     telegramMediaFetchCommandDescriptor,
     ["telegram", "media", "fetch"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createTelegramMediaFetchCommand({
-      connectorAccounts: requireConnectorAccounts(dependencies),
-      conversations: requireConversations(dependencies),
-      messages: requireChannelMessages(dependencies),
-    }, requireCommandFileResolver(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    (dependencies) => {
+      if (!dependencies.connectorAccounts) throw new Error("Agent command module requires connectorAccounts.");
+      if (!dependencies.conversations) throw new Error("Agent command module requires conversations.");
+      if (!dependencies.channelMessages) throw new Error("Agent command module requires channelMessages.");
+      if (!dependencies.commandFileResolver) throw new Error("Agent command module requires commandFileResolver.");
+      return createTelegramMediaFetchCommand({
+      connectorAccounts: dependencies.connectorAccounts,
+      conversations: dependencies.conversations,
+      messages: dependencies.channelMessages,
+    }, dependencies.commandFileResolver);
+    },
   ),
-  daemonChannelCommandModule(
+  channelSendCommandModule(
     telegramSendCommandDescriptor,
     ["telegram", "send"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createTelegramSendCommand(
-      requireOutboundDeliveries(dependencies),
-      requireCommandFileResolver(dependencies),
-    ),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createTelegramSendCommand,
   ),
-  daemonChannelCommandModule(
+  channelActionCommandModule(
     telegramReactCommandDescriptor,
     ["telegram", "react"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createTelegramReactCommand(requireChannelActions(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createTelegramReactCommand,
   ),
-  daemonChannelCommandModule(
+  channelActionCommandModule(
     telegramEditCommandDescriptor,
     ["telegram", "edit"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createTelegramEditCommand(requireChannelActions(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createTelegramEditCommand,
   ),
-  daemonChannelCommandModule(
+  channelActionCommandModule(
     telegramDeleteCommandDescriptor,
     ["telegram", "delete"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createTelegramDeleteCommand(requireChannelActions(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createTelegramDeleteCommand,
   ),
-  daemonChannelCommandModule(
+  channelActionCommandModule(
     telegramPinCommandDescriptor,
     ["telegram", "pin"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createTelegramPinCommand(requireChannelActions(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createTelegramPinCommand,
   ),
-  daemonChannelCommandModule(
+  channelActionCommandModule(
     telegramUnpinCommandDescriptor,
     ["telegram", "unpin"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createTelegramUnpinCommand(requireChannelActions(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createTelegramUnpinCommand,
   ),
-  daemonChannelCommandModule(
+  telegramStickerCommandModule(
     telegramStickerInspectCommandDescriptor,
     ["telegram", "sticker", "inspect"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createTelegramStickerInspectCommand(telegramStickerCommandServices(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createTelegramStickerInspectCommand,
   ),
-  daemonChannelCommandModule(
+  telegramStickerCommandModule(
     telegramStickerSaveCommandDescriptor,
     ["telegram", "sticker", "save"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createTelegramStickerSaveCommand(telegramStickerCommandServices(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createTelegramStickerSaveCommand,
   ),
-  daemonChannelCommandModule(
+  telegramStickerCommandModule(
     telegramStickerListCommandDescriptor,
     ["telegram", "sticker", "list"],
     "{}",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createTelegramStickerListCommand(telegramStickerCommandServices(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createTelegramStickerListCommand,
   ),
-  daemonChannelCommandModule(
+  telegramStickerCommandModule(
     telegramStickerSetShowCommandDescriptor,
     ["telegram", "sticker", "set", "show"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createTelegramStickerSetShowCommand(telegramStickerCommandServices(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createTelegramStickerSetShowCommand,
   ),
-  daemonChannelCommandModule(
+  telegramStickerCommandModule(
     telegramStickerSetSaveCommandDescriptor,
     ["telegram", "sticker", "set", "save"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createTelegramStickerSetSaveCommand(telegramStickerCommandServices(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createTelegramStickerSetSaveCommand,
   ),
   daemonChannelCommandModule(
     telegramStickerSendCommandDescriptor,
     ["telegram", "sticker", "send"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createTelegramStickerSendCommand(
-      requireChannelActions(dependencies),
-      requireCommandFileResolver(dependencies),
-      requireTelegramStickers(dependencies),
-    ),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    (dependencies) => {
+      if (!dependencies.channelActions) throw new Error("Agent command module requires channelActions.");
+      if (!dependencies.commandFileResolver) throw new Error("Agent command module requires commandFileResolver.");
+      if (!dependencies.telegramStickers) throw new Error("Agent command module requires telegramStickers.");
+      return createTelegramStickerSendCommand(
+      dependencies.channelActions,
+      dependencies.commandFileResolver,
+      dependencies.telegramStickers,
+    );
+    },
   ),
-  daemonChannelCommandModule(
+  channelDiscoveryCommandModule(
     discordChannelListCommandDescriptor,
     ["discord", "channel", "list"],
     "{}",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createDiscordChannelListCommand({
-      connectorAccounts: requireConnectorAccounts(dependencies),
-      conversations: requireConversations(dependencies),
-    }),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createDiscordChannelListCommand,
   ),
-  daemonChannelCommandModule(
+  discordVoiceCommandModule(
     discordVoiceJoinCommandDescriptor,
     ["discord", "voice", "join"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createDiscordVoiceJoinCommand(discordVoiceCommandServices(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createDiscordVoiceJoinCommand,
   ),
-  daemonChannelCommandModule(
+  discordVoiceCommandModule(
     discordVoiceLeaveCommandDescriptor,
     ["discord", "voice", "leave"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createDiscordVoiceLeaveCommand(discordVoiceCommandServices(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createDiscordVoiceLeaveCommand,
   ),
-  daemonChannelCommandModule(
+  discordVoiceCommandModule(
     discordVoiceSendCommandDescriptor,
     ["discord", "voice", "send"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createDiscordVoiceSendCommand(discordVoiceCommandServices(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createDiscordVoiceSendCommand,
   ),
-  daemonChannelCommandModule(
+  discordVoiceCommandModule(
     discordVoiceStatusCommandDescriptor,
     ["discord", "voice", "status"],
     "{}",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createDiscordVoiceStatusCommand(discordVoiceCommandServices(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createDiscordVoiceStatusCommand,
   ),
-  daemonChannelCommandModule(
+  channelHistoryCommandModule(
     discordHistoryCommandDescriptor,
     ["discord", "history"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createDiscordHistoryCommand({
-      connectorAccounts: requireConnectorAccounts(dependencies),
-      conversations: requireConversations(dependencies),
-      messages: requireChannelMessages(dependencies),
-      deliveries: requireOutboundDeliveries(dependencies),
-    }),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createDiscordHistoryCommand,
   ),
   daemonChannelCommandModule(
     discordStickerListCommandDescriptor,
     ["discord", "sticker", "list"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createDiscordStickerListCommand({
-      conversations: requireConversations(dependencies),
-      stickers: requireDiscordStickers(dependencies),
-    }),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    (dependencies) => {
+      if (!dependencies.conversations) throw new Error("Agent command module requires conversations.");
+      if (!dependencies.discordStickers) throw new Error("Agent command module requires discordStickers.");
+      return createDiscordStickerListCommand({
+      conversations: dependencies.conversations,
+      stickers: dependencies.discordStickers,
+    });
+    },
   ),
-  daemonChannelCommandModule(
+  channelActionCommandModule(
     discordStickerSendCommandDescriptor,
     ["discord", "sticker", "send"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createDiscordStickerSendCommand(requireChannelActions(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createDiscordStickerSendCommand,
   ),
   daemonChannelCommandModule(
     discordGifSendCommandDescriptor,
     ["discord", "gif", "send"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createDiscordGifSendCommand(
-      requireOutboundDeliveries(dependencies),
-      requireCommandFileResolver(dependencies),
-      requireDiscordGifs(dependencies),
-    ),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    (dependencies) => {
+      if (!dependencies.outboundDeliveries) throw new Error("Agent command module requires outboundDeliveries.");
+      if (!dependencies.commandFileResolver) throw new Error("Agent command module requires commandFileResolver.");
+      if (!dependencies.discordGifs) throw new Error("Agent command module requires discordGifs.");
+      return createDiscordGifSendCommand(
+      dependencies.outboundDeliveries,
+      dependencies.commandFileResolver,
+      dependencies.discordGifs,
+    );
+    },
   ),
-  daemonChannelCommandModule(
+  channelSendCommandModule(
     discordSendCommandDescriptor,
     ["discord", "send"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createDiscordSendCommand(
-      requireOutboundDeliveries(dependencies),
-      requireCommandFileResolver(dependencies),
-    ),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createDiscordSendCommand,
   ),
   daemonChannelCommandModule(
     whatsappChatListCommandDescriptor,
     ["whatsapp", "chat", "list"],
     "{}",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createWhatsAppChatListCommand({
-      conversations: requireConversations(dependencies),
-    }),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    (dependencies) => {
+      if (!dependencies.conversations) throw new Error("Agent command module requires conversations.");
+      return createWhatsAppChatListCommand({
+      conversations: dependencies.conversations,
+    });
+    },
   ),
   daemonChannelCommandModule(
     whatsappHistoryCommandDescriptor,
     ["whatsapp", "history"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createWhatsAppHistoryCommand({
-      conversations: requireConversations(dependencies),
-      messages: requireChannelMessages(dependencies),
-      deliveries: requireOutboundDeliveries(dependencies),
-    }),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    (dependencies) => {
+      if (!dependencies.conversations) throw new Error("Agent command module requires conversations.");
+      if (!dependencies.channelMessages) throw new Error("Agent command module requires channelMessages.");
+      if (!dependencies.outboundDeliveries) throw new Error("Agent command module requires outboundDeliveries.");
+      return createWhatsAppHistoryCommand({
+      conversations: dependencies.conversations,
+      messages: dependencies.channelMessages,
+      deliveries: dependencies.outboundDeliveries,
+    });
+    },
   ),
-  daemonChannelCommandModule(
+  channelSendCommandModule(
     whatsappSendCommandDescriptor,
     ["whatsapp", "send"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createWhatsAppSendCommand(
-      requireOutboundDeliveries(dependencies),
-      requireCommandFileResolver(dependencies),
-    ),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: true}),
+    createWhatsAppSendCommand,
   ),
-  daemonChannelCommandModule(
+  whatsappCallCommandModule(
     whatsappCallStatusCommandDescriptor,
     ["whatsapp", "call", "status"],
     "{}",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createWhatsAppCallStatusCommand(whatsappCallCommandServices(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: false}),
+    createWhatsAppCallStatusCommand,
   ),
-  daemonChannelCommandModule(
+  whatsappCallCommandModule(
     whatsappCallSendCommandDescriptor,
     ["whatsapp", "call", "send"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createWhatsAppCallSendCommand(whatsappCallCommandServices(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: false}),
+    createWhatsAppCallSendCommand,
   ),
-  daemonChannelCommandModule(
+  whatsappCallCommandModule(
     whatsappCallHangupCommandDescriptor,
     ["whatsapp", "call", "hangup"],
     "@payload.json",
-    agentCommandPolicy(["communicate_human"]),
-    (dependencies) => createWhatsAppCallHangupCommand(whatsappCallCommandServices(dependencies)),
+    agentCommandPolicy(["communicate_human"], {defaultAllowed: false}),
+    createWhatsAppCallHangupCommand,
   ),
-  agentCommandModule(
+  credentialCommandModule(
     envListCommandDescriptor,
     ["env", "list"],
     "{}",
-    agentCommandPolicy(["operate"]),
-    (dependencies) => dependencies.credentials
-      ? createListEnvValuesCommand(dependencies.credentials)
-      : null,
+    agentCommandPolicy(["operate"], {defaultAllowed: true}),
+    createListEnvValuesCommand,
   ),
-  agentCommandModule(envSetCommandDescriptor, ["env", "set"], "@payload.json", agentCommandPolicy(["operate"], {
+  credentialCommandModule(envSetCommandDescriptor, ["env", "set"], "@payload.json", agentCommandPolicy(["operate"], {
+    defaultAllowed: true,
     requiresCredentialMutation: true,
-  }), (dependencies) => dependencies.credentials
-    ? createSetEnvValueCommand(dependencies.credentials)
-    : null),
-  agentCommandModule(envClearCommandDescriptor, ["env", "clear"], "@payload.json", agentCommandPolicy(["operate"], {
+  }), createSetEnvValueCommand),
+  credentialCommandModule(envClearCommandDescriptor, ["env", "clear"], "@payload.json", agentCommandPolicy(["operate"], {
+    defaultAllowed: true,
     requiresCredentialMutation: true,
-  }), (dependencies) => dependencies.credentials
-    ? createClearEnvValueCommand(dependencies.credentials)
-    : null),
+  }), createClearEnvValueCommand),
   agentCommandModule(
     ventSendCommandDescriptor,
     ["vent"],
     "@payload.json",
-    agentCommandPolicy(["core"]),
+    agentCommandPolicy(["core"], {defaultAllowed: true}),
     (dependencies) => createVentSendCommand({env: dependencies.env}),
   ),
   agentCommandModule(
     webFetchCommandDescriptor,
     ["web", "fetch"],
     "@payload.json",
-    agentCommandPolicy(["internet"]),
+    agentCommandPolicy(["internet"], {defaultAllowed: true}),
     (dependencies) => createWebFetchCommand({
       env: dependencies.env,
       fileResolver: dependencies.commandFileResolver,
@@ -1769,102 +1713,105 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
     webReadCommandDescriptor,
     ["web", "read"],
     "@payload.json",
-    agentCommandPolicy(["internet"]),
+    agentCommandPolicy(["internet"], {defaultAllowed: false}),
     (dependencies) => createWebReadCommand({env: dependencies.env}),
   ),
-  agentCommandModule(
+  braveCommandModule(
     braveWebSearchCommandDescriptor,
     ["brave", "web", "search"],
     "@payload.json",
-    agentCommandPolicy(["internet"]),
-    (dependencies) => createBraveWebSearchCommand({env: dependencies.env, throttleGate: dependencies.braveThrottleGate}),
+    agentCommandPolicy(["internet"], {defaultAllowed: true}),
+    createBraveWebSearchCommand,
   ),
-  agentCommandModule(
+  braveCommandModule(
     braveNewsSearchCommandDescriptor,
     ["brave", "news", "search"],
     "@payload.json",
-    agentCommandPolicy(["internet"]),
-    (dependencies) => createBraveNewsSearchCommand({env: dependencies.env, throttleGate: dependencies.braveThrottleGate}),
+    agentCommandPolicy(["internet"], {defaultAllowed: true}),
+    createBraveNewsSearchCommand,
   ),
-  agentCommandModule(
+  braveCommandModule(
     braveVideoSearchCommandDescriptor,
     ["brave", "video", "search"],
     "@payload.json",
-    agentCommandPolicy(["internet"]),
-    (dependencies) => createBraveVideoSearchCommand({env: dependencies.env, throttleGate: dependencies.braveThrottleGate}),
+    agentCommandPolicy(["internet"], {defaultAllowed: true}),
+    createBraveVideoSearchCommand,
   ),
-  agentCommandModule(
+  braveCommandModule(
     braveImageSearchCommandDescriptor,
     ["brave", "image", "search"],
     "@payload.json",
-    agentCommandPolicy(["internet"]),
-    (dependencies) => createBraveImageSearchCommand({env: dependencies.env, throttleGate: dependencies.braveThrottleGate}),
+    agentCommandPolicy(["internet"], {defaultAllowed: true}),
+    createBraveImageSearchCommand,
   ),
-  agentCommandModule(
+  braveCommandModule(
     braveLlmContextCommandDescriptor,
     ["brave", "llm", "context"],
     "@payload.json",
-    agentCommandPolicy(["internet"]),
-    (dependencies) => createBraveLlmContextCommand({env: dependencies.env, throttleGate: dependencies.braveThrottleGate}),
+    agentCommandPolicy(["internet"], {defaultAllowed: true}),
+    createBraveLlmContextCommand,
   ),
-  agentCommandModule(
+  braveCommandModule(
     bravePlaceSearchCommandDescriptor,
     ["brave", "place", "search"],
     "@payload.json",
-    agentCommandPolicy(["internet"]),
-    (dependencies) => createBravePlaceSearchCommand({env: dependencies.env, throttleGate: dependencies.braveThrottleGate}),
+    agentCommandPolicy(["internet"], {defaultAllowed: true}),
+    createBravePlaceSearchCommand,
   ),
-  agentCommandModule(
+  braveCommandModule(
     bravePlacePoiCommandDescriptor,
     ["brave", "place", "poi"],
     "@payload.json",
-    agentCommandPolicy(["internet"]),
-    (dependencies) => createBravePlacePoiCommand({env: dependencies.env, throttleGate: dependencies.braveThrottleGate}),
+    agentCommandPolicy(["internet"], {defaultAllowed: true}),
+    createBravePlacePoiCommand,
   ),
-  agentCommandModule(
+  braveCommandModule(
     bravePlaceDescriptionCommandDescriptor,
     ["brave", "place", "description"],
     "@payload.json",
-    agentCommandPolicy(["internet"]),
-    (dependencies) => createBravePlaceDescriptionCommand({env: dependencies.env, throttleGate: dependencies.braveThrottleGate}),
+    agentCommandPolicy(["internet"], {defaultAllowed: true}),
+    createBravePlaceDescriptionCommand,
   ),
   agentCommandModule(
     openAIWebResearchCommandDescriptor,
     ["openai", "web-research"],
     "@payload.json",
-    agentCommandPolicy(["internet"]),
-    (dependencies) => createOpenAIWebResearchCommand({
+    agentCommandPolicy(["internet"], {defaultAllowed: true}),
+    (dependencies) => {
+      if (!dependencies.backgroundJobService) throw new Error("Agent command module requires backgroundJobService.");
+      return createOpenAIWebResearchCommand({
       env: dependencies.env,
-      jobService: requireBackgroundJobService(dependencies),
-    }),
+      jobService: dependencies.backgroundJobService,
+    });
+    },
   ),
   agentCommandModule(
     imageGenerateCommandDescriptor,
     ["image", "generate"],
     "@payload.json",
-    agentCommandPolicy(["core"]),
-    (dependencies) => createImageGenerateCommand({
+    agentCommandPolicy(["core"], {defaultAllowed: true}),
+    (dependencies) => {
+      if (!dependencies.backgroundJobService) throw new Error("Agent command module requires backgroundJobService.");
+      if (!dependencies.commandFileResolver) throw new Error("Agent command module requires commandFileResolver.");
+      return createImageGenerateCommand({
       env: dependencies.env,
-      jobService: requireBackgroundJobService(dependencies),
-    }, requireCommandFileResolver(dependencies)),
+      jobService: dependencies.backgroundJobService,
+    }, dependencies.commandFileResolver);
+    },
   ),
-  agentCommandModule(
+  audioCommandModule(
     whisperTranscribeCommandDescriptor,
     ["whisper", "transcribe"],
     "@payload.json",
-    agentCommandPolicy(["core"]),
-    (dependencies) => createWhisperTranscribeCommand({
-      env: dependencies.env,
-    }, requireCommandFileResolver(dependencies)),
+    agentCommandPolicy(["core"], {defaultAllowed: true}),
+    createWhisperTranscribeCommand,
   ),
-  agentCommandModule(
+  audioCommandModule(
     whisperTranslateCommandDescriptor,
     ["whisper", "translate"],
     "@payload.json",
-    agentCommandPolicy(["core"]),
-    (dependencies) => createWhisperTranslateCommand({
-      env: dependencies.env,
-    }, requireCommandFileResolver(dependencies)),
+    agentCommandPolicy(["core"], {defaultAllowed: true}),
+    createWhisperTranslateCommand,
   ),
 ];
 

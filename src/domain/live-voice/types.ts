@@ -4,6 +4,14 @@ export type LiveVoiceSessionState = "connecting" | "connected" | "disconnected" 
 export type LiveVoiceOperationalState = "connecting" | "ready" | "degraded" | "recovering" | "error";
 export type LiveVoiceTurnStatus = "pending" | "queued" | "running" | "awaiting_final" | "final_sending" | "completed" | "failed";
 
+/** A completed store lookup found no turn; infrastructure failures retain their own cause. */
+export class LiveVoiceTurnNotFoundError extends Error {
+  constructor(id: string) {
+    super(`Unknown live voice turn ${id}.`);
+    this.name = "LiveVoiceTurnNotFoundError";
+  }
+}
+
 export type LiveVoiceHealthReason =
   | "transport_not_ready"
   | "provider_connecting"

@@ -153,7 +153,15 @@ describe("session heartbeat concurrency with PostgreSQL", () => {
 
   liveIt("fences expired and replaced claims without clearing the new owner", async () => {
     const heartbeat = await createDueHeartbeat();
-    const expired = await claim(heartbeat, "old-claim", Date.now() - 1);
+    await expect(sessions.claimHeartbeat({
+      sessionId: heartbeat.sessionId, claimedBy: "already-expired", claimExpiresAt: Date.now() - 1,
+    })).resolves.toBeNull();
+    const expired = await claim(heartbeat, "old-claim");
+    await pool.query(`
+      UPDATE runtime.session_heartbeats
+      SET claim_expires_at = clock_timestamp() - INTERVAL '1 second'
+      WHERE session_id = $1 AND claimed_by = $2
+    `, [heartbeat.sessionId, expired.claimedBy]);
     const oldCompletion = {
       sessionId: heartbeat.sessionId, claimedBy: expired.claimedBy!,
       configRevision: expired.configRevision, attemptedAt: Date.now(), lastSkipReason: "stale",

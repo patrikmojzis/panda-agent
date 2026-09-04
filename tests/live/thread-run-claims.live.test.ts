@@ -86,7 +86,8 @@ describe("durable thread run claims with PostgreSQL", () => {
       await pool.query(`
         CREATE TABLE ${quotedSchema}.agent_sessions (
           id TEXT PRIMARY KEY,
-          current_thread_id TEXT NOT NULL
+          current_thread_id TEXT NOT NULL,
+          archived_at TIMESTAMPTZ
         );
         CREATE TABLE ${quotedSchema}.threads (
           id TEXT PRIMARY KEY,
@@ -94,6 +95,7 @@ describe("durable thread run claims with PostgreSQL", () => {
           run_claims_blocked_at TIMESTAMPTZ,
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
+        CREATE TABLE ${quotedSchema}.session_compaction_requests (session_id TEXT PRIMARY KEY);
         CREATE TABLE ${quotedSchema}.session_runtime_config (
           session_id TEXT PRIMARY KEY,
           pending_wake_at TIMESTAMPTZ,
@@ -125,6 +127,7 @@ describe("durable thread run claims with PostgreSQL", () => {
           abort_requested_at TIMESTAMPTZ,
           abort_reason TEXT,
           error TEXT,
+          error_summary TEXT,
           admitted_through_input_order BIGINT
         );
         CREATE UNIQUE INDEX runs_one_running_per_thread_idx

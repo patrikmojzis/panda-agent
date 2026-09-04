@@ -1,7 +1,8 @@
 import type {JsonValue} from "../../../lib/json.js";
 import type {OutboundItem, OutboundSentItem, OutboundTarget,} from "../types.js";
 
-export type OutboundDeliveryStatus = "pending" | "sending" | "sent" | "failed";
+/** An unknown outcome must be reconciled, never automatically retried. */
+export type OutboundDeliveryStatus = "pending" | "sending" | "sent" | "failed" | "unknown";
 
 export interface DeliveryNotification {
   channel: string;
@@ -31,6 +32,7 @@ export interface OutboundDeliveryRecord extends OutboundDeliveryInput {
   lastError?: string;
   sent?: readonly OutboundSentItem[];
   claimedAt?: number;
+  claimToken?: string;
   completedAt?: number;
   createdAt: number;
   updatedAt: number;
@@ -46,10 +48,12 @@ export interface OutboundDeliveryTargetHistoryFilter {
 
 export interface CompleteDeliveryInput {
   id: string;
+  claimToken: string;
   sent: readonly OutboundSentItem[];
 }
 
 export interface FailDeliveryInput {
   id: string;
+  claimToken: string;
   error: string;
 }

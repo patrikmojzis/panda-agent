@@ -47,6 +47,7 @@ describe("Postgres thread runtime abort delivery", () => {
       "00000000-0000-0000-0000-000000000901",
       "runtime_events",
       false,
+      "stop from postgres",
     ]);
     pool.query.mockClear();
     await expect(store.listAbortRequestedRuns([])).resolves.toEqual([]);

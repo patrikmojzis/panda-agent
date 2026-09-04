@@ -6,8 +6,7 @@ import type {OutboundDeliveryInput} from "../../domain/channels/deliveries/types
 import type {IdentityRecord} from "../../domain/identity/types.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
 import {
-  createSessionWithInitialThread,
-  resetSessionCurrentThread,
+  type SessionLifecycle,
   SessionCurrentThreadConflictError,
 } from "../../domain/sessions/lifecycle.js";
 import type {
@@ -16,7 +15,6 @@ import type {
   UpdateSessionRuntimeConfigInput,
 } from "../../domain/sessions/types.js";
 import {resolveCurrentSessionThread} from "../../domain/sessions/current-thread.js";
-import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
 import type {BindConversationInput, ConversationBinding, ConversationLookup} from "../../domain/sessions/conversations/types.js";
 import type {SessionRouteInput} from "../../domain/sessions/routes/types.js";
@@ -28,13 +26,11 @@ import type {
 } from "../../domain/threads/requests/types.js";
 import {RetryableRuntimeRequestError} from "../../domain/threads/requests/errors.js";
 import type {ThreadRuntimeCoordinator} from "../../domain/threads/runtime/coordinator.js";
-import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import {
   isMissingThreadError,
   type ThreadAbortOperationRecord,
   type ThreadRecord,
 } from "../../domain/threads/runtime/types.js";
-import type {PgPoolLike} from "../../lib/postgres-query.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import {isJsonObject, type JsonValue} from "../../lib/json.js";
 import {trimToUndefined} from "../../lib/strings.js";
@@ -52,7 +48,7 @@ import type {OutboundDeliveryRecord} from "../../domain/channels/deliveries/type
 export interface DaemonThreadHelperContext {
   fallbackContext: {cwd: string};
   runtime: {
-    pool?: PgPoolLike;
+    sessionLifecycle: SessionLifecycle;
     agentStore: {
       getAgent(agentKey: string): Promise<unknown>;
       listIdentityPairings(identityId: string): Promise<readonly {agentKey: string}[]>;
@@ -63,18 +59,15 @@ export interface DaemonThreadHelperContext {
     coordinator: Pick<ThreadRuntimeCoordinator, "abort" | "runExclusively">;
     identityStore: Pick<IdentityStore, "getIdentity">;
     sessionStore: Pick<SessionStore,
-      | "createSession"
       | "getMainSession"
       | "getSession"
-      | "updateCurrentThread"
-      | "updateSessionRuntimeConfig"
       | "getSessionCreationOperation"
       | "recordSessionCreationOperation"
       | "recordMainSessionResolutionOperation"
     >;
     store: Pick<
       ThreadRuntimeStore,
-      "createThread" | "discardPendingInputs" | "getThread" | "getThreadAbortOperation"
+      "getThread" | "getThreadAbortOperation"
     >;
     subagentSessions: DaemonSubagentSessionContext["subagentSessions"];
   };
@@ -234,19 +227,6 @@ export function createDaemonThreadHelpers(
     return Object.keys(patch).length > 0 ? patch : undefined;
   };
 
-  const updateSessionRuntimeConfig = async (
-    sessionId: string,
-    patch: Omit<UpdateSessionRuntimeConfigInput, "sessionId"> | undefined,
-  ): Promise<void> => {
-    if (!patch) {
-      return;
-    }
-    await context.runtime.sessionStore.updateSessionRuntimeConfig({
-      sessionId,
-      ...patch,
-    });
-  };
-
   const ensureMainSession = async (
     agentKey: string,
     identity?: IdentityRecord,
@@ -288,70 +268,30 @@ export function createDaemonThreadHelpers(
     const sessionId = randomUUID();
     const threadId = randomUUID();
     try {
-      if (
-        context.runtime.pool
-        && context.runtime.sessionStore instanceof PostgresSessionStore
-        && context.runtime.store instanceof PostgresThreadRuntimeStore
-      ) {
-        const created = await createSessionWithInitialThread({
-          pool: context.runtime.pool,
-          sessionStore: context.runtime.sessionStore,
-          threadStore: context.runtime.store,
-          session: {
-            id: sessionId,
-            agentKey,
-            kind: "main",
-            currentThreadId: threadId,
-            createdByIdentityId: identity?.id,
-          },
-          thread: buildInitialSessionThreadInput({
-            sessionId,
-            id: threadId,
-          }),
-          runtimeConfig: buildRuntimeConfigPatch({
-            model: initialThread?.model,
-            thinking: initialThread?.thinking,
-            inferenceProjection: initialThread?.inferenceProjection,
-          }),
-          ...(operationId && identity
-            ? {operation: {operationId, identityId: identity.id, kind: "main" as const}}
-            : {}),
-        });
-        return {
-          created: true,
-          session: created.session,
-        };
-      }
-
-      const session = await context.runtime.sessionStore.createSession({
-        id: sessionId,
-        agentKey,
-        kind: "main",
-        currentThreadId: threadId,
-        createdByIdentityId: identity?.id,
-      });
-      await context.runtime.store.createThread(buildInitialSessionThreadInput({
-        sessionId,
-        id: threadId,
-      }));
-      await updateSessionRuntimeConfig(sessionId, buildRuntimeConfigPatch({
-        model: initialThread?.model,
-        thinking: initialThread?.thinking,
-        inferenceProjection: initialThread?.inferenceProjection,
-      }));
-      if (operationId && identity) {
-        await context.runtime.sessionStore.recordSessionCreationOperation({
-          operationId,
-          identityId: identity.id,
+      const created = await context.runtime.sessionLifecycle.create({
+        session: {
+          id: sessionId,
           agentKey,
-          sessionId,
-          threadId,
           kind: "main",
-        });
-      }
+          currentThreadId: threadId,
+          createdByIdentityId: identity?.id,
+        },
+        thread: buildInitialSessionThreadInput({
+          sessionId,
+          id: threadId,
+        }),
+        runtimeConfig: buildRuntimeConfigPatch({
+          model: initialThread?.model,
+          thinking: initialThread?.thinking,
+          inferenceProjection: initialThread?.inferenceProjection,
+        }),
+        ...(operationId && identity
+          ? {operation: {operationId, identityId: identity.id, kind: "main" as const}}
+          : {}),
+      });
       return {
         created: true,
-        session,
+        session: created.session,
       };
     } catch (error) {
       // Main-session creation is naturally contested across independently
@@ -468,51 +408,23 @@ export function createDaemonThreadHelpers(
     const agentKey = await resolveAccessibleAgentKey(identity, input.agentKey);
 
     try {
-      if (
-        context.runtime.pool
-        && context.runtime.sessionStore instanceof PostgresSessionStore
-        && context.runtime.store instanceof PostgresThreadRuntimeStore
-      ) {
-        const created = await createSessionWithInitialThread({
-          pool: context.runtime.pool,
-          sessionStore: context.runtime.sessionStore,
-          threadStore: context.runtime.store,
-          session: {
-            id: sessionId,
-            agentKey,
-            kind: "branch",
-            currentThreadId: threadId,
-            createdByIdentityId: input.identityId,
-          },
-          thread: threadInput,
-          runtimeConfig,
-          operation: {
-            operationId: input.operationId,
-            identityId: input.identityId,
-            kind: "branch",
-          },
-        });
-        return created.thread;
-      }
-
-      await context.runtime.sessionStore.createSession({
-        id: sessionId,
-        agentKey,
-        kind: "branch",
-        currentThreadId: threadId,
-        createdByIdentityId: input.identityId,
+      const created = await context.runtime.sessionLifecycle.create({
+        session: {
+          id: sessionId,
+          agentKey,
+          kind: "branch",
+          currentThreadId: threadId,
+          createdByIdentityId: input.identityId,
+        },
+        thread: threadInput,
+        runtimeConfig,
+        operation: {
+          operationId: input.operationId,
+          identityId: input.identityId,
+          kind: "branch",
+        },
       });
-      const thread = await context.runtime.store.createThread(threadInput);
-      await updateSessionRuntimeConfig(sessionId, runtimeConfig);
-      await context.runtime.sessionStore.recordSessionCreationOperation({
-        operationId: input.operationId,
-        identityId: input.identityId,
-        agentKey,
-        sessionId,
-        threadId,
-        kind: "branch",
-      });
-      return thread;
+      return created.thread;
     } catch (error) {
       const racedReplay = await readReceipt();
       if (racedReplay) {
@@ -978,39 +890,18 @@ export function createDaemonThreadHelpers(
           replacesThreadId: previousThread.id,
         };
         const runtimeConfig = buildRuntimeConfigPatch(input);
-        const postgresReset = Boolean(context.runtime.pool
-          && context.runtime.sessionStore instanceof PostgresSessionStore
-          && context.runtime.store instanceof PostgresThreadRuntimeStore);
-        let thread: ThreadRecord;
-        if (postgresReset) {
-          thread = await resetSessionCurrentThread({
-            pool: context.runtime.pool!,
-            sessionStore: context.runtime.sessionStore as PostgresSessionStore,
-            threadStore: context.runtime.store as PostgresThreadRuntimeStore,
-            thread: nextThread,
-            previousThreadId: previousThread.id,
-            owner,
-            session: {
-              sessionId: session.id,
-              currentThreadId: nextThread.id,
-            },
-            runtimeConfig,
-            runtimeConfigOperationId: input.requestId,
-            channelRouting: input.channelRouting,
-          });
-        } else {
-          await context.runtime.store.discardPendingInputs(previousThread.id);
-          thread = await context.runtime.store.createThread(nextThread);
-          await updateSessionRuntimeConfig(session.id, runtimeConfig);
-          await context.runtime.sessionStore.updateCurrentThread({
+        const thread = await context.runtime.sessionLifecycle.reset({
+          thread: nextThread,
+          previousThreadId: previousThread.id,
+          owner,
+          session: {
             sessionId: session.id,
             currentThreadId: nextThread.id,
-          });
-          if (input.channelRouting) {
-            await context.conversationBindings.bindConversation(input.channelRouting.conversation);
-            await context.sessionRoutes.saveLastRoute(input.channelRouting.route);
-          }
-        }
+          },
+          runtimeConfig,
+          runtimeConfigOperationId: input.requestId,
+          channelRouting: input.channelRouting,
+        });
 
         return {
           thread,

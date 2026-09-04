@@ -24,6 +24,7 @@ describe("connector worker runtime", () => {
     let claimed = false;
     const delivery = {
       id: "delivery-1",
+      claimToken: "claim-1",
       status: "pending" as const,
       attemptCount: 0,
       channel: "telegram",
@@ -42,7 +43,7 @@ describe("connector worker runtime", () => {
       updatedAt: 1,
     };
     const store = {
-      failSendingDeliveries: vi.fn(async () => 0),
+      markSendingDeliveriesUnknown: vi.fn(async () => 0),
       claimNextPendingDelivery: vi.fn(async () => {
         if (claimed) {
           return null;
@@ -51,6 +52,8 @@ describe("connector worker runtime", () => {
         claimed = true;
         return delivery;
       }),
+      getDelivery: vi.fn(async () => delivery),
+      markDeliveryUnknown: vi.fn(async () => delivery),
       markDeliverySent: vi.fn(),
       markDeliveryFailed: vi.fn(async (input: {id: string; error: string}) => ({
         ...delivery,
@@ -79,6 +82,7 @@ describe("connector worker runtime", () => {
 
     expect(store.markDeliveryFailed).toHaveBeenCalledWith({
       id: "delivery-1",
+      claimToken: "claim-1",
       error: "send failed",
     });
     expect(onTerminalFailure).toHaveBeenCalledWith(expect.objectContaining({

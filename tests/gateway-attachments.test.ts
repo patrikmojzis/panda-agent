@@ -257,68 +257,9 @@ describe("gateway attachments store", () => {
     })).rejects.toMatchObject({statusCode: 413});
   });
 
-  it("refuses to scrub expired attachment paths outside the agent media root", async () => {
-    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "panda-gateway-scrub-"));
-    const maliciousPath = path.join(dataDir, "outside.txt");
-    try {
-      await fs.mkdir(path.join(dataDir, "agents", "panda", "media"), {recursive: true});
-      await fs.writeFile(maliciousPath, "do not delete", "utf8");
-      const {gatewayStore, pool} = await createHarness();
-      const attachment = await uploadAttachment({
-        expiresAt: Date.now() - 1_000,
-        idempotencyKey: "malicious-path",
-        text: "malicious",
-      }, gatewayStore);
-      const tables = buildGatewayTableNames();
-      await pool.query(`
-        UPDATE ${tables.attachments}
-        SET local_path = $2
-        WHERE id = $1
-      `, [attachment.id, maliciousPath]);
 
-      await expect(gatewayStore.scrubExpiredAttachments({
-        env: {DATA_DIR: dataDir},
-        now: Date.now(),
-      })).rejects.toThrow("outside media root");
-      await expect(fs.readFile(maliciousPath, "utf8")).resolves.toBe("do not delete");
-      await expect(gatewayStore.getAttachment(attachment.id)).resolves.toMatchObject({
-        status: "uploaded",
-        localPath: maliciousPath,
-      });
-    } finally {
-      await fs.rm(dataDir, {recursive: true, force: true});
-    }
-  });
-
-  it("updates delivered and quarantined attachment retention status", async () => {
+  it("updates quarantined attachment retention status", async () => {
     const {gatewayStore} = await createHarness();
-    const deliveredAttachment = await uploadAttachment({idempotencyKey: "upload-delivered"}, gatewayStore);
-    const stored = await gatewayStore.storeEventWithAttachments({
-      sourceId: "work-prod",
-      type: "meeting.transcript",
-      deliveryRequested: "wake",
-      idempotencyKey: "event-delivered",
-      text: "event text",
-      textBytes: Buffer.byteLength("event text", "utf8"),
-      textSha256: sha256Hex("event text"),
-      attachments: [{id: deliveredAttachment.id}],
-      maxAttachmentBytes: 100,
-    });
-    const [claimed] = await gatewayStore.claimPendingEvents(1);
-    if (!claimed?.claimId) {
-      throw new Error("Expected claimed event.");
-    }
-    await gatewayStore.reserveEventDelivery({eventId: stored.event.id, claimId: claimed.claimId, riskScore: 0.01});
-    await gatewayStore.markEventDelivered({
-      eventId: stored.event.id,
-      claimId: claimed.claimId,
-      threadId: "thread-1",
-      riskScore: 0.01,
-      metadata: {gateway: {}},
-      attachmentRetentionMs: 1_000,
-    });
-    await expect(gatewayStore.getAttachment(deliveredAttachment.id)).resolves.toMatchObject({status: "delivered"});
-
     const quarantinedAttachment = await uploadAttachment({idempotencyKey: "upload-quarantined"}, gatewayStore);
     const quarantined = await gatewayStore.storeEventWithAttachments({
       sourceId: "work-prod",

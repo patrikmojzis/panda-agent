@@ -219,6 +219,7 @@ export function parseGatewayEventRow(row: Record<string, unknown>): GatewayEvent
     riskScore: parseRiskScore(row.risk_score),
     reason: parseOptionalTrimmed("Gateway event reason", row.reason),
     threadId: parseOptionalTrimmed("Gateway event thread id", row.thread_id),
+    inputId: parseOptionalTrimmed("Gateway event input id", row.input_id),
     metadata: parseOptionalGatewayMetadata("Gateway event metadata", row.metadata),
     createdAt: requireTimestampMillis(row.created_at, "Gateway event created_at must be a finite timestamp."),
     claimId: parseOptionalTrimmed("Gateway event claim id", row.claim_id),

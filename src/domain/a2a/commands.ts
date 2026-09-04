@@ -18,12 +18,6 @@ const MAX_ITEMS = 10;
 const DEFAULT_HISTORY_LIMIT = 10;
 const MAX_HISTORY_LIMIT = 50;
 
-export interface MessageAgentSendCommandInput {
-  agentKey?: string;
-  sessionId?: string;
-  items: JsonObject[];
-}
-
 export interface MessageAgentSendCommandOutput extends JsonObject {
   ok: true;
   status: "queued";
@@ -364,7 +358,7 @@ export const a2aInspectCommandDescriptor: CommandDescriptor = {
     deliveryId: "string",
     messageId: "string",
     direction: "inbound|outbound",
-    status: "pending|sending|sent|failed",
+    status: "pending|sending|sent|failed|unknown",
     fromSessionId: "string",
     toSessionId: "string",
     itemCount: "number",

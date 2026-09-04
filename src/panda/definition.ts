@@ -15,10 +15,6 @@ export interface BuildDefaultAgentToolsOptions {
   thinking?: ThinkingSetToolOptions;
 }
 
-// `worker` remains only as a legacy in-process toolset key for non-runtime policy tests.
-// Durable V2 subagents are profile/tool-group driven and must not use this toolset.
-export type DefaultAgentToolsetKey = "main" | "workspace" | "memory" | "browser" | "worker" | "skill_maintainer";
-
 export interface DefaultAgentToolRegistry {
   bash: BashTool;
   backgroundJobStatus?: BackgroundJobStatusTool;
@@ -34,7 +30,6 @@ export interface DefaultAgentToolsets {
   workspace: readonly Tool[];
   memory: readonly Tool[];
   browser: readonly Tool[];
-  worker: readonly Tool[];
   skill_maintainer: readonly Tool[];
 }
 
@@ -87,7 +82,6 @@ export function buildDefaultAgentToolsetsFromRegistry(
   mainExtras: ReadonlyArray<Tool> = [],
   memoryExtras: ReadonlyArray<Tool> = [],
   skillMaintainerExtras: ReadonlyArray<Tool> = [],
-  workerExtras: ReadonlyArray<Tool> = [],
 ): DefaultAgentToolsets {
   return {
     main: compactTools([
@@ -101,16 +95,6 @@ export function buildDefaultAgentToolsetsFromRegistry(
     browser: compactTools([
       registry.media,
       registry.browser,
-    ]),
-    worker: compactTools([
-      registry.bash,
-      registry.backgroundJobStatus,
-      registry.backgroundJobWait,
-      registry.backgroundJobCancel,
-      registry.media,
-      registry.browser,
-      registry.thinking,
-      ...workerExtras,
     ]),
     skill_maintainer: compactTools([
       registry.media,

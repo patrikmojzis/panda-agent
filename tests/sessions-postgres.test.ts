@@ -1,11 +1,12 @@
 import {describe, expect, it, vi} from "vitest";
-import {newDb} from "pg-mem";
+import {DataType, newDb} from "pg-mem";
 
 import {PostgresSessionStore} from "../src/domain/sessions/index.js";
 
 describe("PostgresSessionStore", () => {
   it("pages direct subagent threads by parent and stable session cursor", async () => {
     const db = newDb();
+  db.public.registerFunction({name: "clock_timestamp", returns: DataType.timestamptz, impure: true, implementation: () => new Date()});
     const adapter = db.adapters.createPg();
     const pool = new adapter.Pool();
     try {

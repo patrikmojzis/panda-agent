@@ -9,17 +9,20 @@ import type {
     OutboundDeliveryRecord
 } from "./types.js";
 import {isMatchingChannelNotification} from "../worker-shared.js";
+import {settleChannelReceipt} from "../receipt-settlement.js";
 
 export const DEFAULT_CHANNEL_OUTBOUND_DELIVERY_POLL_INTERVAL_MS = 15_000;
 
 type ChannelOutboundDeliveryWorkerStore = {
-  failSendingDeliveries(lookup: DeliveryWorkerLookup, error: string): Promise<number>;
+  markSendingDeliveriesUnknown(lookup: DeliveryWorkerLookup, error: string): Promise<number>;
+  getDelivery(id: string): Promise<OutboundDeliveryRecord>;
   listenPendingDeliveries?(
     listener: (notification: DeliveryNotification) => Promise<void> | void,
   ): Promise<() => Promise<void>>;
   claimNextPendingDelivery(lookup: DeliveryWorkerLookup): Promise<OutboundDeliveryRecord | null>;
   markDeliverySent(input: CompleteDeliveryInput): Promise<OutboundDeliveryRecord>;
   markDeliveryFailed(input: FailDeliveryInput): Promise<OutboundDeliveryRecord>;
+  markDeliveryUnknown(input: FailDeliveryInput): Promise<OutboundDeliveryRecord>;
 };
 
 export interface ChannelOutboundDeliveryWorkerStartOptions {
@@ -74,8 +77,8 @@ export class ChannelOutboundDeliveryWorker {
 
   async start(options: ChannelOutboundDeliveryWorkerStartOptions = {}): Promise<void> {
     // Callers must already hold connector ownership before starting the worker.
-    // start() recovers stale `sending` rows, then lets pending work drain in the background.
-    await this.store.failSendingDeliveries(this.lookup, "Delivery worker stopped before completion.");
+    // An interrupted send has an unknown external outcome and must never replay.
+    await this.store.markSendingDeliveriesUnknown(this.lookup, "Delivery worker stopped before its outcome was recorded.");
     if (options.subscribeToNotifications ?? true) {
       if (!this.store.listenPendingDeliveries) {
         throw new Error("Outbound delivery worker store does not support pending-delivery subscriptions.");
@@ -121,23 +124,49 @@ export class ChannelOutboundDeliveryWorker {
         return;
       }
 
+      const claimToken = delivery.claimToken;
+      if (!claimToken) throw new Error(`Outbound delivery ${delivery.id} has no claim token.`);
+      const receipt = {
+        label: "Outbound delivery",
+        claimToken,
+        read: () => this.store.getDelivery(delivery.id),
+        markUnknown: (error: string) => this.store.markDeliveryUnknown({id: delivery.id, claimToken, error}),
+      };
+      let result;
       try {
-        const result = await this.adapter.send(toRequest(delivery));
-        await this.store.markDeliverySent({
-          id: delivery.id,
-          sent: result.sent,
-        });
+        result = await this.adapter.send(toRequest(delivery));
       } catch (error) {
-        await this.store.markDeliveryFailed({
-          id: delivery.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        try {
+          await settleChannelReceipt({
+            ...receipt,
+            status: "failed",
+            write: () => this.store.markDeliveryFailed({
+              id: delivery.id,
+              claimToken,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          });
+        } catch (receiptError) {
+          await this.onError?.(receiptError, delivery.id);
+          await this.onError?.(error, delivery.id);
+          continue;
+        }
         try {
           await this.adapter.onTerminalFailure?.(toRequest(delivery));
         } catch (cleanupError) {
           await this.onError?.(cleanupError, delivery.id);
         }
         await this.onError?.(error, delivery.id);
+        continue;
+      }
+      try {
+        await settleChannelReceipt({
+          ...receipt,
+          status: "sent",
+          write: () => this.store.markDeliverySent({id: delivery.id, claimToken, sent: result.sent}),
+        });
+      } catch (receiptError) {
+        await this.onError?.(receiptError, delivery.id);
       }
     }
   }

@@ -4,11 +4,12 @@ import {CommandStructuredError, commandScopeDenied} from "../../../../domain/com
 import type {CommandDescriptor, CommandRequest, RegisteredCommand} from "../../../../domain/commands/types.js";
 import type {ConnectorAccountRecord} from "../../../../domain/connectors/types.js";
 import type {LiveVoiceRepo} from "../../../../domain/live-voice/repo.js";
-import {isActiveLiveVoiceTurn, type LiveVoiceSessionRecord} from "../../../../domain/live-voice/types.js";
+import {isActiveLiveVoiceTurn, LiveVoiceTurnNotFoundError, type LiveVoiceSessionRecord} from "../../../../domain/live-voice/types.js";
 import type {ConversationBinding} from "../../../../domain/sessions/conversations/types.js";
 import {isJsonObject, type JsonObject} from "../../../../lib/json.js";
 import {isRecord} from "../../../../lib/records.js";
 import {isLiveVoiceEnabled} from "../../../voice/config.js";
+import {VoiceControlWaitTimeoutError, voiceStateUnavailable} from "../../../voice/control-errors.js";
 import {WHATSAPP_SOURCE} from "../config.js";
 import {parseWhatsAppMetaCallingConfig} from "./config.js";
 import type {WhatsAppCallControlRepo} from "./postgres.js";
@@ -88,7 +89,11 @@ async function enqueue(input: WhatsAppCallControlInput, request: CommandRequest,
   const control = await services.calls.controls.enqueueControl(idempotent(input, request));
   let result: WhatsAppCallControlRecord;
   try { result = await services.calls.controls.waitForControl(control.id, {timeoutMs: 60_000, signal: request.signal}); }
-  catch { throw new CommandStructuredError("command_failed", request.signal?.aborted ? "WhatsApp call command was cancelled." : "Timed out waiting for the WhatsApp call worker.", {failureCode: request.signal?.aborted ? "worker_unavailable" : "timeout", retryable: true, controlId: control.id}); }
+  catch (error) {
+    const aborted = request.signal?.aborted === true && error === request.signal.reason;
+    if (!aborted && !(error instanceof VoiceControlWaitTimeoutError)) throw voiceStateUnavailable(error, control.id);
+    throw new CommandStructuredError("command_failed", aborted ? "WhatsApp call command was cancelled." : "Timed out waiting for the WhatsApp call worker.", {failureCode: aborted ? "worker_unavailable" : "timeout", retryable: true, controlId: control.id});
+  }
   if (result.status === "failed") failed(result);
   return result.result ?? {ok: true};
 }
@@ -102,7 +107,10 @@ async function active(input: {callId?: string}, request: CommandRequest, service
 
 async function turn(input: {voiceTurnId?: string}, request: CommandRequest, services: WhatsAppCallCommandServices, session: LiveVoiceSessionRecord): Promise<string | undefined> {
   if (input.voiceTurnId) {
-    const value = await services.calls.live.getTurn(input.voiceTurnId).catch(() => undefined);
+    const value = await services.calls.live.getTurn(input.voiceTurnId).catch((error: unknown) => {
+      if (error instanceof LiveVoiceTurnNotFoundError) return undefined;
+      throw voiceStateUnavailable(error);
+    });
     if (!value || !isActiveLiveVoiceTurn(value) || value.liveVoiceSessionId !== session.id || value.sessionId !== request.scope.sessionId) throw new CommandStructuredError("conflict", "The WhatsApp voice turn is not active in this call.", {failureCode: "voice_turn_conflict", retryable: false});
     return value.id;
   }

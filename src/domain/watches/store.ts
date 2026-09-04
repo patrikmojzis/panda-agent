@@ -1,26 +1,20 @@
 import type {
     ClaimWatchInput,
     ClaimWatchResult,
-    CompleteWatchRunInput,
+    AcceptWatchEvaluationInput,
+    RenewWatchClaimInput,
     CreateWatchInput,
     DisableWatchInput,
     FailWatchRunInput,
     ListDueWatchesInput,
     ListWatchRunsInput,
     ListWatchesInput,
-    RecordWatchEventInput,
     StartWatchRunInput,
     UpdateWatchInput,
-    WatchEventRecord,
     WatchRecord,
     WatchRunHistoryRecord,
     WatchRunRecord,
 } from "./types.js";
-
-export interface RecordWatchEventResult {
-  event: WatchEventRecord;
-  created: boolean;
-}
 
 export interface WatchStore {
   createWatch(input: CreateWatchInput): Promise<WatchRecord>;
@@ -30,11 +24,10 @@ export interface WatchStore {
   listWatches(input: ListWatchesInput): Promise<readonly WatchRecord[]>;
   listDueWatches(input?: ListDueWatchesInput): Promise<readonly WatchRecord[]>;
   claimWatch(input: ClaimWatchInput): Promise<ClaimWatchResult | null>;
-  startWatchRun(input: StartWatchRunInput): Promise<WatchRunRecord>;
-  completeWatchRun(input: CompleteWatchRunInput): Promise<WatchRunRecord>;
-  failWatchRun(input: FailWatchRunInput): Promise<WatchRunRecord>;
-  clearWatchClaim(watchId: string): Promise<WatchRecord>;
-  recordEvent(input: RecordWatchEventInput): Promise<RecordWatchEventResult>;
+  startWatchRun(input: StartWatchRunInput): Promise<WatchRunRecord | null>;
+  renewWatchClaim(input: RenewWatchClaimInput): Promise<boolean>;
+  acceptWatchEvaluation(input: AcceptWatchEvaluationInput): Promise<WatchRunRecord | null>;
+  failWatchRun(input: FailWatchRunInput): Promise<WatchRunRecord | null>;
   getLatestWatchRun(watchId: string): Promise<WatchRunRecord | null>;
   listWatchRuns(input: ListWatchRunsInput): Promise<readonly WatchRunHistoryRecord[]>;
 }

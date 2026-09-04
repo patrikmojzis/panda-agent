@@ -16,6 +16,7 @@ export async function ensurePostgresExecutionEnvironmentSchema(pool: PgQueryable
       agent_key TEXT NOT NULL REFERENCES ${agentTables.agents}(agent_key) ON DELETE CASCADE,
       kind TEXT NOT NULL,
       state TEXT NOT NULL DEFAULT 'ready',
+      operation_id TEXT,
       runner_url TEXT,
       runner_cwd TEXT,
       root_path TEXT,

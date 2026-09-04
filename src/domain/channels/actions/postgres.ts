@@ -67,6 +67,7 @@ function parseStatus(value: unknown): ChannelActionStatus {
     || value === "sent"
     || value === "failed"
     || value === "expired"
+    || value === "unknown"
   ) {
     return value;
   }
@@ -290,6 +291,7 @@ function parseRecord(row: Record<string, unknown>): ChannelActionRecord {
     status: parseStatus(row.status),
     attemptCount: requireNonNegativeInteger(row.attempt_count, "Channel action attempt count"),
     lastError: readOptionalRowString(row.last_error, "last error"),
+    claimToken: readOptionalRowString(row.claim_token, "claim token"),
     claimedAt: optionalTimestampMillis(row.claimed_at, "Channel action claimed_at must be a finite timestamp."),
     completedAt: optionalTimestampMillis(row.completed_at, "Channel action completed_at must be a finite timestamp."),
     expiresAt: optionalTimestampMillis(row.expires_at, "Channel action expires_at must be a finite timestamp."),
@@ -583,6 +585,7 @@ export class PostgresChannelActionStore {
             const updateResult = await client.query(`
               UPDATE ${this.tables.channelActions}
               SET status = 'sending',
+                  claim_token = $2,
                   attempt_count = attempt_count + 1,
                   claimed_at = NOW(),
                   updated_at = NOW()
@@ -590,7 +593,7 @@ export class PostgresChannelActionStore {
                 AND status = 'pending'
                 AND (expires_at IS NULL OR expires_at > NOW())
               RETURNING *
-            `, [selected.id]);
+            `, [selected.id, randomUUID()]);
             const updatedRow = updateResult.rows[0];
             if (!updatedRow) {
               await client.query("COMMIT");
@@ -621,70 +624,89 @@ export class PostgresChannelActionStore {
     }
   }
 
-  async markActionSent(id: string): Promise<ChannelActionRecord> {
+  async getAction(id: string): Promise<ChannelActionRecord> {
     const result = await this.pool.query(`
-      UPDATE ${this.tables.channelActions}
-      SET status = 'sent',
-          completed_at = NOW(),
-          updated_at = NOW(),
-          last_error = NULL
-      WHERE id = $1
-      RETURNING *
+      SELECT * FROM ${this.tables.channelActions} WHERE id = $1
     `, [requireNonEmptyString(id, "Channel action id must not be empty.")]);
+    if (!result.rows[0]) throw new Error(`Unknown channel action ${id}.`);
     return parseRecord(result.rows[0] as Record<string, unknown>);
   }
 
-  async markActionFailed(id: string, error: string): Promise<ChannelActionRecord> {
+  async markActionSent(id: string, claimToken: string): Promise<ChannelActionRecord> {
+    return this.settleAction(id, claimToken, "sent", null);
+  }
+
+  async markActionFailed(id: string, claimToken: string, error: string): Promise<ChannelActionRecord> {
+    return this.settleAction(id, claimToken, "failed", error);
+  }
+
+  private async settleAction(
+    id: string,
+    claimToken: string,
+    status: "sent" | "failed",
+    error: string | null,
+  ): Promise<ChannelActionRecord> {
     const result = await this.pool.query(`
       UPDATE ${this.tables.channelActions}
-      SET status = 'failed',
-          completed_at = NOW(),
-          updated_at = NOW(),
-          last_error = $2
-      WHERE id = $1
+      SET status = $3, completed_at = NOW(), updated_at = NOW(), last_error = $4
+      WHERE id = $1 AND claim_token = $2 AND status IN ('sending', 'unknown')
       RETURNING *
     `, [
       requireNonEmptyString(id, "Channel action id must not be empty."),
+      requireNonEmptyString(claimToken, "Channel action claim token must not be empty."),
+      status,
       error,
     ]);
-    return parseRecord(result.rows[0] as Record<string, unknown>);
+    const action = result.rows[0]
+      ? parseRecord(result.rows[0] as Record<string, unknown>)
+      : await this.getAction(id);
+    if (action.claimToken !== claimToken || action.status !== status) {
+      throw new Error(`Channel action ${id} no longer owns the ${status} receipt.`);
+    }
+    return action;
   }
 
-  async expireActionIfDue(id: string): Promise<ChannelActionRecord | null> {
+  async markActionUnknown(id: string, claimToken: string, error: string): Promise<ChannelActionRecord> {
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.channelActions}
+      SET status = 'unknown', completed_at = NOW(), updated_at = NOW(), last_error = $3
+      WHERE id = $1 AND claim_token = $2 AND status = 'sending'
+      RETURNING *
+    `, [
+      requireNonEmptyString(id, "Channel action id must not be empty."),
+      requireNonEmptyString(claimToken, "Channel action claim token must not be empty."),
+      error,
+    ]);
+    return result.rows[0]
+      ? parseRecord(result.rows[0] as Record<string, unknown>)
+      : this.getAction(id);
+  }
+
+  async expireActionIfDue(id: string, claimToken: string): Promise<ChannelActionRecord | null> {
     const result = await this.pool.query(`
       UPDATE ${this.tables.channelActions}
       SET status = 'expired',
           attempt_count = GREATEST(attempt_count - 1, 0),
-          claimed_at = NULL,
-          completed_at = NOW(),
-          updated_at = NOW(),
+          claimed_at = NULL, claim_token = NULL,
+          completed_at = NOW(), updated_at = NOW(),
           last_error = '${ACTION_EXPIRED_BEFORE_DISPATCH_ERROR}'
-      WHERE id = $1
-        AND status = 'sending'
-        AND expires_at IS NOT NULL
-        AND expires_at <= NOW()
+      WHERE id = $1 AND claim_token = $2 AND status = 'sending'
+        AND expires_at IS NOT NULL AND expires_at <= NOW()
       RETURNING *
-    `, [requireNonEmptyString(id, "Channel action id must not be empty.")]);
-    const row = result.rows[0];
-    return row ? parseRecord(row as Record<string, unknown>) : null;
+    `, [
+      requireNonEmptyString(id, "Channel action id must not be empty."),
+      requireNonEmptyString(claimToken, "Channel action claim token must not be empty."),
+    ]);
+    return result.rows[0] ? parseRecord(result.rows[0] as Record<string, unknown>) : null;
   }
 
-  async failSendingActions(lookup: ActionWorkerLookup, error: string): Promise<number> {
+  async markSendingActionsUnknown(lookup: ActionWorkerLookup, error: string): Promise<number> {
     const normalized = normalizeChannelWorkerLookup(lookup, "Channel action");
     const result = await this.pool.query(`
       UPDATE ${this.tables.channelActions}
-      SET status = 'failed',
-          completed_at = NOW(),
-          updated_at = NOW(),
-          last_error = $3
-      WHERE channel = $1
-        AND connector_key = $2
-        AND status = 'sending'
-    `, [
-      normalized.channel,
-      normalized.connectorKey,
-      error,
-    ]);
+      SET status = 'unknown', completed_at = NOW(), updated_at = NOW(), last_error = $3
+      WHERE channel = $1 AND connector_key = $2 AND status = 'sending'
+    `, [normalized.channel, normalized.connectorKey, error]);
     return result.rowCount ?? 0;
   }
 

@@ -3,6 +3,7 @@ import {isJsonObject} from "../../../lib/json.js";
 import {isRecord} from "../../../lib/records.js";
 import type {CommandDescriptor, CommandRequest, RegisteredCommand} from "../../../domain/commands/types.js";
 import {commandScopeDenied} from "../../../domain/commands/errors.js";
+import type {ConversationBindingAuthorizer} from "../../../domain/channels/conversation-authority.js";
 import type {CommandFileResolver} from "../../../domain/commands/files.js";
 import {
   createExplicitChannelSendCommand,
@@ -30,7 +31,8 @@ export interface WhatsAppChatListCommandServices {
   };
 }
 
-export interface WhatsAppHistoryCommandServices extends WhatsAppChatListCommandServices {
+export interface WhatsAppHistoryCommandServices {
+  conversations: ConversationBindingAuthorizer;
   messages: {
     listChannelMessages(filter: ThreadChannelMessageFilter): Promise<readonly ThreadMessageRecord[]>;
   };
@@ -313,21 +315,16 @@ async function findWhatsAppChatBinding(
     chatId: string;
   },
   request: CommandRequest,
-  services: WhatsAppChatListCommandServices,
-): Promise<JsonObject> {
+  services: Pick<WhatsAppHistoryCommandServices, "conversations">,
+): Promise<ConversationBinding> {
   const connectorKey = resolveWhatsAppChatListConnectorKey(input);
-  const bindings = await services.conversations.listConversationBindings({
+  const binding = await services.conversations.getConversationBinding({
     source: WHATSAPP_SOURCE,
     connectorKey,
+    externalConversationId: input.chatId,
   });
-  const matches = bindings
-    .filter((binding) => {
-      return binding.sessionId === request.scope.sessionId
-        && binding.externalConversationId === input.chatId;
-    })
-    .map((binding) => serializeWhatsAppChatBinding(binding));
 
-  if (matches.length === 0) {
+  if (!binding || binding.sessionId !== request.scope.sessionId) {
     throw commandScopeDenied(
       "whatsapp.history found no matching current-session WhatsApp chat.",
       "resource_scope_denied",
@@ -335,7 +332,7 @@ async function findWhatsAppChatBinding(
     );
   }
 
-  return matches[0]!;
+  return binding;
 }
 
 export async function executeWhatsAppChatListCommand(
@@ -375,10 +372,7 @@ export async function executeWhatsAppHistoryCommand(
 ): Promise<JsonObject> {
   const limit = clampWhatsAppHistoryLimit(input.limit);
   const direction = input.direction ?? "all";
-  const chat = await findWhatsAppChatBinding(input, request, services);
-  const connectorKey = readRequiredString(chat.connectorKey, "whatsapp.history chat.connectorKey");
-  const chatId = readRequiredString(chat.chatId, "whatsapp.history chat.chatId");
-  const sessionId = readRequiredString(chat.sessionId, "whatsapp.history chat.sessionId");
+  const {connectorKey, externalConversationId: chatId, sessionId} = await findWhatsAppChatBinding(input, request, services);
 
   const [messages, deliveries] = await Promise.all([
     direction === "outbound"

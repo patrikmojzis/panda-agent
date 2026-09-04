@@ -1,10 +1,23 @@
 import {createHash} from "node:crypto";
 import type {IncomingMessage} from "node:http";
+import {mkdtemp, readFile, rm} from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {Readable} from "node:stream";
 
 import {describe, expect, it} from "vitest";
 
-import {readGatewayAttachmentUploadRequest} from "../src/integrations/gateway/attachment-request.js";
+import {readGatewayAttachmentUploadHeaders, streamGatewayAttachmentUploadRequest} from "../src/integrations/gateway/attachment-request.js";
+
+async function readGatewayAttachmentUploadRequest(input: Parameters<typeof readGatewayAttachmentUploadHeaders>[0]) {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "gateway-stream-"));
+  try {
+    const headers = readGatewayAttachmentUploadHeaders(input);
+    const localPath = path.join(directory, "upload");
+    const result = await streamGatewayAttachmentUploadRequest({...input, headers, localPath, expiresAt: Date.now() + 10_000});
+    return {...result, bytes: await readFile(localPath)};
+  } finally { await rm(directory, {recursive: true, force: true}); }
+}
 
 const ALLOWED_MIME_TYPES = ["text/plain", "application/json", "image/png", "image/jpeg"];
 
@@ -111,4 +124,34 @@ describe("gateway attachment upload requests", () => {
       }),
     })).rejects.toMatchObject({statusCode: 413});
   });
+  it("validates split signatures and UTF-8 across chunks without retaining the body", async () => {
+    const bytes = Buffer.from("  {\"name\":\"café\"}");
+    const request = Object.assign(Readable.from([...bytes].map((value) => Buffer.from([value]))), {
+      headers: {"content-type": "application/json", "idempotency-key": "streamed"},
+    }) as IncomingMessage;
+    await expect(readGatewayAttachmentUploadRequest({allowedMimeTypes: ALLOWED_MIME_TYPES, maxBytes: 1024, request}))
+      .resolves.toMatchObject({bytes, sha256: sha256Hex(bytes), sniffedMimeType: "application/json"});
+  });
+
+  it("rejects a chunked body once it exceeds the admitted bound", async () => {
+    const request = Object.assign(Readable.from(["12", "34", "56"]), {
+      headers: {"content-type": "text/plain", "idempotency-key": "large-chunked"},
+    }) as IncomingMessage;
+    await expect(readGatewayAttachmentUploadRequest({allowedMimeTypes: ALLOWED_MIME_TYPES, maxBytes: 4, request}))
+      .rejects.toMatchObject({statusCode: 413});
+  });
+
+  it("ends stalled bodies at a finite deadline", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "gateway-timeout-"));
+    const request = Object.assign(new Readable({read() {}}), {
+      headers: {"content-type": "text/plain", "idempotency-key": "stalled"},
+    }) as IncomingMessage;
+    try {
+      const headers = readGatewayAttachmentUploadHeaders({allowedMimeTypes: ALLOWED_MIME_TYPES, maxBytes: 1024, request});
+      await expect(streamGatewayAttachmentUploadRequest({headers, localPath: path.join(directory, "upload"), maxBytes: 1024,
+        expiresAt: Date.now() + 20, request})).rejects.toMatchObject({statusCode: 408});
+      expect(request.destroyed).toBe(true);
+    } finally { await rm(directory, {recursive: true, force: true}); }
+  });
+
 });

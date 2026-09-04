@@ -1,6 +1,8 @@
 import type {
     BindSessionEnvironmentInput,
     CreateExecutionEnvironmentInput,
+    ClaimExecutionEnvironmentOperationInput,
+    SettleExecutionEnvironmentOperationInput,
     ExecutionEnvironmentRecord,
     ListDisposableEnvironmentsByOwnerInput,
     SessionEnvironmentBindingRecord,
@@ -8,6 +10,9 @@ import type {
 
 export interface ExecutionEnvironmentStore {
   createEnvironment(input: CreateExecutionEnvironmentInput): Promise<ExecutionEnvironmentRecord>;
+  reserveEnvironment(input: CreateExecutionEnvironmentInput & {operationId: string}): Promise<ExecutionEnvironmentRecord | null>;
+  claimEnvironmentOperation(input: ClaimExecutionEnvironmentOperationInput): Promise<ExecutionEnvironmentRecord | null>;
+  settleEnvironmentOperation(input: SettleExecutionEnvironmentOperationInput): Promise<ExecutionEnvironmentRecord | null>;
   bindSession(input: BindSessionEnvironmentInput): Promise<SessionEnvironmentBindingRecord>;
   getEnvironment(environmentId: string): Promise<ExecutionEnvironmentRecord>;
   getBinding(sessionId: string, environmentId: string): Promise<SessionEnvironmentBindingRecord | null>;

@@ -612,11 +612,15 @@ export function buildThreadRuntimeSchemaSql(
       abort_requested_at TIMESTAMPTZ,
       abort_reason TEXT,
       admitted_through_input_order BIGINT,
-      error TEXT
+      error TEXT,
+      error_summary TEXT
     );
 
     ALTER TABLE ${tables.runs}
     ADD COLUMN IF NOT EXISTS admitted_through_input_order BIGINT;
+
+    ALTER TABLE ${tables.runs}
+    ADD COLUMN IF NOT EXISTS error_summary TEXT;
 
     ALTER TABLE ${tables.runs}
     ADD COLUMN IF NOT EXISTS owner_source TEXT;

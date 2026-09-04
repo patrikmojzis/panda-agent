@@ -177,7 +177,8 @@ async function assertExistingMediaFileMatches(localPath: string, expectedPath: s
   }
 }
 
-function inferExtension(mimeType: string, hintFilename?: string): string {
+/** Resolves the canonical media extension, falling back to a safe filename hint. */
+export function inferMediaExtension(mimeType: string, hintFilename?: string): string {
   const normalizedMimeType = mimeType.toLowerCase();
   const known = MIME_EXTENSION_MAP.get(normalizedMimeType);
   if (known) {
@@ -254,7 +255,7 @@ async function installIdempotentMedia(input: {
   const finalDirectory = path.join(parentDirectory, input.identity.id);
   const localPath = path.join(
     finalDirectory,
-    `media${inferExtension(input.mimeType, input.originalFilename)}`,
+    `media${inferMediaExtension(input.mimeType, input.originalFilename)}`,
   );
   const manifestPath = path.join(finalDirectory, "descriptor.json");
   assertPathWithinRoot(input.rootDir, localPath);
@@ -327,7 +328,7 @@ async function installIdempotentMedia(input: {
   // still produce byte-for-byte identical JSON for request idempotency.
   const stableLocalPath = path.join(
     finalDirectory,
-    `media${inferExtension(canonical.mimeType, canonical.originalFilename)}`,
+    `media${inferMediaExtension(canonical.mimeType, canonical.originalFilename)}`,
   );
   return {...canonical, localPath: stableLocalPath};
 }
@@ -360,7 +361,7 @@ function assertPathWithinRoot(rootDir: string, candidatePath: string): void {
 
 function resolveStoredFilename(descriptor: MediaDescriptor): string {
   if (isCanonicalIdempotentMediaPath(descriptor.localPath)) {
-    return `${descriptor.id}${inferExtension(descriptor.mimeType, descriptor.originalFilename)}`;
+    return `${descriptor.id}${inferMediaExtension(descriptor.mimeType, descriptor.originalFilename)}`;
   }
   const localPath = descriptor.localPath.trim();
   const basename = localPath ? path.basename(localPath) : "";
@@ -368,7 +369,7 @@ function resolveStoredFilename(descriptor: MediaDescriptor): string {
     return basename;
   }
 
-  return `${descriptor.id}${inferExtension(descriptor.mimeType, descriptor.originalFilename)}`;
+  return `${descriptor.id}${inferMediaExtension(descriptor.mimeType, descriptor.originalFilename)}`;
 }
 
 function isCanonicalIdempotentMediaPath(localPath: string): boolean {
@@ -872,7 +873,7 @@ export class FileSystemMediaStore {
       });
       return descriptor;
     }
-    const extension = inferExtension(mimeType, originalFilename);
+    const extension = inferMediaExtension(mimeType, originalFilename);
     const relativeDirectory = buildRelativeMediaDirectory(source, connectorKey, identity.createdAtDate);
     const absoluteDirectory = path.join(this.rootDir, relativeDirectory);
     const localPath = path.join(absoluteDirectory, `${identity.id}${extension}`);
@@ -934,7 +935,7 @@ export class FileSystemMediaStore {
     }
     const relativeDirectory = buildRelativeMediaDirectory(source, connectorKey, identity.createdAtDate);
     const absoluteDirectory = path.join(this.rootDir, relativeDirectory);
-    const localPath = path.join(absoluteDirectory, `${identity.id}${inferExtension(mimeType, originalFilename)}`);
+    const localPath = path.join(absoluteDirectory, `${identity.id}${inferMediaExtension(mimeType, originalFilename)}`);
     assertPathWithinRoot(this.rootDir, localPath);
     await fs.mkdir(absoluteDirectory, {recursive: true});
     await fs.copyFile(sourcePath, localPath, fs.constants.COPYFILE_EXCL);

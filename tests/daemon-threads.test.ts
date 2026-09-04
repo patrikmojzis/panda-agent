@@ -172,6 +172,26 @@ describe("createDaemonThreadHelpers", () => {
     const context: DaemonThreadHelperContext = {
         fallbackContext: { cwd: options.workspace ?? process.cwd() },
         runtime: {
+          sessionLifecycle: {
+            create: vi.fn(async (input) => {
+              const session = await sessionStore.createSession(input.session);
+              const thread = await store.createThread(input.thread);
+              if (input.runtimeConfig) await sessionStore.updateSessionRuntimeConfig({sessionId: session.id, ...input.runtimeConfig});
+              if (input.operation) await sessionStore.recordSessionCreationOperation({...input.operation, agentKey: session.agentKey, sessionId: session.id, threadId: thread.id});
+              return {session, thread};
+            }),
+            reset: vi.fn(async (input) => {
+              await store.discardPendingInputs(input.previousThreadId);
+              const thread = await store.createThread(input.thread);
+              if (input.runtimeConfig) await sessionStore.updateSessionRuntimeConfig({sessionId: input.session.sessionId, ...input.runtimeConfig});
+              await sessionStore.updateCurrentThread(input.session);
+              if (input.channelRouting) {
+                await conversationBindings.bindConversation(input.channelRouting.conversation);
+                await sessionRoutes.saveLastRoute(input.channelRouting.route);
+              }
+              return thread;
+            }),
+          },
           store,
           backgroundJobService: options.backgroundJobService ?? {
             cancelThreadJobs: vi.fn(async () => undefined),
@@ -215,6 +235,7 @@ describe("createDaemonThreadHelpers", () => {
       conversationBindings,
       sessionRoutes,
       sessionStore,
+      sessionLifecycle: context.runtime.sessionLifecycle,
       helpers: createDaemonThreadHelpers(context),
     };
   }
@@ -509,6 +530,18 @@ describe("createDaemonThreadHelpers", () => {
     });
   });
 
+  it("does not fall back to partial writes when the lifecycle operation fails", async () => {
+    const {helpers, identity, sessionLifecycle, sessionStore, store} = createHelpers({pairings: [{agentKey: "panda"}]});
+    vi.mocked(sessionLifecycle.create).mockRejectedValueOnce(new Error("atomic creation failed"));
+    const createThread = vi.spyOn(store, "createThread");
+    await expect(helpers.createBranchSession({
+      operationId: "branch-atomic-failure", replayAttempt: false, identityId: identity.id,
+      sessionId: "branch-failed", threadId: "branch-failed-thread",
+    })).rejects.toThrow("atomic creation failed");
+    expect(sessionStore.createSession).not.toHaveBeenCalled();
+    expect(createThread).not.toHaveBeenCalled();
+  });
+
   it("does not persist synthetic cwd context for new main sessions", async () => {
     vi.stubEnv("BASH_EXECUTION_MODE", "remote");
     vi.stubEnv("BASH_SERVER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
@@ -526,7 +559,7 @@ describe("createDaemonThreadHelpers", () => {
   });
 
   it("leaves new main sessions unpinned when no explicit model was requested", async () => {
-    const {helpers, identity, sessionStore} = createHelpers({
+    const {helpers, identity, sessionLifecycle} = createHelpers({
       pairings: [{agentKey: "panda"}],
     });
 
@@ -534,7 +567,7 @@ describe("createDaemonThreadHelpers", () => {
       identityId: identity.id,
     }, "request-main-unpinned", false);
 
-    expect(sessionStore.updateSessionRuntimeConfig).not.toHaveBeenCalled();
+    expect(sessionLifecycle.create).toHaveBeenCalledWith(expect.objectContaining({runtimeConfig: undefined}));
   });
 
   it("adopts the unique main-session winner under concurrent first ingress", async () => {

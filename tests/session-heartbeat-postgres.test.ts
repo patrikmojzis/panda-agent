@@ -1,5 +1,5 @@
 import {afterEach, beforeEach, describe, expect, it} from "vitest";
-import {newDb} from "pg-mem";
+import {DataType, newDb} from "pg-mem";
 import type {Pool} from "pg";
 
 import {SessionArchivedError} from "../src/domain/threads/runtime/store.js";
@@ -11,7 +11,9 @@ describe("session heartbeat cadence", () => {
   let now: number;
 
   beforeEach(async () => {
-    const {Pool} = newDb().adapters.createPg();
+    const db = newDb();
+    db.public.registerFunction({name: "clock_timestamp", returns: DataType.timestamptz, impure: true, implementation: () => new Date()});
+    const {Pool} = db.adapters.createPg();
     pool = new Pool();
     ({sessionStore: sessions} = await createRuntimeStores(pool));
     await sessions.createSession({

@@ -6,8 +6,6 @@ import {
   registerGatewayManagementCommands,
 } from "../../domain/gateway/cli.js";
 import {PostgresGatewayStore} from "../../domain/gateway/postgres.js";
-import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
-import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import {createGatewayGuardFromEnv} from "../../integrations/gateway/guard.js";
 import {formatGatewayListenUrl, startGatewayServer} from "../../integrations/gateway/http.js";
 import {resolveGatewayHttpConfig} from "../../integrations/gateway/http-config.js";
@@ -46,8 +44,6 @@ async function runGateway(options: GatewayRunOptions): Promise<void> {
   });
   try {
     const gatewayStore = new PostgresGatewayStore({pool});
-    const sessionStore = new PostgresSessionStore({pool});
-    const threadStore = new PostgresThreadRuntimeStore({pool});
     await createPandaSchemaVerifier(pool).assertCurrent();
 
     const guardTimeoutMs = readOptionalPositiveIntegerEnv("GATEWAY_GUARD_TIMEOUT_MS");
@@ -67,8 +63,6 @@ async function runGateway(options: GatewayRunOptions): Promise<void> {
         attachmentRetentionMs: gatewayConfig.attachmentRetentionMs,
         attachmentQuarantineTtlMs: gatewayConfig.attachmentQuarantineTtlMs,
         store: gatewayStore,
-        sessionStore,
-        threadStore,
       });
       try {
         const server = await startGatewayServer({

@@ -10,6 +10,7 @@ export function buildGatewayTableNames() {
     accessTokens: "gateway_access_tokens",
     events: "gateway_events",
     attachments: "gateway_attachments",
+    uploadReservations: "gateway_upload_reservations",
     eventAttachments: "gateway_event_attachments",
     rateLimits: "gateway_rate_limits",
     strikes: "gateway_strikes",

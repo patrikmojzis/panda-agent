@@ -13,16 +13,16 @@
       "sha256": "5bdd27237cdbea0029962f848523647def7fb81053ec670d6d708d4eb51a8c10"
     },
     {
-      "bytes": 17133,
-      "lines": 400,
+      "bytes": 17086,
+      "lines": 384,
       "path": "src/app/runtime/create-runtime.ts",
-      "sha256": "fe9b093971422f35719c505df2a78610a0df66ae83f5109595dba04fa236149e"
+      "sha256": "c5d6b288c23c48f3e1a33f4c377c79c23f76cf4a184b5f792409107ca8eb25c1"
     },
     {
-      "bytes": 20955,
-      "lines": 525,
+      "bytes": 20999,
+      "lines": 521,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "2319676faf3dbe1542ceaa8373bee1e268a32d1cfe935323dbaceb1cddcac44c"
+      "sha256": "67c312d72653dd05337ed1ed968c1c219dadec0de2b38b21ca0bd73f93ee686e"
     },
     {
       "bytes": 17911,
@@ -37,10 +37,10 @@
       "sha256": "033685d9e20dc15874865f8bf3e8b9c0d4244ede32cd871ea21590f8b47c45c4"
     },
     {
-      "bytes": 35026,
-      "lines": 908,
+      "bytes": 35452,
+      "lines": 913,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "943ca528b107d9d1aa54320ebe79c11b2d404f03544df39c7febc6af4f458aaf"
+      "sha256": "e48be958d1d5548ad1ee1404d403d12fbe31b75d8404853add2bf0320afa672e"
     },
     {
       "bytes": 11071,
@@ -67,10 +67,10 @@
       "sha256": "c6d98f315f2cfc237bbf5fdd6eb957112e92238bedd6e16956056d0a7939fb56"
     },
     {
-      "bytes": 68576,
-      "lines": 1893,
+      "bytes": 72447,
+      "lines": 1840,
       "path": "src/panda/commands/agent-command-modules.ts",
-      "sha256": "0afcb38b1a3c42336e80f6620ef7d419f0f45bed1b80e7a01a9660c731fff88f"
+      "sha256": "743e60bb685f8b56ef2806befaae2ff57e395c940549ccacdc93ee8aa38980d4"
     },
     {
       "bytes": 572,
@@ -175,22 +175,16 @@
       "sha256": "0f4c3d1e259c7805dc9999f5eac541cd9f8ec9e733ad23b37d1b84a14156346a"
     },
     {
-      "bytes": 1123,
-      "lines": 31,
+      "bytes": 1409,
+      "lines": 42,
       "path": "src/panda/defaults.ts",
-      "sha256": "274cbf284ffa7b98c2e05de5d97b9bfb07095e6bdbd9dd6def2ea9246a7dce9f"
+      "sha256": "348417920ecc41a9134639d1e518a63236cf2bc1aa0802cd43efd08fe8f153cc"
     },
     {
-      "bytes": 3907,
-      "lines": 130,
+      "bytes": 3292,
+      "lines": 114,
       "path": "src/panda/definition.ts",
-      "sha256": "9df8c043d3725e63f4ecf58860659b23744bf7066119935cc14f7793b10711a4"
-    },
-    {
-      "bytes": 2103,
-      "lines": 58,
-      "path": "src/panda/subagents/policy.ts",
-      "sha256": "b10eb6242116d58bc773b895b2e2819db44db38da97a312929f1786a009bde03"
+      "sha256": "7c64ca4fb20473a6b963db8a263aff6143cea679c7836b8cb306150decd939cb"
     },
     {
       "bytes": 2904,

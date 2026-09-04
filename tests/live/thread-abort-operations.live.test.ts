@@ -95,6 +95,7 @@ describe("durable thread abort operations with PostgreSQL", () => {
           abort_requested_at TIMESTAMPTZ,
           abort_reason TEXT,
           error TEXT,
+          error_summary TEXT,
           UNIQUE (thread_id, id)
         );
         CREATE UNIQUE INDEX runs_one_running_per_thread_idx

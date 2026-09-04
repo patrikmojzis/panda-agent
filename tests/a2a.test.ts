@@ -253,8 +253,11 @@ describe("A2ASessionBindingRepo", () => {
         },
       },
     });
+    const outboundClaim = await deliveries.claimNextPendingDelivery({channel: "a2a", connectorKey: "local"});
+    expect(outboundClaim?.id).toBe(outbound.id);
     await deliveries.markDeliverySent({
       id: outbound.id,
+      claimToken: outboundClaim!.claimToken!,
       sent: [
         {type: "text", externalMessageId: "a2a:outbound"},
         {type: "file", externalMessageId: "a2a:outbound"},
@@ -318,6 +321,20 @@ describe("A2ASessionBindingRepo", () => {
         direction: "outbound",
       },
     ]);
+
+    const unresolved = await deliveries.enqueueDelivery({
+      ...outbound,
+    });
+    let unresolvedClaim = await deliveries.claimNextPendingDelivery({channel: "a2a", connectorKey: "local"});
+    if (unresolvedClaim?.id !== unresolved.id) {
+      unresolvedClaim = await deliveries.claimNextPendingDelivery({channel: "a2a", connectorKey: "local"});
+    }
+    expect(unresolvedClaim?.id).toBe(unresolved.id);
+    await deliveries.markDeliveryUnknown({id: unresolved.id, claimToken: unresolvedClaim!.claimToken!, error: "receipt unavailable"});
+    await expect(bindings.getA2ADelivery({sessionId: "session-a", deliveryId: unresolved.id}))
+      .resolves.toMatchObject({status: "unknown", lastError: "receipt unavailable"});
+    await expect(bindings.listA2ADeliveries({sessionId: "session-a", peerSessionId: "session-b"}))
+      .resolves.toEqual(expect.arrayContaining([expect.objectContaining({deliveryId: unresolved.id, status: "unknown"})]));
   });
 
   it("rejects malformed persisted session binding rows", async () => {

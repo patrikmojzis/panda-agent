@@ -55,6 +55,13 @@ Agent bootstrap creates:
 - can set nullable `alias` and `display_name` labels via `--alias`/`--display-name` without changing the canonical id
 - relies on the existing `session_heartbeats` row behavior, so branch heartbeat starts disabled
 
+Runtime assembly binds `SessionLifecycle.create` and `SessionLifecycle.reset`
+to the domain's Postgres transactions. Main/branch/subagent orchestration calls
+those complete operations; it never switches persistence algorithms based on a
+concrete store type. Custom orchestration tests supply the complete operation,
+while real-Postgres tests protect rollback, claim ownership and replay. Session
+configuration remains unpinned unless a model was explicitly requested.
+
 Readable refs are not aliases. The readable string is still the stored `agent_sessions.id`, and existing raw session-id commands consume it directly.
 
 Aliases are a separate operator affordance:

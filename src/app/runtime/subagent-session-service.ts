@@ -14,14 +14,13 @@ import type {
   ExecutionToolPolicy,
   SessionEnvironmentBindingRecord,
 } from "../../domain/execution-environments/types.js";
-import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {SessionStore} from "../../domain/sessions/store.js";
 import type {
   CreateSessionInput,
   SessionRecord,
   UpdateSessionRuntimeConfigInput,
 } from "../../domain/sessions/types.js";
-import {createSessionWithInitialThread} from "../../domain/sessions/lifecycle.js";
+import type {SessionLifecycle} from "../../domain/sessions/lifecycle.js";
 import type {SubagentProfileStore} from "../../domain/subagents/store.js";
 import {
   buildAdHocSubagentProfileSnapshot,
@@ -40,13 +39,11 @@ import {
 } from "../../domain/subagents/tool-groups.js";
 import type {CommandPolicyModule} from "../../domain/commands/types.js";
 import type {CommandCatalog} from "../../domain/commands/modules.js";
-import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import type {ThreadRuntimeCoordinator} from "../../domain/threads/runtime/coordinator.js";
 import {SessionArchivedError} from "../../domain/threads/runtime/store.js";
 import {RetryableRuntimeRequestError} from "../../domain/threads/requests/errors.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {CreateThreadInput, InferenceProjection, ThreadRecord} from "../../domain/threads/runtime/types.js";
-import type {PgPoolLike} from "../../lib/postgres-query.js";
 import {trimToUndefined, uniqueTrimmedStrings} from "../../lib/strings.js";
 import {renderSubagentHandoff} from "../../prompts/runtime/subagents.js";
 import {
@@ -61,7 +58,6 @@ type SubagentRuntimeConfig = Omit<UpdateSessionRuntimeConfigInput, "sessionId">;
 
 type SubagentSessionStore = Pick<
   SessionStore,
-  | "createSession"
   | "deleteSubagentCreation"
   | "getSession"
   | "getSessionCreationOperation"
@@ -71,7 +67,7 @@ type SubagentSessionStore = Pick<
 
 type SubagentThreadStore = Pick<
   ThreadRuntimeStore,
-  "createThread" | "enqueueSessionInput" | "findInput" | "getThread"
+  "enqueueSessionInput" | "findInput" | "getThread"
 >;
 
 type SubagentEnvironmentAttacher = {
@@ -126,7 +122,7 @@ export interface CreateSubagentSessionResult {
 }
 
 export interface SubagentSessionServiceOptions {
-  pool?: PgPoolLike;
+  sessionLifecycle: Pick<SessionLifecycle, "create">;
   sessions: SubagentSessionStore;
   threads: SubagentThreadStore;
   profiles: SubagentProfileStore;
@@ -196,7 +192,7 @@ function buildRuntimeConfig(input: {
 }
 
 export class SubagentSessionService {
-  private readonly pool?: PgPoolLike;
+  private readonly sessionLifecycle: Pick<SessionLifecycle, "create">;
   private readonly sessions: SubagentSessionStore;
   private readonly threads: SubagentThreadStore;
   private readonly profiles: SubagentProfileStore;
@@ -207,7 +203,7 @@ export class SubagentSessionService {
   private readonly coordinator?: Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
 
   constructor(options: SubagentSessionServiceOptions) {
-    this.pool = options.pool;
+    this.sessionLifecycle = options.sessionLifecycle;
     this.sessions = options.sessions;
     this.threads = options.threads;
     this.profiles = options.profiles;
@@ -628,45 +624,10 @@ export class SubagentSessionService {
     };
 
     try {
-      if (
-        this.pool
-        && this.sessions instanceof PostgresSessionStore
-        && this.threads instanceof PostgresThreadRuntimeStore
-      ) {
-        const created = await createSessionWithInitialThread({
-          pool: this.pool,
-          sessionStore: this.sessions,
-          threadStore: this.threads,
-          session,
-          thread,
-          runtimeConfig,
-          operation,
-          activeParentSessionId,
-        });
-        return {...created, createdNew: true};
-      }
-
-      const createdSession = await this.sessions.createSession(session);
-      const createdThread = await this.threads.createThread(thread);
-      if (runtimeConfig) {
-        await this.sessions.updateSessionRuntimeConfig({
-          sessionId: createdSession.id,
-          ...runtimeConfig,
-        });
-      }
-      if (operation) {
-        await this.sessions.recordSessionCreationOperation({
-          ...operation,
-          agentKey: createdSession.agentKey,
-          sessionId: createdSession.id,
-          threadId: createdThread.id,
-        });
-      }
-      return {
-        session: createdSession,
-        thread: createdThread,
-        createdNew: true,
-      };
+      const created = await this.sessionLifecycle.create({
+        session, thread, runtimeConfig, operation, activeParentSessionId,
+      });
+      return {...created, createdNew: true};
     } catch (error) {
       if (!operation) throw error;
       const racedReplay = await readReplay();

@@ -38,6 +38,12 @@ function sourcePathForPackageEntrypoint(entrypoint: string): string {
   if (entrypoint === "panda") {
     return "src/index.ts";
   }
+  if (entrypoint === "panda/kernel/agent") {
+    return "src/app/sdk/agent.ts";
+  }
+  if (entrypoint === "panda/domain/threads/runtime") {
+    return "src/app/sdk/thread-runtime.ts";
+  }
   if (!entrypoint.startsWith("panda/")) {
     throw new Error(`Unsupported package entrypoint in architecture doc: ${entrypoint}`);
   }
@@ -72,6 +78,8 @@ describe("package exports", () => {
   it("keeps the supported entrypoint docs aligned with package exports", () => {
     expect(new Set(DOCUMENTED_SOURCE_BARRELS)).toEqual(new Set([
       ...DOCUMENTED_PACKAGE_ENTRYPOINTS.map(sourcePathForPackageEntrypoint),
+      "src/kernel/agent/index.ts",
+      "src/domain/threads/runtime/index.ts",
       "src/domain/sessions/index.ts",
     ]));
   });

@@ -13,162 +13,12 @@ import {
 import type {CommandCatalogModule, CommandModule, RegisteredCommand} from "../src/domain/commands/types.js";
 import {resolveCommandLeaseAuthority} from "../src/domain/execution-environments/command-authority.js";
 import {
-  type AgentCommandModuleDependencies,
   buildDefaultAgentCommandModules,
   createDefaultAgentCommandCatalog,
   DEFAULT_AGENT_COMMAND_CATALOG,
   DEFAULT_AGENT_COMMAND_MODULES,
 } from "../src/panda/commands/agent-command-modules.js";
 import {agentCommandPolicy} from "../src/panda/commands/agent-command-policy.js";
-
-const factoryBackedCommandNames = [
-  "time.now",
-  "mcp.tools",
-  "mcp.call",
-  "mcp.server.list",
-  "mcp.server.show",
-  "mcp.server.add",
-  "mcp.server.update",
-  "mcp.server.enable",
-  "mcp.server.disable",
-  "mcp.server.delete",
-  "mcp.server.test",
-  "mcp.oauth.discover",
-  "mcp.oauth.start",
-  "mcp.oauth.status",
-  "mcp.oauth.disconnect",
-  "heartbeat.show",
-  "heartbeat.set",
-  "watch.list",
-  "watch.show",
-  "watch.runs",
-  "watch.create",
-  "watch.update",
-  "watch.disable",
-  "schedule.list",
-  "schedule.show",
-  "schedule.runs",
-  "schedule.create",
-  "schedule.update",
-  "schedule.cancel",
-  "cron.list",
-  "cron.show",
-  "cron.runs",
-  "cron.create",
-  "cron.update",
-  "cron.enable",
-  "cron.disable",
-  "cron.delete",
-  "cron.run",
-  "micro-app.check",
-  "micro-app.create",
-  "micro-app.link.create",
-  "micro-app.list",
-  "micro-app.view",
-  "micro-app.action",
-  "environment.create",
-  "environment.list",
-  "environment.show",
-  "environment.stop",
-  "environment.logs",
-  "skill.list",
-  "skill.show",
-  "skill.load",
-  "skill.set",
-  "skill.patch",
-  "skill.delete",
-  "postgres.readonly.query",
-  "wiki.overview",
-  "wiki.read",
-  "wiki.search",
-  "wiki.list",
-  "wiki.diff",
-  "wiki.write",
-  "wiki.write.section",
-  "wiki.move",
-  "wiki.archive",
-  "wiki.restore",
-  "wiki.attach.image",
-  "wiki.fetch.asset",
-  "wiki.delete.asset",
-  "session.prompt.read",
-  "session.compact",
-  "session.prompt.set",
-  "session.prompt.transform",
-  "todo.add",
-  "todo.list",
-  "todo.show",
-  "todo.done",
-  "todo.block",
-  "todo.clear",
-  "subagent.spawn",
-  "subagent.list",
-  "subagent.show",
-  "subagent.profile.list",
-  "subagent.profile.show",
-  "subagent.profile.upsert",
-  "subagent.profile.enable",
-  "subagent.profile.disable",
-  "a2a.send",
-  "a2a.inspect",
-  "a2a.history",
-  "email.account.list",
-  "email.list",
-  "email.read",
-  "email.search",
-  "email.attachments.fetch",
-  "email.send",
-  "telegram.chat.list",
-  "telegram.chat.info",
-  "telegram.history",
-  "telegram.media.fetch",
-  "telegram.send",
-  "telegram.react",
-  "telegram.edit",
-  "telegram.delete",
-  "telegram.pin",
-  "telegram.unpin",
-  "telegram.sticker.inspect",
-  "telegram.sticker.save",
-  "telegram.sticker.list",
-  "telegram.sticker.set.show",
-  "telegram.sticker.set.save",
-  "telegram.sticker.send",
-  "discord.channel.list",
-  "discord.voice.join",
-  "discord.voice.leave",
-  "discord.voice.send",
-  "discord.voice.status",
-  "discord.history",
-  "discord.sticker.list",
-  "discord.sticker.send",
-  "discord.gif.send",
-  "discord.send",
-  "whatsapp.chat.list",
-  "whatsapp.history",
-  "whatsapp.send",
-  "whatsapp.call.status",
-  "whatsapp.call.send",
-  "whatsapp.call.hangup",
-  "env.list",
-  "env.set",
-  "env.clear",
-  "vent.send",
-  "web.fetch",
-  "web.read",
-  "brave.web.search",
-  "brave.news.search",
-  "brave.video.search",
-  "brave.image.search",
-  "brave.llm.context",
-  "brave.place.search",
-  "brave.place.poi",
-  "brave.place.description",
-  "openai.web_research",
-  "image.generate",
-  "whisper.transcribe",
-  "whisper.translate",
-] as const;
 
 function testCommand(name: "test.one" | "test.two"): RegisteredCommand {
   return {
@@ -219,76 +69,6 @@ function catalogTestModule(name: "test.one" | "test.two"): CommandCatalogModule<
     },
     policy: {
       capability: name,
-    },
-  };
-}
-
-function defaultModuleDependencies(): AgentCommandModuleDependencies {
-  return {
-    env: {},
-    backgroundJobService: {} as AgentCommandModuleDependencies["backgroundJobService"],
-    watchStore: {} as AgentCommandModuleDependencies["watchStore"],
-    watchMutations: {} as AgentCommandModuleDependencies["watchMutations"],
-    scheduledTasks: {} as AgentCommandModuleDependencies["scheduledTasks"],
-    scheduledCommands: {} as AgentCommandModuleDependencies["scheduledCommands"],
-    apps: {} as AgentCommandModuleDependencies["apps"],
-    appAuth: {} as AgentCommandModuleDependencies["appAuth"],
-    resolveAppUrls: () => ({
-      appUrl: "http://127.0.0.1/apps/example/",
-      localAppUrl: "http://127.0.0.1/apps/example/",
-    }),
-    resolveAppLaunchUrls: () => ({
-      appUrl: "http://127.0.0.1/apps/example/",
-      localAppUrl: "http://127.0.0.1/apps/example/",
-      openUrl: "http://127.0.0.1/apps/open?token=test",
-    }),
-    agentSkills: {} as AgentCommandModuleDependencies["agentSkills"],
-    sessionPrompts: {} as AgentCommandModuleDependencies["sessionPrompts"],
-    sessionTodos: {} as AgentCommandModuleDependencies["sessionTodos"],
-    sessionHeartbeats: {} as AgentCommandModuleDependencies["sessionHeartbeats"],
-    heartbeatBounds: {minEveryMinutes: 15, maxEveryMinutes: 1440},
-    sessionCompactionRequests: {} as AgentCommandModuleDependencies["sessionCompactionRequests"],
-    subagentProfiles: {} as AgentCommandModuleDependencies["subagentProfiles"],
-    subagentInventory: {} as AgentCommandModuleDependencies["subagentInventory"],
-    credentials: {} as AgentCommandModuleDependencies["credentials"],
-    credentialResolver: {} as AgentCommandModuleDependencies["credentialResolver"],
-    mcpConfigs: {} as AgentCommandModuleDependencies["mcpConfigs"],
-    mcpRunner: {} as AgentCommandModuleDependencies["mcpRunner"],
-    mcpManagement: {} as AgentCommandModuleDependencies["mcpManagement"],
-    postgresReadonly: {
-      pool: {} as NonNullable<AgentCommandModuleDependencies["postgresReadonly"]>["pool"],
-    },
-    executionEnvironments: {} as AgentCommandModuleDependencies["executionEnvironments"],
-    environmentLifecycle: {} as AgentCommandModuleDependencies["environmentLifecycle"],
-    wiki: {} as AgentCommandModuleDependencies["wiki"],
-    subagentSessions: {} as AgentCommandModuleDependencies["subagentSessions"],
-    connectorAccounts: {} as AgentCommandModuleDependencies["connectorAccounts"],
-    conversations: {} as AgentCommandModuleDependencies["conversations"],
-    channelMessages: {} as AgentCommandModuleDependencies["channelMessages"],
-    outboundDeliveries: {} as AgentCommandModuleDependencies["outboundDeliveries"],
-    channelActions: {} as AgentCommandModuleDependencies["channelActions"],
-    discordStickers: {} as AgentCommandModuleDependencies["discordStickers"],
-    discordGifs: {} as AgentCommandModuleDependencies["discordGifs"],
-    discordVoice: {} as AgentCommandModuleDependencies["discordVoice"],
-    whatsappCalls: {} as AgentCommandModuleDependencies["whatsappCalls"],
-    telegramStickers: {} as AgentCommandModuleDependencies["telegramStickers"],
-    email: {} as AgentCommandModuleDependencies["email"],
-    a2aMessaging: {} as AgentCommandModuleDependencies["a2aMessaging"],
-    a2aDeliveries: {} as AgentCommandModuleDependencies["a2aDeliveries"],
-    commandUploads: {} as AgentCommandModuleDependencies["commandUploads"],
-    commandFileResolver: {
-      async resolveReadablePath({file}) {
-        return {
-          path: file.path,
-          displayPath: file.path,
-        };
-      },
-      async resolveWritablePath({file}) {
-        return {
-          path: file.path,
-          displayPath: file.path,
-        };
-      },
     },
   };
 }
@@ -413,17 +193,50 @@ describe("command modules", () => {
     expect(() => createCommandCatalog([module], [module])).toThrow("Duplicate Panda command module test.one.");
   });
 
-  it("keeps default command factories aligned with their module descriptors", () => {
-    const commands = DEFAULT_AGENT_COMMAND_CATALOG.createCommands(
-      defaultModuleDependencies(),
-    );
+  it("discovers the default catalog without constructing runtime services", () => {
+    expect(DEFAULT_AGENT_COMMAND_CATALOG.get("todo.list")?.descriptor.usage).toContain("todo list");
+    expect(DEFAULT_AGENT_COMMAND_CATALOG.get("watch.create")?.route.helpArgv).toEqual(["watch", "create"]);
+  });
 
-    expect(commands.map((command) => command.descriptor.name)).toEqual(factoryBackedCommandNames);
-    expect(commands.map((command) => command.descriptor)).toEqual(
-      DEFAULT_AGENT_COMMAND_MODULES
-        .filter((module) => module.createCommand)
-        .map((module) => module.descriptor),
-    );
+  it.each([
+    ["watch.list", "watchStore"],
+    ["watch.create", "watchMutations"],
+    ["schedule.list", "scheduledTasks"],
+    ["session.prompt.read", "sessionPrompts"],
+    ["todo.list", "sessionTodos"],
+    ["subagent.profile.list", "subagentProfiles"],
+    ["subagent.list", "subagentInventory"],
+    ["skill.list", "agentSkills"],
+  ] as const)("retains the public missing-service error for %s", (name, service) => {
+    expect(() => DEFAULT_AGENT_COMMAND_CATALOG.createCommands({}, {names: [name]}))
+      .toThrow(`Agent command module requires ${service}.`);
+  });
+
+  it("binds a selected read family without unrelated mutation or runtime services", async () => {
+    const [command] = DEFAULT_AGENT_COMMAND_CATALOG.createCommands({
+      watchStore: {
+        async listWatches(input) {
+          expect(input.sessionId).toBe("session-current");
+          return [];
+        },
+        async getWatch() { throw new Error("Unexpected watch detail read."); },
+        async listWatchRuns() { throw new Error("Unexpected watch run read."); },
+        async disableWatch() { throw new Error("Unexpected watch mutation."); },
+      },
+    }, {names: ["watch.list"], requireAll: true});
+
+    await expect(command!.execute({
+      command: "watch.list",
+      input: {},
+      scope: {agentKey: "panda", sessionId: "session-current"},
+    })).resolves.toMatchObject({ok: true, output: {operation: "list", count: 0, watches: []}});
+  });
+
+  it("keeps unconfigured optional integrations absent until explicitly required", () => {
+    const names = ["heartbeat.show", "cron.list", "wiki.read", "session.compact", "subagent.spawn"] as const;
+    expect(DEFAULT_AGENT_COMMAND_CATALOG.createCommands({}, {names})).toEqual([]);
+    expect(() => DEFAULT_AGENT_COMMAND_CATALOG.createCommands({}, {names: ["cron.list"], requireAll: true}))
+      .toThrow("Panda command module cron.list did not create a command.");
   });
 
   it("builds an extended default agent command catalog", () => {

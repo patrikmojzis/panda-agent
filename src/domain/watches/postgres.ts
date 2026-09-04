@@ -2,28 +2,30 @@ import {optionalTimestampMillis, requireTimestampMillis, toJson} from "../../lib
 import {randomUUID} from "node:crypto";
 
 import {requireBoolean} from "../../lib/booleans.js";
-import {hasActiveClaim} from "../../lib/claims.js";
 import {isJsonObject, type JsonObject} from "../../lib/json.js";
 import {toDateOrNull} from "../../lib/dates.js";
 import {optionalNonEmptyString, requireNonEmptyString} from "../../lib/strings.js";
 import type {PgClientLike, PgPoolLike} from "../../lib/postgres-query.js";
 import {withTransaction} from "../../lib/postgres-transaction.js";
-import {SessionArchivedError} from "../threads/runtime/store.js";
+import {enqueueSessionInputWithClient} from "../threads/runtime/postgres-inputs.js";
+import {buildThreadRuntimeTableNames} from "../threads/runtime/postgres-shared.js";
+import {stringToUserMessage} from "../../kernel/agent/helpers/input.js";
+import {renderWatchEventPrompt} from "../../prompts/runtime/watch-events.js";
 import {parseWatchDetectorConfig, parseWatchSourceConfig} from "./config.js";
 import {buildWatchTableNames, type WatchTableNames} from "./postgres-shared.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
-import type {RecordWatchEventResult, WatchStore} from "./store.js";
+import type {WatchStore} from "./store.js";
 import type {
     ClaimWatchInput,
     ClaimWatchResult,
-    CompleteWatchRunInput,
+    AcceptWatchEvaluationInput,
+    RenewWatchClaimInput,
     CreateWatchInput,
     DisableWatchInput,
     FailWatchRunInput,
     ListDueWatchesInput,
     ListWatchRunsInput,
     ListWatchesInput,
-    RecordWatchEventInput,
     StartWatchRunInput,
     UpdateWatchInput,
     WatchEventRecord,
@@ -116,6 +118,7 @@ function parseWatchRow(row: Record<string, unknown>): WatchRecord {
     nextPollAt: optionalTimestampMillis(row.next_poll_at, "Watch next_poll_at must be a valid timestamp."),
     claimedAt: optionalTimestampMillis(row.claimed_at, "Watch claimed_at must be a valid timestamp."),
     claimedBy: optionalWatchString("claim owner", row.claimed_by),
+    claimRunId: optionalWatchString("claim run", row.claim_run_id),
     claimExpiresAt: optionalTimestampMillis(row.claim_expires_at, "Watch claim_expires_at must be a valid timestamp."),
     cooldownUntil: optionalTimestampMillis(row.cooldown_until, "Watch cooldown_until must be a valid timestamp."),
     lastError: optionalWatchString("last error", row.last_error),
@@ -140,21 +143,6 @@ function parseWatchRunRow(row: Record<string, unknown>): WatchRunRecord {
     createdAt: requireTimestampMillis(row.created_at, "Watch created_at must be a valid timestamp."),
     startedAt: optionalTimestampMillis(row.started_at, "Watch started_at must be a valid timestamp."),
     finishedAt: optionalTimestampMillis(row.finished_at, "Watch finished_at must be a valid timestamp."),
-  };
-}
-
-function parseWatchEventRow(row: Record<string, unknown>): WatchEventRecord {
-  return {
-    id: requireWatchString("event id", row.id),
-    watchId: requireWatchString("id", row.watch_id),
-    sessionId: requireWatchString("session id", row.session_id),
-    createdByIdentityId: optionalWatchString("created identity id", row.created_by_identity_id),
-    resolvedThreadId: optionalWatchString("resolved thread id", row.resolved_thread_id),
-    eventKind: parseWatchEventKind(row.event_kind),
-    summary: requireWatchString("summary", row.summary),
-    dedupeKey: requireWatchString("dedupe key", row.dedupe_key),
-    payload: readOptionalJsonObject(row.payload, "event payload"),
-    createdAt: requireTimestampMillis(row.created_at, "Watch created_at must be a valid timestamp."),
   };
 }
 
@@ -236,6 +224,7 @@ export class PostgresWatchStore implements WatchStore {
   private readonly pool: PgPoolLike;
   private readonly tables: WatchTableNames;
   private readonly sessionTables = buildSessionTableNames();
+  private readonly threadTables = buildThreadRuntimeTableNames();
 
   constructor(options: PostgresWatchStoreOptions) {
     this.pool = options.pool;
@@ -296,11 +285,14 @@ export class PostgresWatchStore implements WatchStore {
       await client.query("BEGIN");
       inTransaction = true;
 
+      await this.lockSession(client, input.sessionId);
       const existing = await readLockedWatch(client, this.tables, input);
-      if (hasActiveClaim(existing, Date.now())) {
+      const now = await this.readClock(client);
+      if ((existing.claimExpiresAt ?? 0) > now) {
         throw new Error(`Watch ${existing.id} is currently running and cannot be updated.`);
       }
 
+      if (existing.claimRunId) await this.retireExpiredClaim(client, existing.claimRunId);
       const resetState = input.source !== undefined || input.detector !== undefined;
       const nextIntervalMinutes = input.intervalMinutes === undefined
         ? existing.intervalMinutes
@@ -332,6 +324,7 @@ export class PostgresWatchStore implements WatchStore {
               state = $7::jsonb,
               disabled_at = CASE WHEN $6 THEN NULL ELSE COALESCE(disabled_at, NOW()) END,
               next_poll_at = CASE WHEN $6 THEN COALESCE($8, NOW()) ELSE NULL END,
+              claimed_at = NULL, claimed_by = NULL, claim_expires_at = NULL, claim_run_id = NULL,
               last_error = CASE WHEN $9 THEN NULL ELSE last_error END,
               updated_at = NOW()
           WHERE id = $1
@@ -371,17 +364,21 @@ export class PostgresWatchStore implements WatchStore {
       await client.query("BEGIN");
       inTransaction = true;
 
+      await this.lockSession(client, input.sessionId);
       const existing = await readLockedWatch(client, this.tables, input);
-      if (hasActiveClaim(existing, Date.now())) {
+      const now = await this.readClock(client);
+      if ((existing.claimExpiresAt ?? 0) > now) {
         throw new Error(`Watch ${existing.id} is currently running and cannot be disabled.`);
       }
 
+      if (existing.claimRunId) await this.retireExpiredClaim(client, existing.claimRunId);
       const result = await client.query(
         `
           UPDATE ${this.tables.watches}
           SET enabled = FALSE,
               disabled_at = NOW(),
               next_poll_at = NULL,
+              claim_run_id = NULL,
               claimed_at = NULL,
               claimed_by = NULL,
               claim_expires_at = NULL,
@@ -472,384 +469,166 @@ export class PostgresWatchStore implements WatchStore {
     return result.rows.map((row) => parseWatchRow(row as Record<string, unknown>));
   }
 
+  private async retireExpiredClaim(client: PgClientLike, runId: string): Promise<void> {
+    await client.query(`UPDATE ${this.tables.watchRuns}
+      SET status = 'failed', error = 'Watch claim expired before acceptance; retired without replay.',
+          finished_at = clock_timestamp()
+      WHERE id = $1 AND status IN ('claimed', 'running')`, [runId]);
+  }
+
+  private async readClock(client: PgClientLike): Promise<number> {
+    const result = await client.query("SELECT clock_timestamp() AS now");
+    return requireTimestampMillis((result.rows[0] as Record<string, unknown>).now, "Invalid database clock.");
+  }
+
+  private async lockSession(client: PgClientLike, sessionId: string): Promise<Record<string, unknown>> {
+    const result = await client.query(`
+      SELECT id, archived_at, current_thread_id, created_by_identity_id
+      FROM ${this.sessionTables.sessions} WHERE id = $1 FOR UPDATE
+    `, [sessionId]);
+    const session = result.rows[0] as Record<string, unknown> | undefined;
+    if (!session) throw new Error(`Unknown session ${sessionId}`);
+    return session;
+  }
+
+  private async lockClaim(client: PgClientLike, runId: string) {
+    // Session-first matches archive/reset and input admission. Never infer ownership from run order.
+    const scope = await client.query(`SELECT session_id FROM ${this.tables.watchRuns} WHERE id = $1`, [runId]);
+    const sessionId = (scope.rows[0] as {session_id?: string} | undefined)?.session_id;
+    if (!sessionId) throw missingWatchRunError(runId);
+    const session = await this.lockSession(client, sessionId);
+    const watchResult = await client.query(`
+      SELECT * FROM ${this.tables.watches}
+      WHERE id = (SELECT watch_id FROM ${this.tables.watchRuns} WHERE id = $1) FOR UPDATE
+    `, [runId]);
+    const runResult = await client.query(`SELECT * FROM ${this.tables.watchRuns} WHERE id = $1 FOR UPDATE`, [runId]);
+    if (!watchResult.rows[0] || !runResult.rows[0]) throw missingWatchRunError(runId);
+    return {
+      session,
+      watch: parseWatchRow(watchResult.rows[0] as Record<string, unknown>),
+      run: parseWatchRunRow(runResult.rows[0] as Record<string, unknown>),
+    };
+  }
+
+  private ownsClaim(claim: Awaited<ReturnType<PostgresWatchStore["lockClaim"]>>, now: number): boolean {
+    return claim.session.archived_at === null && claim.watch.enabled && !claim.watch.disabledAt
+      && claim.watch.claimRunId === claim.run.id && (claim.watch.claimExpiresAt ?? 0) > now
+      && (claim.run.status === "claimed" || claim.run.status === "running");
+  }
+
   async claimWatch(input: ClaimWatchInput): Promise<ClaimWatchResult | null> {
-    const client = await this.pool.connect();
-    let inTransaction = false;
-
-    try {
-      await client.query("BEGIN");
-      inTransaction = true;
-
-      const activeSession = await client.query(`
-        SELECT session.id
-        FROM ${this.sessionTables.sessions} AS session
-        WHERE session.id = (
-          SELECT watch.session_id FROM ${this.tables.watches} AS watch WHERE watch.id = $1
-        )
-          AND session.archived_at IS NULL
-        FOR UPDATE
-      `, [requireWatchString("id", input.watchId)]);
-      if (!activeSession.rows[0]) {
-        await client.query("ROLLBACK");
-        inTransaction = false;
-        return null;
-      }
-
-      const result = await client.query(
-        `
-          SELECT *
-          FROM ${this.tables.watches}
-          WHERE id = $1
-            AND enabled = TRUE
-            AND disabled_at IS NULL
-            AND next_poll_at IS NOT NULL
-            AND next_poll_at <= NOW()
-            AND (claim_expires_at IS NULL OR claim_expires_at <= NOW())
-          FOR UPDATE
-        `,
-        [requireWatchString("id", input.watchId)],
-      );
-      const row = result.rows[0];
-      if (!row) {
-        await client.query("ROLLBACK");
-        inTransaction = false;
-        return null;
-      }
-
-      const watch = parseWatchRow(row as Record<string, unknown>);
-      const scheduledFor = watch.nextPollAt ?? Date.now();
-      const claimedResult = await client.query(
-        `
-          UPDATE ${this.tables.watches}
-          SET claimed_at = NOW(),
-              claimed_by = $2,
-              claim_expires_at = $3,
-              next_poll_at = $4,
-              updated_at = NOW()
-          WHERE id = $1
-          RETURNING *
-        `,
-        [
-          watch.id,
-          requireWatchString("claimedBy", input.claimedBy),
-          new Date(input.claimExpiresAt),
-          toDateOrNull(input.nextPollAt),
-        ],
-      );
-      const claimedWatch = parseWatchRow(claimedResult.rows[0] as Record<string, unknown>);
-      const runResult = await client.query(
-        `
-          INSERT INTO ${this.tables.watchRuns} (
-            id,
-            watch_id,
-            session_id,
-            created_by_identity_id,
-            scheduled_for,
-            status
-          ) VALUES (
-            $1,
-            $2,
-            $3,
-            $4,
-            $5,
-            'claimed'
-          )
-          RETURNING *
-        `,
-        [
-          randomUUID(),
-          claimedWatch.id,
-          claimedWatch.sessionId,
-          claimedWatch.createdByIdentityId ?? null,
-          new Date(scheduledFor),
-        ],
-      );
-
-      await client.query("COMMIT");
-      inTransaction = false;
-      return {
-        watch: claimedWatch,
-        run: parseWatchRunRow(runResult.rows[0] as Record<string, unknown>),
-      };
-    } catch (error) {
-      if (inTransaction) {
-        await client.query("ROLLBACK").catch(() => undefined);
-      }
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
-  async startWatchRun(input: StartWatchRunInput): Promise<WatchRunRecord> {
-    const result = await this.pool.query(
-      `
-        UPDATE ${this.tables.watchRuns}
-        SET status = 'running',
-            resolved_thread_id = COALESCE($2, resolved_thread_id),
-            resolved_thread_session_id = CASE
-              WHEN COALESCE($2, resolved_thread_id) IS NULL THEN NULL
-              ELSE session_id
-            END,
-            started_at = COALESCE(started_at, NOW())
-        WHERE id = $1
-          AND status = 'claimed'
-        RETURNING *
-      `,
-      [
-        requireWatchString("run id", input.runId),
-        input.resolvedThreadId ?? null,
-      ],
-    );
-    const row = result.rows[0];
-    if (!row) {
-      throw missingWatchRunError(input.runId);
-    }
-
-    return parseWatchRunRow(row as Record<string, unknown>);
-  }
-
-  async completeWatchRun(input: CompleteWatchRunInput): Promise<WatchRunRecord> {
-    const client = await this.pool.connect();
-    let inTransaction = false;
-
-    try {
-      await client.query("BEGIN");
-      inTransaction = true;
-
-      const runResult = await client.query(
-        `
-          UPDATE ${this.tables.watchRuns}
-          SET status = $2,
-              resolved_thread_id = COALESCE($3, resolved_thread_id),
-              resolved_thread_session_id = CASE
-                WHEN COALESCE($3, resolved_thread_id) IS NULL THEN NULL
-                ELSE session_id
-              END,
-              emitted_event_watch_id = CASE
-                WHEN COALESCE($4, emitted_event_id) IS NULL THEN NULL
-                ELSE watch_id
-              END,
-              emitted_event_id = COALESCE($4, emitted_event_id),
-              error = NULL,
-              finished_at = NOW()
-          WHERE id = $1
-            AND status IN ('claimed', 'running')
-          RETURNING *
-        `,
-        [
-          requireWatchString("run id", input.runId),
-          input.status,
-          input.resolvedThreadId ?? null,
-          input.emittedEventId ?? null,
-        ],
-      );
-      const runRow = runResult.rows[0];
-      if (!runRow) {
-        throw missingWatchRunError(input.runId);
-      }
-
-      const run = parseWatchRunRow(runRow as Record<string, unknown>);
-      await client.query(
-        `
-          UPDATE ${this.tables.watches}
-          SET state = $2::jsonb,
-              claimed_at = NULL,
-              claimed_by = NULL,
-              claim_expires_at = NULL,
-              last_error = $3,
-              updated_at = NOW()
-          WHERE id = $1
-        `,
-        [
-          run.watchId,
-          toJson(input.state),
-          input.lastError ?? null,
-        ],
-      );
-
-      await client.query("COMMIT");
-      inTransaction = false;
-      return run;
-    } catch (error) {
-      if (inTransaction) {
-        await client.query("ROLLBACK").catch(() => undefined);
-      }
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
-  async failWatchRun(input: FailWatchRunInput): Promise<WatchRunRecord> {
-    const client = await this.pool.connect();
-    let inTransaction = false;
-
-    try {
-      await client.query("BEGIN");
-      inTransaction = true;
-
-      const runResult = await client.query(
-        `
-          UPDATE ${this.tables.watchRuns}
-          SET status = 'failed',
-              resolved_thread_id = COALESCE($2, resolved_thread_id),
-              resolved_thread_session_id = CASE
-                WHEN COALESCE($2, resolved_thread_id) IS NULL THEN NULL
-                ELSE session_id
-              END,
-              error = $3,
-              finished_at = NOW()
-          WHERE id = $1
-            AND status IN ('claimed', 'running')
-          RETURNING *
-        `,
-        [
-          requireWatchString("run id", input.runId),
-          input.resolvedThreadId ?? null,
-          requireWatchString("error", input.error),
-        ],
-      );
-      const runRow = runResult.rows[0];
-      if (!runRow) {
-        throw missingWatchRunError(input.runId);
-      }
-
-      const run = parseWatchRunRow(runRow as Record<string, unknown>);
-      await client.query(
-        `
-          UPDATE ${this.tables.watches}
-          SET state = COALESCE($2::jsonb, state),
-              claimed_at = NULL,
-              claimed_by = NULL,
-              claim_expires_at = NULL,
-              last_error = $3,
-              updated_at = NOW()
-          WHERE id = $1
-        `,
-        [
-          run.watchId,
-          toJson(input.state),
-          input.error,
-        ],
-      );
-
-      await client.query("COMMIT");
-      inTransaction = false;
-      return run;
-    } catch (error) {
-      if (inTransaction) {
-        await client.query("ROLLBACK").catch(() => undefined);
-      }
-      throw error;
-    } finally {
-      client.release();
-    }
-  }
-
-  async clearWatchClaim(watchId: string): Promise<WatchRecord> {
-    const result = await this.pool.query(
-      `
-        UPDATE ${this.tables.watches}
-        SET claimed_at = NULL,
-            claimed_by = NULL,
-            claim_expires_at = NULL,
-            updated_at = NOW()
-        WHERE id = $1
-        RETURNING *
-      `,
-      [requireWatchString("id", watchId)],
-    );
-    const row = result.rows[0];
-    if (!row) {
-      throw missingWatchError(watchId);
-    }
-
-    return parseWatchRow(row as Record<string, unknown>);
-  }
-
-  async recordEvent(input: RecordWatchEventInput): Promise<RecordWatchEventResult> {
-    const id = randomUUID();
-    const watchId = requireWatchString("watch id", input.watchId);
-    const sessionId = requireWatchString("session id", input.sessionId);
-    const dedupeKey = requireWatchString("dedupe key", input.dedupeKey);
     return withTransaction(this.pool, async (client) => {
-      const existing = await client.query(`
-        SELECT *
-        FROM ${this.tables.watchEvents}
-        WHERE watch_id = $1 AND dedupe_key = $2
-      `, [watchId, dedupeKey]);
-      if (existing.rows[0]) {
-        return {
-          event: parseWatchEventRow(existing.rows[0] as Record<string, unknown>),
-          created: false,
-        };
-      }
-      const session = await client.query(`
-        SELECT archived_at
-        FROM ${this.sessionTables.sessions}
-        WHERE id = $1
-        FOR UPDATE
-      `, [sessionId]);
-      const sessionRow = session.rows[0] as {archived_at?: unknown} | undefined;
-      if (!sessionRow) throw new Error(`Unknown session ${sessionId}`);
-      if (sessionRow.archived_at !== null) throw new SessionArchivedError(sessionId);
+      const scope = await client.query(`SELECT session_id FROM ${this.tables.watches} WHERE id = $1`, [input.watchId]);
+      const sessionId = (scope.rows[0] as {session_id?: string} | undefined)?.session_id;
+      if (!sessionId) return null;
+      const session = await this.lockSession(client, sessionId);
+      if (session.archived_at !== null) return null;
+      const watch = await readLockedWatch(client, this.tables, {watchId: input.watchId, sessionId});
+      const now = await this.readClock(client);
+      if (!watch.enabled || watch.disabledAt || watch.nextPollAt === undefined || watch.nextPollAt > now
+        || (watch.claimExpiresAt ?? 0) > now || input.claimExpiresAt <= now) return null;
+      if (watch.claimRunId) await this.retireExpiredClaim(client, watch.claimRunId);
+      const runId = randomUUID();
+      const claimed = await client.query(`UPDATE ${this.tables.watches}
+        SET claimed_at = $5, claimed_by = $2, claim_expires_at = $3, next_poll_at = $4,
+            claim_run_id = $6, updated_at = $5
+        WHERE id = $1 RETURNING *`, [watch.id, requireWatchString("claimedBy", input.claimedBy),
+        new Date(input.claimExpiresAt), toDateOrNull(input.nextPollAt), new Date(now), runId]);
+      const run = await client.query(`INSERT INTO ${this.tables.watchRuns}
+        (id, watch_id, session_id, created_by_identity_id, scheduled_for, status)
+        VALUES ($1, $2, $3, $4, $5, 'claimed') RETURNING *`,
+        [runId, watch.id, watch.sessionId, watch.createdByIdentityId ?? null, new Date(watch.nextPollAt)]);
+      return {watch: parseWatchRow(claimed.rows[0] as Record<string, unknown>),
+        run: parseWatchRunRow(run.rows[0] as Record<string, unknown>)};
+    });
+  }
 
-      const inserted = await client.query(`
-        INSERT INTO ${this.tables.watchEvents} (
-          id,
-          watch_id,
-          session_id,
-          created_by_identity_id,
-          resolved_thread_id,
-          resolved_thread_session_id,
-          event_kind,
-          summary,
-          dedupe_key,
-          payload
-        ) VALUES (
-          $1,
-          $2,
-          $3,
-          $4,
-          $5,
-          $6,
-          $7,
-          $8,
-          $9,
-          $10::jsonb
-        )
-        ON CONFLICT (watch_id, dedupe_key) DO NOTHING
-        RETURNING *
-      `, [
-        id,
-        watchId,
-        sessionId,
-        input.createdByIdentityId?.trim() || null,
-        requireWatchString("resolved thread id", input.resolvedThreadId),
-        sessionId,
-        input.eventKind,
-        requireWatchString("summary", input.summary),
-        dedupeKey,
-        toJson(input.payload),
-      ]);
-      const insertedRow = inserted.rows[0];
-      if (insertedRow) {
-        return {
-          event: parseWatchEventRow(insertedRow as Record<string, unknown>),
-          created: true,
-        };
+  async startWatchRun(input: StartWatchRunInput): Promise<WatchRunRecord | null> {
+    return withTransaction(this.pool, async (client) => {
+      const claim = await this.lockClaim(client, input.runId);
+      if (!this.ownsClaim(claim, await this.readClock(client))) return null;
+      const result = await client.query(`UPDATE ${this.tables.watchRuns}
+        SET status = 'running', resolved_thread_id = $2, resolved_thread_session_id = $3,
+            started_at = COALESCE(started_at, clock_timestamp()) WHERE id = $1 RETURNING *`,
+        [input.runId, claim.session.current_thread_id, claim.run.sessionId]);
+      return parseWatchRunRow(result.rows[0] as Record<string, unknown>);
+    });
+  }
+
+  async renewWatchClaim(input: RenewWatchClaimInput): Promise<boolean> {
+    if (!Number.isFinite(input.claimTtlMs) || input.claimTtlMs <= 0) throw new Error("Invalid watch claim TTL.");
+    return withTransaction(this.pool, async (client) => {
+      const claim = await this.lockClaim(client, input.runId);
+      const now = await this.readClock(client);
+      if (!this.ownsClaim(claim, now)) return false;
+      await client.query(`UPDATE ${this.tables.watches}
+        SET claim_expires_at = $2, updated_at = $3 WHERE id = $1 AND claim_run_id = $4`,
+        [claim.watch.id, new Date(now + input.claimTtlMs), new Date(now), input.runId]);
+      return true;
+    });
+  }
+
+  async acceptWatchEvaluation(input: AcceptWatchEvaluationInput): Promise<WatchRunRecord | null> {
+    if (input.evaluation.changed && !input.evaluation.event) throw new Error("Changed watch evaluation requires an event.");
+    return withTransaction(this.pool, async (client) => {
+      const claim = await this.lockClaim(client, input.runId);
+      // A committed occurrence is its own receipt, even after reset/archive or a lost COMMIT acknowledgement.
+      if (claim.run.status === "changed" || claim.run.status === "no_change") return claim.run;
+      const changed = input.evaluation.changed;
+      if (changed) {
+        await client.query(`SELECT id FROM ${this.threadTables.threads} WHERE id = $1 FOR UPDATE`,
+          [claim.session.current_thread_id]);
       }
-      const raced = await client.query(`
-        SELECT *
-        FROM ${this.tables.watchEvents}
-        WHERE watch_id = $1 AND dedupe_key = $2
-      `, [watchId, dedupeKey]);
-      if (!raced.rows[0]) throw new Error(`Unable to read existing watch event for ${watchId}.`);
-      return {
-        event: parseWatchEventRow(raced.rows[0] as Record<string, unknown>),
-        created: false,
-      };
+      if (!this.ownsClaim(claim, await this.readClock(client))) return null;
+      let threadId: string | null = null;
+      const event = input.evaluation.event;
+      if (changed && event) {
+        const occurredIso = new Date(claim.run.scheduledFor).toISOString();
+        const payload: JsonObject = {watchId: claim.watch.id, eventId: input.runId};
+        if (event.payload) payload.details = event.payload;
+        const enqueue = await enqueueSessionInputWithClient(client, claim.watch.sessionId, {
+          message: stringToUserMessage(renderWatchEventPrompt({title: claim.watch.title,
+            eventKind: event.eventKind, summary: event.summary, occurredIso, payload})),
+          source: "watch_event", externalMessageId: input.runId,
+          identityId: claim.watch.createdByIdentityId ?? optionalWatchString("session creator", claim.session.created_by_identity_id),
+          metadata: {watchEvent: {watchId: claim.watch.id, title: claim.watch.title, eventId: input.runId,
+            eventKind: event.eventKind, occurredAt: occurredIso}},
+        }, "wake", {inputId: input.runId});
+        threadId = enqueue.input.threadId;
+        await client.query(`INSERT INTO ${this.tables.watchEvents}
+          (id, watch_id, session_id, created_by_identity_id, resolved_thread_id, resolved_thread_session_id,
+           event_kind, summary, dedupe_key, payload)
+          VALUES ($1, $2, $3, $4, $5, $3, $6, $7, $8, $9::jsonb)`,
+          [input.runId, claim.watch.id, claim.watch.sessionId, claim.watch.createdByIdentityId ?? null,
+            threadId, event.eventKind, event.summary, `run:${input.runId}`, toJson(event.payload ?? null)]);
+      }
+      const result = await client.query(`UPDATE ${this.tables.watchRuns}
+        SET status = $2, resolved_thread_id = COALESCE($3, resolved_thread_id),
+            resolved_thread_session_id = CASE WHEN COALESCE($3, resolved_thread_id) IS NULL THEN NULL ELSE session_id END,
+            emitted_event_id = $4, emitted_event_watch_id = CASE WHEN $4::uuid IS NULL THEN NULL ELSE watch_id END,
+            error = NULL, finished_at = clock_timestamp() WHERE id = $1 RETURNING *`,
+        [input.runId, changed ? "changed" : "no_change", threadId, changed ? input.runId : null]);
+      await client.query(`UPDATE ${this.tables.watches}
+        SET state = $2::jsonb, claimed_at = NULL, claimed_by = NULL, claim_expires_at = NULL,
+            claim_run_id = NULL, last_error = NULL, updated_at = clock_timestamp()
+        WHERE id = $1 AND claim_run_id = $3`, [claim.watch.id, toJson(input.evaluation.nextState), input.runId]);
+      return parseWatchRunRow(result.rows[0] as Record<string, unknown>);
+    });
+  }
+
+  async failWatchRun(input: FailWatchRunInput): Promise<WatchRunRecord | null> {
+    return withTransaction(this.pool, async (client) => {
+      const claim = await this.lockClaim(client, input.runId);
+      if (claim.run.status === "failed") return claim.run;
+      if (!this.ownsClaim(claim, await this.readClock(client))) return null;
+      const result = await client.query(`UPDATE ${this.tables.watchRuns}
+        SET status = 'failed', error = $2, finished_at = clock_timestamp() WHERE id = $1 RETURNING *`,
+        [input.runId, requireWatchString("error", input.error)]);
+      await client.query(`UPDATE ${this.tables.watches}
+        SET claimed_at = NULL, claimed_by = NULL, claim_expires_at = NULL, claim_run_id = NULL,
+            last_error = $2, updated_at = clock_timestamp() WHERE id = $1 AND claim_run_id = $3`,
+        [claim.watch.id, input.error, input.runId]);
+      return parseWatchRunRow(result.rows[0] as Record<string, unknown>);
     });
   }
 

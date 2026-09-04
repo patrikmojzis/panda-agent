@@ -1,534 +1,104 @@
-import {afterEach, describe, expect, it, vi} from "vitest";
-import type {AssistantMessage} from "@earendil-works/pi-ai";
-import {DataType, newDb} from "pg-mem";
-
-import {Agent} from "../src/index.js";
-import {ThreadRuntimeCoordinator} from "../src/domain/threads/runtime/index.js";
-import {
-  PostgresWatchStore,
-  type WatchEvaluationResult,
-  type WatchEvaluator,
-  WatchRunner,
-} from "../src/domain/watches/index.js";
-import {ensurePostgresWatchSchema} from "../src/domain/watches/postgres-schema.js";
-import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
-import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
+import {randomUUID} from "node:crypto";
+import {describe, expect, it, vi} from "vitest";
+import {WatchRunner, type WatchRunnerOptions} from "../src/domain/watches/runner.js";
+import type {ClaimWatchResult, WatchEvaluationResult} from "../src/domain/watches/types.js";
 import {waitFor} from "./helpers/wait-for.js";
 
-function createAssistantMessage(text: string): AssistantMessage {
-  return {
-    role: "assistant",
-    content: [{type: "text", text}],
-    api: "openai-responses",
-    model: "openai/gpt-5.1",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0},
-    },
-    stopReason: "stop",
-    timestamp: Date.now(),
+function harness() {
+  const now = Date.now();
+  const claim: ClaimWatchResult = {
+    watch: {id: randomUUID(), sessionId: "session", title: "Price", intervalMinutes: 5,
+      source: {kind: "http_json", url: "https://example.com", result: {observation: "scalar", valuePath: "price"}},
+      detector: {kind: "percent_change", percent: 10}, enabled: true, createdAt: now, updatedAt: now},
+    run: {id: randomUUID(), watchId: "watch", sessionId: "session", scheduledFor: now, status: "claimed", createdAt: now},
   };
+  claim.run.watchId = claim.watch.id;
+  const evaluation: WatchEvaluationResult = {changed: true, nextState: {baseline: 120},
+    event: {eventKind: "percent_change", summary: "Price moved", dedupeKey: "detector-fingerprint"}};
+  const watches = {
+    listDueWatches: vi.fn().mockResolvedValueOnce([claim.watch]).mockResolvedValue([]),
+    claimWatch: vi.fn(async () => claim), startWatchRun: vi.fn(async () => ({...claim.run, status: "running" as const})),
+    renewWatchClaim: vi.fn(async () => true), acceptWatchEvaluation: vi.fn(async () => ({...claim.run, status: "changed" as const})),
+    failWatchRun: vi.fn(async () => ({...claim.run, status: "failed" as const})),
+  } satisfies WatchRunnerOptions["watches"];
+  const getSession = vi.fn(async () => ({id: "session", agentKey: "panda", kind: "main" as const,
+    currentThreadId: "current-thread", createdByIdentityId: "creator", createdAt: now, updatedAt: now}));
+  const evaluateWatch = vi.fn(async () => evaluation);
+  const onError = vi.fn();
+  return {claim, evaluation, watches, getSession, evaluateWatch, onError,
+    runner: (extra: Partial<WatchRunnerOptions> = {}) => new WatchRunner({watches, sessions: {getSession},
+      evaluateWatch, onError, pollIntervalMs: 60_000, ...extra})};
 }
 
-function createMockRuntime(...responses: AssistantMessage[]) {
-  return {
-    complete: vi.fn().mockImplementation(async () => {
-      const response = responses.shift();
-      if (!response) {
-        throw new Error("No more runtime responses queued.");
-      }
-
-      return response;
-    }),
-    stream: vi.fn(() => {
-      throw new Error("Streaming was not expected in this test.");
-    }),
-  };
-}
-
-async function createHarness(evaluateWatch: WatchEvaluator) {
-  const db = newDb();
-  db.public.registerFunction({
-    name: "pg_notify",
-    args: [DataType.text, DataType.text],
-    returns: DataType.text,
-    implementation: () => "",
-  });
-  const adapter = db.adapters.createPg();
-  const pool = new adapter.Pool();
-
-  const {identityStore, sessionStore, threadStore: postgresThreadStore} = await createRuntimeStores(pool);
-  const threadStore = new TestThreadRuntimeStore();
-  const watchStore = new PostgresWatchStore({pool});
-  await ensurePostgresWatchSchema(pool);
-
-  const alice = await identityStore.createIdentity({
-    id: "alice-id",
-    handle: "alice",
-    displayName: "Alice",
-  });
-  await sessionStore.createSession({
-    id: "session-main",
-    agentKey: "panda",
-    kind: "main",
-    currentThreadId: "session-thread",
-    createdByIdentityId: alice.id,
-  });
-  await postgresThreadStore.createThread({
-    id: "session-thread",
-    sessionId: "session-main",
-  });
-  await threadStore.createThread({
-    id: "session-thread",
-    sessionId: "session-main",
-  });
-
-  const runtime = createMockRuntime(
-    createAssistantMessage("Handled watch event."),
-    createAssistantMessage("Handled watch event."),
-    createAssistantMessage("Handled watch event."),
-    createAssistantMessage("Handled watch event."),
-  );
-  const coordinator = new ThreadRuntimeCoordinator({
-    store: threadStore,
-    maxConcurrentRuns: 1,
-    resolveDefinition: async () => ({
-      agent: new Agent({
-        name: "panda",
-        instructions: "Reply briefly.",
-      }),
-      runtime,
-    }),
-  });
-  await coordinator.handleStoreNotificationStatus("listening");
-  await coordinator.start({source: "panda-core", connectorKey: "test", holderId: "watch-runner-test"});
-
-  const watchRunner = new WatchRunner({
-    watches: watchStore,
-    sessions: sessionStore,
-    coordinator,
-    evaluateWatch,
-  });
-
-  return {
-    alice,
-    pool,
-    runtime,
-    threadStore,
-    postgresThreadStore,
-    sessionStore,
-    watchStore,
-    coordinator,
-    watchRunner,
-  };
-}
-
-async function forceWatchDue(pool: {query(text: string, values?: unknown[]): Promise<unknown>}, watchId: string): Promise<void> {
-  await pool.query(
-    `UPDATE "runtime"."watches" SET next_poll_at = NOW() - INTERVAL '1 second' WHERE id = $1`,
-    [watchId],
-  );
+async function drain(runner: WatchRunner) {
+  await runner.start();
+  try { await runner.triggerDrain(); } finally { await runner.stop(); }
 }
 
 describe("WatchRunner", () => {
-  const harnesses: Array<Awaited<ReturnType<typeof createHarness>>> = [];
-
-  afterEach(async () => {
-    while (harnesses.length > 0) {
-      const harness = harnesses.pop();
-      if (!harness) {
-        continue;
-      }
-
-      await harness.coordinator.stop();
-      await harness.pool.end();
-    }
+  it("accepts a changed evaluation as one owned operation using the current session context", async () => {
+    const h = harness();
+    await drain(h.runner());
+    expect(h.evaluateWatch).toHaveBeenCalledWith(h.claim.watch, {agentKey: "panda", identityId: "creator"});
+    expect(h.watches.acceptWatchEvaluation).toHaveBeenCalledExactlyOnceWith({runId: h.claim.run.id, evaluation: h.evaluation});
+    expect(h.watches.failWatchRun).not.toHaveBeenCalled();
   });
 
-  it("wakes Panda for a Mongo-style new registration event after bootstrap", async () => {
-    const evaluateWatch = vi.fn<WatchEvaluator>()
-      .mockResolvedValueOnce({
-        changed: false,
-        nextState: {
-          kind: "new_items",
-          identityToken: "mongo-stream",
-          bootstrapped: true,
-          lastCursor: "2026-04-11T10:00:00.000Z",
-          lastIds: ["reg-1"],
-        },
-      } satisfies WatchEvaluationResult)
-      .mockResolvedValueOnce({
-        changed: true,
-        nextState: {
-          kind: "new_items",
-          identityToken: "mongo-stream",
-          bootstrapped: true,
-          lastCursor: "2026-04-11T10:05:00.000Z",
-          lastIds: ["reg-2"],
-        },
-        event: {
-          eventKind: "new_items",
-          summary: "Detected 1 new item.",
-          dedupeKey: "reg-2",
-          payload: {
-            totalNewItems: 1,
-          },
-        },
-      });
-    const harness = await createHarness(evaluateWatch);
-    harnesses.push(harness);
-
-    const watch = await harness.watchStore.createWatch({
-      sessionId: "session-main",
-      createdByIdentityId: harness.alice.id,
-      title: "Registrations",
-      intervalMinutes: 5,
-      source: {
-        kind: "mongodb_query",
-        credentialEnvKey: "MONGO_URI",
-        database: "app",
-        collection: "registrations",
-        operation: "find",
-        result: {
-          observation: "collection",
-          itemIdField: "id",
-          itemCursorField: "createdAt",
-        },
-      },
-      detector: {
-        kind: "new_items",
-      },
-    });
-
-    await harness.watchRunner.start();
-    await waitFor(() => {
-      expect(evaluateWatch).toHaveBeenCalledTimes(1);
-    });
-    await harness.watchRunner.stop();
-
-    await forceWatchDue(harness.pool, watch.id);
-    const resetThreadId = "session-thread-after-reset";
-    await harness.postgresThreadStore.createThread({
-      id: resetThreadId,
-      sessionId: "session-main",
-    });
-    await harness.threadStore.createThread({
-      id: resetThreadId,
-      sessionId: "session-main",
-    });
-    await harness.sessionStore.updateCurrentThread({
-      sessionId: "session-main",
-      currentThreadId: resetThreadId,
-    });
-    await harness.watchRunner.start();
-    await waitFor(async () => {
-      const latestRun = await harness.watchStore.getLatestWatchRun(watch.id);
-      expect(latestRun?.status).toBe("changed");
-    });
-    await harness.coordinator.waitForIdle(resetThreadId);
-    await harness.watchRunner.stop();
-
-    const latestRun = await harness.watchStore.getLatestWatchRun(watch.id);
-    expect(latestRun?.status).toBe("changed");
-    expect(latestRun?.resolvedThreadId).toBe(resetThreadId);
-    expect(evaluateWatch).toHaveBeenCalledTimes(2);
-    expect(evaluateWatch).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({id: watch.id}),
-      {
-        agentKey: "panda",
-        identityId: harness.alice.id,
-      },
-    );
-
-    const oldTranscript = await harness.threadStore.loadTranscriptHistory("session-thread");
-    expect(oldTranscript.some((entry) => entry.origin === "input" && entry.source === "watch_event")).toBe(false);
-
-    const transcript = await harness.threadStore.loadTranscriptHistory(resetThreadId);
-    const input = transcript.find((entry) => entry.origin === "input" && entry.source === "watch_event");
-    expect(input?.identityId).toBe(harness.alice.id);
-    expect(input?.message.role).toBe("user");
-    expect(JSON.stringify(input?.message)).toContain("[Watch Event] Registrations");
-    expect(JSON.stringify(input?.message)).toContain("If this session is connected to an external channel");
+  it("passes no-change detector state through the same ownership gate", async () => {
+    const h = harness();
+    h.evaluateWatch.mockResolvedValue({changed: false, nextState: {baseline: 100}});
+    await drain(h.runner());
+    expect(h.watches.acceptWatchEvaluation).toHaveBeenCalledWith({runId: h.claim.run.id,
+      evaluation: {changed: false, nextState: {baseline: 100}}});
   });
 
-  it("delivers changed watch events to the current thread after evaluation", async () => {
-    let harness: Awaited<ReturnType<typeof createHarness>>;
-    const resetThreadId = "session-thread-after-slow-eval";
-    const evaluateWatch = vi.fn<WatchEvaluator>()
-      .mockResolvedValueOnce({
-        changed: false,
-        nextState: {
-          kind: "snapshot_changed",
-          fingerprint: "initial",
-        },
-      } satisfies WatchEvaluationResult)
-      .mockImplementationOnce(async () => {
-        await harness.postgresThreadStore.createThread({
-          id: resetThreadId,
-          sessionId: "session-main",
-        });
-        await harness.threadStore.createThread({
-          id: resetThreadId,
-          sessionId: "session-main",
-        });
-        await harness.sessionStore.updateCurrentThread({
-          sessionId: "session-main",
-          currentThreadId: resetThreadId,
-        });
-        return {
-          changed: true,
-          nextState: {
-            kind: "snapshot_changed",
-            fingerprint: "after-reset",
-          },
-          event: {
-            eventKind: "snapshot_changed",
-            summary: "Observed content changed.",
-            dedupeKey: "after-reset",
-          },
-        };
-      });
-    harness = await createHarness(evaluateWatch);
-    harnesses.push(harness);
-
-    const watch = await harness.watchStore.createWatch({
-      sessionId: "session-main",
-      createdByIdentityId: harness.alice.id,
-      title: "Slow watch",
-      intervalMinutes: 5,
-      source: {
-        kind: "http_json",
-        url: "https://example.com/state.json",
-        result: {
-          observation: "snapshot",
-        },
-      },
-      detector: {
-        kind: "snapshot_changed",
-      },
-    });
-
-    await harness.watchRunner.start();
-    await waitFor(() => {
-      expect(evaluateWatch).toHaveBeenCalledTimes(1);
-    });
-    await harness.watchRunner.stop();
-    await forceWatchDue(harness.pool, watch.id);
-    await harness.watchRunner.start();
-    await waitFor(async () => {
-      const latestRun = await harness.watchStore.getLatestWatchRun(watch.id);
-      expect(latestRun?.status).toBe("changed");
-    });
-    await harness.coordinator.waitForIdle(resetThreadId);
-    await harness.watchRunner.stop();
-
-    const latestRun = await harness.watchStore.getLatestWatchRun(watch.id);
-    expect(latestRun?.resolvedThreadId).toBe(resetThreadId);
-    const oldTranscript = await harness.threadStore.loadTranscriptHistory("session-thread");
-    expect(oldTranscript.some((entry) => entry.origin === "input" && entry.source === "watch_event")).toBe(false);
-    const transcript = await harness.threadStore.loadTranscriptHistory(resetThreadId);
-    expect(transcript.some((entry) => entry.origin === "input" && entry.source === "watch_event")).toBe(true);
+  it("does not evaluate a claim whose start fence was lost", async () => {
+    const h = harness();
+    h.watches.startWatchRun.mockResolvedValueOnce(null);
+    await drain(h.runner());
+    expect(h.evaluateWatch).not.toHaveBeenCalled();
+    expect(h.watches.acceptWatchEvaluation).not.toHaveBeenCalled();
   });
 
-  it("wakes Panda for an IMAP-style new email event only after bootstrap", async () => {
-    const evaluateWatch = vi.fn<WatchEvaluator>()
-      .mockResolvedValueOnce({
-        changed: false,
-        nextState: {
-          kind: "new_items",
-          identityToken: "uidvalidity-1",
-          bootstrapped: true,
-          lastCursor: 101,
-          lastIds: ["101"],
-        },
-      } satisfies WatchEvaluationResult)
-      .mockResolvedValueOnce({
-        changed: true,
-        nextState: {
-          kind: "new_items",
-          identityToken: "uidvalidity-1",
-          bootstrapped: true,
-          lastCursor: 102,
-          lastIds: ["102"],
-        },
-        event: {
-          eventKind: "new_items",
-          summary: "Detected 1 new item.",
-          dedupeKey: "imap-102",
-        },
-      });
-    const harness = await createHarness(evaluateWatch);
-    harnesses.push(harness);
-
-    const watch = await harness.watchStore.createWatch({
-      sessionId: "session-main",
-      createdByIdentityId: harness.alice.id,
-      title: "Inbox",
-      intervalMinutes: 5,
-      source: {
-        kind: "imap_mailbox",
-        host: "imap.example.com",
-        username: "alice@example.com",
-        passwordCredentialEnvKey: "IMAP_PASSWORD",
-      },
-      detector: {
-        kind: "new_items",
-      },
-    });
-
-    await harness.watchRunner.start();
-    await waitFor(() => {
-      expect(evaluateWatch).toHaveBeenCalledTimes(1);
-    });
-    await harness.watchRunner.stop();
-    await forceWatchDue(harness.pool, watch.id);
-    await harness.watchRunner.start();
-    await waitFor(async () => {
-      const eventRows = await harness.pool.query(
-        `SELECT COUNT(*)::INTEGER AS count FROM "runtime"."watch_events" WHERE watch_id = $1`,
-        [watch.id],
-      );
-      expect(eventRows.rows[0]).toMatchObject({count: 1});
-    });
-    await harness.coordinator.waitForIdle("session-thread");
-    await harness.watchRunner.stop();
-
-    const eventRows = await harness.pool.query(
-      `SELECT COUNT(*)::INTEGER AS count FROM "runtime"."watch_events" WHERE watch_id = $1`,
-      [watch.id],
-    );
-    expect(eventRows.rows[0]).toMatchObject({count: 1});
+  it("renews during evaluation and never settles a claim after renewal was rejected", async () => {
+    const h = harness();
+    let finish!: (value: WatchEvaluationResult) => void;
+    h.evaluateWatch.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    h.watches.renewWatchClaim.mockResolvedValue(false);
+    const runner = h.runner({claimTtlMs: 15});
+    await runner.start();
+    try {
+      await waitFor(() => expect(h.watches.renewWatchClaim).toHaveBeenCalled());
+      finish(h.evaluation);
+      await runner.triggerDrain();
+      expect(h.watches.acceptWatchEvaluation).not.toHaveBeenCalled();
+      expect(h.watches.failWatchRun).not.toHaveBeenCalled();
+    } finally { await runner.stop(); }
   });
 
-  it("wakes Panda for a BTC percent-move watch", async () => {
-    const evaluateWatch = vi.fn<WatchEvaluator>()
-      .mockResolvedValueOnce({
-        changed: false,
-        nextState: {
-          kind: "percent_change",
-          baseline: 100,
-          lastValue: 100,
-        },
-      } satisfies WatchEvaluationResult)
-      .mockResolvedValueOnce({
-        changed: true,
-        nextState: {
-          kind: "percent_change",
-          baseline: 112,
-          lastValue: 112,
-        },
-        event: {
-          eventKind: "percent_change",
-          summary: "BTC moved +12.00% (from 100 to 112).",
-          dedupeKey: "btc-112",
-        },
-      });
-    const harness = await createHarness(evaluateWatch);
-    harnesses.push(harness);
-
-    const watch = await harness.watchStore.createWatch({
-      sessionId: "session-main",
-      createdByIdentityId: harness.alice.id,
-      title: "BTC move",
-      intervalMinutes: 5,
-      source: {
-        kind: "http_json",
-        url: "https://example.com/btc.json",
-        result: {
-          observation: "scalar",
-          valuePath: "price",
-          label: "BTC",
-        },
-      },
-      detector: {
-        kind: "percent_change",
-        percent: 10,
-      },
-    });
-
-    await harness.watchRunner.start();
-    await waitFor(() => {
-      expect(evaluateWatch).toHaveBeenCalledTimes(1);
-    });
-    await harness.watchRunner.stop();
-    await forceWatchDue(harness.pool, watch.id);
-    await harness.watchRunner.start();
-    await waitFor(async () => {
-      const latestRun = await harness.watchStore.getLatestWatchRun(watch.id);
-      expect(latestRun?.status).toBe("changed");
-    });
-    await harness.coordinator.waitForIdle("session-thread");
-    await harness.watchRunner.stop();
-
-    const latestRun = await harness.watchStore.getLatestWatchRun(watch.id);
-    expect(latestRun?.status).toBe("changed");
+  it("records evaluator failures with their run generation", async () => {
+    const h = harness();
+    h.evaluateWatch.mockRejectedValue(new Error("Source unavailable"));
+    await drain(h.runner());
+    expect(h.watches.failWatchRun).toHaveBeenCalledWith({runId: h.claim.run.id, error: "Source unavailable"});
+    expect(h.watches.acceptWatchEvaluation).not.toHaveBeenCalled();
   });
 
-  it("wakes Panda for a property-listing HTML snapshot change", async () => {
-    const evaluateWatch = vi.fn<WatchEvaluator>()
-      .mockResolvedValueOnce({
-        changed: false,
-        nextState: {
-          kind: "snapshot_changed",
-          fingerprint: "listing-a-b",
-          excerpt: "Listing A Listing B",
-        },
-      } satisfies WatchEvaluationResult)
-      .mockResolvedValueOnce({
-        changed: true,
-        nextState: {
-          kind: "snapshot_changed",
-          fingerprint: "listing-a-b-c",
-          excerpt: "Listing A Listing B Listing C",
-        },
-        event: {
-          eventKind: "snapshot_changed",
-          summary: "Observed content changed.",
-          dedupeKey: "listing-c",
-        },
-      });
-    const harness = await createHarness(evaluateWatch);
-    harnesses.push(harness);
+  it("retries acceptance receipts without reevaluating or falsely failing a committed run", async () => {
+    const h = harness();
+    h.watches.acceptWatchEvaluation.mockRejectedValueOnce(new Error("COMMIT acknowledgement lost"));
+    await drain(h.runner());
+    expect(h.watches.acceptWatchEvaluation).toHaveBeenCalledTimes(2);
+    expect(h.evaluateWatch).toHaveBeenCalledTimes(1);
+    expect(h.watches.failWatchRun).not.toHaveBeenCalled();
+  });
 
-    const watch = await harness.watchStore.createWatch({
-      sessionId: "session-main",
-      createdByIdentityId: harness.alice.id,
-      title: "Property listings",
-      intervalMinutes: 5,
-      source: {
-        kind: "http_html",
-        url: "https://example.com/listings",
-        result: {
-          observation: "snapshot",
-          mode: "selector_text",
-          selector: "body",
-        },
-      },
-      detector: {
-        kind: "snapshot_changed",
-      },
-    });
-
-    await harness.watchRunner.start();
-    await waitFor(() => {
-      expect(evaluateWatch).toHaveBeenCalledTimes(1);
-    });
-    await harness.watchRunner.stop();
-    await forceWatchDue(harness.pool, watch.id);
-    await harness.watchRunner.start();
-    await waitFor(async () => {
-      const latestRun = await harness.watchStore.getLatestWatchRun(watch.id);
-      expect(latestRun?.status).toBe("changed");
-    });
-    await harness.coordinator.waitForIdle("session-thread");
-    await harness.watchRunner.stop();
-
-    const latestRun = await harness.watchStore.getLatestWatchRun(watch.id);
-    expect(latestRun?.status).toBe("changed");
+  it("bounds acceptance retries and leaves uncertain receipt recovery to the store", async () => {
+    const h = harness();
+    h.watches.acceptWatchEvaluation.mockRejectedValue(new Error("database unavailable"));
+    await drain(h.runner());
+    expect(h.watches.acceptWatchEvaluation).toHaveBeenCalledTimes(3);
+    expect(h.watches.failWatchRun).not.toHaveBeenCalled();
+    expect(h.onError).toHaveBeenCalledWith(expect.any(Error), h.claim.watch.id);
   });
 });

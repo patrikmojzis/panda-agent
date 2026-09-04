@@ -24,7 +24,7 @@ vi.mock("../src/kernel/models/model-context-policy.js", async (importOriginal) =
 
   return {
     ...actual,
-    resolveModelRuntimeBudget(model?: string) {
+    resolveModelRuntimeBudget(model: string) {
       const operatingWindow = model ? TEST_MODELS.operatingWindowByModel.get(model) : undefined;
       if (operatingWindow === undefined) {
         return actual.resolveModelRuntimeBudget(model);

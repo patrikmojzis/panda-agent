@@ -1,3 +1,4 @@
+import {createDefaultExecutionToolPolicy} from "../../panda/commands/agent-command-policy.js";
 import type {CommandCatalog} from "../../domain/commands/modules.js";
 import {isExecutionToolAllowedByPolicy} from "../../domain/execution-environments/policy.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
@@ -16,6 +17,7 @@ export function createHeartbeatPromptContextResolver(options: {
   env?: NodeJS.ProcessEnv;
 }) {
   const environments = new ExecutionEnvironmentResolver({
+    defaultToolPolicy: createDefaultExecutionToolPolicy(options.commandCatalog),
     store: options.executionEnvironments,
     env: options.env,
   });

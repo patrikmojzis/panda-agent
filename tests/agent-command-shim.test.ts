@@ -7,60 +7,15 @@ import {promisify} from "node:util";
 import {afterEach, beforeEach, describe, expect, it, vi} from "vitest";
 
 import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
+import {DEFAULT_AGENT_COMMAND_CATALOG} from "../src/panda/commands/agent-command-modules.js";
 import {commandStaleVersionConflict} from "../src/domain/commands/errors.js";
 import {FileSystemCommandUploadStore} from "../src/integrations/commands/file-uploads.js";
 import {FileSystemWebResourceStore} from "../src/integrations/web/web-resources.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {CURRENT_READONLY_SESSION_VIEW_BASENAMES} from "../src/integrations/postgres/readonly-session-views.js";
 import {
-  createA2AHistoryCommand,
-  createA2AInspectCommand,
-  createA2ASendCommand,
-} from "../src/domain/a2a/commands.js";
-import {
-  createEmailAccountListCommand,
   createEmailAttachmentsFetchCommand,
-  createEmailListCommand,
-  createEmailReadCommand,
-  createEmailSearchCommand,
-  createEmailSendCommand,
 } from "../src/domain/email/commands.js";
-import {
-  createAppActionCommand,
-  createAppCheckCommand,
-  createAppCreateCommand,
-  createAppLinkCreateCommand,
-  createAppListCommand,
-  createAppViewCommand,
-} from "../src/domain/apps/commands.js";
-import {
-  createSkillDeleteCommand,
-  createSkillListCommand,
-  createSkillLoadCommand,
-  createSkillPatchCommand,
-  createSkillSetCommand,
-  createSkillShowCommand,
-} from "../src/domain/agents/skill-commands.js";
-import {
-  createClearEnvValueCommand,
-  createListEnvValuesCommand,
-  createSetEnvValueCommand,
-} from "../src/domain/credentials/commands.js";
-import {
-  createEnvironmentCreateCommand,
-  createEnvironmentListCommand,
-  createEnvironmentLogsCommand,
-  createEnvironmentShowCommand,
-  createEnvironmentStopCommand,
-} from "../src/domain/execution-environments/commands.js";
-import {
-  createScheduleCancelCommand,
-  createScheduleCreateCommand,
-  createScheduleListCommand,
-  createScheduleRunsCommand,
-  createScheduleShowCommand,
-  createScheduleUpdateCommand,
-} from "../src/domain/scheduling/tasks/commands.js";
 import {
   heartbeatSetCommandDescriptor,
   heartbeatShowCommandDescriptor,
@@ -77,67 +32,12 @@ import {
   cronUpdateCommandDescriptor,
 } from "../src/domain/scheduling/scheduled-commands/commands.js";
 import {
-  createSessionPromptReadCommand,
-  createSessionPromptSetCommand,
-  createSessionPromptTransformCommand,
-} from "../src/domain/sessions/prompt-commands.js";
-import {
-  createTodoAddCommand,
-  createTodoBlockCommand,
-  createTodoClearCommand,
-  createTodoDoneCommand,
-  createTodoListCommand,
-  createTodoShowCommand,
-} from "../src/domain/sessions/todo-commands.js";
-import {
-  createSubagentProfileDisableCommand,
-  createSubagentProfileEnableCommand,
-  createSubagentProfileListCommand,
-  createSubagentProfileShowCommand,
-  createSubagentProfileUpsertCommand,
   createSubagentSpawnCommand,
 } from "../src/domain/subagents/commands.js";
-import {
-  createSubagentListCommand,
-  createSubagentShowCommand,
-} from "../src/domain/subagents/inventory-commands.js";
 import {buildSubagentSessionMetadata} from "../src/domain/subagents/session-metadata.js";
 import {createTimeNowCommand} from "../src/domain/time/commands.js";
 import {
-  createWatchCreateCommand,
-  createWatchDisableCommand,
-  createWatchListCommand,
-  createWatchRunsCommand,
-  createWatchShowCommand,
-  createWatchUpdateCommand,
-} from "../src/domain/watches/commands.js";
-import {
-  createWikiArchiveCommand,
-  createWikiAttachImageCommand,
-  createWikiDeleteAssetCommand,
-  createWikiDiffCommand,
-  createWikiFetchAssetCommand,
-  createWikiListCommand,
-  createWikiMoveCommand,
-  createWikiOverviewCommand,
-  createWikiReadCommand,
-  createWikiRestoreCommand,
-  createWikiSearchCommand,
-  createWikiWriteCommand,
-  createWikiWriteSectionCommand,
-} from "../src/domain/wiki/commands.js";
-import {
-  createTelegramChatListCommand,
-  createTelegramChatInfoCommand,
-  createTelegramDeleteCommand,
-  createTelegramEditCommand,
-  createTelegramHistoryCommand,
-  createTelegramMediaFetchCommand,
-  createTelegramPinCommand,
-  createTelegramReactCommand,
-  createTelegramSendCommand,
   createTelegramStickerSendCommand,
-  createTelegramUnpinCommand,
 } from "../src/integrations/channels/telegram/commands.js";
 import {
   telegramStickerInspectCommandDescriptor,
@@ -147,20 +47,9 @@ import {
   telegramStickerSetShowCommandDescriptor,
 } from "../src/integrations/channels/telegram/sticker-commands.js";
 import {
-  createDiscordChannelListCommand,
   createDiscordGifSendCommand,
-  createDiscordHistoryCommand,
-  createDiscordSendCommand,
   createDiscordStickerListCommand,
-  createDiscordStickerSendCommand,
 } from "../src/integrations/channels/discord/commands.js";
-import {
-  createDiscordVoiceJoinCommand,
-  createDiscordVoiceLeaveCommand,
-  createDiscordVoiceSendCommand,
-  createDiscordVoiceStatusCommand,
-} from "../src/integrations/channels/discord/voice-commands.js";
-import {createWhatsAppChatListCommand, createWhatsAppHistoryCommand, createWhatsAppSendCommand} from "../src/integrations/channels/whatsapp/commands.js";
 import {
   whatsappCallHangupCommandDescriptor,
   whatsappCallSendCommandDescriptor,
@@ -1621,6 +1510,10 @@ describe("agent command shim", () => {
 
         return [];
       }),
+      getConversationBinding: async (lookup: {source: string; connectorKey: string; externalConversationId: string}) => {
+        const bindings = await store.listConversationBindings(lookup);
+        return bindings.find((binding) => binding.externalConversationId === lookup.externalConversationId) ?? null;
+      },
       listConversationBindings: vi.fn(async (filter: {source: string; connectorKey: string}) => {
         if (filter.source === "telegram" && filter.connectorKey === "telegram-main") {
           return [
@@ -2179,144 +2072,54 @@ describe("agent command shim", () => {
               };
             },
           }),
-          createWatchListCommand(store),
-          createWatchShowCommand(store),
-          createWatchRunsCommand(store),
-          createWatchCreateCommand(mutations),
-          createWatchUpdateCommand(mutations),
-          createWatchDisableCommand(store),
-          createScheduleListCommand(store),
-          createScheduleShowCommand(store),
-          createScheduleRunsCommand(store),
-          createScheduleCreateCommand(store),
-          createScheduleUpdateCommand(store),
-          createScheduleCancelCommand(store),
-          createAppCheckCommand(store),
-          createAppCreateCommand(store),
-          createAppLinkCreateCommand(store, appAuth, {
-            resolveLaunchUrls: ({agentKey, appSlug, token}) => ({
+          ...DEFAULT_AGENT_COMMAND_CATALOG.createCommands({
+            env: voiceServices.env,
+            apps: store,
+            appAuth,
+            resolveAppLaunchUrls: ({agentKey, appSlug, token}) => ({
               appUrl: `http://localhost:3000/${agentKey}/apps/${appSlug}/`,
               localAppUrl: `http://127.0.0.1:3000/${agentKey}/apps/${appSlug}/`,
               openUrl: `http://localhost:3000/apps/open?token=${token}`,
             }),
-          }),
-          createAppListCommand(store),
-          createAppViewCommand(store),
-          createAppActionCommand(store),
-          createEnvironmentCreateCommand({
-            lifecycle: store,
+            executionEnvironments: store,
+            environmentLifecycle: store,
+            wiki: store,
+            credentials: store,
+            connectorAccounts: store,
+            conversations: store,
+            channelMessages: store,
+            outboundDeliveries: store,
+            channelActions: store,
+            discordVoice: voiceServices.voice,
+            email: store,
+            a2aMessaging: store,
+            a2aDeliveries: store,
+            commandUploads,
+            commandFileResolver: {
+              async resolveReadablePath({file}) { return {path: file.path, displayPath: file.path}; },
+              async resolveWritablePath({file}) { return {path: file.path, displayPath: file.path}; },
+            },
+            watchStore: store,
+            watchMutations: mutations,
+            scheduledTasks: store,
+            agentSkills: store,
+            sessionPrompts: store,
+            sessionTodos: store,
+            subagentProfiles: store,
+            subagentInventory,
           }, {
-            async resolveReadablePath({file}) {
-              return {
-                path: file.path,
-                displayPath: file.path,
-              };
-            },
+            names: DEFAULT_AGENT_COMMAND_CATALOG.names().filter((name) =>
+              ["watch.", "schedule.", "skill.", "session.prompt.", "todo.", "subagent.profile.", "micro-app.", "environment.", "wiki.", "env.", "a2a."].some((prefix) => name.startsWith(prefix))
+              || (["telegram.", "discord.", "whatsapp.", "email."].some((prefix) => name.startsWith(prefix))
+                && !["telegram.sticker.", "whatsapp.call."].some((prefix) => name.startsWith(prefix))
+                && !["discord.gif.send", "discord.sticker.list", "email.attachments.fetch"].includes(name))
+              || name === "subagent.list" || name === "subagent.show"),
+            requireAll: true,
           }),
-          createEnvironmentListCommand({
-            environments: store,
-          }),
-          createEnvironmentShowCommand({
-            environments: store,
-          }),
-          createEnvironmentStopCommand({
-            environments: store,
-            lifecycle: store,
-          }),
-          createEnvironmentLogsCommand({
-            environments: store,
-            lifecycle: store,
-          }),
-          createWikiOverviewCommand(store),
-          createWikiReadCommand(store),
-          createWikiSearchCommand(store),
-          createWikiListCommand(store),
-          createWikiDiffCommand(store),
-          createWikiWriteCommand(store),
-          createWikiWriteSectionCommand(store),
-          createWikiMoveCommand(store),
-          createWikiArchiveCommand(store),
-          createWikiRestoreCommand(store),
-          createWikiAttachImageCommand(store, {
-            async resolveReadablePath({file}) {
-              return {
-                path: file.path,
-                displayPath: file.path,
-              };
-            },
-          }),
-          createWikiFetchAssetCommand(store),
-          createWikiDeleteAssetCommand(store),
           createPostgresReadonlyQueryCommand({
             pool: readonlyPool,
           }),
-          createSkillListCommand(store),
-          createSkillShowCommand(store),
-          createSkillLoadCommand(store),
-          createSkillSetCommand(store),
-          createSkillPatchCommand(store),
-          createSkillDeleteCommand(store),
-          createSessionPromptReadCommand(store),
-          createSessionPromptSetCommand(store),
-          createSessionPromptTransformCommand(store),
-          createTodoAddCommand(store),
-          createTodoListCommand(store),
-          createTodoShowCommand(store),
-          createTodoDoneCommand(store),
-          createTodoBlockCommand(store),
-          createTodoClearCommand(store),
-          createSubagentProfileListCommand(store),
-          createSubagentProfileShowCommand(store),
-          createSubagentProfileUpsertCommand(store),
-          createSubagentProfileEnableCommand(store),
-          createSubagentProfileDisableCommand(store),
           createSubagentSpawnCommand(store),
-          createSubagentListCommand(subagentInventory),
-          createSubagentShowCommand(subagentInventory),
-          createListEnvValuesCommand(store),
-          createSetEnvValueCommand(store),
-          createClearEnvValueCommand(store),
-          createTelegramChatListCommand({
-            connectorAccounts: store,
-            conversations: store,
-          }),
-          createTelegramChatInfoCommand({
-            connectorAccounts: store,
-            conversations: store,
-          }),
-          createTelegramHistoryCommand({
-            connectorAccounts: store,
-            conversations: store,
-            messages: store,
-            deliveries: store,
-          }),
-          createTelegramMediaFetchCommand({
-            connectorAccounts: store,
-            conversations: store,
-            messages: store,
-          }, {
-            async resolveWritablePath({file}) {
-              return {
-                path: file.path,
-                displayPath: file.path,
-              };
-            },
-          }),
-          createTelegramSendCommand({
-            enqueueDelivery: (input) => store.enqueueDelivery(input),
-            listConversationBindings: (filter) => store.listConversationBindings(filter),
-          }, {
-            async resolveReadablePath({file}) {
-              return {
-                path: file.path,
-                displayPath: file.path,
-              };
-            },
-          }),
-          createTelegramEditCommand(store),
-          createTelegramDeleteCommand(store),
-          createTelegramPinCommand(store),
-          createTelegramUnpinCommand(store),
           createTelegramStickerSendCommand(store, {
             async resolveReadablePath({file}) {
               return {
@@ -2329,20 +2132,6 @@ describe("agent command shim", () => {
               return null;
             },
           }),
-          createDiscordChannelListCommand({
-            connectorAccounts: store,
-            conversations: store,
-          }),
-          createDiscordHistoryCommand({
-            connectorAccounts: store,
-            conversations: store,
-            messages: store,
-            deliveries: store,
-          }),
-          createDiscordVoiceJoinCommand(voiceServices),
-          createDiscordVoiceLeaveCommand(voiceServices),
-          createDiscordVoiceSendCommand(voiceServices),
-          createDiscordVoiceStatusCommand(voiceServices),
           createDiscordStickerListCommand({
             conversations: store,
             stickers: {
@@ -2359,10 +2148,9 @@ describe("agent command shim", () => {
               })),
             },
           }),
-          createDiscordStickerSendCommand(store),
           createDiscordGifSendCommand({
             enqueueDelivery: (input) => store.enqueueDelivery(input),
-            listConversationBindings: (filter) => store.listConversationBindings(filter),
+            getConversationBinding: (lookup) => store.getConversationBinding(lookup),
           }, {
             async resolveReadablePath({file}) {
               return {path: file.path, displayPath: file.path};
@@ -2374,65 +2162,6 @@ describe("agent command shim", () => {
             async downloadRemoteGif() {
               return {path: "/safe/remote.gif", filename: "remote.gif", sizeBytes: 9};
             },
-          }),
-          createDiscordSendCommand({
-            enqueueDelivery: (input) => store.enqueueDelivery(input),
-            listConversationBindings: (filter) => store.listConversationBindings(filter),
-          }, {
-            async resolveReadablePath({file}) {
-              return {
-                path: file.path,
-                displayPath: file.path,
-              };
-            },
-          }),
-          createWhatsAppChatListCommand({
-            conversations: store,
-          }),
-          createWhatsAppHistoryCommand({
-            conversations: store,
-            messages: store,
-            deliveries: store,
-          }),
-          createWhatsAppSendCommand({
-            enqueueDelivery: (input) => store.enqueueDelivery(input),
-            listConversationBindings: (filter) => store.listConversationBindings(filter),
-          }, {
-            async resolveReadablePath({file}) {
-              return {
-                path: file.path,
-                displayPath: file.path,
-              };
-            },
-          }),
-          createTelegramReactCommand(store),
-          createA2ASendCommand(store, commandUploads),
-          createA2AInspectCommand(store),
-          createA2AHistoryCommand(store),
-          createEmailSendCommand({
-            store,
-            queue: {
-              enqueueDelivery: (input) => store.enqueueDelivery(input),
-            },
-          }, {
-            async resolveReadablePath({file}) {
-              return {
-                path: file.path,
-                displayPath: file.path,
-              };
-            },
-          }),
-          createEmailAccountListCommand({
-            store,
-          }),
-          createEmailListCommand({
-            store,
-          }),
-          createEmailReadCommand({
-            store,
-          }),
-          createEmailSearchCommand({
-            store,
           }),
           createEmailAttachmentsFetchCommand({
             store,

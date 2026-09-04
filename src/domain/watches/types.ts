@@ -199,6 +199,7 @@ export interface WatchRecord extends WatchSpec {
   claimedAt?: number;
   claimedBy?: string;
   claimExpiresAt?: number;
+  claimRunId?: string;
   cooldownUntil?: number;
   lastError?: string;
   state?: JsonObject;
@@ -306,34 +307,21 @@ export interface ClaimWatchResult {
 
 export interface StartWatchRunInput {
   runId: string;
-  resolvedThreadId?: string;
 }
 
-export interface CompleteWatchRunInput {
+export interface RenewWatchClaimInput {
   runId: string;
-  status: Extract<WatchRunStatus, "no_change" | "changed">;
-  state?: JsonObject;
-  resolvedThreadId?: string;
-  emittedEventId?: string;
-  lastError?: string | null;
+  claimTtlMs: number;
+}
+
+export interface AcceptWatchEvaluationInput {
+  runId: string;
+  evaluation: WatchEvaluationResult;
 }
 
 export interface FailWatchRunInput {
   runId: string;
   error: string;
-  state?: JsonObject;
-  resolvedThreadId?: string;
-}
-
-export interface RecordWatchEventInput {
-  watchId: string;
-  sessionId: string;
-  createdByIdentityId?: string;
-  resolvedThreadId: string;
-  eventKind: WatchEventKind;
-  summary: string;
-  dedupeKey: string;
-  payload?: JsonObject;
 }
 
 export interface WatchThreadInputMetadataValue extends JsonObject {

@@ -7,7 +7,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/index.js";
-import {PostgresGatewayStore} from "../src/domain/gateway/postgres.js";
+import {GatewayDeliveryTargetUnavailableError, PostgresGatewayStore} from "../src/domain/gateway/postgres.js";
 import {ensurePostgresGatewaySchema} from "../src/domain/gateway/postgres-schema.js";
 import {buildGatewayTableNames} from "../src/domain/gateway/postgres-shared.js";
 import {PostgresIdentityStore} from "../src/domain/identity/index.js";
@@ -42,6 +42,7 @@ describe("Panda gateway", () => {
     riskScore?: number;
   } = {}) {
     const db = newDb();
+    db.public.registerFunction({name: "clock_timestamp", returns: DataType.timestamptz, impure: true, implementation: () => new Date()});
     db.public.registerFunction({
       name: "pg_notify",
       args: [DataType.text, DataType.text],
@@ -133,6 +134,28 @@ describe("Panda gateway", () => {
         };
       },
     };
+    // Substitute the complete acceptance operation for policy tests only.
+    // tests/live/gateway-delivery.live.test.ts proves the production transaction.
+    gatewayStore.commitEventDelivery = async (input) => {
+      const event = await gatewayStore.getEvent(input.eventId);
+      if (event.status === "delivered") return event;
+      if (event.status !== "processing" || event.claimId !== input.claimId) return null;
+      const session = input.source.sessionId
+        ? await sessionStore.getSession(input.source.sessionId)
+        : await sessionStore.getMainSession(input.source.agentKey);
+      if (!session) throw new GatewayDeliveryTargetUnavailableError("Gateway target session is missing.");
+      const accepted = await gatewayThreadStore.enqueueSessionInput(session.id, input.payload, event.deliveryEffective, {inputId: event.inputId});
+      await pool.query(`
+        UPDATE runtime.gateway_events SET status = 'delivered', thread_id = $2, text = '',
+          processed_at = NOW(), delivered_at = NOW(), text_scrubbed_at = NOW()
+        WHERE id = $1
+      `, [event.id, accepted.input.threadId]);
+      await pool.query(`
+        UPDATE runtime.gateway_attachments SET status = 'delivered'
+        WHERE id IN (SELECT attachment_id FROM runtime.gateway_event_attachments WHERE event_id = $1)
+      `, [event.id]);
+      return gatewayStore.getEvent(event.id);
+    };
     const createdSource = await gatewayStore.createSource({
       sourceId: "work-prod",
       agentKey: "panda",
@@ -152,8 +175,6 @@ describe("Panda gateway", () => {
       ...(options.guardTimeoutMs !== undefined ? {guardTimeoutMs: options.guardTimeoutMs} : {}),
       pollMs: 1_000_000,
       store: gatewayStore,
-      sessionStore,
-      threadStore: gatewayThreadStore,
     });
     const httpStore = options.beforeEventStore
       ? new Proxy(gatewayStore, {
@@ -1500,39 +1521,22 @@ describe("Panda gateway", () => {
     }
   });
 
-  it("leaves reserved delivery unquarantined when the delivery commit is ambiguous", async () => {
+  it("resolves a lost delivery acknowledgement without quarantine or a second input", async () => {
     const harness = await createHarness();
     try {
-      const originalMarkDelivered = harness.gatewayStore.markEventDelivered.bind(harness.gatewayStore);
-      let failOnce = true;
-      harness.gatewayStore.markEventDelivered = async (input) => {
-        if (failOnce) {
-          failOnce = false;
-          throw new Error("simulated delivery commit failure");
-        }
-        return originalMarkDelivered(input);
+      const original = harness.gatewayStore.commitEventDelivery.bind(harness.gatewayStore);
+      harness.gatewayStore.commitEventDelivery = async (input) => {
+        await original(input);
+        throw new Error("simulated lost commit acknowledgement");
       };
-
-      const token = await getToken(harness);
-      const response = await postEvent(harness, {
-        token,
-        idempotencyKey: "ambiguous-delivery",
-        text: "Already enqueued before commit failed.",
-      });
+      const response = await postEvent(harness, {token: await getToken(harness), idempotencyKey: "ambiguous-delivery", text: "Delivered once."});
       expect(response.status).toBe(202);
       const body = await response.json() as {eventId: string};
-
       harness.worker.poke();
-      await waitForEventStatus(harness, body.eventId, "delivering");
-
+      await waitForEventStatus(harness, body.eventId, "delivered");
       const event = await harness.gatewayStore.getEvent(body.eventId);
-      expect(event.status).toBe("delivering");
-      expect(event.text).toBe("Already enqueued before commit failed.");
-      const inputDeadline = Date.now() + 500;
-      while (!(await harness.threadStore.hasPendingWake("thread-1")) && Date.now() < inputDeadline) {
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-      expect(await harness.threadStore.hasPendingWake("thread-1")).toBe(true);
+      expect(event).toMatchObject({status: "delivered", text: ""});
+      expect(await harness.threadStore.getInput(event.inputId!)).toMatchObject({externalMessageId: event.id});
     } finally {
       await closeHarness(harness);
     }
@@ -1558,12 +1562,8 @@ describe("Panda gateway", () => {
       }
       expect(claimed.id).toBe(stored.event.id);
       expect(claimed.claimId).toMatch(/^[0-9a-f-]{36}$/);
-      const reserved = await harness.gatewayStore.reserveEventDelivery({
-        eventId: stored.event.id,
-        claimId: claimed.claimId,
-        riskScore: 0.01,
-      });
-      expect(reserved?.status).toBe("delivering");
+      // Retained legacy ambiguity is a fixture, never a live reservation path.
+      await harness.pool.query("UPDATE runtime.gateway_events SET status = 'delivering' WHERE id = $1", [stored.event.id]);
 
       const tables = buildGatewayTableNames();
       await harness.pool.query(
@@ -1600,7 +1600,7 @@ describe("Panda gateway", () => {
       expect(claimed.id).toBe(stored.event.id);
       expect(claimed.claimId).toMatch(/^[0-9a-f-]{36}$/);
 
-      await expect(harness.gatewayStore.reserveEventDelivery({
+      await expect(harness.gatewayStore.recordEventAssessment({
         eventId: stored.event.id,
         claimId: claimed.claimId,
         riskScore: 0.01,

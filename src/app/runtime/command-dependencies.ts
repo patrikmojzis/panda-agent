@@ -60,26 +60,14 @@ export interface DaemonChannelCommandDependenciesInput {
   email: RequiredCommandDependency<"email">;
 }
 
-export interface DaemonA2ACommandDependenciesInput {
-  commandUploads: RequiredCommandDependency<"commandUploads">;
-  a2aMessaging: RequiredCommandDependency<"a2aMessaging">;
-  a2aDeliveries: RequiredCommandDependency<"a2aDeliveries">;
-}
-
 export function buildRuntimeCommandDependencies(
   input: RuntimeCommandDependenciesInput,
-): AgentCommandModuleDependencies {
+): RuntimeCommandDependenciesInput & Required<Pick<
+  AgentCommandModuleDependencies,
+  "resolveAppUrls" | "resolveAppLaunchUrls" | "heartbeatBounds"
+>> {
   return {
-    env: input.env,
-    braveThrottleGate: input.braveThrottleGate,
-    backgroundJobService: input.backgroundJobService,
-    commandFileResolver: input.commandFileResolver,
-    watchStore: input.watchStore,
-    watchMutations: input.watchMutations,
-    scheduledTasks: input.scheduledTasks,
-    scheduledCommands: input.scheduledCommands,
-    apps: input.apps,
-    appAuth: input.appAuth,
+    ...input,
     resolveAppUrls: (appInput) => resolveAgentAppUrls({...appInput, env: input.env}),
     resolveAppLaunchUrls: ({agentKey, appSlug, token}) => {
       const urls = resolveAgentAppUrls({agentKey, appSlug, env: input.env});
@@ -89,39 +77,17 @@ export function buildRuntimeCommandDependencies(
         openUrl: new URL(buildAgentAppOpenPath(token, pathPrefix), urls.appUrl).toString(),
       };
     },
-    agentSkills: input.agentSkills,
-    sessionPrompts: input.sessionPrompts,
-    sessionTodos: input.sessionTodos,
-    sessionHeartbeats: input.sessionHeartbeats,
     heartbeatBounds: resolveHeartbeatCadenceBounds(input.env),
-    sessionCompactionRequests: input.sessionCompactionRequests,
-    subagentProfiles: input.subagentProfiles,
-    subagentInventory: input.subagentInventory,
-    credentials: input.credentials,
-    credentialResolver: input.credentialResolver,
-    mcpConfigs: input.mcpConfigs,
-    mcpRunner: input.mcpRunner,
-    mcpManagement: input.mcpManagement,
-    postgresReadonly: input.postgresReadonly,
-    executionEnvironments: input.executionEnvironments,
-    environmentLifecycle: input.environmentLifecycle,
-    wiki: input.wiki,
-  };
-}
-
-export function buildSubagentCommandDependencies(
-  subagentSessions: RequiredCommandDependency<"subagentSessions">,
-): AgentCommandModuleDependencies {
-  return {subagentSessions};
+  } satisfies AgentCommandModuleDependencies;
 }
 
 export function buildDaemonChannelCommandDependencies(
   input: DaemonChannelCommandDependenciesInput,
-): AgentCommandModuleDependencies {
+) {
   const channelActions = {
     enqueueAction: <K extends ChannelActionKind>(action: ChannelActionInput<K>) => input.channelActions.enqueueAction(action),
-    listConversationBindings: (filter: Parameters<typeof input.conversations.listConversationBindings>[0]) =>
-      input.conversations.listConversationBindings(filter),
+    getConversationBinding: (inputKey: Parameters<typeof input.conversations.getConversationBinding>[0]) =>
+      input.conversations.getConversationBinding(inputKey),
   };
 
   return {
@@ -132,7 +98,7 @@ export function buildDaemonChannelCommandDependencies(
     outboundDeliveries: {
       enqueueDelivery: (delivery) => input.outboundDeliveries.enqueueDelivery(delivery),
       listDeliveriesForTarget: (filter) => input.outboundDeliveries.listDeliveriesForTarget(filter),
-      listConversationBindings: (filter) => input.conversations.listConversationBindings(filter),
+      getConversationBinding: (inputKey) => input.conversations.getConversationBinding(inputKey),
     },
     channelActions,
     discordStickers: input.discordStickers,
@@ -141,15 +107,5 @@ export function buildDaemonChannelCommandDependencies(
     whatsappCalls: input.whatsappCalls,
     telegramStickers: input.telegramStickers,
     email: input.email,
-  };
-}
-
-export function buildDaemonA2ACommandDependencies(
-  input: DaemonA2ACommandDependenciesInput,
-): AgentCommandModuleDependencies {
-  return {
-    commandUploads: input.commandUploads,
-    a2aMessaging: input.a2aMessaging,
-    a2aDeliveries: input.a2aDeliveries,
-  };
+  } satisfies AgentCommandModuleDependencies;
 }

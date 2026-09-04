@@ -109,6 +109,7 @@ export async function ensurePostgresGatewaySchema(pool: PgQueryable): Promise<vo
       metadata JSONB,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       claim_id TEXT,
+      input_id UUID,
       claimed_at TIMESTAMPTZ,
       processed_at TIMESTAMPTZ,
       delivered_at TIMESTAMPTZ,
@@ -127,6 +128,10 @@ export async function ensurePostgresGatewaySchema(pool: PgQueryable): Promise<vo
   await pool.query(`
     ALTER TABLE ${tables.events}
     ADD COLUMN IF NOT EXISTS claim_id TEXT
+  `);
+  await pool.query(`
+    ALTER TABLE ${tables.events}
+    ADD COLUMN IF NOT EXISTS input_id UUID
   `);
   await pool.query(`
     ALTER TABLE ${tables.events}
@@ -168,6 +173,24 @@ export async function ensurePostgresGatewaySchema(pool: PgQueryable): Promise<vo
   await pool.query(`
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_gateway_attachments_source_status_created_idx`)}
     ON ${tables.attachments} (source_id, status, created_at)
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${tables.uploadReservations} (
+      id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL REFERENCES ${tables.sources}(source_id) ON DELETE CASCADE,
+      idempotency_key TEXT NOT NULL,
+      directory TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'receiving',
+      is_retry BOOLEAN NOT NULL,
+      reserved_bytes BIGINT NOT NULL,
+      quota_window_start TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ NOT NULL
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_gateway_upload_reservations_expires_idx`)}
+    ON ${tables.uploadReservations} (status, expires_at)
   `);
   await pool.query(`
     CREATE INDEX IF NOT EXISTS ${quoteIdentifier(`${tables.prefix}_gateway_attachments_source_expires_idx`)}

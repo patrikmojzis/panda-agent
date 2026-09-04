@@ -680,11 +680,6 @@ function collectDiscordAttachmentDownloadItems(value: unknown): readonly Discord
   return items;
 }
 
-export function collectDiscordAttachmentDownloadParts(value: unknown): readonly DiscordAttachmentDownloadPart[] {
-  return collectDiscordAttachmentDownloadItems(value)
-    .flatMap((item) => item.kind === "download" ? [item.part] : []);
-}
-
 const JPEG_MIME_TYPE = "image/jpeg";
 const SUPPORTED_ATTACHMENT_IMAGE_TYPES = new Set([
   JPEG_MIME_TYPE,

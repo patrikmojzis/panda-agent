@@ -1,3 +1,5 @@
+import type {OutboundDeliveryStatus} from "../channels/deliveries/types.js";
+
 export interface A2ASessionBindingLookup {
   senderSessionId: string;
   recipientSessionId: string;
@@ -43,7 +45,7 @@ export interface A2ADeliveryRecord {
   toAgentKey: string;
   toSessionId: string;
   direction: A2ADeliveryDirection;
-  status: "pending" | "sending" | "sent" | "failed";
+  status: OutboundDeliveryStatus;
   attemptCount: number;
   lastError?: string;
   itemCount: number;

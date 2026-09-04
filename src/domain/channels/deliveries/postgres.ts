@@ -124,7 +124,7 @@ function normalizeDeliveryInput(input: OutboundDeliveryInput): OutboundDeliveryI
 }
 
 function parseStatus(value: unknown): OutboundDeliveryStatus {
-  if (value === "pending" || value === "sending" || value === "sent" || value === "failed") {
+  if (value === "pending" || value === "sending" || value === "sent" || value === "failed" || value === "unknown") {
     return value;
   }
 
@@ -261,6 +261,7 @@ function parseOutboundDeliveryRow(row: Record<string, unknown>): OutboundDeliver
     attemptCount: requireNonNegativeInteger(row.attempt_count, "Outbound delivery attempt count"),
     lastError: readOptionalString(row.last_error, "last error"),
     sent: parseSentItems(row.sent_items),
+    claimToken: readOptionalString(row.claim_token, "claim token"),
     claimedAt: optionalTimestampMillis(row.claimed_at, "Outbound delivery claimed_at must be a finite timestamp."),
     completedAt: optionalTimestampMillis(row.completed_at, "Outbound delivery completed_at must be a finite timestamp."),
     createdAt: requireTimestampMillis(row.created_at, "Outbound delivery created_at must be a finite timestamp."),
@@ -501,13 +502,14 @@ export class PostgresOutboundDeliveryStore {
         `
           UPDATE ${this.tables.outboundDeliveries}
           SET status = 'sending',
+              claim_token = $2,
               attempt_count = attempt_count + 1,
               claimed_at = NOW(),
               updated_at = NOW()
           WHERE id = $1
           RETURNING *
         `,
-        [selected.id],
+        [selected.id, randomUUID()],
       );
 
       await client.query("COMMIT");
@@ -524,75 +526,78 @@ export class PostgresOutboundDeliveryStore {
   }
 
   async markDeliverySent(input: CompleteDeliveryInput): Promise<OutboundDeliveryRecord> {
-    const result = await this.pool.query(
-      `
-        UPDATE ${this.tables.outboundDeliveries}
-        SET status = 'sent',
-            sent_items = $2::jsonb,
-            last_error = NULL,
-            completed_at = NOW(),
-            updated_at = NOW()
-        WHERE id = $1
-        RETURNING *
-      `,
-      [
-        requireNonEmptyString(input.id, "Outbound delivery id must not be empty."),
-        JSON.stringify(input.sent),
-      ],
-    );
-
-    const row = result.rows[0];
-    if (!row) {
-      throw missingDeliveryError(input.id);
-    }
-
-    return parseOutboundDeliveryRow(row as Record<string, unknown>);
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.outboundDeliveries}
+      SET status = 'sent', sent_items = $2::jsonb, last_error = NULL,
+          completed_at = NOW(), updated_at = NOW()
+      WHERE id = $1 AND claim_token = $3 AND status IN ('sending', 'unknown')
+      RETURNING *
+    `, [
+      requireNonEmptyString(input.id, "Outbound delivery id must not be empty."),
+      JSON.stringify(input.sent),
+      requireNonEmptyString(input.claimToken, "Outbound delivery claim token must not be empty."),
+    ]);
+    return this.resolveSettlement(result.rows[0], input.id, input.claimToken, "sent");
   }
 
   async markDeliveryFailed(input: FailDeliveryInput): Promise<OutboundDeliveryRecord> {
-    const result = await this.pool.query(
-      `
-        UPDATE ${this.tables.outboundDeliveries}
-        SET status = 'failed',
-            last_error = $2,
-            completed_at = NOW(),
-            updated_at = NOW()
-        WHERE id = $1
-        RETURNING *
-      `,
-      [
-        requireNonEmptyString(input.id, "Outbound delivery id must not be empty."),
-        requireNonEmptyString(input.error, "Outbound delivery error must not be empty."),
-      ],
-    );
-    const row = result.rows[0];
-    if (!row) {
-      throw missingDeliveryError(input.id);
-    }
-
-    return parseOutboundDeliveryRow(row as Record<string, unknown>);
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.outboundDeliveries}
+      SET status = 'failed', last_error = $2, completed_at = NOW(), updated_at = NOW()
+      WHERE id = $1 AND claim_token = $3 AND status IN ('sending', 'unknown')
+      RETURNING *
+    `, [
+      requireNonEmptyString(input.id, "Outbound delivery id must not be empty."),
+      requireNonEmptyString(input.error, "Outbound delivery error must not be empty."),
+      requireNonEmptyString(input.claimToken, "Outbound delivery claim token must not be empty."),
+    ]);
+    return this.resolveSettlement(result.rows[0], input.id, input.claimToken, "failed");
   }
 
-  async failSendingDeliveries(lookup: DeliveryWorkerLookup, error: string): Promise<number> {
-    const normalizedLookup = normalizeChannelWorkerLookup(lookup, "Outbound delivery");
-    const result = await this.pool.query(
-      `
-        UPDATE ${this.tables.outboundDeliveries}
-        SET status = 'failed',
-            last_error = $3,
-            completed_at = COALESCE(completed_at, NOW()),
-            updated_at = NOW()
-        WHERE channel = $1
-          AND connector_key = $2
-          AND status = 'sending'
-      `,
-      [
-        normalizedLookup.channel,
-        normalizedLookup.connectorKey,
-        requireNonEmptyString(error, "Outbound delivery error must not be empty."),
-      ],
-    );
+  async markDeliveryUnknown(input: FailDeliveryInput): Promise<OutboundDeliveryRecord> {
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.outboundDeliveries}
+      SET status = 'unknown', last_error = $2, completed_at = NOW(), updated_at = NOW()
+      WHERE id = $1 AND claim_token = $3 AND status = 'sending'
+      RETURNING *
+    `, [
+      requireNonEmptyString(input.id, "Outbound delivery id must not be empty."),
+      requireNonEmptyString(input.error, "Outbound delivery error must not be empty."),
+      requireNonEmptyString(input.claimToken, "Outbound delivery claim token must not be empty."),
+    ]);
+    // A success receipt may have committed even when its acknowledgement failed.
+    return result.rows[0]
+      ? parseOutboundDeliveryRow(result.rows[0] as Record<string, unknown>)
+      : this.getDelivery(input.id);
+  }
 
+  private async resolveSettlement(
+    row: unknown,
+    id: string,
+    claimToken: string,
+    status: "sent" | "failed",
+  ): Promise<OutboundDeliveryRecord> {
+    const delivery = row
+      ? parseOutboundDeliveryRow(row as Record<string, unknown>)
+      : await this.getDelivery(id);
+    if (delivery.claimToken !== claimToken || delivery.status !== status) {
+      throw new Error(`Outbound delivery ${id} no longer owns the ${status} receipt.`);
+    }
+    return delivery;
+  }
+
+  async markSendingDeliveriesUnknown(lookup: DeliveryWorkerLookup, error: string): Promise<number> {
+    const normalizedLookup = normalizeChannelWorkerLookup(lookup, "Outbound delivery");
+    const result = await this.pool.query(`
+      UPDATE ${this.tables.outboundDeliveries}
+      SET status = 'unknown', last_error = $3,
+          completed_at = COALESCE(completed_at, NOW()), updated_at = NOW()
+      WHERE channel = $1 AND connector_key = $2 AND status = 'sending'
+    `, [
+      normalizedLookup.channel,
+      normalizedLookup.connectorKey,
+      requireNonEmptyString(error, "Outbound delivery error must not be empty."),
+    ]);
     return result.rowCount ?? 0;
   }
 

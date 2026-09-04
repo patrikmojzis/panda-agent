@@ -1,42 +1,13 @@
 import type {GatewayEventAttachmentRecord, GatewayEventRecord, GatewaySourceRecord} from "../../domain/gateway/types.js";
 import {gatewayAttachmentToMediaDescriptor} from "../../domain/gateway/types.js";
-import {
-  enqueueCurrentSessionInput,
-} from "../../domain/sessions/current-thread.js";
-import type {SessionStore} from "../../domain/sessions/store.js";
-import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
+import {GatewayDeliveryTargetUnavailableError, type PostgresGatewayStore} from "../../domain/gateway/postgres.js";
 import {stringToUserMessage} from "../../kernel/agent/helpers/input.js";
 import {isJsonObject, type JsonObject} from "../../lib/json.js";
 import {describeMediaDescriptor, serializeMediaDescriptor} from "../channels/media-shared.js";
 import {renderGatewayInboundText} from "../../prompts/channels/gateway.js";
 
-export interface GatewayDeliveryStore {
-  listEventAttachments?(eventId: string): Promise<readonly GatewayEventAttachmentRecord[]>;
-  markEventDelivered(input: {
-    attachmentRetentionMs?: number;
-    claimId?: string;
-    eventId: string;
-    metadata: JsonObject;
-    riskScore?: number;
-    threadId: string;
-  }): Promise<unknown>;
-  markEventQuarantined(input: {
-    attachmentQuarantineTtlMs?: number;
-    claimId?: string;
-    eventId: string;
-    metadata: JsonObject;
-    reason: string;
-    riskScore?: number;
-  }): Promise<unknown>;
-  reserveEventDelivery(input: {
-    claimId: string;
-    eventId: string;
-    metadata: JsonObject;
-    riskScore?: number;
-  }): Promise<GatewayEventRecord | null>;
-}
-
-export type GatewayDeliverySessionStore = Pick<SessionStore, "getSession" | "getMainSession">;
+export type GatewayDeliveryStore = Pick<PostgresGatewayStore,
+  "listEventAttachments" | "recordEventAssessment" | "commitEventDelivery" | "markEventQuarantined" | "getEvent">;
 
 export type GatewayDeliveryAssessment =
   | {guardStatus: "bypassed"; trusted: true}
@@ -113,34 +84,16 @@ function buildGatewayMetadata(input: {
   };
 }
 
-function describeGatewayDeliveryFailure(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-async function resolveTargetSessionId(input: {
-  sessionStore: GatewayDeliverySessionStore;
-  source: GatewaySourceRecord;
-}): Promise<string> {
-  if (input.source.sessionId) {
-    return input.source.sessionId;
+export function readGatewayDeliveryAssessment(event: GatewayEventRecord): GatewayDeliveryAssessment | undefined {
+  if (!event.inputId) return undefined;
+  const gateway = isJsonObject(event.metadata) ? event.metadata.gateway : undefined;
+  if (isJsonObject(gateway)) {
+    if (event.trusted && gateway.guardStatus === "bypassed") return {guardStatus: "bypassed", trusted: true};
+    if (!event.trusted && gateway.guardStatus === "scored" && event.riskScore !== undefined) {
+      return {guardStatus: "scored", trusted: false, riskScore: event.riskScore};
+    }
   }
-
-  const mainSession = await input.sessionStore.getMainSession(input.source.agentKey);
-  if (!mainSession) {
-    throw new Error(`Agent ${input.source.agentKey} does not have a main session.`);
-  }
-  return mainSession.id;
-}
-
-async function resolveEventAttachments(input: {
-  attachments?: readonly GatewayEventAttachmentRecord[];
-  eventId: string;
-  store: GatewayDeliveryStore;
-}): Promise<readonly GatewayEventAttachmentRecord[]> {
-  if (input.attachments) {
-    return input.attachments;
-  }
-  return input.store.listEventAttachments ? await input.store.listEventAttachments(input.eventId) : [];
+  throw new Error("Gateway input receipt has no valid persisted guard assessment.");
 }
 
 export async function deliverGatewayEventToThread(input: {
@@ -149,16 +102,10 @@ export async function deliverGatewayEventToThread(input: {
   attachments?: readonly GatewayEventAttachmentRecord[];
   assessment: GatewayDeliveryAssessment;
   event: GatewayEventRecord;
-  sessionStore: GatewayDeliverySessionStore;
   source: GatewaySourceRecord;
   store: GatewayDeliveryStore;
-  threadStore: Pick<ThreadRuntimeStore, "enqueueSessionInput">;
 }): Promise<void> {
-  const attachments = await resolveEventAttachments({
-    attachments: input.attachments,
-    eventId: input.event.id,
-    store: input.store,
-  });
+  const attachments = input.attachments ?? await input.store.listEventAttachments(input.event.id);
   const metadata = buildGatewayMetadata({
     attachments,
     assessment: input.assessment,
@@ -178,40 +125,20 @@ export async function deliverGatewayEventToThread(input: {
     return;
   }
 
-  const reserved = await input.store.reserveEventDelivery({
+  const assessed = await input.store.recordEventAssessment({
     eventId: input.event.id,
     claimId: input.event.claimId,
     ...(riskScore !== undefined ? {riskScore} : {}),
     metadata,
   });
-  if (!reserved) {
-    return;
-  }
+  if (!assessed) return;
 
-  let sessionId: string;
   try {
-    sessionId = await resolveTargetSessionId({
-      sessionStore: input.sessionStore,
-      source: input.source,
-    });
-  } catch (error) {
-    await input.store.markEventQuarantined({
+    await input.store.commitEventDelivery({
       eventId: input.event.id,
       claimId: input.event.claimId,
-      ...(quarantineRiskScore !== undefined ? {riskScore: quarantineRiskScore} : {}),
-      reason: describeGatewayDeliveryFailure(error),
-      metadata,
-      attachmentQuarantineTtlMs: input.attachmentQuarantineTtlMs,
-    });
-    return;
-  }
-
-  let target;
-  try {
-    target = await enqueueCurrentSessionInput({
-      sessionId,
-      threads: input.threadStore,
-      mode: input.event.deliveryEffective,
+      source: input.source,
+      attachmentRetentionMs: input.attachmentRetentionMs,
       payload: {
         source: "gateway",
         channelId: input.event.sourceId,
@@ -234,23 +161,18 @@ export async function deliverGatewayEventToThread(input: {
       },
     });
   } catch (error) {
+    // A lost COMMIT acknowledgement is receipt recovery, never evidence that
+    // input admission failed. A database outage leaves the claim retryable.
+    const receipt = await input.store.getEvent(input.event.id).catch(() => undefined);
+    if (receipt?.status === "delivered") return;
+    if (!(error instanceof GatewayDeliveryTargetUnavailableError)) throw error;
     await input.store.markEventQuarantined({
       eventId: input.event.id,
       claimId: input.event.claimId,
       ...(quarantineRiskScore !== undefined ? {riskScore: quarantineRiskScore} : {}),
-      reason: describeGatewayDeliveryFailure(error),
+      reason: error.message,
       metadata,
       attachmentQuarantineTtlMs: input.attachmentQuarantineTtlMs,
     });
-    return;
   }
-
-  await input.store.markEventDelivered({
-    eventId: input.event.id,
-    claimId: input.event.claimId,
-    threadId: target.threadId,
-    ...(riskScore !== undefined ? {riskScore} : {}),
-    metadata,
-    attachmentRetentionMs: input.attachmentRetentionMs,
-  });
 }

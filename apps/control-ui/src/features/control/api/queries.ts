@@ -35,7 +35,7 @@ type ModelCallUsageParams = {
   range_hours: number
 }
 
-export function keepPrevious<T>(previous: T | undefined) {
+function keepPrevious<T>(previous: T | undefined) {
   return previous
 }
 
@@ -61,14 +61,6 @@ export function useControlSearch(search: string, options?: QueryFlags) {
 export function useWorkFailures(params: FailureParams) {
   return useQuery({
     queryKey: controlKeys.failures.list(params),
-    queryFn: () => controlApi.failures(params),
-    placeholderData: keepPrevious,
-  })
-}
-
-export function useWorkFailureSummary(params: FailureParams) {
-  return useQuery({
-    queryKey: controlKeys.failures.summary(params),
     queryFn: () => controlApi.failures(params),
     placeholderData: keepPrevious,
   })
@@ -186,15 +178,6 @@ export function useAgentConnectors(
   })
 }
 
-export function useTelegramSetupStatus(agentKey: string, accountKey: string, options?: QueryFlags) {
-  return useQuery({
-    queryKey: controlKeys.agents.telegramSetup(agentKey, accountKey),
-    queryFn: () => controlApi.telegramSetupStatus(agentKey, accountKey),
-    enabled: options?.enabled ?? Boolean(agentKey && accountKey),
-    staleTime: options?.staleTime,
-  })
-}
-
 export function useAgentBindings(agentKey: string, params: TableParams) {
   return useQuery({
     queryKey: controlKeys.agents.bindings(agentKey, params),
@@ -301,33 +284,6 @@ export function useGatewayEventTypes(
   })
 }
 
-export function useGatewayEvents(
-  agentKey: string,
-  params: TableParams & { sourceId?: string },
-  options?: QueryFlags
-) {
-  return useQuery({
-    queryKey: controlKeys.agents.gatewayEvents(agentKey, params),
-    queryFn: () => controlApi.gatewayEvents(agentKey, params),
-    enabled: options?.enabled ?? Boolean(agentKey),
-    placeholderData: keepPrevious,
-  })
-}
-
-export function useSessionGatewayEvents(
-  agentKey: string,
-  sessionId: string,
-  params: TableParams,
-  options?: QueryFlags
-) {
-  return useQuery({
-    queryKey: controlKeys.sessions.gatewayEvents(agentKey, sessionId, params),
-    queryFn: () => controlApi.sessionGatewayEvents(agentKey, sessionId, params),
-    enabled: options?.enabled ?? Boolean(agentKey && sessionId),
-    placeholderData: keepPrevious,
-  })
-}
-
 export function useScopedGatewayEvents(
   agentKey: string,
   sessionId: string | undefined,
@@ -372,14 +328,6 @@ export function useA2ABindings(
   })
 }
 
-export function useBriefing(agentKey: string, sessionId: string) {
-  return useQuery({
-    queryKey: controlKeys.sessions.briefing(agentKey, sessionId),
-    queryFn: () => controlApi.briefing(agentKey, sessionId),
-    enabled: Boolean(agentKey && sessionId),
-  })
-}
-
 export function useSessionPrompts(agentKey: string, sessionId: string) {
   return useQuery({
     queryKey: controlKeys.sessions.sessionPrompts(agentKey, sessionId),
@@ -392,14 +340,6 @@ export function useHeartbeat(agentKey: string, sessionId: string) {
   return useQuery({
     queryKey: controlKeys.sessions.heartbeat(agentKey, sessionId),
     queryFn: () => controlApi.heartbeat(agentKey, sessionId),
-    enabled: Boolean(agentKey && sessionId),
-  })
-}
-
-export function useSessionTargets(agentKey: string, sessionId: string) {
-  return useQuery({
-    queryKey: controlKeys.sessions.targets(agentKey, sessionId),
-    queryFn: () => controlApi.sessionTargets(agentKey, sessionId),
     enabled: Boolean(agentKey && sessionId),
   })
 }

@@ -109,11 +109,6 @@ export function sanitizeTraceRequestJson(value: JsonObject): JsonObject {
   return isJsonRecord(sanitized) ? sanitized : {};
 }
 
-export function sanitizeTraceString(value: string, key?: string): string {
-  const sanitized = sanitizeString(value, key);
-  return typeof sanitized === "string" ? sanitized : JSON.stringify(sanitized);
-}
-
 export function sanitizePromptCacheKey(value: unknown): string {
   if (typeof value === "string" && PROMPT_CACHE_KEY_REDACTION_PATTERN.test(value)) {
     return value;

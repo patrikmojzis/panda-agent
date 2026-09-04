@@ -27,6 +27,7 @@ type ResolverSession = Pick<SessionRecord, "id" | "agentKey" | "kind" | "metadat
 
 export interface ExecutionEnvironmentResolverOptions {
   store: ExecutionEnvironmentResolverStore;
+  defaultToolPolicy: ExecutionToolPolicy;
   lifecycle?: {
     ensureBoundEnvironmentReady(input: {
       session: Pick<SessionRecord, "id" | "agentKey">;
@@ -48,165 +49,14 @@ function defaultPersistentSkillPolicy(_session: Pick<SessionRecord, "kind">): Ex
   return {mode: "all_agent"};
 }
 
-function defaultPersistentToolPolicy(session: Pick<SessionRecord, "kind">): ExecutionToolPolicy {
-  if (session.kind === "subagent") {
-    return {};
-  }
-
-  return {
-    allowedTools: [
-      "a2a.history",
-      "a2a.inspect",
-      "a2a.send",
-      "skill.list",
-      "skill.show",
-      "skill.load",
-      "skill.set",
-      "skill.patch",
-      "skill.delete",
-      "bash",
-      "background_job_cancel",
-      "background_job_status",
-      "background_job_wait",
-      "brave.web.search",
-      "brave.news.search",
-      "brave.video.search",
-      "brave.image.search",
-      "brave.llm.context",
-      "brave.place.search",
-      "brave.place.poi",
-      "brave.place.description",
-      "mcp.*",
-      "time.now",
-      "email.account.list",
-      "email.list",
-      "email.read",
-      "email.search",
-      "email.attachments.fetch",
-      "email.send",
-      "environment.create",
-      "environment.list",
-      "environment.show",
-      "environment.logs",
-      "environment.stop",
-      "image.generate",
-      "micro-app.action",
-      "micro-app.check",
-      "micro-app.create",
-      "micro-app.link.create",
-      "micro-app.list",
-      "micro-app.view",
-      "telegram.chat.list",
-      "telegram.chat.info",
-      "telegram.history",
-      "telegram.media.fetch",
-      "telegram.send",
-      "telegram.edit",
-      "telegram.delete",
-      "telegram.pin",
-      "telegram.unpin",
-      "telegram.sticker.send",
-      "telegram.sticker.inspect",
-      "telegram.sticker.save",
-      "telegram.sticker.list",
-      "telegram.sticker.set.show",
-      "telegram.sticker.set.save",
-      "discord.channel.list",
-      "discord.history",
-      "discord.sticker.list",
-      "discord.sticker.send",
-      "discord.gif.send",
-      "discord.send",
-      "discord.voice.join",
-      "discord.voice.leave",
-      "discord.voice.send",
-      "discord.voice.status",
-      "whatsapp.chat.list",
-      "whatsapp.history",
-      "whatsapp.send",
-      "postgres.readonly.query",
-      "cron.create",
-      "cron.delete",
-      "cron.disable",
-      "cron.enable",
-      "cron.list",
-      "cron.run",
-      "cron.runs",
-      "cron.show",
-      "cron.update",
-      "schedule.cancel",
-      "schedule.create",
-      "schedule.list",
-      "schedule.runs",
-      "schedule.show",
-      "schedule.update",
-      "heartbeat.show",
-      "heartbeat.set",
-      "session.prompt.read",
-      "session.compact",
-      "session.prompt.set",
-      "session.prompt.transform",
-      "env.clear",
-      "env.list",
-      "subagent.spawn",
-      "env.set",
-      "telegram.react",
-      "todo.add",
-      "todo.list",
-      "todo.show",
-      "todo.done",
-      "todo.block",
-      "todo.clear",
-      "subagent.profile.list",
-      "subagent.profile.show",
-      "subagent.profile.upsert",
-      "subagent.profile.enable",
-      "subagent.profile.disable",
-      "vent.send",
-      "view_media",
-      "watch.create",
-      "watch.disable",
-      "watch.list",
-      "watch.runs",
-      "watch.show",
-      "watch.update",
-      "web.fetch",
-      "openai.web_research",
-      "whisper.transcribe",
-      "whisper.translate",
-      "wiki.read",
-      "wiki.search",
-      "wiki.list",
-      "wiki.diff",
-      "wiki.write",
-      "wiki.write.section",
-      "wiki.move",
-      "wiki.archive",
-      "wiki.restore",
-      "wiki.attach.image",
-      "wiki.fetch.asset",
-      "wiki.delete.asset",
-    ],
-    agentSkill: {
-      allowedOperations: ["load", "set", "patch", "delete"],
-    },
-    bash: {
-      allowed: true,
-    },
-    postgresReadonly: {
-      allowed: true,
-    },
-  };
-}
-
 function resolveFallbackEnvironment(
   session: Pick<SessionRecord, "agentKey" | "kind">,
   env: NodeJS.ProcessEnv,
   policies: {
     credentialPolicy?: ExecutionCredentialPolicy;
     skillPolicy?: ExecutionSkillPolicy;
-    toolPolicy?: ExecutionToolPolicy;
-  } = {},
+    toolPolicy: ExecutionToolPolicy;
+  },
 ): ResolvedExecutionEnvironment {
   const executionMode = resolveBashExecutionMode(env);
   const runnerUrlTemplate = resolveRunnerUrlTemplate(env);
@@ -230,7 +80,7 @@ function resolveFallbackEnvironment(
     ...(initialCwd ? {initialCwd} : {}),
     credentialPolicy: policies.credentialPolicy ?? defaultPersistentCredentialPolicy(session),
     skillPolicy: policies.skillPolicy ?? defaultPersistentSkillPolicy(session),
-    toolPolicy: policies.toolPolicy ?? defaultPersistentToolPolicy(session),
+    toolPolicy: policies.toolPolicy,
     source: "fallback",
   };
 }
@@ -239,9 +89,11 @@ export class ExecutionEnvironmentResolver {
   private readonly store: ExecutionEnvironmentResolverStore;
   private readonly lifecycle?: NonNullable<ExecutionEnvironmentResolverOptions["lifecycle"]>;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly defaultToolPolicy: ExecutionToolPolicy;
 
   constructor(options: ExecutionEnvironmentResolverOptions) {
     this.store = options.store;
+    this.defaultToolPolicy = options.defaultToolPolicy;
     this.lifecycle = options.lifecycle;
     this.env = options.env ?? process.env;
   }
@@ -287,7 +139,7 @@ export class ExecutionEnvironmentResolver {
           toolPolicy: subagent.resolved.toolPolicy,
         });
       }
-      return resolveFallbackEnvironment(session, this.env);
+      return resolveFallbackEnvironment(session, this.env, {toolPolicy: this.defaultToolPolicy});
     }
 
     return this.resolveBinding(session, binding);

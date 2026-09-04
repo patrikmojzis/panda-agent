@@ -14,7 +14,7 @@ import {
     type ThreadRunOwner,
     ThreadRuntimeCoordinator,
     type ThreadRuntimeCoordinatorOptions,
-} from "../src/domain/threads/runtime/index.js";
+} from "../src/app/sdk/thread-runtime.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 const TEST_RUN_OWNER: ThreadRunOwner = {

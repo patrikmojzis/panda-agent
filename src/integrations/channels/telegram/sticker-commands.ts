@@ -6,6 +6,7 @@ import {
   type TelegramStickerSetSnapshot,
 } from "../../../domain/agents/telegram-stickers/types.js";
 import type {ConversationBindingAuthorizer} from "../../../domain/channels/conversation-authority.js";
+import type {ConversationRepo} from "../../../domain/sessions/conversations/repo.js";
 import {assertCurrentSessionConversationBinding} from "../../../domain/channels/conversation-authority.js";
 import type {ConnectorAccountListFilter, ConnectorAccountRecord} from "../../../domain/connectors/types.js";
 import type {
@@ -44,7 +45,7 @@ interface TelegramStickerAccountReader {
 export interface TelegramStickerCommandServices {
   library: TelegramStickerLibrary;
   messages: TelegramStickerMessageReader;
-  conversations: ConversationBindingAuthorizer;
+  conversations: ConversationBindingAuthorizer & Pick<ConversationRepo, "listConversationBindings">;
   connectorAccounts: TelegramStickerAccountReader;
 }
 

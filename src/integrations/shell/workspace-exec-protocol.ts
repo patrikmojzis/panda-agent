@@ -1,7 +1,5 @@
 import type {PersistedEnvEntry} from "./bash-protocol.js";
 
-export type WorkspaceExecActionName = "start" | "status" | "wait" | "cancel";
-export type WorkspaceExecMode = "foreground" | "background";
 export type WorkspaceProcessStatus = "running" | "completed" | "failed" | "cancelled";
 
 interface WorkspaceExecStartRequestBase {

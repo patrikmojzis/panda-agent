@@ -102,9 +102,9 @@ For Panda runtime assembly, keep the public facade thin:
   `stopExecutionEnvironment` seam, but purge planning must not depend on the
   full execution-environment repository.
 - `subagent-session-service.ts` owns subagent session/thread creation, environment
-  binding, and initial handoff enqueueing. Its store seam should require only
-  session create/get and thread create/get/enqueue methods; Postgres transaction
-  cleanup stays behind the optional pool fast path.
+  binding, and initial handoff enqueueing. Creation uses the bound atomic
+  `SessionLifecycle.create` operation. Orchestration tests substitute that whole
+  operation; there is no sequential store fallback or concrete-store fast path.
 
 ### `kernel`
 
@@ -400,6 +400,19 @@ Do not reintroduce pre-read dedupe, metadata-expression indexes, row-at-a-time
 application, or best-effort notify calls after commit. Run-owned mutations must
 use the shared active-run/daemon-lease fence.
 
+Durable producers that own a transaction use `enqueueSessionInputWithClient`
+from `domain/threads/runtime/postgres-inputs.ts`. Watch acceptance and Gateway
+delivery commit the input together with their own outcome records. The stable
+input UUID survives reset; duplicate resolution must remain conflict-safe inside
+the caller's transaction. Lock sessions before producer records and threads.
+
+Channel deliveries and transient actions distinguish a transport outcome from
+its database receipt. Claims carry UUID tokens; only the owner can settle them.
+A successful transport is never repeated to repair a receipt write. Interrupted
+`sending` records become `unknown` at startup and require reconciliation; they
+are not ordinary retryable failures. `sent` receipts are terminal, and receipt
+retries or startup recovery must not trigger failure cleanup after known success.
+
 Runtime request records are discriminated by `kind`; each kind owns exactly one
 payload shape in `src/domain/threads/requests/types.ts`. Daemon dispatch should
 narrow by kind instead of casting payloads by hand. Completed requests are kept
@@ -514,6 +527,8 @@ These are not "maybe later" ideas. They are structure rules.
 These are the source barrels that still deserve to exist:
 
 - `src/index.ts`
+- `src/app/sdk/agent.ts`
+- `src/app/sdk/thread-runtime.ts`
 - `src/app/runtime/index.ts`
 - `src/kernel/agent/index.ts`
 - `src/panda/index.ts`
@@ -561,6 +576,14 @@ The supported package entrypoints are:
 
 Use the root for the normal public API.
 Use the subpath exports only when you intentionally need a secondary boundary.
+The historical `panda/kernel/agent` and `panda/domain/threads/runtime` package
+paths resolve to `src/app/sdk/agent.ts` and `src/app/sdk/thread-runtime.ts`.
+These configured SDK entrypoints preserve optional-model constructors and
+resolve Panda's environment/provider defaults only when no model is supplied.
+Their underlying kernel and domain barrels define the shared export sets;
+internal constructors require resolved models and never discover ambient defaults.
+The daemon resolves unpinned models during definition assembly, without writing
+the fallback into session configuration.
 Inside `src`, import concrete leaf modules when the caller already knows the
 module it needs. The supported barrels are package seams, not a shortcut for
 internal helper imports.

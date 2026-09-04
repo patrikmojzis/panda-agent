@@ -1,5 +1,5 @@
 import {resolveModelSelector} from "./model-selector.js";
-import {resolveRuntimeDefaultModelSelector} from "./default-model.js";
+import {ConfigurationError} from "../agent/exceptions.js";
 
 export interface ModelContextPolicy {
   hardWindow: number;
@@ -71,16 +71,10 @@ function sanitizePositiveInteger(value: unknown): number | undefined {
   return Math.trunc(value);
 }
 
-function resolveModelIdentity(value?: string): {canonicalModel: string; modelId: string; providerName?: string} {
-  const fallbackCanonicalModel = resolveRuntimeDefaultModelSelector();
+function resolveModelIdentity(value: string): {canonicalModel: string; modelId: string; providerName?: string} {
   const trimmed = typeof value === "string" ? value.trim() : "";
   if (!trimmed) {
-    const fallback = resolveModelSelector(fallbackCanonicalModel);
-    return {
-      canonicalModel: fallback.canonical,
-      modelId: fallback.modelId,
-      providerName: fallback.providerName,
-    };
+    throw new ConfigurationError("Model context policy requires a model selector.");
   }
 
   try {
@@ -117,7 +111,7 @@ export function getCompactTriggerTokens(options: Pick<ModelContextPolicy, "opera
 }
 
 export function resolveModelContextPolicy(
-  model?: string,
+  model: string,
   options: {
     rules?: readonly ModelContextPolicyRule[];
     fallback?: ModelContextPolicy;
@@ -171,7 +165,7 @@ export function resolveModelContextPolicy(
   };
 }
 
-export function resolveModelRuntimeBudget(model?: string): ResolvedModelRuntimeBudget {
+export function resolveModelRuntimeBudget(model: string): ResolvedModelRuntimeBudget {
   const policy = resolveModelContextPolicy(model);
 
   return {

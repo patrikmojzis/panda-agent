@@ -37,8 +37,6 @@ export const controlKeys = {
     all: () => [...controlKeys.all, "failures"] as const,
     list: (params: FailureParams) =>
       [...controlKeys.failures.all(), "list", params] as const,
-    summary: (params: FailureParams) =>
-      [...controlKeys.failures.all(), "summary", params] as const,
   },
   identities: {
     all: () => [...controlKeys.all, "identities"] as const,
@@ -65,8 +63,6 @@ export const controlKeys = {
       [...controlKeys.agents.detail(agentKey), "wiki-binding"] as const,
     connectors: (agentKey: string, params: TableParams) =>
       [...controlKeys.agents.detail(agentKey), "connectors", params] as const,
-    telegramSetup: (agentKey: string, accountKey: string) =>
-      [...controlKeys.agents.detail(agentKey), "telegram-setup", accountKey] as const,
     bindings: (agentKey: string, params: TableParams) =>
       [...controlKeys.agents.detail(agentKey), "bindings", params] as const,
     emailRoutes: (agentKey: string, params: TableParams) =>
@@ -97,14 +93,10 @@ export const controlKeys = {
   sessions: {
     a2aBindings: (agentKey: string, sessionId: string, params: TableParams) =>
       [...controlKeys.agents.session(agentKey, sessionId), "a2a-bindings", params] as const,
-    briefing: (agentKey: string, sessionId: string) =>
-      [...controlKeys.agents.session(agentKey, sessionId), "briefing"] as const,
     sessionPrompts: (agentKey: string, sessionId: string) =>
       [...controlKeys.agents.session(agentKey, sessionId), "prompts"] as const,
     heartbeat: (agentKey: string, sessionId: string) =>
       [...controlKeys.agents.session(agentKey, sessionId), "heartbeat"] as const,
-    targets: (agentKey: string, sessionId: string) =>
-      [...controlKeys.agents.session(agentKey, sessionId), "targets"] as const,
     runtime: (agentKey: string, sessionId: string, params: TableParams) =>
       [...controlKeys.agents.session(agentKey, sessionId), "runtime", params] as const,
     scheduledTasks: (agentKey: string, sessionId: string, params?: TableParams) =>

@@ -157,6 +157,7 @@ export class PostgresSessionArchive {
         UPDATE ${watchTables.watches}
         SET claimed_at = NULL,
             claimed_by = NULL,
+            claim_run_id = NULL,
             claim_expires_at = NULL,
             updated_at = NOW()
         WHERE session_id = $1
@@ -333,6 +334,7 @@ export class PostgresSessionArchive {
         SET next_poll_at = $2::timestamptz + interval_minutes * INTERVAL '1 minute',
             claimed_at = NULL,
             claimed_by = NULL,
+            claim_run_id = NULL,
             claim_expires_at = NULL,
             updated_at = NOW()
         WHERE session_id = $1

@@ -1,31 +1,42 @@
-import {resolveModelSelector} from "../kernel/models/model-selector.js";
-import {resolveRuntimeDefaultModelSelector} from "../kernel/models/default-model.js";
-import type {DefaultAgentSubagentRole} from "./subagents/policy.js";
+import {hasAnthropicOauthToken, hasOpenAICodexOauthToken} from "../integrations/providers/shared/auth.js";
+import {getProviderConfig, type ProviderName} from "../integrations/providers/shared/provider.js";
+import {buildCanonicalModelSelector, resolveModelSelector} from "../kernel/models/model-selector.js";
 
-const DEFAULT_AGENT_SUBAGENT_MODEL_ENV_KEYS: Record<DefaultAgentSubagentRole, string> = {
-  workspace: "WORKSPACE_SUBAGENT_MODEL",
-  memory: "MEMORY_SUBAGENT_MODEL",
-  browser: "BROWSER_SUBAGENT_MODEL",
-  skill_maintainer: "SKILL_MAINTAINER_SUBAGENT_MODEL",
-};
+function resolveDefaultModelProvider(env: NodeJS.ProcessEnv): ProviderName {
+  if (hasAnthropicOauthToken(env) && !env.ANTHROPIC_API_KEY && !env.OPENAI_API_KEY) {
+    return "anthropic-oauth";
+  }
 
+  if (hasOpenAICodexOauthToken({env}) && !env.OPENAI_API_KEY) {
+    return "openai-codex";
+  }
+
+  if (env.ANTHROPIC_API_KEY && !env.OPENAI_API_KEY) {
+    return "anthropic";
+  }
+
+  if (env.KIMI_API_KEY && !env.OPENAI_API_KEY) {
+    return "kimi-coding";
+  }
+
+  if (env.ZAI_API_KEY && !env.OPENAI_API_KEY) {
+    return "zai";
+  }
+
+  return "openai";
+}
+
+/** Resolves Panda's configured model at an application or SDK construction boundary. */
 export function resolveDefaultAgentModelSelector(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  return resolveRuntimeDefaultModelSelector(env);
-}
+  const configured = env.DEFAULT_MODEL?.trim();
+  if (configured) {
+    return resolveModelSelector(configured).canonical;
+  }
 
-function resolveOptionalModelSelector(
-  env: NodeJS.ProcessEnv,
-  envKey: string,
-): string | undefined {
-  const configured = env[envKey]?.trim();
-  return configured ? resolveModelSelector(configured).canonical : undefined;
-}
-
-export function resolveDefaultAgentSubagentModelSelector(
-  role: DefaultAgentSubagentRole,
-  env: NodeJS.ProcessEnv = process.env,
-): string | undefined {
-  return resolveOptionalModelSelector(env, DEFAULT_AGENT_SUBAGENT_MODEL_ENV_KEYS[role]);
+  const provider = resolveDefaultModelProvider(env);
+  const config = getProviderConfig(provider);
+  const modelId = env[config.defaultModelEnvVar] ?? config.defaultModel;
+  return buildCanonicalModelSelector(provider, modelId);
 }

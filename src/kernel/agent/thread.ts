@@ -24,7 +24,6 @@ import {isCompactSummaryMessage} from "./helpers/compact.js";
 import {joinMessageTextParts} from "./helpers/message-text.js";
 import {PiAiRuntime} from "../../integrations/providers/shared/runtime.js";
 import {type ResolvedModelSelector, resolveModelSelector,} from "../models/model-selector.js";
-import {resolveRuntimeDefaultModelSelector} from "../models/default-model.js";
 import {resolveModelRuntimeBudget} from "../models/model-context-policy.js";
 import {RunContext} from "./run-context.js";
 import type {LlmModelCallObserver, LlmRuntime, LlmRuntimeRequest} from "./runtime.js";
@@ -46,7 +45,7 @@ export interface ThreadOptions<TContext = unknown, TOutput = unknown> {
   hooks?: ReadonlyArray<Hook<TContext>>;
   promptCacheKey?: string;
   runPipelines?: ReadonlyArray<RunPipeline<TContext>>;
-  model?: string;
+  model: string;
   temperature?: number;
   thinking?: ThinkingLevel;
   runtime?: LlmRuntime;
@@ -752,8 +751,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     this.hooks = options.hooks;
     this.promptCacheKey = options.promptCacheKey;
     this.runPipelines = options.runPipelines;
-    const defaultModel = resolveRuntimeDefaultModelSelector();
-    this.modelSelection = resolveModelSelector(options.model ?? defaultModel);
+    this.modelSelection = resolveModelSelector(options.model);
     this.model = this.modelSelection.canonical;
     this.contextWindowTokens = resolveModelRuntimeBudget(this.model).operatingWindow;
     this.temperature = options.temperature;

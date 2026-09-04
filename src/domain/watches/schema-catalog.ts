@@ -6,24 +6,10 @@ import type {
     WatchSourceConfig,
     WatchSourceKind,
 } from "./types.js";
-import {
-  parseWatchDetectorConfig as parseDomainWatchDetectorConfig,
-  parseWatchSourceConfig as parseDomainWatchSourceConfig,
-} from "./config.js";
 import type {JsonObject, JsonValue} from "../../lib/json.js";
 import {formatParameters} from "../../lib/zod-json-schema.js";
 
-// Temporary context-budget escape hatch for watch creation and updates.
-//
-// Why this exists:
-// - The current tool transport injects full JSON Schema into model context.
-// - The watch source/detector unions are unusually large and burn thousands of tokens.
-// - We only need the detailed branch schema on demand, not on every turn.
-//
-// Why this should not spread:
-// - This is not the preferred pattern for normal tools.
-// - If more tools need schema side-loading, the real fix is transport-level:
-//   CLI-style help, lazy schema discovery, or provider-native tool introspection.
+// Detailed watch schemas are exposed through CLI help; config.ts owns runtime parsing.
 export const WATCH_SOURCE_KINDS = [
   "mongodb_query",
   "sql_query",
@@ -37,9 +23,6 @@ export const WATCH_DETECTOR_KINDS = [
   "snapshot_changed",
   "percent_change",
 ] as const satisfies readonly WatchEventKind[];
-
-const watchSourceKindSchema = z.enum(WATCH_SOURCE_KINDS);
-const watchDetectorKindSchema = z.enum(WATCH_DETECTOR_KINDS);
 
 const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() => z.union([
   z.string(),
@@ -352,99 +335,6 @@ const watchDetectorNotesByKind = {
     "percent is required and must be greater than zero.",
   ],
 } as const satisfies Record<WatchEventKind, readonly string[]>;
-
-const compactWatchSourceEnvelopeSchema = z.looseObject({
-  kind: watchSourceKindSchema,
-});
-
-const compactWatchDetectorEnvelopeSchema = z.looseObject({
-  kind: watchDetectorKindSchema,
-});
-
-function throwIssues(prefix: string, issues: readonly string[]): never {
-  const message = issues.length === 1
-    ? `${prefix}: ${issues[0] ?? "Invalid arguments"}`
-    : `${prefix}: ${issues.join("; ")}`;
-  throw new Error(message);
-}
-
-function parseKindEnvelope<TKind extends string>(options: {
-  value: unknown;
-  schema: z.ZodType<{kind: TKind}>;
-  invalidPrefix: string;
-}): TKind {
-  const parsed = options.schema.safeParse(options.value);
-  if (!parsed.success) {
-    throwIssues(
-      options.invalidPrefix,
-      parsed.error.issues.map((issue) => issue.message),
-    );
-  }
-
-  return parsed.data.kind;
-}
-
-export function parseWatchSourceConfig(value: unknown): WatchSourceConfig {
-  const kind = parseKindEnvelope({
-    value,
-    schema: compactWatchSourceEnvelopeSchema,
-    invalidPrefix: "Invalid watch source",
-  });
-  const schema = watchSourceSchemaByKind[kind];
-  const parsed = schema.safeParse(value);
-  if (!parsed.success) {
-    throwIssues(
-      `Invalid watch source for ${kind}`,
-      parsed.error.issues.map((issue) => issue.message),
-    );
-  }
-  try {
-    return parseDomainWatchSourceConfig(parsed.data);
-  } catch (error) {
-    throwIssues(`Invalid watch source for ${kind}`, [
-      error instanceof Error ? error.message : String(error),
-    ]);
-  }
-}
-
-export function parseWatchDetectorConfig(value: unknown): WatchDetectorConfig {
-  const kind = parseKindEnvelope({
-    value,
-    schema: compactWatchDetectorEnvelopeSchema,
-    invalidPrefix: "Invalid watch detector",
-  });
-  const schema = watchDetectorSchemaByKind[kind];
-  const parsed = schema.safeParse(value);
-  if (!parsed.success) {
-    throwIssues(
-      `Invalid watch detector for ${kind}`,
-      parsed.error.issues.map((issue) => issue.message),
-    );
-  }
-  try {
-    return parseDomainWatchDetectorConfig(parsed.data);
-  } catch (error) {
-    throwIssues(`Invalid watch detector for ${kind}`, [
-      error instanceof Error ? error.message : String(error),
-    ]);
-  }
-}
-
-export function getCompactWatchSourceEnvelopeSchema() {
-  return compactWatchSourceEnvelopeSchema;
-}
-
-export function getCompactWatchDetectorEnvelopeSchema() {
-  return compactWatchDetectorEnvelopeSchema;
-}
-
-export function getWatchSourceKindSchema() {
-  return watchSourceKindSchema;
-}
-
-export function getWatchDetectorKindSchema() {
-  return watchDetectorKindSchema;
-}
 
 export function getWatchSourceSchema(kind: WatchSourceKind): JsonObject {
   return formatParameters(watchSourceSchemaByKind[kind]);

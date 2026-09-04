@@ -24,21 +24,19 @@ function createReactCommand() {
     enqueueAction: vi.fn(async (input) => {
       actions.push(input);
     }),
-    listConversationBindings: vi.fn(async (filter) => {
-      if (filter.source !== TELEGRAM_SOURCE || filter.connectorKey !== "telegram-main") {
-        return [];
+    getConversationBinding: vi.fn(async (filter) => {
+      if (filter.source !== TELEGRAM_SOURCE || filter.connectorKey !== "telegram-main" || filter.externalConversationId !== "1615376408") {
+        return null;
       }
 
-      return [
-        {
+      return {
           source: TELEGRAM_SOURCE,
           connectorKey: "telegram-main",
           externalConversationId: "1615376408",
           sessionId: "session-1",
           createdAt: 1,
           updatedAt: 2,
-        },
-      ];
+      };
     }),
   };
 

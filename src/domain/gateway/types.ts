@@ -99,6 +99,8 @@ export interface GatewayEventRecord {
   riskScore?: number;
   reason?: string;
   threadId?: string;
+  /** Stable runtime input receipt, allocated after guard acceptance. */
+  inputId?: string;
   metadata?: JsonValue;
   createdAt: number;
   claimId?: string;
@@ -177,6 +179,25 @@ export interface GatewayAttachmentUploadInput {
   mimeType: string;
   sniffedMimeType?: string;
   filename?: string;
+  expiresAt: number;
+}
+
+export interface GatewayUploadReservation {
+  id: string;
+  sourceId: string;
+  directory: string;
+  expiresAt: number;
+}
+
+export interface ReserveGatewayUploadInput {
+  id: string;
+  sourceId: string;
+  idempotencyKey: string;
+  directory: string;
+  reservedBytes: number;
+  maxConcurrent: number;
+  maxPending: number;
+  byteLimit: number;
   expiresAt: number;
 }
 

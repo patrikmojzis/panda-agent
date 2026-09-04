@@ -693,6 +693,7 @@ function parseWorkFailureKind(value: string | null): ControlWorkFailureKind | un
     value === "runtime_run"
     || value === "scheduled_task_run"
     || value === "outbound_delivery"
+    || value === "channel_action"
     || value === "gateway_event"
     || value === "gateway_device_command"
     || value === "connector_account"

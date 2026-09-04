@@ -59,6 +59,8 @@ export interface CommandRegistrationDescriptor {
 
 export interface CommandPolicyDescriptor {
   capability?: CommandName;
+  /** Opt in to the fallback main/branch policy; explicit binding grants are independent. */
+  defaultAllowed?: boolean;
   toolGroups?: readonly string[];
   requiresIdentity?: boolean;
   requiresCredentialMutation?: boolean;

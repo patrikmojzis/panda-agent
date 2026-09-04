@@ -16,6 +16,7 @@ import {createRuntimeStores} from "./helpers/runtime-store-setup.js";
 
 function createPool() {
   const db = newDb({noAstCoverageCheck: true});
+  db.public.registerFunction({name: "clock_timestamp", returns: DataType.timestamptz, impure: true, implementation: () => new Date()});
   db.public.registerFunction({
     name: "pg_notify",
     args: [DataType.text, DataType.text],
@@ -188,15 +189,6 @@ describe("session archive admission", () => {
       claimExpiresAt: dueAt + 60_000,
       nextPollAt: dueAt + 300_000,
     })).resolves.toBeNull();
-    await expect(watches.recordEvent({
-      watchId: watch.id,
-      sessionId: "session-branch",
-      resolvedThreadId: "thread-branch",
-      eventKind: "percent_change",
-      summary: "blocked",
-      dedupeKey: "blocked-while-archived",
-      payload: {value: 1},
-    })).rejects.toBeInstanceOf(SessionArchivedError);
     await expect(deliveries.claimNextPendingDelivery({
       channel: "telegram",
       connectorKey: "bot-1",

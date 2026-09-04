@@ -92,7 +92,8 @@ function createQueryOnlyPurgePool(query: SubagentPurgeServiceOptions["pool"]["qu
 
 function createUnusedEnvironmentStore(): SubagentPurgeServiceOptions["environmentStore"] {
   return {
-    createEnvironment: async () => failUnusedDependency("environmentStore.createEnvironment"),
+    claimEnvironmentOperation: async () => failUnusedDependency("environmentStore.claimEnvironmentOperation"),
+    settleEnvironmentOperation: async () => failUnusedDependency("environmentStore.settleEnvironmentOperation"),
     getEnvironment: async () => failUnusedDependency("environmentStore.getEnvironment"),
   };
 }

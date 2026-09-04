@@ -6,7 +6,7 @@ import type {CredentialResolver} from "../credentials/resolver.js";
 import type {ExecutionCredentialPolicy} from "../execution-environments/types.js";
 import {isSafeMcpServerName, referencedMcpCredentialEnvKeys} from "./config.js";
 import {assertMcpCredentialPolicy, McpInvocationError, resolveMcpInvocation} from "./invocation.js";
-import {mcpOAuthGrantRef, type McpOAuthDiscoverySummary, type McpOAuthInitiator, type McpOAuthManualClientInput, type McpOAuthTokenEndpointAuthMethod} from "./oauth-types.js";
+import {mcpOAuthGrantRef, type McpOAuthDiscoverySummary, type McpOAuthInitiator, type McpOAuthManualClientInput} from "./oauth-types.js";
 import {McpRegistryVersionConflictError, type McpConfigStore} from "./store.js";
 import {MCP_OUTPUT_MAX_BYTES, type McpAgentConfigRecord, type McpRunner, type McpServerConfig} from "./types.js";
 
@@ -48,12 +48,6 @@ export interface McpManagementServiceOptions {
   oauthConnections?: {deleteConnection(agentKey: string, serverName: string): Promise<boolean>};
   oauth?: McpOAuthManager;
   audit?: McpManagementAuditWriter;
-}
-
-export interface McpAgentManualClientInput {
-  clientId: string;
-  tokenEndpointAuthMethod: McpOAuthTokenEndpointAuthMethod;
-  clientSecretCredentialEnvKey?: string;
 }
 
 function serverName(value: unknown): string {

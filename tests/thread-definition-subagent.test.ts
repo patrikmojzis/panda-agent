@@ -3,7 +3,7 @@ import {describe, expect, it} from "vitest";
 import {createThreadDefinition} from "../src/app/runtime/create-runtime.js";
 import type {CommandDescriptor} from "../src/domain/commands/index.js";
 import type {ResolvedExecutionEnvironment} from "../src/domain/execution-environments/types.js";
-import {buildSubagentSessionMetadata, readSubagentSessionMetadata} from "../src/domain/subagents/index.js";
+import {buildSubagentSessionMetadata, readSubagentSessionMetadata} from "../src/domain/subagents/session-metadata.js";
 import type {ThreadRecord} from "../src/domain/threads/runtime/types.js";
 import {DEFAULT_AGENT_INSTRUCTIONS} from "../src/prompts/runtime/default-agent.js";
 import {gatherContexts, Tool, z} from "../src/index.js";

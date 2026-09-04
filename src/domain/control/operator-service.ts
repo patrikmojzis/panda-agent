@@ -38,8 +38,6 @@ import type {
     GatewayEventTypeRecord,
     GatewaySourceRecord,
 } from "../gateway/types.js";
-import {buildGatewayTableNames} from "../gateway/postgres-shared.js";
-import {buildOutboundDeliveryTableNames} from "../channels/deliveries/postgres-shared.js";
 import type {IdentityStore} from "../identity/store.js";
 import {
     type IdentityBindingRecord,
@@ -47,8 +45,7 @@ import {
     type IdentityStatus,
     normalizeIdentityHandle
 } from "../identity/types.js";
-import type {PgPoolLike, PgQueryable} from "../../lib/postgres-query.js";
-import {buildScheduledTaskTableNames} from "../scheduling/tasks/postgres-shared.js";
+import type {PgPoolLike} from "../../lib/postgres-query.js";
 import {ConversationRepo} from "../sessions/conversations/repo.js";
 import {buildConversationSessionTableNames} from "../sessions/conversations/postgres-shared.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
@@ -60,14 +57,12 @@ import type {AgentSessionKind, SessionRecord} from "../sessions/types.js";
 import {normalizeSessionAlias} from "../sessions/types.js";
 import type {SubagentProfileStore} from "../subagents/store.js";
 import type {SubagentProfileRecord} from "../subagents/types.js";
-import {buildThreadRuntimeTableNames} from "../threads/runtime/postgres-shared.js";
 import type {WikiBindingService} from "../wiki/service.js";
 import type {WikiBindingRecord} from "../wiki/types.js";
 import {normalizeWikiGroupId, normalizeWikiNamespacePath} from "../wiki/types.js";
 import type {ControlAuditEventSummary, ControlReadService} from "./read-service.js";
 import {PostgresControlIdentityAccess} from "./identity-access.js";
 import type {ControlSessionRecord} from "./types.js";
-import {summarizeRuntimeError} from "../../lib/runtime-error-summary.js";
 import {
   buildRunnerEndpoint,
   makeNetworkTimeoutSignal,
@@ -75,6 +70,8 @@ import {
   resolveRunnerUrl,
   resolveRunnerUrlTemplate,
 } from "../execution-environments/runner-config.js";
+
+import {readControlWorkFailures, type ControlWorkFailureSnapshot, type ControlWorkFailureTableInput} from "./work-failures.js";
 
 const GATEWAY_DEVICE_TOKEN_PREFIX = "pgd";
 const GATEWAY_DEVICE_TOKEN_BYTES = 24;
@@ -508,32 +505,7 @@ export interface ControlWikiBindingRow {
   updatedAt: string;
 }
 
-export type ControlWorkFailureKind =
-  | "runtime_run"
-  | "scheduled_task_run"
-  | "outbound_delivery"
-  | "gateway_event"
-  | "gateway_device_command"
-  | "connector_account";
-
-export interface ControlWorkFailureTableInput extends ControlTableInput {
-  severity?: "warning" | "critical";
-  kind?: ControlWorkFailureKind;
-}
-
-export interface ControlWorkFailureRow {
-  id: string;
-  kind: ControlWorkFailureKind;
-  severity: "warning" | "critical";
-  agentKey: string;
-  sessionId?: string;
-  sessionLabel?: string;
-  source: string;
-  summary: string;
-  detail?: string;
-  targetRoute: string;
-  createdAt: string;
-}
+export type {ControlWorkFailureKind, ControlWorkFailureTableInput, ControlWorkFailureRow, ControlWorkFailureSnapshot} from "./work-failures.js";
 
 export interface ControlGlobalSearchResult {
   id: string;
@@ -1244,20 +1216,8 @@ function searchResultKindWeight(kind: ControlGlobalSearchResult["kind"]): number
   ].indexOf(kind);
 }
 
-async function tableExists(pool: PgQueryable, relation: string): Promise<boolean> {
-  const [schema, table] = relation.replaceAll("\"", "").split(".");
-  const result = await pool.query(`
-    SELECT 1
-    FROM information_schema.tables
-    WHERE table_schema = $1
-      AND table_name = $2
-    LIMIT 1
-  `, [schema, table]);
-  return result.rows.length > 0;
-}
-
 export class ControlOperatorService {
-  private readonly pool: PgQueryable;
+  private readonly pool: PgPoolLike;
   private readonly identityAccess: PostgresControlIdentityAccess;
   private readonly reads: Pick<ControlReadService, "listAgents" | "listAuditEvents">;
   private readonly a2aBindings: ControlA2ABindingStore;
@@ -1281,13 +1241,9 @@ export class ControlOperatorService {
   private readonly fetchImpl: typeof fetch;
   private readonly env: NodeJS.ProcessEnv;
   private readonly sessionTables = buildSessionTableNames();
-  private readonly threadTables = buildThreadRuntimeTableNames();
-  private readonly scheduledTables = buildScheduledTaskTableNames();
-  private readonly deliveryTables = buildOutboundDeliveryTableNames();
   private readonly credentialTables = buildCredentialTableNames();
   private readonly connectorTables = buildConnectorAccountTableNames();
   private readonly conversationTables = buildConversationSessionTableNames();
-  private readonly gatewayTables = buildGatewayTableNames();
 
   constructor(options: ControlOperatorServiceOptions) {
     this.pool = options.pool;
@@ -3682,203 +3638,8 @@ export class ControlOperatorService {
     return tableResponse(sortRows(rows as unknown as Record<string, unknown>[], input, "createdAt") as unknown as ControlAuditEventSummary[], input);
   }
 
-  async listWorkFailures(session: ControlSessionRecord, input: ControlWorkFailureTableInput = {}): Promise<ControlPaginatedResponse<ControlWorkFailureRow>> {
+  async listWorkFailures(session: ControlSessionRecord, input: ControlWorkFailureTableInput = {}): Promise<ControlWorkFailureSnapshot> {
     const agents = await this.reads.listAgents(session);
-    const visibleAgentKeys = agents.map((agent) => agent.agentKey);
-    if (visibleAgentKeys.length === 0) return tableResponse([], input);
-    const rows: ControlWorkFailureRow[] = [];
-    rows.push(...await this.runtimeRunFailures(visibleAgentKeys));
-    rows.push(...await this.scheduledRunFailures(visibleAgentKeys));
-    rows.push(...await this.outboundFailures(visibleAgentKeys));
-    rows.push(...await this.gatewayFailures(visibleAgentKeys));
-    rows.push(...await this.connectorFailures(visibleAgentKeys));
-    const search = normalizeSearch(input.search);
-    const filtered = rows
-      .filter((row) => !input.severity || row.severity === input.severity)
-      .filter((row) => !input.kind || row.kind === input.kind)
-      .filter((row) => includesSearch(row as unknown as Record<string, unknown>, search));
-    return tableResponse(sortRows(filtered as unknown as Record<string, unknown>[], {...input, sortBy: input.sortBy ?? "createdAt", sortDirection: input.sortDirection ?? "desc"}, "createdAt") as unknown as ControlWorkFailureRow[], input);
-  }
-
-  private async runtimeRunFailures(agentKeys: readonly string[]): Promise<ControlWorkFailureRow[]> {
-    const result = await this.pool.query(`
-      SELECT run.id, run.error, run.started_at, run.finished_at, target_thread.session_id,
-        target_session.agent_key, target_session.alias, target_session.display_name
-      FROM ${this.threadTables.runs} AS run
-      INNER JOIN ${this.threadTables.threads} AS target_thread ON target_thread.id = run.thread_id
-      INNER JOIN ${this.sessionTables.sessions} AS target_session ON target_session.id = target_thread.session_id
-      WHERE run.status = 'failed'
-        AND target_session.agent_key = ANY($1::text[])
-      ORDER BY COALESCE(run.finished_at, run.started_at) DESC
-      LIMIT 50
-    `, [agentKeys]).catch(() => ({rows: []}));
-    return (result.rows as Array<Record<string, unknown>>).map((row) => {
-      const agentKey = String(row.agent_key);
-      const sessionId = String(row.session_id);
-      const errorSummary = summarizeRuntimeError(row.error);
-      return {
-        id: `runtime:${String(row.id)}`,
-        kind: "runtime_run",
-        severity: "critical",
-        agentKey,
-        sessionId,
-        sessionLabel: String(row.display_name ?? row.alias ?? sessionId),
-        source: "Runtime",
-        summary: errorSummary ?? "Agent run failed.",
-        detail: errorSummary ? `Sanitized runtime error: ${errorSummary}` : undefined,
-        targetRoute: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}?tab=runtime`,
-        createdAt: iso(row.finished_at as Date | undefined) ?? iso(row.started_at as Date | undefined) ?? new Date().toISOString(),
-      };
-    });
-  }
-
-  private async scheduledRunFailures(agentKeys: readonly string[]): Promise<ControlWorkFailureRow[]> {
-    const result = await this.pool.query(`
-      SELECT run.id, run.error, run.created_at, run.session_id, target_session.agent_key,
-        target_session.alias, target_session.display_name, task.title
-      FROM ${this.scheduledTables.scheduledTaskRuns} AS run
-      INNER JOIN ${this.sessionTables.sessions} AS target_session ON target_session.id = run.session_id
-      LEFT JOIN ${this.scheduledTables.scheduledTasks} AS task ON task.id = run.task_id
-      WHERE run.status = 'failed'
-        AND target_session.agent_key = ANY($1::text[])
-      ORDER BY run.created_at DESC
-      LIMIT 50
-    `, [agentKeys]).catch(() => ({rows: []}));
-    return (result.rows as Array<Record<string, unknown>>).map((row) => {
-      const agentKey = String(row.agent_key);
-      const sessionId = String(row.session_id);
-      return {
-        id: `scheduled:${String(row.id)}`,
-        kind: "scheduled_task_run",
-        severity: "warning",
-        agentKey,
-        sessionId,
-        sessionLabel: String(row.display_name ?? row.alias ?? sessionId),
-        source: "Scheduled task",
-        summary: `Scheduled task failed${typeof row.title === "string" ? `: ${row.title}` : "."}`,
-        detail: row.error ? "Scheduled task run failed; inspect the automations tab for sanitized run details." : undefined,
-        targetRoute: `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}?tab=automations`,
-        createdAt: iso(row.created_at as Date)!,
-      };
-    });
-  }
-
-  private async outboundFailures(agentKeys: readonly string[]): Promise<ControlWorkFailureRow[]> {
-    if (!await tableExists(this.pool, this.deliveryTables.outboundDeliveries)) return [];
-    const result = await this.pool.query(`
-      SELECT delivery.id, delivery.channel, delivery.connector_key, delivery.external_conversation_id,
-        delivery.last_error, delivery.created_at, target_thread.session_id, target_session.agent_key,
-        target_session.alias, target_session.display_name
-      FROM ${this.deliveryTables.outboundDeliveries} AS delivery
-      LEFT JOIN ${this.threadTables.threads} AS target_thread ON target_thread.id = delivery.thread_id
-      LEFT JOIN ${this.sessionTables.sessions} AS target_session ON target_session.id = target_thread.session_id
-      WHERE delivery.status = 'failed'
-        AND target_session.agent_key = ANY($1::text[])
-      ORDER BY delivery.created_at DESC
-      LIMIT 50
-    `, [agentKeys]).catch(() => ({rows: []}));
-    return (result.rows as Array<Record<string, unknown>>).map((row) => {
-      const agentKey = String(row.agent_key);
-      const sessionId = typeof row.session_id === "string" ? row.session_id : undefined;
-      return {
-        id: `outbound:${String(row.id)}`,
-        kind: "outbound_delivery",
-        severity: "warning",
-        agentKey,
-        ...(sessionId ? {sessionId, sessionLabel: String(row.display_name ?? row.alias ?? sessionId)} : {}),
-        source: `${String(row.channel)}/${String(row.connector_key)}`,
-        summary: "Outbound delivery failed.",
-        detail: row.last_error ? "Outbound delivery failed; inspect the channel worker logs for details." : undefined,
-        targetRoute: sessionId ? `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}?tab=runtime` : `/agents/${encodeURIComponent(agentKey)}`,
-        createdAt: iso(row.created_at as Date)!,
-      };
-    });
-  }
-
-  private async gatewayFailures(agentKeys: readonly string[]): Promise<ControlWorkFailureRow[]> {
-    if (!await tableExists(this.pool, this.gatewayTables.events)) return [];
-    const [events, commands] = await Promise.all([
-      this.pool.query(`
-        SELECT event.id, event.source_id, event.event_type, event.reason, event.created_at,
-          source.agent_key, source.session_id, target_session.alias, target_session.display_name
-        FROM ${this.gatewayTables.events} AS event
-        INNER JOIN ${this.gatewayTables.sources} AS source ON source.source_id = event.source_id
-        LEFT JOIN ${this.sessionTables.sessions} AS target_session ON target_session.id = source.session_id
-        WHERE event.status = 'quarantined'
-          AND source.agent_key = ANY($1::text[])
-        ORDER BY event.created_at DESC
-        LIMIT 50
-      `, [agentKeys]).catch(() => ({rows: []})),
-      this.pool.query(`
-        SELECT command.id, command.source_id, command.device_id, command.kind, command.error, command.created_at,
-          source.agent_key, source.session_id, target_session.alias, target_session.display_name
-        FROM ${this.gatewayTables.commands} AS command
-        INNER JOIN ${this.gatewayTables.sources} AS source ON source.source_id = command.source_id
-        LEFT JOIN ${this.sessionTables.sessions} AS target_session ON target_session.id = source.session_id
-        WHERE command.status IN ('failed', 'timed_out', 'rejected')
-          AND source.agent_key = ANY($1::text[])
-        ORDER BY command.created_at DESC
-        LIMIT 50
-      `, [agentKeys]).catch(() => ({rows: []})),
-    ]);
-    return [
-      ...(events.rows as Array<Record<string, unknown>>).map((row) => {
-        const agentKey = String(row.agent_key);
-        const sessionId = typeof row.session_id === "string" ? row.session_id : undefined;
-        return {
-          id: `gateway-event:${String(row.id)}`,
-          kind: "gateway_event" as const,
-          severity: "warning" as const,
-          agentKey,
-          ...(sessionId ? {sessionId, sessionLabel: String(row.display_name ?? row.alias ?? sessionId)} : {}),
-          source: `Gateway ${String(row.source_id)}`,
-          summary: `Gateway event quarantined: ${String(row.event_type)}.`,
-          detail: typeof row.reason === "string" ? row.reason.slice(0, 120) : undefined,
-          targetRoute: sessionId ? `/agents/${encodeURIComponent(agentKey)}/sessions/${encodeURIComponent(sessionId)}?tab=gateway` : `/agents/${encodeURIComponent(agentKey)}?tab=gateway`,
-          createdAt: iso(row.created_at as Date)!,
-        };
-      }),
-      ...(commands.rows as Array<Record<string, unknown>>).map((row) => {
-        const agentKey = String(row.agent_key);
-        const sessionId = typeof row.session_id === "string" ? row.session_id : undefined;
-        return {
-          id: `gateway-command:${String(row.id)}`,
-          kind: "gateway_device_command" as const,
-          severity: "warning" as const,
-          agentKey,
-          ...(sessionId ? {sessionId, sessionLabel: String(row.display_name ?? row.alias ?? sessionId)} : {}),
-          source: `Gateway ${String(row.source_id)}/${String(row.device_id)}`,
-          summary: `Gateway device command failed: ${String(row.kind)}.`,
-          detail: row.error ? "Gateway command failed; inspect gateway device logs for details." : undefined,
-          targetRoute: `/agents/${encodeURIComponent(agentKey)}?tab=gateway`,
-          createdAt: iso(row.created_at as Date)!,
-        };
-      }),
-    ];
-  }
-
-  private async connectorFailures(agentKeys: readonly string[]): Promise<ControlWorkFailureRow[]> {
-    const result = await this.pool.query(`
-      SELECT id, source, account_key, connector_key, display_name, owner_agent_key, updated_at
-      FROM ${this.connectorTables.connectorAccounts}
-      WHERE status = 'error'
-        AND owner_kind = 'agent'
-        AND owner_agent_key = ANY($1::text[])
-      ORDER BY updated_at DESC
-      LIMIT 50
-    `, [agentKeys]).catch(() => ({rows: []}));
-    return (result.rows as Array<Record<string, unknown>>).map((row) => {
-      const agentKey = String(row.owner_agent_key);
-      return {
-        id: `connector:${String(row.id)}`,
-        kind: "connector_account",
-        severity: "warning",
-        agentKey,
-        source: `${String(row.source)}/${String(row.connector_key)}`,
-        summary: `Connector account is in error: ${String(row.display_name ?? row.account_key)}.`,
-        targetRoute: `/agents/${encodeURIComponent(agentKey)}?tab=connectors`,
-        createdAt: iso(row.updated_at as Date)!,
-      };
-    });
+    return readControlWorkFailures(this.pool, agents.map((agent) => agent.agentKey), input);
   }
 }

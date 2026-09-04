@@ -120,6 +120,7 @@ export async function ensurePostgresWatchSchema(pool: PgQueryable): Promise<void
       next_poll_at TIMESTAMPTZ,
       claimed_at TIMESTAMPTZ,
       claimed_by TEXT,
+      claim_run_id UUID,
       claim_expires_at TIMESTAMPTZ,
       cooldown_until TIMESTAMPTZ,
       last_error TEXT,

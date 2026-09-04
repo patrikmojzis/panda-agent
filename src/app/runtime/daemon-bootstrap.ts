@@ -28,10 +28,8 @@ import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
 import {createCommandCatalog, type CommandCatalog} from "../../domain/commands/modules.js";
 import type {CommandCatalogModule} from "../../domain/commands/types.js";
 import {createRuntime, createThreadDefinition, type RuntimeServices,} from "./create-runtime.js";
-import {
-  buildDaemonA2ACommandDependencies,
-  buildDaemonChannelCommandDependencies,
-} from "./command-dependencies.js";
+import {buildDaemonChannelCommandDependencies} from "./command-dependencies.js";
+import type {AgentCommandModuleDependencies} from "../../panda/commands/agent-command-modules.js";
 import {resolveVisibleCommandDescriptors} from "./command-visibility.js";
 import {createHeartbeatPromptContextResolver} from "./heartbeat-prompt-context.js";
 import {DaemonStateRepo} from "./state/repo.js";
@@ -158,7 +156,6 @@ export async function bootstrapDaemonContext(
     dbUrl: options.dbUrl,
     readOnlyDbUrl: options.readOnlyDbUrl,
     cwd: options.cwd,
-    maxSubagentDepth: options.maxSubagentDepth,
     ...(commandCatalog ? {commandCatalog} : {}),
     onEvent: async (event) => {
       await typingEventHandler(event);
@@ -369,11 +366,11 @@ export async function bootstrapDaemonContext(
       maxMessagesPerHour: resolveA2AMaxMessagesPerHour(process.env),
     });
     runtime.commandExecutor.registerCommands(runtime.commandCatalog.createCommands(
-      buildDaemonA2ACommandDependencies({
+      {
         commandUploads,
         a2aMessaging: a2aMessagingService,
         a2aDeliveries: a2aBindings,
-      }),
+      } satisfies Required<Pick<AgentCommandModuleDependencies, "commandUploads" | "a2aMessaging" | "a2aDeliveries">>,
       {registrationPhase: "daemon.a2a", requireAll: true},
     ));
 
@@ -458,7 +455,6 @@ export async function bootstrapDaemonContext(
     const watchRunner = new WatchRunner({
       watches: runtime.watches,
       sessions: runtime.sessionStore,
-      coordinator: runtime.coordinator,
       evaluateWatch,
     });
     const emailSyncRunner = new EmailSyncRunner({

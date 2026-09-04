@@ -18,8 +18,8 @@
       "import": "./dist/app/runtime/index.js"
     },
     "./kernel/agent": {
-      "types": "./dist/kernel/agent/index.d.ts",
-      "import": "./dist/kernel/agent/index.js"
+      "types": "./dist/app/sdk/agent.d.ts",
+      "import": "./dist/app/sdk/agent.js"
     },
     "./panda": {
       "types": "./dist/panda/index.d.ts",
@@ -58,8 +58,8 @@
       "import": "./dist/domain/threads/requests/index.js"
     },
     "./domain/threads/runtime": {
-      "types": "./dist/domain/threads/runtime/index.d.ts",
-      "import": "./dist/domain/threads/runtime/index.js"
+      "types": "./dist/app/sdk/thread-runtime.d.ts",
+      "import": "./dist/app/sdk/thread-runtime.js"
     },
     "./domain/scheduling": {
       "types": "./dist/domain/scheduling/index.d.ts",

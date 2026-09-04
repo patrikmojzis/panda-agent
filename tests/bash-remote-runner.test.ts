@@ -1,3 +1,5 @@
+import {DEFAULT_AGENT_COMMAND_CATALOG} from "../src/panda/commands/agent-command-modules.js";
+import {createDefaultExecutionToolPolicy} from "../src/panda/commands/agent-command-policy.js";
 import {execFile} from "node:child_process";
 import {chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile} from "node:fs/promises";
 import {request as httpRequest} from "node:http";
@@ -194,7 +196,7 @@ describe("remote bash runner", () => {
       alias: "vps",
       toolPolicy: {allowedTools: ["bash"]},
     });
-    const resolver = new ExecutionEnvironmentResolver({store: environmentStore, env: {}});
+    const resolver = new ExecutionEnvironmentResolver({defaultToolPolicy: createDefaultExecutionToolPolicy(DEFAULT_AGENT_COMMAND_CATALOG), store: environmentStore, env: {}});
     const tool = new BashTool({
       env: {BASH_SERVER_SHARED_SECRET: sharedSecret},
     });

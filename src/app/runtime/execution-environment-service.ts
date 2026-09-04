@@ -11,6 +11,7 @@ import type {
   ExecutionToolPolicy,
   ResolvedExecutionEnvironment,
   SessionEnvironmentBindingRecord,
+  SettleExecutionEnvironmentOperationInput,
 } from "../../domain/execution-environments/types.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import type {SessionRecord} from "../../domain/sessions/types.js";
@@ -133,7 +134,7 @@ export interface ExecutionEnvironmentLifecycleServiceOptions {
 
 export type ExecutionEnvironmentStopStore = Pick<
   ExecutionEnvironmentStore,
-  "createEnvironment" | "getEnvironment"
+  "claimEnvironmentOperation" | "settleEnvironmentOperation" | "getEnvironment"
 >;
 
 type ExecutionEnvironmentLifecycleStore = ExecutionEnvironmentStopStore & Pick<
@@ -142,6 +143,7 @@ type ExecutionEnvironmentLifecycleStore = ExecutionEnvironmentStopStore & Pick<
   | "getBinding"
   | "getDefaultBinding"
   | "listExpiredDisposableEnvironments"
+  | "reserveEnvironment"
 >;
 
 function buildDisposableEnvironmentId(sessionId: string): string {
@@ -203,19 +205,73 @@ function sameJson(left: JsonValue, right: JsonValue): boolean {
   return stableStringify(left) === stableStringify(right);
 }
 
+function assertIdleEnvironment(environment: ExecutionEnvironmentRecord): asserts environment is ExecutionEnvironmentRecord & {
+  state: "ready" | "failed" | "stopped";
+} {
+  if (environment.state === "provisioning" || environment.state === "stopping") {
+    throw new Error(`Execution environment ${environment.id} is ${environment.state}; operation ${environment.operationId ?? "legacy/unresolved"} must finish before another transition.`);
+  }
+}
+
+function uncertainOperation(environment: ExecutionEnvironmentRecord, error: unknown): Error {
+  return new Error(`Execution environment ${environment.id} operation ${environment.operationId} has an unresolved outcome and remains ${environment.state}; no automatic retry or takeover is safe.`, {cause: error});
+}
+
+async function settleEnvironmentOperation(
+  store: ExecutionEnvironmentStopStore,
+  input: SettleExecutionEnvironmentOperationInput,
+): Promise<ExecutionEnvironmentRecord> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const settled = await store.settleEnvironmentOperation(input);
+      if (settled) return settled;
+    } catch (error) {
+      lastError = error;
+    }
+    let current: ExecutionEnvironmentRecord;
+    try {
+      current = await store.getEnvironment(input.environmentId);
+    } catch (error) {
+      lastError = error;
+      continue;
+    }
+    if (current.operationId === input.operationId && current.state === input.state) return current;
+    if (current.operationId !== input.operationId || current.state !== input.operationState) {
+      throw new Error(`Execution environment ${input.environmentId} operation ${input.operationId} no longer owns settlement.`);
+    }
+  }
+  throw new Error(`Execution environment ${input.environmentId} operation ${input.operationId} finished externally but its ${input.state} receipt is unresolved.`, {cause: lastError});
+}
+
 export async function stopExecutionEnvironment(input: {
   environmentId: string;
   manager: ExecutionEnvironmentManager;
   store: ExecutionEnvironmentStopStore;
+  expiresBefore?: number;
 }): Promise<ExecutionEnvironmentRecord> {
   const existing = await input.store.getEnvironment(input.environmentId);
-  await input.store.createEnvironment({
-    ...existing,
+  assertIdleEnvironment(existing);
+  if (existing.state === "stopped") return existing;
+  const operationId = randomUUID();
+  const claimed = await input.store.claimEnvironmentOperation({
+    environmentId: existing.id,
+    operationId,
+    expectedOperationId: existing.operationId,
+    expectedState: existing.state,
     state: "stopping",
+    expiresBefore: input.expiresBefore,
   });
-  await input.manager.stopEnvironment(input.environmentId);
-  return input.store.createEnvironment({
-    ...existing,
+  if (!claimed) throw new Error(`Execution environment ${existing.id} changed before stop could claim it.`);
+  try {
+    await input.manager.stopEnvironment(input.environmentId);
+  } catch (error) {
+    throw uncertainOperation(claimed, error);
+  }
+  return settleEnvironmentOperation(input.store, {
+    environmentId: existing.id,
+    operationId,
+    operationState: "stopping",
     state: "stopped",
   });
 }
@@ -360,8 +416,9 @@ export class ExecutionEnvironmentLifecycleService {
       }
     }
 
-    await this.store.createEnvironment({
+    const environment = await this.store.reserveEnvironment({
       id: environmentId,
+      operationId: randomUUID(),
       agentKey: input.session.agentKey,
       kind: "disposable_container",
       state: "provisioning",
@@ -370,9 +427,10 @@ export class ExecutionEnvironmentLifecycleService {
       expiresAt,
       metadata: input.metadata,
     });
+    if (!environment) throw new Error(`Execution environment ${environmentId} already exists; use its existing binding or lifecycle operation.`);
 
-    let created: DisposableEnvironmentCreateResult | null = null;
-    try {
+    let binding: SessionEnvironmentBindingRecord | undefined;
+    const ready = await this.provisionEnvironment(environment, async () => {
       const commandLease = this.commandLeases?.issueCommandLease({
         agentKey: input.session.agentKey,
         sessionId: input.session.id,
@@ -385,7 +443,7 @@ export class ExecutionEnvironmentLifecycleService {
         ...(input.ttlMs === undefined ? {} : {ttlMs: input.ttlMs}),
       });
       const runnerAuthToken = this.resolveRunnerAuthToken(input.session.agentKey, environmentId);
-      created = await this.manager.createDisposableEnvironment({
+      return this.manager!.createDisposableEnvironment({
         agentKey: input.session.agentKey,
         sessionId: input.session.id,
         environmentId,
@@ -402,21 +460,8 @@ export class ExecutionEnvironmentLifecycleService {
           }
           : {}),
       });
-
-      const environment = await this.store.createEnvironment({
-        id: environmentId,
-        agentKey: input.session.agentKey,
-        kind: "disposable_container",
-        state: "ready",
-        runnerUrl: created.runnerUrl,
-        runnerCwd: created.runnerCwd,
-        rootPath: created.rootPath,
-        createdBySessionId: input.createdBySessionId,
-        createdForSessionId: input.session.id,
-        expiresAt,
-        metadata: mergeMetadata(input.metadata, created.metadata),
-      });
-      const binding = await this.store.bindSession({
+    }, async () => {
+      binding = await this.store.bindSession({
         sessionId: input.session.id,
         environmentId,
         alias: trimToUndefined(input.alias) ?? DEFAULT_DISPOSABLE_ALIAS,
@@ -426,31 +471,9 @@ export class ExecutionEnvironmentLifecycleService {
         toolPolicy,
       });
 
-      return {environment, binding};
-    } catch (error) {
-      if (created) {
-        await this.manager.stopEnvironment(environmentId).catch(() => {});
-      }
-      await this.store.createEnvironment({
-        id: environmentId,
-        agentKey: input.session.agentKey,
-        kind: "disposable_container",
-        state: "failed",
-        runnerUrl: created?.runnerUrl,
-        runnerCwd: created?.runnerCwd,
-        rootPath: created?.rootPath,
-        createdBySessionId: input.createdBySessionId,
-        createdForSessionId: input.session.id,
-        expiresAt,
-        metadata: mergeMetadata(
-          input.metadata,
-          created?.metadata,
-          readExecutionEnvironmentSetupErrorMetadata(error),
-          errorMetadata(error),
-        ),
-      });
-      throw error;
-    }
+      return undefined;
+    });
+    return {environment: ready, binding: binding!};
   }
 
   async createStandaloneDisposableEnvironment(
@@ -474,8 +497,9 @@ export class ExecutionEnvironmentLifecycleService {
 
     const environmentId = trimToUndefined(input.environmentId) ?? buildStandaloneEnvironmentId(ownerSessionId);
     const expiresAt = input.ttlMs === undefined ? undefined : Date.now() + input.ttlMs;
-    await this.store.createEnvironment({
+    const environment = await this.store.reserveEnvironment({
       id: environmentId,
+      operationId: randomUUID(),
       agentKey,
       kind: "disposable_container",
       state: "provisioning",
@@ -483,11 +507,11 @@ export class ExecutionEnvironmentLifecycleService {
       expiresAt,
       metadata: input.metadata,
     });
+    if (!environment) throw new Error(`Execution environment ${environmentId} already exists; create requires a new environment id.`);
 
-    let created: DisposableEnvironmentCreateResult | null = null;
-    try {
+    return this.provisionEnvironment(environment, async () => {
       const runnerAuthToken = this.resolveRunnerAuthToken(agentKey, environmentId);
-      created = await this.manager.createDisposableEnvironment({
+      return this.manager!.createDisposableEnvironment({
         agentKey,
         sessionId: ownerSessionId,
         environmentId,
@@ -495,7 +519,7 @@ export class ExecutionEnvironmentLifecycleService {
         ...(input.ttlMs === undefined ? {} : {ttlMs: input.ttlMs}),
         ...(input.metadata === undefined ? {} : {metadata: input.metadata}),
       });
-
+    }, async (created) => {
       let setupMetadata: JsonObject | undefined;
       if (input.setupScript) {
         const filesystem = readExecutionEnvironmentFilesystemMetadata(created.metadata);
@@ -512,41 +536,8 @@ export class ExecutionEnvironmentLifecycleService {
         });
       }
 
-      return this.store.createEnvironment({
-        id: environmentId,
-        agentKey,
-        kind: "disposable_container",
-        state: "ready",
-        runnerUrl: created.runnerUrl,
-        runnerCwd: created.runnerCwd,
-        rootPath: created.rootPath,
-        createdBySessionId: ownerSessionId,
-        expiresAt,
-        metadata: mergeMetadata(input.metadata, created.metadata, setupMetadata),
-      });
-    } catch (error) {
-      if (created) {
-        await this.manager.stopEnvironment(environmentId).catch(() => {});
-      }
-      await this.store.createEnvironment({
-        id: environmentId,
-        agentKey,
-        kind: "disposable_container",
-        state: "failed",
-        runnerUrl: created?.runnerUrl,
-        runnerCwd: created?.runnerCwd,
-        rootPath: created?.rootPath,
-        createdBySessionId: ownerSessionId,
-        expiresAt,
-        metadata: mergeMetadata(
-          input.metadata,
-          created?.metadata,
-          readExecutionEnvironmentSetupErrorMetadata(error),
-          errorMetadata(error),
-        ),
-      });
-      throw error;
-    }
+      return setupMetadata;
+    });
   }
 
   async attachSessionToDisposableEnvironment(
@@ -570,6 +561,7 @@ export class ExecutionEnvironmentLifecycleService {
     if (environment.createdBySessionId !== ownerSessionId) {
       throw new Error(`Execution environment ${environment.id} is not owned by session ${ownerSessionId}.`);
     }
+    assertIdleEnvironment(environment);
     if (environment.state === "stopped" || isExpired(environment)) {
       environment = await this.restartDisposableEnvironment(environment, {
         ttlMs: isExpired(environment) ? DEFAULT_DISPOSABLE_ENVIRONMENT_TTL_MS : undefined,
@@ -670,6 +662,7 @@ export class ExecutionEnvironmentLifecycleService {
     if (environment.agentKey !== input.session.agentKey) {
       throw new Error(`Execution environment ${environment.id} does not belong to agent ${input.session.agentKey}.`);
     }
+    assertIdleEnvironment(environment);
     if (environment.state === "ready" && !isExpired(environment)) {
       return environment;
     }
@@ -697,6 +690,7 @@ export class ExecutionEnvironmentLifecycleService {
     if (!this.manager) {
       throw new Error("Disposable execution environment manager is not configured.");
     }
+    assertIdleEnvironment(environment);
 
     const managerSessionId = environment.createdForSessionId ?? environment.createdBySessionId;
     if (!managerSessionId) {
@@ -708,47 +702,74 @@ export class ExecutionEnvironmentLifecycleService {
       );
     }
 
-    await this.store.createEnvironment({
-      ...environment,
+    const claimed = await this.store.claimEnvironmentOperation({
+      environmentId: environment.id,
+      operationId: randomUUID(),
+      expectedOperationId: environment.operationId,
+      expectedState: environment.state,
       state: "provisioning",
+      ...(isExpired(environment) ? {expiresBefore: Date.now()} : {}),
     });
+    if (!claimed) throw new Error(`Execution environment ${environment.id} changed before restart could claim it.`);
 
-    let created: DisposableEnvironmentCreateResult | null = null;
-    try {
+    const expiresAt = options.ttlMs === undefined ? claimed.expiresAt : Date.now() + options.ttlMs;
+    return this.provisionEnvironment(claimed, async () => {
       const ttlMs = options.ttlMs ?? remainingTtlMs(environment);
-      const expiresAt = options.ttlMs === undefined ? environment.expiresAt : Date.now() + options.ttlMs;
       const runnerAuthToken = this.resolveRunnerAuthToken(environment.agentKey, environment.id);
-      created = await this.manager.createDisposableEnvironment({
+      return this.manager!.createDisposableEnvironment({
         agentKey: environment.agentKey,
         sessionId: managerSessionId,
         environmentId: environment.id,
         ...(runnerAuthToken ? {runnerAuthToken} : {}),
         ...(ttlMs === undefined ? {} : {ttlMs}),
-        ...(environment.metadata === undefined ? {} : {metadata: environment.metadata}),
+        ...(claimed.metadata === undefined ? {} : {metadata: claimed.metadata}),
       });
-      return this.store.createEnvironment({
-        ...environment,
-        state: "ready",
-        runnerUrl: created.runnerUrl,
-        runnerCwd: created.runnerCwd,
-        rootPath: created.rootPath,
-        expiresAt,
-        metadata: mergeMetadata(environment.metadata, created.metadata),
-      });
+    }, undefined, expiresAt);
+  }
+
+  private async provisionEnvironment(
+    environment: ExecutionEnvironmentRecord,
+    create: () => Promise<DisposableEnvironmentCreateResult>,
+    prepare?: (created: DisposableEnvironmentCreateResult) => Promise<JsonValue | undefined>,
+    expiresAt?: number,
+  ): Promise<ExecutionEnvironmentRecord> {
+    let created: DisposableEnvironmentCreateResult;
+    try {
+      created = await create();
     } catch (error) {
-      if (created) {
-        await this.manager.stopEnvironment(environment.id).catch(() => {});
+      // A rejected HTTP request cannot establish whether Docker has finished.
+      throw uncertainOperation(environment, error);
+    }
+
+    let metadata: JsonValue | undefined;
+    try {
+      metadata = await prepare?.(created);
+    } catch (error) {
+      try {
+        await this.manager!.stopEnvironment(environment.id);
+      } catch (stopError) {
+        throw uncertainOperation(environment, stopError);
       }
-      await this.store.createEnvironment({
-        ...environment,
+      await settleEnvironmentOperation(this.store, {
+        environmentId: environment.id,
+        operationId: environment.operationId!,
+        operationState: "provisioning",
         state: "failed",
-        runnerUrl: created?.runnerUrl ?? environment.runnerUrl,
-        runnerCwd: created?.runnerCwd ?? environment.runnerCwd,
-        rootPath: created?.rootPath ?? environment.rootPath,
-        metadata: mergeMetadata(environment.metadata, created?.metadata, errorMetadata(error)),
+        ...created,
+        metadata: mergeMetadata(created.metadata, readExecutionEnvironmentSetupErrorMetadata(error), errorMetadata(error)),
       });
       throw error;
     }
+    // Receipt errors must never enter setup cleanup or repeat the manager call.
+    return settleEnvironmentOperation(this.store, {
+      environmentId: environment.id,
+      operationId: environment.operationId!,
+      operationState: "provisioning",
+      state: "ready",
+      ...created,
+      expiresAt,
+      metadata: mergeMetadata(created.metadata, metadata),
+    });
   }
 
   async stopEnvironment(environmentId: string): Promise<ExecutionEnvironmentRecord> {
@@ -783,14 +804,18 @@ export class ExecutionEnvironmentLifecycleService {
     let failed = 0;
     for (const environment of expired) {
       try {
-        await this.stopEnvironment(environment.id);
+        await stopExecutionEnvironment({
+          environmentId: environment.id,
+          manager: this.manager,
+          store: this.store,
+          expiresBefore: options.now ?? Date.now(),
+        });
         stopped += 1;
       } catch (error) {
         failed += 1;
-        await this.store.createEnvironment({
-          ...environment,
-          state: "failed",
-          metadata: mergeMetadata(environment.metadata, errorMetadata(error)),
+        console.error("Execution environment expiry sweep could not settle", {
+          environmentId: environment.id,
+          error: error instanceof Error ? error.message : String(error),
         });
       }
     }

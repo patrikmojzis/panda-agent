@@ -2285,7 +2285,7 @@ describe("Panda command CLI discovery", () => {
       resultShape: {
         deliveryId: "string",
         direction: "inbound|outbound",
-        status: "pending|sending|sent|failed",
+        status: "pending|sending|sent|failed|unknown",
       },
     });
     expect(JSON.parse(String(write.mock.calls[1]?.[0]))).toMatchObject({

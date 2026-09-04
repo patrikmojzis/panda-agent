@@ -1,7 +1,6 @@
 export const DISCORD_SOURCE = "discord";
 export const DISCORD_BOT_TOKEN_SECRET_KEY = "bot_token";
 export const DISCORD_API_BASE_URL = "https://discord.com/api/v10";
-export const DISCORD_GATEWAY_URL = "wss://gateway.discord.gg";
 export const DISCORD_MESSAGE_CONTENT_LIMIT = 2_000;
 
 export const DISCORD_GATEWAY_INTENTS = {

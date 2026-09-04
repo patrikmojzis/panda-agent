@@ -1,5 +1,5 @@
 import {execFile} from "node:child_process";
-import {mkdir, mkdtemp, readFile, rm, stat, writeFile} from "node:fs/promises";
+import {mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile} from "node:fs/promises";
 import {promisify} from "node:util";
 import os from "node:os";
 import path from "node:path";
@@ -79,22 +79,27 @@ const execFileAsync = promisify(execFile);
 
 describe("RemoteExecutionEnvironmentSetupRunner", () => {
   it("toolchain probe command emits valid observations without stderr", async () => {
-    const {stdout, stderr} = await execFileAsync("bash", ["-lc", TOOLCHAIN_PROBE_COMMAND], {
-      timeout: 30_000,
-    });
-
-    expect(stderr).toBe("");
-    const parsed = JSON.parse(stdout) as {
-      tools: Record<string, {status: string; path?: string; version?: string}>;
-    };
-    expect(parsed.tools.node).toMatchObject({status: "present"});
-    expect(parsed.tools.node?.path?.trim()).toBeTruthy();
-    expect(parsed.tools.node?.version?.trim()).toBeTruthy();
-    for (const tool of Object.values(parsed.tools)) {
-      if (tool.status === "present") {
-        expect(tool.path?.trim()).toBeTruthy();
-        expect(tool.version?.trim()).toBeTruthy();
+    const bin = await mkdtemp(path.join(os.tmpdir(), 'panda-toolchain-"quoted"-'));
+    try {
+      await symlink(process.execPath, path.join(bin, "node"));
+      for (const [tool, version] of [["pnpm", "10.33.0"], ["corepack", "0.34.0"]] as const) {
+        await writeFile(path.join(bin, tool), `#!/bin/sh\nprintf '%s\\n' '${version}'\n`, {mode: 0o755});
       }
+      const {stdout, stderr} = await execFileAsync("/bin/bash", ["-c", TOOLCHAIN_PROBE_COMMAND], {
+        env: {PATH: `${bin}:/usr/bin:/bin`},
+        timeout: 30_000,
+      });
+
+      expect(stderr).toBe("");
+      expect(JSON.parse(stdout)).toEqual({
+        tools: {
+          node: {status: "present", path: path.join(bin, "node"), version: process.version},
+          pnpm: {status: "present", path: path.join(bin, "pnpm"), version: "10.33.0"},
+          corepack: {status: "present", path: path.join(bin, "corepack"), version: "0.34.0"},
+        },
+      });
+    } finally {
+      await rm(bin, {recursive: true, force: true});
     }
   });
 

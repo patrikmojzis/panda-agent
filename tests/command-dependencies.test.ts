@@ -1,115 +1,55 @@
-import {describe, expect, it} from "vitest";
+import {describe, expect, it, vi} from "vitest";
 
-import {
-  buildDaemonA2ACommandDependencies,
-  buildDaemonChannelCommandDependencies,
-  buildRuntimeCommandDependencies,
-  buildSubagentCommandDependencies,
-} from "../src/app/runtime/command-dependencies.js";
-import type {AgentCommandModuleDependencies} from "../src/panda/commands/agent-command-modules.js";
+import type {MessageAgentCommandQueue} from "../src/domain/a2a/commands.js";
+import type {SubagentSpawnSessionCreator} from "../src/domain/subagents/commands.js";
+import {DEFAULT_AGENT_COMMAND_CATALOG, type AgentCommandModuleDependencies} from "../src/panda/commands/agent-command-modules.js";
 
-function fakeDependency<K extends keyof AgentCommandModuleDependencies>(
-  label: K,
-): NonNullable<AgentCommandModuleDependencies[K]> {
-  return {label} as NonNullable<AgentCommandModuleDependencies[K]>;
-}
+const scope = {agentKey: "panda", sessionId: "sender-session", threadId: "sender-thread"};
 
-describe("command dependency builders", () => {
-  it("builds runtime command dependencies with app URL adapters", () => {
-    const backgroundJobService = fakeDependency("backgroundJobService");
-    const braveThrottleGate = fakeDependency("braveThrottleGate");
-    const deps = buildRuntimeCommandDependencies({
-      env: {
-        PANDA_APPS_HOST: "127.0.0.1",
-        PANDA_APPS_PORT: "8092",
+describe("bound command services", () => {
+  it("delivers A2A text with the invoking session authority through the assembled catalog", async () => {
+    const queueMessage = vi.fn<MessageAgentCommandQueue["queueMessage"]>(async () => ({
+      delivery: {id: "delivery-one"}, targetAgentKey: "peer", targetSessionId: "peer-session", messageId: "message-one",
+    }));
+    const dependencies = {
+      a2aMessaging: {queueMessage},
+      a2aDeliveries: {
+        async getA2ADelivery() { return null; },
+        async listA2ADeliveries() { return []; },
       },
-      braveThrottleGate,
-      backgroundJobService,
-      commandFileResolver: fakeDependency("commandFileResolver"),
-      watchStore: fakeDependency("watchStore"),
-      watchMutations: fakeDependency("watchMutations"),
-      scheduledTasks: fakeDependency("scheduledTasks"),
-      apps: fakeDependency("apps"),
-      appAuth: fakeDependency("appAuth"),
-      agentSkills: fakeDependency("agentSkills"),
-      sessionPrompts: fakeDependency("sessionPrompts"),
-      sessionTodos: fakeDependency("sessionTodos"),
-      sessionHeartbeats: fakeDependency("sessionHeartbeats"),
-      subagentProfiles: fakeDependency("subagentProfiles"),
-      subagentInventory: fakeDependency("subagentInventory"),
-      postgresReadonly: fakeDependency("postgresReadonly"),
-      executionEnvironments: fakeDependency("executionEnvironments"),
-      environmentLifecycle: fakeDependency("environmentLifecycle"),
+      commandUploads: {
+        async inspect() { throw new Error("Text delivery must not inspect uploads."); },
+        async resolve() { throw new Error("Text delivery must not resolve uploads."); },
+        async remove() { throw new Error("Text delivery must not remove uploads."); },
+      },
+    } satisfies AgentCommandModuleDependencies;
+    const commands = DEFAULT_AGENT_COMMAND_CATALOG.createCommands(dependencies, {
+      registrationPhase: "daemon.a2a", requireAll: true,
     });
+    const send = commands.find((command) => command.descriptor.name === "a2a.send")!;
 
-    expect(deps.backgroundJobService).toBe(backgroundJobService);
-    expect(deps.braveThrottleGate).toBe(braveThrottleGate);
-    expect(deps.resolveAppLaunchUrls?.({
-      agentKey: "panda",
-      appSlug: "notes",
-      token: "open-token",
-    })).toMatchObject({
-      appUrl: "http://127.0.0.1:8092/panda/apps/notes/",
-      openUrl: "http://127.0.0.1:8092/apps/open?token=open-token",
-    });
+    await expect(send.execute({
+      command: "a2a.send", scope, input: {sessionId: "peer-session", items: [{type: "text", text: "Status update"}]},
+    })).resolves.toMatchObject({ok: true, output: {status: "queued", deliveryId: "delivery-one", targetSessionId: "peer-session"}});
+    expect(queueMessage).toHaveBeenCalledWith(expect.objectContaining({
+      senderAgentKey: "panda", senderSessionId: "sender-session", senderThreadId: "sender-thread", sessionId: "peer-session",
+    }));
   });
 
-  it("builds subagent command dependencies only from the subagent session creator", () => {
-    const subagentSessions = fakeDependency("subagentSessions");
-
-    expect(buildSubagentCommandDependencies(subagentSessions)).toEqual({
-      subagentSessions,
+  it("preserves subagent creation failures and invoking-session authority through its separate registration phase", async () => {
+    const createSubagentSession = vi.fn<SubagentSpawnSessionCreator["createSubagentSession"]>(async () => {
+      throw new Error("Subagent profile is disabled.");
     });
-  });
+    const [command] = DEFAULT_AGENT_COMMAND_CATALOG.createCommands(
+      {subagentSessions: {createSubagentSession}},
+      {registrationPhase: "runtime.subagent", requireAll: true},
+    );
 
-  it("builds daemon channel command dependencies for channel-scoped commands", () => {
-    const outboundDeliveries = {
-      enqueueDelivery: async () => ({}) as never,
-      listDeliveriesForTarget: async () => [],
-    };
-    const channelActions = {
-      enqueueAction: async () => ({}) as never,
-    };
-    const deps = {
-      commandFileResolver: fakeDependency("commandFileResolver"),
-      connectorAccounts: fakeDependency("connectorAccounts"),
-      conversations: {
-        listConversationBindings: async () => [],
-      } as NonNullable<AgentCommandModuleDependencies["conversations"]>,
-      channelMessages: fakeDependency("channelMessages"),
-      outboundDeliveries,
-      channelActions,
-      telegramStickers: fakeDependency("telegramStickers"),
-      email: fakeDependency("email"),
-    };
-    const built = buildDaemonChannelCommandDependencies(deps);
-
-    expect(built).toMatchObject({
-      commandFileResolver: deps.commandFileResolver,
-      connectorAccounts: deps.connectorAccounts,
-      conversations: deps.conversations,
-      channelMessages: deps.channelMessages,
-      telegramStickers: deps.telegramStickers,
-      email: deps.email,
-    });
-    expect(built.outboundDeliveries).toEqual({
-      enqueueDelivery: expect.any(Function),
-      listDeliveriesForTarget: expect.any(Function),
-      listConversationBindings: expect.any(Function),
-    });
-    expect(built.channelActions).toEqual({
-      enqueueAction: expect.any(Function),
-      listConversationBindings: expect.any(Function),
-    });
-  });
-
-  it("builds daemon A2A command dependencies for Panda-to-Panda commands", () => {
-    const deps = {
-      commandUploads: fakeDependency("commandUploads"),
-      a2aMessaging: fakeDependency("a2aMessaging"),
-      a2aDeliveries: fakeDependency("a2aDeliveries"),
-    };
-
-    expect(buildDaemonA2ACommandDependencies(deps)).toEqual(deps);
+    await expect(command!.execute({
+      command: "subagent.spawn", scope, input: {profile: "reader", prompt: "Read the report"},
+    })).rejects.toThrow("Subagent profile is disabled.");
+    expect(createSubagentSession).toHaveBeenCalledWith(expect.objectContaining({
+      agentKey: "panda", parentSessionId: "sender-session", profile: "reader", task: "Read the report",
+    }));
   });
 });

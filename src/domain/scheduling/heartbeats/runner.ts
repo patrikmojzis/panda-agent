@@ -42,7 +42,7 @@ export interface HeartbeatPromptContext {
 
 export interface HeartbeatRunnerOptions {
   sessions: HeartbeatRunnerSessionStore;
-  coordinator: Pick<ThreadRuntimeCoordinator, "isThreadBusy" | "submitSessionInput">;
+  coordinator: Pick<ThreadRuntimeCoordinator, "isThreadBusy">;
   pollIntervalMs?: number;
   claimTtlMs?: number;
   resolvePromptContext?: (session: SessionRecord) => Promise<HeartbeatPromptContext> | HeartbeatPromptContext;
@@ -51,7 +51,7 @@ export interface HeartbeatRunnerOptions {
 
 export class HeartbeatRunner {
   private readonly sessions: HeartbeatRunnerSessionStore;
-  private readonly coordinator: Pick<ThreadRuntimeCoordinator, "isThreadBusy" | "submitSessionInput">;
+  private readonly coordinator: Pick<ThreadRuntimeCoordinator, "isThreadBusy">;
   private readonly claimTtlMs: number;
   private readonly resolvePromptContext?: HeartbeatRunnerOptions["resolvePromptContext"];
   private readonly onError?: (error: unknown, sessionId?: string) => Promise<void> | void;
@@ -165,26 +165,29 @@ export class HeartbeatRunner {
         return;
       }
 
-      await this.coordinator.submitSessionInput(heartbeat.sessionId, {
-        message: stringToUserMessage(buildHeartbeatPrompt(currentHeartbeat, heartbeat.nextFireAt, promptContext)),
-        source: HEARTBEAT_SOURCE,
-        identityId: deliveryTarget.session.createdByIdentityId,
-        metadata: {
-          heartbeat: {
-            kind: "interval",
-            scheduledFor: new Date(heartbeat.nextFireAt).toISOString(),
-            sessionId: deliveryTarget.session.id,
-          },
-        },
-      });
-      await this.sessions.recordHeartbeatResult({
+      const acceptance = {
         sessionId: deliveryTarget.session.id,
         claimedBy,
         configRevision: heartbeat.configRevision,
         attemptedAt: now,
         lastFireAt: now,
         lastSkipReason: null,
-      });
+        input: {
+          message: stringToUserMessage(buildHeartbeatPrompt(currentHeartbeat, heartbeat.nextFireAt, promptContext)),
+          source: HEARTBEAT_SOURCE,
+          identityId: deliveryTarget.session.createdByIdentityId,
+          metadata: {heartbeat: {kind: "interval", scheduledFor: new Date(heartbeat.nextFireAt).toISOString(),
+            sessionId: deliveryTarget.session.id}},
+        },
+      };
+      for (let attempt = 0; ; attempt += 1) {
+        try {
+          await this.sessions.recordHeartbeatResult(acceptance);
+          break;
+        } catch (error) {
+          if (attempt === 2) throw error;
+        }
+      }
     } catch (error) {
       if (!recordedSkip) {
         await this.sessions.recordHeartbeatResult({

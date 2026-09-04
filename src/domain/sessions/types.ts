@@ -1,3 +1,4 @@
+import type {ThreadInputPayload} from "../threads/runtime/types.js";
 import type {ThinkingLevel} from "@earendil-works/pi-ai";
 
 import type {JsonValue} from "../../lib/json.js";
@@ -108,6 +109,7 @@ export interface ClaimSessionHeartbeatInput {
 }
 
 export interface RecordSessionHeartbeatResultInput {
+  input?: ThreadInputPayload;
   sessionId: string;
   claimedBy: string;
   configRevision: number;

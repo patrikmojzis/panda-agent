@@ -6,6 +6,8 @@ sort dated filenames newest first.
 
 ## Current
 
+- [Desloppify — active context and implementation record](./desloppify/README.md)
+- [2026-09-04 — Codebase Deslopification and Architecture Simplification](./2026-09-04-codebase-deslopification.md)
 - [2026-09-01 — Channel Action Reconciliation and Typing Expiry](./2026-09-01-channel-action-reconciliation-and-typing-expiry.md)
 - [2026-08-31 — WhatsApp Stickers and Looping Media](./2026-08-31-whatsapp-stickers-and-looping-media.md)
 - [2026-08-31 — Per-Agent Live Voice Configuration](./2026-08-31-agent-live-voice-configuration.md)

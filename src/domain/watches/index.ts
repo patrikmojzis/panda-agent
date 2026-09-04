@@ -9,20 +9,19 @@ export {
 export {WatchRunner, type WatchEvaluator, type WatchRunnerOptions} from "./runner.js";
 export {parseWatchDetectorConfig, parseWatchSourceConfig} from "./config.js";
 export type {
-  RecordWatchEventResult,
   WatchStore,
 } from "./store.js";
 export {
   parseWatchThreadInputMetadata,
   type ClaimWatchInput,
   type ClaimWatchResult,
-  type CompleteWatchRunInput,
+  type AcceptWatchEvaluationInput,
+  type RenewWatchClaimInput,
   type CreateWatchInput,
   type DisableWatchInput,
   type FailWatchRunInput,
   type ListDueWatchesInput,
   type ListWatchRunsInput,
-  type RecordWatchEventInput,
   type StartWatchRunInput,
   type UpdateWatchInput,
   type WatchCollectionFieldPathMap,

@@ -1,5 +1,6 @@
 import {POSTGRES_CONNECTOR_LEASE_TABLE} from "../../connector-leases/postgres-schema.js";
 import type {PgQueryable} from "../../../lib/postgres-query.js";
+import {summarizeRuntimeError} from "../../../lib/runtime-error-summary.js";
 import type {SessionTableNames} from "../../sessions/postgres-shared.js";
 import {parseRunRow} from "./postgres-rows.js";
 import type {ThreadRuntimeTableNames} from "./postgres-shared.js";
@@ -336,6 +337,11 @@ export async function completeOwnedThreadRun(input: {
         error = CASE
           WHEN run.abort_requested_at IS NULL THEN NULL
           ELSE COALESCE(run.abort_reason, 'Run aborted before completion.')
+        END,
+        error_summary = CASE
+          WHEN run.abort_requested_at IS NULL THEN NULL
+          WHEN run.abort_reason IS NULL THEN 'Run aborted before completion.'
+          ELSE run.error_summary
         END
     FROM active_run
     WHERE run.id = active_run.id
@@ -391,7 +397,8 @@ async function failOwnedThreadRunWithWakePolicy(
       UPDATE ${input.tables.runs} AS run
       SET status = 'failed',
           finished_at = NOW(),
-          error = $2
+          error = $2,
+          error_summary = $5
       FROM active_run
       WHERE run.id = active_run.id
       RETURNING run.*
@@ -451,6 +458,7 @@ async function failOwnedThreadRunWithWakePolicy(
     input.error ?? null,
     input.notificationChannel,
     rearmWithoutPendingInput,
+    summarizeRuntimeError(input.error),
   ]);
   const row = result.rows[0] as Record<string, unknown> | undefined;
   if (!row) {
@@ -495,7 +503,8 @@ export async function failOrphanedThreadRuns(input: {
       UPDATE ${input.tables.runs} AS run
       SET status = 'failed',
           finished_at = NOW(),
-          error = $4
+          error = $4,
+          error_summary = $7
       FROM orphaned_run
       WHERE run.id = orphaned_run.id
       RETURNING run.*
@@ -556,6 +565,7 @@ export async function failOrphanedThreadRuns(input: {
     input.error,
     input.limit,
     input.notificationChannel,
+    summarizeRuntimeError(input.error),
   ]);
   return result.rows.map((row) => parseRunRow(row as Record<string, unknown>));
 }

@@ -40,7 +40,9 @@ export interface DiscordChannelListCommandServices {
   };
 }
 
-export interface DiscordHistoryCommandServices extends DiscordChannelListCommandServices {
+export interface DiscordHistoryCommandServices {
+  connectorAccounts: DiscordChannelListCommandServices["connectorAccounts"];
+  conversations: ConversationBindingAuthorizer;
   messages: {
     listChannelMessages(filter: ThreadChannelMessageFilter): Promise<readonly ThreadMessageRecord[]>;
   };
@@ -492,8 +494,8 @@ async function findDiscordChannelBinding(
     channelId: string;
   },
   request: CommandRequest,
-  services: DiscordChannelListCommandServices,
-): Promise<JsonObject> {
+  services: Pick<DiscordHistoryCommandServices, "connectorAccounts" | "conversations">,
+): Promise<ConversationBinding> {
   const accounts = selectEnabledDiscordAccounts(await services.connectorAccounts.listAccounts({
     source: DISCORD_SOURCE,
     status: "enabled",
@@ -503,19 +505,15 @@ async function findDiscordChannelBinding(
     throw new Error(`discord.channel.info found no enabled Discord connector ${input.connectorKey}.`);
   }
 
-  const matches: JsonObject[] = [];
+  const matches: ConversationBinding[] = [];
   for (const account of accounts) {
-    const bindings = await services.conversations.listConversationBindings({
+    const binding = await services.conversations.getConversationBinding({
       source: DISCORD_SOURCE,
       connectorKey: account.connectorKey,
+      externalConversationId: input.channelId,
     });
-    for (const binding of bindings) {
-      if (
-        binding.sessionId === request.scope.sessionId
-        && binding.externalConversationId === input.channelId
-      ) {
-        matches.push(serializeDiscordChannelBinding(account, binding));
-      }
+    if (binding?.sessionId === request.scope.sessionId) {
+      matches.push(binding);
     }
   }
 
@@ -588,10 +586,7 @@ export async function executeDiscordHistoryCommand(
 ): Promise<JsonObject> {
   const limit = clampDiscordHistoryLimit(input.limit);
   const direction = input.direction ?? "all";
-  const channel = await findDiscordChannelBinding(input, request, services);
-  const connectorKey = readRequiredString(channel.connectorKey, "discord.history channel.connectorKey");
-  const channelId = readRequiredString(channel.channelId, "discord.history channel.channelId");
-  const sessionId = readRequiredString(channel.sessionId, "discord.history channel.sessionId");
+  const {connectorKey, externalConversationId: channelId, sessionId} = await findDiscordChannelBinding(input, request, services);
 
   const [messages, deliveries] = await Promise.all([
     direction === "outbound"

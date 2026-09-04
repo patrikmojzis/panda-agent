@@ -3,10 +3,12 @@ import type {AddressInfo} from "node:net";
 
 import {
   GatewayAttachmentConflictError,
+  GatewayUploadAdmissionError,
   GatewayEventConflictError,
 } from "../../domain/gateway/postgres.js";
 import {stripHttpPathPrefix} from "../../lib/http-path-prefix.js";
 import {writeJsonResponse} from "../../lib/http.js";
+import {createGatewayUploadJanitor} from "./attachment-storage.js";
 import {acceptGatewayAttachmentUploadRequest} from "./attachment-acceptance.js";
 import {acceptGatewayDeviceCommandRequest} from "./device-commands.js";
 import {GatewayHttpError} from "./http-body.js";
@@ -16,6 +18,8 @@ import {
   DEFAULT_GATEWAY_ATTACHMENT_BYTES_PER_HOUR,
   DEFAULT_GATEWAY_ATTACHMENT_RETENTION_MS,
   DEFAULT_GATEWAY_ATTACHMENT_UPLOAD_TTL_MS,
+  DEFAULT_GATEWAY_MAX_CONCURRENT_ATTACHMENT_UPLOADS,
+  DEFAULT_GATEWAY_ATTACHMENT_REQUEST_TIMEOUT_MS,
   DEFAULT_GATEWAY_DEVICE_COMMAND_MAX_WAIT_MS,
   DEFAULT_GATEWAY_HOST,
   DEFAULT_GATEWAY_MAX_ACTIVE_TOKENS_PER_SOURCE,
@@ -71,9 +75,26 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
   const attachmentAllowedMimeTypes = options.attachmentAllowedMimeTypes ?? DEFAULT_GATEWAY_ATTACHMENT_ALLOWED_MIME_TYPES;
   const pathPrefix = options.pathPrefix ?? resolveGatewayPathPrefix(env);
   const network = resolveGatewayNetworkControls({env, host});
+  const maxConcurrentAttachmentUploads = options.maxConcurrentAttachmentUploads ?? DEFAULT_GATEWAY_MAX_CONCURRENT_ATTACHMENT_UPLOADS;
+  let activeAttachmentUploads = 0;
 
   const server = createServer(async (request, response) => {
+    let uploadDeadline: number | undefined;
+    let uploadTimer: NodeJS.Timeout | undefined;
+    const onUploadError = () => {};
     try {
+      const requestUrl = new URL(request.url ?? "/", `http://${request.headers.host ?? "gateway.local"}`);
+      requestUrl.pathname = stripHttpPathPrefix(requestUrl.pathname, pathPrefix);
+      if (request.method === "POST" && requestUrl.pathname === "/v2/attachments") {
+        if (activeAttachmentUploads >= maxConcurrentAttachmentUploads) {
+          throw new GatewayUploadAdmissionError("Concurrent attachment validation limit exceeded.");
+        }
+        activeAttachmentUploads += 1;
+        uploadDeadline = Date.now() + (options.attachmentRequestTimeoutMs ?? DEFAULT_GATEWAY_ATTACHMENT_REQUEST_TIMEOUT_MS);
+        request.on("error", onUploadError);
+        uploadTimer = setTimeout(() => request.destroy(new GatewayHttpError(408, "Attachment upload deadline exceeded.")), uploadDeadline - Date.now());
+        uploadTimer.unref();
+      }
       await admitGatewayHttpRequest({
         network,
         rateLimitPerMinute,
@@ -81,8 +102,6 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
         store: options.store,
       });
 
-      const requestUrl = new URL(request.url ?? "/", `http://${request.headers.host ?? "gateway.local"}`);
-      requestUrl.pathname = stripHttpPathPrefix(requestUrl.pathname, pathPrefix);
       if (request.method === "GET" && requestUrl.pathname === "/health") {
         writeJsonResponse(response, 200, {ok: true});
         return;
@@ -168,6 +187,9 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
           allowedMimeTypes: attachmentAllowedMimeTypes,
           attachmentBytesPerHour,
           attachmentUploadTtlMs,
+          attachmentRequestTimeoutMs: options.attachmentRequestTimeoutMs ?? DEFAULT_GATEWAY_ATTACHMENT_REQUEST_TIMEOUT_MS,
+          deadline: uploadDeadline,
+          maxConcurrentAttachmentUploads,
           env,
           maxBytes: maxAttachmentBytes,
           maxPendingAttachmentsPerSource,
@@ -211,6 +233,10 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
         });
         return;
       }
+      if (error instanceof GatewayUploadAdmissionError) {
+        writeJsonResponse(response, 429, {ok: false, error: error.message});
+        return;
+      }
       if (error instanceof GatewayHttpError) {
         writeJsonResponse(response, error.statusCode, {
           ok: false,
@@ -225,6 +251,13 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
         ok: false,
         error: "Internal server error.",
       });
+    } finally {
+      if (uploadTimer) clearTimeout(uploadTimer);
+      if (uploadDeadline !== undefined) {
+        request.off("error", onUploadError);
+        // A deadline cannot cancel DB waits or filesystem writes; keep the slot until they finish.
+        activeAttachmentUploads -= 1;
+      }
     }
   });
 
@@ -236,12 +269,16 @@ export async function startGatewayServer(options: GatewayServerOptions): Promise
     });
   });
 
+  const janitor = createGatewayUploadJanitor({store: options.store, env});
+  janitor.start();
+  server.once("close", () => { void janitor.stop(); });
   const address = server.address();
   return {
     host,
     port: address && typeof address === "object" ? (address as AddressInfo).port : port,
     server,
     async close(): Promise<void> {
+      await janitor.stop();
       await new Promise<void>((resolve, reject) => {
         server.close((error) => {
           if (error) {

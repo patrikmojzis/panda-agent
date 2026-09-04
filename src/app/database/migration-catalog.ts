@@ -20,6 +20,12 @@ import {WHATSAPP_CALL_CONTROLS_MIGRATION} from "./migrations/0016-whatsapp-call-
 import {CHANNEL_ACTION_EXPIRY_MIGRATION} from "./migrations/0017-channel-action-expiry.js";
 import {SESSION_COMPACTION_REQUESTS_MIGRATION} from "./migrations/0018-session-compaction-requests.js";
 import {HEARTBEAT_CADENCE_MIGRATION} from "./migrations/0019-heartbeat-cadence.js";
+import {CHANNEL_RECEIPT_OWNERSHIP_MIGRATION} from "./migrations/0020-channel-receipt-ownership.js";
+import {ENVIRONMENT_OPERATION_OWNERSHIP_MIGRATION} from "./migrations/0021-environment-operation-ownership.js";
+import {WATCH_CLAIM_OWNERSHIP_MIGRATION} from "./migrations/0022-watch-claim-ownership.js";
+import {GATEWAY_UPLOAD_RESERVATIONS_MIGRATION} from "./migrations/0023-gateway-upload-reservations.js";
+import {GATEWAY_INPUT_RECEIPTS_MIGRATION} from "./migrations/0024-gateway-input-receipts.js";
+import {RUNTIME_ERROR_SUMMARY_MIGRATION} from "./migrations/0025-runtime-error-summary.js";
 import {reconcileReadonlySessionRole} from "./readonly-role.js";
 
 export const PANDA_SCHEMA_MIGRATIONS = Object.freeze([
@@ -42,6 +48,12 @@ export const PANDA_SCHEMA_MIGRATIONS = Object.freeze([
   CHANNEL_ACTION_EXPIRY_MIGRATION,
   SESSION_COMPACTION_REQUESTS_MIGRATION,
   HEARTBEAT_CADENCE_MIGRATION,
+  CHANNEL_RECEIPT_OWNERSHIP_MIGRATION,
+  ENVIRONMENT_OPERATION_OWNERSHIP_MIGRATION,
+  WATCH_CLAIM_OWNERSHIP_MIGRATION,
+  GATEWAY_UPLOAD_RESERVATIONS_MIGRATION,
+  GATEWAY_INPUT_RECEIPTS_MIGRATION,
+  RUNTIME_ERROR_SUMMARY_MIGRATION,
 ]);
 
 /** Entry points bundled by CI to prove every persisted checksum matches code. */
@@ -65,6 +77,12 @@ export const PANDA_SCHEMA_MIGRATION_SOURCES: Readonly<Record<string, string>> = 
   "0017_channel_action_expiry": "src/app/database/migrations/0017-channel-action-expiry.ts",
   "0018_session_compaction_requests": "src/app/database/migrations/0018-session-compaction-requests.ts",
   "0019_heartbeat_cadence": "src/app/database/migrations/0019-heartbeat-cadence.ts",
+  "0020_channel_receipt_ownership": "src/app/database/migrations/0020-channel-receipt-ownership.ts",
+  "0021_environment_operation_ownership": "src/app/database/migrations/0021-environment-operation-ownership.ts",
+  "0022_watch_claim_ownership": "src/app/database/migrations/0022-watch-claim-ownership.ts",
+  "0023_gateway_upload_reservations": "src/app/database/migrations/0023-gateway-upload-reservations.ts",
+  "0024_gateway_input_receipts": "src/app/database/migrations/0024-gateway-input-receipts.ts",
+  "0025_runtime_error_summary": "src/app/database/migrations/0025-runtime-error-summary.ts",
 });
 
 export interface CreatePandaSchemaMigratorOptions {

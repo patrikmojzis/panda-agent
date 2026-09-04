@@ -166,7 +166,12 @@ export interface TelegramChatListCommandServices {
   };
 }
 
-export interface TelegramHistoryCommandServices extends TelegramChatListCommandServices {
+export interface TelegramChatLookupCommandServices {
+  connectorAccounts: TelegramChatListCommandServices["connectorAccounts"];
+  conversations: ConversationBindingAuthorizer;
+}
+
+export interface TelegramHistoryCommandServices extends TelegramChatLookupCommandServices {
   messages: {
     listChannelMessages(filter: ThreadChannelMessageFilter): Promise<readonly ThreadMessageRecord[]>;
   };
@@ -175,7 +180,7 @@ export interface TelegramHistoryCommandServices extends TelegramChatListCommandS
   };
 }
 
-export interface TelegramMediaFetchCommandServices extends TelegramChatListCommandServices {
+export interface TelegramMediaFetchCommandServices extends TelegramChatLookupCommandServices {
   messages: {
     findChannelMedia(filter: ThreadChannelMediaFilter): Promise<ThreadChannelMediaRecord | null>;
   };
@@ -1779,8 +1784,8 @@ async function findTelegramChatBinding(
     conversationId: string;
   },
   request: CommandRequest,
-  services: TelegramChatListCommandServices,
-): Promise<JsonObject> {
+  services: TelegramChatLookupCommandServices,
+): Promise<{account: ConnectorAccountRecord; binding: ConversationBinding}> {
   parseTelegramActionConversationId(input.conversationId);
   const accounts = selectEnabledTelegramAccounts(await services.connectorAccounts.listAccounts({
     source: TELEGRAM_SOURCE,
@@ -1791,19 +1796,15 @@ async function findTelegramChatBinding(
     throw new Error(`telegram.chat.info found no enabled Telegram connector ${input.connectorKey}.`);
   }
 
-  const matches: JsonObject[] = [];
+  const matches: {account: ConnectorAccountRecord; binding: ConversationBinding}[] = [];
   for (const account of accounts) {
-    const bindings = await services.conversations.listConversationBindings({
+    const binding = await services.conversations.getConversationBinding({
       source: TELEGRAM_SOURCE,
       connectorKey: account.connectorKey,
+      externalConversationId: input.conversationId,
     });
-    for (const binding of bindings) {
-      if (
-        binding.sessionId === request.scope.sessionId
-        && binding.externalConversationId === input.conversationId
-      ) {
-        matches.push(serializeTelegramChatBinding(account, binding));
-      }
+    if (binding?.sessionId === request.scope.sessionId) {
+      matches.push({account, binding});
     }
   }
 
@@ -1870,12 +1871,12 @@ export async function executeTelegramChatInfoCommand(
     conversationId: string;
   },
   request: CommandRequest,
-  services: TelegramChatListCommandServices,
+  services: TelegramChatLookupCommandServices,
 ): Promise<JsonObject> {
-  const chat = await findTelegramChatBinding(input, request, services);
+  const {account, binding} = await findTelegramChatBinding(input, request, services);
   return requireCommandJsonObject({
     ok: true,
-    chat,
+    chat: serializeTelegramChatBinding(account, binding),
   }, "telegram.chat.info result");
 }
 
@@ -1886,10 +1887,7 @@ export async function executeTelegramHistoryCommand(
 ): Promise<JsonObject> {
   const limit = clampTelegramHistoryLimit(input.limit);
   const direction = input.direction ?? "all";
-  const chat = await findTelegramChatBinding(input, request, services);
-  const connectorKey = readRequiredString(chat.connectorKey, "telegram.history chat.connectorKey");
-  const conversationId = readRequiredString(chat.conversationId, "telegram.history chat.conversationId");
-  const sessionId = readRequiredString(chat.sessionId, "telegram.history chat.sessionId");
+  const {binding: {connectorKey, externalConversationId: conversationId, sessionId}} = await findTelegramChatBinding(input, request, services);
 
   const [messages, deliveries] = await Promise.all([
     direction === "outbound"
@@ -1940,10 +1938,7 @@ export async function executeTelegramMediaFetchCommand(
   services: TelegramMediaFetchCommandServices,
   fileResolver: CommandWritableFileResolver,
 ): Promise<{output: JsonObject; artifact?: CommandArtifactDescriptor}> {
-  const chat = await findTelegramChatBinding(input, request, services);
-  const connectorKey = readRequiredString(chat.connectorKey, "telegram.media.fetch chat.connectorKey");
-  const conversationId = readRequiredString(chat.conversationId, "telegram.media.fetch chat.conversationId");
-  const sessionId = readRequiredString(chat.sessionId, "telegram.media.fetch chat.sessionId");
+  const {binding: {connectorKey, externalConversationId: conversationId, sessionId}} = await findTelegramChatBinding(input, request, services);
   const found = await services.messages.findChannelMedia({
     sessionId,
     source: TELEGRAM_SOURCE,
@@ -2347,7 +2342,7 @@ export function createTelegramChatListCommand(services: TelegramChatListCommandS
   };
 }
 
-export function createTelegramChatInfoCommand(services: TelegramChatListCommandServices): RegisteredCommand {
+export function createTelegramChatInfoCommand(services: TelegramChatLookupCommandServices): RegisteredCommand {
   return {
     descriptor: telegramChatInfoCommandDescriptor,
     async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {

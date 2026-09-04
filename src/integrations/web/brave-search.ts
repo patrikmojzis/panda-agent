@@ -15,7 +15,6 @@ export const BRAVE_LLM_CONTEXT_ENDPOINT = "https://api.search.brave.com/res/v1/l
 export const BRAVE_PLACE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/local/place_search";
 export const BRAVE_PLACE_POIS_ENDPOINT = "https://api.search.brave.com/res/v1/local/pois";
 export const BRAVE_PLACE_DESCRIPTIONS_ENDPOINT = "https://api.search.brave.com/res/v1/local/descriptions";
-export const BRAVE_SEARCH_ENDPOINT = BRAVE_WEB_SEARCH_ENDPOINT;
 export const DEFAULT_BRAVE_SEARCH_COUNT = 5;
 export const MAX_BRAVE_WEB_SEARCH_COUNT = 20;
 export const MAX_BRAVE_NEWS_SEARCH_COUNT = 50;
@@ -24,7 +23,6 @@ export const MAX_BRAVE_IMAGE_SEARCH_COUNT = 200;
 export const MAX_BRAVE_LLM_CONTEXT_COUNT = 50;
 export const MAX_BRAVE_PLACE_SEARCH_COUNT = 100;
 export const MAX_BRAVE_PLACE_DETAIL_IDS = 20;
-export const MAX_BRAVE_SEARCH_COUNT = 10;
 export const DEFAULT_BRAVE_SEARCH_TIMEOUT_MS = 10_000;
 export const DEFAULT_BRAVE_RETRY_BUDGET_MS = 15_000;
 export const MAX_BRAVE_PHYSICAL_ATTEMPTS = 3;
@@ -453,10 +451,6 @@ function normalizePlaceUnits(value: string | undefined): "metric" | "imperial" |
   }
 
   return undefined;
-}
-
-export function hasBraveSearchApiKey(env: NodeJS.ProcessEnv = process.env): boolean {
-  return trimToNull(env.BRAVE_API_KEY) !== null;
 }
 
 function resolveApiKey(options: BraveSearchOptions): string {

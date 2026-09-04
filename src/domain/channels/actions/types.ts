@@ -1,6 +1,7 @@
 import type {ChannelTypingRequest} from "../types.js";
 
-export type ChannelActionStatus = "pending" | "sending" | "sent" | "failed" | "expired";
+/** An unknown outcome must be reconciled, never automatically redispatched or expired. */
+export type ChannelActionStatus = "pending" | "sending" | "sent" | "failed" | "expired" | "unknown";
 
 export interface TelegramReactionActionPayload {
   conversationId: string;
@@ -90,6 +91,7 @@ type ChannelActionRecordForKind<K extends ChannelActionKind> = {
   attemptCount: number;
   lastError?: string;
   claimedAt?: number;
+  claimToken?: string;
   completedAt?: number;
   expiresAt?: number;
   createdAt: number;

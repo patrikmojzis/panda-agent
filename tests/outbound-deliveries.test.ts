@@ -167,6 +167,7 @@ describe("PostgresOutboundDeliveryStore", () => {
 
     const sent = await store.markDeliverySent({
       id: delivery.id,
+      claimToken: claimed!.claimToken!,
       sent: [{ type: "text", externalMessageId: "101" }],
     });
     expect(sent).toMatchObject({
@@ -486,7 +487,7 @@ describe("PostgresOutboundDeliveryStore", () => {
     );
   });
 
-  it("marks abandoned sending deliveries as failed", async () => {
+  it("preserves abandoned sending deliveries as unknown outcomes", async () => {
     const db = newDb();
     db.public.registerFunction({
       name: "pg_notify",
@@ -527,14 +528,14 @@ describe("PostgresOutboundDeliveryStore", () => {
       channel: "whatsapp",
       connectorKey: "wa-1",
     });
-    const recovered = await store.failSendingDeliveries({
+    const recovered = await store.markSendingDeliveriesUnknown({
       channel: "whatsapp",
       connectorKey: "wa-1",
     }, "worker died");
 
     expect(recovered).toBe(1);
     await expect(store.getDelivery(delivery.id)).resolves.toMatchObject({
-      status: "failed",
+      status: "unknown",
       lastError: "worker died",
     });
   });
@@ -582,6 +583,7 @@ class MemoryDeliveryStore {
     }
 
     delivery.status = "sending";
+    delivery.claimToken = `claim-${delivery.id}`;
     delivery.attemptCount += 1;
     return delivery;
   }
@@ -600,7 +602,16 @@ class MemoryDeliveryStore {
     return delivery;
   }
 
-  async failSendingDeliveries(lookup: DeliveryWorkerLookup, error: string): Promise<number> {
+  async markDeliveryUnknown(input: FailDeliveryInput): Promise<OutboundDeliveryRecord> {
+    const delivery = await this.getDelivery(input.id);
+    if (delivery.status === "sending" && delivery.claimToken === input.claimToken) {
+      delivery.status = "unknown";
+      delivery.lastError = input.error;
+    }
+    return delivery;
+  }
+
+  async markSendingDeliveriesUnknown(lookup: DeliveryWorkerLookup, error: string): Promise<number> {
     let count = 0;
     for (const delivery of this.deliveries) {
       if (
@@ -608,7 +619,7 @@ class MemoryDeliveryStore {
         && delivery.channel === lookup.channel
         && delivery.target.connectorKey === lookup.connectorKey
       ) {
-        delivery.status = "failed";
+        delivery.status = "unknown";
         delivery.lastError = error;
         count += 1;
       }
@@ -791,5 +802,93 @@ describe("ChannelOutboundDeliveryWorker", () => {
     await worker.stop();
 
     expect(store.listener).toBeNull();
+  });
+});
+
+describe("outbound receipt settlement", () => {
+  async function prepare() {
+    const store = new MemoryDeliveryStore();
+    const delivery = await store.enqueueDelivery({
+      channel: "telegram",
+      target: {source: "telegram", connectorKey: "bot", externalConversationId: "chat"},
+      items: [{type: "text", text: "hello"}],
+    });
+    const send = vi.fn(async (request: OutboundRequest): Promise<OutboundResult> => ({
+      ok: true, channel: request.channel, target: request.target,
+      sent: [{type: "text", externalMessageId: "receipt"}],
+    }));
+    const onTerminalFailure = vi.fn(async () => {});
+    const onError = vi.fn();
+    const options = {store, adapter: {channel: "telegram", send, onTerminalFailure}, connectorKey: "bot", onError};
+    return {store, delivery, send, onTerminalFailure, onError, options};
+  }
+
+  it.each(["write rejected", "acknowledgement lost"] as const)("settles one send when its receipt %s", async (mode) => {
+    const h = await prepare();
+    const write = h.store.markDeliverySent.bind(h.store);
+    vi.spyOn(h.store, "markDeliverySent").mockImplementationOnce(async (input) => {
+      if (mode === "acknowledgement lost") await write(input);
+      throw new Error("database response lost");
+    });
+    const worker = new ChannelOutboundDeliveryWorker(h.options);
+    await worker.start({subscribeToNotifications: false});
+    await worker.triggerDrain();
+    await worker.stop();
+    expect(await h.store.getDelivery(h.delivery.id)).toMatchObject({
+      status: "sent", sent: [{type: "text", externalMessageId: "receipt"}], attemptCount: 1,
+    });
+    expect(h.send).toHaveBeenCalledOnce();
+    expect(h.onTerminalFailure).not.toHaveBeenCalled();
+    expect(h.onError).not.toHaveBeenCalled();
+  });
+
+  it("keeps exhausted success-receipt failures unknown through startup without cleanup or resend", async () => {
+    const h = await prepare();
+    vi.spyOn(h.store, "markDeliverySent").mockRejectedValue(new Error("receipt write unavailable"));
+    const worker = new ChannelOutboundDeliveryWorker(h.options);
+    await worker.start({subscribeToNotifications: false});
+    await worker.triggerDrain();
+    await worker.stop();
+    const restarted = new ChannelOutboundDeliveryWorker(h.options);
+    await restarted.start({subscribeToNotifications: false});
+    await restarted.triggerDrain();
+    await restarted.stop();
+    expect(await h.store.getDelivery(h.delivery.id)).toMatchObject({status: "unknown", attemptCount: 1});
+    expect(h.send).toHaveBeenCalledOnce();
+    expect(h.onTerminalFailure).not.toHaveBeenCalled();
+    expect(h.onError).toHaveBeenCalledWith(expect.objectContaining({message: expect.stringContaining("sent receipt could not be confirmed")}), h.delivery.id);
+  });
+
+  it("preserves ambiguity after database outage prevents both receipt and unknown-state writes", async () => {
+    const h = await prepare();
+    vi.spyOn(h.store, "markDeliverySent").mockRejectedValue(new Error("database unavailable"));
+    const markUnknown = vi.spyOn(h.store, "markDeliveryUnknown").mockRejectedValue(new Error("database unavailable"));
+    const worker = new ChannelOutboundDeliveryWorker(h.options);
+    await worker.start({subscribeToNotifications: false});
+    await worker.triggerDrain();
+    await worker.stop();
+    expect(h.delivery.status).toBe("sending");
+    markUnknown.mockRestore();
+    const restarted = new ChannelOutboundDeliveryWorker(h.options);
+    await restarted.start({subscribeToNotifications: false});
+    await restarted.triggerDrain();
+    await restarted.stop();
+    expect(h.delivery.status).toBe("unknown");
+    expect(h.send).toHaveBeenCalledOnce();
+    expect(h.onTerminalFailure).not.toHaveBeenCalled();
+  });
+
+  it("reports failure-receipt errors without treating them as a second transport attempt", async () => {
+    const h = await prepare();
+    h.send.mockRejectedValue(new Error("transport rejected"));
+    vi.spyOn(h.store, "markDeliveryFailed").mockRejectedValue(new Error("failure receipt unavailable"));
+    const worker = new ChannelOutboundDeliveryWorker(h.options);
+    await worker.start({subscribeToNotifications: false});
+    await worker.triggerDrain();
+    await worker.stop();
+    expect(h.delivery.status).toBe("unknown");
+    expect(h.send).toHaveBeenCalledOnce();
+    expect(h.onTerminalFailure).not.toHaveBeenCalled();
+    expect(h.onError).toHaveBeenCalledWith(expect.objectContaining({message: expect.stringContaining("failed receipt could not be confirmed")}), h.delivery.id);
   });
 });

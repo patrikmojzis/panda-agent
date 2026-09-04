@@ -9,6 +9,7 @@ import {
     hasOpenAICodexOauthToken,
     resolveAnthropicAccessToken,
     resolveCodexHome,
+    resolveDefaultAgentModelSelector,
     resolveOpenAICodexAuthFilePath,
     resolveOpenAICodexOauthToken,
 } from "../src/index.js";
@@ -45,6 +46,7 @@ describe("auth helpers", () => {
       expect(resolveOpenAICodexAuthFilePath(env)).toBe(path.join(tempDir, "auth.json"));
       expect(resolveOpenAICodexOauthToken({ env })).toBe("cached-codex-token");
       expect(hasOpenAICodexOauthToken({ env })).toBe(true);
+      expect(resolveDefaultAgentModelSelector({...env, OPENAI_CODEX_MODEL: "gpt-6-astra"})).toBe("openai-codex/gpt-6-astra");
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }

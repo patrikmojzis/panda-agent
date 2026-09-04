@@ -58,6 +58,21 @@ export interface RepairMissingSessionThreadInput {
   runtimeConfig?: Omit<UpdateSessionRuntimeConfigInput, "sessionId">;
 }
 
+type SessionLifecycleDependencies = Pick<CreateSessionWithThreadInput, "pool" | "sessionStore" | "threadStore">;
+
+export interface SessionLifecycle {
+  create(input: Omit<CreateSessionWithThreadInput, keyof SessionLifecycleDependencies>): Promise<{session: SessionRecord; thread: ThreadRecord}>;
+  reset(input: Omit<ResetSessionThreadInput, keyof SessionLifecycleDependencies>): Promise<ThreadRecord>;
+}
+
+/** Bind atomic session operations once; orchestration substitutes complete operations in tests. */
+export function createPostgresSessionLifecycle(dependencies: SessionLifecycleDependencies): SessionLifecycle {
+  return {
+    create: (input) => createSessionWithInitialThread({...dependencies, ...input}),
+    reset: (input) => resetSessionCurrentThread({...dependencies, ...input}),
+  };
+}
+
 async function lockExpectedCurrentThread(
   queryable: PgQueryable,
   sessionId: string,

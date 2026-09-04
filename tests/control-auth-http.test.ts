@@ -262,6 +262,7 @@ async function createHarness(options: {
   whatsapp?: Pick<ControlOperatorServiceOptions, "whatsappAuth" | "whatsappRuntime" | "whatsappLinks">;
 } = {}) {
   const db = newDb({noAstCoverageCheck: true});
+  db.public.registerFunction({name: "clock_timestamp", returns: DataType.timestamptz, impure: true, implementation: () => new Date()});
   db.public.registerFunction({name: "pg_notify", args: [DataType.text, DataType.text], returns: DataType.text, implementation: () => ""});
   db.public.registerFunction({name: "floor", args: [DataType.float], returns: DataType.float, implementation: Math.floor});
   db.public.registerFunction({
@@ -1589,84 +1590,28 @@ describe("Control operator HTTP", () => {
     await expect(invalidVisibility.json()).resolves.toEqual({error: "Control session visibility filter must be primary, subagent, or all."});
   });
 
-  it("filters work failures by severity/kind and sanitizes runtime summaries", async () => {
+  it("authenticates failure snapshots and forwards table filters without splitting counts from rows", async () => {
     const harness = await createHarness();
-    await harness.pool.query(`
-      INSERT INTO "runtime"."threads" (id, session_id)
-      VALUES ('thread-panda', 'session-panda'), ('thread-luna', 'session-luna')
-    `);
-    const visibleRuntimeError = `Provider runtime failed: Unknown model "claude-fable-5". token=sk-1234567890abcdef detail=Bad request {"messages":[{"content":"lowercase patient diagnosis should not leak"}],"stdout":"lowercase shell output"} failureKind=provider_error PRIVATE_RUNTIME_ERROR_MUST_NOT_LEAK`;
-    const shortPrefixRuntimeError = `Bad request {"id":"lowercase short prefix diagnosis should not leak","messages":[{"content":"short prefix secret"}]}`;
-    await harness.pool.query(`
-      INSERT INTO "runtime"."runs" (id, thread_id, status, started_at, finished_at, error) VALUES
-        ('00000000-0000-0000-0000-000000000901', 'thread-panda', 'failed', '2040-01-01T00:00:00.000Z', '2040-01-01T00:00:01.000Z', $1),
-        ('00000000-0000-0000-0000-000000000904', 'thread-panda', 'failed', '2040-01-01T00:00:02.000Z', '2040-01-01T00:00:03.000Z', $2),
-        ('00000000-0000-0000-0000-000000000903', 'thread-luna', 'failed', '2040-01-03T00:00:00.000Z', '2040-01-03T00:00:01.000Z', 'Luna runtime failed')
-    `, [visibleRuntimeError, shortPrefixRuntimeError]);
-    const task = await harness.scheduledTaskStore.createTask({
-      sessionId: "session-panda",
-      title: "Visible scheduled failure",
-      instruction: "PRIVATE_SCHEDULED_INSTRUCTION_MUST_NOT_LEAK",
-      schedule: {kind: "once", runAt: "2040-01-02T10:00:00.000Z"},
-    });
-    await harness.pool.query(`
-      INSERT INTO "runtime"."scheduled_task_runs" (id, task_id, session_id, scheduled_for, status, error, created_at, started_at, finished_at)
-      VALUES ('00000000-0000-0000-0000-000000000902', $1, 'session-panda', '2040-01-02T10:00:00.000Z', 'failed', 'PRIVATE_TASK_ERROR_MUST_NOT_LEAK', '2040-01-02T10:01:00.000Z', '2040-01-02T10:01:00.000Z', '2040-01-02T10:02:00.000Z')
-    `, [task.id]);
+    const snapshot = {
+      data: [{id: "runtime:failed-run", kind: "runtime_run" as const, severity: "critical" as const,
+        agentKey: "panda", source: "Runtime", summary: "Sanitized failure", targetRoute: "/agents/panda", createdAt: "2040-01-01T00:00:00.000Z"}],
+      counts: {total: 70, critical: 69, warning: 1},
+      meta: {total: 69, current_page: 2, per_page: 10, last_page: 7},
+    };
+    const read = vi.spyOn(harness.operator, "listWorkFailures").mockResolvedValue(snapshot);
     const base = await startHarnessServer(harness);
+    expect((await fetch(`${base}/api/control/work-failures`)).status).toBe(401);
+    expect(read).not.toHaveBeenCalled();
     const auth = await login(base, harness);
-
-    const critical = await fetch(`${base}/api/control/work-failures?severity=critical`, {headers: {cookie: auth.cookies}});
-    expect(critical.status).toBe(200);
-    const criticalBody = await critical.json() as {data: Array<{kind: string; severity: string; summary: string; detail?: string; sessionId?: string}>};
-    expect(criticalBody.data).toContainEqual(expect.objectContaining({
-      kind: "runtime_run",
-      severity: "critical",
-      sessionId: "session-panda",
-      summary: `Provider runtime failed: Unknown model "claude-fable-5". token=sk-1234567890abcdef detail=Bad request`,
-      detail: `Sanitized runtime error: Provider runtime failed: Unknown model "claude-fable-5". token=sk-1234567890abcdef detail=Bad request`,
-    }));
-    expect(criticalBody.data).toContainEqual(expect.objectContaining({
-      kind: "runtime_run",
-      severity: "critical",
-      sessionId: "session-panda",
-      summary: "Bad request",
-      detail: "Sanitized runtime error: Bad request",
-    }));
-    const shortPrefixFailure = criticalBody.data.find((failure) => failure.summary === "Bad request");
-    const shortPrefixFailureText = JSON.stringify({summary: shortPrefixFailure?.summary, detail: shortPrefixFailure?.detail});
-    for (const sentinel of [
-      '"id"',
-      '"messages"',
-      '"content"',
-      "lowercase short prefix diagnosis should not leak",
-      "short prefix secret",
-    ]) expect(shortPrefixFailureText).not.toContain(sentinel);
-    const criticalText = JSON.stringify(criticalBody);
-    expect(criticalText).toContain("Provider runtime failed: Unknown model");
-    expect(criticalText).toContain("token=sk-1234567890abcdef");
-    for (const sentinel of [
-      "PRIVATE_RUNTIME_ERROR_MUST_NOT_LEAK",
-      "PRIVATE_PROMPT_BODY_MUST_NOT_LEAK",
-      "PRIVATE_STDOUT_MUST_NOT_LEAK",
-      "lowercase patient diagnosis should not leak",
-      "lowercase shell output",
-      "lowercase short prefix diagnosis should not leak",
-      "short prefix secret",
-      "LUNA_PRIVATE_WORK_FAILURE_ERROR_MUST_NOT_LEAK",
-      "response body",
-      "stdout",
-      "/workspace/private.ts",
-    ]) expect(criticalText).not.toContain(sentinel);
-
-    const scheduled = await fetch(`${base}/api/control/work-failures?kind=scheduled_task_run`, {headers: {cookie: auth.cookies}});
-    expect(scheduled.status).toBe(200);
-    const scheduledBody = await scheduled.json() as {data: Array<{kind: string; severity: string; summary: string}>};
-    expect(scheduledBody.data).toEqual([expect.objectContaining({kind: "scheduled_task_run", severity: "warning", summary: "Scheduled task failed: Visible scheduled failure"})]);
-
+    const response = await fetch(`${base}/api/control/work-failures?severity=critical&kind=runtime_run&search=older&page=2&per_page=10`, {headers: {cookie: auth.cookies}});
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(snapshot);
+    expect(read).toHaveBeenCalledOnce();
+    expect(read.mock.calls[0]?.[1]).toMatchObject({severity: "critical", kind: "runtime_run", search: "older", page: 2, perPage: 10});
     const invalid = await fetch(`${base}/api/control/work-failures?severity=urgent`, {headers: {cookie: auth.cookies}});
     expect(invalid.status).toBe(400);
     await expect(invalid.json()).resolves.toEqual({error: "Control work failure severity filter must be warning or critical."});
+    expect(read).toHaveBeenCalledOnce();
   });
 
   it("lets Control lock and unlock skills without leaking full skill bodies in audit or errors", async () => {
@@ -1767,14 +1712,6 @@ describe("Control operator HTTP", () => {
       data: [{kind: "session", agentKey: "panda", sessionId: "session-panda", targetRoute: "/agents/panda/sessions/session-panda"}],
     });
 
-    await harness.pool.query(`
-      INSERT INTO "runtime"."threads" (id, session_id)
-      VALUES ('thread-panda-search', 'session-panda')
-    `);
-    await harness.pool.query(`
-      INSERT INTO "runtime"."runs" (id, thread_id, status, started_at, finished_at, error)
-      VALUES ('00000000-0000-0000-0000-000000000903', 'thread-panda-search', 'failed', '2040-01-03T00:00:00.000Z', '2040-01-03T00:00:01.000Z', '{"private":"PRIVATE_RUNTIME_ERROR_MUST_NOT_LEAK"}')
-    `);
     await expect(fetch(`${base}/api/control/agents/panda/connectors`, {
       method: "POST",
       headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
@@ -1833,7 +1770,16 @@ describe("Control operator HTTP", () => {
     expect((await searchFor("channel-123")).data).toContainEqual(expect.objectContaining({kind: "binding", targetRoute: "/agents/panda/sessions/session-panda?tab=bindings"}));
     expect((await searchFor("deploy_watch")).data).toContainEqual(expect.objectContaining({kind: "skill", targetRoute: "/agents/panda?tab=skills"}));
     expect((await searchFor("build-alerts")).data).toContainEqual(expect.objectContaining({kind: "gateway_source", targetRoute: "/agents/panda?tab=gateway"}));
+    // PostgreSQL fallback/search behavior lives in the live suite; this seam protects global navigation.
+    const failures = vi.spyOn(harness.operator, "listWorkFailures").mockResolvedValueOnce({
+      data: [{id: "runtime:legacy-failure", kind: "runtime_run", severity: "critical", agentKey: "panda",
+        sessionId: "session-panda", source: "Runtime", summary: "Agent run failed.",
+        targetRoute: "/agents/panda/sessions/session-panda?tab=runtime", createdAt: "2040-01-03T00:00:01.000Z"}],
+      counts: {total: 1, critical: 1, warning: 0}, meta: {total: 1, per_page: 25, current_page: 1, last_page: 1},
+    });
     expect((await searchFor("Agent run failed")).data).toContainEqual(expect.objectContaining({kind: "work_failure", targetRoute: "/agents/panda/sessions/session-panda?tab=runtime"}));
+    expect(failures).toHaveBeenCalledOnce();
+    expect(failures.mock.calls[0]?.[1]).toEqual({search: "agent run failed", perPage: 25});
   });
 
   it("writes agent credentials without returning secret material and audits only summaries", async () => {

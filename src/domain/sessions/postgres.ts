@@ -3,6 +3,7 @@ import type {ThinkingLevel} from "@earendil-works/pi-ai";
 
 import {resolveModelSelector} from "../../kernel/models/model-selector.js";
 import {buildThreadRuntimeTableNames} from "../threads/runtime/postgres-shared.js";
+import {enqueueSessionInputWithClient} from "../threads/runtime/postgres-inputs.js";
 import {buildRuntimeRequestTableNames} from "../threads/requests/postgres-shared.js";
 import {requireBoolean} from "../../lib/booleans.js";
 import {requireNonNegativeInteger} from "../../lib/numbers.js";
@@ -301,6 +302,7 @@ export class PostgresSessionStore implements SessionStore {
   private readonly pool: PgPoolLike;
   private readonly tables: SessionTableNames;
   private readonly threadTableName: string;
+  private readonly threadTables = buildThreadRuntimeTableNames();
 
   constructor(options: PostgresSessionStoreOptions) {
     this.pool = options.pool;
@@ -1305,7 +1307,6 @@ export class PostgresSessionStore implements SessionStore {
   }
 
   async claimHeartbeat(input: ClaimSessionHeartbeatInput): Promise<SessionHeartbeatRecord | null> {
-    const asOf = new Date(input.asOf ?? Date.now());
     return withTransaction(this.pool, async (client) => {
       const sessionId = requireSessionString("id", input.sessionId);
       const lifecycle = await client.query(`
@@ -1317,23 +1318,28 @@ export class PostgresSessionStore implements SessionStore {
       const lifecycleRow = lifecycle.rows[0] as {archived_at?: unknown} | undefined;
       if (!lifecycleRow || lifecycleRow.archived_at !== null) return null;
 
+      await client.query(`SELECT session_id FROM ${this.tables.sessionHeartbeats} WHERE session_id = $1 FOR UPDATE`, [sessionId]);
+      const clock = await client.query("SELECT clock_timestamp() AS now");
+      const now = requireTimestampMillis((clock.rows[0] as Record<string, unknown>).now, "Invalid database clock.");
+      if (input.claimExpiresAt <= now) return null;
       const result = await client.query(`
         UPDATE ${this.tables.sessionHeartbeats}
-        SET claimed_at = NOW(),
+        SET claimed_at = $4,
             claimed_by = $2,
             claim_expires_at = $3,
             updated_at = NOW()
         WHERE session_id = $1
           AND enabled = TRUE
           AND next_fire_at IS NOT NULL
-          AND next_fire_at <= $4
-          AND (claim_expires_at IS NULL OR claim_expires_at <= $4)
+          AND next_fire_at <= clock_timestamp()
+          AND (claim_expires_at IS NULL OR claim_expires_at <= clock_timestamp())
+          AND $3::timestamptz > clock_timestamp()
         RETURNING *
       `, [
         sessionId,
         requireSessionString("claim owner", input.claimedBy),
         new Date(input.claimExpiresAt),
-        asOf,
+        new Date(now),
       ]);
       const row = result.rows[0];
       return row ? parseHeartbeatRow(row as Record<string, unknown>) : null;
@@ -1341,33 +1347,58 @@ export class PostgresSessionStore implements SessionStore {
   }
 
   async recordHeartbeatResult(input: RecordSessionHeartbeatResultInput): Promise<SessionHeartbeatRecord | null> {
-    const result = await this.pool.query(`
-      UPDATE ${this.tables.sessionHeartbeats}
-      SET next_fire_at = CASE
-            WHEN config_revision = $3 THEN $4::timestamptz + every_minutes * INTERVAL '1 minute'
-            ELSE next_fire_at
-          END,
-          last_fire_at = COALESCE($5::timestamptz, last_fire_at),
-          last_skip_reason = $6,
-          claimed_at = NULL,
-          claimed_by = NULL,
-          claim_expires_at = NULL,
-          updated_at = NOW()
-      WHERE session_id = $1
-        AND claimed_by = $2
-        AND claim_expires_at > NOW()
-        AND enabled = TRUE
-      RETURNING *
-    `, [
-      requireSessionString("id", input.sessionId),
-      requireSessionString("claim owner", input.claimedBy),
-      requireNonNegativeInteger(input.configRevision, "Session heartbeat config revision"),
-      new Date(input.attemptedAt),
-      input.lastFireAt === undefined ? null : new Date(input.lastFireAt),
-      input.lastSkipReason ?? null,
-    ]);
-    const row = result.rows[0];
-    return row ? parseHeartbeatRow(row as Record<string, unknown>) : null;
+    return withTransaction(this.pool, async (client) => {
+      const sessionId = requireSessionString("id", input.sessionId);
+      const sessionResult = await client.query(`SELECT id, archived_at, current_thread_id
+        FROM ${this.tables.sessions} WHERE id = $1 FOR UPDATE`, [sessionId]);
+      const session = sessionResult.rows[0] as Record<string, unknown> | undefined;
+      if (!session) return null;
+      const heartbeatResult = await client.query(`SELECT * FROM ${this.tables.sessionHeartbeats}
+        WHERE session_id = $1 FOR UPDATE`, [sessionId]);
+      if (!heartbeatResult.rows[0]) return null;
+      const heartbeat = parseHeartbeatRow(heartbeatResult.rows[0] as Record<string, unknown>);
+      if (input.input) {
+        // Stable claim UUID is the receipt. Readback after reset must not create another input or wake.
+        const receipt = await client.query(`SELECT input.id FROM ${this.threadTables.inputs} AS input
+          INNER JOIN ${this.threadTables.threads} AS thread ON thread.id = input.thread_id
+          WHERE input.id = $1::uuid AND input.source = 'heartbeat' AND thread.session_id = $2`,
+          [input.claimedBy, sessionId]);
+        if (receipt.rows[0]) return heartbeat;
+      }
+      if (session.archived_at !== null || !heartbeat.enabled || heartbeat.claimedBy !== input.claimedBy) return null;
+      let busy = false;
+      if (input.input) {
+        const thread = await client.query(`SELECT id, run_claims_blocked_at FROM ${this.threadTables.threads}
+          WHERE id = $1 FOR UPDATE`, [session.current_thread_id]);
+        if (!thread.rows[0]) return null;
+        const state = await client.query(`SELECT
+          EXISTS (SELECT 1 FROM ${this.threadTables.inputs} WHERE thread_id = $1
+            AND applied_at IS NULL AND discarded_at IS NULL) OR
+          EXISTS (SELECT 1 FROM ${this.threadTables.runs} WHERE thread_id = $1 AND status = 'running') OR
+          EXISTS (SELECT 1 FROM ${this.tables.sessionRuntimeConfig} WHERE session_id = $2 AND pending_wake_at IS NOT NULL)
+          AS busy`, [session.current_thread_id, sessionId]);
+        busy = (thread.rows[0] as Record<string, unknown>).run_claims_blocked_at !== null
+          || (state.rows[0] as {busy: boolean}).busy;
+      }
+      // Transaction start time is insufficient: locks above may have waited past the lease deadline.
+      const clock = await client.query("SELECT clock_timestamp() AS now");
+      const now = requireTimestampMillis((clock.rows[0] as Record<string, unknown>).now, "Invalid database clock.");
+      if ((heartbeat.claimExpiresAt ?? 0) <= now) return null;
+      if (input.input && !busy) {
+        await enqueueSessionInputWithClient(client, sessionId, {...input.input, source: "heartbeat"}, "wake", {inputId: input.claimedBy});
+      }
+      const result = await client.query(`UPDATE ${this.tables.sessionHeartbeats}
+        SET next_fire_at = CASE
+              WHEN config_revision = $3 THEN $4::timestamptz + every_minutes * INTERVAL '1 minute'
+              ELSE next_fire_at END,
+            last_fire_at = COALESCE($5::timestamptz, last_fire_at), last_skip_reason = $6,
+            claimed_at = NULL, claimed_by = NULL, claim_expires_at = NULL, updated_at = clock_timestamp()
+        WHERE session_id = $1 AND claimed_by = $2 RETURNING *`, [sessionId, input.claimedBy,
+        requireNonNegativeInteger(input.configRevision, "Session heartbeat config revision"), new Date(input.attemptedAt),
+        busy ? null : input.lastFireAt === undefined ? null : new Date(input.lastFireAt),
+        busy ? "busy" : input.lastSkipReason ?? null]);
+      return result.rows[0] ? parseHeartbeatRow(result.rows[0] as Record<string, unknown>) : null;
+    });
   }
 
   async updateHeartbeatConfig(input: UpdateSessionHeartbeatConfigInput): Promise<SessionHeartbeatRecord> {

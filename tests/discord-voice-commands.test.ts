@@ -1,6 +1,8 @@
 import {describe, expect, it, vi} from "vitest";
 
 import {CommandStructuredError} from "../src/domain/commands/errors.js";
+import {LiveVoiceTurnNotFoundError} from "../src/domain/live-voice/types.js";
+import {VoiceControlWaitTimeoutError} from "../src/integrations/voice/control-errors.js";
 import {
   createDiscordVoiceJoinCommand,
   createDiscordVoiceLeaveCommand,
@@ -22,7 +24,11 @@ function services(options: {enabled?: boolean; connectors?: string[]; sessions?:
       },
       live: {
         listSessions: vi.fn(async () => options.sessions ?? [] as never),
-        getTurn: vi.fn(async (id: string) => (options.turns ?? []).find((turn) => (turn as {id?: string}).id === id) as never),
+        getTurn: vi.fn(async (id: string) => {
+          const turn = (options.turns ?? []).find((turn) => (turn as {id?: string}).id === id);
+          if (!turn) throw new LiveVoiceTurnNotFoundError(id);
+          return turn as never;
+        }),
         listRunningTurns: vi.fn(async () => options.turns ?? [] as never),
       },
     },
@@ -72,13 +78,42 @@ describe("Discord voice commands", () => {
 
   it("leaves durable control state authoritative when the local waiter times out", async () => {
     const deps = services();
-    vi.mocked(deps.voice.controls.waitForControl).mockRejectedValueOnce(new Error("timeout"));
+    vi.mocked(deps.voice.controls.waitForControl).mockRejectedValueOnce(new VoiceControlWaitTimeoutError("timeout"));
     await expect(createDiscordVoiceJoinCommand(deps).execute({command: "discord.voice.join", input: {channelId: "12345"}, scope}))
       .rejects.toMatchObject({pandaCommandErrorDetails: {failureCode: "timeout", retryable: true}});
   });
 
   it("rejects channel-less leave when there is not exactly one owned session", async () => {
     await expect(createDiscordVoiceLeaveCommand(services()).execute({command: "discord.voice.leave", input: {}, scope})).rejects.toMatchObject({pandaCommandErrorCode: "conflict", pandaCommandErrorDetails: {failureCode: "leave_ambiguous"}});
+  });
+
+  it.each(["wait", "turn"] as const)("reports an unreadable %s without exposing the database error or claiming a conflict", async (operation) => {
+    const session = liveSession();
+    const deps = services({sessions: [session]});
+    const cause = new Error("database connection failed: postgres://private-user:private-password@private-host/db");
+    const execute = operation === "wait"
+      ? () => createDiscordVoiceJoinCommand(deps).execute({command: "discord.voice.join", input: {channelId: "12345"}, scope})
+      : () => createDiscordVoiceSendCommand(deps).execute({command: "discord.voice.send", input: {text: "Update.", voiceTurnId: "11111111-1111-4111-8111-111111111111"}, scope});
+    vi.mocked(operation === "wait" ? deps.voice.controls.waitForControl : deps.voice.live.getTurn).mockRejectedValueOnce(cause);
+
+    const error = await execute().catch((error: unknown) => error as CommandStructuredError);
+    expect(error).toMatchObject({cause, pandaCommandErrorCode: "command_failed", pandaCommandErrorDetails: {failureCode: "voice_state_unavailable", retryable: false}});
+    expect(JSON.stringify((error as CommandStructuredError).toCommandError())).not.toContain("private-");
+    if (operation === "wait") expect(error).toMatchObject({pandaCommandErrorDetails: {controlId: "control-1"}});
+    if (operation === "turn") expect(deps.voice.controls.enqueueControl).not.toHaveBeenCalled();
+  });
+
+  it("preserves cancellation only when the waiter rejects with the signal reason", async () => {
+    const deps = services();
+    const controller = new AbortController();
+    controller.abort("operator cancelled");
+    vi.mocked(deps.voice.controls.waitForControl).mockRejectedValueOnce(controller.signal.reason);
+    await expect(createDiscordVoiceJoinCommand(deps).execute({command: "discord.voice.join", input: {channelId: "12345"}, scope, signal: controller.signal}))
+      .rejects.toMatchObject({message: "Discord voice command was cancelled.", pandaCommandErrorDetails: {failureCode: "worker_unavailable", controlId: "control-1", durableState: "pending_or_running"}});
+
+    vi.mocked(deps.voice.controls.waitForControl).mockRejectedValueOnce(new Error("database unavailable"));
+    await expect(createDiscordVoiceJoinCommand(deps).execute({command: "discord.voice.join", input: {channelId: "12345"}, scope, signal: controller.signal}))
+      .rejects.toMatchObject({pandaCommandErrorDetails: {failureCode: "voice_state_unavailable"}});
   });
 
   it("preserves invalid-channel semantics for an explicit leave target", async () => {

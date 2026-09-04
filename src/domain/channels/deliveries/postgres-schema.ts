@@ -66,6 +66,7 @@ export async function ensurePostgresOutboundDeliverySchema(pool: PgQueryable): P
       last_error TEXT,
       sent_items JSONB,
       claimed_at TIMESTAMPTZ,
+      claim_token UUID,
       completed_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -74,7 +75,8 @@ export async function ensurePostgresOutboundDeliverySchema(pool: PgQueryable): P
   await pool.query(`
     ALTER TABLE ${tables.outboundDeliveries}
     ADD COLUMN IF NOT EXISTS idempotency_key TEXT,
-    ADD COLUMN IF NOT EXISTS session_id TEXT
+    ADD COLUMN IF NOT EXISTS session_id TEXT,
+    ADD COLUMN IF NOT EXISTS claim_token UUID
   `);
   await pool.query(`
     UPDATE ${tables.outboundDeliveries}

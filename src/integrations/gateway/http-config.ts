@@ -17,6 +17,8 @@ export const DEFAULT_GATEWAY_MAX_ATTACHMENTS_PER_EVENT = 5;
 export const DEFAULT_GATEWAY_MAX_EVENT_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 export const DEFAULT_GATEWAY_ATTACHMENT_BYTES_PER_HOUR = 100 * 1024 * 1024;
 export const DEFAULT_GATEWAY_MAX_PENDING_ATTACHMENTS_PER_SOURCE = 100;
+export const DEFAULT_GATEWAY_MAX_CONCURRENT_ATTACHMENT_UPLOADS = 8;
+export const DEFAULT_GATEWAY_ATTACHMENT_REQUEST_TIMEOUT_MS = 60_000;
 export const DEFAULT_GATEWAY_ATTACHMENT_UPLOAD_TTL_MS = 60 * 60_000;
 export const DEFAULT_GATEWAY_DEVICE_COMMAND_MAX_WAIT_MS = 30_000;
 export const DEFAULT_GATEWAY_ATTACHMENT_RETENTION_MS = 7 * 24 * 60 * 60_000;
@@ -42,6 +44,8 @@ export interface GatewayServerOptions {
   attachmentQuarantineTtlMs?: number;
   attachmentRetentionMs?: number;
   attachmentUploadTtlMs?: number;
+  attachmentRequestTimeoutMs?: number;
+  maxConcurrentAttachmentUploads?: number;
   deviceCommandMaxWaitMs?: number;
   deviceCommandWaiter: GatewayDeviceCommandClaimer;
   env?: NodeJS.ProcessEnv;
@@ -168,6 +172,12 @@ export function resolveGatewayHttpConfig(env: NodeJS.ProcessEnv = process.env): 
       trimToNull(env.GATEWAY_MAX_PENDING_ATTACHMENTS_PER_SOURCE),
       DEFAULT_GATEWAY_MAX_PENDING_ATTACHMENTS_PER_SOURCE,
     ),
+    maxConcurrentAttachmentUploads: readPositiveInteger(
+      trimToNull(env.GATEWAY_MAX_CONCURRENT_ATTACHMENT_UPLOADS), DEFAULT_GATEWAY_MAX_CONCURRENT_ATTACHMENT_UPLOADS,
+    ),
+    attachmentRequestTimeoutMs: readPositiveInteger(
+      trimToNull(env.GATEWAY_ATTACHMENT_REQUEST_TIMEOUT_MS), DEFAULT_GATEWAY_ATTACHMENT_REQUEST_TIMEOUT_MS,
+    ),
     attachmentUploadTtlMs: readPositiveInteger(
       trimToNull(env.GATEWAY_ATTACHMENT_UPLOAD_TTL_MS),
       DEFAULT_GATEWAY_ATTACHMENT_UPLOAD_TTL_MS,
@@ -185,19 +195,5 @@ export function resolveGatewayHttpConfig(env: NodeJS.ProcessEnv = process.env): 
       DEFAULT_GATEWAY_ATTACHMENT_QUARANTINE_TTL_MS,
     ),
     attachmentAllowedMimeTypes: parseMimeAllowlist(trimToNull(env.GATEWAY_ATTACHMENT_ALLOWED_MIME_TYPES)),
-  };
-}
-
-export function resolveGatewayServerOptions(
-  store: PostgresGatewayStore,
-  deviceCommandWaiter: GatewayDeviceCommandClaimer,
-  worker: GatewayWorker | undefined,
-  env: NodeJS.ProcessEnv = process.env,
-): GatewayServerOptions {
-  return {
-    ...resolveGatewayHttpConfig(env),
-    deviceCommandWaiter,
-    store,
-    ...(worker ? {worker} : {}),
   };
 }

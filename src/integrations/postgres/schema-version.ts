@@ -21,6 +21,12 @@ import {PANDA_WHATSAPP_CALL_CONTROLS} from "./schema-versions/0016-whatsapp-call
 import {PANDA_CHANNEL_ACTION_EXPIRY} from "./schema-versions/0017-channel-action-expiry.js";
 import {PANDA_SESSION_COMPACTION_REQUESTS} from "./schema-versions/0018-session-compaction-requests.js";
 import {PANDA_HEARTBEAT_CADENCE} from "./schema-versions/0019-heartbeat-cadence.js";
+import {PANDA_CHANNEL_RECEIPT_OWNERSHIP} from "./schema-versions/0020-channel-receipt-ownership.js";
+import {PANDA_ENVIRONMENT_OPERATION_OWNERSHIP} from "./schema-versions/0021-environment-operation-ownership.js";
+import {PANDA_WATCH_CLAIM_OWNERSHIP} from "./schema-versions/0022-watch-claim-ownership.js";
+import {PANDA_GATEWAY_UPLOAD_RESERVATIONS} from "./schema-versions/0023-gateway-upload-reservations.js";
+import {PANDA_GATEWAY_INPUT_RECEIPTS} from "./schema-versions/0024-gateway-input-receipts.js";
+import {PANDA_RUNTIME_ERROR_SUMMARY} from "./schema-versions/0025-runtime-error-summary.js";
 
 export const PANDA_PRE_LEDGER_BASELINE: PostgresMigrationSummary = Object.freeze({
   id: "0001_pre_ledger_baseline",
@@ -65,6 +71,12 @@ export const PANDA_SCHEMA_VERSION = Object.freeze([
   PANDA_CHANNEL_ACTION_EXPIRY,
   PANDA_SESSION_COMPACTION_REQUESTS,
   PANDA_HEARTBEAT_CADENCE,
+  PANDA_CHANNEL_RECEIPT_OWNERSHIP,
+  PANDA_ENVIRONMENT_OPERATION_OWNERSHIP,
+  PANDA_WATCH_CLAIM_OWNERSHIP,
+  PANDA_GATEWAY_UPLOAD_RESERVATIONS,
+  PANDA_GATEWAY_INPUT_RECEIPTS,
+  PANDA_RUNTIME_ERROR_SUMMARY,
 ]);
 
 /** Read-only database revision seam shared by every Postgres-backed process. */

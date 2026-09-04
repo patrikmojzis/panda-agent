@@ -1,8 +1,9 @@
 import {describe, expect, it, vi} from "vitest";
 
 import type {GatewayEventAttachmentRecord, GatewayEventRecord, GatewaySourceRecord} from "../src/domain/gateway/types.js";
-import type {SessionRecord} from "../src/domain/sessions/index.js";
-import {deliverGatewayEventToThread} from "../src/integrations/gateway/delivery.js";
+import {deliverGatewayEventToThread, readGatewayDeliveryAssessment, type GatewayDeliveryStore} from "../src/integrations/gateway/delivery.js";
+
+import {GatewayDeliveryTargetUnavailableError} from "../src/domain/gateway/postgres.js";
 
 function gatewaySource(overrides: Partial<GatewaySourceRecord> = {}): GatewaySourceRecord {
   return {
@@ -38,155 +39,65 @@ function gatewayEvent(overrides: Partial<GatewayEventRecord> = {}): GatewayEvent
   };
 }
 
+function deliveryStore() {
+  return {
+    listEventAttachments: vi.fn(async () => []),
+    recordEventAssessment: vi.fn<GatewayDeliveryStore["recordEventAssessment"]>(async () => gatewayEvent({inputId: "receipt-1"})),
+    commitEventDelivery: vi.fn<GatewayDeliveryStore["commitEventDelivery"]>(async () => gatewayEvent({status: "delivered", threadId: "thread-1"})),
+    markEventQuarantined: vi.fn<GatewayDeliveryStore["markEventQuarantined"]>(async () => gatewayEvent({status: "quarantined"})),
+    getEvent: vi.fn(async () => gatewayEvent()),
+  } satisfies GatewayDeliveryStore;
+}
+
+function deliveryInput(store = deliveryStore()) {
+  return {store, event: gatewayEvent(), source: gatewaySource(), assessment: {guardStatus: "scored" as const, riskScore: 0.1, trusted: false as const}};
+}
+
 describe("gateway delivery", () => {
-  it("resolves the session current thread after reserving delivery", async () => {
-    const session: SessionRecord = {
-      id: "session-1",
-      agentKey: "panda",
-      kind: "main",
-      currentThreadId: "old-thread",
-      createdAt: 1,
-      updatedAt: 1,
-    };
-    const enqueueSessionInput = vi.fn(async (_sessionId, payload, deliveryMode) => ({
-      disposition: "inserted" as const,
-      input: {
-        id: "input-1",
-        threadId: session.currentThreadId,
-        order: 1,
-        deliveryMode: deliveryMode ?? "wake",
-        source: payload.source,
-        message: payload.message,
-        metadata: payload.metadata,
-        createdAt: 1,
-      },
-    }));
-    const markEventDelivered = vi.fn(async () => undefined);
-
-    await deliverGatewayEventToThread({
-      event: gatewayEvent(),
-      assessment: {guardStatus: "scored", riskScore: 0.1, trusted: false},
-      source: gatewaySource(),
-      sessionStore: {
-        getSession: vi.fn(async () => session),
-        getMainSession: vi.fn(async () => null),
-      },
-      store: {
-        markEventDelivered,
-        markEventQuarantined: vi.fn(async () => undefined),
-        reserveEventDelivery: vi.fn(async (input) => {
-          session.currentThreadId = "new-thread";
-          return gatewayEvent({
-            claimId: input.claimId,
-            riskScore: input.riskScore,
-          });
-        }),
-      },
-      threadStore: {
-        enqueueSessionInput,
-      },
-    });
-
-    expect(enqueueSessionInput).toHaveBeenCalledWith("session-1", expect.objectContaining({
-      source: "gateway",
-      externalMessageId: "event-1",
-    }), "wake", undefined);
-    expect(markEventDelivered).toHaveBeenCalledWith(expect.objectContaining({
-      threadId: "new-thread",
+  it("passes durable source authority into the complete admission operation", async () => {
+    const input = deliveryInput();
+    await deliverGatewayEventToThread(input);
+    expect(input.store.commitEventDelivery).toHaveBeenCalledWith(expect.objectContaining({
+      eventId: "event-1", claimId: "claim-1", source: input.source,
+      payload: expect.objectContaining({source: "gateway", externalMessageId: "event-1"}),
     }));
   });
 
-  it("uses the agent main session when the source is not pinned to a session", async () => {
-    const mainSession: SessionRecord = {
-      id: "main-session",
-      agentKey: "panda",
-      kind: "main",
-      currentThreadId: "main-thread",
-      createdAt: 1,
-      updatedAt: 1,
-    };
-    const enqueueSessionInput = vi.fn(async (_sessionId, payload, deliveryMode) => ({
-      disposition: "inserted" as const,
-      input: {
-        id: "input-1",
-        threadId: mainSession.currentThreadId,
-        order: 1,
-        deliveryMode: deliveryMode ?? "wake",
-        source: payload.source,
-        message: payload.message,
-        metadata: payload.metadata,
-        createdAt: 1,
-      },
-    }));
-    const markEventDelivered = vi.fn(async () => undefined);
-
-    await deliverGatewayEventToThread({
-      event: gatewayEvent(),
-      assessment: {guardStatus: "scored", riskScore: 0.1, trusted: false},
-      source: gatewaySource({sessionId: undefined}),
-      sessionStore: {
-        getSession: vi.fn(async () => mainSession),
-        getMainSession: vi.fn(async () => mainSession),
-      },
-      store: {
-        markEventDelivered,
-        markEventQuarantined: vi.fn(async () => undefined),
-        reserveEventDelivery: vi.fn(async () => gatewayEvent({status: "delivering"})),
-      },
-      threadStore: {
-        enqueueSessionInput,
-      },
-    });
-
-    expect(enqueueSessionInput).toHaveBeenCalledWith("main-session", expect.objectContaining({
-      source: "gateway",
-      externalMessageId: "event-1",
-    }), "wake", undefined);
-    expect(markEventDelivered).toHaveBeenCalledWith(expect.objectContaining({
-      threadId: "main-thread",
-    }));
+  it("does not admit work after losing the processing claim", async () => {
+    const input = deliveryInput();
+    input.store.recordEventAssessment.mockResolvedValue(null);
+    await deliverGatewayEventToThread(input);
+    expect(input.store.commitEventDelivery).not.toHaveBeenCalled();
   });
 
-  it("quarantines reserved delivery when atomic session enqueue rejects the target", async () => {
-    const enqueueSessionInput = vi.fn(async () => {
-      throw new Error("Unknown session session-1.");
-    });
-    const markEventDelivered = vi.fn(async () => undefined);
-    const markEventQuarantined = vi.fn(async () => undefined);
+  it("quarantines an explicit unavailable target without treating other failures as rejection", async () => {
+    const input = deliveryInput();
+    input.store.commitEventDelivery.mockRejectedValue(new GatewayDeliveryTargetUnavailableError("Session archived"));
+    await deliverGatewayEventToThread(input);
+    expect(input.store.markEventQuarantined).toHaveBeenCalledWith(expect.objectContaining({reason: "Session archived", claimId: "claim-1"}));
+  });
 
-    await deliverGatewayEventToThread({
-      event: gatewayEvent(),
-      assessment: {guardStatus: "scored", riskScore: 0.1, trusted: false},
-      source: gatewaySource(),
-      sessionStore: {
-        getSession: vi.fn(async () => ({
-          id: "session-1",
-          agentKey: "panda",
-          kind: "main" as const,
-          currentThreadId: " ",
-          createdAt: 1,
-          updatedAt: 1,
-        })),
-        getMainSession: vi.fn(async () => null),
-      },
-      store: {
-        markEventDelivered,
-        markEventQuarantined,
-        reserveEventDelivery: vi.fn(async () => gatewayEvent({status: "delivering"})),
-      },
-      threadStore: {
-        enqueueSessionInput,
-      },
-    });
+  it("recovers a lost commit acknowledgement from its delivered receipt", async () => {
+    const input = deliveryInput();
+    input.store.commitEventDelivery.mockRejectedValue(new Error("commit acknowledgement lost"));
+    input.store.getEvent.mockResolvedValue(gatewayEvent({status: "delivered"}));
+    await deliverGatewayEventToThread(input);
+    expect(input.store.markEventQuarantined).not.toHaveBeenCalled();
+  });
 
-    expect(enqueueSessionInput).toHaveBeenCalledOnce();
-    expect(markEventDelivered).not.toHaveBeenCalled();
-    expect(markEventQuarantined).toHaveBeenCalledWith(expect.objectContaining({
-      eventId: "event-1",
-      claimId: "claim-1",
-      riskScore: 1,
-      reason: "Unknown session session-1.",
-    }));
+  it("keeps unknown database failures retryable without scrubbing payloads", async () => {
+    const input = deliveryInput();
+    input.store.commitEventDelivery.mockRejectedValue(new Error("database unavailable"));
+    input.store.getEvent.mockRejectedValue(new Error("database unavailable"));
+    await expect(deliverGatewayEventToThread(input)).rejects.toThrow("database unavailable");
+    expect(input.store.markEventQuarantined).not.toHaveBeenCalled();
+  });
+
+  it("reuses the durable guard assessment and rejects a malformed receipt", () => {
+    expect(readGatewayDeliveryAssessment(gatewayEvent())).toBeUndefined();
+    expect(readGatewayDeliveryAssessment(gatewayEvent({inputId: "receipt", riskScore: 0.2, metadata: {gateway: {guardStatus: "scored"}}})))
+      .toEqual({guardStatus: "scored", trusted: false, riskScore: 0.2});
+    expect(() => readGatewayDeliveryAssessment(gatewayEvent({inputId: "receipt"}))).toThrow("persisted guard assessment");
   });
 
   it("delivers untrusted attachment descriptors in prompt and metadata", async () => {
@@ -209,20 +120,7 @@ describe("gateway delivery", () => {
       createdAt: 1,
       expiresAt: Date.now() + 60_000,
     };
-    const enqueueSessionInput = vi.fn(async (_sessionId, payload, deliveryMode) => ({
-      disposition: "inserted" as const,
-      input: {
-        id: "input-1",
-        threadId: "thread-1",
-        order: 1,
-        deliveryMode: deliveryMode ?? "wake",
-        source: payload.source,
-        message: payload.message,
-        metadata: payload.metadata,
-        createdAt: 1,
-      },
-    }));
-    const markEventDelivered = vi.fn(async () => undefined);
+    const store = deliveryStore();
 
     await deliverGatewayEventToThread({
       event: gatewayEvent(),
@@ -230,26 +128,10 @@ describe("gateway delivery", () => {
       source: gatewaySource(),
       attachments: [attachment],
       attachmentRetentionMs: 1000,
-      sessionStore: {
-        getSession: vi.fn(async () => ({
-          id: "session-1",
-          agentKey: "panda",
-          kind: "main" as const,
-          currentThreadId: "thread-1",
-          createdAt: 1,
-          updatedAt: 1,
-        })),
-        getMainSession: vi.fn(async () => null),
-      },
-      store: {
-        markEventDelivered,
-        markEventQuarantined: vi.fn(async () => undefined),
-        reserveEventDelivery: vi.fn(async () => gatewayEvent({status: "delivering"})),
-      },
-      threadStore: {enqueueSessionInput},
+      store,
     });
 
-    const payload = enqueueSessionInput.mock.calls[0]?.[1];
+    const payload = store.commitEventDelivery.mock.calls[0]?.[0].payload;
     expect(JSON.stringify(payload?.message)).toContain("attachments:");
     expect(JSON.stringify(payload?.message)).toContain(attachment.localPath);
     expect(payload?.metadata).toMatchObject({
@@ -262,9 +144,8 @@ describe("gateway delivery", () => {
         })],
       },
     });
-    expect(markEventDelivered).toHaveBeenCalledWith(expect.objectContaining({
+    expect(store.commitEventDelivery).toHaveBeenCalledWith(expect.objectContaining({
       attachmentRetentionMs: 1000,
-      threadId: "thread-1",
     }));
   });
 
@@ -294,47 +175,17 @@ describe("gateway delivery", () => {
       createdAt: 1,
       expiresAt: Date.now() + 60_000,
     };
-    const enqueueSessionInput = vi.fn(async (_sessionId, payload, deliveryMode) => ({
-      disposition: "inserted" as const,
-      input: {
-        id: "input-1",
-        threadId: "thread-1",
-        order: 1,
-        deliveryMode: deliveryMode ?? "wake",
-        source: payload.source,
-        message: payload.message,
-        metadata: payload.metadata,
-        createdAt: 1,
-      },
-    }));
-    const reserveEventDelivery = vi.fn(async () => gatewayEvent({status: "delivering", trusted: true}));
-    const markEventDelivered = vi.fn(async () => undefined);
+    const store = deliveryStore();
 
     await deliverGatewayEventToThread({
       event: gatewayEvent({trusted: true}),
       assessment: {guardStatus: "bypassed", trusted: true},
       source: gatewaySource(),
       attachments: [attachment],
-      sessionStore: {
-        getSession: vi.fn(async () => ({
-          id: "session-1",
-          agentKey: "panda",
-          kind: "main" as const,
-          currentThreadId: "thread-1",
-          createdAt: 1,
-          updatedAt: 1,
-        })),
-        getMainSession: vi.fn(async () => null),
-      },
-      store: {
-        markEventDelivered,
-        markEventQuarantined: vi.fn(async () => undefined),
-        reserveEventDelivery,
-      },
-      threadStore: {enqueueSessionInput},
+      store,
     });
 
-    const payload = enqueueSessionInput.mock.calls[0]?.[1];
+    const payload = store.commitEventDelivery.mock.calls[0]?.[0].payload;
     const rendered = JSON.stringify(payload?.message);
     expect(rendered).toContain("Trusted gateway event");
     expect(rendered).toContain("guard_status: bypassed");
@@ -361,8 +212,8 @@ describe("gateway delivery", () => {
         })],
       },
     });
-    expect(reserveEventDelivery.mock.calls[0]?.[0]).not.toHaveProperty("riskScore");
-    expect(markEventDelivered.mock.calls[0]?.[0]).not.toHaveProperty("riskScore");
+    expect(store.recordEventAssessment.mock.calls[0]?.[0]).not.toHaveProperty("riskScore");
+    expect(store.commitEventDelivery.mock.calls[0]?.[0]).not.toHaveProperty("riskScore");
   });
 
 });

@@ -23,14 +23,14 @@ function request(command: string, input: CommandRequest["input"]): CommandReques
   };
 }
 
-const listConversationBindings = vi.fn(async () => [{
+const getConversationBinding = vi.fn(async () => ({
   source: "discord",
   connectorKey: "discord-main",
   externalConversationId: "12345",
   sessionId: "session-1",
   createdAt: 1,
   updatedAt: 1,
-}]);
+}));
 
 describe("Discord sticker commands", () => {
   it("checks the current-session binding before live guild sticker discovery", async () => {
@@ -46,7 +46,7 @@ describe("Discord sticker commands", () => {
       }],
     }));
     const command = createDiscordStickerListCommand({
-      conversations: {listConversationBindings},
+      conversations: {getConversationBinding},
       stickers: {listGuildStickersForChannel},
     });
 
@@ -74,7 +74,7 @@ describe("Discord sticker commands", () => {
   it("does not call Discord when the channel is not bound", async () => {
     const listGuildStickersForChannel = vi.fn();
     const command = createDiscordStickerListCommand({
-      conversations: {listConversationBindings: vi.fn(async () => [])},
+      conversations: {getConversationBinding: vi.fn(async () => null)},
       stickers: {listGuildStickersForChannel},
     });
 
@@ -87,7 +87,7 @@ describe("Discord sticker commands", () => {
 
   it("queues one to three native sticker ids with thread and reply context", async () => {
     const enqueueAction = vi.fn(async () => ({id: "action-1"}));
-    const command = createDiscordStickerSendCommand({listConversationBindings, enqueueAction});
+    const command = createDiscordStickerSendCommand({getConversationBinding, enqueueAction});
 
     const result = await command.execute(request(DISCORD_STICKER_SEND_COMMAND_NAME, {
       connectorKey: "discord-main",
@@ -117,7 +117,7 @@ describe("Discord sticker commands", () => {
 
   it("rejects an invalid sticker count before queueing", async () => {
     const enqueueAction = vi.fn();
-    const command = createDiscordStickerSendCommand({listConversationBindings, enqueueAction});
+    const command = createDiscordStickerSendCommand({getConversationBinding, enqueueAction});
     await expect(command.execute(request(DISCORD_STICKER_SEND_COMMAND_NAME, {
       connectorKey: "discord-main",
       conversationId: "12345",

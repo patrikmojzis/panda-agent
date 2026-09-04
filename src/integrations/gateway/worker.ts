@@ -1,8 +1,7 @@
-import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {GatewayEventAttachmentRecord, GatewayEventRecord, GatewaySourceRecord} from "../../domain/gateway/types.js";
 import {DrainLoop} from "../../lib/drain-loop.js";
 import type {JsonObject} from "../../lib/json.js";
-import {deliverGatewayEventToThread, type GatewayDeliverySessionStore, type GatewayDeliveryStore} from "./delivery.js";
+import {deliverGatewayEventToThread, readGatewayDeliveryAssessment, type GatewayDeliveryStore} from "./delivery.js";
 import type {GatewayGuard} from "./guard.js";
 import {
   DEFAULT_GATEWAY_GUARD_THRESHOLD,
@@ -40,17 +39,7 @@ export interface GatewayWorkerOptions {
   guardTimeoutMs?: number;
   pollMs?: number;
   store: GatewayWorkerStore;
-  sessionStore: GatewayDeliverySessionStore;
-  threadStore: Pick<ThreadRuntimeStore, "enqueueSessionInput">;
   workerConcurrency?: number;
-}
-
-async function shouldLeaveDeliveryStateAlone(
-  options: GatewayWorkerOptions,
-  event: GatewayEventRecord,
-): Promise<boolean> {
-  const current = await options.store.getEvent(event.id);
-  return current.status === "delivering" || current.status === "delivered";
 }
 
 export interface GatewayWorker {
@@ -85,28 +74,30 @@ async function processGatewayEvent(options: GatewayWorkerOptions, event: Gateway
   }
 
   const attachments = await options.store.listEventAttachments(event.id);
-  let assessment;
-  if (event.trusted) {
-    assessment = {guardStatus: "bypassed" as const, trusted: true as const};
-  } else {
-    const guardResult = await evaluateGatewayGuardPolicy({
-      attachments,
-      attachmentQuarantineTtlMs: options.attachmentQuarantineTtlMs,
-      event,
-      guard: options.guard,
-      guardThreshold: options.guardThreshold,
-      guardTimeoutMs: options.guardTimeoutMs,
-      source,
-      store: options.store,
-    });
-    if (!guardResult.deliver) {
-      return;
+  let assessment = readGatewayDeliveryAssessment(event);
+  if (!assessment) {
+    if (event.trusted) {
+      assessment = {guardStatus: "bypassed" as const, trusted: true as const};
+    } else {
+      const guardResult = await evaluateGatewayGuardPolicy({
+        attachments,
+        attachmentQuarantineTtlMs: options.attachmentQuarantineTtlMs,
+        event,
+        guard: options.guard,
+        guardThreshold: options.guardThreshold,
+        guardTimeoutMs: options.guardTimeoutMs,
+        source,
+        store: options.store,
+      });
+      if (!guardResult.deliver) {
+        return;
+      }
+      assessment = {
+        guardStatus: "scored" as const,
+        riskScore: guardResult.riskScore,
+        trusted: false as const,
+      };
     }
-    assessment = {
-      guardStatus: "scored" as const,
-      riskScore: guardResult.riskScore,
-      trusted: false as const,
-    };
   }
 
   await deliverGatewayEventToThread({
@@ -115,10 +106,8 @@ async function processGatewayEvent(options: GatewayWorkerOptions, event: Gateway
     attachmentQuarantineTtlMs: options.attachmentQuarantineTtlMs,
     attachmentRetentionMs: options.attachmentRetentionMs,
     attachments,
-    sessionStore: options.sessionStore,
     source,
     store: options.store,
-    threadStore: options.threadStore,
   });
 }
 
@@ -142,17 +131,12 @@ async function processClaimedGatewayEvent(
   try {
     await processGatewayEvent(options, event);
   } catch (error) {
-    if (await shouldLeaveDeliveryStateAlone(options, event).catch(() => false)) {
-      return;
-    }
-    await options.store.markEventQuarantined({
+    // Only explicit guard/authority decisions quarantine payloads. An unknown
+    // persistence failure must not scrub evidence or contradict a committed input.
+    console.error("Gateway event processing failed; retaining its durable state", {
       eventId: event.id,
-      claimId: event.claimId,
-      ...(event.trusted ? {} : {riskScore: 1}),
-      reason: error instanceof Error ? error.message : "gateway worker failed",
-      metadata: {gateway: {workerFailed: true}},
-      attachmentQuarantineTtlMs: options.attachmentQuarantineTtlMs,
-    }).catch(() => undefined);
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 

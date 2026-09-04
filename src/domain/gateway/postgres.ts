@@ -11,6 +11,8 @@ import {withTransaction} from "../../lib/postgres-transaction.js";
 import {resolveAgentMediaDir} from "../../lib/data-dir.js";
 import {toJson} from "../../lib/postgres-values.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
+import {enqueueSessionInputWithClient} from "../threads/runtime/postgres-inputs.js";
+import type {ThreadInputPayload} from "../threads/runtime/types.js";
 import {buildGatewayDeviceCommandNotificationChannel} from "./device-command-notifications.js";
 import {
   gatewayDeviceAllowedCommandKinds,
@@ -39,6 +41,8 @@ import type {
   GatewayAttachmentRecord,
   GatewayAttachmentRefInput,
   GatewayAttachmentUploadInput,
+  GatewayUploadReservation,
+  ReserveGatewayUploadInput,
   GatewayDeliveryMode,
   GatewayDeviceCapability,
   GatewayDeviceCommandKind,
@@ -81,6 +85,8 @@ export class GatewayEventPolicyChangedError extends Error {
   }
 }
 
+export class GatewayDeliveryTargetUnavailableError extends Error {}
+
 function sameIdempotentEventBody(existing: GatewayEventRecord, input: GatewayEventInput): boolean {
   return existing.type === normalizeGatewayEventType(input.type)
     && existing.deliveryRequested === parseGatewayDeliveryMode(input.deliveryRequested)
@@ -94,6 +100,10 @@ export class GatewayAttachmentConflictError extends Error {
     super("Idempotency key already exists with a different attachment upload.");
     this.name = "GatewayAttachmentConflictError";
   }
+}
+
+export class GatewayUploadAdmissionError extends Error {
+  override readonly name = "GatewayUploadAdmissionError";
 }
 
 export class GatewayAttachmentReferenceError extends Error {
@@ -196,7 +206,20 @@ async function requireGatewayAttachmentPathWithinMediaRoot(input: {
     if (!isNotFoundError(error)) {
       throw error;
     }
-    candidatePath = path.resolve(input.localPath);
+    // A prior unlink may have succeeded before its receipt failed. Resolve the
+    // nearest existing parent so symlinked data roots still compare correctly.
+    let parent = path.resolve(input.localPath);
+    const missing: string[] = [];
+    while (true) {
+      missing.unshift(path.basename(parent));
+      parent = path.dirname(parent);
+      try {
+        candidatePath = path.join(await fs.realpath(parent), ...missing);
+        break;
+      } catch (parentError) {
+        if (!isNotFoundError(parentError) || parent === path.dirname(parent)) throw parentError;
+      }
+    }
   }
 
   if (!isPathInsideRoot(rootPath, candidatePath)) {
@@ -1269,58 +1292,174 @@ export class PostgresGatewayStore {
   }
 
   async storeAttachmentUpload(input: GatewayAttachmentUploadInput): Promise<GatewayStoredAttachmentResult> {
-    try {
-      const result = await this.pool.query(`
-        INSERT INTO ${this.tables.attachments} (
-          id,
-          source_id,
-          idempotency_key,
-          mime_type,
-          sniffed_mime_type,
-          filename,
-          size_bytes,
-          sha256,
-          local_path,
-          media_source,
-          connector_key,
-          media_metadata,
-          created_at,
-          expires_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14)
-        RETURNING *
-      `, [
-        requireGatewayTrimmedString("Gateway attachment id", input.descriptor.id),
-        normalizeGatewaySourceId(input.sourceId),
-        requireGatewayTrimmedString("Gateway attachment idempotency key", input.idempotencyKey),
-        requireGatewayTrimmedString("Gateway attachment MIME type", input.mimeType).toLowerCase(),
-        input.sniffedMimeType ?? null,
-        input.filename ?? null,
-        input.descriptor.sizeBytes,
-        requireGatewayTrimmedString("Gateway attachment sha256", input.sha256).toLowerCase(),
-        requireGatewayTrimmedString("Gateway attachment local path", input.descriptor.localPath),
-        requireGatewayTrimmedString("Gateway attachment media source", input.descriptor.source),
-        requireGatewayTrimmedString("Gateway attachment connector key", input.descriptor.connectorKey),
-        toJson(parseOptionalGatewayMetadata("Gateway attachment media metadata", input.descriptor.metadata)),
-        new Date(input.descriptor.createdAt),
-        new Date(input.expiresAt),
-      ]);
-      return {
-        attachment: parseGatewayAttachmentRow(result.rows[0] as Record<string, unknown>),
-        inserted: true,
-      };
-    } catch (error) {
-      if (!isUniqueViolation(error)) {
-        throw error;
-      }
-      const existing = await this.getAttachmentByIdempotencyKey(input.sourceId, input.idempotencyKey);
-      if (!existing || !sameIdempotentAttachmentUpload(existing, input)) {
-        throw new GatewayAttachmentConflictError(existing ?? await this.getAttachment(input.descriptor.id));
-      }
-      return {
-        attachment: existing,
-        inserted: false,
-      };
+    return this.storeAttachmentUploadWithClient(this.pool, input);
+  }
+
+  private async storeAttachmentUploadWithClient(client: PgQueryable, input: GatewayAttachmentUploadInput): Promise<GatewayStoredAttachmentResult> {
+    const sourceId = normalizeGatewaySourceId(input.sourceId);
+    const idempotencyKey = requireGatewayTrimmedString("Gateway attachment idempotency key", input.idempotencyKey);
+    const id = requireGatewayTrimmedString("Gateway attachment id", input.descriptor.id);
+    const result = await client.query(`
+      INSERT INTO ${this.tables.attachments} (
+        id,
+        source_id,
+        idempotency_key,
+        mime_type,
+        sniffed_mime_type,
+        filename,
+        size_bytes,
+        sha256,
+        local_path,
+        media_source,
+        connector_key,
+        media_metadata,
+        created_at,
+        expires_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14)
+      ON CONFLICT DO NOTHING
+      RETURNING *
+    `, [
+      id,
+      sourceId,
+      idempotencyKey,
+      requireGatewayTrimmedString("Gateway attachment MIME type", input.mimeType).toLowerCase(),
+      input.sniffedMimeType ?? null,
+      input.filename ?? null,
+      input.descriptor.sizeBytes,
+      requireGatewayTrimmedString("Gateway attachment sha256", input.sha256).toLowerCase(),
+      requireGatewayTrimmedString("Gateway attachment local path", input.descriptor.localPath),
+      requireGatewayTrimmedString("Gateway attachment media source", input.descriptor.source),
+      requireGatewayTrimmedString("Gateway attachment connector key", input.descriptor.connectorKey),
+      toJson(parseOptionalGatewayMetadata("Gateway attachment media metadata", input.descriptor.metadata)),
+      new Date(input.descriptor.createdAt),
+      new Date(input.expiresAt),
+    ]);
+    if (result.rows[0]) return {
+      attachment: parseGatewayAttachmentRow(result.rows[0] as Record<string, unknown>),
+      inserted: true,
+    };
+    const duplicate = await client.query(`SELECT * FROM ${this.tables.attachments} WHERE (source_id = $1 AND idempotency_key = $2) OR id = $3`, [sourceId, idempotencyKey, id]);
+    const existing = duplicate.rows[0] ? parseGatewayAttachmentRow(duplicate.rows[0] as Record<string, unknown>) : null;
+    if (!existing || existing.sourceId !== sourceId || existing.idempotencyKey !== idempotencyKey || !sameIdempotentAttachmentUpload(existing, input)) {
+      if (!existing) throw new Error("Conflicting gateway attachment disappeared.");
+      throw new GatewayAttachmentConflictError(existing);
     }
+    return {
+      attachment: existing,
+      inserted: false,
+    };
+  }
+
+  private async lockUploadAdmission(client: PgQueryable): Promise<void> {
+    // Serialize pending/receiving transitions as well as admission; no lock spans body IO.
+    await client.query(`
+      INSERT INTO ${this.tables.rateLimits} (bucket_key, window_start, used)
+      VALUES ('gateway:attachment:admission', NOW(), 0)
+      ON CONFLICT (bucket_key) DO UPDATE SET updated_at = NOW()
+    `);
+  }
+
+  async reserveAttachmentUpload(input: ReserveGatewayUploadInput): Promise<GatewayUploadReservation> {
+    return withTransaction(this.requireTransactionalPool(), async (client) => {
+      await this.lockUploadAdmission(client);
+      const deadline = await client.query("SELECT clock_timestamp() < $1::timestamptz AS live", [new Date(input.expiresAt)]);
+      if (!(deadline.rows[0] as {live: boolean}).live) throw new GatewayUploadAdmissionError("Attachment upload deadline exceeded.");
+      const active = await client.query(`SELECT COUNT(*) AS count FROM ${this.tables.uploadReservations} WHERE status = 'receiving' AND expires_at > clock_timestamp()`);
+      if (Number((active.rows[0] as {count: string}).count) >= input.maxConcurrent) throw new GatewayUploadAdmissionError("Concurrent attachment validation limit exceeded.");
+      const found = await client.query(`SELECT id FROM ${this.tables.attachments} WHERE source_id = $1 AND idempotency_key = $2`, [input.sourceId, input.idempotencyKey]);
+      const isRetry = Boolean(found.rows[0]);
+      if (!isRetry) {
+        const receiving = await client.query(`SELECT idempotency_key FROM ${this.tables.uploadReservations} WHERE source_id = $1 AND status = 'receiving' AND expires_at > clock_timestamp() AND is_retry = FALSE`, [input.sourceId]);
+        if (receiving.rows.some((row) => (row as {idempotency_key: string}).idempotency_key === input.idempotencyKey)) throw new GatewayUploadAdmissionError("This attachment upload is already in progress.");
+        const pending = await client.query(`SELECT COUNT(*) AS count FROM ${this.tables.attachments} WHERE source_id = $1 AND status = 'uploaded' AND expires_at > clock_timestamp()`, [input.sourceId]);
+        if (Number((pending.rows[0] as {count: string}).count) + receiving.rows.length >= input.maxPending) throw new GatewayUploadAdmissionError("Pending attachment limit exceeded.");
+        const quota = await client.query(`
+          INSERT INTO ${this.tables.rateLimits} (bucket_key, window_start, used)
+          VALUES ($1, clock_timestamp(), $2)
+          ON CONFLICT (bucket_key) DO UPDATE SET
+            window_start = CASE WHEN ${this.tables.rateLimits}.window_start < clock_timestamp() - INTERVAL '1 hour' THEN clock_timestamp() ELSE ${this.tables.rateLimits}.window_start END,
+            used = CASE WHEN ${this.tables.rateLimits}.window_start < clock_timestamp() - INTERVAL '1 hour' THEN EXCLUDED.used ELSE ${this.tables.rateLimits}.used + EXCLUDED.used END,
+            updated_at = clock_timestamp()
+          RETURNING used
+        `, [`gateway:source:${input.sourceId}:attachment_bytes`, input.reservedBytes]);
+        if (Number((quota.rows[0] as {used: string}).used) > input.byteLimit) throw new GatewayUploadAdmissionError("Attachment byte budget exceeded.");
+      }
+      const inserted = await client.query(`
+        INSERT INTO ${this.tables.uploadReservations}
+          (id, source_id, idempotency_key, directory, is_retry, reserved_bytes, quota_window_start, expires_at)
+        VALUES ($1, $2, $3, $4, $5, $6,
+          (SELECT window_start FROM ${this.tables.rateLimits} WHERE bucket_key = $7),
+          $8::timestamptz)
+        RETURNING EXTRACT(EPOCH FROM expires_at) * 1000 AS expires_at_ms
+      `, [input.id, input.sourceId, input.idempotencyKey, input.directory, isRetry, isRetry ? 0 : input.reservedBytes,
+        `gateway:source:${input.sourceId}:attachment_bytes`, new Date(input.expiresAt)]);
+      const expiresAt = Number((inserted.rows[0] as {expires_at_ms: string}).expires_at_ms);
+      return {id: input.id, sourceId: input.sourceId, directory: input.directory, expiresAt};
+    });
+  }
+
+  async completeAttachmentUpload(reservationId: string, input: GatewayAttachmentUploadInput): Promise<GatewayStoredAttachmentResult> {
+    return withTransaction(this.requireTransactionalPool(), async (client) => {
+      await this.lockUploadAdmission(client);
+      const selected = await client.query(`SELECT *, expires_at > clock_timestamp() AS live FROM ${this.tables.uploadReservations} WHERE id = $1 FOR UPDATE`, [reservationId]);
+      const reservation = selected.rows[0] as Record<string, unknown> | undefined;
+      if (!reservation || reservation.source_id !== input.sourceId || reservation.idempotency_key !== input.idempotencyKey) throw new Error("Attachment reservation is unavailable.");
+      if (reservation.status !== "committed" && (reservation.status !== "receiving" || !reservation.live)) throw new Error("Attachment reservation expired or was revoked.");
+      if (path.dirname(input.descriptor.localPath) !== reservation.directory || input.descriptor.id !== reservationId) throw new Error("Attachment descriptor does not belong to its reservation.");
+      let stored: GatewayStoredAttachmentResult;
+      if (reservation.is_retry || reservation.status === "committed") {
+        const selectedAttachment = await client.query(`SELECT * FROM ${this.tables.attachments} WHERE source_id = $1 AND idempotency_key = $2`, [input.sourceId, input.idempotencyKey]);
+        const existing = selectedAttachment.rows[0] ? parseGatewayAttachmentRow(selectedAttachment.rows[0] as Record<string, unknown>) : null;
+        if (!existing) throw new Error("Previously accepted attachment is unavailable.");
+        if (!sameIdempotentAttachmentUpload(existing, input)) throw new GatewayAttachmentConflictError(existing);
+        stored = {attachment: existing, inserted: false};
+      } else {
+        if (input.descriptor.sizeBytes > Number(reservation.reserved_bytes)) throw new Error("Attachment exceeds its byte reservation.");
+        stored = await this.storeAttachmentUploadWithClient(client, input);
+      }
+      if (reservation.status !== "committed" && !reservation.is_retry) {
+        await client.query(`
+          UPDATE ${this.tables.rateLimits} SET used = GREATEST(0, used - $2::bigint), updated_at = NOW()
+          WHERE bucket_key = $1 AND window_start = (SELECT quota_window_start FROM ${this.tables.uploadReservations} WHERE id = $3)
+        `, [`gateway:source:${input.sourceId}:attachment_bytes`, Number(reservation.reserved_bytes) - input.descriptor.sizeBytes, reservationId]);
+      }
+      await client.query(`UPDATE ${this.tables.uploadReservations} SET status = 'committed' WHERE id = $1`, [reservationId]);
+      return stored;
+    });
+  }
+
+  async discardAttachmentUpload(input: {id: string; directory: string; sourceId: string; expiresAt?: number; expiredOnly?: boolean}): Promise<"discard" | "retained" | "active" | "mismatch"> {
+    return withTransaction(this.requireTransactionalPool(), async (client) => {
+      await this.lockUploadAdmission(client);
+      const selected = await client.query(`SELECT *, expires_at <= clock_timestamp() AS expired FROM ${this.tables.uploadReservations} WHERE id = $1 FOR UPDATE`, [input.id]);
+      const reservation = selected.rows[0] as Record<string, unknown> | undefined;
+      if (reservation && (reservation.source_id !== input.sourceId || reservation.directory !== input.directory)) return "mismatch";
+      // The attachment row is the durable file receipt, including delivered/scrubbed history.
+      const committed = await client.query(`SELECT id FROM ${this.tables.attachments} WHERE id = $1`, [input.id]);
+      if (committed.rows[0]) return "retained";
+      if (!reservation && input.expiredOnly) {
+        if (input.expiresAt === undefined) return "active";
+        // An absent-row proof is safe only once the immutable admission deadline has passed.
+        const deadline = await client.query("SELECT clock_timestamp() >= $1::timestamptz AS expired", [new Date(input.expiresAt)]);
+        if (!(deadline.rows[0] as {expired: boolean}).expired) return "active";
+      }
+      if (reservation?.status === "receiving" && input.expiredOnly && !reservation.expired) return "active";
+      if (reservation) await client.query(`UPDATE ${this.tables.uploadReservations} SET status = 'aborted' WHERE id = $1`, [input.id]);
+      return "discard";
+    });
+  }
+
+  async removeAttachmentUploadReservation(id: string): Promise<void> {
+    await this.pool.query(`DELETE FROM ${this.tables.uploadReservations} WHERE id = $1 AND status <> 'receiving'`, [id]);
+  }
+
+  async removeExpiredAttachmentUploadReservations(limit: number): Promise<void> {
+    await withTransaction(this.requireTransactionalPool(), async (client) => {
+      await this.lockUploadAdmission(client);
+      await client.query(`DELETE FROM ${this.tables.uploadReservations} WHERE id IN (
+        SELECT id FROM ${this.tables.uploadReservations} WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT $1
+      )`, [limit]);
+    });
   }
 
   private async listEventAttachmentsWithClient(
@@ -1622,81 +1761,110 @@ export class PostgresGatewayStore {
     return result.rows.map((row) => parseGatewayEventRow(row as Record<string, unknown>));
   }
 
-  async reserveEventDelivery(input: {
+  async recordEventAssessment(input: {
     eventId: string;
     claimId: string;
     riskScore?: number;
-    metadata?: GatewayEventRecord["metadata"];
+    metadata: GatewayEventRecord["metadata"];
   }): Promise<GatewayEventRecord | null> {
+    const metadata = toJson(parseOptionalGatewayMetadata("Gateway event metadata", input.metadata));
     const result = await this.pool.query(`
       UPDATE ${this.tables.events}
-      SET status = 'delivering',
-          risk_score = $3,
-          metadata = $4::jsonb,
-          claimed_at = NOW()
-      WHERE id = $1
-        AND status = 'processing'
-        AND claim_id = $2
+      SET input_id = COALESCE(input_id, $3::uuid),
+          risk_score = CASE WHEN input_id IS NULL THEN $4 ELSE risk_score END,
+          metadata = CASE WHEN input_id IS NULL THEN $5::jsonb ELSE metadata END
+      WHERE id = $1 AND claim_id = $2 AND status = 'processing'
       RETURNING *
-    `, [
-      input.eventId,
-      input.claimId,
-      input.riskScore ?? null,
-      toJson(parseOptionalGatewayMetadata("Gateway event metadata", input.metadata)),
-    ]);
+    `, [input.eventId, input.claimId, randomUUID(), input.riskScore ?? null, metadata]);
     const row = result.rows[0] as Record<string, unknown> | undefined;
     return row ? parseGatewayEventRow(row) : null;
   }
 
-  async markEventDelivered(input: {
+  /** Accept one guarded event, its input and attachment receipts in one commit. */
+  async commitEventDelivery(input: {
     eventId: string;
-    claimId?: string;
-    threadId: string;
-    riskScore?: number;
-    metadata?: GatewayEventRecord["metadata"];
+    claimId: string;
+    source: Pick<GatewaySourceRecord, "sourceId" | "agentKey" | "identityId" | "sessionId">;
+    payload: ThreadInputPayload;
     attachmentRetentionMs?: number;
-  }): Promise<GatewayEventRecord> {
-    const result = await this.pool.query(`
-      UPDATE ${this.tables.events}
-      SET status = 'delivered',
-          risk_score = $2,
-          thread_id = $3,
-          metadata = $4::jsonb,
-          text = '',
-          processed_at = NOW(),
-          delivered_at = NOW(),
-          text_scrubbed_at = COALESCE(text_scrubbed_at, NOW())
-      WHERE id = $1
-        AND status = 'delivering'
-        AND ($5::text IS NULL OR claim_id = $5)
-      RETURNING *
-    `, [
-      input.eventId,
-      input.riskScore ?? null,
-      input.threadId,
-      toJson(parseOptionalGatewayMetadata("Gateway event metadata", input.metadata)),
-      input.claimId ?? null,
-    ]);
-    const row = result.rows[0] as Record<string, unknown> | undefined;
-    if (row) {
-      const attachmentExpiresAt = new Date(Date.now() + Math.max(
-        1,
-        Math.floor(input.attachmentRetentionMs ?? DEFAULT_ATTACHMENT_RETENTION_MS),
-      ));
-      await this.pool.query(`
-        UPDATE ${this.tables.attachments}
-        SET status = 'delivered',
-            delivered_at = COALESCE(delivered_at, NOW()),
-            expires_at = $2
-        WHERE id IN (
-          SELECT attachment_id
-          FROM ${this.tables.eventAttachments}
-          WHERE event_id = $1
+  }): Promise<GatewayEventRecord | null> {
+    return withTransaction(this.requireTransactionalPool(), async (client) => {
+      const receipt = await client.query(`SELECT * FROM ${this.tables.events} WHERE id = $1`, [input.eventId]);
+      const existing = receipt.rows[0] as Record<string, unknown> | undefined;
+      if (!existing) return null;
+      if (existing.status === "delivered") return parseGatewayEventRow(existing);
+      // Archive and reset take the session lock first. Source/event locks must
+      // follow it, or their cascade updates can deadlock delivery admission.
+      const target = await client.query(`
+        SELECT id, archived_at FROM ${this.sessionTables.sessions}
+        WHERE agent_key = $1 AND (
+          ($2::text IS NOT NULL AND id = $2) OR ($2::text IS NULL AND kind = 'main')
         )
+        FOR UPDATE
+      `, [input.source.agentKey, input.source.sessionId ?? null]);
+      const session = target.rows[0] as {id: string; archived_at: unknown} | undefined;
+      if (!session || session.archived_at !== null) {
+        throw new GatewayDeliveryTargetUnavailableError("Gateway target session is missing or archived.");
+      }
+      const sourceResult = await client.query(`
+        SELECT * FROM ${this.tables.sources} WHERE source_id = $1 FOR UPDATE
+      `, [input.source.sourceId]);
+      const sourceRow = sourceResult.rows[0] as Record<string, unknown> | undefined;
+      if (!sourceRow) throw new GatewayDeliveryTargetUnavailableError("Gateway source no longer exists.");
+      const source = parseGatewaySourceRow(sourceRow);
+      if (source.status !== "active" || source.agentKey !== input.source.agentKey
+        || source.identityId !== input.source.identityId || source.sessionId !== input.source.sessionId) {
+        throw new GatewayDeliveryTargetUnavailableError("Gateway source authority changed before delivery.");
+      }
+      const result = await client.query(`SELECT * FROM ${this.tables.events} WHERE id = $1 FOR UPDATE`, [input.eventId]);
+      const row = result.rows[0] as Record<string, unknown> | undefined;
+      if (!row) return null;
+      const event = parseGatewayEventRow(row);
+      if (event.status === "delivered") return event;
+      if (event.status !== "processing" || event.claimId !== input.claimId) return null;
+      if (event.sourceId !== source.sourceId || !event.inputId) {
+        throw new Error("Gateway delivery requires an owned, guarded input receipt.");
+      }
+      await client.query(`
+        SELECT attachment.id FROM ${this.tables.attachments} AS attachment
+        JOIN ${this.tables.eventAttachments} AS link ON link.attachment_id = attachment.id
+        WHERE link.event_id = $1 ORDER BY attachment.id FOR UPDATE OF attachment
+      `, [event.id]);
+      const unavailable = await client.query(`
+        SELECT attachment.id FROM ${this.tables.attachments} AS attachment
+        JOIN ${this.tables.eventAttachments} AS link ON link.attachment_id = attachment.id
+        WHERE link.event_id = $1
+          AND (attachment.status <> 'bound' OR attachment.expires_at <= clock_timestamp())
+      `, [event.id]);
+      if (unavailable.rows.length > 0) {
+        throw new GatewayDeliveryTargetUnavailableError("Gateway attachment expired or became unavailable before delivery.");
+      }
+      const accepted = await enqueueSessionInputWithClient(client, session.id, {
+        ...input.payload,
+        source: "gateway",
+        channelId: event.sourceId,
+        externalMessageId: event.id,
+        actorId: event.sourceId,
+        identityId: source.identityId,
+        metadata: event.metadata,
+      }, event.deliveryEffective, {inputId: event.inputId});
+      const delivered = await client.query(`
+        UPDATE ${this.tables.events}
+        SET status = 'delivered', thread_id = $2, text = '',
+            processed_at = NOW(), delivered_at = NOW(),
+            text_scrubbed_at = COALESCE(text_scrubbed_at, NOW())
+        WHERE id = $1
+        RETURNING *
+      `, [event.id, accepted.input.threadId]);
+      await client.query(`
+        UPDATE ${this.tables.attachments}
+        SET status = 'delivered', delivered_at = COALESCE(delivered_at, NOW()),
+            expires_at = NOW() + ($2::double precision * INTERVAL '1 millisecond')
+        WHERE id IN (SELECT attachment_id FROM ${this.tables.eventAttachments} WHERE event_id = $1)
           AND status IN ('bound', 'delivered')
-      `, [input.eventId, attachmentExpiresAt]);
-    }
-    return row ? parseGatewayEventRow(row) : await this.getEvent(input.eventId);
+      `, [event.id, Math.max(1, Math.floor(input.attachmentRetentionMs ?? DEFAULT_ATTACHMENT_RETENTION_MS))]);
+      return parseGatewayEventRow(delivered.rows[0] as Record<string, unknown>);
+    });
   }
 
   async markEventQuarantined(input: {
@@ -1707,46 +1875,51 @@ export class PostgresGatewayStore {
     metadata?: GatewayEventRecord["metadata"];
     attachmentQuarantineTtlMs?: number;
   }): Promise<GatewayEventRecord> {
-    const result = await this.pool.query(`
-      UPDATE ${this.tables.events}
-      SET status = 'quarantined',
-          risk_score = $2,
-          reason = $3,
-          metadata = $4::jsonb,
-          text = '',
-          processed_at = NOW(),
-          text_scrubbed_at = COALESCE(text_scrubbed_at, NOW())
-      WHERE id = $1
-        AND status IN ('pending', 'processing', 'delivering')
-        AND ($5::text IS NULL OR claim_id = $5)
-      RETURNING *
-    `, [
-      input.eventId,
-      input.riskScore ?? null,
-      input.reason,
-      toJson(parseOptionalGatewayMetadata("Gateway event metadata", input.metadata)),
-      input.claimId ?? null,
-    ]);
-    const row = result.rows[0] as Record<string, unknown> | undefined;
-    if (row) {
-      const attachmentExpiresAt = new Date(Date.now() + Math.max(
-        1,
-        Math.floor(input.attachmentQuarantineTtlMs ?? DEFAULT_ATTACHMENT_QUARANTINE_TTL_MS),
-      ));
-      await this.pool.query(`
-        UPDATE ${this.tables.attachments}
+    return withTransaction(this.requireTransactionalPool(), async (client) => {
+      const result = await client.query(`
+        UPDATE ${this.tables.events}
         SET status = 'quarantined',
-            quarantined_at = COALESCE(quarantined_at, NOW()),
-            expires_at = $2
-        WHERE id IN (
-          SELECT attachment_id
-          FROM ${this.tables.eventAttachments}
-          WHERE event_id = $1
-        )
-          AND status IN ('uploaded', 'bound', 'quarantined')
-      `, [input.eventId, attachmentExpiresAt]);
-    }
-    return row ? parseGatewayEventRow(row) : await this.getEvent(input.eventId);
+            risk_score = $2,
+            reason = $3,
+            metadata = $4::jsonb,
+            text = '',
+            processed_at = NOW(),
+            text_scrubbed_at = COALESCE(text_scrubbed_at, NOW())
+        WHERE id = $1
+          AND status IN ('pending', 'processing', 'delivering')
+          AND ($5::text IS NULL OR claim_id = $5)
+        RETURNING *
+      `, [
+        input.eventId,
+        input.riskScore ?? null,
+        input.reason,
+        toJson(parseOptionalGatewayMetadata("Gateway event metadata", input.metadata)),
+        input.claimId ?? null,
+      ]);
+      const row = result.rows[0] as Record<string, unknown> | undefined;
+      if (row) {
+        const attachmentExpiresAt = new Date(Date.now() + Math.max(
+          1,
+          Math.floor(input.attachmentQuarantineTtlMs ?? DEFAULT_ATTACHMENT_QUARANTINE_TTL_MS),
+        ));
+        await client.query(`
+          UPDATE ${this.tables.attachments}
+          SET status = 'quarantined',
+              quarantined_at = COALESCE(quarantined_at, NOW()),
+              expires_at = $2
+          WHERE id IN (
+            SELECT attachment_id
+            FROM ${this.tables.eventAttachments}
+            WHERE event_id = $1
+          )
+            AND status IN ('uploaded', 'bound', 'quarantined')
+        `, [input.eventId, attachmentExpiresAt]);
+      }
+      if (row) return parseGatewayEventRow(row);
+      const current = await client.query(`SELECT * FROM ${this.tables.events} WHERE id = $1`, [input.eventId]);
+      if (!current.rows[0]) throw new Error(`Unknown gateway event ${input.eventId}.`);
+      return parseGatewayEventRow(current.rows[0] as Record<string, unknown>);
+    });
   }
 
   async scrubExpiredAttachments(input: {
@@ -1766,29 +1939,39 @@ export class PostgresGatewayStore {
       ORDER BY a.expires_at ASC, a.created_at ASC
       LIMIT $2
     `, [now, limit]);
-    const attachments = result.rows.map((row) => ({
-      agentKey: requireGatewayTrimmedString("Gateway attachment source agent key", (row as {agent_key?: unknown}).agent_key),
-      attachment: parseGatewayAttachmentRow(row as Record<string, unknown>),
-    }));
-    for (const {agentKey, attachment} of attachments) {
-      await requireGatewayAttachmentPathWithinMediaRoot({
-        agentKey,
-        env: input.env,
-        localPath: attachment.localPath,
+    let scrubbed = 0;
+    for (const candidate of result.rows as Record<string, unknown>[]) {
+      const removed = await withTransaction(this.requireTransactionalPool(), async (client) => {
+        const locked = await client.query(`
+          SELECT a.*, s.agent_key FROM ${this.tables.attachments} AS a
+          JOIN ${this.tables.sources} AS s ON s.source_id = a.source_id
+          WHERE a.id = $1 FOR UPDATE OF a
+        `, [candidate.id]);
+        const row = locked.rows[0] as Record<string, unknown> | undefined;
+        if (!row) return false;
+        const attachment = parseGatewayAttachmentRow(row);
+        // Delivery may have extended retention while this sweep waited. Keep
+        // the row locked through unlink, so admission can never race cleanup.
+        const expired = await client.query(`
+          SELECT id FROM ${this.tables.attachments} WHERE id = $1
+            AND status <> 'scrubbed' AND expires_at <= ${input.now === undefined ? "clock_timestamp()" : "$2::timestamptz"}
+        `, input.now === undefined ? [attachment.id] : [attachment.id, now]);
+        if (expired.rows.length === 0) return false;
+        await requireGatewayAttachmentPathWithinMediaRoot({
+          agentKey: requireGatewayTrimmedString("Gateway attachment source agent key", row.agent_key),
+          env: input.env, localPath: attachment.localPath,
+        });
+        await fs.unlink(attachment.localPath).catch((error: unknown) => {
+          if (!isNotFoundError(error)) throw error;
+        });
+        await client.query(`
+          UPDATE ${this.tables.attachments} SET status = 'scrubbed', scrubbed_at = NOW() WHERE id = $1
+        `, [attachment.id]);
+        return true;
       });
-      await fs.unlink(attachment.localPath).catch((error: unknown) => {
-        if (isNotFoundError(error)) {
-          return;
-        }
-        throw error;
-      });
-      await this.pool.query(`
-        UPDATE ${this.tables.attachments}
-        SET status = 'scrubbed', scrubbed_at = NOW()
-        WHERE id = $1
-      `, [attachment.id]);
+      if (removed) scrubbed += 1;
     }
-    return {scrubbed: attachments.length};
+    return {scrubbed};
   }
 
   async recordStrike(input: {

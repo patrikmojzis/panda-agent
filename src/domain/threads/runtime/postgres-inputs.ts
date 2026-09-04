@@ -8,7 +8,10 @@ import type {ThreadEnqueueResult} from "./store.js";
 import {SessionArchivedError, ThreadInputAdmissionBlockedError, ThreadRunClaimLostError} from "./store.js";
 import {buildActiveThreadRunGuardCte} from "./postgres-run-claims.js";
 import {parseInputRow, parseInputThreadIdRow, parseMessageRow} from "./postgres-rows.js";
-import type {ThreadRuntimeTableNames} from "./postgres-shared.js";
+import {buildThreadRuntimeTableNames, type ThreadRuntimeTableNames} from "./postgres-shared.js";
+import {buildThreadRuntimeNotificationChannel} from "./postgres-notifications.js";
+import {buildSessionTableNames} from "../../sessions/postgres-shared.js";
+import {buildSessionRouteTableNames} from "../../sessions/routes/postgres-shared.js";
 import type {
   ThreadEnqueueOptions,
   ThreadInputDeliveryMode,
@@ -313,6 +316,7 @@ async function enqueueInputAtTarget(options: ThreadInputEnqueueMutationOptions):
           $10::jsonb,
           $11::jsonb
         FROM target_thread
+        ON CONFLICT DO NOTHING
         RETURNING ${inputStateColumns(tables.inputs)}
       ), ${routeCte.sql}, updated_thread AS (
         UPDATE ${tables.threads} AS thread
@@ -349,9 +353,11 @@ async function enqueueInputAtTarget(options: ThreadInputEnqueueMutationOptions):
         INNER JOIN updated_thread ON updated_thread.id = inserted.thread_id
       )
       SELECT inserted.*, notified.notification,
+             EXISTS (SELECT 1 FROM target_thread) AS target_exists,
              (SELECT COUNT(*) FROM wake) AS wake_count
-      FROM inserted
-      INNER JOIN notified ON TRUE
+      FROM (SELECT 1) AS outcome
+      LEFT JOIN inserted ON TRUE
+      LEFT JOIN notified ON TRUE
     `, [
       inputId,
       options.targetId,
@@ -368,9 +374,10 @@ async function enqueueInputAtTarget(options: ThreadInputEnqueueMutationOptions):
       ...routeCte.values,
     ]);
     const row = result.rows[0] as Record<string, unknown> | undefined;
-    if (!row) {
+    if (!row?.target_exists) {
       throw new Error(`Unknown ${options.targetLabel} ${options.targetId}.`);
     }
+    if (!row.id) return resolveDuplicateInput({...options, inputId, connectorKey});
     return {input: parseInputRow(row), disposition: "inserted"};
   } catch (error) {
     const jsonbError = createThreadRuntimeJsonbPersistenceError(error, {
@@ -387,10 +394,7 @@ async function enqueueInputAtTarget(options: ThreadInputEnqueueMutationOptions):
     if (jsonbError) {
       throw jsonbError;
     }
-    if ((error as {code?: string}).code !== "23505") {
-      throw error;
-    }
-    return resolveDuplicateInput({...options, inputId, connectorKey});
+    throw error;
   }
 }
 
@@ -816,4 +820,27 @@ export async function wakePendingThreadInputs(options: {
     ORDER BY id ASC
   `, [options.notificationChannel, options.threadId]);
   return result.rows.map((row) => parseInputThreadIdRow(row as Record<string, unknown>));
+}
+
+/** Admit input on the caller's transaction, including route, wake, and notification writes. */
+export function enqueueSessionInputWithClient(
+  client: PgQueryable,
+  sessionId: string,
+  payload: ThreadInputPayload,
+  deliveryMode: ThreadInputDeliveryMode = "wake",
+  options?: ThreadEnqueueOptions,
+): Promise<ThreadEnqueueResult> {
+  const sessions = buildSessionTableNames();
+  return enqueueSessionThreadInput({
+    pool: client,
+    tables: buildThreadRuntimeTableNames(),
+    sessionTable: sessions.sessions,
+    sessionRuntimeConfigTable: sessions.sessionRuntimeConfig,
+    sessionRouteTable: buildSessionRouteTableNames().sessionRoutes,
+    notificationChannel: buildThreadRuntimeNotificationChannel(),
+    sessionId,
+    payload,
+    deliveryMode,
+    enqueueOptions: options,
+  });
 }
