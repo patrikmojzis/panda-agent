@@ -5,6 +5,7 @@ import {resolveModelSelector} from "../../kernel/models/model-selector.js";
 import {buildThreadRuntimeTableNames} from "../threads/runtime/postgres-shared.js";
 import {buildRuntimeRequestTableNames} from "../threads/requests/postgres-shared.js";
 import {requireBoolean} from "../../lib/booleans.js";
+import {requireNonNegativeInteger} from "../../lib/numbers.js";
 import {type JsonValue, readOptionalJsonValue, stringifyOptionalJsonValue} from "../../lib/json.js";
 import type {PgPoolLike, PgQueryable} from "../../lib/postgres-query.js";
 import {withTransaction} from "../../lib/postgres-transaction.js";
@@ -38,6 +39,7 @@ import type {
   UpdateSessionRuntimeConfigInput,
 } from "./types.js";
 import {DEFAULT_SESSION_PROMPT_TEMPLATES} from "../../prompts/templates/session-prompts.js";
+import {SessionArchivedError} from "../threads/runtime/store.js";
 import {
   normalizeSessionAlias,
   normalizeSessionPromptSlug,
@@ -124,6 +126,8 @@ function parseHeartbeatRow(row: Record<string, unknown>): SessionHeartbeatRecord
     sessionId: requireSessionString("id", row.session_id),
     enabled: requireBoolean(row.enabled, "Session heartbeat enabled flag must be a boolean."),
     everyMinutes,
+    configRevision: requireNonNegativeInteger(row.config_revision, "Session heartbeat config revision"),
+    lastCadenceChangeReason: optionalSessionString("heartbeat cadence change reason", row.last_cadence_change_reason),
     nextFireAt: requireTimestampMillis(row.next_fire_at, "Session next_fire_at must be a valid timestamp."),
     lastFireAt: optionalTimestampMillis(row.last_fire_at, "Session last_fire_at must be a valid timestamp."),
     lastSkipReason: optionalSessionString("last skip reason", row.last_skip_reason),
@@ -1336,66 +1340,102 @@ export class PostgresSessionStore implements SessionStore {
     });
   }
 
-  async recordHeartbeatResult(input: RecordSessionHeartbeatResultInput): Promise<SessionHeartbeatRecord> {
+  async recordHeartbeatResult(input: RecordSessionHeartbeatResultInput): Promise<SessionHeartbeatRecord | null> {
     const result = await this.pool.query(`
       UPDATE ${this.tables.sessionHeartbeats}
-      SET next_fire_at = $3,
-          last_fire_at = COALESCE($4, last_fire_at),
-          last_skip_reason = $5,
+      SET next_fire_at = CASE
+            WHEN config_revision = $3 THEN $4::timestamptz + every_minutes * INTERVAL '1 minute'
+            ELSE next_fire_at
+          END,
+          last_fire_at = COALESCE($5::timestamptz, last_fire_at),
+          last_skip_reason = $6,
           claimed_at = NULL,
           claimed_by = NULL,
           claim_expires_at = NULL,
           updated_at = NOW()
       WHERE session_id = $1
         AND claimed_by = $2
+        AND claim_expires_at > NOW()
+        AND enabled = TRUE
       RETURNING *
     `, [
       requireSessionString("id", input.sessionId),
       requireSessionString("claim owner", input.claimedBy),
-      new Date(input.nextFireAt),
+      requireNonNegativeInteger(input.configRevision, "Session heartbeat config revision"),
+      new Date(input.attemptedAt),
       input.lastFireAt === undefined ? null : new Date(input.lastFireAt),
       input.lastSkipReason ?? null,
     ]);
     const row = result.rows[0];
-    if (!row) {
-      throw missingHeartbeatError(input.sessionId);
-    }
-
-    return parseHeartbeatRow(row as Record<string, unknown>);
+    return row ? parseHeartbeatRow(row as Record<string, unknown>) : null;
   }
 
   async updateHeartbeatConfig(input: UpdateSessionHeartbeatConfigInput): Promise<SessionHeartbeatRecord> {
-    const existing = await this.getHeartbeat(input.sessionId);
-    if (!existing) {
-      throw missingHeartbeatError(input.sessionId);
-    }
-
-    const enabled = input.enabled ?? existing.enabled;
-    const everyMinutes = input.everyMinutes === undefined
-      ? existing.everyMinutes
+    const sessionId = requireSessionString("id", input.sessionId);
+    const requestedInterval = input.everyMinutes === undefined
+      ? undefined
       : requireHeartbeatEveryMinutes(input.everyMinutes);
-    const asOf = input.asOf ?? Date.now();
-    const nextFireAt = enabled
-      ? asOf + everyMinutes * 60_000
-      : existing.nextFireAt;
+    const reason = input.lastCadenceChangeReason === undefined
+      ? null
+      : requireSessionString("heartbeat cadence change reason", input.lastCadenceChangeReason);
 
-    const result = await this.pool.query(`
-      UPDATE ${this.tables.sessionHeartbeats}
-      SET enabled = $2,
-          every_minutes = $3,
-          next_fire_at = $4,
-          claimed_at = NULL,
-          claimed_by = NULL,
-          claim_expires_at = NULL,
-          updated_at = NOW()
-      WHERE session_id = $1
-      RETURNING *
-    `, [
-      requireSessionString("id", input.sessionId),
-      enabled,
-      everyMinutes,
-      new Date(nextFireAt),
-    ]);
-    return parseHeartbeatRow(result.rows[0] as Record<string, unknown>);
+    return withTransaction(this.pool, async (client) => {
+      const lifecycle = await client.query(`
+        SELECT id, archived_at
+        FROM ${this.tables.sessions}
+        WHERE id = $1
+        FOR UPDATE
+      `, [sessionId]);
+      const lifecycleRow = lifecycle.rows[0] as {archived_at?: unknown} | undefined;
+      if (!lifecycleRow) throw missingSessionError(sessionId);
+      if (lifecycleRow.archived_at !== null) throw new SessionArchivedError(sessionId);
+
+      const locked = await client.query(`
+        SELECT *
+        FROM ${this.tables.sessionHeartbeats}
+        WHERE session_id = $1
+        FOR UPDATE
+      `, [sessionId]);
+      if (!locked.rows[0]) throw missingHeartbeatError(sessionId);
+      const existing = parseHeartbeatRow(locked.rows[0] as Record<string, unknown>);
+      const enabled = input.enabled ?? existing.enabled;
+      const everyMinutes = requestedInterval ?? existing.everyMinutes;
+      if (enabled === existing.enabled && everyMinutes === existing.everyMinutes) return existing;
+
+      const asOf = input.asOf ?? Date.now();
+      const preservesClaim = enabled && existing.enabled
+        && existing.claimedBy !== undefined && (existing.claimExpiresAt ?? 0) > asOf;
+      let nextFireAt = existing.nextFireAt;
+      if (enabled) {
+        nextFireAt = asOf + everyMinutes * 60_000;
+        // A claimed tick is already owned; the new clock is for the following tick.
+        if (existing.enabled && !preservesClaim && everyMinutes < existing.everyMinutes) {
+          nextFireAt = Math.min(existing.nextFireAt, nextFireAt);
+        }
+      }
+
+      const result = await client.query(`
+        UPDATE ${this.tables.sessionHeartbeats}
+        SET enabled = $2,
+            every_minutes = $3,
+            next_fire_at = $4,
+            config_revision = config_revision + 1,
+            last_cadence_change_reason = $5,
+            claimed_at = CASE WHEN $6 THEN claimed_at ELSE NULL END,
+            claimed_by = CASE WHEN $6 THEN claimed_by ELSE NULL END,
+            claim_expires_at = CASE WHEN $6 THEN claim_expires_at ELSE NULL END,
+            updated_at = NOW()
+        WHERE session_id = $1
+        RETURNING *
+      `, [
+        sessionId,
+        enabled,
+        everyMinutes,
+        new Date(nextFireAt),
+        everyMinutes === existing.everyMinutes ? existing.lastCadenceChangeReason ?? null : reason,
+        preservesClaim,
+      ]);
+      return parseHeartbeatRow(result.rows[0] as Record<string, unknown>);
+    });
   }
 }

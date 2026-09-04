@@ -140,6 +140,8 @@ function defaultPersistentToolPolicy(session: Pick<SessionRecord, "kind">): Exec
       "schedule.runs",
       "schedule.show",
       "schedule.update",
+      "heartbeat.show",
+      "heartbeat.set",
       "session.prompt.read",
       "session.prompt.set",
       "session.prompt.transform",

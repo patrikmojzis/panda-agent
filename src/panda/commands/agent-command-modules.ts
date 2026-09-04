@@ -405,6 +405,14 @@ import {
 } from "../../integrations/web/commands.js";
 import type {BraveThrottleGate} from "../../integrations/web/brave-throttle.js";
 import {
+  createHeartbeatShowCommand,
+  createHeartbeatSetCommand,
+  heartbeatShowCommandDescriptor,
+  heartbeatSetCommandDescriptor,
+} from "../../domain/scheduling/heartbeats/commands.js";
+import type {HeartbeatCadenceBounds} from "../../domain/scheduling/heartbeats/config.js";
+import type {SessionStore} from "../../domain/sessions/store.js";
+import {
   createImageGenerateCommand,
   imageGenerateCommandDescriptor,
 } from "./image-generate-command.js";
@@ -464,6 +472,8 @@ export interface AgentCommandModuleDependencies {
   agentSkills?: AgentSkillCommandStore;
   sessionPrompts?: SessionPromptCommandStore;
   sessionTodos?: SessionTodoCommandStore;
+  sessionHeartbeats?: Pick<SessionStore, "getHeartbeat" | "updateHeartbeatConfig">;
+  heartbeatBounds?: HeartbeatCadenceBounds;
   subagentProfiles?: SubagentProfileCommandStore;
   subagentInventory?: SubagentInventoryReader;
   credentials?: EnvCommandService;
@@ -854,6 +864,24 @@ const DEFAULT_AGENT_COMMAND_MODULE_LIST: readonly AgentCommandModule[] = [
   mcpManagementCommandModule(mcpOauthStartCommandDescriptor, ["mcp", "oauth", "start"], createMcpOauthStartCommand),
   mcpManagementCommandModule(mcpOauthStatusCommandDescriptor, ["mcp", "oauth", "status"], createMcpOauthStatusCommand),
   mcpManagementCommandModule(mcpOauthDisconnectCommandDescriptor, ["mcp", "oauth", "disconnect"], createMcpOauthDisconnectCommand),
+  agentCommandModule(
+    heartbeatShowCommandDescriptor,
+    ["heartbeat", "show"],
+    "@payload.json",
+    agentCommandPolicy(["operate"]),
+    (dependencies) => dependencies.sessionHeartbeats && dependencies.heartbeatBounds
+      ? createHeartbeatShowCommand(dependencies.sessionHeartbeats, dependencies.heartbeatBounds)
+      : null,
+  ),
+  agentCommandModule(
+    heartbeatSetCommandDescriptor,
+    ["heartbeat", "set"],
+    "@payload.json",
+    agentCommandPolicy(["operate"]),
+    (dependencies) => dependencies.sessionHeartbeats && dependencies.heartbeatBounds
+      ? createHeartbeatSetCommand(dependencies.sessionHeartbeats, dependencies.heartbeatBounds)
+      : null,
+  ),
   agentCommandModule(
     watchListCommandDescriptor,
     ["watch", "list"],

@@ -253,6 +253,8 @@ export async function ensurePostgresSessionSchema(pool: PgQueryable): Promise<vo
       session_id TEXT PRIMARY KEY REFERENCES ${tables.sessions}(id) ON DELETE CASCADE,
       enabled BOOLEAN NOT NULL DEFAULT TRUE,
       every_minutes INTEGER NOT NULL DEFAULT ${DEFAULT_SESSION_HEARTBEAT_EVERY_MINUTES},
+      config_revision INTEGER NOT NULL DEFAULT 0,
+      last_cadence_change_reason TEXT,
       next_fire_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '${DEFAULT_SESSION_HEARTBEAT_EVERY_MINUTES} minutes',
       last_fire_at TIMESTAMPTZ,
       last_skip_reason TEXT,

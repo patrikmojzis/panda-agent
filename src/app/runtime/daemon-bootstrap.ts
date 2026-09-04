@@ -33,6 +33,7 @@ import {
   buildDaemonChannelCommandDependencies,
 } from "./command-dependencies.js";
 import {resolveVisibleCommandDescriptors} from "./command-visibility.js";
+import {createHeartbeatPromptContextResolver} from "./heartbeat-prompt-context.js";
 import {DaemonStateRepo} from "./state/repo.js";
 import type {DaemonOptions} from "./daemon-shared.js";
 import {DEFAULT_DAEMON_KEY} from "./daemon-shared.js";
@@ -477,10 +478,12 @@ export async function bootstrapDaemonContext(
     const sessionHeartbeatRunner = new HeartbeatRunner({
       sessions: runtime.sessionStore,
       coordinator: runtime.coordinator,
-      resolveInstructions: async (session) => {
-        const heartbeatDoc = await runtime.sessionStore.readSessionPrompt(session.id, "heartbeat");
-        return heartbeatDoc?.content?.trim() || null;
-      },
+      resolvePromptContext: createHeartbeatPromptContextResolver({
+        sessions: runtime.sessionStore,
+        executionEnvironments: runtime.executionEnvironments,
+        commandCatalog: runtime.commandCatalog,
+        commandExecutor: runtime.commandExecutor,
+      }),
       onError: (error, sessionId) => {
         console.error("Session heartbeat runner failed", {
           sessionId,

@@ -47,6 +47,12 @@ agent_command_shim_lookup_route() {
     'mcp oauth disconnect')
       printf '%s\t%s\n' 'mcp.oauth.disconnect' 'mcp oauth disconnect'
       ;;
+    'heartbeat show')
+      printf '%s\t%s\n' 'heartbeat.show' 'heartbeat show'
+      ;;
+    'heartbeat set')
+      printf '%s\t%s\n' 'heartbeat.set' 'heartbeat set'
+      ;;
     'watch list')
       printf '%s\t%s\n' 'watch.list' 'watch list'
       ;;
@@ -454,6 +460,8 @@ agent_command_shim_print_root_usage_commands() {
   panda mcp oauth start <server> [--manual-client <json|@file|@->]
   panda mcp oauth status <server>
   panda mcp oauth disconnect <server>
+  panda heartbeat show
+  panda heartbeat set --every <duration> --reason <text>
   panda watch list [--status enabled|disabled|all] [--limit <n>]
   panda watch show <watch-id>
   panda watch runs <watch-id> [--limit <n>]
@@ -772,6 +780,26 @@ Detailed help is available only through the current agent command lease.
 Usage:
   panda mcp oauth disconnect --json @payload.json
 PANDA_COMMAND_HELP_mcp_oauth_disconnect
+      ;;
+    'heartbeat.show')
+      cat <<'PANDA_COMMAND_HELP_heartbeat_show'
+Panda command: heartbeat.show
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda heartbeat show --json @payload.json
+PANDA_COMMAND_HELP_heartbeat_show
+      ;;
+    'heartbeat.set')
+      cat <<'PANDA_COMMAND_HELP_heartbeat_set'
+Panda command: heartbeat.set
+
+Detailed help is available only through the current agent command lease.
+
+Usage:
+  panda heartbeat set --json @payload.json
+PANDA_COMMAND_HELP_heartbeat_set
       ;;
     'watch.list')
       cat <<'PANDA_COMMAND_HELP_watch_list'
@@ -2334,6 +2362,42 @@ PANDA_COMMAND_HELP_JSON_mcp_oauth_status
   "examples": []
 }
 PANDA_COMMAND_HELP_JSON_mcp_oauth_disconnect
+      ;;
+    'heartbeat.show')
+      cat <<'PANDA_COMMAND_HELP_JSON_heartbeat_show'
+{
+  "name": "heartbeat.show",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda heartbeat show --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_heartbeat_show
+      ;;
+    'heartbeat.set')
+      cat <<'PANDA_COMMAND_HELP_JSON_heartbeat_set'
+{
+  "name": "heartbeat.set",
+  "summary": "Detailed help requires current agent command access.",
+  "description": "Run this help command inside an agent bash call or provide a valid command-access file.",
+  "usage": "panda heartbeat set --json @payload.json",
+  "inputModes": [
+    "json"
+  ],
+  "outputModes": [
+    "json"
+  ],
+  "arguments": [],
+  "examples": []
+}
+PANDA_COMMAND_HELP_JSON_heartbeat_set
       ;;
     'watch.list')
       cat <<'PANDA_COMMAND_HELP_JSON_watch_list'

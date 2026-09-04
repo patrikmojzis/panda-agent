@@ -40,6 +40,30 @@ That second rule matters. Heartbeat should not pile stale nudges behind real use
 
 ## CLI
 
+Agents with `operate` can inspect and change their own session's ongoing interval:
+
+```bash
+panda heartbeat show
+panda heartbeat set --every 15m --reason "Active investigation"
+panda heartbeat set --every 4h --reason "Quiet period"
+panda heartbeat set --help
+```
+
+The interval persists until changed again. Minutes (`15` or `15m`) and whole
+hours (`4h`) are supported. JSON input uses `everyMinutes` and `reason`.
+Results include the enabled state, interval, next timestamp, last change reason,
+and allowed limits. Changing cadence never enables a disabled heartbeat.
+
+The operator sets agent limits through `PANDA_HEARTBEAT_MIN_EVERY_MINUTES`
+(default `15`) and `PANDA_HEARTBEAT_MAX_EVERY_MINUTES` (default `1440`). These
+limits apply to agent commands; operator controls remain separate.
+
+Use a shorter interval when frequent reassessment helps and a longer one during
+quiet periods, after checking live commitments. Use `panda schedule` for a
+specific timed task and `panda watch` for external change detection.
+
+The following operator commands can also enable and disable heartbeat:
+
 List sessions for an agent:
 
 ```bash
@@ -89,10 +113,13 @@ panda session heartbeat 2c8d0a1e-... --enable --every 45
 - the session must already exist
 - `--every` keeps the current enabled or disabled state unless you also pass `--enable` or `--disable`
 - `--enable` and `--disable` together is an error
-- config updates that leave the heartbeat enabled reschedule the next fire time from now
+- unchanged configuration is a no-op, including the next fire time and reason
+- shortening an enabled interval keeps an already earlier pending tick; otherwise the next tick is due after the new interval
+- lengthening an enabled interval schedules its next tick from now
+- a tick already claimed may finish; a cadence change applies to the following tick
 - disabling a heartbeat preserves the stored next fire time while it is off
-
-That reschedule rule is intentional. If you change the interval while the heartbeat remains enabled, Panda restarts the clock instead of honoring stale due timestamps.
+- enabling a disabled heartbeat starts the interval from now
+- operator cadence changes clear an older agent-provided reason
 
 ## What Heartbeat Is Good For
 

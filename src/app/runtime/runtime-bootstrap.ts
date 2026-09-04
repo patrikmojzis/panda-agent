@@ -753,6 +753,7 @@ export async function bootstrapRuntime(
       agentSkills: agentStore,
       sessionPrompts: sessionStore,
       sessionTodos: sessionStore,
+      sessionHeartbeats: sessionStore,
       subagentProfiles,
       subagentInventory,
       credentials: credentialService ?? undefined,

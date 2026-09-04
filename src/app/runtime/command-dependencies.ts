@@ -6,6 +6,7 @@ import type {
   OutboundDeliveryTargetHistoryFilter,
 } from "../../domain/channels/deliveries/types.js";
 import {buildAgentAppOpenPath, readPublicAppsPathPrefix, resolveAgentAppUrls} from "../../integrations/apps/http-config.js";
+import {resolveHeartbeatCadenceBounds} from "../../domain/scheduling/heartbeats/config.js";
 
 type RequiredCommandDependency<K extends keyof AgentCommandModuleDependencies> =
   NonNullable<AgentCommandModuleDependencies[K]>;
@@ -24,6 +25,7 @@ export interface RuntimeCommandDependenciesInput {
   agentSkills: RequiredCommandDependency<"agentSkills">;
   sessionPrompts: RequiredCommandDependency<"sessionPrompts">;
   sessionTodos: RequiredCommandDependency<"sessionTodos">;
+  sessionHeartbeats: RequiredCommandDependency<"sessionHeartbeats">;
   subagentProfiles: RequiredCommandDependency<"subagentProfiles">;
   subagentInventory: RequiredCommandDependency<"subagentInventory">;
   credentials?: AgentCommandModuleDependencies["credentials"];
@@ -89,6 +91,8 @@ export function buildRuntimeCommandDependencies(
     agentSkills: input.agentSkills,
     sessionPrompts: input.sessionPrompts,
     sessionTodos: input.sessionTodos,
+    sessionHeartbeats: input.sessionHeartbeats,
+    heartbeatBounds: resolveHeartbeatCadenceBounds(input.env),
     subagentProfiles: input.subagentProfiles,
     subagentInventory: input.subagentInventory,
     credentials: input.credentials,

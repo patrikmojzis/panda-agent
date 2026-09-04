@@ -72,6 +72,7 @@ function createDueHeartbeatSessionStore(input: {
   const getSession = vi.fn(async () => input.session);
   const store: HeartbeatRunnerOptions["sessions"] = {
     getSession,
+    getHeartbeat: vi.fn(async () => ({...input.heartbeat})),
     listDueHeartbeats: vi.fn(async () => {
       if (listed) {
         return [];
@@ -80,7 +81,11 @@ function createDueHeartbeatSessionStore(input: {
       listed = true;
       return [input.heartbeat];
     }),
-    claimHeartbeat: vi.fn(async () => input.heartbeat),
+    claimHeartbeat: vi.fn(async (claim) => {
+      input.heartbeat.claimedBy = claim.claimedBy;
+      input.heartbeat.claimExpiresAt = claim.claimExpiresAt;
+      return {...input.heartbeat};
+    }),
     recordHeartbeatResult: vi.fn(async () => input.heartbeat),
   };
 
@@ -90,8 +95,18 @@ function createDueHeartbeatSessionStore(input: {
 async function createHarness(options: {
   responseText?: string;
   heartbeatInstructions?: string | null;
+  resolvePromptContext?: HeartbeatRunnerOptions["resolvePromptContext"];
 } = {}) {
   const db = newDb();
+  db.public.registerOperator({
+    operator: "*",
+    left: DataType.integer,
+    right: DataType.interval,
+    returns: DataType.interval,
+    implementation: (multiple: number, interval: Record<string, number>) => Object.fromEntries(
+      Object.entries(interval).map(([unit, value]) => [unit, value * multiple]),
+    ),
+  });
   db.public.registerFunction({
     name: "pg_notify",
     args: [DataType.text, DataType.text],
@@ -142,10 +157,13 @@ async function createHarness(options: {
   await coordinator.handleStoreNotificationStatus("listening");
   await coordinator.start({source: "panda-core", connectorKey: "test", holderId: "heartbeat-runner-test"});
 
+  const errors: unknown[] = [];
   const runner = new HeartbeatRunner({
     sessions: sessionStore,
     coordinator,
-    resolveInstructions: async () => options.heartbeatInstructions ?? null,
+    resolvePromptContext: options.resolvePromptContext
+      ?? (async () => ({guidance: options.heartbeatInstructions, canConfigureCadence: true})),
+    onError: (error) => { errors.push(error); },
   });
 
   return {
@@ -156,6 +174,7 @@ async function createHarness(options: {
     coordinator,
     runner,
     runtime,
+    errors,
   };
 }
 
@@ -248,11 +267,100 @@ describe("HeartbeatRunner", () => {
     expect(heartbeat?.nextFireAt).toBeGreaterThan(Date.now());
   });
 
+  it("preserves a cadence change accepted while delivering the current tick", async () => {
+    let accepted: SessionHeartbeatRecord | undefined;
+    const scheduledFor = Date.now() - 1_000;
+    const harness = await createHarness({
+      resolvePromptContext: async () => {
+        accepted = await harness.sessionStore.updateHeartbeatConfig({
+          sessionId: "session-main", everyMinutes: 15, lastCadenceChangeReason: "An investigation started",
+        });
+        return {canConfigureCadence: true};
+      },
+    });
+    harnesses.push(harness);
+    await harness.pool.query(
+      `UPDATE "runtime"."session_heartbeats" SET next_fire_at = $2 WHERE session_id = $1`,
+      ["session-main", new Date(scheduledFor)],
+    );
+
+    await harness.runner.start();
+    await waitFor(async () => {
+      expect(harness.errors).toEqual([]);
+      expect((await harness.sessionStore.getHeartbeat("session-main"))?.lastFireAt).toEqual(expect.any(Number));
+    });
+    await harness.runner.stop();
+    await expect(harness.sessionStore.getHeartbeat("session-main")).resolves.toMatchObject({
+      everyMinutes: 15, nextFireAt: accepted?.nextFireAt, claimedBy: undefined,
+      lastCadenceChangeReason: "An investigation started",
+    });
+    await harness.coordinator.waitForIdle("session-thread");
+    const transcript = await harness.threadStore.loadTranscriptHistory("session-thread");
+    const heartbeatInput = transcript.find((entry) => entry.origin === "input" && entry.source === "heartbeat");
+    expect(heartbeatInput?.message).toMatchObject({content: expect.stringContaining("Current heartbeat interval: 15 minutes.")});
+    expect(heartbeatInput?.message).toMatchObject({content: expect.stringContaining("An investigation started")});
+    expect(heartbeatInput?.metadata).toMatchObject({heartbeat: {scheduledFor: new Date(scheduledFor).toISOString()}});
+  });
+
+  it("does not admit a tick disabled during prompt resolution", async () => {
+    const harness = await createHarness({
+      resolvePromptContext: async () => {
+        await harness.sessionStore.updateHeartbeatConfig({sessionId: "session-main", enabled: false});
+        return {canConfigureCadence: false};
+      },
+    });
+    harnesses.push(harness);
+    await harness.pool.query(
+      `UPDATE "runtime"."session_heartbeats" SET next_fire_at = $2 WHERE session_id = $1`,
+      ["session-main", new Date(Date.now() - 1_000)],
+    );
+    await harness.runner.start();
+    await harness.runner.triggerDrain();
+    await harness.runner.stop();
+
+    expect(harness.errors).toEqual([]);
+    expect(harness.runtime.complete).not.toHaveBeenCalled();
+    await expect(harness.sessionStore.getHeartbeat("session-main")).resolves.toMatchObject({
+      enabled: false, claimedBy: undefined, lastFireAt: undefined,
+    });
+  });
+
+  it.each(["expired", "reclaimed"] as const)("does not admit a tick whose claim was %s during prompt resolution", async (change) => {
+    const heartbeat: SessionHeartbeatRecord = {
+      sessionId: "session-main", enabled: true, everyMinutes: 60, configRevision: 0,
+      nextFireAt: Date.now() - 1_000, createdAt: 1, updatedAt: 1,
+    };
+    const {store: sessions} = createDueHeartbeatSessionStore({
+      heartbeat,
+      session: {id: "session-main", agentKey: "panda", kind: "main", currentThreadId: "current-thread", createdAt: 1, updatedAt: 1},
+    });
+    const coordinator = {
+      isThreadBusy: vi.fn(async () => false),
+      submitSessionInput: vi.fn(async () => heartbeatDeliveryResult("current-thread")),
+    };
+    const onError = vi.fn();
+    const runner = new HeartbeatRunner({
+      sessions, coordinator, onError,
+      resolvePromptContext: async () => {
+        if (change === "expired") heartbeat.claimExpiresAt = Date.now() - 1;
+        else heartbeat.claimedBy = "another-attempt";
+        return {canConfigureCadence: true};
+      },
+    });
+    await runner.start();
+    await runner.triggerDrain();
+    await runner.stop();
+
+    expect(coordinator.submitSessionInput).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it("records a skipped heartbeat when the session has no current thread", async () => {
     const heartbeat: SessionHeartbeatRecord = {
       sessionId: "session-main",
       enabled: true,
       everyMinutes: 30,
+      configRevision: 0,
       nextFireAt: Date.now() - 1_000,
       createdAt: 1,
       updatedAt: 1,
@@ -281,7 +389,7 @@ describe("HeartbeatRunner", () => {
     await waitFor(() => {
       expect(sessions.recordHeartbeatResult).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "session-main",
-        claimedBy: "heartbeat-runner",
+        claimedBy: expect.any(String),
         lastSkipReason: "Session session-main has no current thread.",
       }));
     });
@@ -297,6 +405,7 @@ describe("HeartbeatRunner", () => {
       sessionId: "session-main",
       enabled: true,
       everyMinutes: 30,
+      configRevision: 0,
       nextFireAt: Date.now() - 1_000,
       createdAt: 1,
       updatedAt: 1,
@@ -345,6 +454,7 @@ describe("HeartbeatRunner", () => {
       sessionId: "session-main",
       enabled: true,
       everyMinutes: 30,
+      configRevision: 0,
       nextFireAt: Date.now() - 1_000,
       createdAt: 1,
       updatedAt: 1,
@@ -382,7 +492,7 @@ describe("HeartbeatRunner", () => {
     await waitFor(() => {
       expect(sessions.recordHeartbeatResult).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "session-main",
-        claimedBy: "heartbeat-runner",
+        claimedBy: expect.any(String),
         lastSkipReason: "busy",
       }));
     });
@@ -398,6 +508,7 @@ describe("HeartbeatRunner", () => {
       sessionId: "session-main",
       enabled: true,
       everyMinutes: 30,
+      configRevision: 0,
       nextFireAt: Date.now() - 1_000,
       createdAt: 1,
       updatedAt: 1,

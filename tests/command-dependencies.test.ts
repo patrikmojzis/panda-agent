@@ -34,6 +34,7 @@ describe("command dependency builders", () => {
       agentSkills: fakeDependency("agentSkills"),
       sessionPrompts: fakeDependency("sessionPrompts"),
       sessionTodos: fakeDependency("sessionTodos"),
+      sessionHeartbeats: fakeDependency("sessionHeartbeats"),
       subagentProfiles: fakeDependency("subagentProfiles"),
       subagentInventory: fakeDependency("subagentInventory"),
       postgresReadonly: fakeDependency("postgresReadonly"),

@@ -17,6 +17,7 @@ export interface ControlHeartbeatRecord {
   everyMinutes: number;
   nextFireAt: string;
   lastFireAt?: string;
+  lastCadenceChangeReason?: string;
 }
 
 export interface ControlHeartbeatPatchInput {
@@ -38,6 +39,7 @@ interface ControlHeartbeatMetadata {
   everyMinutes: number;
   nextFireAt: string;
   lastFireAt?: string;
+  lastCadenceChangeReason?: string;
 }
 
 function publicHeartbeat(agentKey: string, heartbeat: SessionHeartbeatRecord): ControlHeartbeatRecord {
@@ -48,6 +50,7 @@ function publicHeartbeat(agentKey: string, heartbeat: SessionHeartbeatRecord): C
     everyMinutes: heartbeat.everyMinutes,
     nextFireAt: new Date(heartbeat.nextFireAt).toISOString(),
     ...(heartbeat.lastFireAt !== undefined ? {lastFireAt: new Date(heartbeat.lastFireAt).toISOString()} : {}),
+    ...(heartbeat.lastCadenceChangeReason !== undefined ? {lastCadenceChangeReason: heartbeat.lastCadenceChangeReason} : {}),
   };
 }
 
@@ -57,6 +60,7 @@ function auditHeartbeat(heartbeat: SessionHeartbeatRecord): ControlHeartbeatMeta
     everyMinutes: heartbeat.everyMinutes,
     nextFireAt: new Date(heartbeat.nextFireAt).toISOString(),
     ...(heartbeat.lastFireAt !== undefined ? {lastFireAt: new Date(heartbeat.lastFireAt).toISOString()} : {}),
+    ...(heartbeat.lastCadenceChangeReason !== undefined ? {lastCadenceChangeReason: heartbeat.lastCadenceChangeReason} : {}),
   };
 }
 

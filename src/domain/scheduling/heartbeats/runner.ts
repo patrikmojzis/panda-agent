@@ -1,3 +1,5 @@
+import {randomUUID} from "node:crypto";
+
 import {stringToUserMessage} from "../../../kernel/agent/helpers/input.js";
 import {renderHeartbeatPrompt} from "../../../prompts/runtime/heartbeat.js";
 import {resolveLocalDateTimeInfo} from "../../../lib/dates.js";
@@ -11,19 +13,21 @@ const DEFAULT_POLL_INTERVAL_MS = 60_000;
 const DEFAULT_CLAIM_TTL_MS = 5 * 60_000;
 const DEFAULT_BATCH_SIZE = 100;
 const HEARTBEAT_SOURCE = "heartbeat";
-const HEARTBEAT_CLAIM_OWNER = "heartbeat-runner";
 type HeartbeatRunnerSessionStore = Pick<
   SessionStore,
-  "claimHeartbeat" | "getSession" | "listDueHeartbeats" | "recordHeartbeatResult"
+  "claimHeartbeat" | "getHeartbeat" | "getSession" | "listDueHeartbeats" | "recordHeartbeatResult"
 >;
 
-function buildHeartbeatPrompt(scheduledFor: number, guidance?: string | null): string {
+function buildHeartbeatPrompt(heartbeat: SessionHeartbeatRecord, scheduledFor: number, context?: HeartbeatPromptContext): string {
   const localDateTime = resolveLocalDateTimeInfo(new Date(scheduledFor));
   return renderHeartbeatPrompt({
     scheduledIso: new Date(scheduledFor).toISOString(),
     scheduledLocalDateTime: localDateTime.formattedDateTimeWithZone,
     timeZone: localDateTime.timeZone,
-    guidance,
+    guidance: context?.guidance,
+    everyMinutes: heartbeat.everyMinutes,
+    lastChangeReason: heartbeat.lastCadenceChangeReason,
+    canConfigureCadence: context?.canConfigureCadence ?? false,
   });
 }
 
@@ -31,12 +35,17 @@ function describeHeartbeatFailure(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+export interface HeartbeatPromptContext {
+  guidance?: string | null;
+  canConfigureCadence: boolean;
+}
+
 export interface HeartbeatRunnerOptions {
   sessions: HeartbeatRunnerSessionStore;
   coordinator: Pick<ThreadRuntimeCoordinator, "isThreadBusy" | "submitSessionInput">;
   pollIntervalMs?: number;
   claimTtlMs?: number;
-  resolveInstructions?: (session: SessionRecord) => Promise<string | null> | string | null;
+  resolvePromptContext?: (session: SessionRecord) => Promise<HeartbeatPromptContext> | HeartbeatPromptContext;
   onError?: (error: unknown, sessionId?: string) => Promise<void> | void;
 }
 
@@ -44,7 +53,7 @@ export class HeartbeatRunner {
   private readonly sessions: HeartbeatRunnerSessionStore;
   private readonly coordinator: Pick<ThreadRuntimeCoordinator, "isThreadBusy" | "submitSessionInput">;
   private readonly claimTtlMs: number;
-  private readonly resolveInstructions?: (session: SessionRecord) => Promise<string | null> | string | null;
+  private readonly resolvePromptContext?: HeartbeatRunnerOptions["resolvePromptContext"];
   private readonly onError?: (error: unknown, sessionId?: string) => Promise<void> | void;
   private readonly drainLoop: DrainLoop;
 
@@ -52,7 +61,7 @@ export class HeartbeatRunner {
     this.sessions = options.sessions;
     this.coordinator = options.coordinator;
     this.claimTtlMs = options.claimTtlMs ?? DEFAULT_CLAIM_TTL_MS;
-    this.resolveInstructions = options.resolveInstructions;
+    this.resolvePromptContext = options.resolvePromptContext;
     this.onError = options.onError;
     this.drainLoop = new DrainLoop({
       label: "Heartbeat runner drain",
@@ -91,7 +100,7 @@ export class HeartbeatRunner {
 
         const claimed = await this.sessions.claimHeartbeat({
           sessionId: heartbeat.sessionId,
-          claimedBy: HEARTBEAT_CLAIM_OWNER,
+          claimedBy: randomUUID(),
           claimExpiresAt: Date.now() + this.claimTtlMs,
         });
         if (!claimed) {
@@ -114,7 +123,8 @@ export class HeartbeatRunner {
 
   private async processHeartbeat(heartbeat: SessionHeartbeatRecord): Promise<void> {
     const now = Date.now();
-    const nextFireAt = now + heartbeat.everyMinutes * 60_000;
+    const claimedBy = heartbeat.claimedBy;
+    if (!claimedBy) throw new Error(`Heartbeat ${heartbeat.sessionId} has no claim token.`);
 
     let recordedSkip = false;
     try {
@@ -124,28 +134,39 @@ export class HeartbeatRunner {
         recordedSkip = true;
         await this.sessions.recordHeartbeatResult({
           sessionId: session.id,
-          claimedBy: HEARTBEAT_CLAIM_OWNER,
-          nextFireAt,
+          claimedBy,
+          configRevision: heartbeat.configRevision,
+          attemptedAt: now,
           lastSkipReason: "busy",
         });
         return;
       }
 
-      const guidance = await this.resolveInstructions?.(session);
+      const promptContext = await this.resolvePromptContext?.(session);
       const deliveryTarget = await resolveCurrentSessionThread(this.sessions, heartbeat.sessionId);
       if (await this.coordinator.isThreadBusy(deliveryTarget.threadId)) {
         recordedSkip = true;
         await this.sessions.recordHeartbeatResult({
           sessionId: deliveryTarget.session.id,
-          claimedBy: HEARTBEAT_CLAIM_OWNER,
-          nextFireAt,
+          claimedBy,
+          configRevision: heartbeat.configRevision,
+          attemptedAt: now,
           lastSkipReason: "busy",
         });
         return;
       }
 
+      const currentHeartbeat = await this.sessions.getHeartbeat(heartbeat.sessionId);
+      if (
+        !currentHeartbeat?.enabled
+        || currentHeartbeat.claimedBy !== claimedBy
+        || (currentHeartbeat.claimExpiresAt ?? 0) <= Date.now()
+      ) {
+        return;
+      }
+
       await this.coordinator.submitSessionInput(heartbeat.sessionId, {
-        message: stringToUserMessage(buildHeartbeatPrompt(heartbeat.nextFireAt, guidance)),
+        message: stringToUserMessage(buildHeartbeatPrompt(currentHeartbeat, heartbeat.nextFireAt, promptContext)),
         source: HEARTBEAT_SOURCE,
         identityId: deliveryTarget.session.createdByIdentityId,
         metadata: {
@@ -158,8 +179,9 @@ export class HeartbeatRunner {
       });
       await this.sessions.recordHeartbeatResult({
         sessionId: deliveryTarget.session.id,
-        claimedBy: HEARTBEAT_CLAIM_OWNER,
-        nextFireAt,
+        claimedBy,
+        configRevision: heartbeat.configRevision,
+        attemptedAt: now,
         lastFireAt: now,
         lastSkipReason: null,
       });
@@ -167,8 +189,9 @@ export class HeartbeatRunner {
       if (!recordedSkip) {
         await this.sessions.recordHeartbeatResult({
           sessionId: heartbeat.sessionId,
-          claimedBy: HEARTBEAT_CLAIM_OWNER,
-          nextFireAt,
+          claimedBy,
+          configRevision: heartbeat.configRevision,
+          attemptedAt: now,
           lastSkipReason: describeHeartbeatFailure(error),
         });
       }

@@ -1548,6 +1548,77 @@ USAGE
     execute_json_command "$command_name" "$payload"
     exit $?
     ;;
+  heartbeat)
+    shift
+    case "${1:-}" in
+      ""|--help|-h)
+        cat <<'USAGE'
+Usage:
+  panda heartbeat show
+  panda heartbeat set --every <duration> --reason <text>
+  panda heartbeat show --help [--json]
+  panda heartbeat set --help [--json]
+
+Adjust the current session's ongoing heartbeat interval. Use 15m or 4h.
+The interval persists until changed. Disabled heartbeats stay disabled.
+Use schedules for specific timed work and watches for external changes.
+USAGE
+        exit 0
+        ;;
+      show) command_name="heartbeat.show" ;;
+      set) command_name="heartbeat.set" ;;
+      *) die "Unknown panda heartbeat command. Try: panda heartbeat --help" ;;
+    esac
+    subcommand="$1"
+    shift
+    if [ "$subcommand" = "show" ]; then
+      [ "$#" -eq 0 ] || die "panda heartbeat show does not accept arguments."
+      execute_json_command "$command_name" '{}'
+      exit $?
+    fi
+    every=""
+    reason=""
+    while [ "$#" -gt 0 ]; do
+      option="$1"
+      shift
+      case "$option" in
+        --every)
+          [ "$#" -gt 0 ] || die "panda heartbeat set --every requires a duration."
+          duration="$1"
+          shift
+          duration_number="$duration"
+          duration_suffix=""
+          case "$duration" in
+            *m|*h)
+              duration_number="${duration%?}"
+              duration_suffix="${duration: -1}"
+              ;;
+          esac
+          case "$duration_number" in
+            ''|*[!0-9]*) die "panda heartbeat set --every requires positive whole minutes, optionally suffixed with m or h." ;;
+          esac
+          [ "${#duration_number}" -le 10 ] || die "panda heartbeat set --every is too large."
+          require_positive_integer "$duration_number" "panda heartbeat set --every"
+          duration_number="$((10#$duration_number))"
+          duration_limit=2147483647
+          if [ "$duration_suffix" = "h" ]; then duration_limit=35791394; fi
+          [ "$duration_number" -le "$duration_limit" ] || die "panda heartbeat set --every is too large."
+          every="$(parse_duration_minutes "${duration_number}${duration_suffix}" "panda heartbeat set --every")"
+          ;;
+        --reason)
+          [ "$#" -gt 0 ] || die "panda heartbeat set --reason requires a value."
+          reason="$1"
+          shift
+          ;;
+        *) die "Unknown panda heartbeat set option: $option" ;;
+      esac
+    done
+    [ -n "$every" ] || die "panda heartbeat set requires --every <duration>."
+    [ -n "$reason" ] || die "panda heartbeat set requires --reason <text>."
+    payload="$(jq -n --argjson everyMinutes "$every" --arg reason "$reason" '{everyMinutes: $everyMinutes, reason: $reason}')"
+    execute_json_command "$command_name" "$payload"
+    exit $?
+    ;;
   watch)
     shift
     case "${1:-}" in

@@ -159,6 +159,8 @@ describe("subagent tool groups", () => {
           "toolNames": [
             "thinking_set",
             "mcp.manage.*",
+            "heartbeat.show",
+            "heartbeat.set",
             "watch.list",
             "watch.show",
             "watch.runs",

@@ -1,10 +1,10 @@
 {
   "files": [
     {
-      "bytes": 139218,
-      "lines": 4647,
+      "bytes": 140987,
+      "lines": 4711,
       "path": "scripts/agent-command-shim/routes.generated.sh",
-      "sha256": "72c3aee9dbb666fa6290d42c360b1ff39352e5842769dcc761977a854532ec6b"
+      "sha256": "45b5027e491e795f9dc98bfcb14e327833149a1ea07146c49619932325006505"
     },
     {
       "bytes": 1166,
@@ -19,10 +19,10 @@
       "sha256": "1a1004c51544a7e25b32abafe0e8ad5afe42350f599fcf125434ba3a56382faf"
     },
     {
-      "bytes": 20684,
-      "lines": 519,
+      "bytes": 20914,
+      "lines": 524,
       "path": "src/app/runtime/daemon-bootstrap.ts",
-      "sha256": "6e1c8d46d8fc6bf3c39e3fb7ea0dd85ac12752fa3934e19a51932d46890234ea"
+      "sha256": "24bd07dc25de76738073b71332b478774ce23e81db88e16c16a48a8f90fa6191"
     },
     {
       "bytes": 17911,
@@ -37,10 +37,10 @@
       "sha256": "033685d9e20dc15874865f8bf3e8b9c0d4244ede32cd871ea21590f8b47c45c4"
     },
     {
-      "bytes": 34679,
-      "lines": 902,
+      "bytes": 34718,
+      "lines": 903,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "fb0506e0ffd76cb72e4dae346f9b8aacaf1f7b69af789900d21c82641f50149b"
+      "sha256": "aaaff83f73d549297bce514e00a731f35c84e785a35191c09284ab2b5ed1808a"
     },
     {
       "bytes": 10873,
@@ -67,10 +67,10 @@
       "sha256": "c6d98f315f2cfc237bbf5fdd6eb957112e92238bedd6e16956056d0a7939fb56"
     },
     {
-      "bytes": 66842,
-      "lines": 1853,
+      "bytes": 68003,
+      "lines": 1881,
       "path": "src/panda/commands/agent-command-modules.ts",
-      "sha256": "31f8096638c2eaf893d30485998ca91186d45c54238170f7577481891a221df7"
+      "sha256": "406328096969ac73065204cd76a4cd9ff301076abb8bd7e3953fc1a20a8fd009"
     },
     {
       "bytes": 572,
@@ -367,10 +367,10 @@
       "sha256": "e209892260a5cdd1058cd1fe86e3ab9d95b009c0f553ba92d7825d0a63cacd33"
     },
     {
-      "bytes": 673,
-      "lines": 20,
+      "bytes": 1280,
+      "lines": 33,
       "path": "src/prompts/runtime/heartbeat.ts",
-      "sha256": "6de48107f7a2dc4a1079eea892478cccd66ce38877265b516f999d9e2b9af66e"
+      "sha256": "52372a691db82b895a5e4476a25873acb43ab8af1981d126cb4018f155835f30"
     },
     {
       "bytes": 764,
@@ -539,6 +539,8 @@
       "toolNames": [
         "thinking_set",
         "mcp.manage.*",
+        "heartbeat.show",
+        "heartbeat.set",
         "watch.list",
         "watch.show",
         "watch.runs",

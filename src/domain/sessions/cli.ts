@@ -495,6 +495,8 @@ async function inspectSessionCommand(sessionRef: string, options: ScopedSessionR
         `runtime thinking ${runtimeConfig.thinkingConfigured ? runtimeConfig.thinking ?? "off" : "-"}`,
         `heartbeat enabled ${heartbeat?.enabled ? "yes" : "no"}`,
         `heartbeat every ${heartbeat?.everyMinutes ?? "-"} minutes`,
+        `heartbeat next ${heartbeat ? new Date(heartbeat.nextFireAt).toISOString() : "-"}`,
+        ...(heartbeat?.lastCadenceChangeReason ? [`heartbeat cadence reason ${JSON.stringify(heartbeat.lastCadenceChangeReason)}`] : []),
       ].join("\n") + "\n",
     );
   });

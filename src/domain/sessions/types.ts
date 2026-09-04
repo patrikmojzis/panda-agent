@@ -83,6 +83,8 @@ export interface SessionHeartbeatRecord {
   sessionId: string;
   enabled: boolean;
   everyMinutes: number;
+  configRevision: number;
+  lastCadenceChangeReason?: string;
   nextFireAt: number;
   lastFireAt?: number;
   lastSkipReason?: string;
@@ -108,7 +110,8 @@ export interface ClaimSessionHeartbeatInput {
 export interface RecordSessionHeartbeatResultInput {
   sessionId: string;
   claimedBy: string;
-  nextFireAt: number;
+  configRevision: number;
+  attemptedAt: number;
   lastFireAt?: number;
   lastSkipReason?: string | null;
 }
@@ -117,6 +120,7 @@ export interface UpdateSessionHeartbeatConfigInput {
   sessionId: string;
   enabled?: boolean;
   everyMinutes?: number;
+  lastCadenceChangeReason?: string;
   asOf?: number;
 }
 

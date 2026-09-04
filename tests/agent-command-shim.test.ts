@@ -62,6 +62,10 @@ import {
   createScheduleUpdateCommand,
 } from "../src/domain/scheduling/tasks/commands.js";
 import {
+  heartbeatSetCommandDescriptor,
+  heartbeatShowCommandDescriptor,
+} from "../src/domain/scheduling/heartbeats/commands.js";
+import {
   cronCreateCommandDescriptor,
   cronDeleteCommandDescriptor,
   cronDisableCommandDescriptor,
@@ -1947,6 +1951,7 @@ describe("agent command shim", () => {
     const server = await startCommandHttpServer({
       executor: new RuntimeCommandDispatcher({
         commands: [
+          ...[heartbeatShowCommandDescriptor, heartbeatSetCommandDescriptor].map(echoInputCommand),
           ...mcpManagementDescriptors.map(echoInputCommand),
           ...cronDescriptors.map(echoInputCommand),
           ...[
@@ -2574,6 +2579,41 @@ describe("agent command shim", () => {
       expect(payload.schemaCatalog, route.command).toBeUndefined();
     }
   }, fullShimHelpContractTimeoutMs);
+
+  it("executes heartbeat show and interval changes through native flags", async () => {
+    const env = shimEnv(await startWatchServer());
+    const show = await execFileAsync(shimPath, ["heartbeat", "show"], {env});
+    expect(JSON.parse(show.stdout)).toEqual({});
+    for (const [duration, everyMinutes] of [["15m", 15], ["4h", 240], ["60", 60], ["08h", 480]] as const) {
+      const result = await execFileAsync(shimPath, ["heartbeat", "set", "--every", duration, "--reason", "Active investigation"], {env});
+      expect(JSON.parse(result.stdout)).toEqual({everyMinutes, reason: "Active investigation"});
+    }
+  });
+
+  it("executes canonical heartbeat JSON input and exposes detailed help", async () => {
+    const env = shimEnv(await startWatchServer());
+    const result = await execFileAsync(shimPath, ["heartbeat", "set", "--json", '{"everyMinutes":240,"reason":"Quiet period"}'], {env});
+    expect(JSON.parse(result.stdout)).toEqual({everyMinutes: 240, reason: "Quiet period"});
+    const help = await execFileAsync(shimPath, ["heartbeat", "set", "--help"], {env});
+    expect(help.stdout).toContain("panda heartbeat set --every <duration> --reason <text>");
+    expect(help.stdout).toContain("The interval persists until changed.");
+    expect(help.stdout).toContain("Disabled heartbeats stay disabled.");
+  });
+
+  it.each(["0m", "-1h", "1.5h", "1d", "35791395h", "2147483648m", "307445734561825861h", "999999999999999999999999h"])("rejects invalid or overflowing heartbeat duration %s before transport", async (duration) => {
+    await expect(execFileAsync(shimPath, ["heartbeat", "set", "--every", duration, "--reason", "Test"])).rejects.toMatchObject({stderr: expect.stringContaining("panda heartbeat set --every")});
+  });
+
+  it("requires heartbeat interval and reason and rejects session or enable flags", async () => {
+    for (const args of [
+      ["--reason", "Test"],
+      ["--every", "15m"],
+      ["--every", "15m", "--reason", "Test", "--session", "other"],
+      ["--every", "15m", "--reason", "Test", "--enable"],
+    ]) {
+      await expect(execFileAsync(shimPath, ["heartbeat", "set", ...args])).rejects.toMatchObject({stderr: expect.stringContaining("panda heartbeat set")});
+    }
+  });
 
   it("executes time.now through the native no-argument form", async () => {
     const server = await startWatchServer();

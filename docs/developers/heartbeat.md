@@ -67,6 +67,18 @@ The runner loop is:
 7. reschedule the next fire time
 8. clear the claim
 
+Each claim has a unique token. Completion only clears that token and uses the
+configuration revision to avoid overwriting a newer cadence change. A lost or
+revoked claim is harmless. Configuration updates lock the session before its
+heartbeat row, matching claim and archive lock order. Cadence-only updates never
+write a stale enabled flag back over an operator disable.
+
+Unchanged configuration is a full no-op. Shortening takes the earlier of the
+existing due time and now plus the new interval; lengthening starts the new
+interval from now. A valid claim owns its current tick, so a change during that
+claim schedules the following tick from now. Already admitted input may still
+execute after disable; the setter does not retract transcript input.
+
 Re-resolving the session after claim is important.
 That is what makes heartbeat follow resets cleanly.
 
@@ -82,6 +94,7 @@ The row stores:
 - last fire time
 - last skip reason
 - claim state for the runner
+- configuration revision and last cadence change reason
 
 This is cleaner than burying heartbeat state inside a fake home-thread row.
 
@@ -91,16 +104,28 @@ The heartbeat prompt stays intentionally simple.
 
 Its synthetic wake text lives in `src/prompts/runtime/heartbeat.ts`.
 
-It tells Panda:
-
-- this is a periodic wake
-- review heartbeat guidance
-- check pending promises, reminders, and unfinished follow-ups
-- do not invent stale work
-- only use outbound if it is intentional
-- if nothing needs attention, move on quietly
+It identifies the periodic wake and asks Panda to review open loops, follow-ups,
+conversation momentum, or memory candidates. It includes the current interval
+and last cadence change reason as data. When the session can invoke
+`heartbeat.set`, it adds one short cadence-adjustment hint. The daemon reuses
+command visibility and a read-only environment resolver; building the hint must
+not provision or recover an environment. Invocation still checks the current
+lease authority.
 
 Silence is a valid outcome.
+
+## Agent cadence commands
+
+`heartbeat.show` and `heartbeat.set` are catalog commands under `operate`,
+scoped to the authenticated calling session. They use the existing command shim
+and daemon; they are not new native model tools. Detailed usage lives in
+`panda heartbeat set --help`.
+
+`PANDA_HEARTBEAT_MIN_EVERY_MINUTES` and `PANDA_HEARTBEAT_MAX_EVERY_MINUTES` bound
+agent choices, defaulting to `15` and `1440`. They are read during runtime
+assembly. The setter accepts only `everyMinutes` and a bounded single-line
+`reason`; it cannot change enabled state. Operator controls share the atomic
+store mutation but retain their own authorization and interval policy.
 
 ## Non-Goals In V1
 
