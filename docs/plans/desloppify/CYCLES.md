@@ -557,3 +557,18 @@ Further read-only recon identified two next areas:
 Neither follow-up was implemented in this batch. Other examined runtime parsers,
 row/claim helpers and Control UI transports retain meaningful differences or live
 callers; no further deletion was justified there.
+
+## Cycle 23 — Reuse string normalization in the Bash audit reader
+
+- Finding: a private helper accepted a field-name parameter with only one valid
+  value and repeated the existing `trimToUndefined` behavior.
+- Change: normalize `job.result?.code` directly with the existing string helper,
+  removing the local wrapper and redundant result cast.
+- Result: eight fewer production lines; no new test scaffolding.
+- Evidence: all 14 command-dispatcher tests pass, including caller-visible audit
+  summaries. Independent review matched 115 before/after caller outcomes and
+  store arguments across missing/nonstring/whitespace codes and ordinal values.
+  The missing-ordinal guard, projected fields and exported factory are unchanged.
+  Typecheck, import law and diff checks pass.
+- State: reviewed and committed locally with this cycle. No command execution,
+  audit persistence or public package contract changed.
