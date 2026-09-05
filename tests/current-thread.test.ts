@@ -1,7 +1,6 @@
 import {describe, expect, it, vi} from "vitest";
 
 import {
-  enqueueCurrentSessionInput,
   requireCurrentSessionThread,
   submitCurrentSessionInput,
 } from "../src/domain/sessions/current-thread.js";
@@ -47,30 +46,5 @@ describe("current session thread delivery", () => {
 
     expect(target.threadId).toBe("thread-after-reset");
     expect(coordinator.submitSessionInput).toHaveBeenCalledWith("session-1", payload, "queue", undefined);
-  });
-
-  it("queues to the current thread and defaults to wake delivery", async () => {
-    const payload = {
-      source: "test",
-      message: stringToUserMessage("hello"),
-    };
-    const threads = {
-      enqueueSessionInput: vi.fn(async () => ({
-        input: {
-          id: "input-1",
-          threadId: "thread-after-reset",
-        },
-        disposition: "inserted" as const,
-      })),
-    };
-
-    const target = await enqueueCurrentSessionInput({
-      sessionId: "session-1",
-      threads,
-      payload,
-    });
-
-    expect(target.threadId).toBe("thread-after-reset");
-    expect(threads.enqueueSessionInput).toHaveBeenCalledWith("session-1", payload, "wake", undefined);
   });
 });

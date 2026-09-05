@@ -8,7 +8,6 @@ import {
   readGatewayBearerToken,
   readGatewayEventRequest,
   readGatewayEventWithAttachmentsRequest,
-  resolveGatewayEffectiveDelivery,
 } from "../src/integrations/gateway/event-request.js";
 
 function createRequest(body: string, headers: IncomingMessage["headers"] = {}): IncomingMessage {
@@ -135,16 +134,5 @@ describe("gateway event requests", () => {
       statusCode: 400,
       message: "attachments must contain at least one ref when present.",
     });
-  });
-
-  it("never escalates queue-only event types to wake", () => {
-    expect(resolveGatewayEffectiveDelivery({
-      allowedDelivery: "queue",
-      requestedDelivery: "wake",
-    })).toBe("queue");
-    expect(resolveGatewayEffectiveDelivery({
-      allowedDelivery: "wake",
-      requestedDelivery: "queue",
-    })).toBe("queue");
   });
 });

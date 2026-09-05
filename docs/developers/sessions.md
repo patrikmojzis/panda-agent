@@ -213,9 +213,11 @@ scheduled-task runners, watch runners, gateway delivery, app wake actions, or
 A2A inbound handling. Use `resolveCurrentSessionThread` when the caller must
 record the resolved thread id, `submitCurrentSessionInput` when the caller only
 needs to wake the current backing thread through the live daemon, and
-`enqueueCurrentSessionInput` when already-reserved work must persist directly
-through the thread store. That keeps `/reset` attached to the durable session
-instead of the stale backing thread.
+`ThreadRuntimeStore.enqueueSessionInput` when already-reserved work must persist
+directly through the thread store. Existing persistence transactions use
+`enqueueSessionInputWithClient` with their transaction client. Both admission
+paths resolve and lock the active session inside the write, keeping `/reset`
+attached to the durable session instead of the stale backing thread.
 If a delivery path performs a pre-submit check such as “is this thread busy,”
 re-resolve after the check and apply the check to the final target before
 submitting. Do not check one backing thread and then submit to another.

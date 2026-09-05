@@ -175,10 +175,3 @@ export async function readGatewayEventWithAttachmentsRequest(
     })),
   });
 }
-
-export function resolveGatewayEffectiveDelivery(input: {
-  allowedDelivery: GatewayDeliveryMode;
-  requestedDelivery: GatewayDeliveryMode;
-}): GatewayDeliveryMode {
-  return input.allowedDelivery === "queue" ? "queue" : input.requestedDelivery;
-}

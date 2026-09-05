@@ -1919,3 +1919,48 @@ ordering remains necessary. Runtime-activity pagination also remains open.
   push, deployment or schema changes. Cycle 61 is committed as `eb34f7b9`.
   The unused observer snapshot finding is resolved; broader pool-factory changes
   remain deferred for the ownership constraints recorded above.
+
+## Cycle 63 — Delete test-only session and ingress leftovers
+
+- Findings: `enqueueCurrentSessionInput` forwards to the atomic store operation
+  but has only a mock-based test caller. Discord's unused default bound handler
+  only logs and drops a message; the real service defaults to durable runtime
+  request admission. Gateway's unused effective-delivery calculator duplicates
+  policy already evaluated from the current stored event type during admission.
+- Changes: remove the session wrapper, its exclusive type import and stale
+  guidance (24 production lines), Discord's dropping helper (8), and Gateway's
+  duplicate calculator (7). Update session documentation to name
+  `ThreadRuntimeStore.enqueueSessionInput` and the transaction-client admission
+  seam. Retain current-thread resolution, daemon submission, store writes,
+  protocol parsing, policy SQL and durable-request handlers byte-for-byte.
+- Export evidence: whole-tree caller searches and TypeScript resolution of all
+  1,021 exports across 19 supported entrypoints find none of these helpers in a
+  supported contract. The session author also compares actual baseline/current
+  exported declarations. No public retirement or persistence change is involved.
+- Tests: remove exactly three cases that preserve the dead helpers; test code
+  shrinks by 73 lines. Existing Discord tests cover real bound callbacks and
+  service admission. Gateway's v1/v2 cases change event policy before durable
+  admission and verify that queue-only policy wins. Retained session/runtime
+  tests exercise actual store and coordinator paths; no replacement mock-only
+  or absence tests are added.
+- Result: **39 fewer production lines**, bringing the cumulative reduction to
+  **5,607 production lines across 64 cleanup commits**, including 75 lines moved
+  into tests. Documentation, tests and generated files remain excluded.
+- Gates: all **3,253 unit tests across 341 files** pass without failures or skips,
+  including the retained ingress tests. The session author's 32 focused tests,
+  root build/typecheck, import law, prompt/shim contracts, all 19 compiled package
+  imports and shared `Thread` identity pass. The prompt snapshot is unchanged.
+  Evidence: `.temp/desloppify-cycle63-unit-results.json`. The six source/test
+  hashes match `.temp/desloppify-cycle63-source-freeze.json` after verification.
+  No fresh PostgreSQL or smoke run is claimed for these unused-path deletions.
+- State: independently reviewed and committed locally with this cycle. No
+  production access, push or deployment. Cycle 62 is committed as `227a94c6`.
+
+### Rejected deletion and next recon
+
+Keep `createGatewayDeviceCommandWaiter`: although its factory is used only by
+tests, it exposes the same waiter implementation production starts with a
+Postgres listener. Removing it would make behavioral tests depend on listener
+construction without deleting a second runtime algorithm. The Control UI's
+legacy runtime-response fallback and readonly-pool failure ownership are under
+separate review; neither is considered resolved by this cycle.

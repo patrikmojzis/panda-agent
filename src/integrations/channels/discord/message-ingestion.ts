@@ -367,14 +367,6 @@ async function downloadBoundStickers(
   }
 }
 
-export function createDefaultDiscordBoundMessageHandler(
-  log: (event: string, payload: Record<string, unknown>) => void,
-): DiscordBoundMessageHandler {
-  return (message) => {
-    logRouteDrop(log, "message_preflight_bound", message.route, "bound_callback_not_configured");
-  };
-}
-
 export async function ingestDiscordMessageCreate(
   payload: DiscordMessageCreatePayload,
   options: IngestDiscordMessageCreateOptions,

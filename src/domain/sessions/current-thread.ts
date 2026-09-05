@@ -4,7 +4,6 @@ import type {ThreadRuntimeCoordinator, ThreadWakeMode} from "../threads/runtime/
 import {
   SessionArchivedError,
   type ThreadEnqueueResult,
-  type ThreadRuntimeStore,
 } from "../threads/runtime/store.js";
 import type {ThreadEnqueueOptions, ThreadInputPayload} from "../threads/runtime/types.js";
 
@@ -51,29 +50,6 @@ export async function submitCurrentSessionInput(
   },
 ): Promise<SessionInputDeliveryResult> {
   const result = await input.coordinator.submitSessionInput(
-    input.sessionId,
-    input.payload,
-    input.mode ?? "wake",
-    input.options,
-  );
-  return {...result, threadId: result.input.threadId};
-}
-
-/**
- * Queues input to the current thread for a durable session and returns the
- * resolved target. Use this for already-reserved work that should not run
- * through the live daemon coordinator directly.
- */
-export async function enqueueCurrentSessionInput(
-  input: {
-    sessionId: string;
-    threads: Pick<ThreadRuntimeStore, "enqueueSessionInput">;
-    mode?: ThreadWakeMode;
-    payload: ThreadInputPayload;
-    options?: ThreadEnqueueOptions;
-  },
-): Promise<SessionInputDeliveryResult> {
-  const result = await input.threads.enqueueSessionInput(
     input.sessionId,
     input.payload,
     input.mode ?? "wake",

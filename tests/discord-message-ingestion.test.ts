@@ -2,7 +2,6 @@ import {describe, expect, it, vi} from "vitest";
 
 import type {ConversationBinding} from "../src/domain/sessions/conversations/types.js";
 import {
-  createDefaultDiscordBoundMessageHandler,
   ingestDiscordMessageCreate,
   type DiscordMessageCreatePayload,
 } from "../src/integrations/channels/discord/message-ingestion.js";
@@ -497,39 +496,5 @@ describe("Discord message ingestion privacy preflight", () => {
         media: [],
       }),
     }));
-  });
-
-  it("default bound callback logs only safe route ids and drops", async () => {
-    const log = vi.fn();
-    const handler = createDefaultDiscordBoundMessageHandler(log);
-
-    await handler({
-      binding: binding(),
-      requestPayload: {
-        connectorKey: "bot-1",
-        externalConversationId: "channel-1",
-        externalActorId: "user-1",
-        externalMessageId: "message-1",
-        actualChannelId: "channel-1",
-        text: "PRIVATE_SENTINEL_TEXT",
-        attachmentSummaries: [],
-        media: [],
-      },
-      route: {
-        source: "discord",
-        connectorKey: "bot-1",
-        accountKey: "ops",
-        externalConversationId: "channel-1",
-        actualChannelId: "channel-1",
-        externalMessageId: "message-1",
-      },
-    });
-
-    expect(log).toHaveBeenCalledWith("message_preflight_bound", expect.objectContaining({
-      reason: "bound_callback_not_configured",
-      externalConversationId: "channel-1",
-      externalMessageId: "message-1",
-    }));
-    expect(stringifyLogCalls(log)).not.toContain("PRIVATE_SENTINEL_TEXT");
   });
 });
