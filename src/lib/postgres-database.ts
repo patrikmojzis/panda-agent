@@ -295,14 +295,22 @@ export function observePostgresPool(options: PostgresPoolObserverOptions): Postg
   }, waitingLogIntervalMs);
   interval.unref();
 
-  logStats("startup");
-
-  return {
-    stop(): void {
-      clearInterval(interval);
-      options.pool.off("error", handlePoolError);
-      options.pool.connect = originalConnect;
-      options.pool.query = originalQuery;
-    },
+  const stop = (): void => {
+    clearInterval(interval);
+    options.pool.off("error", handlePoolError);
+    options.pool.connect = originalConnect;
+    options.pool.query = originalQuery;
   };
+
+  try {
+    logStats("startup");
+  } catch (error) {
+    try {
+      stop();
+    } finally {
+      throw error;
+    }
+  }
+
+  return {stop};
 }

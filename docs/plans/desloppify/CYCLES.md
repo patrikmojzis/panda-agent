@@ -2074,3 +2074,55 @@ failure identity when addressing it; do not hide it inside a broad pool factory.
 The actual public-observer probe reproduces the retained timer, listener and
 wrappers in `.temp/desloppify-observer-startup-rejection-before.json`; its own
 resources were cleaned in `finally`, and it made no database or network calls.
+
+## Cycle 66 — Roll back observation when startup logging fails
+
+- Finding: `observePostgresPool` installs an error listener, connect/query
+  wrappers and an unref timer before calling its startup logger. If that logger
+  throws, the caller receives no stop handle while observation remains active.
+- Change: name the existing stop operation locally and reuse it when startup
+  logging throws. Keep listener/wrapper/timer/log setup order and all four stop
+  statements unchanged. Rethrow the original value even if rollback throws;
+  ordinary successful callers receive the same stop behavior.
+- Regression evidence: five new cases fail against the unchanged baseline and
+  pass after the fix. Actual observer tests verify timer/listener removal,
+  retention of an existing listener, no subsequent observer logging, and intact
+  promise/callback query behavior. Error, string, null and undefined startup
+  failures survive a secondary cleanup failure unchanged. Independent checks also
+  retain a prior observer while removing only the failed new observer.
+- Result: 17 production lines added and nine removed, net **eight added**.
+  Tests add 78 lines. Cumulative reduction becomes **5,721 production lines
+  across 67 cleanup commits**, including 75 lines moved into tests. The extra
+  lines establish cleanup ownership before the observer can escape its caller.
+- Gates: all 45 author-focused tests and 28 independent focused tests pass.
+  The final **3,260 unit tests across 341 files** pass with no failures or skips.
+  Root build/typecheck, import law, prompt/shim contracts, all 19 compiled package
+  imports and shared `Thread` identity pass. Source/test hashes remain frozen;
+  source reconstruction permits only the startup-log/stop ownership change.
+  Evidence: `.temp/desloppify-cycle66-before-results.json`,
+  `.temp/desloppify-cycle66-focused-results.json`,
+  `.temp/desloppify-cycle66-unit-results.json` and
+  `.temp/desloppify-cycle66-frozen.json`.
+- Probe: actual public-observer before/after evidence preserves the complete
+  healthy result. Failed startup now leaves no observer timer/listener or later
+  observer logging. Restored methods use the existing bound-original semantics;
+  identity with the pool's original unbound function is not asserted. Evidence:
+  `.temp/desloppify-observer-startup-rejection-after.json`.
+- Smoke: the offline common-runtime check passes on a fresh isolated PostgreSQL
+  database with 25 migrations, two injected model responses, one tool call, four
+  messages, owned completion, applied input, idle state and zero external
+  requests. The cluster is stopped afterward. This smoke does not invoke
+  observer initialization; focused observer tests establish the fix. Evidence:
+  `.temp/desloppify-cycle66-offline-smoke-output.log`.
+- State: independently reviewed and committed locally with this cycle. Generated
+  prompt metadata is unchanged. No production access, push or deployment.
+  Cycle 65 is committed as `7c5c8889`.
+
+### Remaining initialization boundaries
+
+This fixes startup logging after observer installation. Earlier setup exceptions
+remain outside this change. A failing cleanup primitive can prevent full
+restoration, although it can no longer replace the original startup failure.
+Eager bootstrap allocates its pools before its broader cleanup boundary; that
+ownership path is under separate review. Do not treat these scoped fixes as
+evidence that every possible initialization failure is now covered.

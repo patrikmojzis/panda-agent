@@ -13,9 +13,9 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–65; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–66; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,729 production lines**, including
+Together, these cleanup commits remove **5,721 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
@@ -69,23 +69,27 @@ Cycle 65 repairs shutdown losing a readonly pool when lazy initialization fails
 after allocation. Cleanup now recovers the owned pool and any returned observer
 after the initialization promise settles. It adds two production lines and two
 regression tests; the original initialization error and cleanup ordering remain
-intact. Observer setup failing before it returns a handle is a separate follow-up.
+intact. Cycle 66 closes the startup-log rollback gap: failed observation now
+uses its normal stop operation before rethrowing the original value. It adds
+eight production lines and five regression cases, retaining prior observers and
+pool callback/promise behavior. Earlier setup failures and eager bootstrap
+ownership remain separate boundaries.
 
-The frozen tree passes **3,255 unit tests across 341 files**, root build/typecheck,
+The frozen backend passes **3,260 unit tests across 341 files**, root build/typecheck,
 import law, all 19 compiled package
 imports and shared `Thread` identity. The initial failure of an unchanged
 cancellation test and its passing isolated/file/full reruns are recorded under
 cycle 54; its precise cause remains unproven. Cycle 57 passed prompt/shim
 contracts, eleven real-PostgreSQL visibility tests and 102 baseline/current
 comparisons. Cycles 58–59 leave those queries and authority checks unchanged.
-The cycle 65 common-runtime smoke applied all 25 migrations to fresh local
+The cycle 66 common-runtime smoke applied all 25 migrations to fresh local
 PostgreSQL and completed an owned run with applied input, one tool call, four
 messages and idle state. It used injected model responses and blocked external
-requests. The new bootstrap tests prove the shutdown repair; the smoke avoids
-application bootstrap and does not exercise that race or the actor listings.
-The test cluster was stopped afterward. Prompt/shim contracts pass; cycle 65
-changes only bootstrap file metadata in the prompt snapshot. Runtime-activity
-reads and observer setup rollback remain under investigation, with
+requests. Focused bootstrap and observer tests prove the ownership repairs; the
+smoke avoids application bootstrap and does not exercise those failure paths or
+the actor listings. The test cluster was stopped afterward. Prompt/shim contracts
+pass; cycle 66 leaves the snapshot unchanged. Runtime-activity reads and eager
+bootstrap ownership remain under investigation, with
 their constraints recorded in the cycle record. The inspect/review/commit loop
 remains active.
 

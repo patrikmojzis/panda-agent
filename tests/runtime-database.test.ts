@@ -24,8 +24,17 @@ class FakePool extends EventEmitter {
   totalCount = 0;
   idleCount = 0;
   waitingCount = 0;
+  failure: Error | null = null;
 
   connect(callback?: FakeConnectCallback): Promise<FakeClient> | void {
+    if (this.failure) {
+      if (callback) {
+        callback(this.failure);
+        return;
+      }
+      return Promise.reject(this.failure);
+    }
+
     const client: FakeClient = {
       query: (_text, values, maybeCallback) => {
         const resolvedCallback = typeof values === "function" ? values : maybeCallback;
@@ -104,6 +113,75 @@ class DuplicateQueryErrorPool extends EventEmitter {
 }
 
 describe("observePostgresPool", () => {
+  it("rolls back failed startup logging without changing the pool's behavior", async () => {
+    vi.useFakeTimers({toFake: ["setInterval", "clearInterval"]});
+    const pool = new FakePool();
+    const priorListener = vi.fn();
+    pool.on("error", priorListener);
+    const failure = new Error("startup log failed");
+    const log = vi.fn((_event: string, payload: Record<string, unknown>) => {
+      if (payload.reason === "startup") throw failure;
+    });
+    try {
+      let thrown: unknown;
+      try {
+        observePostgresPool({pool, applicationName: "test-rollback", waitingLogIntervalMs: 100, log});
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBe(failure);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(pool.listeners("error")).toEqual([priorListener]);
+
+      log.mockClear();
+      pool.waitingCount = 1;
+      vi.advanceTimersByTime(100);
+      pool.emit("error", failure);
+      expect(priorListener).toHaveBeenCalledWith(failure);
+      await expect(pool.connect()).resolves.toEqual(expect.objectContaining({release: expect.any(Function)}));
+      await expect(pool.query("select 1")).resolves.toEqual({rows: [{ok: true}]});
+      await expect(new Promise((resolve, reject) => {
+        pool.query("select 1", (error, result) => error ? reject(error) : resolve(result));
+      })).resolves.toEqual({rows: [{ok: true}]});
+
+      pool.failure = new Error("later acquisition failure");
+      await expect(pool.connect()).rejects.toBe(pool.failure);
+      await expect(pool.query("select 1")).rejects.toBe(pool.failure);
+      expect(log).not.toHaveBeenCalled();
+    } finally {
+      pool.removeAllListeners();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    {label: "Error", failure: new Error("startup failed")},
+    {label: "string", failure: "startup failed"},
+    {label: "null", failure: null},
+    {label: "undefined", failure: undefined},
+  ])("preserves the original $label startup failure when rollback also fails", ({failure}) => {
+    vi.useFakeTimers({toFake: ["setInterval", "clearInterval"]});
+    const pool = new FakePool();
+    const off = vi.spyOn(pool, "off").mockImplementation(() => { throw new Error("rollback failed"); });
+    try {
+      let thrown: unknown = Symbol("not thrown");
+      try {
+        observePostgresPool({pool, applicationName: "test-rollback", log: () => { throw failure; }});
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBe(failure);
+      expect(off).toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      off.mockRestore();
+      pool.removeAllListeners();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("preserves the callback-style connect path used by pool.query", async () => {
     const pool = new FakePool();
     const log = vi.fn();
