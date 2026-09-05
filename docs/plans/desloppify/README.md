@@ -14,13 +14,13 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–79; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–80; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,995 production lines**, including
+Together, these cleanup commits remove **6,002 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration. This established counter covers `src/` and
 `apps/`; cycles 75 and 79 additionally remove 94 lines from the shipped command
-shim, recorded separately. There are 80 cleanup commits including the initial pass.
+shim, recorded separately. There are 81 cleanup commits including the initial pass.
 
 Control now separates single-agent authorization and bulk visible-key reads from
 agent-list enrichment. Cycle 57 added 23 production lines to remove unnecessary
@@ -160,6 +160,12 @@ Telegram, Discord and WhatsApp history parsers. Target names and diagnostics
 remain channel-specific. Nine new public cases pass before and after the change;
 all 197 shim tests and 93 independent parser comparisons pass. Generated JSON
 dispatch, help, permissions and transport remain unchanged.
+
+Cycle 80 removes a seven-line forwarding factory from A2A commands. The existing
+public factory now directly owns the same implementation, signature and closure.
+All 48 focused command tests pass; independent source reconstruction and the
+declaration comparison confirm that command behavior and public contracts remain
+unchanged.
 
 The frozen worktree passes **3,318 unit tests across 341 files**, root build/typecheck,
 import law, all 19 compiled package

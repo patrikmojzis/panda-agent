@@ -475,7 +475,7 @@ export const a2aSendCommandDescriptor: CommandDescriptor = {
   },
 };
 
-function createMessageSendCommand(
+export function createA2ASendCommand(
   queue: MessageAgentCommandQueue,
   uploads: CommandUploadStore,
 ): RegisteredCommand {
@@ -517,13 +517,6 @@ function createMessageSendCommand(
       };
     },
   };
-}
-
-export function createA2ASendCommand(
-  queue: MessageAgentCommandQueue,
-  uploads: CommandUploadStore,
-): RegisteredCommand {
-  return createMessageSendCommand(queue, uploads);
 }
 
 export function createA2AInspectCommand(reader: A2ADeliveryReader): RegisteredCommand {

@@ -2704,3 +2704,30 @@ Cycle 72 below implements that policy.
   they remove **6,089 shipped code lines**.
 - State: independently reviewed and committed locally with this cycle.
   Cycle 78 is committed as `213a2484`. No production access, push or deployment.
+
+## Cycle 80 — Remove the forwarding A2A command factory
+
+- Finding: `src/domain/a2a/commands.ts` has a private factory containing the whole
+  command and a public factory that only forwards its two arguments. This adds
+  a name and call without containing policy or adapting the interface.
+- Change: promote the existing implementation under `createA2ASendCommand` and
+  delete the forwarding function. Preserve the public parameter/return types,
+  descriptor, parser, upload handling, sender snapshot, queue call and output.
+  Live command-module registration and all six behavioral test constructions
+  continue to use the same public name. No new interface or abstraction.
+- Evidence: independent whole-file reconstruction permits only the name/export
+  promotion and wrapper deletion; implementation bytes are otherwise identical.
+  All 48 tests in `tests/message-agent-command.test.ts`,
+  `tests/command-dependencies.test.ts` and `tests/command-cli.test.ts` pass.
+  Neither factory is part of the 19 supported package entrypoints or their
+  1,021 resolved export symbols; the existing leaf export remains supported.
+- Gates: the frozen batch passes 3,318 tests across 341 files, build/typecheck,
+  import law, prompt/shim contracts and all 19 compiled package imports. All
+  981 declaration files remain identical. No test, snapshot, SQL or schema
+  change belongs to this cycle.
+- Result: **seven fewer production lines**. The source counter becomes
+  **6,002 fewer production lines across 81 cleanup commits**, including 75 lines
+  moved into tests. The separate 94-line shim reduction brings the combined
+  reduction to **6,096 shipped code lines**.
+- State: independently reviewed and committed locally with this cycle.
+  Cycle 79 is committed as `31aac169`. No production access, push or deployment.
