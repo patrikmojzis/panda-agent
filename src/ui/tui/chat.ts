@@ -16,7 +16,6 @@ import {
 } from "./chat-session.js";
 import {
     appendStoredTranscriptMessages,
-    createStoredTranscriptEntry,
     observeLatestStoredRun,
     resolveStoredThreadDisplayConfig,
     resolveRuntimeDisplayedCwd,
@@ -433,14 +432,14 @@ export class ChatApp {
   }
 
   private createTranscriptEntry(role: EntryRole, title: string, body: string): TranscriptEntry {
-    const created = createStoredTranscriptEntry({
-      nextEntryId: this.nextEntryId,
+    const entry = {
+      id: this.nextEntryId,
       role,
       title,
       body,
-    });
-    this.nextEntryId = created.nextEntryId;
-    return created.entry;
+    };
+    this.nextEntryId += 1;
+    return entry;
   }
 
   private appendStoredMessages(records: Parameters<typeof appendStoredTranscriptMessages>[0]["records"]): void {

@@ -6,7 +6,7 @@ import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {SessionRuntimeConfigRecord} from "../../domain/sessions/types.js";
 import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord, ThreadToolJobRecord,} from "../../domain/threads/runtime/types.js";
 import {resolveDefaultAgentModelSelector} from "../../panda/defaults.js";
-import {type EntryRole, type RunPhase, type TranscriptEntry,} from "../tui/chat-shared.js";
+import {type RunPhase, type TranscriptEntry,} from "../tui/chat-shared.js";
 import {renderTranscriptEntries} from "../tui/transcript.js";
 
 export function resolveRuntimeDisplayedCwd(
@@ -29,23 +29,6 @@ export function resolveStoredThreadDisplayConfig(runtimeConfig?: Pick<
   return {
     model: runtimeConfig?.model ?? resolveDefaultAgentModelSelector(),
     thinking: runtimeConfig?.thinkingConfigured ? runtimeConfig.thinking : undefined,
-  };
-}
-
-export function createStoredTranscriptEntry(input: {
-  nextEntryId: number;
-  role: EntryRole;
-  title: string;
-  body: string;
-}): {entry: TranscriptEntry; nextEntryId: number} {
-  return {
-    entry: {
-      id: input.nextEntryId,
-      role: input.role,
-      title: input.title,
-      body: input.body,
-    },
-    nextEntryId: input.nextEntryId + 1,
   };
 }
 
@@ -74,14 +57,13 @@ export function appendStoredTranscriptMessages(input: {
     }
 
     for (const entry of renderTranscriptEntries(record.message, record, input.currentTools)) {
-      const created = createStoredTranscriptEntry({
-        nextEntryId,
+      entries.push({
+        id: nextEntryId,
         role: entry.role,
         title: entry.title,
         body: entry.body,
       });
-      entries.push(created.entry);
-      nextEntryId = created.nextEntryId;
+      nextEntryId += 1;
     }
   }
 

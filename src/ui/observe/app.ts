@@ -16,7 +16,6 @@ import {buildDefaultAgentTools} from "../../panda/definition.js";
 import {buildStoredTranscriptLines} from "../shared/transcript-lines.js";
 import {
     appendStoredTranscriptMessages,
-    createStoredTranscriptEntry,
     loadStoredThreadSnapshot,
     observeLatestStoredRun,
     resolveStoredThreadDisplayConfig,
@@ -132,14 +131,13 @@ function appendCommandToolJobEntries(input: {
       continue;
     }
     input.seenStatusKeys.add(statusKey);
-    const created = createStoredTranscriptEntry({
-      nextEntryId,
+    entries.push({
+      id: nextEntryId,
       role: job.status === "failed" ? "error" : "tool",
       title: "command",
       body: renderCommandToolJobBody(job),
     });
-    entries.push(created.entry);
-    nextEntryId = created.nextEntryId;
+    nextEntryId += 1;
   }
 
   return {entries, nextEntryId};

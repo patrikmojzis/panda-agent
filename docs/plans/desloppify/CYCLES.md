@@ -673,3 +673,17 @@ and supported runtime context exports retain meaningful policy or public callers
   both are identical. The new type reference is erased, adding no runtime cycle.
 - State: reviewed and committed locally with this cycle. Public types, HTTP
   behavior, authentication, input admission and app SQL isolation are unchanged.
+
+## Cycle 29 — Construct terminal transcript entries directly
+
+- Finding: a shared factory only copied four entry fields and returned an
+  incremented counter to three callers that immediately unpacked both values.
+- Change: construct explicit entry fields at the stored-message, Observe-command
+  and TUI-local call sites; advance counters after rendering/construction.
+- Result: 21 fewer production lines; no new test scaffolding.
+- Evidence: 60 focused UI/shared/CLI tests, typecheck and import law pass.
+  Independent review ran 57 affected tests and matched 174 old/new cases covering
+  duplicates, pending-input acknowledgments, rendering failures, seen sets,
+  counters, ordering and cache IDs. The helper was not a supported package export.
+- State: reviewed and committed locally with this cycle. Transcript rendering,
+  persisted shapes, UI output and entry-identity behavior are unchanged.
