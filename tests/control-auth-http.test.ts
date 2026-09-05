@@ -1069,6 +1069,47 @@ describe("Control operator HTTP", () => {
     expect(audit.rows).toEqual([{action: "archive"}, {action: "restore"}]);
   });
 
+  it.each(["completed", "failed", "pending"])("waits for an authorized reset request that is $0 at its deadline", async (status) => {
+    const harness = await createHarness();
+    const base = await startHarnessServer(harness);
+    const endpoint = `${base}/api/control/agents/panda/sessions/session-panda/reset`;
+    expect((await fetch(endpoint, {method: "POST"})).status).toBe(401);
+    expect(harness.sessionRequests.enqueueRequest).not.toHaveBeenCalled();
+    const auth = await login(base, harness);
+    harness.sessionRequests.enqueueRequest.mockResolvedValue({
+      id: "enqueued-request-id", kind: "reset_session", payload: {}, status: "pending", result: {},
+    });
+    let now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const readIds: string[] = [];
+    harness.sessionRequests.getRequest.mockImplementation(async (id) => {
+      readIds.push(id);
+      if (readIds.length === 1) {
+        now += 30_000;
+        return {id: "returned-request-id", status: "pending"};
+      }
+      now += 100;
+      return {id: "returned-request-id", status, result: {previousThreadId: "previous-thread-result"}};
+    });
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST", headers: {cookie: auth.cookies, "x-control-csrf": auth.csrfToken},
+      });
+      expect(response.status).toBe(status === "completed" ? 200 : 400);
+      await expect(response.json()).resolves.toMatchObject(status === "completed"
+        ? {previousThreadId: "previous-thread-result", session: {id: "session-panda"}}
+        : {error: status === "failed"
+          ? "Runtime request returned-request-id failed."
+          : "Timed out waiting for runtime request enqueued-request-id."});
+      expect(readIds).toEqual(["enqueued-request-id", "enqueued-request-id"]);
+      expect(harness.sessionRequests.enqueueRequest).toHaveBeenCalledExactlyOnceWith({
+        kind: "reset_session", payload: {source: "operator", sessionId: "session-panda"},
+      });
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("returns agents and sessions with the table contract", async () => {
     const harness = await createHarness();
     const base = await startHarnessServer(harness);

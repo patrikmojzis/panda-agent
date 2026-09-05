@@ -12,8 +12,11 @@ const sessionResetCliMocks = vi.hoisted(() => {
       query(text: string, values?: readonly unknown[]): Promise<unknown>;
     };
     enqueued: unknown[];
+    readRequest?: (id: string) => Promise<Record<string, unknown>>;
+    readTimes: number[];
   } = {
     enqueued: [],
+    readTimes: [],
   };
 
   class MockRuntimeRequestRepo {
@@ -22,7 +25,9 @@ const sessionResetCliMocks = vi.hoisted(() => {
       state.enqueued.push(input);
       return {id: "request-runtime"};
     });
-    readonly getRequest = vi.fn(async () => {
+    readonly getRequest = vi.fn(async (id: string) => {
+      state.readTimes.push(Date.now());
+      if (state.readRequest) return state.readRequest(id);
       const input = state.enqueued.at(-1) as {kind?: string} | undefined;
       return {
         id: "request-runtime",
@@ -128,7 +133,10 @@ describe("Session reset CLI", () => {
   afterEach(async () => {
     sessionResetCliMocks.state.pool = undefined;
     sessionResetCliMocks.state.enqueued = [];
+    sessionResetCliMocks.state.readRequest = undefined;
+    sessionResetCliMocks.state.readTimes = [];
     sessionResetCliMocks.withPostgresPool.mockClear();
+    vi.useRealTimers();
     vi.restoreAllMocks();
 
     while (pools.length > 0) {
@@ -254,5 +262,62 @@ describe("Session reset CLI", () => {
       {kind: "archive_session", payload: {sessionId: "canonical-session"}},
       {kind: "restore_session", payload: {sessionId: "canonical-session"}},
     ]);
+  });
+
+  it.each(["reset", "compact", "archive", "restore"])("uses the enqueued request ID for an unlabelled %s failure", async (command) => {
+    const {pool, sessionStore} = await createHarness();
+    pools.push(pool);
+    await sessionStore.createSession({
+      id: "canonical-session", agentKey: "panda", kind: "branch", currentThreadId: "thread-current",
+    });
+    sessionResetCliMocks.state.readRequest = async () => ({id: "different-returned-id", status: "failed"});
+
+    await expect(createProgram().parseAsync(["session", command, "canonical-session"], {from: "user"}))
+      .rejects.toThrow("Runtime request request-runtime failed.");
+    expect(sessionResetCliMocks.state.enqueued).toHaveLength(1);
+  });
+
+  it.each([
+    {command: "reset", timeoutMs: 30_000, completes: true},
+    {command: "reset", timeoutMs: 30_000, completes: false},
+    {command: "compact", timeoutMs: 15 * 60_000, completes: true},
+    {command: "compact", timeoutMs: 15 * 60_000, completes: false},
+  ])("waits through the inclusive $command deadline (completes=$completes)", async ({command, timeoutMs, completes}) => {
+    const {pool, sessionStore} = await createHarness();
+    pools.push(pool);
+    await sessionStore.createSession({
+      id: "canonical-session", agentKey: "panda", kind: "branch", currentThreadId: "thread-current",
+    });
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    sessionResetCliMocks.state.readRequest = async () => ({
+      id: "different-returned-id",
+      status: completes && Date.now() === timeoutMs ? "completed" : Date.now() ? "running" : "pending",
+      result: null,
+    });
+    const result = createProgram().parseAsync(["session", command, "canonical-session"], {from: "user"});
+    const assertion = completes
+      ? expect(result).resolves.toBeInstanceOf(Command)
+      : expect(result).rejects.toThrow("Timed out waiting for runtime request request-runtime.");
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(99);
+    expect(sessionResetCliMocks.state.readTimes).toEqual([0]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sessionResetCliMocks.state.readTimes).toEqual([0, 100]);
+    vi.setSystemTime(timeoutMs - 100);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sessionResetCliMocks.state.readTimes).toEqual([0, 100, timeoutMs]);
+    if (!completes) await vi.advanceTimersByTimeAsync(100);
+    await assertion;
+    expect(sessionResetCliMocks.state.enqueued).toHaveLength(1);
+    expect(sessionResetCliMocks.state.readTimes).toEqual([0, 100, timeoutMs]);
+    if (completes) {
+      expect(write).toHaveBeenCalledWith(command === "reset"
+        ? "Reset session canonical-session.\nnew thread -\nprevious thread -\n"
+        : "Session canonical-session has no older context to compact.\nthread thread-current\n");
+    } else {
+      expect(write).not.toHaveBeenCalled();
+    }
   });
 });

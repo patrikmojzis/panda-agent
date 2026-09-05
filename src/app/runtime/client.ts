@@ -9,6 +9,7 @@ import {type IdentityRecord, normalizeIdentityHandle} from "../../domain/identit
 import type {JsonValue} from "../../lib/json.js";
 import type {CreateRuntimeRequestInput, RuntimeRequestKind, RuntimeThreadUpdate} from "../../domain/threads/requests/types.js";
 import {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
+import {waitForRuntimeRequestResult} from "../../domain/threads/requests/wait-for-result.js";
 import {DaemonStateRepo} from "./state/repo.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import type {ThreadRuntimeNotification} from "../../domain/threads/runtime/postgres-notifications.js";
@@ -108,29 +109,6 @@ export interface RuntimeClient {
   close(): Promise<void>;
 }
 
-async function waitForRequestResult<T>(
-  requests: RuntimeRequestRepo,
-  requestId: string,
-  timeoutMs: number,
-): Promise<T> {
-  const deadline = Date.now() + timeoutMs;
-
-  while (Date.now() <= deadline) {
-    const request = await requests.getRequest(requestId);
-    if (request.status === "completed") {
-      return (request.result ?? {}) as T;
-    }
-
-    if (request.status === "failed") {
-      throw new Error(request.error ?? `Runtime request ${request.id} failed.`);
-    }
-
-    await sleep(100);
-  }
-
-  throw new Error(`Timed out waiting for runtime request ${requestId}.`);
-}
-
 export async function createRuntimeClient(options: RuntimeClientOptions): Promise<RuntimeClient> {
   const pool = createPostgresPool({
     connectionString: requireDatabaseUrl(options.dbUrl),
@@ -194,7 +172,7 @@ export async function createRuntimeClient(options: RuntimeClientOptions): Promis
     ): Promise<TResult> => {
       await assertDaemonActive();
       const request = await requests.enqueueRequest(input);
-      return waitForRequestResult<TResult>(requests, request.id, timeoutMs);
+      return waitForRuntimeRequestResult<TResult>(requests, request.id, timeoutMs);
     };
 
     const createBranchSession = async (sessionOptions: RuntimeClientSessionOptions = {}): Promise<ThreadRecord> => {

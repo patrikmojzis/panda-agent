@@ -12,6 +12,7 @@ import {
 } from "../../domain/sessions/cli.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
+import {waitForRuntimeRequestResult} from "../../domain/threads/requests/wait-for-result.js";
 import {DAEMON_REQUEST_TIMEOUT_MS, DAEMON_STALE_AFTER_MS, DEFAULT_DAEMON_KEY} from "../runtime/daemon.js";
 import {DaemonStateRepo} from "../runtime/state/repo.js";
 
@@ -54,27 +55,6 @@ async function withSessionResetStores<T>(
   });
 }
 
-async function waitForRequestResult(
-  requests: RuntimeRequestRepo,
-  requestId: string,
-  timeoutMs: number,
-): Promise<Record<string, unknown>> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() <= deadline) {
-    const request = await requests.getRequest(requestId);
-    if (request.status === "completed") {
-      return (request.result ?? {}) as Record<string, unknown>;
-    }
-    if (request.status === "failed") {
-      throw new Error(request.error ?? `Runtime request ${requestId} failed.`);
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-
-  throw new Error(`Timed out waiting for runtime request ${requestId}.`);
-}
-
 function parseAgentKeyOption(value: string): string {
   try {
     return normalizeAgentKey(value);
@@ -104,7 +84,7 @@ async function resetSessionCommand(sessionRef: string, options: SessionResetCliO
         sessionId: session.id,
       },
     });
-    const result = await waitForRequestResult(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
+    const result = await waitForRuntimeRequestResult(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS, "request");
     process.stdout.write(
       [
         `Reset session ${session.id}.`,
@@ -129,7 +109,7 @@ async function compactSessionCommand(sessionRef: string, options: SessionCompact
         customInstructions: options.instructions?.trim() ?? "",
       },
     });
-    const result = await waitForRequestResult(requests, request.id, SESSION_COMPACT_REQUEST_TIMEOUT_MS);
+    const result = await waitForRuntimeRequestResult(requests, request.id, SESSION_COMPACT_REQUEST_TIMEOUT_MS, "request");
     const output = {
       compacted: result.compacted === true,
       sessionId: session.id,
@@ -163,7 +143,7 @@ async function changeSessionLifecycle(
     await requireDaemonOnline(daemonState);
     const session = await sessionStore.resolveSessionRef({sessionRef, agentKey: options.agent});
     const request = await requests.enqueueRequest({kind, payload: {sessionId: session.id}});
-    const result = await waitForRequestResult(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS);
+    const result = await waitForRuntimeRequestResult(requests, request.id, DAEMON_REQUEST_TIMEOUT_MS, "request");
     const output = {
       sessionId: session.id,
       threadId: typeof result.threadId === "string" ? result.threadId : session.currentThreadId,

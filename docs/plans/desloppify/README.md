@@ -11,43 +11,29 @@ authoritative; this folder records decisions and work in progress.
 
 ## Current state
 
-The first pass implemented D01–D14 locally and passed its recorded verification.
-The second pass removes verified dead code and redundant composition. The active
-cycle record tracks their commit and subsequent work. Concurrent credential-name,
-image-generation and background-job work belongs to separate tasks; preserve it.
-Earlier test results are historical evidence and do not certify subsequent edits.
+The initial architecture and simplification passes are committed as `ca5a689d`.
+The continuing cleanup loop has completed cycles 1–22; their decisions, scoped
+commits, behavior changes and verification evidence are in the cycle record.
+Together, these cleanup commits remove **4,888 production lines**, including
+75 lines relocated into tests. Counts exclude unrelated commits, tests,
+documentation and configuration.
 
-The second pass is implemented and verified locally: 1,974 fewer production-code
-lines, 330 passing test files / 2,926 tests, a passing model smoke, and current
-build/import/prompt/shim checks. Its complete decisions and evidence are in the
-current-pass record. Production remains undeployed by this cleanup work.
+The latest five cycles remove 68 production lines: unused Bash secret metadata,
+redundant subagent prompt projection, Whisper's dead progress hook, duplicated
+TUI usage additions and repeated request-result polling. Whisper now forwards
+caller cancellation through its existing abort handling. The other four changes
+preserve their supported behavior.
 
-The first two passes are committed as `ca5a689d`. Cycle 1 is committed as
-`2e3aa496`, removing another 834 production lines of duplicated host CLI help.
-Browser action completion is committed as `161ed329`; terminal snapshots are
-committed as `779e7647`. These passes remove another 125 production lines. The
-mixed operator CLI cleanup is committed as `8686d315`, removing another 1,061
-lines. The attachment-save race fix removes 18 more production lines and is
-reviewed and committed with its cycle. In total, these cleanup commits remove
-4,159 production lines relative to the first cleanup commit's parent, excluding
-tests, documentation and configuration. Cycles 6–9 simplify provider projections,
-MCP cancellation, runtime composition and shell compensation, removing another
-230 production lines, including 75 relocated into tests. Provider, MCP and runtime
-changes are committed as `07cabc01`, `598a7ef4` and `bd8382a7`; shell compensation
-is committed with its own cycle. Combined isolated verification covered 2,957
-tests and a passing model/bash smoke. The separate storage commit `89dfea95` is
-excluded from these counts. Cycles 10–13 remove another 188 production lines:
-the single-use web-research factory, repeated Control access queries, duplicated
-channel-history text handling and redundant transcript projection/segment code.
-The cleanup total is 4,577 fewer production lines, including the 75 relocated
-into tests. Independent reviews, focused tests, current build/contracts and a
-fresh disposable-Postgres model/bash smoke passed. The cycle log is the current
-progress record. Cycles 14–17 remove another 243 production lines by sharing
-Whisper execution, deleting unused Panda helpers, removing foreign UI error
-parsing and simplifying worker startup. The total is now 4,820 fewer production
-lines, including those 75 moved into tests. All 3,021 tests across 334 files,
-current builds/contracts and a fresh model/bash smoke pass. The
-inspect/review/commit loop remains active.
+The frozen combined source passes **3,053 tests across 334 files**, the TypeScript
+build, import law, prompt/shim contracts, all 19 compiled package imports and a
+model/bash smoke against disposable local Postgres. The test database was stopped
+afterward. Earlier verification records are historical and do not certify later
+edits. The inspect/review/commit loop remains active; the next recon candidates
+are recorded after cycle 22.
+
+Concurrent credential-name, image-generation and background-job work belongs to
+separate tasks. Preserve those changes and untracked `output/`; they are excluded
+from cleanup counts.
 
 Production access remains strictly read-only. No deployment, migration, restart,
 message replay or historical-data cleanup is part of this work. The production

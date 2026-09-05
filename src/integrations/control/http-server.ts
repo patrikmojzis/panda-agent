@@ -54,6 +54,7 @@ import type {ModelCallTraceMode, ModelCallTraceStatus} from "../../domain/model-
 import type {ControlGrantRecord, ControlGrantRole, ControlSessionRecord} from "../../domain/control/types.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
 import type {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
+import {waitForRuntimeRequestResult} from "../../domain/threads/requests/wait-for-result.js";
 import {McpRegistryVersionConflictError} from "../../domain/mcp/store.js";
 
 export const CONTROL_SESSION_COOKIE = "panda_control_session";
@@ -197,14 +198,7 @@ async function runSessionMutation(
     : kind === "archive_session"
       ? await requests.enqueueRequest({kind, payload: {sessionId}})
       : await requests.enqueueRequest({kind, payload: {sessionId}});
-  const deadline = Date.now() + 30_000;
-  while (Date.now() <= deadline) {
-    const current = await requests.getRequest(request.id);
-    if (current.status === "completed") return (current.result ?? {}) as Record<string, unknown>;
-    if (current.status === "failed") throw new Error(current.error ?? `Runtime request ${current.id} failed.`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error(`Timed out waiting for runtime request ${request.id}.`);
+  return waitForRuntimeRequestResult(requests, request.id, 30_000);
 }
 
 function parseCookies(header: string | undefined): Record<string, string> {

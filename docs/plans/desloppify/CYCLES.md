@@ -503,3 +503,57 @@ intact rather than adding churn.
   records, so the spread introduces no getter or alias behavior.
 - State: reviewed and committed locally with this cycle. No transcript shape,
   stored usage, paging policy or user-facing formatting changed.
+
+## Cycle 22 — Share persisted request-result polling
+
+- Finding: the runtime client, session CLI and Control HTTP adapter repeated the
+  same persisted-result polling loop. Their timeout limits and fallback error
+  identifiers differ and belong to the callers.
+- Change: `src/domain/threads/requests/wait-for-result.ts` owns polling through a
+  narrow `getRequest` store slice. Callers retain their limits; the CLI explicitly
+  selects its requested-ID failure diagnostic while other callers use the row ID.
+- Result: 24 fewer production lines, including the new helper; 203 net test lines
+  added across the three public caller seams.
+- Evidence: all 117 runtime-client, session CLI and Control HTTP tests pass,
+  including 24 new cases. Independent review passed 28 cases and checked the
+  immediate first read, 100 ms polling, inclusive 30-second/15-minute deadlines,
+  late-returning reads, nullish-only result fallback and stored/empty errors.
+  Authentication and enqueue order are unchanged. Timeout neither cancels nor
+  re-enqueues durable work. Typecheck and import law pass.
+- State: reviewed and committed locally with this cycle. No query, claim, lease,
+  session/reset policy, schema or migration changed.
+
+## Combined verification after cycles 18–22
+
+The frozen source passes all 3,053 tests across 334 files with no failures or skips:
+`.temp/desloppify-cycles18-22-unit-results.json`. The TypeScript build, import law,
+shim and prompt checks pass. All 19 compiled package imports and shared `Thread`
+identity pass, and all 113 local plan links resolve. Prompt metadata changed only
+for the subagent-context source; model-visible content and tool surfaces match.
+
+The model/bash smoke passed all five assertions against disposable local Postgres:
+`.temp/runtime-smoke/desloppify-cycles18-22-20260905/summary.json`. Its temporary
+server was stopped afterward. Production received no writes, deployments,
+migrations, restarts or message replays.
+
+These five cycles remove 68 production lines, taking the cleanup total to 4,888,
+including the previously recorded 75 lines relocated into tests. Bash, subagent
+context, audio and TUI commits are `ee4c76f3`, `29b17c94`, `862832e4` and `998c2155`;
+request polling and this combined record are committed with cycle 22. Unrelated
+work and `output/` are excluded and preserved.
+
+Further read-only recon identified two next areas:
+
+1. `src/domain/threads/runtime/tool-job-service.ts` repeats starting-job removal
+   and startup-settlement notification in five exits. A single `finally` may own
+   that cleanup, but must preserve registration before awaits, immediate rejection
+   observation, awaited late cancellation and aggregate-error ordering. Verify
+   reservation rejection and combined start/settlement failures before accepting.
+2. `src/integrations/control/http-server.ts` has an unreachable second connector
+   GET handler plus eight private route matchers duplicated by existing helpers.
+   Recon matched 960 old/new path cases. Preserve matcher evaluation positions,
+   malformed-escape behavior, authorization and the first handler's complete DTO.
+
+Neither follow-up was implemented in this batch. Other examined runtime parsers,
+row/claim helpers and Control UI transports retain meaningful differences or live
+callers; no further deletion was justified there.
