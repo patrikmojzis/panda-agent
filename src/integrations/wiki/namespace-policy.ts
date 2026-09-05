@@ -1,11 +1,9 @@
 import {ToolError} from "../../kernel/agent/exceptions.js";
-import {trimToUndefined} from "../../lib/strings.js";
 import {commandScopeDenied} from "../../domain/commands/errors.js";
-import {
-  DEFAULT_WIKI_LOCALE,
-  type WikiPageListItem,
-  type WikiPageSearchResult,
-} from "./client.js";
+import type {
+  WikiPageListItem,
+  WikiPageSearchResult,
+} from "./types.js";
 import {
   buildWikiArchiveRoot,
   hasUnsafeWikiPathSegments,
@@ -59,13 +57,6 @@ export function resolveWikiInputPath(
   }
 
   return {inputPath, resolvedPath};
-}
-
-/**
- * Normalizes optional operation locale while preserving the Wiki.js default.
- */
-export function normalizeWikiInputLocale(value: string | undefined): string {
-  return trimToUndefined(value) ?? DEFAULT_WIKI_LOCALE;
 }
 
 /**

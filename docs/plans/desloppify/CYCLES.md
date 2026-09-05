@@ -1100,3 +1100,21 @@ acceptance. None of these candidates is implemented in this batch.
 - State: independently reviewed and committed locally with this cycle. Typecheck,
   import law and diff checks pass. No package entrypoint expansion, migration,
   production access, push or deployment.
+
+## Cycle 44 — Reuse the Wiki locale normalizer
+
+- Finding: Wiki commands and the Wiki client duplicated the same optional-locale
+  normalization and default value.
+- Change: use the existing `normalizeWikiLocale` at all ten command-service call
+  sites and remove `normalizeWikiInputLocale`. Namespace policy now imports its
+  two remaining types directly from `types.ts`.
+- Result: nine fewer production lines; cumulative reduction 5,137, including the
+  75 lines previously relocated into tests. No test scaffolding added.
+- Evidence: 78 Wiki tests pass; independent review passed 52 focused tests and
+  16 old/new locale cases. Whole-file reconstruction proves that call positions,
+  arguments and the two explicit defaults are unchanged. The helper bodies are
+  identical after renaming and resolve the same constant. Path normalization and
+  namespace authority remain separate and unchanged.
+- State: independently reviewed and committed locally with this cycle. Typecheck,
+  import law and diff checks pass. No supported export or request-contract change,
+  production access, push or deployment. Binary decoding is committed as `4e389844`.

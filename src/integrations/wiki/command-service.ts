@@ -31,6 +31,7 @@ import {
   type WikiPage,
   WikiJsClient,
 } from "./client.js";
+import {normalizeWikiLocale} from "./client-input.js";
 import {
   buildWikiImageAssetFilename,
   inferViewableWikiAssetMimeType,
@@ -55,7 +56,6 @@ import {
   filterWikiSearchResultsToScope,
   normalizeWikiAssetSlot,
   normalizeWikiImageText,
-  normalizeWikiInputLocale,
   normalizeWikiListLimit,
   normalizeWikiSectionTitle,
   resolveWikiInputPath,
@@ -231,7 +231,7 @@ export class WikiRuntimeCommandService implements WikiCommandService {
   async readPage(agentKey: string, input: WikiReadCommandInput): Promise<JsonObject> {
     const {client, namespacePath} = await this.resolveClient(agentKey);
     const {inputPath, resolvedPath: path} = resolveWikiInputPath(input.path, namespacePath, "page");
-    const locale = normalizeWikiInputLocale(input.locale);
+    const locale = normalizeWikiLocale(input.locale);
     const page = await client.getPageByPath(path, locale);
     if (!page) {
       return {
@@ -257,7 +257,7 @@ export class WikiRuntimeCommandService implements WikiCommandService {
 
   async searchPages(agentKey: string, input: WikiSearchCommandInput): Promise<JsonObject> {
     const {client, namespacePath} = await this.resolveClient(agentKey);
-    const locale = normalizeWikiInputLocale(input.locale);
+    const locale = normalizeWikiLocale(input.locale);
     const resolution = input.path
       ? resolveWikiInputPath(input.path, namespacePath, "page")
       : undefined;
@@ -288,7 +288,7 @@ export class WikiRuntimeCommandService implements WikiCommandService {
 
   async listPages(agentKey: string, input: WikiListCommandInput): Promise<JsonObject> {
     const {client, namespacePath} = await this.resolveClient(agentKey);
-    const locale = normalizeWikiInputLocale(input.locale ?? DEFAULT_WIKI_LOCALE);
+    const locale = normalizeWikiLocale(input.locale ?? DEFAULT_WIKI_LOCALE);
     const resolution = input.path
       ? resolveWikiInputPath(input.path, namespacePath, "page")
       : undefined;
@@ -328,7 +328,7 @@ export class WikiRuntimeCommandService implements WikiCommandService {
 
   async diffPages(agentKey: string, input: WikiDiffCommandInput): Promise<JsonObject> {
     const {client, namespacePath} = await this.resolveClient(agentKey);
-    const locale = normalizeWikiInputLocale(input.locale ?? DEFAULT_WIKI_LOCALE);
+    const locale = normalizeWikiLocale(input.locale ?? DEFAULT_WIKI_LOCALE);
     const left = resolveWikiInputPath(input.leftPath, namespacePath, "page");
     const right = resolveWikiInputPath(input.rightPath, namespacePath, "page");
     const leftPath = left.resolvedPath;
@@ -371,7 +371,7 @@ export class WikiRuntimeCommandService implements WikiCommandService {
   async writePage(agentKey: string, input: WikiWriteCommandInput): Promise<JsonObject> {
     const {client, namespacePath} = await this.resolveClient(agentKey);
     const {inputPath, resolvedPath: path} = resolveWikiInputPath(input.path, namespacePath, "page");
-    const locale = normalizeWikiInputLocale(input.locale);
+    const locale = normalizeWikiLocale(input.locale);
     const existing = await client.getPageByPath(path, locale);
     const result = await writeWikiPage({
       client,
@@ -403,7 +403,7 @@ export class WikiRuntimeCommandService implements WikiCommandService {
   async writeSection(agentKey: string, input: WikiWriteSectionCommandInput): Promise<JsonObject> {
     const {client, namespacePath} = await this.resolveClient(agentKey);
     const {inputPath, resolvedPath: path} = resolveWikiInputPath(input.path, namespacePath, "page");
-    const locale = normalizeWikiInputLocale(input.locale);
+    const locale = normalizeWikiLocale(input.locale);
     const existing = await client.getPageByPath(path, locale);
     const createIfMissing = input.createIfMissing ?? true;
     const sectionTitle = normalizeWikiSectionTitle(input.section);
@@ -459,7 +459,7 @@ export class WikiRuntimeCommandService implements WikiCommandService {
     const destination = resolveWikiInputPath(input.destinationPath, namespacePath, "page");
     const path = source.resolvedPath;
     const destinationPath = destination.resolvedPath;
-    const locale = normalizeWikiInputLocale(input.locale);
+    const locale = normalizeWikiLocale(input.locale);
     const existing = await client.getPageByPath(path, locale);
     if (!existing) {
       throw new ToolError(`Wiki page ${locale}/${path} does not exist.`);
@@ -505,7 +505,7 @@ export class WikiRuntimeCommandService implements WikiCommandService {
   async archivePage(agentKey: string, input: WikiArchiveCommandInput): Promise<JsonObject> {
     const {client, namespacePath} = await this.resolveClient(agentKey);
     const {inputPath, resolvedPath: path} = resolveWikiInputPath(input.path, namespacePath, "page");
-    const locale = normalizeWikiInputLocale(input.locale);
+    const locale = normalizeWikiLocale(input.locale);
     const existing = await client.getPageByPath(path, locale);
     if (!existing) {
       throw new ToolError(`Wiki page ${locale}/${path} does not exist.`);
@@ -547,7 +547,7 @@ export class WikiRuntimeCommandService implements WikiCommandService {
       throw new ToolError(`Wiki page ${path} is not archived. Use wiki.move for live page moves.`);
     }
 
-    const locale = normalizeWikiInputLocale(input.locale);
+    const locale = normalizeWikiLocale(input.locale);
     const existing = await client.getPageByPath(path, locale);
     if (!existing) {
       throw new ToolError(`Wiki page ${locale}/${path} does not exist.`);
@@ -596,7 +596,7 @@ export class WikiRuntimeCommandService implements WikiCommandService {
       throw new ToolError(`Wiki page ${path} is archived. Do not attach images to archive history.`);
     }
 
-    const locale = normalizeWikiInputLocale(input.locale);
+    const locale = normalizeWikiLocale(input.locale);
     const createIfMissing = input.createIfMissing ?? true;
     const sectionTitle = normalizeWikiSectionTitle(input.section);
     const slot = normalizeWikiAssetSlot(input.slot);
