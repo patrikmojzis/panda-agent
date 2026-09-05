@@ -875,3 +875,57 @@ this pass retain meaningful policy and were left intact.
   pipeline, checkpoint and tool order remains; interruption options, cancellation
   reasons, progress, early iterator closure and thinking restoration are covered.
   Provider retries, public APIs and persisted transcript formats are unchanged.
+
+## Cycle 37 — Remove unused migration-constant reexports
+
+- Finding: the schema verifier module reexported 16 migration constants with no
+  consumers. Executable migrations already import their concrete summary files;
+  runtime callers use the verifier or complete manifest.
+- Change: remove those reexports and their trailing blank line. Keep the imports,
+  manifest, baseline metadata and verifier implementation.
+- Result: 17 fewer production lines; no test scaffolding added.
+- Evidence: independent caller/export review found no supported package exposure.
+  All remaining source is byte-identical. The complete 25-entry, 4,774-byte
+  manifest matches, as do seven old/new verifier cases covering current, pending,
+  missing, unknown, nonprefix and checksum-invalid ledgers. All 21 focused
+  checksum/migration/boundary/package tests pass; root also ran the 15 primary
+  migration/checksum tests. Executable migration bundle checksums remain pinned.
+- State: reviewed and committed locally with this cycle. No schema, migration,
+  SQL, startup verification or supported public contract changes.
+
+## Combined verification after cycles 36–37
+
+All 3,140 tests across 335 files pass without failures or skips:
+`.temp/desloppify-cycles36-37-unit-results.json`. TypeScript build, import law,
+prompt/shim contracts, 19 compiled package imports and shared `Thread` identity
+pass. Generated contracts are unchanged.
+
+Automatic approval review rejected the additional external-model smoke because
+its outgoing runtime context/credential payload lacked sufficiently specific
+authorization. That command did not run. A safer deterministic fixture instead
+used the real migration catalog, Postgres stores, lease and runtime coordinator
+with a fixed in-process echo tool and injected model responses. It discarded
+inherited environment values and blocked fetch plus all sockets except the exact
+loopback test database. All 25 migrations applied; two synthetic model responses
+and one tool call produced a completed owned run, an applied input, four persisted
+messages and idle state, with zero external requests. Evidence:
+`.temp/desloppify-cycles36-37-offline-smoke-output.log`.
+
+The fixture initially rejected PostgreSQL's address rendering (`127.0.0.1/32`)
+before migrations; its query now uses `host(inet_server_addr())`. The corrected
+fixture passed, and the isolated server was stopped afterward. This validates
+the runtime/persistence path; it does not validate external providers or Bash.
+No production operations or external-model calls occurred in this verification.
+
+These two cycles remove 40 production lines, bringing the cleanup total to
+5,165, including 75 lines previously relocated into tests. Kernel finalization is
+committed as `11c7590d`; the export cleanup and this record are committed with
+cycle 37. Unrelated commits and `output/` remain excluded and preserved.
+
+The next material issue is documented in the pending
+[browser cancellation plan](./2026-09-05-browser-cancellation.md). Recon established
+missing client/service cancellation, incorrect HTTP disconnect observation,
+dirty teardown blocked by storage persistence, and ownership risks in late
+startup/fallback/write completion. Independent plan review added explicit
+artifact/storage publication rules so old writes cannot overwrite replacement
+state. No browser cancellation implementation is included in this batch.

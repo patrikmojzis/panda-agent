@@ -8,28 +8,32 @@ authoritative; this folder records decisions and work in progress.
 - [First pass: architecture, full discussion and production alignment](./2026-09-04-codebase-deslopification.md)
 - [Current pass: verified deletions and simpler implementation](./2026-09-05-simplification-pass.md)
 - [Active inspect, simplify, review and commit loop](./CYCLES.md)
+- [Pending browser cancellation and ownership repair](./2026-09-05-browser-cancellation.md)
 
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–35; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–37; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,125 production lines**, including
+Together, these cleanup commits remove **5,165 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
-The latest four cycles remove 19 production lines net: copied object/string
-validators, the browser client singleton, and an MCP cancellation repair. Default
-browser tools now retain their own configuration. MCP commands observe caller
-cancellation, preserve first-abort attribution and still clean up sessions and
-processes. Queued OAuth cancellation still waits for the preceding operation.
+The latest two cycles remove 40 production lines: the normal and streaming kernel
+paths now share assistant-turn finalization, and unused migration reexports are
+gone. Checkpoint/cancellation behavior, transcripts, public APIs and migration
+checksums remain intact. The earlier MCP cancellation fix is also committed;
+queued OAuth cancellation still waits for the preceding operation.
 
-The frozen combined source passes **3,120 tests across 335 files**, the TypeScript
+The frozen combined source passes **3,140 tests across 335 files**, the TypeScript
 build, import law, prompt/shim contracts, all 19 compiled package imports and a
-model/bash smoke against disposable local Postgres. The test database was stopped
-afterward. Earlier verification records are historical and do not certify later
-edits. The inspect/review/commit loop remains active; the next recon candidates
-are recorded after cycle 35.
+deterministic runtime smoke against disposable local Postgres with external
+networking disabled. Automatic approval review declined the external-model smoke;
+the local replacement validates migration, claiming, tool execution, transcript
+persistence and idle state, but does not exercise an external provider or Bash.
+The test database was stopped afterward. Earlier verification records are
+historical and do not certify later edits. The inspect/review/commit loop remains
+active; browser cancellation is the next planned repair.
 
 Concurrent credential-name, image-generation and background-job work belongs to
 separate tasks. Preserve those changes and untracked `output/`; they are excluded
