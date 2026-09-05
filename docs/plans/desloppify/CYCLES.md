@@ -382,6 +382,48 @@ input/error differences; this pass did not justify a generic replacement.
 - State: reviewed and committed locally with this cycle; not pushed or deployed.
   The only intended behavior change is reliable feedback for malformed responses.
 
+## Cycle 17 — Keep daemon worker startup in one ordered loop
+
+- Finding: seven workers repeated the same awaited start, shutdown check and
+  bounded cleanup for a worker whose start completed late. They already share
+  the existing `StartStopService` contract.
+- Change: replace those blocks with a local ordered tuple loop. Preserve A2A,
+  email outbound, email sync, scheduled task, scheduled command, watch and
+  heartbeat order, exact late-stop diagnostics and the existing parallel shutdown.
+- Result: 46 fewer production lines; 80 test lines added.
+- Evidence: all 41 lifecycle/options/request-drain tests pass, including 14 new
+  cases covering each worker before/after bounded cleanup. They protect active
+  resource cleanup, startup prefixes, request admission and lease/runtime release.
+  Root independently compared all seven keys/order/labels; all source outside
+  the replaced startup block is byte-identical. Typecheck and import law pass.
+- State: reviewed and committed locally with this cycle; not pushed or deployed.
+  No worker, pool, timer or durable-work policy was added.
+
+## Combined verification after cycles 14–17
+
+The frozen combined tree passes all 3,021 tests across 334 files with no failed
+or skipped tests. Local report: `.temp/desloppify-cycles14-17-unit-results.json`.
+The full run includes the verified Sonner ESM mock; its subsequent package-entry
+experiment was reverted, and the 14 form tests passed again after restoration.
+Root build, import law, shim and prompt contracts pass. Control typecheck/build
+passed as recorded above. The model/bash smoke passed against disposable local
+Postgres with all five assertions satisfied; report:
+`.temp/runtime-smoke/desloppify-cycles14-17-20260905/summary.json`. The temporary
+database server was stopped after verification.
+
+The four cycles remove 243 production lines, taking the cleanup total to 4,820
+including the previously recorded 75 lines relocated into tests. Audio, Panda
+helper and UI commits are `544ad3ad`, `299c56be` and `2cb35981`; daemon startup and
+this combined record are committed with cycle 17. Unrelated work and `output/`
+remain untouched. Nothing was pushed, deployed, restarted or migrated in production.
+
+Remaining recon candidates include unused Bash secret-candidate metadata, the
+subagent-context projection, and repeated persisted-request polling. The polling
+callers have different failure-ID diagnostics that need preserving. Whisper's
+private runner also retains unused progress/caller-signal hooks; cancellation
+behavior needs an explicit decision before touching those. No such follow-up
+change is included in these cycles.
+
 ## Combined verification after cycles 1–5
 
 The final combined source passed the TypeScript build, all three package-export

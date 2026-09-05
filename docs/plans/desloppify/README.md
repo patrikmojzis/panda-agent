@@ -42,7 +42,12 @@ channel-history text handling and redundant transcript projection/segment code.
 The cleanup total is 4,577 fewer production lines, including the 75 relocated
 into tests. Independent reviews, focused tests, current build/contracts and a
 fresh disposable-Postgres model/bash smoke passed. The cycle log is the current
-progress record; the inspect/review/commit loop remains active.
+progress record. Cycles 14–17 remove another 243 production lines by sharing
+Whisper execution, deleting unused Panda helpers, removing foreign UI error
+parsing and simplifying worker startup. The total is now 4,820 fewer production
+lines, including those 75 moved into tests. All 3,021 tests across 334 files,
+current builds/contracts and a fresh model/bash smoke pass. The
+inspect/review/commit loop remains active.
 
 Production access remains strictly read-only. No deployment, migration, restart,
 message replay or historical-data cleanup is part of this work. The production

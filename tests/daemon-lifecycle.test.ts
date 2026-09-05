@@ -499,6 +499,86 @@ describe("createDaemonLifecycle", () => {
     }
   });
 
+  const workerKeys = [
+    "a2aOutboundWorker",
+    "emailOutboundWorker",
+    "emailSyncRunner",
+    "scheduledTaskRunner",
+    "scheduledCommandRunner",
+    "watchRunner",
+    "sessionHeartbeatRunner",
+  ] as const;
+
+  it.each(workerKeys.flatMap((workerKey) => [
+    {workerKey, phase: "before cleanup", finishAfterCleanup: false},
+    {workerKey, phase: "after cleanup", finishAfterCleanup: true},
+  ]))("fences $workerKey when startup settles $phase", async ({workerKey, finishAfterCleanup}) => {
+    vi.stubEnv("PANDA_APPS_PORT", "0");
+    vi.stubEnv("PANDA_CORE_HEALTH_PORT", "");
+    vi.stubEnv("PANDA_CONTROL_ENABLED", "false");
+    vi.stubEnv("PANDA_COMMAND_SERVER_ENABLED", "false");
+    vi.stubEnv("PANDA_COMMAND_SERVER_SOCKET_PATH", "");
+    vi.stubEnv("PANDA_DAEMON_SERVICE_STOP_TIMEOUT_MS", finishAfterCleanup ? "20" : "1000");
+    const workerStartEntered = deferred();
+    const finishWorkerStart = deferred();
+    const activeWorkers = new Set<string>();
+    const startedWorkers: string[] = [];
+    const context = createDaemonLifecycleContext();
+    for (const key of workerKeys) {
+      context[key] = {
+        start: async () => {
+          startedWorkers.push(key);
+          if (key === workerKey) {
+            workerStartEntered.resolve();
+            await finishWorkerStart.promise;
+          }
+          activeWorkers.add(key);
+        },
+        stop: vi.fn(async () => {
+          activeWorkers.delete(key);
+        }),
+      };
+    }
+    const lifecycle = createDaemonLifecycle({
+      context,
+      processRequest: vi.fn(async () => undefined),
+    });
+    const runPromise = lifecycle.run();
+
+    try {
+      await Promise.race([workerStartEntered.promise, runPromise]);
+      const stopPromise = lifecycle.stop();
+      if (finishAfterCleanup) {
+        await stopPromise;
+        expect(context.runtime.close).toHaveBeenCalledOnce();
+        expect(context.connectorLeases.release).toHaveBeenCalledOnce();
+      } else {
+        expect(context[workerKey].stop).not.toHaveBeenCalled();
+        expect(context.runtime.close).not.toHaveBeenCalled();
+        expect(context.connectorLeases.release).not.toHaveBeenCalled();
+      }
+      finishWorkerStart.resolve();
+      await stopPromise;
+      await runPromise;
+      await waitFor(() => {
+        expect(context[workerKey].stop).toHaveBeenCalledTimes(finishAfterCleanup ? 2 : 1);
+        expect(activeWorkers.size).toBe(0);
+      });
+      expect(startedWorkers).toEqual(workerKeys.slice(0, workerKeys.indexOf(workerKey) + 1));
+      expect(context.requests.claimNextPendingRequest).not.toHaveBeenCalled();
+      expect(context.runtime.close).toHaveBeenCalledOnce();
+      expect(context.connectorLeases.release).toHaveBeenCalledOnce();
+    } finally {
+      finishWorkerStart.resolve();
+      try {
+        await lifecycle.stop();
+        await runPromise;
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    }
+  });
+
   it("stops receipt-producing runners concurrently with their coordinator", async () => {
     const previousAppsPort = process.env.PANDA_APPS_PORT;
     const previousHealthPort = process.env.PANDA_CORE_HEALTH_PORT;

@@ -720,69 +720,23 @@ export function createDaemonLifecycle(input: {
           if (stopped) {
             return;
           }
-          await input.context.a2aOutboundWorker.start();
-          if (stopped) {
-            if (cleanupStarted) {
-              await stopServiceWithinDeadline(
-                "late-started a2a outbound worker",
-                () => input.context.a2aOutboundWorker.stop(),
-              );
+          const workers: readonly [string, StartStopService][] = [
+            ["a2a outbound worker", input.context.a2aOutboundWorker],
+            ["email outbound worker", input.context.emailOutboundWorker],
+            ["email sync runner", input.context.emailSyncRunner],
+            ["scheduled task runner", input.context.scheduledTaskRunner],
+            ["scheduled command runner", input.context.scheduledCommandRunner],
+            ["watch runner", input.context.watchRunner],
+            ["session heartbeat runner", input.context.sessionHeartbeatRunner],
+          ];
+          for (const [label, worker] of workers) {
+            await worker.start();
+            if (stopped) {
+              if (cleanupStarted) {
+                await stopServiceWithinDeadline(`late-started ${label}`, () => worker.stop());
+              }
+              return;
             }
-            return;
-          }
-          await input.context.emailOutboundWorker.start();
-          if (stopped) {
-            if (cleanupStarted) {
-              await stopServiceWithinDeadline(
-                "late-started email outbound worker",
-                () => input.context.emailOutboundWorker.stop(),
-              );
-            }
-            return;
-          }
-          await input.context.emailSyncRunner.start();
-          if (stopped) {
-            if (cleanupStarted) {
-              await stopServiceWithinDeadline("late-started email sync runner", () => input.context.emailSyncRunner.stop());
-            }
-            return;
-          }
-          await input.context.scheduledTaskRunner.start();
-          if (stopped) {
-            if (cleanupStarted) {
-              await stopServiceWithinDeadline(
-                "late-started scheduled task runner",
-                () => input.context.scheduledTaskRunner.stop(),
-              );
-            }
-            return;
-          }
-          await input.context.scheduledCommandRunner.start();
-          if (stopped) {
-            if (cleanupStarted) {
-              await stopServiceWithinDeadline(
-                "late-started scheduled command runner",
-                () => input.context.scheduledCommandRunner.stop(),
-              );
-            }
-            return;
-          }
-          await input.context.watchRunner.start();
-          if (stopped) {
-            if (cleanupStarted) {
-              await stopServiceWithinDeadline("late-started watch runner", () => input.context.watchRunner.stop());
-            }
-            return;
-          }
-          await input.context.sessionHeartbeatRunner.start();
-          if (stopped) {
-            if (cleanupStarted) {
-              await stopServiceWithinDeadline(
-                "late-started session heartbeat runner",
-                () => input.context.sessionHeartbeatRunner.stop(),
-              );
-            }
-            return;
           }
           running = true;
           requestDrain.start();
