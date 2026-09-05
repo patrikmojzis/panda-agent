@@ -68,10 +68,11 @@ export async function buildBrowserScreenshotArtifactPayload(params: {
   bytes: Buffer | Uint8Array;
   labels: boolean;
   labeledSnapshot?: BrowserArtifactSnapshot | null;
+  writeArtifact?: (filePath: string, bytes: Buffer) => Promise<void>;
 }): Promise<ToolResultPayload> {
   const buffer = normalizeArtifactBytes(params.bytes);
   const filePath = path.join(params.session.artifactDir, `${Date.now()}-${randomUUID()}.png`);
-  await writeFile(filePath, buffer);
+  await (params.writeArtifact ?? writeFile)(filePath, buffer);
   const title = await readPageTitle(params.page);
   const url = params.page.url();
   const textLines = [
@@ -125,10 +126,11 @@ export async function buildBrowserPdfArtifactPayload(params: {
   session: BrowserArtifactSession;
   page: Page;
   bytes: Buffer | Uint8Array;
+  writeArtifact?: (filePath: string, bytes: Buffer) => Promise<void>;
 }): Promise<ToolResultPayload> {
   const buffer = normalizeArtifactBytes(params.bytes);
   const filePath = path.join(params.session.artifactDir, `${Date.now()}-${randomUUID()}.pdf`);
-  await writeFile(filePath, buffer);
+  await (params.writeArtifact ?? writeFile)(filePath, buffer);
   const title = await readPageTitle(params.page);
   const url = params.page.url();
   return {

@@ -303,6 +303,11 @@ export async function startBrowserRunner(options: BrowserRunnerOptions): Promise
   const service = new BrowserSessionService(options);
 
   const server = createServer(async (request, response) => {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    const abortOnResponseClose = () => {
+      if (!response.writableFinished) abort();
+    };
     try {
       if (!request.url) {
         response.statusCode = 404;
@@ -326,6 +331,9 @@ export async function startBrowserRunner(options: BrowserRunnerOptions): Promise
       }
 
       requireAuthorization(request, sharedSecret);
+      request.once("aborted", abort);
+      response.once("close", abortOnResponseClose);
+      if (request.aborted || (response.destroyed && !response.writableFinished)) abort();
       const body = await readJsonBody(request);
       const parsed = validateActionRequest(body, options.env ?? process.env);
       const requestId = randomUUID();
@@ -335,9 +343,6 @@ export async function startBrowserRunner(options: BrowserRunnerOptions): Promise
         requestId,
         ...actionLogFields,
       });
-      const controller = new AbortController();
-      request.on("close", () => controller.abort());
-
       try {
         const payload = await service.handle(parsed.action, new RunContext({
           agent: runnerAgent,
@@ -391,6 +396,9 @@ export async function startBrowserRunner(options: BrowserRunnerOptions): Promise
         ok: false,
         error: message,
       } satisfies BrowserRunnerActionResponse);
+    } finally {
+      request.off("aborted", abort);
+      response.off("close", abortOnResponseClose);
     }
   });
 

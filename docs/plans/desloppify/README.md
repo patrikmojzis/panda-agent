@@ -8,32 +8,35 @@ authoritative; this folder records decisions and work in progress.
 - [First pass: architecture, full discussion and production alignment](./2026-09-04-codebase-deslopification.md)
 - [Current pass: verified deletions and simpler implementation](./2026-09-05-simplification-pass.md)
 - [Active inspect, simplify, review and commit loop](./CYCLES.md)
-- [Pending browser cancellation and ownership repair](./2026-09-05-browser-cancellation.md)
+- [Browser cancellation and ownership repair](./2026-09-05-browser-cancellation.md)
 
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–37; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–38; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,165 production lines**, including
+Together, these cleanup commits remove **4,899 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
-The latest two cycles remove 40 production lines: the normal and streaming kernel
-paths now share assistant-turn finalization, and unused migration reexports are
-gone. Checkpoint/cancellation behavior, transcripts, public APIs and migration
-checksums remain intact. The earlier MCP cancellation fix is also committed;
-queued OAuth cancellation still waits for the preceding operation.
+The latest cycle repairs browser cancellation across the public tool, HTTP runner
+and session service. Per-scope admission, exact resource ownership and staged
+artifact/storage publication prevent canceled operations from affecting their
+replacement. This correctness repair adds 266 production lines and 1,026 test
+lines; it is not a line-count reduction. The earlier kernel finalization,
+migration export and MCP cancellation changes remain committed.
 
-The frozen combined source passes **3,140 tests across 335 files**, the TypeScript
+The frozen combined source passes **3,179 tests across 338 files**, the TypeScript
 build, import law, prompt/shim contracts, all 19 compiled package imports and a
 deterministic runtime smoke against disposable local Postgres with external
-networking disabled. Automatic approval review declined the external-model smoke;
-the local replacement validates migration, claiming, tool execution, transcript
-persistence and idle state, but does not exercise an external provider or Bash.
-The test database was stopped afterward. Earlier verification records are
-historical and do not certify later edits. The inspect/review/commit loop remains
-active; browser cancellation is the next planned repair.
+networking disabled. Browser coverage includes 39 new cases and an actual
+loopback HTTP cancellation from the public tool through fake Chromium teardown.
+Real Chromium closure timing is not validated. Automatic approval review had
+declined the external-model smoke; the local replacement validates migration,
+claiming, tool execution, transcript persistence and idle state, but does not
+exercise an external provider or Bash. The test database was stopped afterward.
+Earlier verification records are historical and do not certify later edits.
+The inspect/review/commit loop remains active.
 
 Concurrent credential-name, image-generation and background-job work belongs to
 separate tasks. Preserve those changes and untracked `output/`; they are excluded

@@ -1,4 +1,5 @@
-import {mkdir, rm} from "node:fs/promises";
+import {randomUUID} from "node:crypto";
+import {mkdir, rename, rm, writeFile} from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -14,7 +15,7 @@ import {resolveDataDir} from "../../lib/data-dir.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import type {ToolResultPayload} from "../../kernel/agent/types.js";
-import {sleep} from "../../lib/async.js";
+import {sleepWithSignal} from "../../lib/async.js";
 import {pathExists} from "../../lib/fs.js";
 import {normalizePathLabel} from "../../lib/path-segments.js";
 import type {JsonObject} from "../../lib/json.js";
@@ -90,6 +91,18 @@ interface BrowserSessionRecord {
   lastUsedAtMs: number;
   disconnected: boolean;
   previewOriginGrant?: BrowserPreviewOriginGrant;
+  operation: BrowserOperation;
+}
+
+interface BrowserOperation {
+  signal: AbortSignal;
+  error?: ToolError;
+  browser?: Browser;
+  context?: BrowserContext;
+  session?: BrowserSessionRecord;
+  publication: Promise<void>;
+  artifacts: Set<string>;
+  check(): void;
 }
 
 type BrowserElementAction =
@@ -446,7 +459,9 @@ export class BrowserSessionService {
   private readonly reaperIntervalMs: number;
   private readonly allowPrivateHostnames: readonly string[];
   private readonly sessions = new Map<string, BrowserSessionRecord>();
-  private readonly invalidatedScopeVersions = new Map<string, number>();
+  private readonly admission = new Map<string, Promise<void>>();
+  private readonly closingBrowsers = new WeakSet<Browser>();
+  private readonly closingContexts = new WeakSet<BrowserContext>();
   private reaper: NodeJS.Timeout | null = null;
   private startPromise: Promise<void> | null = null;
   private started = false;
@@ -504,13 +519,18 @@ export class BrowserSessionService {
 
   private emitProgress<TContext extends BrowserRuntimeContext>(
     run: RunContext<TContext>,
+    operation: BrowserOperation,
     status: BrowserProgressStatus,
     extra: JsonObject = {},
   ): void {
+    if (operation.error) {
+      return;
+    }
     run.emitToolProgress({
       status,
       ...extra,
     });
+    operation.check();
   }
 
   private async ensureSafeBrowserTarget(
@@ -543,54 +563,114 @@ export class BrowserSessionService {
     return Math.max(1, Math.floor(actionTimeout ?? this.actionTimeoutMs));
   }
 
-  private readScopeVersion(scopeKey: string): number {
-    return this.invalidatedScopeVersions.get(scopeKey) ?? 0;
+  private reserveScope(scopeKey: string): {ready: Promise<void>; release(): void} {
+    const ready = this.admission.get(scopeKey) ?? Promise.resolve();
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => { release = resolve; });
+    const tail = ready.then(() => released);
+    this.admission.set(scopeKey, tail);
+    void tail.then(() => {
+      if (this.admission.get(scopeKey) === tail) {
+        this.admission.delete(scopeKey);
+      }
+    });
+    return {ready, release};
   }
 
-  private invalidateScope(scopeKey: string): void {
-    this.invalidatedScopeVersions.set(scopeKey, this.readScopeVersion(scopeKey) + 1);
-  }
-
-  private isScopeInvalidated(scopeKey: string, version: number): boolean {
-    return this.readScopeVersion(scopeKey) !== version;
+  private discardResources(operation: BrowserOperation): void {
+    const {session, context, browser} = operation;
+    if (session && this.sessions.get(session.scopeKey) === session) {
+      this.sessions.delete(session.scopeKey);
+    }
+    // Browser closure must not wait for storageState or graceful context closure.
+    if (browser && !this.closingBrowsers.has(browser)) {
+      this.closingBrowsers.add(browser);
+      void browser.close().catch(() => undefined);
+    }
+    if (context && !this.closingContexts.has(context)) {
+      this.closingContexts.add(context);
+      void context.close().catch(() => undefined);
+    }
   }
 
   private async runWithActionTimeout<T>(
     action: BrowserAction,
     scopeKey: string,
     timeoutMs: number,
-    operation: (scopeVersion: number) => Promise<T>,
+    signal: AbortSignal | undefined,
+    execute: (operation: BrowserOperation) => Promise<T>,
   ): Promise<T> {
-    const scopeVersion = this.readScopeVersion(scopeKey);
-    const actionPromise = operation(scopeVersion);
+    const controller = new AbortController();
+    const operation: BrowserOperation = {
+      signal: controller.signal,
+      publication: Promise.resolve(),
+      artifacts: new Set(),
+      check: () => {
+        if (operation.error) {
+          this.discardResources(operation);
+          throw operation.error;
+        }
+      },
+    };
+    let rejectCancelled!: (error: ToolError) => void;
+    const cancelled = new Promise<never>((_, reject) => { rejectCancelled = reject; });
+    const stop = (error: ToolError) => {
+      if (operation.error) return;
+      operation.error = error;
+      this.discardResources(operation);
+      controller.abort(error);
+      rejectCancelled(error);
+    };
+    const onAbort = () => stop(new ToolError("Browser action was cancelled.", {details: {cancelled: true}}));
+    signal?.addEventListener("abort", onAbort, {once: true});
+    if (signal?.aborted) onAbort();
+    const timer = setTimeout(() => stop(buildTimeoutError(`browser action ${action.action}`, timeoutMs, {
+      action: action.action,
+    })), timeoutMs);
+    timer.unref?.();
+    const admission = this.reserveScope(scopeKey);
     try {
-      return await withTimeout(actionPromise, timeoutMs, `browser action ${action.action}`, {
-        action: action.action,
-      });
+      await Promise.race([admission.ready, cancelled]);
+      operation.check();
+      const result = await Promise.race([execute(operation), cancelled]);
+      operation.check();
+      return result;
     } catch (error) {
       if (isTimeoutToolError(error)) {
-        this.invalidateScope(scopeKey);
-        // Remove the dirty session immediately; the async close may continue in
-        // the background, but future actions must not reuse a wedged page.
-        void this.closeSession(scopeKey).catch(() => undefined);
+        stop(error as ToolError);
       }
-      throw error;
+      throw operation.error ?? error;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      // An issued rename commits before the next owner enters. Cancellation
+      // returns promptly; only admission waits for that publication to settle.
+      void operation.publication.catch(() => undefined).then(async () => {
+        if (operation.error) {
+          await Promise.all([...operation.artifacts].map((file) => rm(file, {force: true}).catch(() => undefined)));
+        }
+      }).finally(admission.release);
     }
   }
 
   private async createBrowserContext(
     browser: Browser,
     deviceProfile: BrowserDeviceProfile,
+    operation: BrowserOperation,
     storageStatePath?: string,
   ): Promise<BrowserContext> {
-    if (!storageStatePath || !(await pathExists(storageStatePath))) {
+    const hasStorageState = storageStatePath && await pathExists(storageStatePath);
+    operation.check();
+    if (!hasStorageState) {
       return await browser.newContext(buildBrowserContextOptions(deviceProfile));
     }
 
     try {
       return await browser.newContext(buildBrowserContextOptions(deviceProfile, storageStatePath));
     } catch {
-      await rm(storageStatePath, {force: true}).catch(() => undefined);
+      operation.check();
+      await this.publish(operation, () => rm(storageStatePath, {force: true})).catch(() => undefined);
+      operation.check();
       return await browser.newContext(buildBrowserContextOptions(deviceProfile));
     }
   }
@@ -599,15 +679,19 @@ export class BrowserSessionService {
     context: BrowserContext,
     deviceProfile: BrowserDeviceProfile,
     timeoutMs: number,
+    operation: BrowserOperation,
   ): Promise<JsonObject> {
     return await withTimeout((async () => {
       const page = await context.newPage();
       try {
+        operation.check();
         await page.setContent(RUNTIME_DEVICE_PROBE_HTML, {
           waitUntil: "domcontentloaded",
           timeout: Math.min(timeoutMs, 10_000),
         });
+        operation.check();
         const raw = await page.evaluate(readRuntimeDeviceProbeInPage);
+        operation.check();
         return normalizeRuntimeDeviceProbe(deviceProfile, raw);
       } finally {
         await page.close().catch(() => undefined);
@@ -621,13 +705,14 @@ export class BrowserSessionService {
     context: BrowserContext,
     deviceProfile: BrowserDeviceProfile,
     timeoutMs: number,
+    operation: BrowserOperation,
   ): Promise<JsonObject | undefined> {
     if (!shouldAssertRuntimeDeviceProfile(deviceProfile)) {
       return undefined;
     }
 
     const expected = buildBrowserRuntimeDeviceExpectationForProfile(deviceProfile);
-    const actual = await this.probeRuntimeDeviceProfile(context, deviceProfile, timeoutMs);
+    const actual = await this.probeRuntimeDeviceProfile(context, deviceProfile, timeoutMs, operation);
     const mismatches = buildRuntimeDeviceMismatches(expected, actual);
     if (mismatches.length > 0) {
       throw new ToolError(`browser deviceProfile=${deviceProfile} did not apply expected runtime metrics.`, {
@@ -643,21 +728,52 @@ export class BrowserSessionService {
     return actual;
   }
 
+  private publish(operation: BrowserOperation, write: () => Promise<void>): Promise<void> {
+    operation.check();
+    const publication = write();
+    operation.publication = publication;
+    return publication;
+  }
+
+  private async writeArtifact(session: BrowserSessionRecord, filePath: string, bytes: Buffer): Promise<void> {
+    const operation = session.operation;
+    operation.check();
+    const stagedPath = `${filePath}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(stagedPath, bytes);
+      operation.check();
+      operation.artifacts.add(filePath);
+      await this.publish(operation, () => rename(stagedPath, filePath));
+      operation.check();
+    } finally {
+      await rm(stagedPath, {force: true}).catch(() => undefined);
+    }
+  }
+
   private async persistStorageState(session: BrowserSessionRecord | null | undefined): Promise<void> {
     if (!session?.storageStatePath || session.scope === "ephemeral") {
       return;
     }
+    const operation = session.operation;
+    operation.check();
     await mkdir(path.dirname(session.storageStatePath), {recursive: true});
-    await session.context.storageState({
-      path: session.storageStatePath,
-    }).catch(() => undefined);
+    operation.check();
+    const stagedPath = `${session.storageStatePath}.${randomUUID()}.tmp`;
+    try {
+      await session.context.storageState({path: stagedPath});
+      operation.check();
+      await this.publish(operation, () => rename(stagedPath, session.storageStatePath!));
+      operation.check();
+    } finally {
+      await rm(stagedPath, {force: true}).catch(() => undefined);
+    }
   }
 
   private async startSession<TContext extends BrowserRuntimeContext>(
     scope: BrowserResolvedSessionScope,
     run: RunContext<TContext>,
     _timeoutMs: number,
-    scopeVersion: number,
+    operation: BrowserOperation,
   ): Promise<BrowserSessionRecord> {
     const startedAtMs = this.now();
     const sessionRoot = path.join(
@@ -670,22 +786,35 @@ export class BrowserSessionService {
       ? path.join(sessionRoot, "storage-state.json")
       : undefined;
     await mkdir(artifactDir, {recursive: true});
+    operation.check();
 
     let browser: Browser | null = null;
     let context: BrowserContext | null = null;
     let session: BrowserSessionRecord | null = null;
     try {
       browser = await this.launchBrowserImpl(this.launchOptions);
-      context = await this.createBrowserContext(browser, scope.deviceProfile, storageStatePath);
-      const runtimeDevice = await this.assertRuntimeDeviceProfile(context, scope.deviceProfile, _timeoutMs);
+      operation.browser = browser;
+      operation.check();
+      context = await this.createBrowserContext(browser, scope.deviceProfile, operation, storageStatePath);
+      operation.context = context;
+      operation.check();
+      const runtimeDevice = await this.assertRuntimeDeviceProfile(context, scope.deviceProfile, _timeoutMs, operation);
+      operation.check();
+      const checkRoute = () => {
+        (session?.operation ?? operation).check();
+        if (session && (session.disconnected || this.sessions.get(scope.key) !== session)) {
+          throw new ToolError("Browser session is closed.");
+        }
+      };
       await context.route("**/*", async (route) => {
         const request = route.request();
         const requestUrl = trimToUndefined(request.url());
-        if (!requestUrl) {
-          await route.continue();
-          return;
-        }
         try {
+          checkRoute();
+          if (!requestUrl) {
+            await route.continue();
+            return;
+          }
           const url = new URL(requestUrl);
           if (!isBrowserNetworkProtocol(url.protocol)) {
             await route.continue();
@@ -695,11 +824,13 @@ export class BrowserSessionService {
             this.clearPreviewGrantIfLeavingOrigin(session, url);
           }
           await this.ensureSafeBrowserTarget(url, session?.previewOriginGrant, browserNetworkProtocols());
+          checkRoute();
           await route.continue();
         } catch {
           await route.abort("blockedbyclient");
         }
       });
+      operation.check();
       await context.routeWebSocket?.("**/*", async (ws) => {
         const requestUrl = trimToUndefined(ws.url());
         if (!requestUrl) {
@@ -707,18 +838,23 @@ export class BrowserSessionService {
           return;
         }
         try {
+          checkRoute();
           const url = new URL(requestUrl);
           if (!isWebSocketProtocol(url.protocol)) {
             await ws.close({code: 1008, reason: "Blocked by browser policy"}).catch(() => undefined);
             return;
           }
           await this.ensureSafeBrowserTarget(url, session?.previewOriginGrant, ["ws:", "wss:"]);
+          checkRoute();
           ws.connectToServer();
         } catch {
           await ws.close({code: 1008, reason: "Blocked by browser policy"}).catch(() => undefined);
         }
       });
+      operation.check();
       const page = await context.newPage();
+      if (operation.error) await page.close().catch(() => undefined);
+      operation.check();
 
       session = {
         scopeKey: scope.key,
@@ -734,7 +870,9 @@ export class BrowserSessionService {
         createdAtMs: startedAtMs,
         lastUsedAtMs: startedAtMs,
         disconnected: false,
+        operation,
       };
+      operation.session = session;
       const createdSession = session;
       context.on?.("page", (nextPage) => {
         void this.switchToPage(createdSession, nextPage).catch(() => undefined);
@@ -742,23 +880,18 @@ export class BrowserSessionService {
       browser.on?.("disconnected", () => {
         createdSession.disconnected = true;
       });
-      if (this.isScopeInvalidated(scope.key, scopeVersion)) {
-        throw buildTimeoutError("browser session startup", _timeoutMs, {
-          action: "start",
-          scope: scope.scope,
-        });
-      }
+      operation.check();
       this.sessions.set(scope.key, session);
       return session;
     } catch (error) {
-      await context?.close().catch(() => undefined);
-      await browser?.close().catch(() => undefined);
+      this.discardResources(operation);
       throw error;
     }
   }
 
   private async closeOtherPages(session: BrowserSessionRecord, keep: Page): Promise<void> {
     for (const page of session.context.pages()) {
+      session.operation.check();
       if (page === keep || page.isClosed()) {
         continue;
       }
@@ -767,11 +900,16 @@ export class BrowserSessionService {
   }
 
   private async switchToPage(session: BrowserSessionRecord, page: Page): Promise<void> {
+    if (session.operation.error || session.disconnected || this.sessions.get(session.scopeKey) !== session) {
+      await page.close().catch(() => undefined);
+      return;
+    }
     session.page = page;
     await this.closeOtherPages(session, page);
   }
 
   private async ensureActivePage(session: BrowserSessionRecord): Promise<Page> {
+    session.operation.check();
     if (!session.page.isClosed()) {
       return session.page;
     }
@@ -779,9 +917,15 @@ export class BrowserSessionService {
     const nextPage = pages[pages.length - 1];
     if (nextPage) {
       await this.switchToPage(session, nextPage);
+      session.operation.check();
       return nextPage;
     }
-    session.page = await session.context.newPage();
+    const page = await session.context.newPage();
+    if (session.operation.error) {
+      await page.close().catch(() => undefined);
+      session.operation.check();
+    }
+    session.page = page;
     return session.page;
   }
 
@@ -789,11 +933,12 @@ export class BrowserSessionService {
     scope: BrowserResolvedSessionScope,
     run: RunContext<TContext>,
     timeoutMs: number,
-    scopeVersion: number,
+    operation: BrowserOperation,
   ): Promise<BrowserSessionRecord> {
+    operation.check();
     const existing = this.sessions.get(scope.key);
     if (!existing) {
-      return await this.startSession(scope, run, timeoutMs, scopeVersion);
+      return await this.startSession(scope, run, timeoutMs, operation);
     }
     const now = this.now();
     if (
@@ -801,24 +946,29 @@ export class BrowserSessionService {
       now - existing.lastUsedAtMs >= this.sessionIdleTtlMs ||
       now - existing.createdAtMs >= this.sessionMaxAgeMs
     ) {
-      await this.closeSession(scope.key).catch(() => undefined);
-      return await this.startSession(scope, run, timeoutMs, scopeVersion);
+      this.ownSession(operation, existing);
+      await this.closeRecord(existing).catch(() => undefined);
+      operation.check();
+      return await this.startSession(scope, run, timeoutMs, operation);
     }
     existing.lastUsedAtMs = now;
+    this.ownSession(operation, existing);
     return existing;
   }
 
   private async settlePage(session: BrowserSessionRecord, timeoutMs: number): Promise<Page> {
-    await sleep(250);
+    await sleepWithSignal(250, session.operation.signal);
     const current = await this.ensureActivePage(session);
     await current.waitForLoadState("domcontentloaded", {
       timeout: Math.min(timeoutMs, 5_000),
     }).catch(() => undefined);
+    session.operation.check();
     await current.waitForTimeout(150).catch(() => undefined);
     return await this.ensureActivePage(session);
   }
 
   private async ensureSafeFinalUrl(session: BrowserSessionRecord, page: Page): Promise<void> {
+    session.operation.check();
     const currentUrl = trimToUndefined(page.url());
     if (!currentUrl) {
       return;
@@ -835,6 +985,7 @@ export class BrowserSessionService {
       return;
     }
     await this.ensureSafeBrowserTarget(url, session.previewOriginGrant);
+    session.operation.check();
     this.clearPreviewGrantIfLeavingOrigin(session, url);
   }
 
@@ -842,7 +993,9 @@ export class BrowserSessionService {
     page: Page,
     action: BrowserElementAction,
     timeoutMs: number,
+    operation: BrowserOperation,
   ): Promise<Locator> {
+    operation.check();
     const ref = trimToUndefined(action.ref);
     const target = ref ? buildRefSelector(ref) : trimToUndefined(action.selector);
     if (!target) {
@@ -854,8 +1007,10 @@ export class BrowserSessionService {
         state: "visible",
         timeout: timeoutMs,
       });
+      operation.check();
       return locator;
     } catch {
+      operation.check();
       if (ref) {
         throw new ToolError(`browser could not find ref ${ref}. Take a fresh snapshot first.`);
       }
@@ -872,6 +1027,7 @@ export class BrowserSessionService {
     },
   ): Promise<BrowserSnapshotCapture> {
     const page = await this.ensureActivePage(session);
+    session.operation.check();
     const timeoutMs = Math.max(1, Math.floor(params.timeoutMs ?? this.actionTimeoutMs));
     const raw = await withTimeout(
       page.evaluate(
@@ -888,6 +1044,7 @@ export class BrowserSessionService {
         scope: session.scope,
       },
     );
+    session.operation.check();
     const normalized = normalizeSnapshotResult(raw, {
       maxChars: this.maxSnapshotChars,
       mode: params.mode,
@@ -903,6 +1060,7 @@ export class BrowserSessionService {
 
   private async captureActionBaseline(session: BrowserSessionRecord, timeoutMs: number): Promise<BrowserActionBaseline> {
     const page = await this.ensureActivePage(session);
+    session.operation.check();
     const snapshot = await this.takeSnapshot(session, {
       mode: "compact",
       timeoutMs,
@@ -989,7 +1147,7 @@ export class BrowserSessionService {
     timeoutMs: number,
   ): Promise<ToolResultPayload> {
     await this.ensureSafeFinalUrl(session, settledPage);
-    this.emitProgress(run, "snapshotting", {action: action.action});
+    this.emitProgress(run, session.operation, "snapshotting", {action: action.action});
     const capture = await this.takeSnapshot(session, {
       mode: snapshotMode,
       timeoutMs,
@@ -1008,6 +1166,7 @@ export class BrowserSessionService {
     action: Extract<BrowserAction, {action: "evaluate"}>,
   ): Promise<ToolResultPayload> {
     const page = await this.ensureActivePage(session);
+    session.operation.check();
     const raw = await withTimeout(
       page.evaluate(
         runEvaluateScriptInPage,
@@ -1020,6 +1179,7 @@ export class BrowserSessionService {
       action.timeoutMs ?? this.actionTimeoutMs,
       "browser evaluate",
     );
+    session.operation.check();
     const serialized = trimToUndefined(raw.json) ?? trimToUndefined(raw.text);
     if (!serialized) {
       return {
@@ -1143,6 +1303,7 @@ export class BrowserSessionService {
     timeoutMs: number,
   ): Promise<ToolResultPayload> {
     const page = await this.ensureActivePage(session);
+    session.operation.check();
     const target = trimToUndefined(action.ref) || trimToUndefined(action.selector);
     if (target && action.fullPage) {
       throw new ToolError("browser screenshot does not support fullPage with ref or selector.");
@@ -1162,18 +1323,20 @@ export class BrowserSessionService {
     let bytes: Buffer | Uint8Array;
     try {
       if (action.labels) {
+        session.operation.check();
         await this.installScreenshotLabels(page);
+        session.operation.check();
       }
-      bytes = target
-        ? await (await this.targetLocator(page, action, timeoutMs)).screenshot({
-            timeout: timeoutMs,
-          })
-        : await page.screenshot({
-            fullPage: action.fullPage === true,
-            timeout: timeoutMs,
-          });
+      if (target) {
+        const locator = await this.targetLocator(page, action, timeoutMs, session.operation);
+        session.operation.check();
+        bytes = await locator.screenshot({timeout: timeoutMs});
+      } else {
+        session.operation.check();
+        bytes = await page.screenshot({fullPage: action.fullPage === true, timeout: timeoutMs});
+      }
     } finally {
-      if (action.labels) {
+      if (action.labels && !session.operation.error) {
         await this.removeScreenshotLabels(page);
       }
     }
@@ -1183,6 +1346,7 @@ export class BrowserSessionService {
       bytes,
       labels: action.labels === true,
       labeledSnapshot,
+      writeArtifact: (filePath, bytes) => this.writeArtifact(session, filePath, bytes),
     });
   }
 
@@ -1191,23 +1355,44 @@ export class BrowserSessionService {
     timeoutMs: number,
   ): Promise<ToolResultPayload> {
     const page = await this.ensureActivePage(session);
+    session.operation.check();
     const pdf = await withTimeout(page.pdf(), timeoutMs, "browser pdf");
     return await buildBrowserPdfArtifactPayload({
       session,
       page,
       bytes: pdf,
+      writeArtifact: (filePath, bytes) => this.writeArtifact(session, filePath, bytes),
     });
   }
 
-  async closeSession(scopeKey: string): Promise<void> {
-    const session = this.sessions.get(scopeKey);
-    if (!session) {
-      return;
+  private ownSession(operation: BrowserOperation, session: BrowserSessionRecord): void {
+    operation.session = session;
+    operation.browser = session.browser;
+    operation.context = session.context;
+    session.operation = operation;
+  }
+
+  private async closeRecord(session: BrowserSessionRecord): Promise<void> {
+    if (this.sessions.get(session.scopeKey) === session) {
+      this.sessions.delete(session.scopeKey);
     }
-    this.sessions.delete(scopeKey);
-    await this.persistStorageState(session);
-    await session.context.close().catch(() => undefined);
-    await session.browser.close().catch(() => undefined);
+    try {
+      await this.persistStorageState(session).catch(() => undefined);
+    } finally {
+      await session.context.close().catch(() => undefined);
+      await session.browser.close().catch(() => undefined);
+    }
+  }
+
+  async closeSession(scopeKey: string): Promise<void> {
+    const admission = this.reserveScope(scopeKey);
+    try {
+      await admission.ready;
+      const session = this.sessions.get(scopeKey);
+      if (session) await this.closeRecord(session);
+    } finally {
+      admission.release();
+    }
   }
 
   async reapExpiredSessions(): Promise<void> {
@@ -1216,10 +1401,20 @@ export class BrowserSessionService {
       .filter((session) =>
         now - session.lastUsedAtMs >= this.sessionIdleTtlMs
         || now - session.createdAtMs >= this.sessionMaxAgeMs,
-      )
-      .map((session) => session.scopeKey);
-    for (const scopeKey of expired) {
-      await this.closeSession(scopeKey);
+      );
+    for (const session of expired) {
+      const admission = this.reserveScope(session.scopeKey);
+      try {
+        await admission.ready;
+        if (this.sessions.get(session.scopeKey) === session && (
+          this.now() - session.lastUsedAtMs >= this.sessionIdleTtlMs
+          || this.now() - session.createdAtMs >= this.sessionMaxAgeMs
+        )) {
+          await this.closeRecord(session);
+        }
+      } finally {
+        admission.release();
+      }
     }
   }
 
@@ -1228,7 +1423,7 @@ export class BrowserSessionService {
       clearInterval(this.reaper);
       this.reaper = null;
     }
-    const sessionKeys = [...this.sessions.keys()];
+    const sessionKeys = new Set([...this.sessions.keys(), ...this.admission.keys()]);
     for (const scopeKey of sessionKeys) {
       await this.closeSession(scopeKey);
     }
@@ -1247,7 +1442,8 @@ export class BrowserSessionService {
       action,
       scope.key,
       timeoutMs,
-      (scopeVersion) => this.handleAction(action, run, scope, timeoutMs, scopeVersion, previewOriginGrant),
+      run.signal,
+      (operation) => this.handleAction(action, run, scope, timeoutMs, operation, previewOriginGrant),
     );
   }
 
@@ -1256,7 +1452,7 @@ export class BrowserSessionService {
     run: RunContext<TContext>,
     scope: BrowserResolvedSessionScope,
     timeoutMs: number,
-    scopeVersion: number,
+    operation: BrowserOperation,
     previewOriginGrant?: BrowserPreviewOriginGrant,
   ): Promise<ToolResultPayload> {
     const snapshotMode = "snapshotMode" in action ? action.snapshotMode ?? "compact" : "compact";
@@ -1264,15 +1460,20 @@ export class BrowserSessionService {
     const scopeKey = scope.key;
 
     if (action.action === "close") {
-      this.emitProgress(run, "closing", {scope: scope.scope, scopeKey, deviceProfile: scope.deviceProfile});
+      this.emitProgress(run, operation, "closing", {scope: scope.scope, scopeKey, deviceProfile: scope.deviceProfile});
       if (!persistent) {
         return {
           content: [{type: "text", text: "No persistent browser session to close."}],
           details: {action: "close", scope: scope.scope, deviceProfile: scope.deviceProfile} satisfies JsonObject,
         };
       }
-      const hadSession = this.sessions.has(scopeKey);
-      await this.closeSession(scopeKey);
+      const existing = this.sessions.get(scopeKey);
+      const hadSession = Boolean(existing);
+      if (existing) {
+        this.ownSession(operation, existing);
+        await this.closeRecord(existing);
+        operation.check();
+      }
       return {
         content: [{
           type: "text",
@@ -1283,42 +1484,46 @@ export class BrowserSessionService {
     }
 
     if (action.action === "navigate") {
-      this.emitProgress(run, "navigating", {
+      this.emitProgress(run, operation, "navigating", {
         scope: scope.scope,
         deviceProfile: scope.deviceProfile,
         url: action.url,
       });
       await this.ensureSafeBrowserTarget(new URL(action.url), previewOriginGrant);
+      operation.check();
     }
 
     let session: BrowserSessionRecord | null = null;
     try {
       if (!this.sessions.has(scopeKey)) {
-        this.emitProgress(run, "starting", {scope: scope.scope, scopeKey, deviceProfile: scope.deviceProfile});
+        this.emitProgress(run, operation, "starting", {scope: scope.scope, scopeKey, deviceProfile: scope.deviceProfile});
       }
-      this.emitProgress(run, "connecting", {scope: scope.scope, scopeKey, deviceProfile: scope.deviceProfile});
-      session = await this.resolveSession(scope, run, timeoutMs, scopeVersion);
+      this.emitProgress(run, operation, "connecting", {scope: scope.scope, scopeKey, deviceProfile: scope.deviceProfile});
+      session = await this.resolveSession(scope, run, timeoutMs, operation);
+      operation.check();
       if (action.action === "navigate") {
         session.previewOriginGrant = previewOriginGrant;
       }
       const page = await this.ensureActivePage(session);
+      operation.check();
 
       switch (action.action) {
         case "snapshot":
-          this.emitProgress(run, "snapshotting", {action: "snapshot"});
+          this.emitProgress(run, operation, "snapshotting", {action: "snapshot"});
           return await this.buildSnapshotPayload(session, "snapshot", snapshotMode, undefined, undefined, timeoutMs);
         case "evaluate":
-          this.emitProgress(run, "evaluating", {action: "evaluate"});
+          this.emitProgress(run, operation, "evaluating", {action: "evaluate"});
           return await this.buildEvaluatePayload(session, action);
         case "screenshot":
-          this.emitProgress(run, "capturing", {action: "screenshot"});
+          this.emitProgress(run, operation, "capturing", {action: "screenshot"});
           return await this.buildScreenshotPayload(session, action, timeoutMs);
         case "pdf":
-          this.emitProgress(run, "capturing", {action: "pdf"});
+          this.emitProgress(run, operation, "capturing", {action: "pdf"});
           return await this.buildPdfPayload(session, timeoutMs);
       }
 
       const baseline = await this.captureActionBaseline(session, timeoutMs);
+      operation.check();
       switch (action.action) {
         case "navigate": {
           await baseline.page.goto(action.url, {
@@ -1329,11 +1534,12 @@ export class BrowserSessionService {
         }
         case "click": {
           const target = formatActionTarget(action);
-          this.emitProgress(run, "acting", {
+          this.emitProgress(run, operation, "acting", {
             action: "click",
             ...(target ? {target} : {}),
           });
-          const locator = await this.targetLocator(page, action, timeoutMs);
+          const locator = await this.targetLocator(page, action, timeoutMs, session.operation);
+          operation.check();
           await locator.click({
             timeout: timeoutMs,
           });
@@ -1341,34 +1547,41 @@ export class BrowserSessionService {
         }
         case "type": {
           const target = formatActionTarget(action);
-          this.emitProgress(run, "acting", {
+          this.emitProgress(run, operation, "acting", {
             action: "type",
             ...(target ? {target} : {}),
           });
-          const locator = await this.targetLocator(page, action, timeoutMs);
+          const locator = await this.targetLocator(page, action, timeoutMs, session.operation);
+          operation.check();
           try {
             await locator.fill(action.text, {
               timeout: timeoutMs,
             });
           } catch {
+            operation.check();
             await locator.click({
               timeout: timeoutMs,
             });
+            operation.check();
             await page.keyboard.insertText(action.text);
           }
+          operation.check();
           if (action.submit) {
             await locator.press("Enter", {
               timeout: timeoutMs,
             }).catch(async () => {
+              operation.check();
               await withTimeout(page.keyboard.press("Enter"), timeoutMs, "browser key press");
             });
           }
           break;
         }
         case "press": {
-          this.emitProgress(run, "acting", {action: "press", key: action.key});
+          this.emitProgress(run, operation, "acting", {action: "press", key: action.key});
           if (trimToUndefined(action.ref) || trimToUndefined(action.selector)) {
-            await (await this.targetLocator(page, action, timeoutMs)).press(action.key, {
+            const locator = await this.targetLocator(page, action, timeoutMs, operation);
+            operation.check();
+            await locator.press(action.key, {
               timeout: timeoutMs,
             });
           } else {
@@ -1378,7 +1591,7 @@ export class BrowserSessionService {
         }
         case "select": {
           const target = formatActionTarget(action);
-          this.emitProgress(run, "acting", {
+          this.emitProgress(run, operation, "acting", {
             action: "select",
             ...(target ? {target} : {}),
           });
@@ -1387,7 +1600,9 @@ export class BrowserSessionService {
             : typeof action.value === "string"
               ? [action.value]
               : [];
-          await (await this.targetLocator(page, action, timeoutMs)).selectOption(
+          const locator = await this.targetLocator(page, action, timeoutMs, operation);
+          operation.check();
+          await locator.selectOption(
             values.map((value) => ({value})),
             {
               timeout: timeoutMs,
@@ -1396,7 +1611,7 @@ export class BrowserSessionService {
           break;
         }
         case "wait": {
-          this.emitProgress(run, "acting", {action: buildWaitLabel(action)});
+          this.emitProgress(run, operation, "acting", {action: buildWaitLabel(action)});
           if (action.loadState) {
             await page.waitForLoadState(action.loadState, {
               timeout: timeoutMs,
@@ -1426,6 +1641,7 @@ export class BrowserSessionService {
         default:
           throw new ToolError("browser reached an invalid action.");
       }
+      operation.check();
       const settledPage = await this.settlePage(session, timeoutMs);
       return await this.buildChangedActionSnapshotPayload(
         run,
@@ -1437,14 +1653,14 @@ export class BrowserSessionService {
         timeoutMs,
       );
     } finally {
-      if (session) {
+      if (session && !operation.error) {
         session.lastUsedAtMs = this.now();
         if (persistent) {
           await this.persistStorageState(session).catch(() => undefined);
         }
       }
-      if (!persistent) {
-        await this.closeSession(scopeKey).catch(() => undefined);
+      if (!persistent && session && !operation.error) {
+        await this.closeRecord(session).catch(() => undefined);
       }
     }
   }

@@ -1,5 +1,5 @@
 import {randomUUID} from "node:crypto";
-import {mkdir, writeFile} from "node:fs/promises";
+import {mkdir, rm, writeFile} from "node:fs/promises";
 import path from "node:path";
 
 import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/filesystem.js";
@@ -7,6 +7,7 @@ import {resolveAgentMediaDir, resolveMediaDir} from "../../lib/data-dir.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {RunContext} from "../../kernel/agent/run-context.js";
 import type {ToolResultPayload} from "../../kernel/agent/types.js";
+import {runInBackground} from "../../lib/async.js";
 import {buildEndpointUrl, isLoopbackHttpHostname} from "../../lib/http.js";
 import type {JsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
@@ -95,14 +96,6 @@ function resolveBrowserMediaRoots(
     storageRoot: root,
     displayRoot: root,
   };
-}
-
-function makeNetworkTimeoutSignal(timeoutMs: number): AbortSignal {
-  const controller = new AbortController();
-  setTimeout(() => {
-    controller.abort(new Error(`Browser runner did not respond within ${timeoutMs}ms.`));
-  }, timeoutMs).unref();
-  return controller.signal;
 }
 
 function resolveExtension(kind: BrowserRunnerArtifact["kind"], mimeType: string): string {
@@ -270,6 +263,7 @@ export class BrowserRunnerClient<TContext extends BrowserRuntimeContext = Browse
   private async persistArtifact(
     context: BrowserRuntimeContext,
     artifact: BrowserRunnerArtifact,
+    signal: AbortSignal,
   ): Promise<{path: string; storagePath: string; bytes: number}> {
     const scope = normalizeBrowserArtifactScopeKey(context);
     const roots = resolveBrowserMediaRoots(context, this.dataDir, this.env);
@@ -277,12 +271,18 @@ export class BrowserRunnerClient<TContext extends BrowserRuntimeContext = Browse
     const storageDir = path.join(roots.storageRoot, artifactSubdir);
     const displayDir = path.join(roots.displayRoot, artifactSubdir);
     await mkdir(storageDir, {recursive: true});
+    signal.throwIfAborted();
 
     const buffer = Buffer.from(artifact.data, "base64");
     const fileName = `${Date.now()}-${randomUUID()}${resolveExtension(artifact.kind, artifact.mimeType)}`;
     const storagePath = path.join(storageDir, fileName);
     const displayPath = path.join(displayDir, fileName);
-    await writeFile(storagePath, buffer);
+    try {
+      await writeFile(storagePath, buffer, {signal});
+    } catch (error) {
+      await rm(storagePath, {force: true});
+      throw error;
+    }
 
     return {
       path: displayPath,
@@ -292,74 +292,114 @@ export class BrowserRunnerClient<TContext extends BrowserRuntimeContext = Browse
   }
 
   async handle(action: BrowserAction, run: RunContext<TContext>): Promise<ToolResultPayload> {
-    const {runnerUrl, sharedSecret} = this.resolveConfig();
-    const timeoutMs = Math.max(1, Math.floor(("timeoutMs" in action ? action.timeoutMs : undefined) ?? this.actionTimeoutMs ?? 60_000));
-    const context = (run.context ?? {}) as BrowserRuntimeContext;
-    const previewRequest = resolveWorkerPreviewAction(action, context);
-    const request: BrowserRunnerActionRequest = {
-      agentKey: trimToUndefined(context.agentKey) ?? "",
-      ...(trimToUndefined(context.sessionId) ? {sessionId: context.sessionId!.trim()} : {}),
-      ...(trimToUndefined(context.threadId) ? {threadId: context.threadId!.trim()} : {}),
-      action: previewRequest.action,
-      ...(previewRequest.previewOriginGrant ? {previewOriginGrant: previewRequest.previewOriginGrant} : {}),
+    const cancelled = new ToolError("Browser action was cancelled.", {details: {cancelled: true}});
+    if (run.signal?.aborted) throw cancelled;
+    const timeoutMs = Math.max(1, Math.floor(("timeoutMs" in action ? action.timeoutMs : undefined) ?? this.actionTimeoutMs ?? 60_000))
+      + DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS;
+    const controller = new AbortController();
+    let rejectAbort!: (error: Error) => void;
+    const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+    const abort = (error: Error) => {
+      if (controller.signal.aborted) return;
+      controller.abort(error);
+      rejectAbort(error);
     };
-
-    const response = await this.fetchImpl(buildEndpointUrl(runnerUrl, "action"), {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${sharedSecret}`,
-      },
-      body: JSON.stringify(request),
-      signal: makeNetworkTimeoutSignal(timeoutMs + DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS),
-    });
-
-    if (!response.ok) {
-      await readBrowserRunnerError(response);
-    }
-
-    const payload = parseBrowserRunnerActionResponse(await response.json());
-    if (!payload.ok) {
-      throw new ToolError(payload.error, payload.details ? {details: payload.details} : undefined);
-    }
-
-    let text = payload.text;
-    let details = payload.details;
-    const content: ToolResultPayload["content"] = [
-      {
-        type: "text",
-        text,
-      },
-    ];
-
-    if (payload.artifact) {
-      const persisted = await this.persistArtifact(context, payload.artifact);
-      text = rewriteBrowserText(text, payload.artifact.path, persisted.path);
-      details = rewriteBrowserDetails(
-        details,
-        payload.artifact.path,
-        persisted.path,
-        persisted.storagePath,
-        persisted.bytes,
-      );
-      content[0] = {
-        type: "text",
-        text,
+    const onCallerAbort = () => abort(cancelled);
+    const timer = setTimeout(() => abort(new Error(`Browser runner did not respond within ${timeoutMs}ms.`)), timeoutMs);
+    timer.unref();
+    run.signal?.addEventListener("abort", onCallerAbort, {once: true});
+    let artifactPath: string | undefined;
+    let published = false;
+    const operation = (async () => {
+      const {runnerUrl, sharedSecret} = this.resolveConfig();
+      const context = (run.context ?? {}) as BrowserRuntimeContext;
+      const previewRequest = resolveWorkerPreviewAction(action, context);
+      const request: BrowserRunnerActionRequest = {
+        agentKey: trimToUndefined(context.agentKey) ?? "",
+        ...(trimToUndefined(context.sessionId) ? {sessionId: context.sessionId!.trim()} : {}),
+        ...(trimToUndefined(context.threadId) ? {threadId: context.threadId!.trim()} : {}),
+        action: previewRequest.action,
+        ...(previewRequest.previewOriginGrant ? {previewOriginGrant: previewRequest.previewOriginGrant} : {}),
       };
 
-      if (payload.artifact.kind === "image") {
-        content.push({
-          type: "image",
-          data: payload.artifact.data,
-          mimeType: payload.artifact.mimeType,
-        });
+      const response = await this.fetchImpl(buildEndpointUrl(runnerUrl, "action"), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${sharedSecret}`,
+        },
+        body: JSON.stringify(request),
+        signal: controller.signal,
+      });
+
+      controller.signal.throwIfAborted();
+      if (!response.ok) {
+        await readBrowserRunnerError(response);
+      }
+
+      const raw = await response.json();
+      controller.signal.throwIfAborted();
+      const payload = parseBrowserRunnerActionResponse(raw);
+      if (!payload.ok) {
+        throw new ToolError(payload.error, payload.details ? {details: payload.details} : undefined);
+      }
+
+      let text = payload.text;
+      let details = payload.details;
+      const content: ToolResultPayload["content"] = [
+        {
+          type: "text",
+          text,
+        },
+      ];
+
+      if (payload.artifact) {
+        const persisted = await this.persistArtifact(context, payload.artifact, controller.signal);
+        artifactPath = persisted.storagePath;
+        controller.signal.throwIfAborted();
+        text = rewriteBrowserText(text, payload.artifact.path, persisted.path);
+        details = rewriteBrowserDetails(
+          details,
+          payload.artifact.path,
+          persisted.path,
+          persisted.storagePath,
+          persisted.bytes,
+        );
+        content[0] = {
+          type: "text",
+          text,
+        };
+
+        if (payload.artifact.kind === "image") {
+          content.push({
+            type: "image",
+            data: payload.artifact.data,
+            mimeType: payload.artifact.mimeType,
+          });
+        }
+      }
+
+      return {
+        content,
+        ...(details ? {details} : {}),
+      };
+    })();
+    try {
+      const result = await Promise.race([operation, aborted]);
+      controller.signal.throwIfAborted();
+      published = true;
+      return result;
+    } finally {
+      clearTimeout(timer);
+      run.signal?.removeEventListener("abort", onCallerAbort);
+      if (!published) {
+        // A canceled write may finish later; only its own unpublished file is removed.
+        runInBackground(async () => {
+          await operation.catch(() => undefined);
+          if (artifactPath) await rm(artifactPath, {force: true});
+        }, {label: "Browser artifact cleanup"});
       }
     }
-
-    return {
-      content,
-      ...(details ? {details} : {}),
-    };
   }
 
   async close(): Promise<void> {}

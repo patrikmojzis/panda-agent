@@ -929,3 +929,41 @@ dirty teardown blocked by storage persistence, and ownership risks in late
 startup/fallback/write completion. Independent plan review added explicit
 artifact/storage publication rules so old writes cannot overwrite replacement
 state. No browser cancellation implementation is included in this batch.
+
+## Cycle 38 — Own browser cancellation through cleanup
+
+- Finding: the browser client ignored caller cancellation; the HTTP runner
+  observed request closure too late; service timeouts closed by scope key after
+  storage persistence. Late startup, fallback input and file writes could outlive
+  the action and interfere with replacement work.
+- Change: implement B01–B06 from the browser cancellation plan. The client carries
+  a fixed caller error through fetch, body parsing and exact artifact cleanup.
+  The runner observes aborted bodies and unfinished responses. The service owns
+  admission, acquired resources and staged publication per session/device scope.
+  Canceled waiters never acquire resources; dirty closure starts before admission
+  release and does not wait for storage collection. Already-issued rename remains
+  the commit boundary and settles before replacement admission.
+- Result: 266 production lines added and 1,026 test lines added. This is a
+  correctness repair, not a negative-code pass. Cumulative production reduction
+  is now 4,899 lines, including 75 lines previously relocated into tests.
+- Evidence: 39 new retained cases cover the public client, real loopback HTTP and
+  service lifecycle. Independent review passed six additional public lifecycle
+  probes and found no blockers. Root verified the composed public tool → HTTP →
+  browser teardown path and exact preservation of all frozen source/test hashes.
+  Review added post-acquisition and final-result cancellation guards. All 3,179
+  tests across 338 files pass with zero failures or skips:
+  `.temp/desloppify-cycle38-unit-results.json`. TypeScript build, import law,
+  prompt/shim contracts, 19 compiled imports and shared `Thread` identity pass.
+- Runtime verification: the inspected offline fixture migrated a fresh isolated
+  Postgres database through all 25 migrations, executed one owned run with two
+  deterministic model responses and one tool call, persisted the four-message
+  transcript and reached idle with zero external requests. Evidence:
+  `.temp/desloppify-cycle38-offline-smoke-output.log`. The cluster was stopped.
+  The prior automatic rejection of external-model smoke remains respected.
+- State: reviewed and committed locally with this cycle. Wire/action/auth and
+  navigation policy remain; normal persistence, explicit close, independent
+  device scopes and public options remain. Cancellation cannot roll back issued
+  external effects, HTTP abort does not acknowledge completed Chromium teardown,
+  and a never-settling launcher cannot be interrupted through its current seam.
+  Browser tests use fake Chromium; the offline runtime smoke does not validate
+  external providers or Bash. No production access, push or deployment occurred.
