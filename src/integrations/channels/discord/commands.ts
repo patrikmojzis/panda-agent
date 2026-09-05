@@ -18,6 +18,7 @@ import type {ThreadChannelMessageFilter, ThreadMessageRecord} from "../../../dom
 import type {DiscordGuildSticker} from "./api.js";
 import {DISCORD_SOURCE} from "./config.js";
 import type {DiscordGifService} from "./gifs.js";
+import {extractHistoryMessageText, textPreview} from "../history-text.js";
 
 export const DISCORD_SEND_COMMAND_NAME = "discord.send";
 export const DISCORD_CHANNEL_LIST_COMMAND_NAME = "discord.channel.list";
@@ -315,41 +316,6 @@ function serializeDiscordChannelBinding(
 
 function clampDiscordHistoryLimit(limit: number | undefined): number {
   return Math.min(limit ?? DEFAULT_DISCORD_HISTORY_LIMIT, MAX_DISCORD_HISTORY_LIMIT);
-}
-
-function textPreview(text: string | undefined, maxChars = 1200): JsonObject {
-  const value = text?.trim();
-  if (!value) {
-    return {};
-  }
-
-  if (value.length <= maxChars) {
-    return {text: value};
-  }
-
-  return {
-    text: `${value.slice(0, maxChars)}...`,
-    truncated: true,
-  };
-}
-
-function extractHistoryMessageText(record: ThreadMessageRecord): string | undefined {
-  const content = (record.message as {content?: unknown}).content;
-  if (typeof content === "string") {
-    return content.trim() || undefined;
-  }
-  if (!Array.isArray(content)) {
-    return undefined;
-  }
-
-  const parts = content.flatMap((part) => {
-    if (!isRecord(part) || part.type !== "text" || typeof part.text !== "string") {
-      return [];
-    }
-    const text = part.text.trim();
-    return text ? [text] : [];
-  });
-  return parts.length > 0 ? parts.join("\n\n") : undefined;
 }
 
 function readDiscordMetadata(record: ThreadMessageRecord): Record<string, unknown> {

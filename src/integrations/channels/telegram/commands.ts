@@ -38,6 +38,7 @@ import {
   parseTelegramReactionMessageId,
 } from "./reactions.js";
 import {readTelegramInboundSticker, serializeSafeTelegramSticker} from "./sticker-metadata.js";
+import {extractHistoryMessageText, textPreview} from "../history-text.js";
 
 export const TELEGRAM_REACT_COMMAND_NAME = "telegram.react";
 export const TELEGRAM_EDIT_COMMAND_NAME = "telegram.edit";
@@ -1544,41 +1545,6 @@ function serializeTelegramChatBinding(
 
 function clampTelegramHistoryLimit(limit: number | undefined): number {
   return Math.min(limit ?? DEFAULT_TELEGRAM_HISTORY_LIMIT, MAX_TELEGRAM_HISTORY_LIMIT);
-}
-
-function textPreview(text: string | undefined, maxChars = 1200): JsonObject {
-  const value = text?.trim();
-  if (!value) {
-    return {};
-  }
-
-  if (value.length <= maxChars) {
-    return {text: value};
-  }
-
-  return {
-    text: `${value.slice(0, maxChars)}...`,
-    truncated: true,
-  };
-}
-
-function extractHistoryMessageText(record: ThreadMessageRecord): string | undefined {
-  const content = (record.message as {content?: unknown}).content;
-  if (typeof content === "string") {
-    return trimToUndefined(content);
-  }
-  if (!Array.isArray(content)) {
-    return undefined;
-  }
-
-  const parts = content.flatMap((part) => {
-    if (!isRecord(part) || part.type !== "text" || typeof part.text !== "string") {
-      return [];
-    }
-    const text = part.text.trim();
-    return text ? [text] : [];
-  });
-  return trimToUndefined(parts.join("\n\n"));
 }
 
 function readTelegramHistoryMetadata(record: ThreadMessageRecord): Record<string, unknown> {

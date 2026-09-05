@@ -271,6 +271,23 @@ disposable validation worktree was removed after preserving those artifacts.
 - State: reviewed and committed locally with this cycle; not pushed or deployed.
   No query semantics, schema, migration or authority policy changed.
 
+## Cycle 12 — Share channel-history text handling
+
+- Finding: Telegram, Discord and WhatsApp repeated the same tolerant text-block
+  extraction and bounded previews. Protocol metadata and authorization differ.
+- Change: `src/integrations/channels/history-text.ts` owns only text extraction
+  and preview truncation. Native history commands retain all protocol shaping,
+  authorization, filtering and ordering. Malformed/non-text blocks are still
+  ignored; inbound previews keep 1,200 characters and outbound previews keep 500.
+- Result: 61 fewer production lines, including the new helper; 45 test lines added.
+- Evidence: 44 focused history/send/command tests and all three native history
+  shim routes pass. Independent review passed 75 history/CLI tests and matched
+  672 old/new extraction and preview outcomes, including malformed content,
+  sparse arrays, Unicode whitespace and truncation boundaries. The remaining
+  219 declarations/statements are unchanged. Import law and shim checks pass.
+- State: reviewed and committed locally with this cycle; not pushed or deployed.
+  The helper is internal, with no new package export or provider call.
+
 ## Combined verification after cycles 1–5
 
 The final combined source passed the TypeScript build, all three package-export

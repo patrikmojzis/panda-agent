@@ -14,6 +14,7 @@ import type {OutboundItem} from "../../../domain/channels/types.js";
 import type {ConversationBinding, ConversationBindingListFilter} from "../../../domain/sessions/conversations/types.js";
 import type {ThreadChannelMessageFilter, ThreadMessageRecord} from "../../../domain/threads/runtime/types.js";
 import {WHATSAPP_SOURCE} from "./config.js";
+import {extractHistoryMessageText, textPreview} from "../history-text.js";
 
 export const WHATSAPP_SEND_COMMAND_NAME = "whatsapp.send";
 export const WHATSAPP_CHAT_LIST_COMMAND_NAME = "whatsapp.chat.list";
@@ -172,41 +173,6 @@ function resolveWhatsAppChatListConnectorKey(
 
 function clampWhatsAppHistoryLimit(limit: number | undefined): number {
   return Math.min(limit ?? DEFAULT_WHATSAPP_HISTORY_LIMIT, MAX_WHATSAPP_HISTORY_LIMIT);
-}
-
-function textPreview(text: string | undefined, maxChars = 1200): JsonObject {
-  const value = text?.trim();
-  if (!value) {
-    return {};
-  }
-
-  if (value.length <= maxChars) {
-    return {text: value};
-  }
-
-  return {
-    text: `${value.slice(0, maxChars)}...`,
-    truncated: true,
-  };
-}
-
-function extractHistoryMessageText(record: ThreadMessageRecord): string | undefined {
-  const content = (record.message as {content?: unknown}).content;
-  if (typeof content === "string") {
-    return content.trim() || undefined;
-  }
-  if (!Array.isArray(content)) {
-    return undefined;
-  }
-
-  const parts = content.flatMap((part) => {
-    if (!isRecord(part) || part.type !== "text" || typeof part.text !== "string") {
-      return [];
-    }
-    const text = part.text.trim();
-    return text ? [text] : [];
-  });
-  return parts.length > 0 ? parts.join("\n\n") : undefined;
 }
 
 function readWhatsAppMetadata(record: ThreadMessageRecord): Record<string, unknown> {
