@@ -1118,3 +1118,54 @@ acceptance. None of these candidates is implemented in this batch.
 - State: independently reviewed and committed locally with this cycle. Typecheck,
   import law and diff checks pass. No supported export or request-contract change,
   production access, push or deployment. Binary decoding is committed as `4e389844`.
+
+## Cycle 45 — Dispatch TUI commands at their existing host seam
+
+- Finding: the TUI created a 13-callback object solely to forward one dispatcher's
+  calls to private command handlers. That dispatcher had one caller, no direct
+  tests and no supported package export.
+- Change: move its parsing and switch into `runChatActionsCommandLine` and call
+  the existing handlers directly. Keep `ChatCommandHost`, the actual ChatApp
+  adapter, command handlers, help text and unknown-command rendering unchanged.
+- Result: 45 fewer production lines and 68 test lines for ten behavior cases.
+  Cumulative production reduction is 5,182, including 75 relocated into tests.
+- Evidence: all 53 ChatApp tests passed before and after the source change;
+  independent review passed the same suite. New cases cover busy/idle exit and
+  quit, picker waiting/rejection, resume whitespace, idle/active abort outcomes,
+  case sensitivity and empty/leading-whitespace input. Structural review proves
+  every retained declaration is unchanged and each switch branch is the exact
+  substitution of its former callback body, including awaits and error handling.
+- State: independently reviewed and committed locally with this cycle. The
+  existing caller/service seam remains testable; no replacement callback layer,
+  command alias, input format or public contract is added. No production access,
+  push or deployment. Wiki locale reuse is committed as `153279f4`.
+
+## Combined verification after cycles 43–45
+
+All 3,195 tests across 339 files pass without failures or skips:
+`.temp/desloppify-cycles43-45-unit-retry-results.json`. The initial sandboxed run
+could not use fixture sockets, DNS or macOS PDF previews; the permitted rerun
+passed. The root TypeScript build/typecheck, import law, prompt/shim contracts,
+all 19 compiled package imports and shared `Thread` identity pass. All ten frozen
+source/test hashes still match; generated contracts and migrations are unchanged.
+
+The inspected deterministic runtime fixture passed against a fresh isolated
+Postgres database: 25 migrations, one owned completed run, two injected model
+responses, one tool call, four persisted messages, an applied input and idle state,
+with zero external requests. The cluster was stopped afterward. Evidence:
+`.temp/desloppify-cycles43-45-offline-smoke-output.log`. This does not exercise an
+external provider, Bash or real Chromium. The earlier automatic rejection of
+external-model smoke remains respected; production was untouched.
+
+These three cycles remove 102 production lines net, bringing the total to 5,182
+across 46 cleanup commits. Binary decoding is committed as `4e389844`; Wiki locale
+reuse as `153279f4`; TUI dispatch and this record are committed with cycle 45.
+Unrelated commits and untracked `output/` remain excluded and preserved.
+
+Further recon and independent assessment found two subagent-profile upsert
+methods whose SQL differs only in the fixed partial-index conflict target. A
+single query is a supported next candidate, provided transaction/advisory locking,
+cross-scope rejection and validation order remain. Existing tests emulate those
+upserts and skip the partial indexes; exact emitted-SQL/parameter comparisons and
+a disposable real-Postgres check of both scopes are required before acceptance.
+That candidate is not implemented in this batch.

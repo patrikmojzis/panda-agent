@@ -147,6 +147,74 @@ function imageToolResult(data = "abcd".repeat(200)) {
   };
 }
 
+describe("ChatApp slash-command dispatch", () => {
+  it.each(["/exit", "/quit"])("keeps %s open during a run and permits exit when idle", async (command) => {
+    const app = createAppHarness();
+    app.setNotice = vi.fn();
+    app.runPhase = "thinking";
+    await expect(app.handleCommand(command)).resolves.toBe(true);
+    expect(app.setNotice).toHaveBeenCalledWith("Wait for the current turn to finish before exiting.", "info");
+    app.runPhase = "idle";
+    await expect(app.handleCommand(command)).resolves.toBe(false);
+  });
+
+  it("waits for the session picker and propagates its failure", async () => {
+    const app = createAppHarness();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    app.openSessionPicker = vi.fn(() => gate);
+    let settled = false;
+    const pending = app.handleCommand("/sessions").then((result) => { settled = true; return result; });
+    await vi.waitFor(() => expect(app.openSessionPicker).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    release();
+    await expect(pending).resolves.toBe(true);
+    app.openSessionPicker = vi.fn(async () => { throw new Error("picker unavailable"); });
+    await expect(app.handleCommand("/sessions")).rejects.toThrow("picker unavailable");
+  });
+
+  it("normalizes command argument whitespace before opening a stored session", async () => {
+    const app = createAppHarness();
+    const thread = {id: "resumed-thread", sessionId: "resumed-session", createdAt: 1, updatedAt: 1};
+    const openSession = vi.fn(async () => thread);
+    app.currentAgentKey = "panda";
+    app.services = {openSession} as unknown as ChatRuntimeServices;
+    app.switchThread = vi.fn(async () => {});
+    app.setNotice = vi.fn();
+    await expect(app.handleCommand("/resume\t stored   session \n")).resolves.toBe(true);
+    expect(openSession).toHaveBeenCalledExactlyOnceWith("stored session", "panda");
+    expect(app.switchThread).toHaveBeenCalledExactlyOnceWith(thread);
+    expect(app.transcript.at(-1)).toMatchObject({title: "session", body: "Opened session resumed-session."});
+  });
+
+  it.each([false, true])("preserves an active abort result of %s without replay", async (accepted) => {
+    const app = createAppHarness();
+    const abortThread = vi.fn(async () => accepted);
+    app.currentThreadId = "active-thread";
+    app.services = {abortThread} as unknown as ChatRuntimeServices;
+    app.setNotice = vi.fn();
+    app.runPhase = "idle";
+    await expect(app.handleCommand("/abort")).resolves.toBe(true);
+    expect(abortThread).not.toHaveBeenCalled();
+    app.runPhase = "thinking";
+    await expect(app.handleCommand("/abort")).resolves.toBe(true);
+    expect(abortThread).toHaveBeenCalledExactlyOnceWith("active-thread", "Aborted from the TUI.");
+    expect(app.setNotice).toHaveBeenLastCalledWith(accepted ? "Aborting the active run..." : "No active run to abort.", "info");
+  });
+
+  it.each([
+    ["/missing ignored", "Unknown command: /missing"],
+    ["/MODEL default", "Unknown command: /MODEL"],
+    [" /help", "Unknown command: "],
+    ["", "Unknown command: "],
+  ])("preserves unknown-command parsing for %j", async (command, message) => {
+    const app = createAppHarness();
+    app.setNotice = vi.fn();
+    await expect(app.handleCommand(command)).resolves.toBe(true);
+    expect(app.transcript.at(-1)).toMatchObject({role: "error", title: "command", body: message});
+  });
+});
+
 describe("ChatApp Ctrl-C handling", () => {
   it("aborts once and closes after the active run settles", async () => {
     const abortThread = vi.fn(async () => true);

@@ -13,25 +13,26 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–42; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–45; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,080 production lines**, including
+Together, these cleanup commits remove **5,182 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
-The latest three cycles remove 149 production lines: command modules reuse
-existing string validation, email persistence uses one mailbox/UID lookup, and
-Control drops an unused filter-patch format. Public command contracts, validation
-and authority order, SQL and live filter/query behavior remain. Six new Control
-behavior tests passed on both the baseline and the simplified implementation.
+The latest three cycles remove 102 production lines: four stores share binary
+decoding, Wiki commands reuse locale normalization, and the TUI dispatches directly
+to its handlers through the existing host interface. SQL, validation/authority
+order and command behavior remain. Ten new TUI behavior cases passed on both the
+baseline and the simplified implementation.
 
-The frozen combined tree passes **3,185 tests across 339 files**, root and Control
-builds/typechecks, import law, prompt/shim contracts, all 19 compiled package
+The frozen combined tree passes **3,195 tests across 339 files**, root
+build/typecheck, import law, prompt/shim contracts, all 19 compiled package
 imports and a deterministic runtime smoke against disposable local Postgres with
 external networking disabled. All 25 migrations applied; one owned run completed
 with an applied input, persisted transcript and idle state. The test cluster was
-stopped afterward. This verification uses injected model responses and fake
-Chromium; it does not exercise external providers, Bash or actual browser closure
+stopped afterward. Runtime verification uses injected model responses; browser
+unit tests use fake Chromium. These checks do not exercise external providers,
+Bash or actual browser closure
 latency. Earlier verification records are historical and do not certify later
 edits. The inspect/review/commit loop remains active.
 

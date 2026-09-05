@@ -5,7 +5,7 @@ import type {ThinkingLevel} from "@earendil-works/pi-ai";
 import {resolveModelSelector} from "../../kernel/models/model-selector.js";
 import type {ThreadRecord} from "../../domain/threads/runtime/types.js";
 import type {ChatRuntimeServices} from "./runtime.js";
-import {buildChatHelpText, describeUnknownCommand, runChatCommandLine} from "./chat-commands.js";
+import {buildChatHelpText, describeUnknownCommand} from "./chat-commands.js";
 import {resolveStoredThreadDisplayConfig} from "../shared/stored-thread.js";
 import {collectThreadUsageSnapshot, formatThreadUsageSnapshot, scanStoredThreadUsage,} from "./usage-summary.js";
 import {
@@ -312,24 +312,40 @@ export async function runChatActionsCommandLine(
   commandLine: string,
   host: ChatCommandHost,
 ): Promise<boolean> {
-  return await runChatCommandLine(commandLine, {
-    help: () => showHelp(host),
-    usage: () => handleUsageCommand(host),
-    model: (value) => handleModelCommand(host, value),
-    thinking: (value) => handleThinkingCommand(host, value),
-    compact: (value) => handleCompactCommand(host, value),
-    newSession: () => handleNewSessionCommand(host),
-    resetSession: () => handleResetSessionCommand(host),
-    resume: (value) => handleResumeCommand(host, value),
-    showThread: () => showThreadSummary(host),
-    openSessionPicker: async () => {
+  const [rawCommand, ...rest] = commandLine.split(/\s+/);
+  const command = rawCommand ?? "";
+  const value = rest.join(" ").trim();
+
+  switch (command) {
+    case "/help":
+      return await showHelp(host);
+    case "/usage":
+      return await handleUsageCommand(host);
+    case "/model":
+      return await handleModelCommand(host, value);
+    case "/thinking":
+      return await handleThinkingCommand(host, value);
+    case "/compact":
+      return await handleCompactCommand(host, value);
+    case "/new":
+      return await handleNewSessionCommand(host);
+    case "/reset":
+      return await handleResetSessionCommand(host);
+    case "/resume":
+      return await handleResumeCommand(host, value);
+    case "/thread":
+      return await showThreadSummary(host);
+    case "/sessions":
       await host.openSessionPicker();
       return true;
-    },
-    abort: () => handleAbortCommand(host),
-    exit: () => handleExitCommand(host),
-    unknown: (command) => handleUnknownCommand(host, command),
-  });
+    case "/abort":
+      return await handleAbortCommand(host);
+    case "/exit":
+    case "/quit":
+      return await handleExitCommand(host);
+    default:
+      return await handleUnknownCommand(host, command || "");
+  }
 }
 
 export async function submitChatComposer(host: ChatComposerHost): Promise<void> {
