@@ -437,3 +437,19 @@ Production has not been modified by any of these cycles.
 The wiki crypto service and command-result validation protect real boundaries.
 No worthwhile simplification was demonstrated in that bounded review; leave them
 intact rather than adding churn.
+
+## Cycle 18 — Remove unused Bash secret metadata
+
+- Finding: temporary secret candidates stored their source and environment key,
+  but only their trimmed values were consumed.
+- Change: collect strings directly. Keep nonblank-key/value checks, credential,
+  prior-session, current-session and call-environment ordering, secret-key
+  detection, longest-first deduplication and output-persistence policy.
+- Result: 16 fewer production lines; 67 test lines added.
+- Evidence: 146 Bash, background-job and remote-runner tests pass, along with
+  typecheck and import law. Independent review passed all 61 Bash tests and
+  6,561 before/after combinations of sources, blanks, overlaps and Unicode.
+  Redaction, insertion order, secret-material detection and persistence gates
+  match; the other 51 source declarations/statements are unchanged.
+- State: reviewed and committed locally with this cycle. No public contract,
+  credential policy or production service changed.

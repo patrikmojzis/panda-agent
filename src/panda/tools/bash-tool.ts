@@ -163,14 +163,6 @@ function formatBashStatus(details: Record<string, unknown>): string {
   return "command failed";
 }
 
-type BashSecretCandidateSource = "credential" | "session" | "call-env-key";
-
-interface BashSecretCandidate {
-  source: BashSecretCandidateSource;
-  key: string;
-  value: string;
-}
-
 interface BashSecretInventory {
   redactionValues: string[];
   hasSecretMaterial: boolean;
@@ -188,8 +180,7 @@ function isSecretLikeEnvKey(key: string): boolean {
 
 
 function addSecretCandidate(
-  candidates: BashSecretCandidate[],
-  source: BashSecretCandidateSource,
+  candidates: string[],
   key: string,
   value: string,
 ): void {
@@ -198,16 +189,11 @@ function addSecretCandidate(
     return;
   }
 
-  candidates.push({
-    source,
-    key,
-    value: trimmed,
-  });
+  candidates.push(trimmed);
 }
 
 function addEnvSecretCandidates(
-  candidates: BashSecretCandidate[],
-  source: BashSecretCandidateSource,
+  candidates: string[],
   env: Record<string, string> | undefined,
 ): void {
   if (!env) {
@@ -215,7 +201,7 @@ function addEnvSecretCandidates(
   }
 
   for (const [key, value] of Object.entries(env)) {
-    addSecretCandidate(candidates, source, key, value);
+    addSecretCandidate(candidates, key, value);
   }
 }
 
@@ -225,21 +211,19 @@ function buildBashSecretInventory(options: {
   priorSecretSessionEnv?: Record<string, string>;
   currentSecretSessionEnv?: Record<string, string>;
 }): BashSecretInventory {
-  const candidates: BashSecretCandidate[] = [];
-  addEnvSecretCandidates(candidates, "credential", options.resolvedCredentialEnv);
-  addEnvSecretCandidates(candidates, "session", options.priorSecretSessionEnv);
-  addEnvSecretCandidates(candidates, "session", options.currentSecretSessionEnv);
+  const candidates: string[] = [];
+  addEnvSecretCandidates(candidates, options.resolvedCredentialEnv);
+  addEnvSecretCandidates(candidates, options.priorSecretSessionEnv);
+  addEnvSecretCandidates(candidates, options.currentSecretSessionEnv);
 
   for (const [key, value] of Object.entries(options.callEnv ?? {})) {
     if (isSecretLikeEnvKey(key)) {
-      addSecretCandidate(candidates, "call-env-key", key, value);
+      addSecretCandidate(candidates, key, value);
     }
   }
 
-  const sourceSecretValues = new Set(candidates.map((candidate) => candidate.value));
-  const redactionValues = uniqueTrimmedStrings(
-    candidates.map((candidate) => candidate.value),
-  ).sort((left, right) => right.length - left.length);
+  const sourceSecretValues = new Set(candidates);
+  const redactionValues = uniqueTrimmedStrings(candidates).sort((left, right) => right.length - left.length);
 
   return {
     redactionValues,

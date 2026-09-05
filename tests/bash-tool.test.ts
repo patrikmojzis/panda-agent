@@ -1490,6 +1490,73 @@ describe("BashTool", () => {
     }
   });
 
+  it("keeps output persistable when secret sources contain only blank keys or values", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-blank-secrets-"));
+    try {
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        persistOutputThresholdChars: 1,
+        credentialResolver: {
+          resolveEnvironment: async () => ({
+            "": "blank-key-value",
+            " ": "space-key-value",
+            EMPTY_CREDENTIAL: "",
+            BLANK_CREDENTIAL: " \t ",
+          }),
+        },
+      });
+      const result = await tool.run(
+        {
+          command: "printf 'blank-key-value|space-key-value|ordinary output'",
+          env: {EMPTY_TOKEN: "", BLANK_SECRET: " \t "},
+        },
+        createRunContext({
+          cwd: workspace,
+          shell: {cwd: workspace, env: {CACHED: " \t "}, secretEnvKeys: ["CACHED"]},
+        }),
+      );
+      const output = asObject(result);
+
+      expect(output.stdout).toBe("blank-key-value|space-key-value|ordinary output");
+      expect(output.stdoutPersisted).toBe(true);
+      await expect(readFile(String(output.stdoutPath), "utf8")).resolves.toBe(output.stdout);
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
+  it("redacts overlapping secrets and whitespace-padded duplicates across env sources", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-overlapping-secrets-"));
+    try {
+      const tool = new BashTool({
+        outputDirectory: path.join(workspace, "tool-results"),
+        persistOutputThresholdChars: 1,
+        credentialResolver: {
+          resolveEnvironment: async () => ({OPAQUE_VALUE: "token", DUPLICATE: " token "}),
+        },
+      });
+      const context: DefaultAgentSessionContext = {
+        cwd: workspace,
+        shell: {cwd: workspace, env: {CACHED: "token-suffix"}, secretEnvKeys: ["CACHED"]},
+      };
+      const result = await tool.run(
+        {
+          command: 'export COPIED_VALUE="$CALL_SECRET"; printf "%s|%s|%s|%s|ordinary" "$OPAQUE_VALUE" "$DUPLICATE" "$CACHED" "$COPIED_VALUE"',
+          env: {CALL_SECRET: " \ttoken-suffix-extra\t "},
+        },
+        createRunContext(context),
+      );
+      const output = asObject(result);
+
+      expect(output.stdout).toBe("[redacted]| [redacted] |[redacted]| \t[redacted]\t |ordinary");
+      expect(output.stdoutPersisted).toBe(false);
+      expect(output.stdoutPath).toBeUndefined();
+      expect(context.shell?.secretEnvKeys).toContain("COPIED_VALUE");
+    } finally {
+      await rm(workspace, {recursive: true, force: true});
+    }
+  });
+
   it("redacts explicit short secret values without hiding unrelated output", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "runtime-bash-short-secret-"));
     try {
