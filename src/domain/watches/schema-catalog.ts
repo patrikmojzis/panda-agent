@@ -336,30 +336,6 @@ const watchDetectorNotesByKind = {
   ],
 } as const satisfies Record<WatchEventKind, readonly string[]>;
 
-export function getWatchSourceSchema(kind: WatchSourceKind): JsonObject {
-  return formatParameters(watchSourceSchemaByKind[kind]);
-}
-
-export function getWatchDetectorSchema(kind: WatchEventKind): JsonObject {
-  return formatParameters(watchDetectorSchemaByKind[kind]);
-}
-
-export function getWatchSourceExample(kind: WatchSourceKind): JsonValue {
-  return watchSourceExampleByKind[kind];
-}
-
-export function getWatchDetectorExample(kind: WatchEventKind): JsonValue {
-  return watchDetectorExampleByKind[kind];
-}
-
-export function getWatchSourceNotes(kind: WatchSourceKind): string[] {
-  return [...watchSourceNotesByKind[kind]];
-}
-
-export function getWatchDetectorNotes(kind: WatchEventKind): string[] {
-  return [...watchDetectorNotesByKind[kind]];
-}
-
 export function getWatchSchemaCatalog(): JsonObject {
   return {
     sourceKinds: [...WATCH_SOURCE_KINDS],
@@ -367,17 +343,17 @@ export function getWatchSchemaCatalog(): JsonObject {
     sources: Object.fromEntries(WATCH_SOURCE_KINDS.map((kind) => [
       kind,
       {
-        schema: getWatchSourceSchema(kind),
-        example: getWatchSourceExample(kind),
-        notes: getWatchSourceNotes(kind),
+        schema: formatParameters(watchSourceSchemaByKind[kind]),
+        example: watchSourceExampleByKind[kind],
+        notes: [...watchSourceNotesByKind[kind]],
       },
     ])),
     detectors: Object.fromEntries(WATCH_DETECTOR_KINDS.map((kind) => [
       kind,
       {
-        schema: getWatchDetectorSchema(kind),
-        example: getWatchDetectorExample(kind),
-        notes: getWatchDetectorNotes(kind),
+        schema: formatParameters(watchDetectorSchemaByKind[kind]),
+        example: watchDetectorExampleByKind[kind],
+        notes: [...watchDetectorNotesByKind[kind]],
       },
     ])),
   };

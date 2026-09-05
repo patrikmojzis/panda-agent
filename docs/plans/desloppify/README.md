@@ -12,24 +12,23 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–22; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–27; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **4,888 production lines**, including
+Together, these cleanup commits remove **5,020 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
-The latest five cycles remove 68 production lines: unused Bash secret metadata,
-redundant subagent prompt projection, Whisper's dead progress hook, duplicated
-TUI usage additions and repeated request-result polling. Whisper now forwards
-caller cancellation through its existing abort handling. The other four changes
-preserve their supported behavior.
+The latest five cycles remove 132 production lines: repeated Bash audit string
+normalization, background startup bookkeeping, redundant Control routes, an
+obsolete row parser and one-use watch catalog accessors. Their supported behavior,
+error handling, durable ownership and public contracts are preserved.
 
-The frozen combined source passes **3,053 tests across 334 files**, the TypeScript
+The frozen combined source passes **3,056 tests across 334 files**, the TypeScript
 build, import law, prompt/shim contracts, all 19 compiled package imports and a
 model/bash smoke against disposable local Postgres. The test database was stopped
 afterward. Earlier verification records are historical and do not certify later
 edits. The inspect/review/commit loop remains active; the next recon candidates
-are recorded after cycle 22.
+are recorded after cycle 27.
 
 Concurrent credential-name, image-generation and background-job work belongs to
 separate tasks. Preserve those changes and untracked `output/`; they are excluded

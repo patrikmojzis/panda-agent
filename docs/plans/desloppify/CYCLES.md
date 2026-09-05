@@ -620,3 +620,43 @@ callers; no further deletion was justified there.
   and diff check pass. The live coordinator/store/recovery SQL chain is unchanged.
 - State: reviewed and committed locally with this cycle. No query, row format,
   migration, recovery behavior or public package contract changed.
+
+## Cycle 27 — Construct the watch schema catalog directly
+
+- Finding: six exported accessors were each used only by the catalog constructor
+  in the same file. None was exposed through a supported package entrypoint.
+- Change: construct the catalog with the existing schema formatter, example
+  lookups and copied notes directly, removing those forwarding functions.
+- Result: 24 fewer production lines; no new test scaffolding.
+- Evidence: 217 command/CLI/shim tests pass, as do typecheck, import law and
+  shim/prompt checks. Independent review verified the complete 12,154-byte catalog
+  against the previous implementation and both real command descriptors. All 26
+  repeated-call reference comparisons match: kinds, schemas and notes remain
+  fresh, while examples remain shared. Source/detector order is unchanged.
+- State: reviewed and committed locally with this cycle. No schema, example,
+  note, model-facing text or command policy changed.
+
+## Combined verification after cycles 23–27
+
+All 3,056 tests across 334 files pass with no failures or skips:
+`.temp/desloppify-cycles23-27-unit-results.json`. The frozen source also passes the
+TypeScript build, import law, prompt/shim contracts, all 19 compiled package
+imports and shared `Thread` identity. No generated contract changed.
+
+The model/bash smoke passed all five assertions against disposable local Postgres:
+`.temp/runtime-smoke/desloppify-cycles23-27-20260905/summary.json`. The temporary
+server was stopped afterward. Production received no writes or operational changes.
+
+These five cycles remove 132 production lines, bringing the cleanup total to
+5,020, including the previously recorded 75 lines relocated into tests. Bash
+audit, startup cleanup, Control routing and dead row-parser commits are
+`39540ab9`, `3ac63511`, `c39f4244` and `5a7e3620`; watch catalog cleanup and this
+record are committed with cycle 27. Unrelated commits and `output/` are excluded.
+
+Read-only recon found a next bounded candidate: private string-parsing copies in
+watch, scheduled-task and scheduled-command command modules can use existing
+`lib/strings` helpers. Ninety value/error comparisons match; implementation still
+needs caller-level validation checks, exact error labels and preservation of
+cron's explicit null-to-clear behavior. No such change is included here.
+Other inspected scheduling limit/claim/renewal paths, channel/provider helpers
+and supported runtime context exports retain meaningful policy or public callers.
