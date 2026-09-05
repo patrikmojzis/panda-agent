@@ -13,9 +13,9 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–69; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–70; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,840 production lines**, including
+Together, these cleanup commits remove **5,837 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
@@ -93,24 +93,32 @@ removing 83 UI lines. The live confirmation button, its promise handling, the
 briefing caller and the shared switch primitive remain byte-for-byte unchanged.
 Caller/export checks, Control typecheck and production build pass.
 
-The frozen backend passes **3,267 unit tests across 341 files**, root build/typecheck,
+Cycle 70 extends runtime cleanup through post-bootstrap command registration.
+A failing custom subagent-command factory now releases Panda's coordinator and
+runtime resources while preserving the original failure. Required commands
+returning null receive the same cleanup. Three regressions pass; normal shutdown
+and successful registration order remain unchanged. The repair adds three
+production lines and 65 test lines.
+
+The frozen backend passes **3,270 unit tests across 341 files**, root build/typecheck,
 import law, all 19 compiled package
 imports and shared `Thread` identity. The initial failure of an unchanged
 cancellation test and its passing isolated/file/full reruns are recorded under
 cycle 54; its precise cause remains unproven. Cycle 57 passed prompt/shim
 contracts, eleven real-PostgreSQL visibility tests and 102 baseline/current
 comparisons. Cycles 58–59 leave those queries and authority checks unchanged.
-The cycle 68 common-runtime smoke applied all 25 migrations to fresh local
+The cycle 70 common-runtime smoke applied all 25 migrations to fresh local
 PostgreSQL and completed an owned run with applied input, one tool call, four
 messages and idle state. It used injected model responses and blocked external
 requests. Focused bootstrap and observer tests prove the ownership repairs; the
 smoke avoids application bootstrap and does not exercise those failure paths or
 the actor listings. The test cluster was stopped afterward. Prompt/shim contracts
-pass; cycle 68 changes only bootstrap source metadata in the snapshot. All 981
-compiled declarations remain unchanged. Runtime-activity reads and the later
-custom subagent-command registration boundary remain open. The latter now has
-a public-caller reproduction showing three unclosed pools after its factory
-throws. Their evidence and constraints are recorded in the cycle record. The
+pass; cycle 70 changes only create-runtime source metadata in the snapshot. All
+981 compiled declarations remain unchanged. Runtime-activity history reads and
+cleanup error reporting remain open. A connector shutdown reproduction shows
+that a throwing error reporter prevents later worker stop and lease release;
+the shared cleanup helper also loses falsy thrown values under `rethrow: true`.
+Their evidence and constraints are recorded in the cycle record. The
 inspect/review/commit loop remains active.
 
 Concurrent credential-name, image-generation and background-job work belongs to

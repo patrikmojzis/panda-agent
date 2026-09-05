@@ -458,7 +458,55 @@ describe("createRuntime", () => {
     expect([endOrder[1], endOrder[2], endOrder[0]]).toEqual([...endOrder].sort((left, right) => left - right));
   });
 
+  it.each(["factory throw", "missing command", "cleanup rejection"])("closes runtime resources after subagent registration failure: %s", async (mode) => {
+    vi.useFakeTimers({toFake: ["setInterval", "clearInterval"]});
+    const failure = mode === "cleanup rejection" ? undefined : new Error("custom command factory failed");
+    if (mode === "cleanup rejection") {
+      runtimeMocks.coordinatorStop.mockRejectedValueOnce(new Error("coordinator close failed"));
+    }
+    const descriptor = {
+      name: "custom.subagent", summary: "Test command.", description: "Test command.",
+      usage: "panda custom subagent", inputModes: ["json"], outputModes: ["json"], arguments: [], examples: [],
+    } as const;
+    const module: CommandCatalogModule = {
+      descriptor,
+      route: {helpArgv: ["custom", "subagent"], jsonArgv: ["custom", "subagent", "--json", "@payload.json"]},
+      policy: {capability: "custom.subagent"},
+      registration: {phase: "runtime.subagent"},
+      createCommand: () => {
+        if (mode === "missing command") return null;
+        throw failure;
+      },
+    };
+    try {
+      const creating = createRuntime({
+        dbUrl: "postgres://panda:test@localhost:5432/panda",
+        resolveDefinition: vi.fn(),
+        commandModules: [module],
+      });
+      if (mode === "missing command") {
+        await expect(creating).rejects.toThrow("Panda command module custom.subagent did not create a command.");
+      } else {
+        await expect(creating).rejects.toBe(failure);
+      }
+      expect(runtimeMocks.coordinatorStop).toHaveBeenCalledTimes(1);
+      expect(runtimeMocks.poolInstances).toHaveLength(3);
+      for (const pool of runtimeMocks.poolInstances) {
+        expect(pool.off).toHaveBeenCalledTimes(1);
+        expect(pool.end).toHaveBeenCalledTimes(1);
+        expect(runtimeMocks.coordinatorStop.mock.invocationCallOrder[0]).toBeLessThan(pool.end.mock.invocationCallOrder[0]!);
+      }
+      expect(runtimeMocks.client.query).not.toHaveBeenCalled();
+      expect(providerRuntimeMocks.close).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("registers supplied command modules with the runtime dispatcher", async () => {
+    const phases: string[] = [];
     const descriptor = {
       name: "custom.echo",
       summary: "Echo a custom message.",
@@ -479,19 +527,34 @@ describe("createRuntime", () => {
         capability: "custom.echo",
         toolGroups: ["core"],
       },
-      createCommand: () => ({
-        descriptor,
-        async execute(request) {
-          return {
-            ok: true,
-            command: "custom.echo",
-            output: request.input,
-          };
-        },
-      }),
+      createCommand: () => {
+        phases.push("runtime");
+        return {
+          descriptor,
+          async execute(request) {
+            return {
+              ok: true,
+              command: "custom.echo",
+              output: request.input,
+            };
+          },
+        };
+      },
     };
 
-    const commandCatalog = createCommandCatalog([customModule]);
+    const subagentDescriptor = {...descriptor, name: "custom.subagent"};
+    const subagentModule: CommandCatalogModule = {
+      descriptor: subagentDescriptor,
+      route: {helpArgv: ["custom", "subagent"], jsonArgv: ["custom", "subagent", "--json", "@payload.json"]},
+      policy: {capability: "custom.subagent"},
+      registration: {phase: "runtime.subagent"},
+      createCommand: ({subagentSessions}) => {
+        phases.push("runtime.subagent");
+        expect(subagentSessions).toBeDefined();
+        return {descriptor: subagentDescriptor, execute: async () => ({ok: true, command: "custom.subagent", output: {}})};
+      },
+    };
+    const commandCatalog = createCommandCatalog([subagentModule, customModule]);
     const runtime = await createRuntime({
       dbUrl: "postgres://panda:test@localhost:5432/panda",
       commandCatalog,
@@ -499,9 +562,11 @@ describe("createRuntime", () => {
     });
 
     expect(runtime.commandCatalog).toBe(commandCatalog);
-    expect(runtime.commandModules).toEqual([customModule]);
+    expect(runtime.commandModules).toEqual([subagentModule, customModule]);
+    expect(phases).toEqual(["runtime", "runtime.subagent"]);
     await expect(runtime.commandExecutor.getCommand("custom.echo")).resolves.toEqual(descriptor);
-    await expect(runtime.commandExecutor.listCommands()).resolves.toEqual([descriptor]);
+    await expect(runtime.commandExecutor.getCommand("custom.subagent")).resolves.toEqual(subagentDescriptor);
+    await expect(runtime.commandExecutor.listCommands()).resolves.toEqual([descriptor, subagentDescriptor]);
     await expect(runtime.commandExecutor.listCommands({
       agentKey: "panda",
       sessionId: "session-main",

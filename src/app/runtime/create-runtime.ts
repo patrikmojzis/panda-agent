@@ -201,84 +201,86 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
     dbUrl,
   });
 
-  const resolverContext: DefinitionResolverContext = {
-    agentStore: runtime.agentStore,
-    backgroundJobService: runtime.backgroundJobService,
-    browserService: runtime.browserService,
-    credentialResolver: runtime.credentialResolver,
-    executionEnvironments: runtime.executionEnvironments,
-    executionEnvironmentResolver: runtime.executionEnvironmentResolver,
-    executionEnvironmentService: runtime.executionEnvironmentService,
-    pairedIdentities: new PostgresPairedIdentityDirectory({pool: runtime.pool}),
-    sessionStore: runtime.sessionStore,
-    subagentProfiles: runtime.subagentProfiles,
-    store: runtime.store,
-    shellStateStore: runtime.shellStateStore,
-    scheduledTasks: runtime.scheduledTasks,
-    email: runtime.email,
-    wikiBindingService: runtime.wikiBindingService,
-    commandCatalog: runtime.commandCatalog,
-    commandModules: runtime.commandModules,
-    mainTools: runtime.mainTools,
-    subagentTools: runtime.subagentTools,
-  };
-
-  const coordinatorDrainTimeoutMs = readPositiveIntegerEnv(
-    "PANDA_CORE_THREAD_RUN_DRAIN_TIMEOUT_MS",
-    DEFAULT_THREAD_RUN_DRAIN_TIMEOUT_MS,
-  );
-  const coordinator = new ThreadRuntimeCoordinator({
-    store: runtime.store,
-    sessionCompactionRequests: runtime.sessionCompactionRequests,
-    maxConcurrentRuns: readPositiveIntegerEnv(
-      "PANDA_CORE_THREAD_RUN_CONCURRENCY",
-      DEFAULT_THREAD_RUN_CONCURRENCY,
-    ),
-    shutdownDrainTimeoutMs: coordinatorDrainTimeoutMs,
-    modelCallObserver: runtime.modelCallRecorder,
-    resolveDefinition: async (thread) => {
-      const definition = await options.resolveDefinition(thread, resolverContext);
-      return {...definition, model: definition.model ?? resolveDefaultAgentModelSelector()};
-    },
-    onEvent: options.onEvent,
-  });
-  const subagentSessions = new SubagentSessionService({
-    sessionLifecycle: runtime.sessionLifecycle,
-    sessions: runtime.sessionStore,
-    threads: runtime.store,
-    profiles: runtime.subagentProfiles,
-    environments: runtime.executionEnvironmentService,
-    a2aBindings: runtime.a2aBindings,
-    commandCatalog: runtime.commandCatalog,
-    coordinator,
-  });
-  const sessionCompaction = new SessionCompactionService({
-    sessions: runtime.sessionStore,
-    threads: runtime.store,
-    coordinator,
-  });
-  const archiveSessions = new PostgresSessionStore({pool: runtime.pool});
-  const sessionArchive = new SessionArchiveService({
-    sessions: archiveSessions,
-    archiveStore: new PostgresSessionArchive({
-      pool: runtime.pool,
-      sessions: archiveSessions,
-      threads: new PostgresThreadRuntimeStore({pool: runtime.pool}),
-    }),
-    coordinator,
-    backgroundJobs: runtime.backgroundJobService,
-  });
-  runtime.commandExecutor.registerCommands(runtime.commandCatalog.createCommands(
-    {subagentSessions} satisfies Required<Pick<AgentCommandModuleDependencies, "subagentSessions">>,
-    {registrationPhase: "runtime.subagent", requireAll: true},
-  ));
-
-  runtime.backgroundJobService.setBackgroundCompletionHandler(async (record) => {
-    await coordinator.submitInput(record.threadId, buildBackgroundToolThreadInput(record), "wake");
-  });
-
+  let coordinatorForCleanup: ThreadRuntimeCoordinator | null = null;
   let notificationUnsubscribe: (() => Promise<void>) | null = null;
   try {
+    const resolverContext: DefinitionResolverContext = {
+      agentStore: runtime.agentStore,
+      backgroundJobService: runtime.backgroundJobService,
+      browserService: runtime.browserService,
+      credentialResolver: runtime.credentialResolver,
+      executionEnvironments: runtime.executionEnvironments,
+      executionEnvironmentResolver: runtime.executionEnvironmentResolver,
+      executionEnvironmentService: runtime.executionEnvironmentService,
+      pairedIdentities: new PostgresPairedIdentityDirectory({pool: runtime.pool}),
+      sessionStore: runtime.sessionStore,
+      subagentProfiles: runtime.subagentProfiles,
+      store: runtime.store,
+      shellStateStore: runtime.shellStateStore,
+      scheduledTasks: runtime.scheduledTasks,
+      email: runtime.email,
+      wikiBindingService: runtime.wikiBindingService,
+      commandCatalog: runtime.commandCatalog,
+      commandModules: runtime.commandModules,
+      mainTools: runtime.mainTools,
+      subagentTools: runtime.subagentTools,
+    };
+
+    const coordinatorDrainTimeoutMs = readPositiveIntegerEnv(
+      "PANDA_CORE_THREAD_RUN_DRAIN_TIMEOUT_MS",
+      DEFAULT_THREAD_RUN_DRAIN_TIMEOUT_MS,
+    );
+    const coordinator = new ThreadRuntimeCoordinator({
+      store: runtime.store,
+      sessionCompactionRequests: runtime.sessionCompactionRequests,
+      maxConcurrentRuns: readPositiveIntegerEnv(
+        "PANDA_CORE_THREAD_RUN_CONCURRENCY",
+        DEFAULT_THREAD_RUN_CONCURRENCY,
+      ),
+      shutdownDrainTimeoutMs: coordinatorDrainTimeoutMs,
+      modelCallObserver: runtime.modelCallRecorder,
+      resolveDefinition: async (thread) => {
+        const definition = await options.resolveDefinition(thread, resolverContext);
+        return {...definition, model: definition.model ?? resolveDefaultAgentModelSelector()};
+      },
+      onEvent: options.onEvent,
+    });
+    coordinatorForCleanup = coordinator;
+    const subagentSessions = new SubagentSessionService({
+      sessionLifecycle: runtime.sessionLifecycle,
+      sessions: runtime.sessionStore,
+      threads: runtime.store,
+      profiles: runtime.subagentProfiles,
+      environments: runtime.executionEnvironmentService,
+      a2aBindings: runtime.a2aBindings,
+      commandCatalog: runtime.commandCatalog,
+      coordinator,
+    });
+    const sessionCompaction = new SessionCompactionService({
+      sessions: runtime.sessionStore,
+      threads: runtime.store,
+      coordinator,
+    });
+    const archiveSessions = new PostgresSessionStore({pool: runtime.pool});
+    const sessionArchive = new SessionArchiveService({
+      sessions: archiveSessions,
+      archiveStore: new PostgresSessionArchive({
+        pool: runtime.pool,
+        sessions: archiveSessions,
+        threads: new PostgresThreadRuntimeStore({pool: runtime.pool}),
+      }),
+      coordinator,
+      backgroundJobs: runtime.backgroundJobService,
+    });
+    runtime.commandExecutor.registerCommands(runtime.commandCatalog.createCommands(
+      {subagentSessions} satisfies Required<Pick<AgentCommandModuleDependencies, "subagentSessions">>,
+      {registrationPhase: "runtime.subagent", requireAll: true},
+    ));
+
+    runtime.backgroundJobService.setBackgroundCompletionHandler(async (record) => {
+      await coordinator.submitInput(record.threadId, buildBackgroundToolThreadInput(record), "wake");
+    });
+
     notificationUnsubscribe = await listenThreadRuntimeNotifications({
       pool: runtime.notificationPool,
       listener: (notification) => coordinator.handleStoreNotification(notification),
@@ -289,96 +291,97 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
         });
       },
     });
+
+    let closePromise: Promise<void> | null = null;
+    const close = (): Promise<void> => {
+      if (closePromise) {
+        return closePromise;
+      }
+
+      const unsubscribe = notificationUnsubscribe;
+      notificationUnsubscribe = null;
+      closePromise = runCleanupSteps([
+        {
+          label: "thread-runtime-listener",
+          run: () => closeWithin("thread runtime listener", async () => unsubscribe?.(), RUNTIME_CLOSE_STEP_TIMEOUT_MS),
+        },
+        {
+          label: "thread-runtime-coordinator",
+          run: () => closeWithin(
+            "thread runtime coordinator",
+            () => coordinator.stop(),
+            coordinatorDrainTimeoutMs + RUNTIME_CLOSE_STEP_TIMEOUT_MS,
+          ),
+        },
+        // Pi-AI caches provider transports by prompt-cache session. The daemon
+        // owns one runtime, so process teardown must close that global cache
+        // after model work settles or WebSockets keep the process alive.
+        {label: "provider-runtime-resources", run: async () => closePiAiRuntimeResources()},
+        {
+          label: "runtime",
+          run: () => closeWithin("runtime resources", () => runtime.close(), RUNTIME_CLOSE_STEP_TIMEOUT_MS),
+        },
+      ], undefined, {rethrow: true});
+      return closePromise;
+    };
+
+    return {
+      agentStore: runtime.agentStore,
+      apps: runtime.apps,
+      appAuth: runtime.appAuth,
+      controlAuth: runtime.controlAuth,
+      controlReads: runtime.controlReads,
+      controlHome: runtime.controlHome,
+      controlOperator: runtime.controlOperator,
+      controlMcp: runtime.controlMcp,
+      controlBriefings: runtime.controlBriefings,
+      controlHeartbeats: runtime.controlHeartbeats,
+      controlScheduledTasks: runtime.controlScheduledTasks,
+      controlWatches: runtime.controlWatches,
+      controlRuntimeActivity: runtime.controlRuntimeActivity,
+      controlConnectorAccounts: runtime.controlConnectorAccounts,
+      controlModelCallTraces: runtime.controlModelCallTraces,
+      modelCallTraces: runtime.modelCallTraces,
+      backgroundJobService: runtime.backgroundJobService,
+      browserService: runtime.browserService,
+      credentialResolver: runtime.credentialResolver,
+      executionEnvironments: runtime.executionEnvironments,
+      executionEnvironmentResolver: runtime.executionEnvironmentResolver,
+      executionEnvironmentService: runtime.executionEnvironmentService,
+      identityStore: runtime.identityStore,
+      sessionStore: runtime.sessionStore,
+      subagentProfiles: runtime.subagentProfiles,
+      store: runtime.store,
+      shellStateStore: runtime.shellStateStore,
+      scheduledTasks: runtime.scheduledTasks,
+      scheduledCommands: runtime.scheduledCommands,
+      scheduledCommandIntegrity: runtime.scheduledCommandIntegrity,
+      scheduledCommandService: runtime.scheduledCommandService,
+      email: runtime.email,
+      watches: runtime.watches,
+      commandExecutor: runtime.commandExecutor,
+      commandLeases: runtime.commandLeases,
+      commandFileResolver: runtime.commandFileResolver,
+      commandCatalog: runtime.commandCatalog,
+      commandModules: runtime.commandModules,
+      subagentSessions,
+      sessionLifecycle: runtime.sessionLifecycle,
+      sessionCompaction,
+      sessionArchive,
+      a2aBindings: runtime.a2aBindings,
+      coordinator,
+      mainTools: runtime.mainTools,
+      subagentTools: runtime.subagentTools,
+      pool: runtime.pool,
+      notificationPool: runtime.notificationPool,
+      close,
+    };
   } catch (error) {
     await runCleanupSteps([
-      {label: "thread-runtime-coordinator", run: () => coordinator.stop()},
+      {label: "thread-runtime-listener", run: () => notificationUnsubscribe?.()},
+      {label: "thread-runtime-coordinator", run: () => coordinatorForCleanup?.stop()},
       {label: "runtime", run: () => runtime.close()},
-    ]);
+    ]).catch(() => undefined);
     throw error;
   }
-
-  let closePromise: Promise<void> | null = null;
-  const close = (): Promise<void> => {
-    if (closePromise) {
-      return closePromise;
-    }
-
-    const unsubscribe = notificationUnsubscribe;
-    notificationUnsubscribe = null;
-    closePromise = runCleanupSteps([
-      {
-        label: "thread-runtime-listener",
-        run: () => closeWithin("thread runtime listener", async () => unsubscribe?.(), RUNTIME_CLOSE_STEP_TIMEOUT_MS),
-      },
-      {
-        label: "thread-runtime-coordinator",
-        run: () => closeWithin(
-          "thread runtime coordinator",
-          () => coordinator.stop(),
-          coordinatorDrainTimeoutMs + RUNTIME_CLOSE_STEP_TIMEOUT_MS,
-        ),
-      },
-      // Pi-AI caches provider transports by prompt-cache session. The daemon
-      // owns one runtime, so process teardown must close that global cache
-      // after model work settles or WebSockets keep the process alive.
-      {label: "provider-runtime-resources", run: async () => closePiAiRuntimeResources()},
-      {
-        label: "runtime",
-        run: () => closeWithin("runtime resources", () => runtime.close(), RUNTIME_CLOSE_STEP_TIMEOUT_MS),
-      },
-    ], undefined, {rethrow: true});
-    return closePromise;
-  };
-
-  return {
-    agentStore: runtime.agentStore,
-    apps: runtime.apps,
-    appAuth: runtime.appAuth,
-    controlAuth: runtime.controlAuth,
-    controlReads: runtime.controlReads,
-    controlHome: runtime.controlHome,
-    controlOperator: runtime.controlOperator,
-    controlMcp: runtime.controlMcp,
-    controlBriefings: runtime.controlBriefings,
-    controlHeartbeats: runtime.controlHeartbeats,
-    controlScheduledTasks: runtime.controlScheduledTasks,
-    controlWatches: runtime.controlWatches,
-    controlRuntimeActivity: runtime.controlRuntimeActivity,
-    controlConnectorAccounts: runtime.controlConnectorAccounts,
-    controlModelCallTraces: runtime.controlModelCallTraces,
-    modelCallTraces: runtime.modelCallTraces,
-    backgroundJobService: runtime.backgroundJobService,
-    browserService: runtime.browserService,
-    credentialResolver: runtime.credentialResolver,
-    executionEnvironments: runtime.executionEnvironments,
-    executionEnvironmentResolver: runtime.executionEnvironmentResolver,
-    executionEnvironmentService: runtime.executionEnvironmentService,
-    identityStore: runtime.identityStore,
-    sessionStore: runtime.sessionStore,
-    subagentProfiles: runtime.subagentProfiles,
-    store: runtime.store,
-    shellStateStore: runtime.shellStateStore,
-    scheduledTasks: runtime.scheduledTasks,
-    scheduledCommands: runtime.scheduledCommands,
-    scheduledCommandIntegrity: runtime.scheduledCommandIntegrity,
-    scheduledCommandService: runtime.scheduledCommandService,
-    email: runtime.email,
-    watches: runtime.watches,
-    commandExecutor: runtime.commandExecutor,
-    commandLeases: runtime.commandLeases,
-    commandFileResolver: runtime.commandFileResolver,
-    commandCatalog: runtime.commandCatalog,
-    commandModules: runtime.commandModules,
-    subagentSessions,
-    sessionLifecycle: runtime.sessionLifecycle,
-    sessionCompaction,
-    sessionArchive,
-    a2aBindings: runtime.a2aBindings,
-    coordinator,
-    mainTools: runtime.mainTools,
-    subagentTools: runtime.subagentTools,
-    pool: runtime.pool,
-    notificationPool: runtime.notificationPool,
-    close,
-  };
 }

@@ -2213,7 +2213,7 @@ evidence that every possible initialization failure is now covered.
 - State: independently reviewed and committed locally with this cycle. No
   production access, push or deployment. Cycle 67 is committed as `51e40c8d`.
 
-### Next: custom subagent-command registration ownership
+### Finding carried into cycle 70: subagent-command registration ownership
 
 After bootstrap returns, `src/app/runtime/create-runtime.ts` registers commands
 for `runtime.subagent` before its notification-listener cleanup boundary. An
@@ -2228,7 +2228,7 @@ Evidence: `.temp/desloppify-subagent-registration.test.ts` and
 Extend runtime assembly's ownership boundary to cover this supported command
 phase, preserving synchronous command registration order, the lazy definition
 callback and the existing successful runtime surface. Do not wrap or suppress
-the command factory error. This remains pending work, separate from cycle 68.
+the command factory error. Cycle 70 below addresses this separate boundary.
 
 ## Cycle 69 — Delete the unused confirmation switch
 
@@ -2262,3 +2262,74 @@ the command factory error. This remains pending work, separate from cycle 68.
   production access, push or deployment. Cycle 68 is committed as `eef33f2a`.
   Runtime-activity history reads and custom subagent-command registration
   ownership remain open as recorded above.
+
+## Cycle 70 — Own runtime resources through command registration
+
+- Finding: after `bootstrapRuntime` returned, `createRuntime` assembled the
+  coordinator and registered `runtime.subagent` commands outside its cleanup
+  boundary. An actual caller-supplied command factory could throw while leaving
+  three pools, their observers and the recorder timer alive. The public caller
+  reproduction is `.temp/desloppify-subagent-registration-before.json`.
+- Change: `src/app/runtime/create-runtime.ts` moves its existing `try` to cover
+  post-bootstrap assembly through the successful return. A private nullable
+  cleanup reference owns the coordinator immediately after construction. On
+  failure, cleanup releases any returned notification listener, then stops the
+  coordinator and closes runtime resources. The original rejection survives a
+  cleanup rejection. No general resource framework or provider-cache shutdown
+  is added to failed assembly.
+- Preserved behavior: command registration remains synchronous and ordered by
+  its existing phases. The normal close function, timeouts, idempotence,
+  provider-cache ordering, definition callback and returned runtime remain
+  unchanged. The owner covers Panda's acquired resources; arbitrary external
+  side effects inside custom factories are not owned or reversed here.
+- Regression evidence: three new cases in `tests/panda-runtime.test.ts` fail
+  against `2be8a0dd`: a factory throws, a required factory returns null, and a
+  factory throws `undefined` while coordinator cleanup also rejects. The
+  enhanced successful case passes on both versions and checks mixed-phase
+  command creation and dispatch. The author passes 56 focused tests; independent
+  review passes 39 across a different three-file set. It also verifies that all
+  15 successful-path statements and 70 other top-level statements are unchanged.
+- Gates: **3,270 tests across 341 files** pass with no failures, skips or todo
+  cases. Root build/typecheck, import-law ratchet, prompt/shim contracts and all
+  19 compiled package imports pass, retaining shared `Thread` identity. All 981
+  compiled declarations match the baseline. Only create-runtime bytes, lines
+  and hash change in `scripts/ci/prompt-contracts.snapshot.json`. Evidence:
+  `.temp/desloppify-cycle70-frozen.json`,
+  `.temp/desloppify-cycle70-before-results.json` and
+  `.temp/desloppify-cycle70-unit-results.json`.
+- PostgreSQL: the offline common-runtime smoke applies 25 migrations to a fresh
+  disposable local database and completes one owned run, with applied input,
+  one tool call, four messages and idle state. Model responses are injected,
+  external requests are blocked, and the cluster is stopped afterward. This
+  smoke avoids application bootstrap; focused caller tests cover the repaired
+  registration boundary. Evidence:
+  `.temp/desloppify-cycle70-offline-smoke-output.log`.
+- Result: 164 production lines added and 161 removed, net **three added**;
+  most of the diff is indentation. Tests add 65 lines net. Cumulative reduction
+  becomes **5,837 production lines across 71 cleanup commits**, including 75
+  lines moved into tests.
+- State: independently reviewed and committed locally with this cycle. No
+  production access, push or deployment. Cycle 69 is committed as `2be8a0dd`.
+
+### Next: cleanup reporting must not abandon remaining resources
+
+`src/lib/cleanup.ts` awaits its error reporter inside the cleanup catch. A
+reporter rejection stops the remaining cleanup loop. Through the actual
+`stopConnectorWorkerRuntime` in `src/integrations/channels/worker-runtime.ts`,
+an action-worker stop failure followed by a throwing reporter skips outbound
+worker stop and connector-lease release. Healthy shutdown and an ordinary
+worker-stop failure with a successful reporter complete the sequence. The
+reporter error currently reaches the caller; preserve its observability while
+finishing the remaining cleanup steps.
+
+The helper's nullish/truthiness error sentinel also makes `rethrow: true`
+silently fulfill after `undefined`, `null`, `false`, zero or an empty string is
+thrown. A tagged failure record can retain these values without changing the
+ordinary default policy of swallowing reported cleanup errors. Retain current
+exception precedence: after completing the sequence, throw the first reporter
+failure if present; otherwise `rethrow: true` throws the first cleanup failure.
+Keep the exact values without aggregation or wrapping. Caller regressions must
+verify that policy before implementation is accepted. The three connector cases
+and five falsy-value checks are recorded in
+`.temp/desloppify-cleanup-reporting-before.json`; they use supplied local
+workers and callbacks with no database, network or persistent resources.
