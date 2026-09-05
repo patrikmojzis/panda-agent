@@ -9,7 +9,7 @@ import type {JsonValue} from "../../lib/json.js";
 import type {DefaultAgentSessionContext} from "../../app/runtime/panda-session-context.js";
 import {browserActionSchema} from "../../integrations/browser/action-schema.js";
 import type {BrowserAction} from "../../integrations/browser/action-types.js";
-import {getDefaultBrowserRunnerClient} from "../../integrations/browser/client.js";
+import {BrowserRunnerClient} from "../../integrations/browser/client.js";
 
 export interface BrowserToolService<TContext = DefaultAgentSessionContext> {
   handle(action: BrowserAction, run: RunContext<TContext>): Promise<ToolResultPayload>;
@@ -36,7 +36,7 @@ export class BrowserTool<TContext = DefaultAgentSessionContext>
 
   constructor(options: BrowserToolOptions<TContext> = {}) {
     super();
-    this.service = options.service ?? getDefaultBrowserRunnerClient({
+    this.service = options.service ?? new BrowserRunnerClient({
       env: options.env,
       fetchImpl: options.fetchImpl,
       actionTimeoutMs: options.actionTimeoutMs,

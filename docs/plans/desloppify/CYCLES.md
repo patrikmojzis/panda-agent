@@ -778,3 +778,21 @@ No additional implementation is included in this batch.
   returns the original untrimmed string.
 - State: reviewed and committed locally with this cycle. Error precedence,
   descriptors, authority checks, mutation order and credential contents are intact.
+
+## Cycle 34 — Remove the browser client singleton
+
+- Finding: default `BrowserTool` instances shared the first constructed client's
+  configuration. A second tool could silently use the first tool's runner URL,
+  authentication and fetch implementation.
+- Change: construct the default `BrowserRunnerClient` in each tool and delete the
+  global cache/getter. Explicitly injected services still take precedence.
+- Result: 12 fewer production lines; 27 test lines added.
+- Evidence: the new caller-level regression failed before the fix and now passes.
+  Independent review passed 65 browser/protocol/public-entrypoint/runtime tests,
+  typecheck and import law. The client class and helpers are byte-identical; only
+  the tool's import/construction and the unused cache/getter change. Lazy default
+  environment resolution and public exports remain intact.
+- State: reviewed and committed locally with this cycle. Per-tool configuration
+  is intentionally corrected. The daemon still injects its owned shared client;
+  remote browser-session ownership, explicit `close()` and TTL cleanup remain.
+  No live Chromium or production checks were performed.

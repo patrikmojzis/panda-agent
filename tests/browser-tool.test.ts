@@ -523,6 +523,33 @@ describe("BrowserTool", () => {
     expect(result.details).toMatchObject({action: "navigate", title: "Example"});
   });
 
+  it("uses each default tool's runner configuration and fetch implementation", async () => {
+    const clients = ["first", "second"].map((name) => {
+      const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({
+        ok: true,
+        text: name,
+      }), {status: 200}));
+      const tool = new BrowserTool({
+        env: {
+          BROWSER_RUNNER_URL: `https://${name}.example.test/browser`,
+          BROWSER_RUNNER_SHARED_SECRET: `${name}-secret`,
+        },
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+      return {name, fetchImpl, tool};
+    });
+    const context = {agentKey: "panda", sessionId: "session-shared", threadId: "thread-shared"};
+
+    for (const {name, fetchImpl, tool} of clients) {
+      const result = await tool.run({action: "snapshot"}, createRunContext(context));
+      expect(result.content).toEqual([{type: "text", text: name}]);
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`https://${name}.example.test/browser/action`);
+      expect(fetchImpl.mock.calls[0]?.[1]?.headers).toMatchObject({authorization: `Bearer ${name}-secret`});
+      expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toEqual({...context, action: {action: "snapshot"}});
+    }
+  });
+
   it("keeps live screenshot previews but redacts inline image data for persistence", () => {
     const tool = new BrowserTool({
       service: {

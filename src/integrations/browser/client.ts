@@ -364,15 +364,3 @@ export class BrowserRunnerClient<TContext extends BrowserRuntimeContext = Browse
 
   async close(): Promise<void> {}
 }
-
-let defaultBrowserRunnerClient: BrowserRunnerClient | null = null;
-
-export function getDefaultBrowserRunnerClient(
-  options: BrowserRunnerClientOptions = {},
-): BrowserRunnerClient {
-  if (!defaultBrowserRunnerClient) {
-    defaultBrowserRunnerClient = new BrowserRunnerClient(options);
-  }
-
-  return defaultBrowserRunnerClient;
-}
