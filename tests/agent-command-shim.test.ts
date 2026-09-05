@@ -6801,6 +6801,90 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     });
   });
 
+  describe.each([
+    {channel: "telegram", flag: "--chat", key: "conversationId", target: "a conversation id", placeholder: "<conversation-id>", connector: "a key"},
+    {channel: "discord", flag: "--channel", key: "channelId", target: "a channel id", placeholder: "<channel-id>", connector: "a connector key"},
+    {channel: "whatsapp", flag: "--chat", key: "chatId", target: "a chat id or phone number", placeholder: "<jid-or-phone>", connector: "a connector key"},
+  ])("$channel channel history parser", ({channel, flag, key, target, placeholder, connector}) => {
+    const descriptor = DEFAULT_AGENT_COMMAND_DESCRIPTORS.find((entry) => entry.name === `${channel}.history`)!;
+    const label = `panda ${channel} history`;
+
+    it("preserves native values, last-value wins, optional omission and generated JSON bypass", async () => {
+      const server = await startCommandHttpServer({
+        executor: new RuntimeCommandDispatcher({commands: [echoInputCommand(descriptor)]}),
+        leaseVerifier: createTestCommandLeaseVerifier([["token-a", {
+          agentKey: "panda", sessionId: "session-main", allowedCommands: [descriptor.name],
+        }]]),
+      });
+      servers.push(server);
+      const rawTarget = " target\n\"quoted\" ";
+      const jsonInput = {[key]: null, direction: "sideways", limit: 0, extra: true};
+      const cases = [
+        {args: [flag, "target"], input: {[key]: "target"}},
+        {args: ["--direction", "inbound", "--limit", "2", flag, "first", "--connector", "first", flag, rawTarget,
+          "--connector", "", "--direction", "outbound", "--limit", "0007"], input: {[key]: rawTarget, direction: "outbound", limit: 7}},
+        {args: [flag, "", flag, "last", "--direction", "all", "--connector", " padded "],
+          input: {[key]: "last", direction: "all", connectorKey: " padded "}},
+        {args: [flag, "--connector", "--connector", "--direction"], input: {[key]: "--connector", connectorKey: "--direction"}},
+        {args: ["--json", JSON.stringify(jsonInput)], input: jsonInput},
+      ];
+      for (const {args, input} of cases) {
+        const {stdout, stderr} = await execFileAsync(shimPath, [channel, "history", ...args], {env: shimEnv(server)});
+        expect(JSON.parse(stdout)).toEqual(input);
+        expect(stderr).toBe("");
+      }
+    });
+
+    it("rejects malformed native options before transport with exact diagnostics", async () => {
+      const directory = await mkdtemp(path.join(os.tmpdir(), "panda-history-parser-"));
+      directories.push(directory);
+      const required = `${label} requires ${flag} ${placeholder}.`;
+      const cases: Array<[string[], string]> = [
+        [[], required],
+        [[flag], `${label} ${flag} requires ${target}.`],
+        [[flag, ""], required],
+        [[flag, "first", flag, ""], required],
+        [["--connector"], `${label} --connector requires ${connector}.`],
+        [["--direction"], `${label} --direction requires inbound, outbound, or all.`],
+        [["--direction", ""], `${label} --direction must be inbound, outbound, or all.`],
+        [["--direction", "INBOUND", "--direction", "all"], `${label} --direction must be inbound, outbound, or all.`],
+        [["--limit"], `${label} --limit requires a positive integer.`],
+        ...["", "0", "-1", "1.5", "all"].map((value): [string[], string] =>
+          [["--limit", value], `${label} --limit requires a positive integer.`]),
+        [["--unexpected"], `Unknown ${label} option: --unexpected`],
+        [[flag, "first", "--unexpected"], `Unknown ${label} option: --unexpected`],
+        [[flag === "--chat" ? "--channel" : "--chat", "target"],
+          `Unknown ${label} option: ${flag === "--chat" ? "--channel" : "--chat"}`],
+      ];
+      for (const [args, message] of cases) {
+        await expect(execFileAsync(shimPath, [channel, "history", ...args], {
+          env: {...process.env, PANDA_COMMAND_SOCKET: path.join(directory, "missing.sock"), PANDA_COMMAND_TOKEN: "private-history-token"},
+        })).rejects.toMatchObject({code: 1, stdout: "", stderr: `${message}\n`});
+      }
+    }, fullShimHelpContractTimeoutMs);
+
+    it("retains scoped authorization for native and generated JSON calls", async () => {
+      const execute = vi.fn(echoInputCommand(descriptor).execute);
+      const server = await startCommandHttpServer({
+        executor: new RuntimeCommandDispatcher({commands: [{descriptor, execute}]}),
+        leaseVerifier: createTestCommandLeaseVerifier([["token-a", {
+          agentKey: "panda", sessionId: "session-main", allowedCommands: ["time.now"],
+        }]]),
+      });
+      servers.push(server);
+      for (const args of [[flag, "target"], ["--json", JSON.stringify({[key]: "target"})]]) {
+        const error = await execFileAsync(shimPath, [channel, "history", ...args], {env: shimEnv(server)})
+          .then(() => null, (reason: unknown) => reason as {code: number; stdout: string; stderr: string});
+        expect(error).toMatchObject({code: 3, stdout: ""});
+        expect(JSON.parse(error!.stderr)).toMatchObject({ok: false, command: descriptor.name, error: {
+          code: "forbidden", details: {failureCode: "capability_missing", exitCode: 3},
+        }});
+        expect(error!.stderr).not.toContain("token-a");
+      }
+      expect(execute).not.toHaveBeenCalled();
+    });
+  });
+
   it("executes telegram.history through native args", async () => {
     const server = await startWatchServer();
 

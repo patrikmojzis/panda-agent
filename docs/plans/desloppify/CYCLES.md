@@ -2669,13 +2669,38 @@ Cycle 72 below implements that policy.
 - State: independently reviewed and committed locally with this cycle.
   Cycle 77 is committed as `081b5fe2`. No production access, push or deployment.
 
-### Next command-adapter candidate
+## Cycle 79 — Share the native channel-history parser
 
-Recon found three native channel-history parsing blocks in the command shim
-that differ only in their channel target names and diagnostic spelling. A
-channel-history-specific helper may remove that repetition without changing
-backend protocol policy. Before implementing, preserve exact errors, option
-order, repeated-value handling, empty values, defaults and no-transport parser
-failures through public subprocess tests. This candidate is not implemented
-or counted as a deletion. Broader watch/schedule parser reuse was rejected
-because their required, optional and shortcut semantics differ.
+- Finding: Telegram, Discord and WhatsApp repeat the same native history option
+  parser. Their target flag, payload key, label and diagnostic spelling differ;
+  backend protocol handling does not belong in this parser.
+- Change: add one history-specific helper with explicit selection for the three
+  channels in `scripts/agent-command-shim/panda`. Preserve defaults, empty values,
+  option order, repeated values, direction/integer validation and exact errors.
+  Generated `--json` dispatch continues to bypass native parsing. Non-history
+  handlers, help, authorization, transport and shared execution remain unchanged.
+  Broader watch/schedule parser reuse remains rejected because their required,
+  optional and shortcut semantics differ.
+- Evidence: nine new public cases in `tests/agent-command-shim.test.ts` cover
+  72 subprocess scenarios and pass against both the original and final script.
+  All 197 shim tests pass. Independent review reconstructs the entire script
+  from the baseline with only the intended helper/replacements and compares
+  93 original/final parser executions, including malformed and repeated values.
+  Three public diagnostic tests also pass independently. The comparison stubs
+  the final executor; the full shim tests exercise local HTTP and authorization.
+  Evidence: `.temp/desloppify-cycle79-frozen.json`,
+  `.temp/desloppify-cycle79-source-proof.json` and
+  `.temp/desloppify-cycle79-after-results.json`.
+- Gates: frozen cycles 79–81 pass **3,318 tests across 341 files**, with no failures,
+  skips or todo cases. Build/typecheck, import law, Bash syntax and prompt/shim
+  contracts pass. All 981 compiled declarations are unchanged; all 19 compiled
+  package imports retain their exports and shared `Thread` identity. Later
+  source and snapshot changes are staged in their own cycles. No SQL, persistence
+  or runtime behavior changes require another PostgreSQL fixture for this batch.
+- Result: **69 fewer shipped script lines**, 84 added test lines and nine new
+  cases. The established source counter remains **5,995 fewer production lines
+  across 80 cleanup commits**, including 75 lines moved into tests. Shipped shim
+  reductions now total **94 lines**, separate from the source counter; together
+  they remove **6,089 shipped code lines**.
+- State: independently reviewed and committed locally with this cycle.
+  Cycle 78 is committed as `213a2484`. No production access, push or deployment.

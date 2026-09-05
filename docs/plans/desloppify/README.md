@@ -14,13 +14,13 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–78; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–79; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
 Together, these cleanup commits remove **5,995 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration. This established counter covers `src/` and
-`apps/`; cycle 75 additionally removes 25 lines from the shipped command shim,
-recorded separately. There are 79 cleanup commits including the initial pass.
+`apps/`; cycles 75 and 79 additionally remove 94 lines from the shipped command
+shim, recorded separately. There are 80 cleanup commits including the initial pass.
 
 Control now separates single-agent authorization and bulk visible-key reads from
 agent-list enrichment. Cycle 57 added 23 production lines to remove unnecessary
@@ -155,7 +155,13 @@ samples, little-endian bytes, incomplete tails, offsets and independent storage
 remain unchanged. All 42 focused voice tests pass; independent review checks
 every signed 16-bit value and confirms the public exports stay unchanged.
 
-The frozen worktree passes **3,309 unit tests across 341 files**, root build/typecheck,
+Cycle 79 removes another 69 shipped shim lines by sharing the three native
+Telegram, Discord and WhatsApp history parsers. Target names and diagnostics
+remain channel-specific. Nine new public cases pass before and after the change;
+all 197 shim tests and 93 independent parser comparisons pass. Generated JSON
+dispatch, help, permissions and transport remain unchanged.
+
+The frozen worktree passes **3,318 unit tests across 341 files**, root build/typecheck,
 import law, all 19 compiled package
 imports and shared `Thread` identity. The initial failure of an unchanged
 cancellation test and its passing isolated/file/full reruns are recorded under
@@ -168,10 +174,12 @@ messages and idle state. It used injected model responses and blocked external
 requests. Focused bootstrap and observer tests prove the ownership repairs; the
 smoke avoids application bootstrap and does not exercise those failure paths or
 the actor listings. The test cluster was stopped afterward. Prompt/shim contracts
-pass; the latest cycles leave the snapshot unchanged. Cycle 74 changes only the deleted
+pass. Cycle 79 leaves the snapshot unchanged; the pending background-preview
+cleanup updates only two source-file metadata records. Cycle 74 changes only the deleted
 internal helper's declaration among 981 compiled declaration files; all 19
 supported entrypoints retain their exports. Cycle 78 adds only the two internal
-PCM declarations. Runtime-activity history reads remain open, with their
+PCM declarations. All 981 declarations remain unchanged in the frozen batch
+following cycle 78. Runtime-activity history reads remain open, with their
 compatibility constraints recorded in the cycle record. Cleanup cannot bypass a
 hanging step or resume sibling operations skipped inside one failed step. The
 inspect/review/commit loop remains active.

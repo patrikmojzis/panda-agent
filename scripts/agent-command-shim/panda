@@ -296,6 +296,78 @@ execute_json_command() {
   return "$exit_code"
 }
 
+# Parse the three native channel-history forms; JSON input bypasses this parser.
+execute_channel_history() {
+  local command="$1"
+  shift
+  local target_flag="--chat" connector_label="a connector key"
+  local target_key target_label target_placeholder
+  case "$command" in
+    telegram.history)
+      target_key="conversationId"
+      target_label="a conversation id"
+      target_placeholder="<conversation-id>"
+      connector_label="a key"
+      ;;
+    discord.history)
+      target_flag="--channel"
+      target_key="channelId"
+      target_label="a channel id"
+      target_placeholder="<channel-id>"
+      ;;
+    whatsapp.history)
+      target_key="chatId"
+      target_label="a chat id or phone number"
+      target_placeholder="<jid-or-phone>"
+      ;;
+  esac
+  local label="panda ${command%.history} history"
+  local target_id="" connector_key="" direction="" limit="" payload
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      "$target_flag")
+        [ "$#" -gt 1 ] || die "$label $target_flag requires $target_label."
+        target_id="$2"
+        shift 2
+        ;;
+      --connector)
+        [ "$#" -gt 1 ] || die "$label --connector requires $connector_label."
+        connector_key="$2"
+        shift 2
+        ;;
+      --direction)
+        [ "$#" -gt 1 ] || die "$label --direction requires inbound, outbound, or all."
+        case "$2" in
+          inbound|outbound|all) direction="$2" ;;
+          *) die "$label --direction must be inbound, outbound, or all." ;;
+        esac
+        shift 2
+        ;;
+      --limit)
+        [ "$#" -gt 1 ] || die "$label --limit requires a positive integer."
+        require_positive_integer "$2" "$label --limit"
+        limit="$2"
+        shift 2
+        ;;
+      *)
+        die "Unknown $label option: $1"
+        ;;
+    esac
+  done
+  [ -n "$target_id" ] || die "$label requires $target_flag $target_placeholder."
+  payload="$(jq -n \
+    --arg targetKey "$target_key" \
+    --arg targetId "$target_id" \
+    --arg connectorKey "$connector_key" \
+    --arg direction "$direction" \
+    --arg limit "$limit" \
+    '{($targetKey): $targetId}
+    + (if $connectorKey != "" then {connectorKey: $connectorKey} else {} end)
+    + (if $direction != "" then {direction: $direction} else {} end)
+    + (if $limit != "" then {limit: ($limit | tonumber)} else {} end)')"
+  execute_json_command "$command" "$payload"
+}
+
 project_skill_list_output() {
   local output="$1"
   local response="$2"
@@ -5522,54 +5594,7 @@ USAGE
 	      exit $?
 	    fi
 	    if [ "$subcommand" = "history" ]; then
-	      conversation_id=""
-	      connector_key=""
-	      direction=""
-	      limit=""
-	      while [ "$#" -gt 0 ]; do
-	        case "$1" in
-	          --chat)
-	            [ "$#" -gt 1 ] || die "panda telegram history --chat requires a conversation id."
-	            conversation_id="$2"
-	            shift 2
-	            ;;
-	          --connector)
-	            [ "$#" -gt 1 ] || die "panda telegram history --connector requires a key."
-	            connector_key="$2"
-	            shift 2
-	            ;;
-	          --direction)
-	            [ "$#" -gt 1 ] || die "panda telegram history --direction requires inbound, outbound, or all."
-	            case "$2" in
-	              inbound|outbound|all) direction="$2" ;;
-	              *) die "panda telegram history --direction must be inbound, outbound, or all." ;;
-	            esac
-	            shift 2
-	            ;;
-	          --limit)
-	            [ "$#" -gt 1 ] || die "panda telegram history --limit requires a positive integer."
-	            require_positive_integer "$2" "panda telegram history --limit"
-	            limit="$2"
-	            shift 2
-	            ;;
-	          *)
-	            die "Unknown panda telegram history option: $1"
-	            ;;
-	        esac
-	      done
-	      [ -n "$conversation_id" ] || die "panda telegram history requires --chat <conversation-id>."
-	      payload="$(jq -n \
-	        --arg conversationId "$conversation_id" \
-	        --arg connectorKey "$connector_key" \
-	        --arg direction "$direction" \
-	        --arg limit "$limit" \
-	        '{
-	          conversationId: $conversationId
-	        }
-	        + (if $connectorKey != "" then {connectorKey: $connectorKey} else {} end)
-	        + (if $direction != "" then {direction: $direction} else {} end)
-	        + (if $limit != "" then {limit: ($limit | tonumber)} else {} end)')"
-	      execute_json_command "$command_name" "$payload"
+	      execute_channel_history "$command_name" "$@"
 	      exit $?
 	    fi
 	    if [ "$subcommand" = "media fetch" ]; then
@@ -6364,54 +6389,7 @@ USAGE
 	      exit $?
 	    fi
 	    if [ "$subcommand" = "history" ]; then
-	      channel_id=""
-	      connector_key=""
-	      direction=""
-	      limit=""
-	      while [ "$#" -gt 0 ]; do
-	        case "$1" in
-	          --channel)
-	            [ "$#" -gt 1 ] || die "panda discord history --channel requires a channel id."
-	            channel_id="$2"
-	            shift 2
-	            ;;
-	          --connector)
-	            [ "$#" -gt 1 ] || die "panda discord history --connector requires a connector key."
-	            connector_key="$2"
-	            shift 2
-	            ;;
-	          --direction)
-	            [ "$#" -gt 1 ] || die "panda discord history --direction requires inbound, outbound, or all."
-	            case "$2" in
-	              inbound|outbound|all) direction="$2" ;;
-	              *) die "panda discord history --direction must be inbound, outbound, or all." ;;
-	            esac
-	            shift 2
-	            ;;
-	          --limit)
-	            [ "$#" -gt 1 ] || die "panda discord history --limit requires a positive integer."
-	            require_positive_integer "$2" "panda discord history --limit"
-	            limit="$2"
-	            shift 2
-	            ;;
-	          *)
-	            die "Unknown panda discord history option: $1"
-	            ;;
-	        esac
-	      done
-	      [ -n "$channel_id" ] || die "panda discord history requires --channel <channel-id>."
-	      payload="$(jq -n \
-	        --arg channelId "$channel_id" \
-	        --arg connectorKey "$connector_key" \
-	        --arg direction "$direction" \
-	        --arg limit "$limit" \
-	        '{
-	          channelId: $channelId
-	        }
-	        + (if $connectorKey != "" then {connectorKey: $connectorKey} else {} end)
-	        + (if $direction != "" then {direction: $direction} else {} end)
-	        + (if $limit != "" then {limit: ($limit | tonumber)} else {} end)')"
-	      execute_json_command "$command_name" "$payload"
+	      execute_channel_history "$command_name" "$@"
 	      exit $?
 	    fi
 	    if [ "$subcommand" = "sticker list" ]; then
@@ -6720,54 +6698,7 @@ USAGE
 	      exit $?
 	    fi
 	    if [ "$subcommand" = "history" ]; then
-	      chat_id=""
-	      connector_key=""
-	      direction=""
-	      limit=""
-	      while [ "$#" -gt 0 ]; do
-	        case "$1" in
-	          --chat)
-	            [ "$#" -gt 1 ] || die "panda whatsapp history --chat requires a chat id or phone number."
-	            chat_id="$2"
-	            shift 2
-	            ;;
-	          --connector)
-	            [ "$#" -gt 1 ] || die "panda whatsapp history --connector requires a connector key."
-	            connector_key="$2"
-	            shift 2
-	            ;;
-	          --direction)
-	            [ "$#" -gt 1 ] || die "panda whatsapp history --direction requires inbound, outbound, or all."
-	            case "$2" in
-	              inbound|outbound|all) direction="$2" ;;
-	              *) die "panda whatsapp history --direction must be inbound, outbound, or all." ;;
-	            esac
-	            shift 2
-	            ;;
-	          --limit)
-	            [ "$#" -gt 1 ] || die "panda whatsapp history --limit requires a positive integer."
-	            require_positive_integer "$2" "panda whatsapp history --limit"
-	            limit="$2"
-	            shift 2
-	            ;;
-	          *)
-	            die "Unknown panda whatsapp history option: $1"
-	            ;;
-	        esac
-	      done
-	      [ -n "$chat_id" ] || die "panda whatsapp history requires --chat <jid-or-phone>."
-	      payload="$(jq -n \
-	        --arg chatId "$chat_id" \
-	        --arg connectorKey "$connector_key" \
-	        --arg direction "$direction" \
-	        --arg limit "$limit" \
-	        '{
-	          chatId: $chatId
-	        }
-	        + (if $connectorKey != "" then {connectorKey: $connectorKey} else {} end)
-	        + (if $direction != "" then {direction: $direction} else {} end)
-	        + (if $limit != "" then {limit: ($limit | tonumber)} else {} end)')"
-	      execute_json_command "$command_name" "$payload"
+	      execute_channel_history "$command_name" "$@"
 	      exit $?
 	    fi
 	    if [ "$subcommand" = "call status" ] || [ "$subcommand" = "call send" ] || [ "$subcommand" = "call hangup" ]; then
