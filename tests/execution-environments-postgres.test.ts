@@ -28,6 +28,7 @@ import {ExecutionEnvironmentSetupError} from "../src/app/runtime/execution-envir
 import {buildSubagentSessionMetadata} from "../src/domain/subagents/session-metadata.js";
 import type {JsonObject, JsonValue} from "../src/lib/json.js";
 import {HmacRunnerTokenAuthority} from "../src/integrations/shell/runner-auth.js";
+import {HttpExecutionEnvironmentManagerClient} from "../src/integrations/shell/execution-environment-manager-client.js";
 
 function createFilesystemMetadata(envDir = "env-worker"): JsonObject {
   return {
@@ -1049,6 +1050,129 @@ describe("PostgresExecutionEnvironmentStore", () => {
       runnerUrl: "http://env-worker:8080",
     });
     expect((await environmentStore.getEnvironment("env-worker")).expiresAt).toBeGreaterThan(Date.now());
+  });
+
+  it.each(["create", "restart", "stop"] as const)("recovers %s after manager URL validation fails before dispatch", async (operation) => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const session = await sessionStore.getSession("session-worker");
+    const initialState = operation === "stop" ? "ready" : "stopped";
+    let binding;
+    if (operation !== "create") {
+      await environmentStore.createEnvironment({id: "env-preflight", agentKey: "panda", kind: "disposable_container",
+        state: initialState, createdForSessionId: session.id, metadata: {retained: true}});
+      binding = await environmentStore.bindSession({sessionId: session.id, environmentId: "env-preflight", alias: "self",
+        isDefault: true, credentialPolicy: {mode: "none"}, skillPolicy: {mode: "none"}, toolPolicy: {}});
+    }
+    const env = {PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL: "not a URL"};
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ok: true,
+      runnerUrl: "http://runner.invalid", runnerCwd: "/workspace"}), {status: 200}));
+    const service = new ExecutionEnvironmentLifecycleService({store: environmentStore,
+      manager: new HttpExecutionEnvironmentManagerClient({env, fetchImpl})});
+    const act = () => operation === "create"
+      ? service.createStandaloneDisposableEnvironment({agentKey: "panda", createdBySessionId: session.id, environmentId: "env-preflight"})
+      : operation === "restart" ? service.ensureBoundEnvironmentReady({session, binding: binding!})
+        : service.stopEnvironment("env-preflight");
+
+    await expect(act()).rejects.toThrow("Invalid URL");
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await expect(environmentStore.getEnvironment("env-preflight")).resolves.toMatchObject({
+      state: operation === "create" ? "failed" : initialState,
+      ...(operation === "create" ? {} : {metadata: {retained: true}}),
+    });
+    env.PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL = "http://manager.invalid";
+    // Failed creation can be cleaned up; restart/stop can repeat their known unissued operation.
+    await expect(operation === "create" ? service.stopEnvironment("env-preflight") : act()).resolves.toMatchObject({
+      state: operation === "restart" ? "ready" : "stopped",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["create", "restart", "stop"] as const)("keeps %s ownership when a dispatched manager request rejects", async (operation) => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const session = await sessionStore.getSession("session-worker");
+    let binding;
+    if (operation !== "create") {
+      await environmentStore.createEnvironment({id: "env-uncertain", agentKey: "panda", kind: "disposable_container",
+        state: operation === "stop" ? "ready" : "stopped", createdForSessionId: session.id});
+      binding = await environmentStore.bindSession({sessionId: session.id, environmentId: "env-uncertain", alias: "self",
+        isDefault: true, credentialPolicy: {mode: "none"}, skillPolicy: {mode: "none"}, toolPolicy: {}});
+    }
+    const fetchImpl = vi.fn(async () => { throw new Error("Connection lost after dispatch"); });
+    const service = new ExecutionEnvironmentLifecycleService({store: environmentStore,
+      manager: new HttpExecutionEnvironmentManagerClient({managerUrl: "http://manager.invalid", fetchImpl})});
+    const result = operation === "create"
+      ? service.createStandaloneDisposableEnvironment({agentKey: "panda", createdBySessionId: session.id, environmentId: "env-uncertain"})
+      : operation === "restart" ? service.ensureBoundEnvironmentReady({session, binding: binding!})
+        : service.stopEnvironment("env-uncertain");
+    await expect(result).rejects.toThrow("unresolved outcome");
+    await expect(environmentStore.getEnvironment("env-uncertain")).resolves.toMatchObject({
+      state: operation === "stop" ? "stopping" : "provisioning", operationId: expect.any(String),
+    });
+    await expect(service.stopEnvironment("env-uncertain")).rejects.toThrow("must finish before another transition");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["session token", "session lease", "standalone token", "restart token"] as const)("keeps environment recovery available when local %s preflight fails", async (scenario) => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const session = await sessionStore.getSession("session-worker");
+    const manager = new FakeEnvironmentManager();
+    let failing = true;
+    const preflight = () => { if (failing) throw new Error("Local preflight failed"); return "synthetic-token"; };
+    const service = new ExecutionEnvironmentLifecycleService({store: environmentStore, manager,
+      ...(scenario === "session lease" ? {commandLeases: {issueCommandLease: () => { preflight(); return null; }}}
+        : {runnerTokenAuthority: {derive: preflight}})});
+    let binding;
+    if (scenario === "restart token") {
+      await environmentStore.createEnvironment({id: "env-local", agentKey: "panda", kind: "disposable_container",
+        state: "stopped", createdForSessionId: session.id});
+      binding = await environmentStore.bindSession({sessionId: session.id, environmentId: "env-local", alias: "self",
+        isDefault: true, credentialPolicy: {mode: "none"}, skillPolicy: {mode: "none"}, toolPolicy: {}});
+    }
+    const act = () => scenario === "restart token" ? service.ensureBoundEnvironmentReady({session, binding: binding!})
+      : scenario === "standalone token" ? service.createStandaloneDisposableEnvironment({agentKey: "panda",
+        createdBySessionId: session.id, environmentId: "env-local"})
+        : service.createDisposableForSession({session, environmentId: "env-local"});
+    await expect(act()).rejects.toThrow("Local preflight failed");
+    if (scenario === "restart token") {
+      await expect(environmentStore.getEnvironment("env-local")).resolves.toMatchObject({state: "stopped", operationId: undefined});
+    } else if (scenario === "session lease") {
+      await expect(environmentStore.getEnvironment("env-local")).resolves.toMatchObject({state: "failed"});
+    } else {
+      await expect(environmentStore.getEnvironment("env-local")).rejects.toThrow("Unknown execution environment");
+    }
+    expect(manager.requests).toEqual([]);
+    failing = false;
+    if (scenario === "session lease") {
+      await expect(service.stopEnvironment("env-local")).resolves.toMatchObject({state: "stopped"});
+      await service.createDisposableForSession({session, environmentId: "env-local-retry"});
+      await expect(environmentStore.getEnvironment("env-local-retry")).resolves.toMatchObject({state: "ready"});
+      return;
+    }
+    await act();
+    await expect(environmentStore.getEnvironment("env-local")).resolves.toMatchObject({state: "ready"});
+  });
+
+  it("does not mint command leases for rejected duplicate environment IDs", async () => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const session = await sessionStore.getSession("session-worker");
+    await environmentStore.createEnvironment({id: "env-existing", agentKey: "panda", kind: "disposable_container",
+      state: "ready", createdForSessionId: session.id});
+    const commandLeases = new RuntimeCommandLeaseService({baseUrl: "http://commands.invalid",
+      commandCatalog: DEFAULT_AGENT_COMMAND_CATALOG});
+    const issued = vi.spyOn(commandLeases, "issueCommandLease");
+    const service = new ExecutionEnvironmentLifecycleService({store: environmentStore,
+      manager: new FakeEnvironmentManager(), commandLeases});
+    const reserve = vi.spyOn(environmentStore, "reserveEnvironment");
+    const toolPolicy = {allowedTools: ["a2a.send"]};
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      // pg-mem returns the existing row for DO NOTHING; PostgreSQL returns no reservation.
+      reserve.mockResolvedValueOnce(null);
+      await expect(service.createDisposableForSession({session, environmentId: "env-existing", toolPolicy})).rejects.toThrow("already exists");
+    }
+    await service.createDisposableForSession({session, environmentId: "env-winner", toolPolicy});
+    const leases = issued.mock.results.flatMap((result) => result.type === "return" && result.value ? [result.value] : []);
+    expect(leases).toHaveLength(1);
+    await expect(commandLeases.verify(leases[0]!.token)).resolves.toMatchObject({environmentId: "env-winner"});
   });
 
   it("creates and binds disposable worker environments through the manager boundary", async () => {

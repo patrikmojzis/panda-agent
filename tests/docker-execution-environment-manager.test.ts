@@ -12,6 +12,7 @@ import type {
     DisposableEnvironmentCommandAccessRefreshRequest,
     ExecutionEnvironmentManager,
 } from "../src/domain/execution-environments/types.js";
+import {ExecutionEnvironmentManagerPreflightError} from "../src/domain/execution-environments/types.js";
 import {readExecutionEnvironmentFilesystemMetadata} from "../src/domain/execution-environments/filesystem.js";
 import {isRecord} from "../src/lib/records.js";
 import {
@@ -875,6 +876,20 @@ describe("DockerExecutionEnvironmentManager", () => {
 });
 
 describe("execution environment manager HTTP boundary", () => {
+  it.each([
+    {managerUrl: undefined, sharedSecret: undefined, message: "require PANDA_EXECUTION_ENVIRONMENT_MANAGER_URL"},
+    {managerUrl: "not a URL", sharedSecret: undefined, message: "Invalid URL"},
+    {managerUrl: "http://manager.invalid", sharedSecret: "synthetic-secret\ninvalid", message: "token is not a valid HTTP header value"},
+  ])("identifies local manager configuration failures before dispatch ($message)", async (options) => {
+    const fetchImpl = vi.fn(async () => { throw new Error("Request must not be dispatched"); });
+    const client = new HttpExecutionEnvironmentManagerClient({...options, env: {}, fetchImpl});
+    const operation = client.stopEnvironment("env-preflight");
+    await expect(operation).rejects.toBeInstanceOf(ExecutionEnvironmentManagerPreflightError);
+    await expect(operation).rejects.toThrow(options.message);
+    await expect(operation).rejects.not.toThrow("synthetic-secret");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("lets panda-core create disposable environments through the manager client", async () => {
     const fakeManager = new FakeManager();
     const server = await startExecutionEnvironmentManager({

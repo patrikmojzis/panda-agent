@@ -83,7 +83,8 @@ export async function readControlWorkFailures(
     }
     const sortBy = columns.find((column) => column === input.sortBy) ?? "createdAt";
     const order = `lower(COALESCE("${sortBy}", '')) COLLATE "C" ${input.sortDirection === "asc" ? "ASC" : "DESC"}, id COLLATE "C" ASC`;
-    const search = columns.map((column) => `strpos(lower(COALESCE("${column}", '')), $2) > 0`).join(" OR ");
+    // ICU root lowercasing handles Unicode even in a C-locale database; C keeps matching literal.
+    const search = columns.map((column) => `strpos(lower(COALESCE("${column}", '') COLLATE pg_catalog."und-x-icu") COLLATE "C", lower($2 COLLATE pg_catalog."und-x-icu") COLLATE "C") > 0`).join(" OR ");
     const result = await client.query(`
       WITH failures AS (
         ${sources.join("\nUNION ALL\n")}
@@ -109,7 +110,7 @@ export async function readControlWorkFailures(
       )
       SELECT counts.*, COALESCE((SELECT jsonb_agg(jsonb_strip_nulls(to_jsonb(page)) ORDER BY ${order}) FROM page), '[]'::jsonb) AS data
       FROM counts
-    `, [agentKeys, input.search?.trim().toLowerCase() ?? "", input.severity ?? null, perPage, (page - 1) * perPage]);
+    `, [agentKeys, input.search?.trim() ?? "", input.severity ?? null, perPage, (page - 1) * perPage]);
     const row = result.rows[0] as {total: number; critical: number; warning: number; table_total: number; data: ControlWorkFailureRow[]};
     await client.query("COMMIT");
     return {

@@ -226,6 +226,14 @@ export interface DisposableEnvironmentCreateResult {
   metadata?: JsonValue;
 }
 
+/** The manager rejected local request preparation without dispatching an external operation. */
+export class ExecutionEnvironmentManagerPreflightError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), {cause});
+    this.name = "ExecutionEnvironmentManagerPreflightError";
+  }
+}
+
 export interface ExecutionEnvironmentManager {
   createDisposableEnvironment(input: DisposableEnvironmentCreateRequest): Promise<DisposableEnvironmentCreateResult>;
   stopEnvironment(environmentId: string): Promise<void>;

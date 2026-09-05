@@ -72,7 +72,7 @@ import {
   type PairedIdentityDirectoryReader,
 } from "../../domain/agents/paired-identity-directory.js";
 import {closePiAiRuntimeResources} from "../../integrations/providers/shared/runtime.js";
-import {resolveDefaultAgentModelSelector} from "../../panda/defaults.js";
+import {withDefaultModel} from "../sdk/model-defaults.js";
 
 const DEFAULT_THREAD_RUN_CONCURRENCY = 8;
 const DEFAULT_THREAD_RUN_DRAIN_TIMEOUT_MS = 30_000;
@@ -241,7 +241,7 @@ export async function createRuntime(options: RuntimeOptions): Promise<RuntimeSer
       modelCallObserver: runtime.modelCallRecorder,
       resolveDefinition: async (thread) => {
         const definition = await options.resolveDefinition(thread, resolverContext);
-        return {...definition, model: definition.model ?? resolveDefaultAgentModelSelector()};
+        return withDefaultModel(definition);
       },
       onEvent: options.onEvent,
     });

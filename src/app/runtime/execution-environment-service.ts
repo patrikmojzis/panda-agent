@@ -13,6 +13,7 @@ import type {
   SessionEnvironmentBindingRecord,
   SettleExecutionEnvironmentOperationInput,
 } from "../../domain/execution-environments/types.js";
+import {ExecutionEnvironmentManagerPreflightError} from "../../domain/execution-environments/types.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import type {SessionRecord} from "../../domain/sessions/types.js";
 import type {JsonObject, JsonValue} from "../../lib/json.js";
@@ -266,6 +267,12 @@ export async function stopExecutionEnvironment(input: {
   try {
     await input.manager.stopEnvironment(input.environmentId);
   } catch (error) {
+    if (error instanceof ExecutionEnvironmentManagerPreflightError) {
+      await settleEnvironmentOperation(input.store, {
+        environmentId: existing.id, operationId, operationState: "stopping", state: existing.state,
+      });
+      throw error;
+    }
     throw uncertainOperation(claimed, error);
   }
   return settleEnvironmentOperation(input.store, {
@@ -399,6 +406,7 @@ export class ExecutionEnvironmentLifecycleService {
       }
     }
 
+    const runnerAuthToken = this.resolveRunnerAuthToken(input.session.agentKey, environmentId);
     const environment = await this.store.reserveEnvironment({
       id: environmentId,
       operationId: randomUUID(),
@@ -414,18 +422,22 @@ export class ExecutionEnvironmentLifecycleService {
 
     let binding: SessionEnvironmentBindingRecord | undefined;
     const ready = await this.provisionEnvironment(environment, async () => {
-      const commandLease = this.commandLeases?.issueCommandLease({
-        agentKey: input.session.agentKey,
-        sessionId: input.session.id,
-        environmentId,
-        toolPolicy,
-        skillPolicy,
-        credentialPolicy,
-        credentialMutationAllowed: false,
-        socketAccessAllowed: true,
-        ...(input.ttlMs === undefined ? {} : {ttlMs: input.ttlMs}),
-      });
-      const runnerAuthToken = this.resolveRunnerAuthToken(input.session.agentKey, environmentId);
+      let commandLease;
+      try {
+        commandLease = this.commandLeases?.issueCommandLease({
+          agentKey: input.session.agentKey,
+          sessionId: input.session.id,
+          environmentId,
+          toolPolicy,
+          skillPolicy,
+          credentialPolicy,
+          credentialMutationAllowed: false,
+          socketAccessAllowed: true,
+          ...(input.ttlMs === undefined ? {} : {ttlMs: input.ttlMs}),
+        });
+      } catch (error) {
+        throw new ExecutionEnvironmentManagerPreflightError(error);
+      }
       return this.manager!.createDisposableEnvironment({
         agentKey: input.session.agentKey,
         sessionId: input.session.id,
@@ -480,6 +492,7 @@ export class ExecutionEnvironmentLifecycleService {
 
     const environmentId = trimToUndefined(input.environmentId) ?? buildStandaloneEnvironmentId(ownerSessionId);
     const expiresAt = input.ttlMs === undefined ? undefined : Date.now() + input.ttlMs;
+    const runnerAuthToken = this.resolveRunnerAuthToken(agentKey, environmentId);
     const environment = await this.store.reserveEnvironment({
       id: environmentId,
       operationId: randomUUID(),
@@ -493,7 +506,6 @@ export class ExecutionEnvironmentLifecycleService {
     if (!environment) throw new Error(`Execution environment ${environmentId} already exists; create requires a new environment id.`);
 
     return this.provisionEnvironment(environment, async () => {
-      const runnerAuthToken = this.resolveRunnerAuthToken(agentKey, environmentId);
       return this.manager!.createDisposableEnvironment({
         agentKey,
         sessionId: ownerSessionId,
@@ -685,6 +697,7 @@ export class ExecutionEnvironmentLifecycleService {
       );
     }
 
+    const runnerAuthToken = this.resolveRunnerAuthToken(environment.agentKey, environment.id);
     const claimed = await this.store.claimEnvironmentOperation({
       environmentId: environment.id,
       operationId: randomUUID(),
@@ -698,7 +711,6 @@ export class ExecutionEnvironmentLifecycleService {
     const expiresAt = options.ttlMs === undefined ? claimed.expiresAt : Date.now() + options.ttlMs;
     return this.provisionEnvironment(claimed, async () => {
       const ttlMs = options.ttlMs ?? remainingTtlMs(environment);
-      const runnerAuthToken = this.resolveRunnerAuthToken(environment.agentKey, environment.id);
       return this.manager!.createDisposableEnvironment({
         agentKey: environment.agentKey,
         sessionId: managerSessionId,
@@ -707,7 +719,7 @@ export class ExecutionEnvironmentLifecycleService {
         ...(ttlMs === undefined ? {} : {ttlMs}),
         ...(claimed.metadata === undefined ? {} : {metadata: claimed.metadata}),
       });
-    }, undefined, expiresAt);
+    }, undefined, expiresAt, environment.state);
   }
 
   private async provisionEnvironment(
@@ -715,11 +727,19 @@ export class ExecutionEnvironmentLifecycleService {
     create: () => Promise<DisposableEnvironmentCreateResult>,
     prepare?: (created: DisposableEnvironmentCreateResult) => Promise<JsonValue | undefined>,
     expiresAt?: number,
+    undispatchedState: "ready" | "failed" | "stopped" = "failed",
   ): Promise<ExecutionEnvironmentRecord> {
     let created: DisposableEnvironmentCreateResult;
     try {
       created = await create();
     } catch (error) {
+      if (error instanceof ExecutionEnvironmentManagerPreflightError) {
+        await settleEnvironmentOperation(this.store, {
+          environmentId: environment.id, operationId: environment.operationId!,
+          operationState: "provisioning", state: undispatchedState,
+        });
+        throw error;
+      }
       // A rejected HTTP request cannot establish whether Docker has finished.
       throw uncertainOperation(environment, error);
     }

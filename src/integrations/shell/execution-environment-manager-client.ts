@@ -7,6 +7,7 @@ import type {
     DisposableEnvironmentLogsResult,
     ExecutionEnvironmentManager,
 } from "../../domain/execution-environments/types.js";
+import {ExecutionEnvironmentManagerPreflightError} from "../../domain/execution-environments/types.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import {buildEndpointUrl} from "../../lib/http.js";
 import {isJsonValue, type JsonValue} from "../../lib/json.js";
@@ -127,12 +128,18 @@ export class HttpExecutionEnvironmentManagerClient implements ExecutionEnvironme
   async createDisposableEnvironment(
     input: DisposableEnvironmentCreateRequest,
   ): Promise<DisposableEnvironmentCreateResult> {
-    const payload = await this.post("environments/disposable", {
-      ...input,
-      ...(input.metadata === undefined ? {} : {
-        metadata: parseOptionalMetadata("Execution environment manager request metadata", input.metadata),
-      }),
-    });
+    let body: DisposableEnvironmentCreateRequest;
+    try {
+      body = {
+        ...input,
+        ...(input.metadata === undefined ? {} : {
+          metadata: parseOptionalMetadata("Execution environment manager request metadata", input.metadata),
+        }),
+      };
+    } catch (error) {
+      throw new ExecutionEnvironmentManagerPreflightError(error);
+    }
+    const payload = await this.post("environments/disposable", body);
     if (!payload.runnerUrl || !payload.runnerCwd) {
       throw new ToolError("Execution environment manager returned an invalid create response.");
     }
@@ -176,16 +183,30 @@ export class HttpExecutionEnvironmentManagerClient implements ExecutionEnvironme
   }
 
   private async post(endpoint: string, body: unknown): Promise<ManagerResponse> {
-    const {managerUrl, sharedSecret} = this.resolveConfig();
-    const response = await this.fetchImpl(buildEndpointUrl(managerUrl, endpoint), {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(sharedSecret ? {authorization: `Bearer ${sharedSecret}`} : {}),
-      },
-      body: JSON.stringify(body),
-      signal: makeNetworkTimeoutSignal(this.timeoutMs),
-    });
+    let url: URL;
+    let request: RequestInit;
+    try {
+      const {managerUrl, sharedSecret} = this.resolveConfig();
+      url = buildEndpointUrl(managerUrl, endpoint);
+      const headers = new Headers({"content-type": "application/json"});
+      if (sharedSecret) {
+        try {
+          headers.set("authorization", `Bearer ${sharedSecret}`);
+        } catch {
+          throw new ToolError("Execution environment manager token is not a valid HTTP header value.");
+        }
+      }
+      request = {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+        signal: makeNetworkTimeoutSignal(this.timeoutMs),
+      };
+    } catch (error) {
+      throw new ExecutionEnvironmentManagerPreflightError(error);
+    }
+    // Once fetch is invoked, even rejection cannot prove the operation was not dispatched.
+    const response = await this.fetchImpl(url, request);
 
     if (!response.ok) {
       await readManagerError(response);

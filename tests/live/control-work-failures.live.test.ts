@@ -154,6 +154,27 @@ describe.sequential("Control failure snapshots with PostgreSQL", () => {
       .toMatchObject({counts: {total: 1}, data: [{sessionId: "session-panda", summary: "Outbound delivery outcome is unknown."}]});
   });
 
+  liveIt.each([
+    {title: "Žilina", searches: ["Žilina", "žilina", "ŽILINA"], nonmatches: ["Zilina"]},
+    {title: "İstanbul", searches: ["İstanbul", "i̇stanbul", "İSTANBUL"], nonmatches: ["istanbul"]},
+    {title: "ΣΟΣ", searches: ["ΣΟΣ", "σος", "ΣοΣ"], nonmatches: ["σοσ"]},
+    {title: "Straße", searches: ["Straße", "straße"], nonmatches: ["STRASSE"]},
+  ])("matches Unicode title $title independently of the database locale", async ({title, searches, nonmatches}) => {
+    await pool.query("UPDATE runtime.scheduled_tasks SET title = $2 WHERE id = $1", [taskId, title]);
+    try {
+      for (const search of searches) {
+        expect(await readControlWorkFailures(pool, ["panda"], {kind: "scheduled_task_run", search, perPage: 1}))
+          .toMatchObject({data: [{summary: `Scheduled task failed: ${title}`}], meta: {total: 210}, counts: {total: 210, critical: 0, warning: 210}});
+      }
+      for (const search of nonmatches) {
+        expect(await readControlWorkFailures(pool, ["panda"], {kind: "scheduled_task_run", search}))
+          .toMatchObject({data: [], meta: {total: 0}, counts: {total: 0}});
+      }
+    } finally {
+      await pool.query("UPDATE runtime.scheduled_tasks SET title = 'Retained scheduled failure' WHERE id = $1", [taskId]);
+    }
+  });
+
   liveIt("keeps equal timestamps stable across pages and preserves counts beyond the last page", async () => {
     const input = {kind: "scheduled_task_run" as const, perPage: 100, sortBy: "createdAt", sortDirection: "desc" as const};
     const pages = await Promise.all([1, 2, 3, 4].map((page) => readControlWorkFailures(pool, ["panda"], {...input, page})));

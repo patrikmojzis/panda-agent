@@ -2,6 +2,15 @@
 
 Panda changes its Postgres schema during deployment, never during application startup. The runtime, gateway, channel workers, and operator commands are schema consumers. They must fail fast when the database revision does not match the running build.
 
+## Database prerequisites
+
+Use a UTF-8 PostgreSQL database with ICU support. Control failure search uses
+`pg_catalog."und-x-icu"` for language-neutral Unicode lowercasing on both sides
+of a literal substring match, independently of the database's default locale.
+This collation is provided by ICU-enabled PostgreSQL 16 and newer installations;
+no extension or change to the database locale is required. See the
+[PostgreSQL collation documentation](https://www.postgresql.org/docs/16/collation.html#COLLATION-MANAGING-ICU).
+
 ## Ownership
 
 - Domain Postgres modules own their tables, data migrations, and integrity checks.
