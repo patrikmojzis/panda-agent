@@ -13,7 +13,7 @@ import {
   createMcpServerUpdateCommand,
 } from "../src/domain/mcp/management-commands.js";
 import {McpManagementService, type McpOAuthManager} from "../src/domain/mcp/management-service.js";
-import {InMemoryMcpConfigStore} from "../src/domain/mcp/store.js";
+import {InMemoryMcpConfigStore} from "./helpers/in-memory-mcp-config-store.js";
 
 const commandNames = [
   "mcp.server.list", "mcp.server.show", "mcp.server.add", "mcp.server.update",

@@ -152,7 +152,8 @@ sole-use tool mapping helper.
   with the previous implementation. The reported catch-boundary difference was
   corrected and verified before freezing. Public exports and tool mapping remain
   unchanged. Typecheck and import law passed.
-- State: reviewed and committed locally with this cycle; not pushed or deployed.
+- Commit: `07cabc01` — `refactor(providers): remove redundant auth and context projections`.
+- State: committed locally; not pushed or deployed.
 
 ## Cycle 7 — Use native MCP cancellation and relocate its test adapter
 
@@ -169,7 +170,7 @@ store contract, conflict error and Postgres implementation.
   and successful SSE stream closure reaching the real fetch signal. Independent
   review verified identical class members and passed 30 transport/OAuth tests.
   Typecheck, import law and public-export checks passed.
-- State: independently reviewed; awaiting its separate local commit.
+- State: reviewed and committed locally with this cycle; not pushed or deployed.
 
 ## Cycle 8 — Remove redundant runtime composition
 

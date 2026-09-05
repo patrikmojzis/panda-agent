@@ -96,20 +96,6 @@ function boundedJsonObject(value: unknown, secrets: readonly string[]): JsonObje
   return redacted;
 }
 
-function abortSignals(...signals: Array<AbortSignal | null | undefined>): AbortSignal {
-  const present = signals.filter((signal): signal is AbortSignal => Boolean(signal));
-  if (present.length === 1) return present[0]!;
-  const controller = new AbortController();
-  for (const signal of present) {
-    if (signal.aborted) {
-      controller.abort(signal.reason);
-      break;
-    }
-    signal.addEventListener("abort", () => controller.abort(signal.reason), {once: true});
-  }
-  return controller.signal;
-}
-
 function cappedResponseBody(body: ReadableStream<Uint8Array> | null, signal: AbortSignal): ReadableStream<Uint8Array> | null {
   if (!body) return null;
   let bytes = 0;
@@ -156,7 +142,7 @@ function createBoundedFetch(
     const resourceRequest = requestUrl.origin === configured.origin
       && requestUrl.pathname === configured.pathname
       && requestUrl.search === configured.search;
-    const signal = abortSignals(deadlineSignal, request.signal);
+    const signal = AbortSignal.any([deadlineSignal, request.signal]);
     let response: Response;
     try {
       response = await fetch(request, {redirect: "manual", signal});

@@ -232,15 +232,22 @@ describe("MCP SDK runner", () => {
 
   it("uses explicit legacy SSE without transport fallback and closes its stream", async () => {
     const fixture = await startHttpFixture();
+    const originalFetch = globalThis.fetch;
+    let streamSignal: AbortSignal | null | undefined;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((request, init) => {
+      if (request instanceof Request && request.url === fixture.sse) streamSignal = init?.signal;
+      return originalFetch(request, init);
+    });
     const result = await new SdkMcpRunner().callTool(invocation({
       transport: "sse",
       enabled: true,
       url: fixture.sse,
       headers: {Authorization: `Bearer ${secret}`},
       timeoutMs: 5_000,
-    }), {name: "echo", arguments: {message: "legacy-ok"}});
+    }), {name: "echo", arguments: {message: "legacy-ok"}}).finally(() => fetchSpy.mockRestore());
     expect(result).toMatchObject({diagnostics: {transport: "sse"}});
     expect(result.value.content?.[0]).toMatchObject({type: "text", text: "legacy-ok"});
+    expect(streamSignal?.aborted).toBe(true);
     const events = await fetch(`${fixture.base}/events`).then((response) => response.json()) as {events: Array<Record<string, unknown>>};
     expect(events.events[0]).toMatchObject({method: "GET", path: "/sse", authorization: true});
     expect(events.events.some((event) => event.method === "POST" && event.path === "/messages")).toBe(true);

@@ -11,7 +11,7 @@ import {
   MCP_CALL_COMMAND_NAME,
   MCP_TOOLS_COMMAND_NAME,
 } from "../src/domain/mcp/commands.js";
-import {InMemoryMcpConfigStore} from "../src/domain/mcp/store.js";
+import {InMemoryMcpConfigStore} from "./helpers/in-memory-mcp-config-store.js";
 import type {McpRunner} from "../src/domain/mcp/types.js";
 import {DEFAULT_AGENT_COMMAND_CATALOG} from "../src/panda/commands/agent-command-modules.js";
 import {SdkMcpRunner} from "../src/integrations/mcp/client.js";
