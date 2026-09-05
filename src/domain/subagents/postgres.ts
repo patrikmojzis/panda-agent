@@ -117,9 +117,38 @@ export class PostgresSubagentProfileStore implements SubagentProfileStore {
       await lockSubagentProfileSlug(client, profile.slug);
       await this.assertNoCrossScopeSlugConflict(profile, client);
 
-      const result = profile.agentKey === undefined
-        ? await this.upsertGlobalProfile(client, profileParams(profile))
-        : await this.upsertAgentScopedProfile(client, profileParams(profile));
+      const conflictTarget = profile.agentKey === undefined
+        ? "(slug) WHERE agent_key IS NULL"
+        : "(agent_key, slug) WHERE agent_key IS NOT NULL";
+      const result = await client.query(`
+        INSERT INTO ${this.tables.subagentProfiles} (
+          slug,
+          agent_key,
+          description,
+          prompt,
+          tool_groups,
+          model,
+          thinking,
+          transcript_mode,
+          source,
+          created_by_agent_key,
+          enabled
+        ) VALUES (
+          $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11
+        )
+        ON CONFLICT ${conflictTarget} DO UPDATE SET
+          description = EXCLUDED.description,
+          prompt = EXCLUDED.prompt,
+          tool_groups = EXCLUDED.tool_groups,
+          model = EXCLUDED.model,
+          thinking = EXCLUDED.thinking,
+          transcript_mode = EXCLUDED.transcript_mode,
+          source = EXCLUDED.source,
+          created_by_agent_key = EXCLUDED.created_by_agent_key,
+          enabled = EXCLUDED.enabled,
+          updated_at = NOW()
+        RETURNING *
+      `, profileParams(profile));
 
       return parseProfileRow(result.rows[0] as Record<string, unknown>);
     });
@@ -224,75 +253,5 @@ export class PostgresSubagentProfileStore implements SubagentProfileStore {
         `Global subagent profile ${profile.slug} conflicts with existing custom profiles; an operator migration is required before this built-in can be seeded.`,
       );
     }
-  }
-
-  private async upsertGlobalProfile(
-    queryable: PgQueryable,
-    params: readonly unknown[],
-  ): Promise<{ rows: readonly unknown[] }> {
-    return queryable.query(`
-      INSERT INTO ${this.tables.subagentProfiles} (
-        slug,
-        agent_key,
-        description,
-        prompt,
-        tool_groups,
-        model,
-        thinking,
-        transcript_mode,
-        source,
-        created_by_agent_key,
-        enabled
-      ) VALUES (
-        $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11
-      )
-      ON CONFLICT (slug) WHERE agent_key IS NULL DO UPDATE SET
-        description = EXCLUDED.description,
-        prompt = EXCLUDED.prompt,
-        tool_groups = EXCLUDED.tool_groups,
-        model = EXCLUDED.model,
-        thinking = EXCLUDED.thinking,
-        transcript_mode = EXCLUDED.transcript_mode,
-        source = EXCLUDED.source,
-        created_by_agent_key = EXCLUDED.created_by_agent_key,
-        enabled = EXCLUDED.enabled,
-        updated_at = NOW()
-      RETURNING *
-    `, params);
-  }
-
-  private async upsertAgentScopedProfile(
-    queryable: PgQueryable,
-    params: readonly unknown[],
-  ): Promise<{ rows: readonly unknown[] }> {
-    return queryable.query(`
-      INSERT INTO ${this.tables.subagentProfiles} (
-        slug,
-        agent_key,
-        description,
-        prompt,
-        tool_groups,
-        model,
-        thinking,
-        transcript_mode,
-        source,
-        created_by_agent_key,
-        enabled
-      ) VALUES (
-        $1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11
-      )
-      ON CONFLICT (agent_key, slug) WHERE agent_key IS NOT NULL DO UPDATE SET
-        description = EXCLUDED.description,
-        prompt = EXCLUDED.prompt,
-        tool_groups = EXCLUDED.tool_groups,
-        model = EXCLUDED.model,
-        thinking = EXCLUDED.thinking,
-        transcript_mode = EXCLUDED.transcript_mode,
-        source = EXCLUDED.source,
-        created_by_agent_key = EXCLUDED.created_by_agent_key,
-        enabled = EXCLUDED.enabled,
-        updated_at = NOW()
-      RETURNING *
-    `, params);
   }
 }

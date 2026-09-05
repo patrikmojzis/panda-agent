@@ -1169,3 +1169,31 @@ cross-scope rejection and validation order remain. Existing tests emulate those
 upserts and skip the partial indexes; exact emitted-SQL/parameter comparisons and
 a disposable real-Postgres check of both scopes are required before acceptance.
 That candidate is not implemented in this batch.
+
+## Cycle 46 — Use one subagent-profile upsert
+
+- Finding: two private profile-store methods repeated an insert/update query;
+  only the global versus agent-scoped partial-index conflict target differed.
+- Change: put one query in the existing public `upsertProfile` method, selecting
+  its conflict target from two fixed literals. Remove the private duplicates.
+  Preserve normalization, transaction, advisory slug lock, cross-scope guard,
+  parameter preparation, row validation and transaction completion order.
+- Result: 41 fewer production lines and 116 live-test lines for seven cases.
+  Cumulative production reduction is 5,223, including 75 relocated into tests.
+- Evidence: 205 old/new public-upsert comparisons preserve every SQL token and
+  all 11 parameters, return values, validation/query errors, rollback and release.
+  Only uniform query indentation changes. All 33 focused subagent tests pass.
+  Local comparison: `.temp/desloppify-cycle46-parity.mjs`.
+- PostgreSQL coverage: the existing in-memory fixture intercepts upsert SQL and
+  skips the partial indexes. New `tests/live/subagent-profiles.live.test.ts` uses
+  real migrations and public store calls to verify inserts/updates in both scopes,
+  shared custom slugs across agents, both conflict directions, a global/custom
+  creation race, and recovery after a foreign-key failure. All seven cases pass
+  on a fresh isolated database; evidence:
+  `.temp/desloppify-cycle46-profiles-live-results.json`.
+- State: independently reviewed and committed locally with this cycle. Root
+  typecheck, import law and diff checks pass. The deterministic runtime fixture
+  also passed against a separate fresh database: 25 migrations, one completed
+  owned run, an applied input and zero external requests. Evidence:
+  `.temp/desloppify-cycle46-offline-smoke-output.log`. The isolated cluster was
+  stopped afterward. No production access, migration, push or deployment.
