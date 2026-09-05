@@ -54,12 +54,14 @@ export function redactExactJson(value: unknown, secrets: readonly string[]): Jso
 export class StreamingSecretRedactor {
   private readonly decoder = new StringDecoder("utf8");
   private readonly secrets: readonly string[];
+  private readonly pattern: RegExp;
   private readonly maxSecretLength: number;
   private pending = "";
   private finished = false;
 
   constructor(values: readonly string[], private readonly emit: (redacted: string) => void) {
     this.secrets = exactSecretInventory(values);
+    this.pattern = new RegExp(this.secrets.map(escapeRegExp).join("|"), "gu");
     this.maxSecretLength = Math.max(0, ...this.secrets.map((secret) => secret.length));
   }
 
@@ -77,20 +79,21 @@ export class StreamingSecretRedactor {
 
   private process(decoded: string, final: boolean): void {
     const combined = this.pending + decoded;
-    if (final || this.maxSecretLength <= 1) {
+    if (final || this.maxSecretLength === 0) {
       this.pending = "";
       if (combined) this.emit(redactExactString(combined, this.secrets));
       return;
     }
 
-    let cutoff = Math.max(0, combined.length - (this.maxSecretLength - 1));
-    for (const secret of this.secrets) {
-      let start = combined.lastIndexOf(secret, cutoff);
-      while (start >= 0) {
-        if (start < cutoff && start + secret.length > cutoff) cutoff = start;
-        start = combined.lastIndexOf(secret, start - 1);
+    let cutoff = Math.max(0, combined.length - Math.max(1, this.maxSecretLength - 1));
+    for (const match of combined.matchAll(this.pattern)) {
+      if (match.index >= cutoff) break;
+      if (match.index + match[0].length > cutoff) {
+        cutoff = match.index;
+        break;
       }
     }
+    if ((combined.codePointAt(cutoff - 1) ?? 0) > 0xffff) cutoff -= 1;
     const safe = combined.slice(0, cutoff);
     this.pending = combined.slice(cutoff);
     if (safe) this.emit(redactExactString(safe, this.secrets));

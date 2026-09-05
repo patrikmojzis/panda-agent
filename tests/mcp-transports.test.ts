@@ -1,9 +1,10 @@
-import {spawn, type ChildProcess} from "node:child_process";
+import {execFile, spawn, type ChildProcess} from "node:child_process";
 import {randomUUID} from "node:crypto";
 import {mkdtemp, readFile, rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
+import {promisify} from "node:util";
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {SdkMcpRunner} from "../src/integrations/mcp/client.js";
@@ -21,6 +22,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixturePath = path.join(root, "examples/mcp/fixture-server.mjs");
 const secret = "fixture-raw-secret-value";
 const children: ChildProcess[] = [];
+const execFileAsync = promisify(execFile);
 
 interface ProcessTreeState {
   parentPid: number;
@@ -105,6 +107,32 @@ afterEach(async () => {
 });
 
 describe("MCP exact raw secret redaction", () => {
+  it.each([
+    {name: "a full secret", chunks: ["test-secret"], expected: "[redacted]"},
+    {name: "repeated secrets", chunks: ["test-secret test-secret"], expected: "[redacted] [redacted]"},
+    {name: "a split secret", chunks: ["test-", "secret"], expected: "[redacted]"},
+    {name: "a secret followed by ordinary text", chunks: ["test-secret public", " suffix"], expected: "[redacted] public suffix"},
+  ])("finishes redacting $name at offset zero without leaking buffered text", async ({chunks, expected}) => {
+    const {stdout} = await execFileAsync(process.execPath, [
+      "--import", "tsx", "--input-type=module", "-e", `
+        import assert from "node:assert/strict";
+        import {StreamingSecretRedactor} from "./src/integrations/mcp/redaction.ts";
+        let output = "";
+        const redactor = new StreamingSecretRedactor(["test-secret"], (text) => {
+          assert(!text.includes("test-secret"));
+          output += text;
+        });
+        for (const chunk of JSON.parse(process.argv[1])) redactor.append(Buffer.from(chunk));
+        redactor.finish();
+        redactor.finish();
+        redactor.append(Buffer.from("ignored after finish"));
+        process.stdout.write(output);
+      `,
+      JSON.stringify(chunks),
+    ], {cwd: root, timeout: 2_000});
+    expect(stdout).toBe(expected);
+  });
+
   it("uses longest-first exact matching for overlapping values and regex characters", () => {
     expect(redactExactString("token=a+b; short=a", ["a", "a+b"])).toBe("token=[redacted]; short=[redacted]");
     expect(redactExactString("encoded=YSs=", ["a+b"])).toBe("encoded=YSs=");
@@ -133,6 +161,56 @@ describe("MCP exact raw secret redaction", () => {
     redactor.append(Buffer.from("cret after"));
     redactor.finish();
     expect(output).toBe("before [redacted] after");
+  });
+
+  it.each([
+    {
+      name: "overlapping secrets",
+      secrets: ["abcdefghij", "hijklm"],
+      input: "abcdefghijklmnopqrstu",
+      expected: "[redacted]klmnopqrstu",
+    },
+    {
+      name: "an earlier short match before a longer overlap",
+      secrets: ["abc", "cdefgh"],
+      input: "abcdefgh public tail",
+      expected: "[redacted]defgh public tail",
+    },
+    {
+      name: "Unicode secrets and regex characters",
+      secrets: ["🔑a+b", "a+b"],
+      input: "🔑a+b / a+b / 🔑a+b public tail",
+      expected: "[redacted] / [redacted] / [redacted] public tail",
+    },
+    {
+      name: "Unicode context around unpaired-surrogate secrets",
+      secrets: ["]+ß", "\ude00b+]+"],
+      input: "ac😀b+]+ß",
+      expected: "ac😀b+[redacted]",
+    },
+    {
+      name: "single code-unit surrogate secrets",
+      secrets: ["\ud83d", "\ude00"],
+      input: "😀",
+      expected: "😀",
+    },
+  ])("matches whole-string redaction for every chunk split with $name", ({secrets, input, expected}) => {
+    expect(redactExactString(input, secrets)).toBe(expected);
+    const redactChunks = (chunks: readonly (Buffer | string)[]) => {
+      let output = "";
+      const redactor = new StreamingSecretRedactor(secrets, (text) => { output += text; });
+      for (const chunk of chunks) redactor.append(chunk);
+      redactor.finish();
+      return output;
+    };
+    for (let split = 0; split <= input.length; split += 1) {
+      expect(redactChunks([input.slice(0, split), input.slice(split)])).toBe(expected);
+    }
+    const bytes = Buffer.from(input);
+    for (let split = 0; split <= bytes.length; split += 1) {
+      expect(redactChunks([bytes.subarray(0, split), bytes.subarray(split)])).toBe(expected);
+    }
+    expect(redactChunks([...bytes].map((byte) => Buffer.from([byte])))).toBe(expected);
   });
 });
 

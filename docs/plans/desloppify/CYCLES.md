@@ -702,3 +702,50 @@ and supported runtime context exports retain meaningful policy or public callers
   explicit. Its test store now replaces cwd like the real Postgres adapter.
 - State: reviewed and committed locally with this cycle. Command descriptors,
   authority, mutation order, null semantics and error behavior are unchanged.
+
+## Cycle 31 — Fix streaming MCP secret redaction
+
+- Finding: the backward match loop never terminated when a complete secret began
+  at offset zero: `lastIndexOf` clamps a negative search position back to zero.
+  A shorter overlapping secret could also move the cutoff inside a previously
+  scanned longer secret, emitting its raw prefix.
+- Change: scan cached regex matches forward using the same leftmost/longest-first
+  precedence as whole-string redaction. Retain a bounded suffix and keep valid
+  UTF-16 pairs together, including when secret values contain unpaired surrogates.
+  A nonempty single-unit inventory now retains one unit for Unicode context;
+  empty inventories retain their immediate passthrough behavior.
+- Result: three production lines added; 78 net test lines added. Correctness takes
+  priority over a negative line count for this defect.
+- Evidence: four subprocess regressions timed out on the previous implementation
+  and now finish without leaking buffered secrets. All 59 focused MCP tests pass.
+  Root fuzzing found two Unicode boundary cases during review; both were fixed
+  before acceptance. The 28,536 root comparisons plus 42,493 independent cases
+  match whole-string redaction across overlaps, UTF-16/UTF-8 splits, malformed
+  bytes, repeated finish and empty inventories. Review confirmed every emitted
+  prefix is safe, regex state is stable and pending data stays bounded.
+- State: reviewed and committed locally with this cycle. This intentionally fixes
+  stderr hangs and partial-secret exposure. JSON redaction, transport lifecycle,
+  provider calls and supported interfaces are unchanged; production is untouched.
+
+## Combined verification after cycles 28–31
+
+The frozen combined source passes all 3,107 tests across 335 files with no failures
+or skips: `.temp/desloppify-cycles28-31-unit-results.json`. TypeScript build, import
+law, prompt/shim contracts, all 19 compiled package imports and shared `Thread`
+identity pass. No generated contract changed. All 113 local plan links resolve.
+
+The model/bash smoke passed all five assertions against disposable local Postgres:
+`.temp/runtime-smoke/desloppify-cycles28-31-20260905/summary.json`. The temporary
+server was stopped afterward. Production received no writes or operational changes.
+
+These four cycles remove 86 production lines net, bringing the cleanup total to
+5,106, including the previously recorded 75 lines relocated into tests. App HTTP,
+terminal entries and command parser commits are `f647451a`, `9559ed62` and
+`36b47900`; MCP redaction and this record are committed with cycle 31. Unrelated
+commits and `output/` are excluded and preserved.
+
+MCP/browser recon was interrupted to fix the reproduced redactor defects and
+remains an area for further inspection. Two private object-shape guards also
+duplicate `lib/records` in WhatsApp auth storage and Bash-target context; any
+follow-up must verify auth decoding and exact prompt output before removing them.
+No additional implementation is included in this batch.
