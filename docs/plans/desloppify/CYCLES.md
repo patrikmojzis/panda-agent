@@ -17,10 +17,39 @@ are outside this objective.
   exact before/after parity for all 131 default grants.
 - Exclusions: unrelated image-generation and background-tool-job work, plus
   generated reporting artifacts. Preserve those files and their author's commits.
-- State: verified and reviewed; scoped commit prepared.
+- Commit: `ca5a689d` — `refactor(core): consolidate durable ownership and remove obsolete paths`.
+- State: committed locally; not pushed or deployed.
 
-## Next cycle
+## Cycle 1 — Consolidate catalog-backed CLI help
 
-Reconnaissance is examining terminal UI, CLI adapters and browser integration.
-Accepted candidates need current caller/export evidence, a concrete simplification,
-focused behavioral checks and an independent review before the next commit.
+The host CLI pre-registers handwritten help-only commands even though
+`registerCommandRouteHelpCommands` already projects catalog routes and skips
+existing operator commands. Inspect and remove the redundant registrars while
+preserving native callbacks, option parsing and command discovery. Compare actual
+help/JSON output before and after; do not create another command inventory.
+
+- Result: deleted 13 help-only registrars and their app wiring: 834 fewer
+  production lines, with 10 net test lines added. The existing catalog supplies
+  their 60 routes; native operator callbacks and image CLI remain intact.
+- Evidence: 180 before/after comparisons preserved leaf JSON help, text help and
+  transport errors. All 239 focused command/package/schema tests passed. Fifteen
+  real CLI help subprocesses passed against an unusable database URL, including
+  generated help beneath operator groups. Typecheck, import law, shim generation,
+  prompt contracts and diff checks passed.
+- Review: independent final review found no blockers and reran 40 command/help
+  and schema-gate tests successfully. Tests protect complete descriptor output,
+  native callback/options retention through repeated registration, and DB-free
+  generated help. No references to the deleted modules remain.
+- State: reviewed and committed locally with this cycle; not pushed or deployed.
+
+## Cycle 2 — Simplify browser action completion
+
+Six browser page actions repeat baseline capture, settling and changed-snapshot
+rendering. Consolidate that sequence locally while preserving each action's
+Playwright calls, progress order, popup behavior, target validation and scope
+invalidation. Reuse the existing timeout helper without weakening dirty-session
+closure after timeout. Remove trivial naming adapters only where direct calls
+remain clear.
+
+- State: implementation in progress; terminal snapshot/rendering simplifications
+  are being investigated separately for the following cycle.

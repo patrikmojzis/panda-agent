@@ -1,30 +1,19 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {Command} from "commander";
 
+import {commandUsesDatabase} from "../src/app/cli-shared.js";
 import {buildCommandRouteTree} from "../src/domain/commands/index.js";
 import {registerCommandCatalogCommands, registerCommandRouteHelpCommands} from "../src/domain/commands/cli.js";
+import {commandDescriptorToJson, formatCommandHelp} from "../src/domain/commands/help.js";
 import type {CommandDescriptor} from "../src/domain/commands/types.js";
 import {registerA2ACommands} from "../src/domain/a2a/cli.js";
-import {registerAppCommandHelpCommands} from "../src/domain/apps/cli.js";
-import {registerSkillCommandHelpCommands} from "../src/domain/agents/skill-cli.js";
-import {registerEnvCommandHelpCommands} from "../src/domain/credentials/env-cli.js";
 import {registerEmailCommands} from "../src/domain/email/cli.js";
-import {registerEnvironmentCommandHelpCommands} from "../src/domain/execution-environments/cli.js";
-import {registerScheduleCommandHelpCommands} from "../src/domain/scheduling/tasks/cli.js";
 import {registerSessionCommands} from "../src/domain/sessions/cli.js";
-import {registerTodoCommandHelpCommands} from "../src/domain/sessions/todo-cli.js";
 import {subagentSpawnCommandDescriptor} from "../src/domain/subagents/commands.js";
-import {registerSubagentCommandHelpCommands} from "../src/domain/subagents/cli.js";
-import {registerTimeCommandHelpCommands} from "../src/domain/time/cli.js";
-import {registerWatchCommandHelpCommands} from "../src/domain/watches/cli.js";
-import {registerWhisperCommandHelpCommands} from "../src/integrations/audio/cli.js";
 import {registerTelegramCommands} from "../src/integrations/channels/telegram/cli.js";
 import {registerDiscordCommands} from "../src/integrations/channels/discord/cli.js";
 import {registerWhatsAppCommands} from "../src/integrations/channels/whatsapp/cli.js";
-import {registerVentCommandHelpCommands} from "../src/integrations/panda-trace/vent-cli.js";
 import {ventSendCommandDescriptor} from "../src/integrations/panda-trace/vent-commands.js";
-import {registerPostgresCommandHelpCommands} from "../src/integrations/postgres/cli.js";
-import {registerWebCommandHelpCommands} from "../src/integrations/web/cli.js";
 import {
   braveImageSearchCommandDescriptor,
   braveLlmContextCommandDescriptor,
@@ -60,22 +49,9 @@ function extractUsageOptionNames(usage: string): string[] {
 function createProgram(): Command {
   const program = new Command();
   registerCommandCatalogCommands(program, DEFAULT_AGENT_COMMAND_DESCRIPTORS);
-  registerAppCommandHelpCommands(program);
-  registerEnvironmentCommandHelpCommands(program);
-  registerEnvCommandHelpCommands(program);
-  registerScheduleCommandHelpCommands(program);
-  registerWatchCommandHelpCommands(program);
-  registerTimeCommandHelpCommands(program);
-  registerSkillCommandHelpCommands(program);
-  registerVentCommandHelpCommands(program);
-  registerPostgresCommandHelpCommands(program);
-  registerWebCommandHelpCommands(program);
   registerImageCommandHelpCommands(program);
-  registerWhisperCommandHelpCommands(program);
   registerWikiCommands(program);
-  registerTodoCommandHelpCommands(program);
   registerSessionCommands(program);
-  registerSubagentCommandHelpCommands(program);
   registerA2ACommands(program);
   registerEmailCommands(program);
   registerTelegramCommands(program);
@@ -186,7 +162,7 @@ describe("Panda command CLI discovery", () => {
     expect(missingFromMetadata).toEqual([]);
   });
 
-  it("prints descriptor-backed JSON help for every default catalog route", async () => {
+  it("prints the full descriptor contract as JSON and text for every default catalog route", async () => {
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     for (const leaf of defaultCommandRouteTree.commands) {
@@ -196,10 +172,14 @@ describe("Panda command CLI discovery", () => {
       await program.parseAsync([...leaf.argv, "--help", "--json"], {from: "user"});
 
       expect(write.mock.calls.length, leaf.command).toBeGreaterThan(0);
-      expect(JSON.parse(String(write.mock.calls[0]?.[0])), leaf.command).toMatchObject({
-        name: leaf.command,
-        usage: leaf.descriptor.usage,
-      });
+      expect(JSON.parse(String(write.mock.calls[0]?.[0])), leaf.command).toEqual(
+        commandDescriptorToJson(leaf.descriptor, {includeSchemaCatalog: true}),
+      );
+      write.mockClear();
+      await createProgram().parseAsync([...leaf.argv, "--help"], {from: "user"});
+      expect(write.mock.calls.map(([chunk]) => String(chunk)).join(""), leaf.command).toBe(
+        formatCommandHelp(leaf.descriptor),
+      );
     }
   });
 
@@ -240,6 +220,36 @@ describe("Panda command CLI discovery", () => {
       name: "custom.echo",
       usage: "panda custom echo <text>",
     });
+  });
+
+  it("preserves existing operator actions and options when catalog routes overlap", async () => {
+    const program = new Command();
+    const received: string[] = [];
+    program.command("time").command("now")
+      .requiredOption("--clock <name>")
+      .action((options: {clock: string}) => { received.push(options.clock); });
+
+    registerCommandRouteHelpCommands(program, defaultCommandRouteTree);
+    registerCommandRouteHelpCommands(program, defaultCommandRouteTree);
+    await program.parseAsync(["time", "now", "--clock", "operator"], {from: "user"});
+
+    expect(received).toEqual(["operator"]);
+  });
+
+  it("keeps generated help database-free beneath an operator group with database options", async () => {
+    const program = new Command();
+    program.command("time").option("--db-url <url>");
+    const databaseActions: boolean[] = [];
+    program.hook("preAction", (_command, actionCommand) => {
+      databaseActions.push(commandUsesDatabase(actionCommand, program));
+    });
+    registerCommandRouteHelpCommands(program, defaultCommandRouteTree);
+    const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+
+    await program.parseAsync(["time", "now", "--help", "--json"], {from: "user"});
+
+    expect(databaseActions).toEqual([false]);
+    expect(JSON.parse(String(write.mock.calls[0]?.[0]))).toMatchObject({name: "time.now"});
   });
 
   it("refuses native-shaped host invocations with shim transport guidance", async () => {

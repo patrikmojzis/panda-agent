@@ -22,6 +22,11 @@ lines, 330 passing test files / 2,926 tests, a passing model smoke, and current
 build/import/prompt/shim checks. Its complete decisions and evidence are in the
 current-pass record. Production remains undeployed by this cleanup work.
 
+The first two passes are committed as `ca5a689d`. Cycle 1 removes another 834
+production lines of duplicated host CLI help registration and has passed its
+independent review. Cycle 2 targets browser action completion; the cycle log is
+the current progress record.
+
 Production access remains strictly read-only. No deployment, migration, restart,
 message replay or historical-data cleanup is part of this work. The production
 snapshot and migration constraints are recorded in the first-pass plan, §8.
