@@ -490,6 +490,10 @@ describe("ObserveApp", () => {
 
     expect(output.buffer).toContain("run run-1 failed");
     expect(output.buffer).toContain("Boom.");
+
+    const afterFailure = output.buffer;
+    await app.syncStoredState(true);
+    expect(output.buffer).toBe(afterFailure);
   });
 
   it("strips ansi formatting when stdout is not a TTY", async () => {

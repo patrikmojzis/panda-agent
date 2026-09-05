@@ -78,7 +78,7 @@ describe("stored thread snapshots", () => {
       threadId: "thread-forward-refresh",
     });
 
-    expect(snapshot.runs).toEqual([latestRun]);
+    expect(snapshot.latestRun).toEqual(latestRun);
     expect(getLatestRun).toHaveBeenCalledOnce();
   });
 });

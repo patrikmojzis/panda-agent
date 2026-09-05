@@ -61,7 +61,8 @@ remain clear.
 - Review: independent review found no blockers and reran all 51 browser tests.
   It verified timer/error behavior, late promise handling, dirty-session removal,
   startup fencing, action ordering, popup and final-URL checks, and normalizer parity.
-- State: reviewed and committed locally with this cycle; not pushed or deployed.
+- Commit: `161ed329` — `refactor(browser): share page action completion and deadline handling`.
+- State: committed locally; not pushed or deployed.
 
 ## Cycle 3 — Carry the latest stored run directly to terminal views
 
@@ -78,7 +79,7 @@ formatter's unreachable role branches and redundant tool-result cast.
   check that a repeated refresh does not print a run failure again. Typecheck and
   import law passed. Independent review compared the old and new run-state
   function across 40 cases and found identical observable behavior and no blockers.
-- State: implemented and independently reviewed; awaiting its separate local commit.
+- State: reviewed and committed locally with this cycle; not pushed or deployed.
 
 ## Cycle 4 — Remove copied help from mixed operator registrars
 

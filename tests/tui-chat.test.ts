@@ -56,7 +56,7 @@ type AppHarness = {
     sequence?: string;
     shift?: boolean;
   }): Promise<void>;
-  observeLatestRun(runs: readonly ThreadRunRecord[]): void;
+  observeLatestRun(latestRun: ThreadRunRecord | null): void;
   cleanup(): Promise<void>;
   submitComposer(): Promise<void>;
   handleCommand(commandLine: string): Promise<boolean>;
@@ -166,14 +166,14 @@ describe("ChatApp Ctrl-C handling", () => {
     expect(abortThread).toHaveBeenCalledWith("thread-ctrl-c", "Aborted from Ctrl-C.");
     expect(app.closed).toBe(false);
 
-    app.observeLatestRun([{
+    app.observeLatestRun({
       id: "run-ctrl-c",
       threadId: "thread-ctrl-c",
       status: "failed",
       startedAt: Date.now() - 100,
       finishedAt: Date.now(),
       error: "Aborted from Ctrl-C.",
-    }]);
+    });
 
     await flushTimers();
 

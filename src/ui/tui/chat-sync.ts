@@ -31,7 +31,7 @@ export interface ChatSyncHost {
     thread: ThreadRecord,
     session: SessionRecord,
     transcript: readonly ThreadMessageRecord[],
-    runs: readonly ThreadRunRecord[],
+    latestRun: ThreadRunRecord | null,
     displayConfig: {model: string; thinking?: ThinkingLevel},
   ): void;
   requestRender(): void;
@@ -108,7 +108,7 @@ export async function syncChatStoredThreadState(
         ? services.resolveThreadRunConfig(snapshot.thread.id).catch(() => resolveStoredThreadDisplayConfig())
         : Promise.resolve(resolveStoredThreadDisplayConfig()),
     ]);
-    host.applyLoadedSnapshot(snapshot.thread, session, snapshot.transcript, snapshot.runs, displayConfig);
+    host.applyLoadedSnapshot(snapshot.thread, session, snapshot.transcript, snapshot.latestRun, displayConfig);
     host.requestRender();
   } catch {
     // Ignore background sync failures here. Foreground actions surface their own errors.

@@ -343,11 +343,11 @@ export class ChatApp {
         this.lastStoredSyncAt = value;
       },
       getLastStoredSequence: () => this.lastStoredSequence,
-      applyLoadedSnapshot: (thread, session, transcript, runs, displayConfig) => this.applyLoadedSnapshot(
+      applyLoadedSnapshot: (thread, session, transcript, latestRun, displayConfig) => this.applyLoadedSnapshot(
         thread,
         session,
         transcript,
-        runs,
+        latestRun,
         displayConfig,
       ),
       requestRender: () => this.requestRender(),
@@ -554,9 +554,9 @@ export class ChatApp {
     this.setNotice(compactLabel, "info", 6_000);
   }
 
-  private observeLatestRun(runs: Parameters<typeof observeLatestStoredRun>[0]["runs"]): void {
+  private observeLatestRun(latestRun: Parameters<typeof observeLatestStoredRun>[0]["latestRun"]): void {
     const observed = observeLatestStoredRun({
-      runs,
+      latestRun,
       lastObservedRunStatusKey: this.lastObservedRunStatusKey,
       currentRunStartedAt: this.runStartedAt,
     });
@@ -582,7 +582,7 @@ export class ChatApp {
     thread: ThreadRecord,
     session: Awaited<ReturnType<ChatRuntimeServices["getSession"]>>,
     transcript: Parameters<typeof appendStoredTranscriptMessages>[0]["records"],
-    runs: Parameters<typeof observeLatestStoredRun>[0]["runs"],
+    latestRun: Parameters<typeof observeLatestStoredRun>[0]["latestRun"],
     displayConfig: {model: string; thinking?: ThinkingLevel},
   ): void {
     this.currentThread = thread;
@@ -594,7 +594,7 @@ export class ChatApp {
     this.refreshToolCatalog();
     this.markDirty();
     this.appendStoredMessages(transcript);
-    this.observeLatestRun(runs);
+    this.observeLatestRun(latestRun);
   }
 
   private queuePendingLocalInput(threadId: string, text: string, id: string): void {

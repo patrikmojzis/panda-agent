@@ -59,7 +59,7 @@ describe("syncChatStoredThreadState", () => {
       thread,
       session,
       [],
-      [],
+      null,
       resolveStoredThreadDisplayConfig(),
     );
     expect(services.store.listTranscriptPage).toHaveBeenCalledWith("thread-sync", {

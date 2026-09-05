@@ -363,7 +363,7 @@ export class ObserveApp {
     resolved: ResolvedObserveTarget;
     thread: ThreadRecord;
     transcript: readonly ThreadMessageRecord[];
-    runs: readonly ThreadRunRecord[];
+    latestRun: ThreadRunRecord | null;
     toolJobs: readonly ThreadToolJobRecord[];
     runtimeConfig: SessionRuntimeConfigRecord;
   }> {
@@ -393,7 +393,7 @@ export class ObserveApp {
     resolved: ResolvedObserveTarget;
     thread: ThreadRecord;
     transcript: readonly ThreadMessageRecord[];
-    runs: readonly ThreadRunRecord[];
+    latestRun: ThreadRunRecord | null;
     toolJobs: readonly ThreadToolJobRecord[];
     runtimeConfig: SessionRuntimeConfigRecord;
   }): Promise<void> {
@@ -418,9 +418,9 @@ export class ObserveApp {
     );
 
     if (isInitial) {
-      this.renderHeader(snapshot.thread, snapshot.resolved, snapshot.runs, snapshot.runtimeConfig);
+      this.renderHeader(snapshot.thread, snapshot.resolved, snapshot.latestRun, snapshot.runtimeConfig);
       this.renderInitialActivity(snapshot.transcript, snapshot.toolJobs);
-      this.seedRunState(snapshot.runs);
+      this.seedRunState(snapshot.latestRun);
       return;
     }
 
@@ -437,7 +437,7 @@ export class ObserveApp {
     }
 
     this.renderCommandToolJobs(snapshot.toolJobs);
-    this.renderRunTransition(snapshot.runs);
+    this.renderRunTransition(snapshot.latestRun);
   }
 
   private resetThreadViewState(): void {
@@ -450,9 +450,9 @@ export class ObserveApp {
     this.lastStoredSequence = 0;
   }
 
-  private seedRunState(runs: readonly ThreadRunRecord[]): void {
+  private seedRunState(latestRun: ThreadRunRecord | null): void {
     const observed = observeLatestStoredRun({
-      runs,
+      latestRun,
       lastObservedRunStatusKey: this.lastObservedRunStatusKey,
       currentRunStartedAt: this.currentRunStartedAt,
     });
@@ -460,10 +460,9 @@ export class ObserveApp {
     this.currentRunStartedAt = observed.runStartedAt;
   }
 
-  private renderRunTransition(runs: readonly ThreadRunRecord[]): void {
-    const latestRun = runs.at(-1);
+  private renderRunTransition(latestRun: ThreadRunRecord | null): void {
     const observed = observeLatestStoredRun({
-      runs,
+      latestRun,
       lastObservedRunStatusKey: this.lastObservedRunStatusKey,
       currentRunStartedAt: this.currentRunStartedAt,
     });
@@ -628,11 +627,10 @@ export class ObserveApp {
   private renderHeader(
     thread: ThreadRecord,
     resolved: ResolvedObserveTarget,
-    runs: readonly ThreadRunRecord[],
+    latestRun: ThreadRunRecord | null,
     runtimeConfig: SessionRuntimeConfigRecord,
   ): void {
     const displayConfig = resolveStoredThreadDisplayConfig(runtimeConfig);
-    const latestRun = runs.at(-1);
     this.writeLines([
       this.renderHeaderLine("target", this.describeTarget()),
       this.renderHeaderLine("agent", resolved.agentKey),

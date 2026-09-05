@@ -93,7 +93,7 @@ export function appendStoredTranscriptMessages(input: {
 }
 
 export function observeLatestStoredRun(input: {
-  runs: readonly ThreadRunRecord[];
+  latestRun: ThreadRunRecord | null;
   lastObservedRunStatusKey: string | null;
   currentRunStartedAt: number;
 }): {
@@ -104,48 +104,18 @@ export function observeLatestStoredRun(input: {
   errorNotice?: string;
   shouldScheduleCloseAfterRun: boolean;
 } {
-  const latestRun = input.runs.at(-1);
+  const latestRun = input.latestRun;
   const runKey = latestRun ? `${latestRun.id}:${latestRun.status}` : null;
-
-  if (runKey === input.lastObservedRunStatusKey) {
-    return {
-      changed: false,
-      lastObservedRunStatusKey: input.lastObservedRunStatusKey,
-      runPhase: latestRun?.status === "running" ? "thinking" : "idle",
-      runStartedAt: latestRun?.status === "running"
-        ? latestRun.startedAt
-        : input.currentRunStartedAt,
-      shouldScheduleCloseAfterRun: latestRun?.status !== "running",
-    };
-  }
-
-  if (!latestRun) {
-    return {
-      changed: true,
-      lastObservedRunStatusKey: null,
-      runPhase: "idle",
-      runStartedAt: input.currentRunStartedAt,
-      shouldScheduleCloseAfterRun: true,
-    };
-  }
-
-  if (latestRun.status === "running") {
-    return {
-      changed: true,
-      lastObservedRunStatusKey: runKey,
-      runPhase: "thinking",
-      runStartedAt: latestRun.startedAt,
-      shouldScheduleCloseAfterRun: false,
-    };
-  }
+  const changed = runKey !== input.lastObservedRunStatusKey;
+  const running = latestRun?.status === "running";
 
   return {
-    changed: true,
+    changed,
     lastObservedRunStatusKey: runKey,
-    runPhase: "idle",
-    runStartedAt: input.currentRunStartedAt,
-    errorNotice: latestRun.status === "failed" ? latestRun.error : undefined,
-    shouldScheduleCloseAfterRun: true,
+    runPhase: running ? "thinking" : "idle",
+    runStartedAt: running ? latestRun.startedAt : input.currentRunStartedAt,
+    errorNotice: changed && latestRun?.status === "failed" ? latestRun.error : undefined,
+    shouldScheduleCloseAfterRun: !running,
   };
 }
 
@@ -159,7 +129,7 @@ export async function loadStoredThreadSnapshot(input: {
   thread: ThreadRecord;
   transcript: readonly ThreadMessageRecord[];
   nextTranscriptBeforeSequence?: number;
-  runs: readonly ThreadRunRecord[];
+  latestRun: ThreadRunRecord | null;
   toolJobs: readonly ThreadToolJobRecord[];
 }> {
   const loadTranscriptPageWindow = async () => {
@@ -202,7 +172,7 @@ export async function loadStoredThreadSnapshot(input: {
     thread,
     transcript: transcriptPage.records,
     nextTranscriptBeforeSequence: transcriptPage.nextTranscriptBeforeSequence,
-    runs: latestRun ? [latestRun] : [],
+    latestRun,
     toolJobs,
   };
 }

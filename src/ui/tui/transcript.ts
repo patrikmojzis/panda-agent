@@ -1,4 +1,4 @@
-import type {Message, ToolResultMessage} from "@earendil-works/pi-ai";
+import type {Message} from "@earendil-works/pi-ai";
 
 import {
     formatToolCallFallback,
@@ -24,36 +24,19 @@ function sourceLabel(metadata: ThreadMessageMetadata): string {
   return `${metadata.source}:${metadata.channelId}`;
 }
 
-function summarizeMessageText(message: Message): string {
-  switch (message.role) {
-    case "user":
-      if (typeof message.content === "string") {
-        return message.content.trim();
-      }
-
-      return joinMessageTextParts(message.content, "\n");
-
-    case "assistant":
-      return joinMessageTextParts(message.content, "\n");
-
-    case "toolResult":
-      return formatToolResultFallback(message);
-
-    default:
-      return JSON.stringify(message);
-  }
-}
-
 export function renderTranscriptEntries(
   message: Message,
   metadata: ThreadMessageMetadata,
   tools: readonly Tool[] = [],
 ): TranscriptEntryView[] {
   if (message.role === "user") {
+    const body = typeof message.content === "string"
+      ? message.content.trim()
+      : joinMessageTextParts(message.content, "\n");
     return [{
       role: "user",
       title: sourceLabel(metadata),
-      body: summarizeMessageText(message) || "(empty message)",
+      body: body || "(empty message)",
     }];
   }
 
@@ -102,7 +85,7 @@ export function renderTranscriptEntries(
     return [{
       role: "tool",
       title: message.toolName,
-      body: tool?.formatResult(message as ToolResultMessage) ?? formatToolResultFallback(message),
+      body: tool?.formatResult(message) ?? formatToolResultFallback(message),
     }];
   }
 
