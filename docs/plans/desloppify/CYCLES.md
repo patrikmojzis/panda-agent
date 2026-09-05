@@ -606,3 +606,17 @@ callers; no further deletion was justified there.
   Typecheck, import law and diff checks pass.
 - State: reviewed and committed locally with this cycle. Route availability,
   response shapes, authorization and protocol behavior are unchanged.
+
+## Cycle 26 — Delete the obsolete orphaned-job row parser
+
+- Finding: `RunningToolJobLossRow` and `parseRunningToolJobLossRow` had no callers.
+  The current orphaned-job recovery path delegates to `postgres-run-claims.ts`
+  and reads the SQL update count instead.
+- Change: delete the unused interface and parser from `postgres-rows.ts`.
+- Result: 14 fewer production lines; no test scaffolding added for dead code.
+- Evidence: independent source/dynamic-lookup/export searches found no consumer
+  or supported package exposure. All 36 retained top-level statements are
+  byte-identical. The 29 runtime-Postgres/transcript-checkpoint tests, typecheck
+  and diff check pass. The live coordinator/store/recovery SQL chain is unchanged.
+- State: reviewed and committed locally with this cycle. No query, row format,
+  migration, recovery behavior or public package contract changed.

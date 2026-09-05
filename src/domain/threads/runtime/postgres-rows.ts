@@ -25,12 +25,6 @@ const runStatuses = ["running", "completed", "failed"] as const satisfies readon
 const toolJobKinds = ["bash", "command", "image_generate", "spawn_subagent", "web_research"] as const satisfies readonly ThreadToolJobKind[];
 const toolJobStatuses = ["running", "completed", "failed", "cancelled", "lost"] as const satisfies readonly ThreadToolJobStatus[];
 
-export interface RunningToolJobLossRow {
-  id: string;
-  threadId: string;
-  startedAt: number;
-}
-
 function parseRequiredString(value: unknown, label: string): string {
   return requireNonEmptyString(value, `Thread runtime ${label} must not be empty.`);
 }
@@ -350,13 +344,5 @@ export function parseToolJobRow(row: Record<string, unknown>): ThreadToolJobReco
     error: parseOptionalString(row.error),
     statusReason: parseOptionalString(row.status_reason),
     progress: parseOptionalJsonObject(row.progress, "tool job progress"),
-  };
-}
-
-export function parseRunningToolJobLossRow(row: Record<string, unknown>): RunningToolJobLossRow {
-  return {
-    id: parseRequiredString(row.id, "tool job id"),
-    threadId: parseRequiredString(row.thread_id, "thread id"),
-    startedAt: requireTimestampMillis(row.started_at, "Thread runtime tool job started_at must be a valid timestamp."),
   };
 }
