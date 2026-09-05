@@ -18,8 +18,8 @@ import type {InferenceProjection, ThreadRecord,} from "../../domain/threads/runt
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {SessionRecord} from "../../domain/sessions/types.js";
 import {resolveCurrentSessionThread} from "../../domain/sessions/current-thread.js";
-import {DAEMON_REQUEST_TIMEOUT_MS, DAEMON_STALE_AFTER_MS, DEFAULT_DAEMON_KEY,} from "./daemon.js";
-import {createPostgresPool, requireDatabaseUrl} from "./create-runtime.js";
+import {DAEMON_REQUEST_TIMEOUT_MS, DAEMON_STALE_AFTER_MS, DEFAULT_DAEMON_KEY,} from "./daemon-shared.js";
+import {createPostgresPool, requireDatabaseUrl} from "../../lib/postgres-database.js";
 import {listenThreadRuntimeNotifications} from "./store-notifications.js";
 import {createPandaSchemaVerifier} from "../../integrations/postgres/schema-version.js";
 

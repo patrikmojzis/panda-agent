@@ -128,8 +128,8 @@ const runtimeClientMocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("../src/app/runtime/create-runtime.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/app/runtime/create-runtime.js")>();
+vi.mock("../src/lib/postgres-database.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/postgres-database.js")>();
   return {
     ...actual,
     createPostgresPool: runtimeClientMocks.createPostgresPool,

@@ -14,13 +14,13 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–75; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–76; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
 Together, these cleanup commits remove **5,961 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration. This established counter covers `src/` and
 `apps/`; cycle 75 additionally removes 25 lines from the shipped command shim,
-recorded separately. There are 76 cleanup commits including the initial pass.
+recorded separately. There are 77 cleanup commits including the initial pass.
 
 Control now separates single-agent authorization and bulk visible-key reads from
 agent-list enrichment. Cycle 57 added 23 production lines to remove unnecessary
@@ -135,7 +135,14 @@ handling. Eleven new subprocess cases protect exits, artifacts, failure
 envelopes, permissions and transport errors. Independent review and all 188
 shim tests pass; no command route or catalog changes.
 
-The frozen worktree passes **3,306 unit tests across 341 files**, root build/typecheck,
+Cycle 76 replaces five indirect imports in the runtime client, session CLI and
+observer modules with their existing leaf modules. The runtime client's static
+local import graph falls from 516 files to 78; session CLI falls from 518 to 59.
+All imported bindings and supported exports remain identical. This removes
+assembly dependencies without changing the production line count; it is not
+a measured startup-latency claim. Sixty-three focused tests pass.
+
+The combined worktree passes **3,309 unit tests across 341 files**, root build/typecheck,
 import law, all 19 compiled package
 imports and shared `Thread` identity. The initial failure of an unchanged
 cancellation test and its passing isolated/file/full reruns are recorded under

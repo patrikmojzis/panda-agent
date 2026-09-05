@@ -13,7 +13,7 @@ import {
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
 import {waitForRuntimeRequestResult} from "../../domain/threads/requests/wait-for-result.js";
-import {DAEMON_REQUEST_TIMEOUT_MS, DAEMON_STALE_AFTER_MS, DEFAULT_DAEMON_KEY} from "../runtime/daemon.js";
+import {DAEMON_REQUEST_TIMEOUT_MS, DAEMON_STALE_AFTER_MS, DEFAULT_DAEMON_KEY} from "../runtime/daemon-shared.js";
 import {DaemonStateRepo} from "../runtime/state/repo.js";
 
 interface SessionResetCliOptions extends SessionCliOptions {

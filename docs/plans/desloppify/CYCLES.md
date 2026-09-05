@@ -2549,3 +2549,42 @@ Cycle 72 below implements that policy.
   Cycle 74 is committed as `bd92e101`. No production access for this change,
   push or deployment. Runtime-history processing remains open under the
   measured decision recorded with cycle 74.
+
+## Cycle 76 — Import runtime helpers from their owning modules
+
+- Finding: the runtime client obtains daemon constants and generic Postgres
+  helpers through assembly modules. Session CLI and observer modules contain
+  the same indirection. Importing a constant or stored-context renderer therefore
+  pulls in daemon/runtime assembly and unrelated integrations.
+- Change: replace five import specifiers across `src/app/runtime/client.ts`,
+  `src/app/sessions/cli.ts`, `src/ui/observe/app.ts` and
+  `src/ui/shared/stored-thread.ts`. Use the existing `daemon-shared.ts`,
+  `lib/postgres-database.ts` and `thread-definition.ts` implementations. Keep
+  intentional public reexports and callers that actually assemble the runtime.
+  Two tests now substitute the Postgres leaf while retaining its other exports.
+- Evidence: exact whole-file reconstruction permits only those import changes.
+  Independent TypeScript resolution confirms all 11 changed named bindings
+  still refer to identical declarations and types. Separate declaration emits
+  preserve all 19 supported entrypoints and six examined internal modules.
+  No import-triggered startup contract was found; startup remains inside the
+  factory functions. All 63 focused tests across nine files pass.
+- Dependency result: with external packages excluded and tree shaking disabled,
+  esbuild's static local graph shrinks from 516 to 78 files for the runtime
+  client, 518 to 59 for session CLI, 446 to 255 for observer app and 441 to 200
+  for the stored-thread reader. These compare the five import substitutions
+  within the same source tree. They do not measure process startup or promise
+  that the root CLI, which also imports daemon assembly, becomes faster.
+  Reproducible evidence: `.temp/desloppify-cycle76-import-proof.mjs`,
+  `.temp/desloppify-cycle76-import-proof.json` and
+  `.temp/desloppify-cycle76-focused-results.json`.
+- Gates: the combined frozen source for cycles 76–78 passes 3,309 tests across
+  341 files, root build/typecheck, import law and prompt/shim contracts. All 19
+  compiled package imports retain their exports and shared `Thread` identity.
+  The prompt snapshot is unchanged. Following Home/PCM changes are separately
+  staged; this cycle changes no query, algorithm, schema or function body.
+- Result: zero net production lines and one added test line. The established
+  counter stays **5,961 fewer production lines across 77 cleanup commits**,
+  including 75 relocated into tests; the preceding 25-line shim reduction
+  remains separate.
+- State: independently reviewed and committed locally with this cycle.
+  Cycle 75 is committed as `28f97d90`. No production access, push or deployment.

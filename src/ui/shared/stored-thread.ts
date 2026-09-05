@@ -1,7 +1,7 @@
 import type {ThinkingLevel} from "@earendil-works/pi-ai";
 
 import type {Tool} from "../../kernel/agent/tool.js";
-import {resolveStoredContext} from "../../app/runtime/create-runtime.js";
+import {resolveStoredContext} from "../../app/runtime/thread-definition.js";
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import type {SessionRuntimeConfigRecord} from "../../domain/sessions/types.js";
 import type {ThreadMessageRecord, ThreadRecord, ThreadRunRecord, ThreadToolJobRecord,} from "../../domain/threads/runtime/types.js";

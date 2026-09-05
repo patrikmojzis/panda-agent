@@ -1,6 +1,6 @@
 import process from "node:process";
 
-import {createPostgresPool, requireDatabaseUrl} from "../../app/runtime/create-runtime.js";
+import {createPostgresPool, requireDatabaseUrl} from "../../lib/postgres-database.js";
 import {listenThreadRuntimeNotifications} from "../../app/runtime/store-notifications.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
 import type {SessionStore} from "../../domain/sessions/store.js";

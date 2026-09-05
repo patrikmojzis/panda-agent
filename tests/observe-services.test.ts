@@ -9,7 +9,8 @@ const observeServiceMocks = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("../src/app/runtime/create-runtime.js", () => ({
+vi.mock("../src/lib/postgres-database.js", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../src/lib/postgres-database.js")>(),
   createPostgresPool: () => observeServiceMocks.pool,
   requireDatabaseUrl: (value?: string) => value ?? "postgresql://example/panda",
 }));
