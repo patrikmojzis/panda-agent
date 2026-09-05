@@ -2311,7 +2311,7 @@ the command factory error. Cycle 70 below addresses this separate boundary.
 - State: independently reviewed and committed locally with this cycle. No
   production access, push or deployment. Cycle 69 is committed as `2be8a0dd`.
 
-### Next: cleanup reporting must not abandon remaining resources
+### Finding carried into cycle 72: cleanup reporting
 
 `src/lib/cleanup.ts` awaits its error reporter inside the cleanup catch. A
 reporter rejection stops the remaining cleanup loop. Through the actual
@@ -2338,6 +2338,7 @@ Keep the existing serial cleanup order. Delaying a reporter rejection means
 later cleanup must settle first; an already hanging step can delay that
 rejection. This repair should not introduce a new timeout framework or change
 how an outer default cleanup loop handles a rejected inner cleanup operation.
+Cycle 72 below implements that policy.
 
 ## Cycle 71 — Delete the orphaned detail-tabs implementation
 
@@ -2368,3 +2369,57 @@ how an outer default cleanup loop handles a rejected inner cleanup operation.
 - State: independently reviewed and committed locally with this cycle. No
   production access, push or deployment. Cycle 70 is committed as `ca4e803c`.
   Runtime-activity history reads and cleanup-error reporting remain open.
+
+## Cycle 72 — Finish cleanup after error reporting fails
+
+- Finding: `src/lib/cleanup.ts` allowed a failing reporter to abort the remaining
+  steps. The actual connector shutdown probe skipped outbound worker stop and
+  lease release after an action-worker failure and reporter rejection. Its
+  truthy/nullish sentinel also lost falsy failures with `rethrow: true`.
+  Before evidence: `.temp/desloppify-cleanup-reporting-before.json`.
+- Change: one local tagged failure record retains exact thrown values and the
+  distinction between cleanup and reporter failures. Each declared step still
+  runs serially. The first reporter failure takes precedence and is thrown
+  after remaining steps settle, regardless of `rethrow`. Without reporter
+  failure, the default still swallows cleanup errors and `rethrow: true` throws
+  the first cleanup error. Errors are neither aggregated nor wrapped; public
+  signatures and callback arguments stay unchanged.
+- Scope: all 13 source call sites were inspected. Reporters log errors or call
+  the supplied reporting callback; none intentionally aborts shutdown. The
+  guarantee covers remaining declared steps. A hanging step can delay rejection,
+  and sibling operations inside a single failed step are not retried or resumed.
+  No timeout policy changes. Inventory:
+  `.temp/desloppify-cycle72-cleanup-callers.json`.
+- Regression evidence: 25 new cases in `tests/cleanup.test.ts` and
+  `tests/channel-worker-runtime.test.ts` cover falsy errors, reporter precedence,
+  synchronous/asynchronous and repeated reporting failures, nested default
+  cleanup, serial order, callback arguments and actual connector lease release.
+  Twenty fail against `ec884cd4`; the compatibility cases already pass there.
+  The author passes 84 focused tests across five files after retrying socket
+  fixtures outside the sandbox's `listen EPERM` restriction. Independent review
+  passes 54 focused tests and verifies the frozen hashes. Root's original public
+  probe now releases the lease while returning the same reporter error; its
+  healthy/default results remain identical. Evidence:
+  `.temp/desloppify-cycle72-frozen.json`,
+  `.temp/desloppify-cycle72-before-results.json`,
+  `.temp/desloppify-cycle72-independent-results.json` and
+  `.temp/desloppify-cycle72-public-probe-after.json`.
+- Gates: **3,295 tests across 341 files** pass without failures, skips or todo
+  cases. Root build/typecheck, import-law ratchet, prompt/shim contracts and all
+  19 compiled package imports pass, retaining shared `Thread` identity. All 981
+  compiled declarations and the prompt/tool snapshot remain unchanged.
+  Full-suite report: `.temp/desloppify-cycle72-unit-results.json`.
+- PostgreSQL: the offline common-runtime smoke applies 25 migrations to a fresh
+  disposable local database, completes an owned run with applied input, one
+  tool call and four messages, then reaches idle. Model responses are injected
+  and external requests are blocked. The cluster is stopped afterward. This
+  smoke does not inject cleanup failures; focused helper/connector tests prove
+  the repaired failure behavior. Evidence:
+  `.temp/desloppify-cycle72-offline-smoke-output.log`.
+- Result: 11 production lines added and five removed, net **six added**. Tests
+  add 98 lines. Cumulative reduction becomes **5,912 production lines across
+  73 cleanup commits**, including 75 lines moved into tests.
+- State: independently reviewed and committed locally with this cycle. No
+  production access, push or deployment. Cycle 71 is committed as `ec884cd4`.
+  Runtime-activity history hydration remains open at the read-model boundary
+  recorded after cycle 64; a larger persistence change needs its own evidence.

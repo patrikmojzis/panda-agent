@@ -13,18 +13,24 @@ export async function runCleanupSteps(
   onError?: (step: CleanupStep, error: unknown) => Promise<void> | void,
   options: RunCleanupStepsOptions = {},
 ): Promise<void> {
-  let firstError: unknown = null;
+  let failure: {kind: "cleanup" | "reporter"; error: unknown} | undefined;
 
   for (const step of steps) {
     try {
       await step.run();
     } catch (error) {
-      firstError ??= error;
-      await onError?.(step, error);
+      failure ??= {kind: "cleanup", error};
+      try {
+        await onError?.(step, error);
+      } catch (reporterError) {
+        if (failure.kind !== "reporter") {
+          failure = {kind: "reporter", error: reporterError};
+        }
+      }
     }
   }
 
-  if (firstError && options.rethrow) {
-    throw firstError;
+  if (failure && (failure.kind === "reporter" || options.rethrow)) {
+    throw failure.error;
   }
 }

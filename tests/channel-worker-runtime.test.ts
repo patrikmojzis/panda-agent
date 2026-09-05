@@ -174,6 +174,37 @@ describe("connector worker runtime", () => {
     expect(onCleanupError).not.toHaveBeenCalled();
   });
 
+  it.each(["sync", "async"])("releases the lease when the %s cleanup reporter fails for multiple workers", async (mode) => {
+    const order: string[] = [];
+    const actionError = new Error("action stop failed");
+    const outboundError = new Error("outbound stop failed");
+    const reporterError = new Error("first reporter failed");
+    const actionWorker = createWorker("action", order);
+    const outboundWorker = createWorker("outbound", order);
+    actionWorker.stop.mockImplementationOnce(async () => { order.push("action:stop"); throw actionError; });
+    outboundWorker.stop.mockImplementationOnce(async () => { order.push("outbound:stop"); throw outboundError; });
+    let released = false;
+    const handle = {
+      notificationRegistration: {unregister: () => { order.push("unregister"); }},
+      actionWorker,
+      outboundWorker,
+      lease: {release: async () => { released = true; order.push("lease:release"); }},
+    };
+    const onError = vi.fn((step: {label: string}) => {
+      order.push(`report:${step.label}`);
+      const failure = step.label === "action-worker" ? reporterError : new Error("later reporter failed");
+      if (mode === "async") return Promise.reject(failure);
+      throw failure;
+    });
+
+    await expect(stopConnectorWorkerRuntime(handle, onError)).rejects.toBe(reporterError);
+
+    expect(released).toBe(true);
+    expect(order).toEqual(["unregister", "action:stop", "report:action-worker", "outbound:stop", "report:outbound-worker", "lease:release"]);
+    expect(onError).toHaveBeenNthCalledWith(1, {label: "action-worker"}, actionError);
+    expect(onError).toHaveBeenNthCalledWith(2, {label: "outbound-worker"}, outboundError);
+  });
+
   it("reports cleanup failures while continuing through remaining resources", async () => {
     const order: string[] = [];
     const onCleanupError = vi.fn();
