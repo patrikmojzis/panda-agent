@@ -44,30 +44,6 @@ export function DetailField({
   )
 }
 
-export function DetailSection({
-  children,
-  className,
-}: {
-  children: ReactNode
-  className?: string
-}) {
-  return <section className={cn("grid gap-3", className)}>{children}</section>
-}
-
-export function DetailSectionLabel({
-  children,
-  className,
-}: {
-  children: ReactNode
-  className?: string
-}) {
-  return (
-    <h2 className={cn("text-sm font-semibold tracking-normal", className)}>
-      {children}
-    </h2>
-  )
-}
-
 export function DetailsGrid({
   children,
   className,

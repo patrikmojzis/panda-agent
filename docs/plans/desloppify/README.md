@@ -13,9 +13,9 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–72; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–73; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,912 production lines**, including
+Together, these cleanup commits remove **5,945 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
@@ -111,6 +111,11 @@ reporter failure still takes precedence, after the remaining steps settle;
 ordinary cleanup errors retain their default handling. The repair adds six
 production lines and 25 regression cases. Connector tests verify that outbound
 shutdown and lease release are still attempted after reporting fails.
+
+Cycle 73 batches three unused custom UI components from two files, removing
+33 lines. All live declarations, imports and callers remain unchanged. The
+bounded audit covers 98 custom UI files and preserves reusable library
+primitives; Control typecheck and production build pass.
 
 The frozen backend passes **3,295 unit tests across 341 files**, root build/typecheck,
 import law, all 19 compiled package

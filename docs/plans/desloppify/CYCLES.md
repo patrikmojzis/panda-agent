@@ -2423,3 +2423,39 @@ Cycle 72 below implements that policy.
   production access, push or deployment. Cycle 71 is committed as `ec884cd4`.
   Runtime-activity history hydration remains open at the read-model boundary
   recorded after cycle 64; a larger persistence change needs its own evidence.
+
+## Cycle 73 — Delete three unused custom UI components
+
+- Finding: a bounded audit of 98 custom Control/common UI files identifies
+  unused `DetailSection` and `DetailSectionLabel` in
+  `apps/control-ui/src/features/control/detail-primitives.tsx`, plus unused
+  `ProviderModel` in
+  `apps/control-ui/src/features/control/model-calls/model-call-context.tsx`.
+  The declarations have no caller, dynamic lookup or supported package export.
+  Reusable general-library primitive exports are excluded from this audit.
+- Change: delete only the three declarations and their separators. All 17
+  retained statements, including nine imports, remain byte-for-byte unchanged.
+  Live field/loading/error rendering and trace/session links remain intact.
+  Provider/model labels already render directly in the list and detail views;
+  those views do not call the deleted component.
+- Verification: exact whole-file reconstruction and a 1,304-file tracked source
+  scan verify the deletion and absence of dynamic/module discovery. Six callers
+  import other detail-primitives exports by name; two callers import
+  `TraceContext`. Every caller file is unchanged. Root's independent AST check
+  and a separate reviewer confirm both frozen hashes and retained statements.
+  Evidence: `.temp/desloppify-cycle73-proof.mjs` and
+  `.temp/desloppify-cycle73-proof-output.log`.
+- Gates: Control app/node typechecks and the TypeScript/Vite production build
+  pass once for the complete batch. Scoped diff check passes. No persistent
+  absence-only test is added. The preceding backend gate remains 3,295 passing
+  tests across 341 files; this cycle changes no backend source, schema, API
+  response, generated contract or test file.
+- Result: **33 fewer production lines**, with zero added: 24 from the detail
+  primitives and nine from model-call context. Cumulative reduction becomes
+  **5,945 production lines across 74 cleanup commits**, including 75 lines moved
+  into tests.
+- State: independently reviewed and committed locally with this cycle. No
+  production access, push or deployment. Cycle 72 is committed as `4defcf71`.
+  Runtime-activity history hydration remains open; the next recon pass examines
+  that larger boundary instead of assuming that a limited SQL page preserves
+  the current summary, filtering and ordering contracts.

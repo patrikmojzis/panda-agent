@@ -10,15 +10,6 @@ import type { ModelCallTraceSummary } from "@/lib/api"
 
 import { shortModelCallContextValue } from "./model-call-display"
 
-export function ProviderModel({ trace }: { trace: ModelCallTraceSummary }) {
-  return (
-    <div className="grid min-w-0 gap-1">
-      <span className="break-words font-medium">{trace.provider}</span>
-      <code className="break-all text-xs text-muted-foreground">{trace.model}</code>
-    </div>
-  )
-}
-
 export function TraceContext({
   showSessionLink = true,
   trace,
