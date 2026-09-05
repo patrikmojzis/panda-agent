@@ -25,7 +25,7 @@ describe("SubagentsContext", () => {
       subagentProfiles: {
         listProfiles: async () => [
           profile("workspace"),
-          {...profile("custom"), source: "custom", agentKey: "panda"},
+          {...profile("custom"), source: "custom", agentKey: "panda", createdByAgentKey: "private-creator", model: "openai/gpt-test", thinking: "high"},
         ],
       },
       agentKey: "panda",
@@ -35,9 +35,11 @@ describe("SubagentsContext", () => {
     const second = await context.getContent();
 
     expect(first).toBe(second);
-    expect(first).toContain("Available subagent profiles:");
-    expect(first).toContain("workspace (builtin): workspace profile");
-    expect(first).toContain("custom (custom): custom profile");
+    expect(first).toBe([
+      "Available subagent profiles:",
+      "- workspace (builtin): workspace profile | toolGroups core",
+      "- custom (custom): custom profile | toolGroups core | model openai/gpt-test | thinking high",
+    ].join("\n"));
     expect(first).not.toContain("prompt body must not render");
     expect(first).not.toContain("Agent workspace subagents:");
     expect(first).not.toContain("Isolated environment subagents:");

@@ -1,9 +1,6 @@
 import {LlmContext} from "../../kernel/agent/llm-context.js";
 import type {SubagentProfileStore} from "../../domain/subagents/store.js";
-import {
-  renderSubagentsContext,
-  type RenderSubagentsContextProfile,
-} from "../../prompts/contexts/subagents.js";
+import {renderSubagentsContext} from "../../prompts/contexts/subagents.js";
 
 const MAX_RENDERED_PROFILES = 20;
 
@@ -28,14 +25,7 @@ export class SubagentsContext extends LlmContext {
     const profiles = await this.options.subagentProfiles.listProfiles({
       agentKey: this.options.agentKey,
     });
-    const renderedProfiles: RenderSubagentsContextProfile[] = profiles.slice(0, maxProfiles).map((profile) => ({
-      slug: profile.slug,
-      source: profile.source,
-      description: profile.description,
-      toolGroups: profile.toolGroups,
-      ...(profile.model ? {model: profile.model} : {}),
-      ...(profile.thinking ? {thinking: profile.thinking} : {}),
-    }));
+    const renderedProfiles = profiles.slice(0, maxProfiles);
 
     return renderSubagentsContext({
       profiles: renderedProfiles,

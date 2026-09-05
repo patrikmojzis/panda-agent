@@ -163,10 +163,10 @@
       "sha256": "2219105013a33029f99e4263a8d228959ac73a8821fd38e81dad92f89e5cee7e"
     },
     {
-      "bytes": 1483,
-      "lines": 45,
+      "bytes": 1124,
+      "lines": 35,
       "path": "src/panda/contexts/subagents-context.ts",
-      "sha256": "f26189a99d1f2486c959cba42616a68b29fc76de03599c4c495891e0bdae2223"
+      "sha256": "61686df1ddbcbd0d0aae151f846c3e15f3361bf7dd2a1e1378e7447b70f3cd69"
     },
     {
       "bytes": 1723,

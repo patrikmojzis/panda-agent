@@ -453,3 +453,19 @@ intact rather than adding churn.
   match; the other 51 source declarations/statements are unchanged.
 - State: reviewed and committed locally with this cycle. No public contract,
   credential policy or production service changed.
+
+## Cycle 19 — Let the subagent prompt renderer own field selection
+
+- Finding: context assembly copied six profile fields before calling a renderer
+  that already explicitly selects those same fields.
+- Change: pass the capped profile records directly. The pure renderer remains
+  the single owner of model-visible field selection; private prompts, ownership
+  and timestamps are never spread or serialized into the output.
+- Result: 10 fewer production lines; two net test lines added. Generated prompt
+  contracts change only this source file's byte count, line count and hash.
+- Evidence: 14 focused tests, typecheck, import law and prompt contracts pass.
+  Independent review confirmed exact output through the context caller, unchanged
+  default/cap/omitted counts and optional model/thinking behavior. All 324
+  before/after combinations match, including private profile metadata.
+- State: reviewed and committed locally with this cycle. No model-facing text,
+  tool catalog, tool set or subagent permission group changed.
