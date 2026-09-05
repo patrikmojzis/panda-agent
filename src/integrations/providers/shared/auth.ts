@@ -6,7 +6,6 @@ import {isRecord} from "../../../lib/records.js";
 import {trimToUndefined} from "../../../lib/strings.js";
 import {getProviderConfig, type ProviderAuthKind, type ProviderName} from "./provider.js";
 
-const OPENAI_CODEX_OAUTH_ENV_VARS = ["OPENAI_OAUTH_TOKEN"] as const;
 const ANTHROPIC_OAUTH_ENV_VARS = [
   "ANTHROPIC_AUTH_TOKEN",
   "ANTHROPIC_OAUTH_TOKEN",
@@ -34,61 +33,30 @@ export function resolveOpenAICodexAuthFilePath(env: NodeJS.ProcessEnv = process.
   return path.join(resolveCodexHome(env), "auth.json");
 }
 
-type OpenAICodexAuthFile = {
-  auth_mode?: string;
-  tokens?: {
-    access_token?: string;
-  };
-};
-
-function readOptionalStringField(source: Record<string, unknown>, key: string): string | undefined {
-  const value = source[key];
-  return typeof value === "string" ? value : undefined;
-}
-
-function parseOpenAICodexAuthFile(value: unknown): OpenAICodexAuthFile | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-
-  const authMode = readOptionalStringField(value, "auth_mode");
-  const accessToken = isRecord(value.tokens)
-    ? readOptionalStringField(value.tokens, "access_token")
-    : undefined;
-  return {
-    ...(authMode !== undefined ? {auth_mode: authMode} : {}),
-    ...(accessToken !== undefined ? {tokens: {access_token: accessToken}} : {}),
-  };
-}
-
-function readOpenAICodexAuthFile(authFilePath: string): OpenAICodexAuthFile | null {
-  try {
-    const raw = fs.readFileSync(authFilePath, "utf8");
-    return parseOpenAICodexAuthFile(JSON.parse(raw) as unknown);
-  } catch {
-    return null;
-  }
-}
-
 export function resolveOpenAICodexOauthToken(options: {
   env?: NodeJS.ProcessEnv;
   authFilePath?: string;
 } = {}): string | null {
   const env = options.env ?? process.env;
 
-  for (const key of OPENAI_CODEX_OAUTH_ENV_VARS) {
-    const value = trimToUndefined(env[key]);
-    if (value) {
-      return value;
-    }
+  const token = trimToUndefined(env.OPENAI_OAUTH_TOKEN);
+  if (token) {
+    return token;
   }
 
-  const authFile = readOpenAICodexAuthFile(options.authFilePath ?? resolveOpenAICodexAuthFilePath(env));
-  if (!authFile || authFile.auth_mode !== "chatgpt") {
+  const authFilePath = options.authFilePath ?? resolveOpenAICodexAuthFilePath(env);
+  try {
+    const raw = fs.readFileSync(authFilePath, "utf8");
+    const authFile: unknown = JSON.parse(raw);
+    if (!isRecord(authFile) || authFile.auth_mode !== "chatgpt" || !isRecord(authFile.tokens)) {
+      return null;
+    }
+    return typeof authFile.tokens.access_token === "string"
+      ? trimToUndefined(authFile.tokens.access_token) ?? null
+      : null;
+  } catch {
     return null;
   }
-
-  return trimToUndefined(authFile.tokens?.access_token) ?? null;
 }
 
 export function hasOpenAICodexOauthToken(options: {

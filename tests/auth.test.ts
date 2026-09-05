@@ -52,18 +52,22 @@ describe("auth helpers", () => {
     }
   });
 
-  it("ignores malformed Codex auth cache token fields", async () => {
+  it.each([
+    null,
+    [],
+    {},
+    {tokens: {access_token: "cached-token"}},
+    {auth_mode: "apikey", tokens: {access_token: "cached-token"}},
+    {auth_mode: "chatgpt", tokens: []},
+    {auth_mode: "chatgpt", tokens: {access_token: 42}},
+    {auth_mode: "chatgpt", tokens: {access_token: " "}},
+  ])("ignores unsupported Codex auth cache fields (case %#)", async (cache) => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "runtime-codex-auth-"));
 
     try {
       await fs.writeFile(
         path.join(tempDir, "auth.json"),
-        JSON.stringify({
-          auth_mode: "chatgpt",
-          tokens: {
-            access_token: 42,
-          },
-        }),
+        JSON.stringify(cache),
       );
 
       const env = { CODEX_HOME: tempDir };

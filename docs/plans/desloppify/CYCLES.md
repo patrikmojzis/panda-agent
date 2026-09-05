@@ -134,7 +134,93 @@ current command boundaries; do not add another filesystem abstraction.
 - Review: no actionable findings. Independent review passed 44 tests across six
   files, including file authority and path-context coverage, and verified unchanged
   authorization, path mapping, source checks and explicit overwrite semantics.
+- Commit: `d33f96f7` — `fix(attachments): enforce no-overwrite with exclusive file copies`.
+- State: committed locally; not pushed or deployed.
+
+## Cycle 6 — Simplify provider auth and budget projections
+
+Read the one supported Codex environment token directly, then validate the cache
+fields at the point of use. Delete the intermediate cache object, parser and
+one-element environment loop. Preserve token precedence, the ChatGPT mode gate,
+public helpers and the original path-resolution exception boundary. Select the
+exact or prefix model rule before constructing one budget result; inline the
+sole-use tool mapping helper.
+
+- Result: 61 fewer production lines; four net test lines added.
+- Evidence: 103 focused tests passed. Independent review passed 74 tests and
+  compared 605 auth-cache/environment cases and 846 model-policy combinations
+  with the previous implementation. The reported catch-boundary difference was
+  corrected and verified before freezing. Public exports and tool mapping remain
+  unchanged. Typecheck and import law passed.
 - State: reviewed and committed locally with this cycle; not pushed or deployed.
+
+## Cycle 7 — Use native MCP cancellation and relocate its test adapter
+
+The HTTP fetch wrapper always combines two real signals. Replace its optional,
+variadic listener helper with `AbortSignal.any`, retaining both the operation
+deadline and the SDK request cancellation. Move the in-memory MCP registry from
+the production store module into a specific test helper; retain the production
+store contract, conflict error and Postgres implementation.
+
+- Result: 91 fewer production lines, including 75 class lines relocated unchanged
+  into tests. The repository is five lines smaller overall; relocation is not
+  counted as deletion from the repository.
+- Evidence: all 54 focused MCP tests passed, including shared-deadline expiry
+  and successful SSE stream closure reaching the real fetch signal. Independent
+  review verified identical class members and passed 30 transport/OAuth tests.
+  Typecheck, import law and public-export checks passed.
+- State: independently reviewed; awaiting its separate local commit.
+
+## Cycle 8 — Remove redundant runtime composition
+
+Construct subagent tools directly from core tools plus browser. The old specialist
+groups contributed only duplicates, browser or nothing. Reuse the existing
+runtime command-catalog resolver in daemon bootstrap while retaining validation
+before runtime/database initialization. Remove the unused internal readonly
+bootstrap result member, preserving the live readonly command dependency.
+
+- Result: 45 fewer production lines; 46 test lines added.
+- Evidence: 35 focused tests passed, plus typecheck, import law and shim checks.
+  Independent review passed 14 changed-file tests and checked actual tool order
+  and shared object identity with and without background jobs, catalog identity,
+  duplicate/conflicting module rejection, early validation and readonly wiring.
+- State: independently reviewed; awaiting its separate local commit and scoped
+  source-metadata snapshot update.
+
+## Cycle 9 — Let remote-start compensation own its outcome
+
+The existing compensation helper now owns cancellation and propagation of the
+original error, including ordered `AggregateError` details when cancellation
+also fails. Its three callers retain their distinct diagnostics. Remove private
+runner-config forwarding layers and import the owning modules directly, keeping
+the supported shell package exports.
+
+- Result: 33 fewer production lines; 75 test lines added.
+- Evidence: 218 focused tests passed. Independent review compared 28 failure
+  scenarios, all 50 named/type exports and 31 runtime export references. Its
+  broader run passed 91 tests; one unchanged cancellation timing assertion passed
+  on isolated retry. New compensation cases passed on their first run.
+- State: independently reviewed; awaiting its separate local commit. Three files
+  also contain concurrent storage work; stage only our import changes there.
+
+## Isolated verification after cycles 6–9
+
+Concurrent scheduling, storage, prompt and Docker-retention work appeared in the
+shared checkout. A temporary checkout at `d33f96f7` received only these four
+cleanup patches and their tests. The isolated TypeScript build, import law, shim
+check and generated prompt/tool surfaces passed. Exactly three tracked source
+metadata records changed: the two bootstrap files and thread definition.
+
+The full isolated unit run passed 2,955 assertions across 332 files; one additional
+suite could not load because the temporary checkout lacked the Control UI's
+dependency link. After adding that local link, its two tests passed: 2,957 tests
+verified across all 333 files, without a product-code change for the setup issue.
+The initial smoke invocation omitted its required agent selector; after correcting
+the harness input, a model plus bash smoke passed against disposable local
+Postgres. That temporary database server was stopped afterward.
+
+Preserve the unrelated edits. Commit source-metadata updates only for our files;
+do not regenerate and include another task's prompt changes with this cleanup.
 
 ## Combined verification after cycles 1–5
 

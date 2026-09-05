@@ -30,7 +30,10 @@ mixed operator CLI cleanup is committed as `8686d315`, removing another 1,061
 lines. The attachment-save race fix removes 18 more production lines and is
 reviewed and committed with its cycle. In total, these cleanup commits remove
 4,159 production lines relative to the first cleanup commit's parent, excluding
-tests, documentation and configuration. The cycle log is the current progress
+tests, documentation and configuration. Cycles 6–9 simplify provider projections,
+MCP cancellation, runtime composition and shell compensation. They are verified
+in an isolated checkout and being committed separately; concurrent storage and
+prompt changes belong to another task. The cycle log is the current progress
 record; the inspect/review/commit loop remains active.
 
 Production access remains strictly read-only. No deployment, migration, restart,

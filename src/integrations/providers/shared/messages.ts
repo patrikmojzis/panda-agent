@@ -2,7 +2,6 @@ import type {
     AssistantMessage,
     Context,
     Message,
-    Tool as PiTool,
     ToolCall,
     ToolResultMessage,
 } from "@earendil-works/pi-ai";
@@ -10,7 +9,6 @@ import type {
 import type {Agent} from "../../../kernel/agent/agent.js";
 import {formatParameters} from "../../../kernel/agent/helpers/schema.js";
 import type {ToolResultContent} from "../../../kernel/agent/types.js";
-import {Tool} from "../../../kernel/agent/tool.js";
 import type {JsonValue} from "../../../lib/json.js";
 import {renderStructuredOutputInstruction} from "../../../prompts/runtime/structured-output.js";
 
@@ -20,10 +18,6 @@ function normalizeSystemPrompt(systemPrompt?: string | ReadonlyArray<string>): s
   }
 
   return systemPrompt ? [...systemPrompt] : [];
-}
-
-function buildPiTools(tools: ReadonlyArray<Tool>): PiTool[] {
-  return tools.map((tool) => tool.piTool);
 }
 
 function createStructuredOutputInstruction(agent: Agent): string | null {
@@ -51,7 +45,7 @@ export function buildConversationContext(options: {
     .filter((part): part is string => typeof part === "string" && part.trim().length > 0)
     .join("\n\n");
 
-  const tools = buildPiTools(options.agent.tools);
+  const tools = options.agent.tools.map((tool) => tool.piTool);
 
   return {
     systemPrompt: systemPrompt || undefined,

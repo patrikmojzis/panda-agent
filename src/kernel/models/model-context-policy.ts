@@ -120,48 +120,25 @@ export function resolveModelContextPolicy(
   const {canonicalModel, modelId, providerName} = resolveModelIdentity(model);
   const rules = options.rules ?? MODEL_CONTEXT_POLICY_RULES;
   const fallback = options.fallback ?? DEFAULT_MODEL_CONTEXT_POLICY;
-  const exactMatch = rules.find((rule) => (
+  const match = rules.find((rule) => (
     rule.kind === "exact"
     && rule.match === modelId
     && (rule.providerName === undefined || rule.providerName === providerName)
-  ));
-
-  if (exactMatch) {
-    return {
-      canonicalModel,
-      modelId,
-      hardWindow: exactMatch.hardWindow,
-      operatingWindow: exactMatch.operatingWindow,
-      compactAtPercent: exactMatch.compactAtPercent,
-      match: exactMatch.match,
-      matchKind: "exact",
-    };
-  }
-
-  const prefixMatch = rules.find((rule) => (
+  )) ?? rules.find((rule) => (
     rule.kind === "prefix"
     && modelId.startsWith(rule.match)
     && (rule.providerName === undefined || rule.providerName === providerName)
   ));
-  if (prefixMatch) {
-    return {
-      canonicalModel,
-      modelId,
-      hardWindow: prefixMatch.hardWindow,
-      operatingWindow: prefixMatch.operatingWindow,
-      compactAtPercent: prefixMatch.compactAtPercent,
-      match: prefixMatch.match,
-      matchKind: "prefix",
-    };
-  }
+  const policy = match ?? fallback;
 
   return {
     canonicalModel,
     modelId,
-    hardWindow: fallback.hardWindow,
-    operatingWindow: fallback.operatingWindow,
-    compactAtPercent: fallback.compactAtPercent,
-    matchKind: "fallback",
+    hardWindow: policy.hardWindow,
+    operatingWindow: policy.operatingWindow,
+    compactAtPercent: policy.compactAtPercent,
+    ...(match ? {match: match.match} : {}),
+    matchKind: match?.kind ?? "fallback",
   };
 }
 
