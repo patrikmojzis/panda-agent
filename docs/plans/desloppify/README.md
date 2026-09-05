@@ -13,20 +13,27 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–38; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–39; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **4,899 production lines**, including
+Together, these cleanup commits remove **4,931 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
-The latest cycle repairs browser cancellation across the public tool, HTTP runner
+The latest cycle removes four redundant private skill-command factories: 32
+fewer production lines, with public factories, descriptors, validation and
+authority checks preserved. Exact whole-file reconstruction proves that the
+remaining source is unchanged. The 69 focused tests and 204 independent command
+tests pass, along with typecheck, contracts and 2,176 behavior comparisons; details
+are in cycle 39.
+
+Cycle 38 repairs browser cancellation across the public tool, HTTP runner
 and session service. Per-scope admission, exact resource ownership and staged
 artifact/storage publication prevent canceled operations from affecting their
 replacement. This correctness repair adds 266 production lines and 1,026 test
 lines; it is not a line-count reduction. The earlier kernel finalization,
 migration export and MCP cancellation changes remain committed.
 
-The frozen combined source passes **3,179 tests across 338 files**, the TypeScript
+The frozen cycle-38 source passes **3,179 tests across 338 files**, the TypeScript
 build, import law, prompt/shim contracts, all 19 compiled package imports and a
 deterministic runtime smoke against disposable local Postgres with external
 networking disabled. Browser coverage includes 39 new cases and an actual

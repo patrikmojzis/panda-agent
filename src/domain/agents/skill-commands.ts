@@ -553,22 +553,18 @@ export function createSkillShowCommand(store: AgentSkillCommandStore): Registere
   };
 }
 
-function createSkillLoadCommandWithDescriptor(
-  store: AgentSkillCommandStore,
-  commandName: typeof SKILL_LOAD_COMMAND_NAME,
-  descriptor: CommandDescriptor,
-): RegisteredCommand {
+export function createSkillLoadCommand(store: AgentSkillCommandStore): RegisteredCommand {
   return {
-    descriptor,
+    descriptor: skillLoadCommandDescriptor,
     async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
-      const input = parseLoadInput(request.input, commandName);
+      const input = parseLoadInput(request.input, SKILL_LOAD_COMMAND_NAME);
       assertAgentSkillOperationAllowed(request.scope, "load");
       assertSkillAllowed(request.scope, input.skillKey);
       const record = await store.loadAgentSkill(request.scope.agentKey, input.skillKey);
 
       return {
         ok: true,
-        command: commandName,
+        command: SKILL_LOAD_COMMAND_NAME,
         output: serializeLoadedSkill(request.scope.agentKey, input.skillKey, record),
         summary: record ? `Loaded skill ${input.skillKey}.` : `Skill ${input.skillKey} was not found.`,
       };
@@ -576,15 +572,11 @@ function createSkillLoadCommandWithDescriptor(
   };
 }
 
-function createSkillSetCommandWithDescriptor(
-  store: AgentSkillCommandStore,
-  commandName: typeof SKILL_SET_COMMAND_NAME,
-  descriptor: CommandDescriptor,
-): RegisteredCommand {
+export function createSkillSetCommand(store: AgentSkillCommandStore): RegisteredCommand {
   return {
-    descriptor,
+    descriptor: skillSetCommandDescriptor,
     async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
-      const input = parseSetInput(request.input, commandName);
+      const input = parseSetInput(request.input, SKILL_SET_COMMAND_NAME);
       assertAgentSkillOperationAllowed(request.scope, "set");
       assertSkillAllowed(request.scope, input.skillKey);
       assertMutationAllowed(request.scope);
@@ -598,7 +590,7 @@ function createSkillSetCommandWithDescriptor(
 
       return {
         ok: true,
-        command: commandName,
+        command: SKILL_SET_COMMAND_NAME,
         output: serializeMutatedSkill("set", request.scope.agentKey, record),
         summary: `Set skill ${input.skillKey}.`,
       };
@@ -606,15 +598,11 @@ function createSkillSetCommandWithDescriptor(
   };
 }
 
-function createSkillPatchCommandWithDescriptor(
-  store: AgentSkillCommandStore,
-  commandName: typeof SKILL_PATCH_COMMAND_NAME,
-  descriptor: CommandDescriptor,
-): RegisteredCommand {
+export function createSkillPatchCommand(store: AgentSkillCommandStore): RegisteredCommand {
   return {
-    descriptor,
+    descriptor: skillPatchCommandDescriptor,
     async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
-      const input = parsePatchInput(request.input, commandName);
+      const input = parsePatchInput(request.input, SKILL_PATCH_COMMAND_NAME);
       assertAgentSkillOperationAllowed(request.scope, "patch");
       assertSkillAllowed(request.scope, input.skillKey);
       assertMutationAllowed(request.scope);
@@ -629,7 +617,7 @@ function createSkillPatchCommandWithDescriptor(
 
       return {
         ok: true,
-        command: commandName,
+        command: SKILL_PATCH_COMMAND_NAME,
         output: serializeMutatedSkill("patch", request.scope.agentKey, record),
         summary: `Patched skill ${input.skillKey}.`,
       };
@@ -637,15 +625,11 @@ function createSkillPatchCommandWithDescriptor(
   };
 }
 
-function createSkillDeleteCommandWithDescriptor(
-  store: AgentSkillCommandStore,
-  commandName: typeof SKILL_DELETE_COMMAND_NAME,
-  descriptor: CommandDescriptor,
-): RegisteredCommand {
+export function createSkillDeleteCommand(store: AgentSkillCommandStore): RegisteredCommand {
   return {
-    descriptor,
+    descriptor: skillDeleteCommandDescriptor,
     async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
-      const input = parseDeleteInput(request.input, commandName);
+      const input = parseDeleteInput(request.input, SKILL_DELETE_COMMAND_NAME);
       assertAgentSkillOperationAllowed(request.scope, "delete");
       assertSkillAllowed(request.scope, input.skillKey);
       assertMutationAllowed(request.scope);
@@ -656,7 +640,7 @@ function createSkillDeleteCommandWithDescriptor(
 
       return {
         ok: true,
-        command: commandName,
+        command: SKILL_DELETE_COMMAND_NAME,
         output: requireCommandJsonObject({
           operation: "delete",
           agentKey: request.scope.agentKey,
@@ -667,20 +651,4 @@ function createSkillDeleteCommandWithDescriptor(
       };
     },
   };
-}
-
-export function createSkillLoadCommand(store: AgentSkillCommandStore): RegisteredCommand {
-  return createSkillLoadCommandWithDescriptor(store, SKILL_LOAD_COMMAND_NAME, skillLoadCommandDescriptor);
-}
-
-export function createSkillSetCommand(store: AgentSkillCommandStore): RegisteredCommand {
-  return createSkillSetCommandWithDescriptor(store, SKILL_SET_COMMAND_NAME, skillSetCommandDescriptor);
-}
-
-export function createSkillPatchCommand(store: AgentSkillCommandStore): RegisteredCommand {
-  return createSkillPatchCommandWithDescriptor(store, SKILL_PATCH_COMMAND_NAME, skillPatchCommandDescriptor);
-}
-
-export function createSkillDeleteCommand(store: AgentSkillCommandStore): RegisteredCommand {
-  return createSkillDeleteCommandWithDescriptor(store, SKILL_DELETE_COMMAND_NAME, skillDeleteCommandDescriptor);
 }

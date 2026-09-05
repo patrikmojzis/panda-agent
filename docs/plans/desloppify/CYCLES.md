@@ -967,3 +967,33 @@ state. No browser cancellation implementation is included in this batch.
   and a never-settling launcher cannot be interrupted through its current seam.
   Browser tests use fake Chromium; the offline runtime smoke does not validate
   external providers or Bash. No production access, push or deployment occurred.
+
+## Cycle 39 — Remove fixed-argument skill-command factories
+
+- Finding: four private `createSkill*CommandWithDescriptor` factories each had one
+  caller, which supplied fixed command-name and descriptor constants. Their
+  parameters did not represent supported variation.
+- Change: put each existing body directly in its exported skill-command factory
+  and substitute those same constants. Keep list/show, descriptors, exported
+  names, parsers, authorization checks and mutation helpers intact.
+- Result: 32 fewer production lines; no new tests or abstractions. Cumulative
+  production reduction is 4,931 lines, including 75 relocated into tests.
+- Evidence: exact whole-file reconstruction from `719074d1` allows only the four
+  body/header substitutions and wrapper removals; every other byte is unchanged.
+  Independent AST review confirms unchanged execution bodies after substitution,
+  all 50 other top-level statements and the exported names. Author verification
+  passed 720 old/current execution comparisons; independent review passed 2,176
+  cases across inputs, scopes, present/missing records and store failures. Results,
+  errors, descriptor identity and store-call traces match. Retained local proof:
+  `.temp/desloppify-cycle39-parity.mjs` and
+  `.temp/desloppify-cycle39-structural-proof.json`.
+- Checks: 69 focused CLI/module/package and skill/shim tests pass. Independent
+  review also passes 204 command-authority/module/shim tests, including the full
+  shim file. The author's filtered shim run skips 172 unrelated cases. Typecheck, import law,
+  generated shim, prompt contracts and diff checks pass. The cycle-38 full suite
+  and isolated runtime smoke remain historical evidence for that earlier tree;
+  this structurally identical command-factory move received focused verification.
+- State: independently reviewed and committed locally with this cycle. Public
+  command factories, command discovery, validation/authority order, delete
+  confirmation and store effects are preserved. No production access, push or
+  deployment. Browser cancellation is committed as `719074d1`.
