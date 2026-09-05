@@ -252,8 +252,8 @@ Keep domain Postgres code split by responsibility:
   parameter conversion, live in `src/lib/postgres-values.ts`; domain stores
   should not import them from thread runtime modules.
 - Generic data-dir and health-server helpers live in `src/lib/data-dir.ts` and
-  `src/lib/health-server.ts`. Lower modules should import those directly; app
-  runtime re-exports exist only for compatibility and app assembly.
+  `src/lib/health-server.ts`. Internal consumers, including app assembly, should
+  import those directly. Keep re-exports only at intentional package entrypoints.
 - Runtime code should receive domain records, not raw JSONB, enum casts, driver
   truthiness, or stringified timestamp leftovers.
 - Thread transcript row parsing must reject unsupported persisted message

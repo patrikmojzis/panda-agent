@@ -429,54 +429,12 @@ function resolveContainedPathSync(targetPath: string, rootPath: string, rawPath:
   return targetRealPath;
 }
 
-async function realpathNearestExisting(targetPath: string): Promise<string> {
-  let current = path.resolve(targetPath);
-  const missingParts: string[] = [];
-  while (true) {
-    try {
-      const existingRealPath = await realpath(current);
-      return path.join(existingRealPath, ...missingParts);
-    } catch {
-      const parent = path.dirname(current);
-      if (parent === current) {
-        return path.resolve(targetPath);
-      }
-      missingParts.unshift(path.basename(current));
-      current = parent;
-    }
-  }
-}
-
 async function realpathIfPossible(targetPath: string): Promise<string> {
   try {
     return await realpath(targetPath);
   } catch {
     return path.resolve(targetPath);
   }
-}
-
-export async function resolveReadableContextPath(
-  rawPath: string,
-  context: unknown,
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<string> {
-  const resolved = resolveContextPathDetails(rawPath, context, env);
-  if (resolved.blockedReason) {
-    throw new ToolError(`${resolved.blockedReason} Path: ${rawPath}`);
-  }
-  if (!resolved.containmentRoot) {
-    return resolved.path;
-  }
-
-  const [rootRealPath, targetRealPath] = await Promise.all([
-    realpathIfPossible(resolved.containmentRoot),
-    realpathNearestExisting(resolved.path),
-  ]);
-  if (!isPathWithinRoot(rootRealPath, targetRealPath)) {
-    throw new ToolError(`Resolved path escapes the execution environment root: ${rawPath}`);
-  }
-
-  return targetRealPath;
 }
 
 export async function materializeReadableContextPath(

@@ -42,7 +42,6 @@ export interface PostgresPoolObserverOptions {
 }
 
 export interface PostgresPoolObserver {
-  getSnapshot?(): {applicationName: string; max: number; totalCount: number; idleCount: number; waitingCount: number};
   stop(): void;
 }
 
@@ -299,13 +298,6 @@ export function observePostgresPool(options: PostgresPoolObserverOptions): Postg
   logStats("startup");
 
   return {
-    getSnapshot: () => ({
-      applicationName: options.applicationName,
-      max,
-      totalCount: options.pool.totalCount,
-      idleCount: options.pool.idleCount,
-      waitingCount: options.pool.waitingCount,
-    }),
     stop(): void {
       clearInterval(interval);
       options.pool.off("error", handlePoolError);

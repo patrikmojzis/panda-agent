@@ -1,9 +1,8 @@
-import {createPostgresSessionLifecycle, type SessionLifecycle} from "../../domain/sessions/lifecycle.js";
+import {createPostgresSessionLifecycle} from "../../domain/sessions/lifecycle.js";
 import {createDefaultExecutionToolPolicy} from "../../panda/commands/agent-command-policy.js";
 import {Pool} from "pg";
 
 import {PostgresAgentStore} from "../../domain/agents/postgres.js";
-import type {AgentStore} from "../../domain/agents/store.js";
 import {CredentialResolver, CredentialService} from "../../domain/credentials/resolver.js";
 import {PostgresCredentialStore} from "../../domain/credentials/postgres.js";
 import {PostgresMcpConfigStore} from "../../domain/mcp/postgres.js";
@@ -16,33 +15,22 @@ import {McpOAuthControl} from "../../integrations/mcp/oauth-control.js";
 import {buildControlMcpOAuthCallbackUrl, resolveControlPublicUrl} from "../../integrations/control/config.js";
 import {resolveSecretCrypto} from "../../domain/secrets/crypto.js";
 import {PostgresExecutionEnvironmentStore} from "../../domain/execution-environments/postgres.js";
-import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import {PostgresIdentityStore} from "../../domain/identity/postgres.js";
-import type {IdentityStore} from "../../domain/identity/store.js";
 import {PostgresScheduledTaskStore} from "../../domain/scheduling/tasks/postgres.js";
-import type {ScheduledTaskStore} from "../../domain/scheduling/tasks/store.js";
-import {loadScheduledCommandIntegrity, type ScheduledCommandIntegrity} from "../../domain/scheduling/scheduled-commands/integrity.js";
+import {loadScheduledCommandIntegrity} from "../../domain/scheduling/scheduled-commands/integrity.js";
 import {PostgresScheduledCommandStore} from "../../domain/scheduling/scheduled-commands/postgres.js";
-import type {ScheduledCommandStore} from "../../domain/scheduling/scheduled-commands/store.js";
 import {ScheduledCommandService} from "../../domain/scheduling/scheduled-commands/service.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
-import type {SessionStore} from "../../domain/sessions/store.js";
 import {PostgresSubagentProfileStore} from "../../domain/subagents/postgres.js";
 import {PostgresSubagentInventory} from "../../domain/subagents/inventory.js";
-import type {SubagentProfileStore} from "../../domain/subagents/store.js";
 import {createCommandCatalog, type CommandCatalog} from "../../domain/commands/modules.js";
 import {PostgresEmailStore} from "../../domain/email/postgres.js";
-import type {EmailStore} from "../../domain/email/types.js";
 import {WatchMutationService} from "../../domain/watches/mutation-service.js";
 import {PostgresWatchStore} from "../../domain/watches/postgres.js";
-import type {WatchStore} from "../../domain/watches/store.js";
 import {PostgresWikiBindingStore} from "../../domain/wiki/postgres.js";
 import {WikiBindingService} from "../../domain/wiki/service.js";
 import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
-import {type AgentAppAuthService, PostgresAgentAppAuthService} from "../../domain/apps/auth.js";
-import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
-import type {ThreadShellStateStore} from "../../domain/threads/runtime/shell-state-store.js";
-import type {Tool} from "../../kernel/agent/tool.js";
+import {PostgresAgentAppAuthService} from "../../domain/apps/auth.js";
 import {
     buildCoreAgentToolsFromRegistry,
     createDefaultAgentToolRegistry,
@@ -76,7 +64,7 @@ import {resolveRuntimeCommandScope} from "./command-scope.js";
 import {buildCommandServerBaseUrl, resolveOptionalCommandServerBinding} from "../../integrations/commands/config.js";
 import {buildRuntimeCommandDependencies} from "./command-dependencies.js";
 import {PostgresSessionCompactionStore} from "../../domain/sessions/compaction-postgres.js";
-import type {RuntimeOptions} from "./create-runtime.js";
+import type {RuntimeOptions, RuntimeServices} from "./create-runtime.js";
 import {ExecutionEnvironmentResolver} from "./execution-environment-resolver.js";
 import {ExecutionEnvironmentLifecycleService} from "./execution-environment-service.js";
 import {RemoteExecutionEnvironmentSetupRunner} from "./execution-environment-setup-runner.js";
@@ -142,56 +130,14 @@ interface RuntimeBootstrapOptions extends Omit<RuntimeOptions, "dbUrl"> {
   dbUrl: string;
 }
 
-interface RuntimeBootstrapResult {
-  sessionLifecycle: SessionLifecycle;
-  agentStore: AgentStore;
-  apps: AgentAppService;
-  appAuth: AgentAppAuthService;
-  controlAuth: PostgresControlAuthService;
-  controlReads: ControlReadService;
-  controlHome: ControlHomeService;
-  controlOperator: ControlOperatorService;
-  controlMcp: ControlMcpService;
-  controlBriefings: ControlBriefingService;
-  controlHeartbeats: ControlHeartbeatService;
-  controlScheduledTasks: ControlScheduledTasksService;
-  controlWatches: ControlWatchesService;
-  controlRuntimeActivity: ControlRuntimeActivityService;
-  controlConnectorAccounts: ControlConnectorAccountsService;
-  controlModelCallTraces: ControlModelCallTraceService;
-  modelCallTraces: PostgresModelCallTraceStore;
+type RuntimeBootstrapResult = Omit<
+  RuntimeServices,
+  "subagentSessions" | "sessionCompaction" | "sessionArchive" | "coordinator"
+> & {
   modelCallRecorder: BufferedModelCallRecorder;
-  backgroundJobService: BackgroundToolJobService;
-  browserService: BrowserRunnerClient;
-  credentialResolver: CredentialResolver;
-  executionEnvironments: ExecutionEnvironmentStore;
-  executionEnvironmentResolver: ExecutionEnvironmentResolver;
-  executionEnvironmentService: ExecutionEnvironmentLifecycleService;
-  identityStore: IdentityStore;
-  sessionStore: SessionStore;
   sessionCompactionRequests: PostgresSessionCompactionStore;
-  subagentProfiles: SubagentProfileStore;
-  store: ThreadRuntimeStore;
-  shellStateStore: ThreadShellStateStore;
-  scheduledTasks: ScheduledTaskStore;
-  scheduledCommands: ScheduledCommandStore;
-  scheduledCommandIntegrity: ScheduledCommandIntegrity | null;
-  scheduledCommandService: ScheduledCommandService | null;
-  email: EmailStore;
-  watches: WatchStore;
-  commandExecutor: RuntimeCommandDispatcher;
-  commandLeases: RuntimeCommandLeaseService;
-  commandFileResolver: RuntimeCommandFileResolver;
-  commandCatalog: CommandCatalog<any, CommandCatalogModule<any>>;
-  commandModules: readonly CommandCatalogModule<any>[];
   wikiBindingService: WikiBindingService | null;
-  a2aBindings: A2ASessionBindingRepo;
-  mainTools: readonly Tool[];
-  subagentTools: readonly Tool[];
-  pool: Pool;
-  notificationPool: Pool;
-  close(): Promise<void>;
-}
+};
 
 interface ObservedPoolState {
   pool: Pool | null;

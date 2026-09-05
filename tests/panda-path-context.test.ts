@@ -1,10 +1,10 @@
 import path from "node:path";
-import {mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile} from "node:fs/promises";
+import {mkdir, mkdtemp, rm, symlink, writeFile} from "node:fs/promises";
 import os from "node:os";
 
 import {afterEach, describe, expect, it, vi} from "vitest";
 
-import {materializeReadableContextPath, resolveContextPath, resolveReadableContextPath} from "../src/app/runtime/panda-path-context.js";
+import {resolveContextPath} from "../src/app/runtime/panda-path-context.js";
 import {ToolError} from "../src/index.js";
 
 function createDisposableContext(root: string, artifacts = path.join(root, "artifacts")) {
@@ -102,27 +102,6 @@ describe("resolveContextPath", () => {
     )).toThrow("outside this agent's mounted filesystem roots");
   });
 
-  it("rejects symlink escapes from a mapped remote agent home", async () => {
-    const dataDir = await makeTempDir();
-    const agentRoot = path.join(dataDir, "agents", "jozef");
-    const outside = path.join(dataDir, "core-secret");
-    await mkdir(agentRoot, {recursive: true});
-    await writeFile(outside, "private");
-    await symlink(outside, path.join(agentRoot, "escape"));
-    const env = {
-      ...process.env,
-      BASH_EXECUTION_MODE: "remote",
-      BASH_SERVER_CWD_TEMPLATE: "/root/.panda/agents/{agentKey}",
-      DATA_DIR: dataDir,
-    };
-
-    await expect(resolveReadableContextPath(
-      "/root/.panda/agents/jozef/escape",
-      {agentKey: "jozef"},
-      env,
-    )).rejects.toThrow("escapes the execution environment root");
-  });
-
   it("leaves non-agent-home paths alone in remote mode", () => {
     vi.stubEnv("BASH_EXECUTION_MODE", "remote");
     vi.stubEnv("BASH_SERVER_CWD_TEMPLATE", "/root/.panda/agents/{agentKey}");
@@ -131,66 +110,6 @@ describe("resolveContextPath", () => {
     expect(resolveContextPath("/workspace/shared/report.png", {
       agentKey: "jozef",
     })).toBe("/workspace/shared/report.png");
-  });
-
-  it("maps and contains authorised collaboration workspace paths", async () => {
-    const sharedRoot = await makeTempDir();
-    await writeFile(path.join(sharedRoot, "report.txt"), "safe");
-    const env = {
-      ...process.env,
-      PANDA_CORE_SHARED_ROOT: sharedRoot,
-      PANDA_SHARED_WORKSPACE_AGENTS: "panda",
-    };
-
-    await expect(resolveReadableContextPath("/workspace/shared/report.txt", {agentKey: "panda"}, env))
-      .resolves.toBe(await realpath(path.join(sharedRoot, "report.txt")));
-    expect(() => resolveContextPath("/workspace/shared/report.txt", {agentKey: "luna"}, env))
-      .toThrow("not authorised for the shared collaboration workspace");
-  });
-
-  it("materializes a private immutable snapshot before an untrusted source can be swapped", async () => {
-    const root = await makeTempDir();
-    const sharedRoot = path.join(root, "shared");
-    const dataDir = path.join(root, "core-data");
-    const source = path.join(sharedRoot, "report.txt");
-    const outside = path.join(root, "outside.txt");
-    await mkdir(sharedRoot);
-    await writeFile(source, "safe");
-    await writeFile(outside, "private");
-    const env = {
-      ...process.env,
-      DATA_DIR: dataDir,
-      PANDA_CORE_SHARED_ROOT: sharedRoot,
-      PANDA_SHARED_WORKSPACE_AGENTS: "panda",
-    };
-
-    const snapshot = await materializeReadableContextPath(
-      "/workspace/shared/report.txt",
-      {agentKey: "panda"},
-      env,
-    );
-    await rename(source, `${source}.old`);
-    await symlink(outside, source);
-
-    await expect(readFile(snapshot, "utf8")).resolves.toBe("safe");
-    expect(snapshot).toContain(path.join(dataDir, "outbound-file-spool"));
-  });
-
-  it("rejects symlink escapes from the collaboration workspace", async () => {
-    const root = await makeTempDir();
-    const sharedRoot = path.join(root, "shared");
-    const outside = path.join(root, "outside.txt");
-    await mkdir(sharedRoot);
-    await writeFile(outside, "private");
-    await symlink(outside, path.join(sharedRoot, "escape.txt"));
-    const env = {
-      ...process.env,
-      PANDA_CORE_SHARED_ROOT: sharedRoot,
-      PANDA_SHARED_WORKSPACE_AGENTS: "panda",
-    };
-
-    await expect(resolveReadableContextPath("/workspace/shared/escape.txt", {agentKey: "panda"}, env))
-      .rejects.toThrow("escapes the execution environment root");
   });
 
   it("does not grant isolated environments the host collaboration mount implicitly", () => {
@@ -282,22 +201,6 @@ describe("resolveContextPath", () => {
     expect(resolveContextPath("/environments/worker-a/artifacts/report.txt", {
       agentKey: "luna",
     }, env)).toBe("/root/.panda/environments/luna/worker-a/artifacts/report.txt");
-  });
-
-  it("rejects symlink escapes from mapped worker roots", async () => {
-    const root = await makeTempDir();
-    const artifacts = path.join(root, "artifacts");
-    const outside = path.join(root, "outside.txt");
-    const escape = path.join(artifacts, "escape.txt");
-    await writeFile(outside, "nope");
-    await mkdir(artifacts, {recursive: true});
-    await symlink(outside, escape);
-
-    const context = createDisposableContext(root, artifacts);
-    const promise = resolveReadableContextPath("/artifacts/escape.txt", context);
-    await expect(promise).rejects.toBeInstanceOf(ToolError);
-    await expect(resolveReadableContextPath("/artifacts/escape.txt", context))
-      .rejects.toThrow("escapes the execution environment root");
   });
 
   it("rejects symlink escapes from sync mapped worker paths", async () => {

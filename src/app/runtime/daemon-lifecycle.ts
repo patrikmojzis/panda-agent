@@ -6,7 +6,7 @@ import {
   type ConnectorLeaseRepository,
   type ManagedConnectorLease,
 } from "../../domain/connector-leases/repo.js";
-import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../health/server.js";
+import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer} from "../../lib/health-server.js";
 import {
   type AgentAppHttpService,
   type AgentAppServer,

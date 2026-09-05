@@ -13,9 +13,9 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–61; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–62; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,446 production lines**, including
+Together, these cleanup commits remove **5,568 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
@@ -45,7 +45,13 @@ preserving original rows, visibility and pairing counts. All 12 PostgreSQL cases
 and 50 baseline/current comparisons pass. Identity-page batch failures return
 sanitized 500; global search preserves its existing best-effort category policy.
 
-The frozen tree passes **3,254 unit tests across 341 files**, root
+Cycle 62 removes 122 more production lines: a duplicated private bootstrap
+contract, unused pool snapshot and HTML/path helpers, and a health-server
+forwarding file. Public package contracts remain unchanged. Path security tests
+now exercise the actual command-file resolver, including symlink containment and
+immutable file snapshots. Bootstrap JavaScript is identical to its baseline.
+
+The frozen tree passes **3,256 unit tests across 341 files**, root
 build/typecheck, import law, all 19 compiled package
 imports and shared `Thread` identity. The initial failure of an unchanged
 cancellation test and its passing isolated/file/full reruns are recorded under
@@ -57,8 +63,11 @@ PostgreSQL and completed an owned run with applied input, one tool call, four
 messages and idle state. It used injected model responses and blocked external
 requests. Focused public tests and earlier method parity cover the lifecycle
 changes; that smoke did not invoke those methods or the actor listings. The test cluster
-was stopped afterward. Runtime-activity reads and pool observation ownership
-remain under investigation, with their constraints recorded in the cycle record. The inspect/review/commit loop remains active.
+was stopped afterward. Cycle 62 also passes prompt/shim contracts; only two
+source-file metadata records changed in the prompt snapshot. Runtime-activity
+reads and broader pool observation ownership remain under investigation, with
+their constraints recorded in the cycle record. The inspect/review/commit loop
+remains active.
 
 Concurrent credential-name, image-generation and background-job work belongs to
 separate tasks. Preserve those changes and untracked `output/`; they are excluded

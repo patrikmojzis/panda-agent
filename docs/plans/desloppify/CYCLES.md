@@ -1869,3 +1869,53 @@ captured settings and is stored for cleanup before observer/log creation.
 Combining those paths carelessly changes environment-read timing and loses
 ownership if observation setup throws. Existing observer-stop-before-pool-end
 ordering remains necessary. Runtime-activity pagination also remains open.
+
+## Cycle 62 — Remove obsolete helpers and a duplicate runtime contract
+
+- Findings: the private bootstrap result repeats 45 fields from the explicit
+  public runtime contract. A pool-observer snapshot, HTML snippet helper and
+  asynchronous readable-path resolver have no production callers. The daemon
+  imports its health implementation through a seven-line forwarding file.
+- Changes: derive the private bootstrap result from `RuntimeServices`, excluding
+  the four services created later and retaining three bootstrap-only members.
+  Keep the public interface and runtime return object explicit. Delete the
+  unused observer snapshot (8 lines), HTML helper (11), asynchronous path helper
+  and resolver (42), and health facade (7); redirect the daemon to the unchanged
+  library implementation. The bootstrap type/import cleanup removes 54 lines.
+  Update current architecture prose to require direct internal leaf imports.
+- Contract evidence: independent compiler checks compare all 48 private field
+  types and optionality, all 19 supported entry declarations and the public
+  runtime declaration with `eb34f7b9`. All match. Bootstrap JavaScript is identical
+  with source maps excluded. Caller and export checks find no supported surface
+  for the removed helpers. The daemon changes only one import specifier; retained
+  path, HTML, pool observation and health implementations remain byte-identical.
+  Pool logging, query wrappers, cleanup ordering and lazy ownership stay intact.
+- Tests: replace five obsolete/direct helper cases with seven command-file
+  resolver cases. Six cover file and parent-directory symlink escapes across
+  agent-home, shared-workspace and disposable-artifact mounts, preserving
+  `ToolError` classification and the live error messages. The seventh verifies
+  shared-workspace authorization and an immutable snapshot after source
+  replacement. These cases exercise the caller seam; they do not establish
+  protection against every possible mid-read race. Test code shrinks by 21 lines.
+- Result: 10 production lines added and 132 deleted, net **122 fewer**.
+  Cumulative reduction becomes **5,568 production lines across 63 cleanup
+  commits**, including 75 lines relocated into tests. Tests, documentation and
+  generated metadata are excluded from that production count.
+- Verification: all **3,256 unit tests across 341 files** pass with no failures
+  or skips, including the retained daemon lifecycle and security cases. Earlier
+  focused verification passed 43 pool/runtime, 11 runtime and 21 path/command
+  cases. The first web selection hit sandbox `listen EPERM` in three HTTP cases;
+  the unchanged selection passed all 41 cases with local socket access. Evidence:
+  `.temp/desloppify-cycle62-unit-results.json` and
+  `.temp/desloppify-cycle62-web-results.json`.
+- Gates: root build/typecheck, import law, shim/prompt contracts, all 19 compiled
+  package imports and shared `Thread` identity pass. Prompt snapshot differences
+  are restricted to bytes, lines and hashes for `panda-path-context.ts` and
+  `runtime-bootstrap.ts`; toolsets, catalog and model-facing text are unchanged.
+  Independent review confirms the nine frozen source/test/snapshot states and
+  finds no blockers. No fresh PostgreSQL or runtime smoke was needed for these
+  unconsumed paths and type-only changes; cycle 60 remains earlier smoke evidence.
+- State: reviewed and committed locally with this cycle. No production access,
+  push, deployment or schema changes. Cycle 61 is committed as `eb34f7b9`.
+  The unused observer snapshot finding is resolved; broader pool-factory changes
+  remain deferred for the ownership constraints recorded above.

@@ -6,7 +6,6 @@ import {
   normalizeTextBlockWhitespace,
   stripInvisibleUnicode,
   trimToUndefined,
-  truncateTextWithStatus,
 } from "../../lib/strings.js";
 
 const MAX_HTML_CHARS_FOR_READABILITY = 1_000_000;
@@ -73,16 +72,6 @@ export function looksLikeHtml(value: string): boolean {
   return trimmed.startsWith("<!doctype html")
     || trimmed.startsWith("<html")
     || /<(head|body|article|main|p|div)\b/.test(trimmed);
-}
-
-/** Strips markup and hidden Unicode from a server-provided HTML error snippet. */
-export function sanitizeHtmlTextSnippet(value: string, maxChars = 4_000): string {
-  const trimmed = normalizeTextBlockWhitespace(stripInvisibleUnicode(stripTags(value)));
-  if (!trimmed) {
-    return "";
-  }
-
-  return truncateTextWithStatus(trimmed, maxChars).text;
 }
 
 function absolutizeUrl(rawUrl: string, baseUrl: string): string | null {
