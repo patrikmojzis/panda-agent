@@ -38,6 +38,7 @@ import type {
     GatewayEventTypeRecord,
     GatewaySourceRecord,
 } from "../gateway/types.js";
+import {readIdentityBindingGroups} from "../identity/postgres.js";
 import type {IdentityStore} from "../identity/store.js";
 import {
     type IdentityBindingRecord,
@@ -1215,6 +1216,8 @@ function searchResultKindWeight(kind: ControlGlobalSearchResult["kind"]): number
     "gateway_device",
   ].indexOf(kind);
 }
+
+export class ControlActorPairingReadError extends Error {}
 
 export class ControlOperatorService {
   private readonly pool: PgPoolLike;
@@ -2701,12 +2704,11 @@ export class ControlOperatorService {
 
     const identities = await this.identities.listIdentities();
     const identityById = new Map(identities.map((identity) => [identity.id, identity]));
-    const bindings = await Promise.all(
-      identities.map((identity) => this.identities.listIdentityBindings(identity.id).catch(() => [] as readonly IdentityBindingRecord[])),
-    );
+    const groups = await readIdentityBindingGroups(this.pool, identities.map((identity) => identity.id), {invalidGroup: "omit"})
+      .catch((cause) => { throw new ControlActorPairingReadError("Control actor pairing read failed.", {cause}); });
     const search = normalizeSearch(input.search);
-    const rows = bindings
-      .flat()
+    const rows = groups
+      .flatMap((group) => group.bindings)
       .filter((binding) => binding.source === "discord" && accountByConnector.has(binding.connectorKey))
       .map((binding) => {
         const identity = identityById.get(binding.identityId);
@@ -2795,23 +2797,16 @@ export class ControlOperatorService {
       .map((account) => `${account.source}\0${account.connectorKey}`));
     if (pairings.length === 0 || ownedConnectors.size === 0) return tableResponse([], input);
 
-    const identities = await Promise.all(pairings.map((pairing) => this.identities.getIdentity(pairing.identityId).catch(() => null)));
-    const identityById = new Map(identities.filter((identity): identity is IdentityRecord => Boolean(identity)).map((identity) => [identity.id, identity]));
-    const bindings = await Promise.all(
-      pairings.map((pairing) => this.identities.listIdentityBindings(pairing.identityId).catch(() => [] as readonly IdentityBindingRecord[])),
-    );
+    const groups = await readIdentityBindingGroups(this.pool, pairings.map((pairing) => pairing.identityId), {invalidGroup: "omit"})
+      .catch((cause) => { throw new ControlActorPairingReadError("Control actor pairing read failed.", {cause}); });
     const search = normalizeSearch(input.search);
-    const rows = bindings
-      .flat()
-      .filter((binding) => isControlChannelActorPairingSource(binding.source))
-      .filter((binding) => ownedConnectors.has(`${binding.source}\0${binding.connectorKey}`))
-      .filter((binding) => !source || binding.source === source)
-      .filter((binding) => !connectorKey || binding.connectorKey === connectorKey)
-      .map((binding) => {
-        const identity = identityById.get(binding.identityId);
-        return identity ? publicChannelActorPairing(binding, identity, normalizedAgentKey) : null;
-      })
-      .filter((row): row is ControlChannelActorPairingRow => Boolean(row))
+    const rows = groups
+      .flatMap(({identity, bindings}) => bindings
+        .filter((binding) => isControlChannelActorPairingSource(binding.source))
+        .filter((binding) => ownedConnectors.has(`${binding.source}\0${binding.connectorKey}`))
+        .filter((binding) => !source || binding.source === source)
+        .filter((binding) => !connectorKey || binding.connectorKey === connectorKey)
+        .map((binding) => publicChannelActorPairing(binding, identity, normalizedAgentKey)))
       .filter((row) => includesSearch(row as unknown as Record<string, unknown>, search));
     return tableResponse(sortRows(rows as unknown as Record<string, unknown>[], input, "updatedAt") as unknown as ControlChannelActorPairingRow[], input);
   }

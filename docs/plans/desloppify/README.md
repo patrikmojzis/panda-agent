@@ -13,9 +13,9 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–59; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–60; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,491 production lines**, including
+Together, these cleanup commits remove **5,446 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
@@ -33,21 +33,28 @@ case/accent ties, nulls, page clamping and unfiltered summaries stay unchanged.
 Verification includes 5,718 public-method comparisons across English, Slovak and
 Turkish locales, 4,830 duration comparisons and ten new public caller cases.
 
-The frozen tree passes **3,219 unit tests across 339 files**, root
+Actor listings now share a Postgres batch reader while retaining their different
+identity and connector scopes. Discord's identity reads fall from `1 + 2N` to
+three; Telegram/WhatsApp falls from `3P` to two. This adds 45 production lines to
+remove fanout. Whole batch failures return sanitized HTTP 500 responses; malformed
+individual groups keep their existing omit/strict policies. Eight PostgreSQL
+caller cases verify the actual SQL and fixed query count.
+
+The frozen tree passes **3,247 unit tests across 341 files**, root
 build/typecheck, import law, all 19 compiled package
 imports and shared `Thread` identity. The initial failure of an unchanged
 cancellation test and its passing isolated/file/full reruns are recorded under
 cycle 54; its precise cause remains unproven. Cycle 57 passed prompt/shim
 contracts, eleven real-PostgreSQL visibility tests and 102 baseline/current
 comparisons. Cycles 58–59 leave those queries and authority checks unchanged.
-The cycle 56 common-runtime smoke applied all 25 migrations to fresh local
+The cycle 60 common-runtime smoke applied all 25 migrations to fresh local
 PostgreSQL and completed an owned run with applied input, one tool call, four
 messages and idle state. It used injected model responses and blocked external
-requests. Focused public tests and method parity cover the lifecycle changes;
-that smoke did not invoke those methods. The test cluster was stopped afterward.
-Actor-pairing fanout and runtime-activity reads remain under investigation, with
-their policy and pagination constraints recorded in the cycle record. The
-inspect/review/commit loop remains active.
+requests. Focused public tests and earlier method parity cover the lifecycle
+changes; that smoke did not invoke those methods or the actor listings. The test cluster
+was stopped afterward. Identity-directory binding counts, runtime-activity reads
+and pool observation ownership remain under investigation, with their constraints
+recorded in the cycle record. The inspect/review/commit loop remains active.
 
 Concurrent credential-name, image-generation and background-job work belongs to
 separate tasks. Preserve those changes and untracked `output/`; they are excluded

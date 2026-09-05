@@ -110,6 +110,48 @@ function missingIdentityHandleError(handle: string): Error {
   return new Error(`Unknown identity handle ${handle}`);
 }
 
+/** Reads complete identity binding groups in requested order; database errors are never omitted. */
+export async function readIdentityBindingGroups(
+  pool: PgQueryable,
+  identityIds: readonly string[],
+  options: {invalidGroup: "omit" | "throw"},
+): Promise<readonly {identity: IdentityRecord; bindings: readonly IdentityBindingRecord[]}[]> {
+  if (identityIds.length === 0) return [];
+  const tables = buildIdentityTableNames();
+  const identities = await pool.query(
+    `SELECT * FROM ${tables.identities} WHERE id = ANY($1::text[])`,
+    [identityIds],
+  );
+  const bindings = await pool.query(
+    `SELECT * FROM ${tables.identityBindings} WHERE identity_id = ANY($1::text[]) ORDER BY created_at ASC`,
+    [identityIds],
+  );
+  const identityById = new Map(identities.rows.map((value) => {
+    const row = value as Record<string, unknown>;
+    return [row.id, row];
+  }));
+  const bindingsByIdentity = new Map<unknown, Record<string, unknown>[]>();
+  for (const value of bindings.rows) {
+    const row = value as Record<string, unknown>;
+    const group = bindingsByIdentity.get(row.identity_id) ?? [];
+    group.push(row);
+    bindingsByIdentity.set(row.identity_id, group);
+  }
+  return identityIds.flatMap((identityId) => {
+    try {
+      const row = identityById.get(identityId);
+      if (!row) throw missingIdentityError(identityId);
+      return [{
+        identity: parseIdentityRow(row),
+        bindings: (bindingsByIdentity.get(identityId) ?? []).map(parseIdentityBindingRow),
+      }];
+    } catch (error) {
+      if (options.invalidGroup === "throw") throw error;
+      return [];
+    }
+  });
+}
+
 function describeBindingKey(lookup: IdentityBindingLookup): string {
   return `${lookup.source}/${lookup.connectorKey}/${lookup.externalActorId}`;
 }

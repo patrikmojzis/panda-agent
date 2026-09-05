@@ -276,9 +276,6 @@ const discordCliMocks = vi.hoisted(() => {
     });
     readonly deleteIdentityBinding = vi.fn(async () => state.deleteIdentityBindingResult);
     readonly listIdentities = vi.fn(async () => state.listIdentitiesResult);
-    readonly listIdentityBindings = vi.fn(async (identityId: string) => (
-      state.listIdentityBindingsResult[identityId] ?? []
-    ));
 
     constructor(_options: unknown) {
       identityStoreInstances.push(this);
@@ -356,6 +353,10 @@ vi.mock("../src/domain/secrets/crypto.js", () => ({
 
 vi.mock("../src/domain/identity/postgres.js", () => ({
   PostgresIdentityStore: discordCliMocks.MockPostgresIdentityStore,
+  readIdentityBindingGroups: async (_pool: unknown, identityIds: readonly string[]) => identityIds.map((identityId) => ({
+    identity: discordCliMocks.state.listIdentitiesResult.find((identity) => identity.id === identityId),
+    bindings: discordCliMocks.state.listIdentityBindingsResult[identityId] ?? [],
+  })),
 }));
 
 vi.mock("../src/lib/postgres-database.js", () => ({
@@ -1017,8 +1018,6 @@ describe("Discord account CLI", () => {
     ], {from: "user"});
 
     expect(latestIdentityStore().listIdentities).toHaveBeenCalledOnce();
-    expect(latestIdentityStore().listIdentityBindings).toHaveBeenCalledWith("identity-patrik");
-    expect(latestIdentityStore().listIdentityBindings).toHaveBeenCalledWith("identity-alice");
 
     const output = collectWrites(write);
     expect(output).toContain("discord/ops/234567890123456789");

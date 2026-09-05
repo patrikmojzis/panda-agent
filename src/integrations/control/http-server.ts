@@ -6,6 +6,7 @@ import path from "node:path";
 import {readJsonHttpBody} from "../http-body.js";
 import {writeJsonResponse} from "../../lib/http.js";
 import {DEFAULT_CONTROL_REMEMBERED_SESSION_TTL_MS, type PostgresControlAuthService} from "../../domain/control/auth.js";
+import {ControlActorPairingReadError} from "../../domain/control/operator-service.js";
 import type {ControlReadService} from "../../domain/control/read-service.js";
 import type {ControlHomeService} from "../../domain/control/home-service.js";
 import type {ControlMcpService} from "../../domain/control/mcp-service.js";
@@ -1748,6 +1749,7 @@ export async function startControlServer(options: StartControlServerOptions): Pr
           const status = await options.operator.getTelegramSetupStatus(session, telegramSetupStatusPath.agentKey, {accountKey}, options.env ?? process.env);
           writeJsonResponse(response, 200, {status});
         } catch (error) {
+          if (error instanceof ControlActorPairingReadError) throw new ControlHttpError(500, "internal_error");
           throw new ControlHttpError(400, error instanceof Error ? error.message : "Control Telegram setup status read failed.");
         }
         return;
@@ -1874,6 +1876,7 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         try {
           writeJsonResponse(response, 200, await options.operator.listDiscordActorPairings(session, discordActorPairingsPath.agentKey, parseDiscordActorPairingTableInput(url.searchParams)));
         } catch (error) {
+          if (error instanceof ControlActorPairingReadError) throw new ControlHttpError(500, "internal_error");
           const message = error instanceof Error ? error.message : "Control Discord actor pairing read failed.";
           if (message === "Control table pagination values must be positive integers.") throw new ControlHttpError(400, message);
           throw new ControlHttpError(404, "Control Discord pairing target agent was not found or is not visible.");
@@ -1909,6 +1912,7 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         try {
           writeJsonResponse(response, 200, await options.operator.listChannelActorPairings(session, channelActorPairingsPath.agentKey, parseChannelActorPairingTableInput(url.searchParams)));
         } catch (error) {
+          if (error instanceof ControlActorPairingReadError) throw new ControlHttpError(500, "internal_error");
           const message = error instanceof Error ? error.message : "Control channel actor pairing read failed.";
           if (
             message === "Control table pagination values must be positive integers."

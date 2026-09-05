@@ -326,7 +326,18 @@ async function createHarness(options: {
   const controlMcp = new ControlMcpService({reads, management: mcpManagement});
   const wikiBindingService = new WikiBindingService({store: wikiBindingStore, crypto: credentialCrypto});
   const operator = new ControlOperatorService({
-    pool,
+    pool: {
+      connect: () => pool.connect(),
+      query: (sql, params = []) => {
+        // pg-mem incorrectly returns no rows for text = ANY(text[]). Translate
+        // only these identity reads; the live caller tests execute the real SQL.
+        if (/FROM "runtime"\."(?:identities|identity_bindings)"/.test(sql) && sql.includes("= ANY($1::text[])")) {
+          const ids = params[0] as readonly string[];
+          return pool.query(sql.replace("= ANY($1::text[])", `IN (${ids.map((_, i) => `$${i + 1}`).join(", ")})`), ids);
+        }
+        return pool.query(sql, params);
+      },
+    },
     reads,
     a2aBindings,
     agents,
@@ -2425,6 +2436,67 @@ describe("Control operator HTTP", () => {
     expect(auditText).toContain("start_whatsapp_link");
     expect(auditText).not.toContain("421900123456");
     expect(auditText).not.toContain("PAIR-CODE-SECRET");
+  });
+
+  it.each([
+    {source: "discord", resource: "discord/actor-pairings", table: "identities"},
+    {source: "discord", resource: "discord/actor-pairings", table: "identity_bindings"},
+    {source: "telegram", resource: "channel-actor-pairings?source=telegram", table: "identities"},
+    {source: "telegram", resource: "channel-actor-pairings?source=telegram", table: "identity_bindings"},
+    {source: "whatsapp", resource: "channel-actor-pairings?source=whatsapp", table: "identities"},
+    {source: "whatsapp", resource: "channel-actor-pairings?source=whatsapp", table: "identity_bindings"},
+  ])("returns safe500 for $source bulk $table failures without changing admission", async ({source, resource, table}) => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    await harness.connectorAccountStore.upsertAccount({
+      source, accountKey: "actor-read", connectorKey: "actor-read-owned", ownerKind: "agent", ownerAgentKey: "panda", status: "enabled",
+    });
+    await harness.identities.ensureIdentityBinding({source, connectorKey: "actor-read-owned", externalActorId: "actor-read", identityId: "identity-patrik"});
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+    const url = `${base}/api/control/agents/panda/${resource}`;
+    const headers = {cookie: auth.cookies};
+    const success = await fetch(url, {headers});
+    expect(success.status).toBe(200);
+    await expect(success.json()).resolves.toMatchObject({data: [expect.objectContaining({externalActorId: "actor-read"})], meta: {total: 1}});
+    const invalid = await fetch(`${url}${url.includes("?") ? "&" : "?"}page=0`, {headers});
+    expect(invalid.status).toBe(400);
+    if (source !== "discord") {
+      expect((await fetch(`${base}/api/control/agents/panda/channel-actor-pairings?source=invalid`, {headers})).status).toBe(400);
+    }
+    const setupUrl = `${base}/api/control/agents/panda/telegram/setup-status?account_key=actor-read`;
+    if (source === "telegram") {
+      const setup = await fetch(setupUrl, {headers});
+      expect(setup.status).toBe(200);
+      await expect(setup.json()).resolves.toMatchObject({status: {actorPairings: {total: 1}}});
+    }
+
+    const query = harness.pool.query.bind(harness.pool);
+    let failedReads = 0;
+    const spy = vi.spyOn(harness.pool, "query").mockImplementation(async (sql: string, params?: readonly unknown[]) => {
+      if (sql.includes(`FROM "runtime"."${table}"`) && /WHERE (?:id|identity_id) IN \(/.test(sql)) {
+        failedReads++;
+        throw new Error("ACTOR_DATABASE_SECRET_SENTINEL");
+      }
+      return query(sql, params);
+    });
+    try {
+      expect((await fetch(url)).status).toBe(401);
+      expect((await fetch(`${base}/api/control/agents/missing/${resource}`, {headers})).status).toBe(404);
+      expect(failedReads).toBe(0);
+      const failed = await fetch(url, {headers});
+      expect(failed.status).toBe(500);
+      await expect(failed.json()).resolves.toEqual({error: "internal_error"});
+      expect(failedReads).toBe(1);
+      if (source === "telegram") {
+        const setup = await fetch(setupUrl, {headers});
+        expect(setup.status).toBe(500);
+        await expect(setup.json()).resolves.toEqual({error: "internal_error"});
+        expect(failedReads).toBe(2);
+      }
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("creates Discord connectors and manual conversation bindings", async () => {

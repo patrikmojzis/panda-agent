@@ -1742,3 +1742,73 @@ candidate under verification.
   reconstruction permits only the three duration substitutions; timestamp helpers,
   SQL and authorization are unchanged. No schema, production access, push or
   deployment change. Cycle 58 is committed as `94e20aea`.
+
+
+## Cycle 60 — Batch actor identity reads at the Postgres boundary
+
+- Finding: Discord actor listings repeated identity existence and binding reads
+  for every identity; Telegram/WhatsApp repeated them for every agent pairing.
+  Fetching only connector-matching rows would change persisted-key normalization
+  and hide malformed unrelated bindings that currently invalidate a whole group.
+- Change: one internal `readIdentityBindingGroups` reader performs two queries
+  for requested identities and all their bindings, then reuses the existing row
+  parsers. It restores requested identity order and preserves each group's
+  binding order. Equal `created_at` ties have no guaranteed SQL order in either
+  implementation. Empty input performs no query. Control omits missing/malformed
+  groups; the Discord CLI remains strict and emits no partial output.
+- Scope: Discord still includes deleted and unpaired identities bound to owned
+  accounts and renders its initial identity snapshot. Telegram/WhatsApp still
+  require agent pairing. Disabled owned accounts remain listable. Source and
+  connector filtering happen after whole-group parsing; opaque actor values,
+  metadata sanitation, stable sorting, search totals and empty high pages remain.
+  `IdentityStore`, supported exports, the original `listIdentityBindings`
+  existence check and database schema remain unchanged.
+- Query result: the identity portion of Discord Control/CLI falls from `1 + 2N`
+  reads to three; Telegram/WhatsApp falls from `3P` to two. Here `N` is the full
+  identity inventory and `P` is the agent's pairing count. The real-PostgreSQL
+  Control fixture uses five total reads for either surface, including unchanged
+  authorization/account/pairing reads, as twelve more identities are added.
+- Explicit behavior changes: a whole batch-query failure now produces fixed
+  HTTP 500 `{error: "internal_error"}` rather than fabricated partial/empty data.
+  The mapping includes Telegram setup status, which calls the actor reader.
+  Independent review caught and corrected its old HTTP 400 catch. Only
+  batch-reader failures receive that mapping; initial authorization,
+  connector and Discord inventory failures keep their previous handling.
+  Fewer SQL statements change concurrent-update observation and simultaneous
+  failure precedence. Successful stable-state results and individual CLI errors
+  remain preserved; the two reads do not claim a transaction snapshot.
+- Result: 70 production lines added and 25 deleted, net **45 added**. The fixed
+  query count earns this cost. Cumulative reduction becomes **5,446 production
+  lines across 61 cleanup commits**, including the 75 lines relocated into tests.
+  Tests add 539 net lines, including a narrow pg-mem array-query workaround.
+- Verification: independent source reviews found no blockers. All **3,247 unit
+  tests across 341 files** pass, including 28 new reader/HTTP/CLI cases. Eight
+  new real-PostgreSQL caller cases pass after all 25 migrations. They cover text
+  array SQL, normalization, whole-group omission, deleted/unpaired/vanishing
+  identities, ownership, ordering, pagination, admission and constant query count.
+  Evidence: `.temp/desloppify-cycle60-unit-results.json` and
+  `.temp/desloppify-cycle60-actors-live-results.json`. The HTTP harness translates
+  pg-mem's incorrect `text = ANY(text[])` result; live tests run the actual SQL.
+- Gates: root build/typecheck, import law, shim/prompt contracts, all 19 compiled
+  package imports and shared `Thread` identity pass. The inspected offline
+  common-runtime smoke also passes with 25 migrations, one owned completed run,
+  applied input, two injected model responses, one tool call, four messages,
+  idle state and zero external requests. That smoke does not exercise actor
+  listings; the caller tests above cover this change. Evidence:
+  `.temp/desloppify-cycle60-offline-smoke-output.log`.
+- State: reviewed and committed locally with this cycle. The isolated test
+  cluster was stopped. No production access, push or deployment; the schema
+  remains unchanged. Cycle 59 is committed as `25f5690c`.
+
+### Next candidates and rejected reuse
+
+`listIdentities` still repeats binding reads merely to count actors. Reuse of
+this reader can remove that fanout while keeping the original identity rows,
+visibility and pairing counts. Invalid groups must retain a zero count; global
+query failures should reach the existing safe HTTP 500 fallback. Verify these
+contracts before changing the caller. Do not reuse this reader for
+`listAgentPairings`, which needs no bindings: doing so would over-fetch and hide
+valid pairings when unrelated bindings are malformed. The paired-identity
+session directory already uses three bounded reads with different scope and
+windowing; leave it alone. Runtime-activity pagination and pool observation
+ownership remain unresolved.

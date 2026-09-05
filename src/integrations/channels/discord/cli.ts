@@ -10,11 +10,12 @@ import type {ConversationBinding} from "../../../domain/sessions/conversations/t
 import {PostgresSessionStore} from "../../../domain/sessions/postgres.js";
 import {normalizeConnectorAccountKey, type ConnectorAccountOwnerInput, type ConnectorAccountRecord} from "../../../domain/connectors/types.js";
 import {resolveSecretCrypto, type SecretCrypto} from "../../../domain/secrets/crypto.js";
-import {PostgresIdentityStore} from "../../../domain/identity/postgres.js";
+import {PostgresIdentityStore, readIdentityBindingGroups} from "../../../domain/identity/postgres.js";
 import {normalizeIdentityHandle, type IdentityBindingRecord, type IdentityRecord} from "../../../domain/identity/types.js";
 import {DB_URL_OPTION_DESCRIPTION, parseRequiredOptionValue, parseSessionIdOption} from "../../../lib/cli.js";
 import {resolveMediaDir} from "../../../lib/data-dir.js";
 import {withPostgresPool} from "../../../lib/postgres-database.js";
+import type {PgQueryable} from "../../../lib/postgres-query.js";
 import {trimToUndefined} from "../../../lib/strings.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
 import {
@@ -122,6 +123,7 @@ interface DiscordBindingStores {
 }
 
 interface DiscordActorPairingStores {
+  pool: PgQueryable;
   connectorStore: PostgresConnectorAccountStore;
   identityStore: PostgresIdentityStore;
 }
@@ -256,6 +258,7 @@ async function withDiscordActorPairingStores<T>(
 ): Promise<T> {
   return withPostgresPool(options.dbUrl, async (pool) => {
     const stores: DiscordActorPairingStores = {
+      pool,
       connectorStore: new PostgresConnectorAccountStore({pool}),
       identityStore: new PostgresIdentityStore({pool}),
     };
@@ -565,15 +568,16 @@ export async function discordUnpairCommand(options: DiscordActorUnpairCliOptions
 }
 
 export async function discordPairingsCommand(options: DiscordActorPairingsCliOptions): Promise<void> {
-  await withDiscordActorPairingStores(options, async ({connectorStore, identityStore}) => {
+  await withDiscordActorPairingStores(options, async ({pool, connectorStore, identityStore}) => {
     const account = await resolveDiscordActorPairingAccount({connectorStore}, options.account, {
       requireEnabled: false,
     });
     const identities = await identityStore.listIdentities();
+    const groups = await readIdentityBindingGroups(pool, identities.map((identity) => identity.id), {invalidGroup: "throw"});
     const entries: string[] = [];
 
-    for (const identity of identities) {
-      const bindings = await identityStore.listIdentityBindings(identity.id);
+    for (const [index, {bindings}] of groups.entries()) {
+      const identity = identities[index]!;
       for (const binding of bindings) {
         if (binding.source === DISCORD_SOURCE && binding.connectorKey === account.connectorKey) {
           entries.push(renderDiscordActorPairingListEntry(account, identity, binding));
