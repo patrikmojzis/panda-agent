@@ -192,6 +192,51 @@ describe("createRuntime", () => {
     providerRuntimeMocks.close.mockReset();
   });
 
+  it.each([
+    ...["panda/core", "panda/core-notify", "panda/core-trace"].flatMap((applicationName, index) =>
+      ["postgres_pool_stats", "postgres_pool_ready"].map((event) => ({
+        applicationName, event, allocated: index + 1, cleanupFails: false,
+      }))
+    ),
+    {applicationName: "panda/core-trace", event: "postgres_pool_ready", allocated: 3, cleanupFails: true},
+  ])("closes eager pools after $event fails for $applicationName (cleanup fails: $cleanupFails)", async ({applicationName, event, allocated, cleanupFails}) => {
+    vi.useFakeTimers({toFake: ["setInterval", "clearInterval"]});
+    const failure = cleanupFails ? undefined : new Error("eager pool logging failed");
+    runtimeMocks.configurePool.mockImplementation((pool) => {
+      if (cleanupFails && runtimeMocks.poolInstances.length === 2) {
+        pool.end.mockRejectedValueOnce(new Error("notification pool close failed"));
+      }
+    });
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    const write = vi.spyOn(process.stdout, "write").mockImplementation((...args: Parameters<typeof process.stdout.write>) => {
+      if (String(args[0]).includes(`"event":"${event}"`)
+        && String(args[0]).includes(`"applicationName":"${applicationName}"`)) {
+        throw failure;
+      }
+      return originalWrite(...args);
+    });
+    try {
+      await expect(createRuntime({
+        dbUrl: "postgres://panda:test@localhost:5432/panda",
+        readOnlyDbUrl: "postgres://readonly:test@localhost:5432/panda",
+        resolveDefinition: vi.fn(),
+      })).rejects.toBe(failure);
+
+      expect(runtimeMocks.poolInstances).toHaveLength(allocated);
+      for (const pool of runtimeMocks.poolInstances) {
+        expect(pool.off).toHaveBeenCalledTimes(1);
+        expect(pool.end).toHaveBeenCalledTimes(1);
+        expect(pool.off.mock.invocationCallOrder[0]).toBeLessThan(pool.end.mock.invocationCallOrder[0]!);
+      }
+      expect(vi.getTimerCount()).toBe(0);
+      expect(runtimeMocks.schemaAssertCurrent).not.toHaveBeenCalled();
+    } finally {
+      write.mockRestore();
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("ends every pool when the schema revision check fails", async () => {
     runtimeMocks.schemaAssertCurrent.mockRejectedValueOnce(new Error("schema revision is stale"));
 
@@ -406,6 +451,11 @@ describe("createRuntime", () => {
     });
     await runtime.close();
     expect(closeOrder).toEqual(["recorder", "trace-pool"]);
+    const stopOrder = runtimeMocks.poolInstances.map((pool) => pool.off.mock.invocationCallOrder[0]!);
+    const endOrder = runtimeMocks.poolInstances.map((pool) => pool.end.mock.invocationCallOrder[0]!);
+    expect(stopOrder).toEqual([...stopOrder].sort((left, right) => left - right));
+    expect(Math.max(...stopOrder)).toBeLessThan(Math.min(...endOrder));
+    expect([endOrder[1], endOrder[2], endOrder[0]]).toEqual([...endOrder].sort((left, right) => left - right));
   });
 
   it("registers supplied command modules with the runtime dispatcher", async () => {

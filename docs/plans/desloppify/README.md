@@ -13,9 +13,9 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–67; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–68; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,768 production lines**, including
+Together, these cleanup commits remove **5,757 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
@@ -72,8 +72,8 @@ regression tests; the original initialization error and cleanup ordering remain
 intact. Cycle 66 closes the startup-log rollback gap: failed observation now
 uses its normal stop operation before rethrowing the original value. It adds
 eight production lines and five regression cases, retaining prior observers and
-pool callback/promise behavior. Earlier setup failures and eager bootstrap
-ownership remain separate boundaries.
+pool callback/promise behavior. Earlier observer setup failures remain a
+separate boundary.
 
 Cycle 67 removes 47 more UI lines from Automations, Watches and Gateway. These
 panels now pass through the required paginated responses instead of copying them
@@ -81,23 +81,32 @@ and inventing fallback metadata. API aliases remain intact. Seventy-two React
 render comparisons pass, including page metrics, previous data, errors and
 Gateway source selection; Control typecheck and production build pass.
 
-The frozen backend passes **3,260 unit tests across 341 files**, root build/typecheck,
+Cycle 68 closes the eager bootstrap ownership gap. Each pool and observer is
+recorded immediately, and the existing cleanup boundary now covers their
+initialization. Six logging-failure cases and one secondary cleanup-failure case
+fail before the repair and pass afterward. Healthy initialization, lazy readonly
+configuration, cleanup order and original errors remain intact. This adds 11
+production lines and 50 test lines; no public contract or schema changes.
+
+The frozen backend passes **3,267 unit tests across 341 files**, root build/typecheck,
 import law, all 19 compiled package
 imports and shared `Thread` identity. The initial failure of an unchanged
 cancellation test and its passing isolated/file/full reruns are recorded under
 cycle 54; its precise cause remains unproven. Cycle 57 passed prompt/shim
 contracts, eleven real-PostgreSQL visibility tests and 102 baseline/current
 comparisons. Cycles 58–59 leave those queries and authority checks unchanged.
-The cycle 66 common-runtime smoke applied all 25 migrations to fresh local
+The cycle 68 common-runtime smoke applied all 25 migrations to fresh local
 PostgreSQL and completed an owned run with applied input, one tool call, four
 messages and idle state. It used injected model responses and blocked external
 requests. Focused bootstrap and observer tests prove the ownership repairs; the
 smoke avoids application bootstrap and does not exercise those failure paths or
 the actor listings. The test cluster was stopped afterward. Prompt/shim contracts
-pass; cycle 66 leaves the snapshot unchanged. Runtime-activity reads and eager
-bootstrap ownership remain open, with a reproduced eager-startup failure and
-their constraints recorded in the cycle record. The inspect/review/commit loop
-remains active.
+pass; cycle 68 changes only bootstrap source metadata in the snapshot. All 981
+compiled declarations remain unchanged. Runtime-activity reads and the later
+custom subagent-command registration boundary remain open. The latter now has
+a public-caller reproduction showing three unclosed pools after its factory
+throws. Their evidence and constraints are recorded in the cycle record. The
+inspect/review/commit loop remains active.
 
 Concurrent credential-name, image-generation and background-job work belongs to
 separate tasks. Preserve those changes and untracked `output/`; they are excluded

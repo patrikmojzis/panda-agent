@@ -2164,21 +2164,68 @@ evidence that every possible initialization failure is now covered.
 - State: independently reviewed and committed locally with this cycle. No
   production access, push or deployment. Cycle 66 is committed as `4243972e`.
 
-### Next: eager bootstrap ownership
+## Cycle 68 — Own eager pools before initialization can fail
 
-The actual `createRuntime` probe now reproduces a separate initialization leak:
-ready logging can fail on the first, second or third eager pool before bootstrap
-enters its cleanup boundary. The respective one, two or three allocated pools
-and observers remain unclosed. Cycle 66 rolls back the observer whose startup
-log fails, but earlier observers and allocated pools still need an owner.
-The seven-case probe includes healthy startup/shutdown and cleans its own fake
-timers, pools and logging spies. Evidence:
-`.temp/desloppify-eager-bootstrap-before.json`.
+- Finding: `bootstrapRuntime` allocated three observed pools before entering its
+  cleanup boundary. Failure on a later startup or ready log left earlier pools
+  and observers open. Cycle 66 rolled back the failing observer's startup log,
+  but did not own its pool or earlier handles. The actual `createRuntime` probe
+  records six failure cases and healthy startup/shutdown in
+  `.temp/desloppify-eager-bootstrap-before.json`.
+- Change: `src/app/runtime/runtime-bootstrap.ts` records each allocated pool and
+  returned observer immediately in private ownership records. Its existing
+  `try` now covers eager initialization, and the existing cleanup accepts
+  nullable partial handles. No asynchronous factory or general pool framework
+  is introduced. The successful return shape, synchronous setup order, readonly
+  configuration capture and lazy getter remain unchanged.
+- Behavior: a failed initialization closes each allocated pool and stops each
+  returned observer. The original rejection is preserved, including `undefined`
+  when a later pool close also rejects. Healthy shutdown still stops observers
+  before ending pools, in the existing order. A constructor that never returns
+  a handle, a throwing observer-stop primitive, or a failing cleanup-error logger
+  remains outside the complete-recovery claim.
+- Regression evidence: seven new caller-level cases in
+  `tests/panda-runtime.test.ts` fail against `51e40c8d`: startup statistics and
+  ready logging at each of three pools, plus a secondary cleanup failure.
+  The existing healthy case now checks stop/end ordering. The author passed
+  35 focused tests; an independent reviewer passed 34 across a different
+  three-file set and verified the frozen source and test hashes.
+- Gates: **3,267 tests across 341 files** pass with no failures, skips or todo
+  cases. Root build/typecheck, import-law ratchet, prompt/shim contracts and all
+  19 compiled package imports pass, preserving shared `Thread` identity. All
+  981 compiled declaration files match the baseline. Only bootstrap bytes, lines
+  and hash change in `scripts/ci/prompt-contracts.snapshot.json`; prompt and tool
+  payloads remain unchanged. The source/test freeze is
+  `.temp/desloppify-cycle68-frozen.json`; red and full-suite reports are
+  `.temp/desloppify-cycle68-before-results.json` and
+  `.temp/desloppify-cycle68-unit-results.json`.
+- PostgreSQL: the offline common-runtime smoke applies all 25 migrations to a
+  fresh disposable local database, completes one owned run with applied input,
+  one tool call and four transcript messages, then reaches idle. Model responses
+  are injected and external requests are blocked. The cluster is stopped. This
+  smoke avoids application bootstrap; focused caller tests verify the actual
+  ownership failure paths. Evidence:
+  `.temp/desloppify-cycle68-offline-smoke-output.log`.
+- Result: 102 production lines added and 91 removed, net **11 added**; most of
+  the diff is the earlier `try` boundary's indentation. Tests add 50 lines.
+  Cumulative reduction becomes **5,757 production lines across 69 cleanup
+  commits**, including 75 lines moved into tests.
+- State: independently reviewed and committed locally with this cycle. No
+  production access, push or deployment. Cycle 67 is committed as `51e40c8d`.
 
-Capture each eager pool and returned observer immediately in a stable private
-ownership record, move the existing bootstrap `try` before eager allocation,
-and reuse the existing cleanup implementation with nullable partial handles.
-Preserve synchronous initialization order, readonly configuration capture,
-normal cleanup labels/order and the original initialization error. Keep the lazy
-path separate; no generic pool framework or source-line reduction is required
-to justify this resource-ownership repair.
+### Next: custom subagent-command registration ownership
+
+After bootstrap returns, `src/app/runtime/create-runtime.ts` registers commands
+for `runtime.subagent` before its notification-listener cleanup boundary. An
+actual caller-supplied `CommandCatalogModule` whose factory throws reproduces
+three allocated pools with zero end calls, three remaining observer listeners,
+four active intervals and no coordinator stop. The original factory error is
+returned. The local probe uses the existing runtime fixture and cleans up its
+fake resources afterward; it does not contact a database or production.
+Evidence: `.temp/desloppify-subagent-registration.test.ts` and
+`.temp/desloppify-subagent-registration-before.json`.
+
+Extend runtime assembly's ownership boundary to cover this supported command
+phase, preserving synchronous command registration order, the lazy definition
+callback and the existing successful runtime surface. Do not wrap or suppress
+the command factory error. This remains pending work, separate from cycle 68.

@@ -145,6 +145,8 @@ interface ObservedPoolState {
   initializing: Promise<Pool> | null;
 }
 
+type ObservedPoolOwnership = Pick<ObservedPoolState, "pool" | "observer">;
+
 /** Resolves the configured catalog before daemon startup acquires runtime resources. */
 export function resolveRuntimeCommandCatalog(
   options: Pick<RuntimeOptions, "commandCatalog" | "commandModules">,
@@ -168,6 +170,7 @@ interface ObservedPoolHandle {
 }
 
 function createObservedPoolHandle(input: {
+  ownership: ObservedPoolOwnership;
   connectionString: string;
   applicationName: string;
   maxEnvKey: string;
@@ -189,6 +192,7 @@ function createObservedPoolHandle(input: {
     ...(input.queryTimeoutMillis !== undefined ? {queryTimeoutMillis: input.queryTimeoutMillis} : {}),
     ...(input.statementTimeoutMillis !== undefined ? {statementTimeoutMillis: input.statementTimeoutMillis} : {}),
   });
+  input.ownership.pool = pool;
   const observer = observePostgresPool({
     pool,
     applicationName: config.applicationName,
@@ -197,6 +201,7 @@ function createObservedPoolHandle(input: {
     waitingLogIntervalMs: config.waitingLogIntervalMs,
     log: logRuntimeEvent,
   });
+  input.ownership.observer = observer;
 
   logRuntimeEvent("postgres_pool_ready", {
     applicationName: config.applicationName,
@@ -211,13 +216,13 @@ function createObservedPoolHandle(input: {
 function createCloseRuntime(options: {
   backgroundJobService: BackgroundToolJobService | null;
   browserService: BrowserRunnerClient | null;
-  postgresPool: Pool;
-  postgresPoolObserver: PostgresPoolObserver;
-  notificationPool: Pool;
-  notificationPoolObserver: PostgresPoolObserver;
+  postgresPool: Pool | null;
+  postgresPoolObserver: PostgresPoolObserver | null;
+  notificationPool: Pool | null;
+  notificationPoolObserver: PostgresPoolObserver | null;
   modelCallRecorder: BufferedModelCallRecorder | null;
-  modelCallTracePool: Pool;
-  modelCallTracePoolObserver: PostgresPoolObserver;
+  modelCallTracePool: Pool | null;
+  modelCallTracePoolObserver: PostgresPoolObserver | null;
   readonlyPoolState: ObservedPoolState;
   whatsappLinks?: Pick<WhatsAppLinkManager, "stop"> | null;
 }): () => Promise<void> {
@@ -269,9 +274,9 @@ function createCloseRuntime(options: {
         label: "postgres-pool-observer",
         run: async () => {
           await resolveReadonlyPool();
-          options.postgresPoolObserver.stop();
-          options.notificationPoolObserver.stop();
-          options.modelCallTracePoolObserver.stop();
+          options.postgresPoolObserver?.stop();
+          options.notificationPoolObserver?.stop();
+          options.modelCallTracePoolObserver?.stop();
           readonlyPoolObserver?.stop();
         },
       },
@@ -285,19 +290,19 @@ function createCloseRuntime(options: {
       {
         label: "notification-postgres-pool",
         run: async () => {
-          await options.notificationPool.end();
+          await options.notificationPool?.end();
         },
       },
       {
         label: "model-call-trace-postgres-pool",
         run: async () => {
-          await options.modelCallTracePool.end();
+          await options.modelCallTracePool?.end();
         },
       },
       {
         label: "postgres-pool",
         run: async () => {
-          await options.postgresPool.end();
+          await options.postgresPool?.end();
         },
       },
     ], (step, error) => {
@@ -328,84 +333,90 @@ export async function bootstrapRuntime(
   let browserService: BrowserRunnerClient | null = null;
   let backgroundJobService: BackgroundToolJobService | null = null;
   let whatsappLinks: WhatsAppLinkManager | null = null;
-  const postgresPoolHandle = createObservedPoolHandle({
-    connectionString: options.dbUrl,
-    applicationName: CORE_POSTGRES_APPLICATION_NAME,
-    maxEnvKey: "PANDA_CORE_DB_POOL_MAX",
-    fallbackMax: CORE_POSTGRES_POOL_MAX_FALLBACK,
-  });
-  const notificationPoolHandle = createObservedPoolHandle({
-    connectionString: options.dbUrl,
-    applicationName: CORE_NOTIFICATION_POSTGRES_APPLICATION_NAME,
-    maxEnvKey: "PANDA_CORE_NOTIFICATION_DB_POOL_MAX",
-    fallbackMax: CORE_NOTIFICATION_POSTGRES_POOL_MAX_FALLBACK,
-  });
-  const modelCallTracePoolHandle = createObservedPoolHandle({
-    connectionString: options.dbUrl,
-    applicationName: CORE_MODEL_CALL_TRACE_POSTGRES_APPLICATION_NAME,
-    maxEnvKey: "PANDA_CORE_MODEL_CALL_DB_POOL_MAX",
-    fallbackMax: CORE_MODEL_CALL_TRACE_POSTGRES_POOL_MAX_FALLBACK,
-    queryTimeoutMillis: CORE_MODEL_CALL_TRACE_QUERY_TIMEOUT_MS,
-    statementTimeoutMillis: CORE_MODEL_CALL_TRACE_STATEMENT_TIMEOUT_MS,
-  });
-  const postgresPool = postgresPoolHandle.pool;
-  const postgresPoolObserver = postgresPoolHandle.observer;
-  const notificationPool = notificationPoolHandle.pool;
-  const notificationPoolObserver = notificationPoolHandle.observer;
-  const modelCallTracePool = modelCallTracePoolHandle.pool;
-  const modelCallTracePoolObserver = modelCallTracePoolHandle.observer;
-  const readonlyPoolConfig = readOnlyDbUrl
-    ? buildObservedPoolConfig(
-      CORE_READONLY_POSTGRES_APPLICATION_NAME,
-      "PANDA_CORE_READONLY_DB_POOL_MAX",
-      CORE_READONLY_POSTGRES_POOL_MAX_FALLBACK,
-    )
-    : null;
-  const getReadonlyPool = async (): Promise<Pool> => {
-    const connectionString = readOnlyDbUrl;
-    if (!readonlyPoolConfig || !connectionString) {
-      return postgresPool;
-    }
-
-    if (readonlyPoolState.pool) {
-      return readonlyPoolState.pool;
-    }
-
-    if (!readonlyPoolState.initializing) {
-      readonlyPoolState.initializing = Promise.resolve().then(() => {
-        const pool = createPostgresPool({
-          connectionString,
-          applicationName: readonlyPoolConfig.applicationName,
-          max: readonlyPoolConfig.max,
-          idleTimeoutMillis: readonlyPoolConfig.idleTimeoutMillis,
-          connectionTimeoutMillis: readonlyPoolConfig.acquireTimeoutMillis,
-        });
-        readonlyPoolState.pool = pool;
-        readonlyPoolState.observer = observePostgresPool({
-          pool,
-          applicationName: readonlyPoolConfig.applicationName,
-          max: readonlyPoolConfig.max,
-          idleTimeoutMillis: readonlyPoolConfig.idleTimeoutMillis,
-          waitingLogIntervalMs: readonlyPoolConfig.waitingLogIntervalMs,
-          log: logRuntimeEvent,
-        });
-        logRuntimeEvent("postgres_pool_ready", {
-          applicationName: readonlyPoolConfig.applicationName,
-          max: readonlyPoolConfig.max,
-          idleTimeoutMillis: readonlyPoolConfig.idleTimeoutMillis,
-          acquireTimeoutMillis: readonlyPoolConfig.acquireTimeoutMillis,
-        });
-        return pool;
-      }).finally(() => {
-        readonlyPoolState.initializing = null;
-      });
-    }
-
-    return readonlyPoolState.initializing;
-  };
-
+  const postgresPoolOwnership: ObservedPoolOwnership = {pool: null, observer: null};
+  const notificationPoolOwnership: ObservedPoolOwnership = {pool: null, observer: null};
+  const modelCallTracePoolOwnership: ObservedPoolOwnership = {pool: null, observer: null};
   let modelCallRecorder: BufferedModelCallRecorder | null = null;
   try {
+    const postgresPoolHandle = createObservedPoolHandle({
+      ownership: postgresPoolOwnership,
+      connectionString: options.dbUrl,
+      applicationName: CORE_POSTGRES_APPLICATION_NAME,
+      maxEnvKey: "PANDA_CORE_DB_POOL_MAX",
+      fallbackMax: CORE_POSTGRES_POOL_MAX_FALLBACK,
+    });
+    const notificationPoolHandle = createObservedPoolHandle({
+      ownership: notificationPoolOwnership,
+      connectionString: options.dbUrl,
+      applicationName: CORE_NOTIFICATION_POSTGRES_APPLICATION_NAME,
+      maxEnvKey: "PANDA_CORE_NOTIFICATION_DB_POOL_MAX",
+      fallbackMax: CORE_NOTIFICATION_POSTGRES_POOL_MAX_FALLBACK,
+    });
+    const modelCallTracePoolHandle = createObservedPoolHandle({
+      ownership: modelCallTracePoolOwnership,
+      connectionString: options.dbUrl,
+      applicationName: CORE_MODEL_CALL_TRACE_POSTGRES_APPLICATION_NAME,
+      maxEnvKey: "PANDA_CORE_MODEL_CALL_DB_POOL_MAX",
+      fallbackMax: CORE_MODEL_CALL_TRACE_POSTGRES_POOL_MAX_FALLBACK,
+      queryTimeoutMillis: CORE_MODEL_CALL_TRACE_QUERY_TIMEOUT_MS,
+      statementTimeoutMillis: CORE_MODEL_CALL_TRACE_STATEMENT_TIMEOUT_MS,
+    });
+    const postgresPool = postgresPoolHandle.pool;
+    const postgresPoolObserver = postgresPoolHandle.observer;
+    const notificationPool = notificationPoolHandle.pool;
+    const notificationPoolObserver = notificationPoolHandle.observer;
+    const modelCallTracePool = modelCallTracePoolHandle.pool;
+    const modelCallTracePoolObserver = modelCallTracePoolHandle.observer;
+    const readonlyPoolConfig = readOnlyDbUrl
+      ? buildObservedPoolConfig(
+        CORE_READONLY_POSTGRES_APPLICATION_NAME,
+        "PANDA_CORE_READONLY_DB_POOL_MAX",
+        CORE_READONLY_POSTGRES_POOL_MAX_FALLBACK,
+      )
+      : null;
+    const getReadonlyPool = async (): Promise<Pool> => {
+      const connectionString = readOnlyDbUrl;
+      if (!readonlyPoolConfig || !connectionString) {
+        return postgresPool;
+      }
+
+      if (readonlyPoolState.pool) {
+        return readonlyPoolState.pool;
+      }
+
+      if (!readonlyPoolState.initializing) {
+        readonlyPoolState.initializing = Promise.resolve().then(() => {
+          const pool = createPostgresPool({
+            connectionString,
+            applicationName: readonlyPoolConfig.applicationName,
+            max: readonlyPoolConfig.max,
+            idleTimeoutMillis: readonlyPoolConfig.idleTimeoutMillis,
+            connectionTimeoutMillis: readonlyPoolConfig.acquireTimeoutMillis,
+          });
+          readonlyPoolState.pool = pool;
+          readonlyPoolState.observer = observePostgresPool({
+            pool,
+            applicationName: readonlyPoolConfig.applicationName,
+            max: readonlyPoolConfig.max,
+            idleTimeoutMillis: readonlyPoolConfig.idleTimeoutMillis,
+            waitingLogIntervalMs: readonlyPoolConfig.waitingLogIntervalMs,
+            log: logRuntimeEvent,
+          });
+          logRuntimeEvent("postgres_pool_ready", {
+            applicationName: readonlyPoolConfig.applicationName,
+            max: readonlyPoolConfig.max,
+            idleTimeoutMillis: readonlyPoolConfig.idleTimeoutMillis,
+            acquireTimeoutMillis: readonlyPoolConfig.acquireTimeoutMillis,
+          });
+          return pool;
+        }).finally(() => {
+          readonlyPoolState.initializing = null;
+        });
+      }
+
+      return readonlyPoolState.initializing;
+    };
+
     // Startup is deliberately read-only: deployment owns schema migration before
     // any database-writing process starts, while every process rejects drift here.
     await createPandaSchemaVerifier(postgresPool).assertCurrent();
@@ -818,13 +829,13 @@ export async function bootstrapRuntime(
     await createCloseRuntime({
       backgroundJobService,
       browserService,
-      postgresPool,
-      postgresPoolObserver,
-      notificationPool,
-      notificationPoolObserver,
+      postgresPool: postgresPoolOwnership.pool,
+      postgresPoolObserver: postgresPoolOwnership.observer,
+      notificationPool: notificationPoolOwnership.pool,
+      notificationPoolObserver: notificationPoolOwnership.observer,
       modelCallRecorder,
-      modelCallTracePool,
-      modelCallTracePoolObserver,
+      modelCallTracePool: modelCallTracePoolOwnership.pool,
+      modelCallTracePoolObserver: modelCallTracePoolOwnership.observer,
       readonlyPoolState,
       whatsappLinks,
     })().catch(() => undefined);

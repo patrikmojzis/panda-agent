@@ -37,10 +37,10 @@
       "sha256": "033685d9e20dc15874865f8bf3e8b9c0d4244ede32cd871ea21590f8b47c45c4"
     },
     {
-      "bytes": 32144,
-      "lines": 833,
+      "bytes": 33113,
+      "lines": 844,
       "path": "src/app/runtime/runtime-bootstrap.ts",
-      "sha256": "2eac7a964ad25401a70c465da8c91496fb19c620adce80d85a9da8d923d83fc8"
+      "sha256": "7baf42fb536e300e1bf373f28061724e71f783848fa5700691973c67bc8c3fcb"
     },
     {
       "bytes": 11082,
