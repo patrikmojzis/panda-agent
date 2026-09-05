@@ -13,9 +13,9 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–63; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–64; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,607 production lines**, including
+Together, these cleanup commits remove **5,731 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
@@ -56,8 +56,16 @@ dropping fallback and Gateway's duplicate delivery-policy helper. Their live
 atomic admission and durable-request paths remain unchanged; three tests that
 only exercised those obsolete helpers are removed.
 
-The frozen tree passes **3,253 unit tests across 341 files**, root
-build/typecheck, import law, all 19 compiled package
+Cycle 64 removes 124 UI lines that reimplemented runtime filtering, sorting,
+pagination and summaries for a retired response shape. The panel now consumes
+the server's required summary, data and metadata. Its controls, loading states
+and valid-response output remain unchanged; 705 backend-generated comparisons
+verify the projection, and 30 React render comparisons verify component parity
+with mocked boundaries. Control typecheck and production build pass. Backend
+history hydration remains a separate issue.
+
+The last complete backend suite at cycle 63 passed **3,253 tests across 341 files**,
+root build/typecheck, import law, all 19 compiled package
 imports and shared `Thread` identity. The initial failure of an unchanged
 cancellation test and its passing isolated/file/full reruns are recorded under
 cycle 54; its precise cause remains unproven. Cycle 57 passed prompt/shim

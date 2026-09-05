@@ -553,7 +553,7 @@ export type RuntimeRun = {
 export type RuntimeActivity = {
   agentKey: string
   sessionId: string
-  summary?: {
+  summary: {
     total: number
     running: number
     completed: number
@@ -564,9 +564,8 @@ export type RuntimeActivity = {
     latestFinishedAt: string | null
     latestRun: RuntimeRun | null
   }
-  data?: RuntimeRun[]
-  meta?: TableMeta
-  runs?: RuntimeRun[]
+  data: RuntimeRun[]
+  meta: TableMeta
 }
 
 export type ModelCallTraceMode = "complete" | "stream" | string

@@ -33,7 +33,6 @@ import {
   type PaginatedResponse,
   type RuntimeActivity,
   type RuntimeRun,
-  type TableParams,
 } from "@/lib/api"
 import {
   formatDate,
@@ -200,7 +199,7 @@ export function RuntimePanel({
         </DetailPanel>
       </div>
       <RuntimeRunsTable
-        response={runtimeTableResponse(activity, table.params)}
+        response={activity && { data: activity.data, meta: activity.meta }}
         table={table}
         loading={runtime.isLoading}
         fetching={runtime.isFetching}
@@ -464,120 +463,22 @@ function RuntimeRunFilters({
   )
 }
 
-function runtimeRows(activity?: RuntimeActivity) {
-  return activity?.data ?? activity?.runs ?? []
-}
-
-function runtimeTableResponse(
-  activity?: RuntimeActivity,
-  params?: TableParams
-): PaginatedResponse<RuntimeRun> | undefined {
-  if (!activity) return undefined
-  if (activity.data && activity.meta) {
-    return { data: activity.data, meta: activity.meta }
-  }
-
-  const rows = fallbackRuntimeRows(runtimeRows(activity), params)
-  const perPage = positiveNumber(params?.per_page, 10)
-  const lastPage = Math.max(1, Math.ceil(rows.length / perPage))
-  const currentPage = Math.min(positiveNumber(params?.page, 1), lastPage)
-  const offset = (currentPage - 1) * perPage
-  return {
-    data: rows.slice(offset, offset + perPage),
-    meta: {
-      current_page: currentPage,
-      last_page: lastPage,
-      per_page: perPage,
-      total: rows.length,
-    },
-  }
-}
-
-function fallbackRuntimeRows(rows: RuntimeRun[], params?: TableParams) {
-  const search =
-    typeof params?.search === "string" ? params.search.trim().toLowerCase() : ""
-  const status = typeof params?.status === "string" ? params.status : ""
-  const failureCategory =
-    typeof params?.failure_category === "string" ? params.failure_category : ""
-  const sortBy =
-    typeof params?.sort_by === "string" ? params.sort_by : undefined
-  const sortDirection = params?.sort_direction === "asc" ? "asc" : "desc"
-
-  const filtered = rows.filter((run) => {
-    if (status && run.status !== status) return false
-    if (failureCategory && run.failureCategory !== failureCategory) {
-      return false
-    }
-    if (!search) return true
-    return [
-      run.id,
-      run.status,
-      run.failureCategory,
-      run.errorSummary,
-      run.startedAt,
-      run.finishedAt,
-    ]
-      .filter(Boolean)
-      .some((value) => String(value).toLowerCase().includes(search))
-  })
-
-  if (!sortBy) return filtered
-
-  return [...filtered].sort((left, right) => {
-    const leftValue = runtimeRunSortValue(left, sortBy)
-    const rightValue = runtimeRunSortValue(right, sortBy)
-    const result = compareNullable(leftValue, rightValue)
-    return sortDirection === "asc" ? result : -result
-  })
-}
-
-function runtimeRunSortValue(run: RuntimeRun, sortBy: string) {
-  switch (sortBy) {
-    case "durationMs":
-      return run.durationMs
-    case "failureCategory":
-      return run.failureCategory
-    case "errorSummary":
-      return run.errorSummary
-    case "finishedAt":
-      return run.finishedAt
-    case "id":
-      return run.id
-    case "status":
-      return run.status
-    case "startedAt":
-      return run.startedAt
-    default:
-      return undefined
-  }
-}
-
 function runtimeStats(activity?: RuntimeActivity) {
-  const rows = runtimeRows(activity)
-  const completed =
-    activity?.summary?.completed ??
-    rows.filter((run) => run.status === "completed").length
-  const failed =
-    activity?.summary?.failed ??
-    rows.filter((run) => run.status === "failed").length
+  const summary = activity?.summary
+  const completed = summary?.completed ?? 0
+  const failed = summary?.failed ?? 0
   const terminal = completed + failed
-  const latestRun = activity?.summary?.latestRun ?? rows[0]
 
   return {
-    abortRequests:
-      activity?.summary?.abortRequests ??
-      rows.filter((run) => Boolean(run.abortRequestedAt)).length,
-    averageDurationMs:
-      activity?.summary?.averageDurationMs ?? averageRunDuration(rows),
+    abortRequests: summary?.abortRequests ?? 0,
+    averageDurationMs: summary?.averageDurationMs ?? null,
     completed,
     failed,
     failureRate:
       terminal > 0 ? `${Math.round((failed / terminal) * 100)}%` : "-",
-    latestRun,
-    running:
-      activity?.summary?.running ??
-      rows.filter((run) => run.status === "running").length,
-    total: activity?.summary?.total ?? activity?.meta?.total ?? rows.length,
+    latestRun: summary?.latestRun ?? undefined,
+    running: summary?.running ?? 0,
+    total: summary?.total ?? 0,
   }
 }
 
@@ -590,28 +491,4 @@ function setTableFilter(
     ...previous.filter((filter) => filter.id !== id),
     { id, value },
   ])
-}
-
-function averageRunDuration(rows: RuntimeRun[]) {
-  const durations = rows
-    .map((run) => run.durationMs)
-    .filter((duration): duration is number => typeof duration === "number")
-  if (durations.length === 0) return null
-  const total = durations.reduce((sum, duration) => sum + duration, 0)
-  return Math.round(total / durations.length)
-}
-
-function positiveNumber(value: unknown, fallback: number) {
-  const parsed = typeof value === "number" ? value : Number(value)
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
-}
-
-function compareNullable(left: unknown, right: unknown) {
-  if (left === right) return 0
-  if (left === null || left === undefined) return -1
-  if (right === null || right === undefined) return 1
-  if (typeof left === "number" && typeof right === "number") {
-    return left - right
-  }
-  return String(left).localeCompare(String(right))
 }

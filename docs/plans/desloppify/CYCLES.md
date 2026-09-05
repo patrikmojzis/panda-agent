@@ -1964,3 +1964,57 @@ Postgres listener. Removing it would make behavioral tests depend on listener
 construction without deleting a second runtime algorithm. The Control UI's
 legacy runtime-response fallback and readonly-pool failure ownership are under
 separate review; neither is considered resolved by this cycle.
+
+## Cycle 64 — Remove the runtime panel's obsolete response fallback
+
+- Finding: the runtime panel locally filters, sorts, pages and summarizes a
+  legacy `{runs}` response even though its only producer returns required
+  `summary`, `data` and `meta`. The private UI type incorrectly marks those
+  fields optional and advertises the retired response member.
+- Change: require the actual response fields, remove `runs`, delete seven
+  private fallback helpers, and project the server table and summary directly.
+  Preserve empty/loading defaults, nullable duration/latest-run display, all
+  controls, query keys, error rendering, authorization links and DOM layout.
+  The backend keeps ownership of filtering, ordering, pagination and summaries.
+- Compatibility: the same-origin API is the only query producer. QueryClient
+  stores responses in memory; persisted table state stores column visibility,
+  not responses. The recorded production checkout `8336db3` already returns the
+  required fields. This is historical checkout evidence, not a fresh production
+  audit. No supported older-backend contract or alternate producer was found.
+- Evidence: 705 actual-service baseline/current UI projection comparisons cover
+  32 inventories, 11 filter/sort/page inputs, undefined activity, nullable summary
+  fields, empty filtered pages, extreme valid dates and different requested
+  parameters. Complete values and data/metadata reference identities match.
+  Evidence: `.temp/desloppify-cycle64-runtime-ui-parity.mjs` and
+  `.temp/desloppify-cycle64-runtime-ui-parity-output.log`.
+- Result: 12 UI production lines added and 136 removed, net **124 fewer**.
+  Cumulative reduction becomes **5,731 production lines across 65 cleanup
+  commits**, including 75 lines moved into tests. Backend source and persistent
+  tests are unchanged by this cycle.
+- Verification: 30 additional baseline/current comparisons render the actual
+  `RuntimePanel` through React server rendering with mocked query, table and
+  presentation boundaries. They compare output/props for loading, initial and
+  cached errors, fetching with previous data, admin/scoped roles, nullable fields
+  and the Show failed runs filter action. This is component parity, not browser
+  interaction or a real React Query transition test. Evidence:
+  `.temp/desloppify-cycle64-runtime-ui-render.mjs` and
+  `.temp/desloppify-cycle64-runtime-ui-render-output.log`.
+- Gates: installed Control TypeScript checks and production build pass; Vite
+  transforms 3,315 modules. Independent source and documentation reviews find
+  no blockers, and both frozen source hashes match after verification. The
+  preceding backend suite passed 3,253 tests across 341 files at cycle 63;
+  there is no new backend or PostgreSQL claim for this UI-only commit.
+- State: reviewed and committed locally with this cycle. No production access,
+  push or deployment. Cycle 63 is committed as `49c428ca`.
+
+### Backend read-model boundary
+
+This deletion does not solve full-history hydration. The endpoint performs two
+queries rather than an N+1 loop, but reads the full run inventory for unfiltered
+summary and error search. Moving paging to SQL must first preserve sanitized
+error/category semantics, null ordering, locale-aware text collation, stable
+ties, high-page clamping and summary arithmetic. Stored error summaries can be
+null for historical rows and are not a proven substitute for current parsing.
+There is no configured UI polling interval and no measured production latency
+claim. Keep that larger persistence change open until those contracts and
+isolated PostgreSQL measurements support it.
