@@ -14,13 +14,14 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–80; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–81; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **6,002 production lines**, including
+Together, these cleanup commits remove **6,018 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration. This established counter covers `src/` and
 `apps/`; cycles 75 and 79 additionally remove 94 lines from the shipped command
-shim, recorded separately. There are 81 cleanup commits including the initial pass.
+shim, recorded separately. Combined, that is **6,112 fewer shipped code lines**
+across 82 cleanup commits including the initial pass.
 
 Control now separates single-agent authorization and bulk visible-key reads from
 agent-list enrichment. Cycle 57 added 23 production lines to remove unnecessary
@@ -167,6 +168,13 @@ All 48 focused command tests pass; independent source reconstruction and the
 declaration comparison confirm that command behavior and public contracts remain
 unchanged.
 
+Cycle 81 removes 16 lines from background-job context and event rendering by
+reusing the existing whitespace and truncation helpers. Each caller retains its
+normalization, widths, labels, image precedence and output ordering. All 80
+focused tests and 399 rendered-output comparisons pass, with independent review.
+Only two source-file metadata records change in the prompt snapshot; model-facing
+text and tool contracts retain their behavior.
+
 The frozen worktree passes **3,318 unit tests across 341 files**, root build/typecheck,
 import law, all 19 compiled package
 imports and shared `Thread` identity. The initial failure of an unchanged
@@ -180,8 +188,8 @@ messages and idle state. It used injected model responses and blocked external
 requests. Focused bootstrap and observer tests prove the ownership repairs; the
 smoke avoids application bootstrap and does not exercise those failure paths or
 the actor listings. The test cluster was stopped afterward. Prompt/shim contracts
-pass. Cycle 79 leaves the snapshot unchanged; the pending background-preview
-cleanup updates only two source-file metadata records. Cycle 74 changes only the deleted
+pass. Cycle 81 updates only two source-file metadata records in the snapshot.
+Cycle 74 changes only the deleted
 internal helper's declaration among 981 compiled declaration files; all 19
 supported entrypoints retain their exports. Cycle 78 adds only the two internal
 PCM declarations. All 981 declarations remain unchanged in the frozen batch

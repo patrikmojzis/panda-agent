@@ -2731,3 +2731,52 @@ Cycle 72 below implements that policy.
   reduction to **6,096 shipped code lines**.
 - State: independently reviewed and committed locally with this cycle.
   Cycle 79 is committed as `31aac169`. No production access, push or deployment.
+
+## Cycle 81 — Reuse background-preview text helpers
+
+- Finding: background-job context and event rendering each copy truncation already
+  owned by `src/lib/strings.ts`. The context additionally copies its whitespace
+  collapsing operation. Their different normalization policies belong to callers.
+- Change: remove those two private helpers from
+  `src/panda/contexts/background-jobs-context.ts` and
+  `src/prompts/runtime/background-tool-job.ts`. Use existing `collapseWhitespace`
+  and `truncateText` leaf imports. Preserve the context's whitespace collapsing,
+  the event's trimming/nullish behavior and already-trimmed result fields. Keep
+  all five widths, truthy guards, image-path precedence, labels, ordering,
+  running-job filtering and timestamp conversion unchanged.
+- Evidence: 393 complete original/final rendered outputs and six changing-accessor
+  or nullish cases match. Whole-file reconstruction permits only helper removal,
+  imports and call substitutions. All 80 focused tests across four files pass.
+  Independent review verifies normalization, UTF-16 slicing, ellipsis/trimEnd,
+  guards and evaluation order, reruns the comparisons and caller tests, and
+  confirms unchanged declarations. Evidence:
+  `.temp/desloppify-cycle81-frozen.json`,
+  `.temp/desloppify-cycle81-parity.mjs` and
+  `.temp/desloppify-cycle81-parity-output.json`.
+- Contracts: regenerate `scripts/ci/prompt-contracts.snapshot.json`. Root verifies
+  that exactly the two owned source-file metadata records change; every other
+  file record, tool catalog, toolset and subagent group remains identical.
+  Prompt rendering comparisons protect the emitted text. No new public helper,
+  barrel, test case, persistence or schema change.
+- Gates: final frozen cycles 79–81 pass **3,318 tests across 341 files**, without
+  failures, skips or todo cases, plus build/typecheck, import law, Bash syntax
+  and prompt/shim contracts. All 981 compiled declaration files remain identical;
+  all 19 compiled entrypoints import successfully and preserve shared `Thread`
+  identity. Full report: `.temp/desloppify-cycle79-81-unit-results.json`.
+- Result: **16 fewer production lines**. The established source counter becomes
+  **6,018 fewer production lines across 82 cleanup commits**, including 75 lines
+  moved into tests. The additional 94 shipped shim lines bring the combined
+  reduction to **6,112 shipped code lines**. Tests, docs, configuration and
+  unrelated commits remain excluded from that counter.
+- State: independently reviewed and committed locally with this cycle.
+  Cycle 80 is committed as `16d4c8e3`. No production access, push or deployment.
+
+### Next bounded candidate
+
+Read-only recon found the same forwarding-factory pattern in
+`src/integrations/panda-trace/vent-commands.ts`: the private implementation's
+sole caller is the exported `createVentSendCommand`. Promoting that implementation
+under the retained public name could remove eight lines while preserving its
+options/defaults. Verify late option reads, validation/sanitization, trace
+drop/error policy, scope and non-echoed output through the existing command and
+shim tests. This candidate is not implemented or counted.

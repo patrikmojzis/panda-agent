@@ -1,20 +1,12 @@
 import type {JsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
+import {truncateText} from "../../lib/strings.js";
 
 const SUMMARY_PREVIEW_CHARS = 360;
 const ERROR_PREVIEW_CHARS = 480;
 const RESULT_PREVIEW_CHARS = 1_000;
 const FINAL_MESSAGE_PREVIEW_CHARS = 1_400;
 const OUTPUT_PREVIEW_CHARS = 400;
-
-function truncatePreview(value: string | undefined, maxChars: number): string {
-  const trimmed = (value ?? "").trim();
-  if (trimmed.length <= maxChars) {
-    return trimmed;
-  }
-
-  return `${trimmed.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
-}
 
 function readText(value: JsonObject | undefined, key: string): string {
   const next = value?.[key];
@@ -48,7 +40,7 @@ export function renderBackgroundToolJobEventPrompt(options: {
     `Job ID: ${options.jobId}`,
     `Kind: ${options.kind}`,
     `Status: ${options.status}`,
-    `Summary: ${truncatePreview(options.summary, SUMMARY_PREVIEW_CHARS)}`,
+    `Summary: ${truncateText((options.summary ?? "").trim(), SUMMARY_PREVIEW_CHARS)}`,
   ];
 
   if (options.durationMs !== undefined) {
@@ -56,11 +48,11 @@ export function renderBackgroundToolJobEventPrompt(options: {
   }
 
   if (options.error) {
-    lines.push(`Error: ${truncatePreview(options.error, ERROR_PREVIEW_CHARS)}`);
+    lines.push(`Error: ${truncateText((options.error ?? "").trim(), ERROR_PREVIEW_CHARS)}`);
   }
 
   if (options.reason) {
-    lines.push(`Reason: ${truncatePreview(options.reason, ERROR_PREVIEW_CHARS)}`);
+    lines.push(`Reason: ${truncateText((options.reason ?? "").trim(), ERROR_PREVIEW_CHARS)}`);
   }
 
   const contentText = readText(options.result, "contentText");
@@ -71,22 +63,22 @@ export function renderBackgroundToolJobEventPrompt(options: {
       ...imagePaths.map((imagePath, index) => `Image ${index + 1}: ${imagePath}`),
     ].join("\n"));
   } else if (contentText) {
-    lines.push(`Result:\n${truncatePreview(contentText, RESULT_PREVIEW_CHARS)}`);
+    lines.push(`Result:\n${truncateText(contentText, RESULT_PREVIEW_CHARS)}`);
   }
 
   const finalMessage = readText(options.result, "finalMessage");
   if (finalMessage) {
-    lines.push(`Final message:\n${truncatePreview(finalMessage, FINAL_MESSAGE_PREVIEW_CHARS)}`);
+    lines.push(`Final message:\n${truncateText(finalMessage, FINAL_MESSAGE_PREVIEW_CHARS)}`);
   }
 
   const stdout = readText(options.result, "stdout");
   if (stdout) {
-    lines.push(`stdout preview:\n${truncatePreview(stdout, OUTPUT_PREVIEW_CHARS)}`);
+    lines.push(`stdout preview:\n${truncateText(stdout, OUTPUT_PREVIEW_CHARS)}`);
   }
 
   const stderr = readText(options.result, "stderr");
   if (stderr) {
-    lines.push(`stderr preview:\n${truncatePreview(stderr, OUTPUT_PREVIEW_CHARS)}`);
+    lines.push(`stderr preview:\n${truncateText(stderr, OUTPUT_PREVIEW_CHARS)}`);
   }
 
   return lines.join("\n");
