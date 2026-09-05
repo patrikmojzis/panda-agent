@@ -18,8 +18,23 @@ Disposable isolated environments mount:
 - `/inbox` for parent-provided inputs
 - `/artifacts` for reviewable outputs
 
-The parent runner sees the same environment under `/environments/<envDir>/...`.
-Use `/inbox` and `/artifacts` for coordination; do not rely on transcript copying.
+The owning agent's standard runner sees the same files under
+`/environments/<envDir>/...`. These are that runner's coordinates: another
+agent or a parent bound to a different runner may need a file attachment instead.
+Use the configured inbox and artifacts paths for coordination; do not rely on
+transcript copying. A2A file attachments are copied into recipient agent media,
+not automatically into an isolated recipient's inbox.
+
+Stop and expiry retain these mounted directories; environment purge removes
+them. Before purge, the owner must copy accepted outputs needed long-term into
+its declared persistent storage. Files elsewhere in the disposable container,
+including installed packages, can disappear on recreation; keep setup reproducible.
+
+Environment Overview and named bash targets show configured paths and retention
+for the resolved target. Metadata is not proof that a path currently exists.
+Agent-workspace subagents use that target's paths, without invented isolated
+`/workspace`, `/inbox`, or `/artifacts` defaults. Custom managers may configure
+different paths; use the mappings supplied in context.
 
 Each disposable environment has two trust zones. The untrusted workspace
 container gets its own per-environment network and the workspace files. The

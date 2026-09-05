@@ -119,3 +119,17 @@ normal operational tools, not a delegation API.
 The execution-environment metadata still stores core, parent-runner, and
 runtime-local paths for compatibility with the shell manager. Model-facing
 prompts and docs call these subagent paths.
+
+Storage declarations are independent of cwd, HOME, runner kind, and subagent
+spawn mode. Fallback remote runners read the optional Core setting
+`BASH_SERVER_PERSISTENT_ROOTS_TEMPLATE`, a JSON array of absolute runner paths
+with `{agentKey}` expansion. Bound non-disposable environments can declare
+`metadata.storage.persistentRoots` as an array of absolute paths. Missing or
+malformed metadata leaves retention unspecified; malformed Core configuration
+is rejected. Declarations describe retention, create no mounts, and do not
+establish that files exist or are accessible to other targets.
+
+The shared storage renderer supplies both the default Environment Overview
+and named Bash Targets. Profile-only subagents receive the same environment
+guidance as main and branch sessions. Disposable environments use configured
+filesystem mappings with stop/purge retention, never permanent-root claims.

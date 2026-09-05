@@ -1117,6 +1117,7 @@ describe("buildA2AInboundPersistence", () => {
     expect(text).toContain("- parent_workspace_path: /environments/worker-a/workspace");
     expect(text).toContain("- parent_artifacts_path: /environments/worker-a/artifacts");
     expect(text).toContain("- subagent_artifacts_path: /artifacts");
+    expect(text).toContain("Sender and owner-runner coordinates only; they do not establish access from this recipient or target.");
     expect(text).toContain("status: done");
     expect(text).not.toContain("/root/.panda");
   });

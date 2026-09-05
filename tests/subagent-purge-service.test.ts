@@ -1,4 +1,4 @@
-import {lstat, mkdir, mkdtemp, rm, writeFile} from "node:fs/promises";
+import {copyFile, lstat, mkdir, mkdtemp, readFile, rm, writeFile} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import {randomUUID} from "node:crypto";
@@ -453,6 +453,21 @@ describe("SubagentPurgeService", () => {
       skipFiles: true,
     })).rejects.toThrow("Subagent purge row count must be a non-negative integer.");
   });
+
+  it("preserves an artifact retained in the parent agent home when its source environment is purged", async () => {
+    const {environmentsRoot, envRoot, service, sessionStore} = await createHarness();
+    const parentArtifacts = path.join(path.dirname(environmentsRoot), "agents", "panda", "artifacts");
+    const source = path.join(envRoot, "artifacts", "report.txt");
+    const retained = path.join(parentArtifacts, "report.txt");
+    await mkdir(parentArtifacts, {recursive: true});
+    await copyFile(source, retained);
+
+    await service.purge({selector: {sessionId: "subagent-session"}, execute: true});
+
+    await expect(readFile(source, "utf8")).rejects.toMatchObject({code: "ENOENT"});
+    expect(await readFile(retained, "utf8")).toBe("done\n");
+    expect(await sessionStore.getSession("main-session")).toMatchObject({currentThreadId: "main-thread"});
+  }, pgMemIntegrationTimeoutMs);
 
   it("hard purges non-cascading rows, cascaded session rows, environment row, and env files", async () => {
     const {pool, a2a, environmentStore, envRoot, manager, requests, service, sessionStore} = await createHarness();

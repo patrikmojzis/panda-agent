@@ -116,6 +116,7 @@ export function buildDefaultAgentLlmContexts(
   if (uniqueSections.has("environment")) {
     llmContexts.push(new EnvironmentContext({
       cwd: options.context?.cwd,
+      executionEnvironment: options.context?.executionEnvironment,
     }));
   }
 

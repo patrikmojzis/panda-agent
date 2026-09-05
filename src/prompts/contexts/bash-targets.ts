@@ -1,9 +1,12 @@
+import {renderEnvironmentStorageContext, type EnvironmentStorageContextInput} from "./environment.js";
+
 export interface BashTargetContextItem {
   alias: string;
   isDefaultBinding?: boolean;
   allowedTools?: readonly string[];
   description?: string;
   capabilities?: readonly string[];
+  storage?: EnvironmentStorageContextInput;
 }
 
 function uniqueSorted(values: readonly string[]): string[] {
@@ -47,7 +50,10 @@ function renderTarget(item: BashTargetContextItem): string {
     details.push("session default");
   }
 
-  return details.length > 0 ? `- ${item.alias}: ${details.join("; ")}` : `- ${item.alias}`;
+  const summary = details.length > 0 ? `- ${item.alias}: ${details.join("; ")}` : `- ${item.alias}`;
+  return item.storage
+    ? `${summary}\n${renderEnvironmentStorageContext(item.storage)}`
+    : summary;
 }
 
 export function renderBashTargetsContext(targets: readonly BashTargetContextItem[]): string {

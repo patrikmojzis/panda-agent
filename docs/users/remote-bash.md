@@ -104,6 +104,27 @@ Examples:
 `BASH_SERVER_CWD_TEMPLATE` tells `panda-core` what starting directory exists inside the runner.
 Use it whenever remote bash is on, especially when the core runs on your host but the runner lives in Docker.
 
+### Storage across runner recreation
+
+The generated Docker stack declares the agent-home bind mount to Core with
+`BASH_SERVER_PERSISTENT_ROOTS_TEMPLATE='["/root/.panda/agents/{agentKey}"]'`.
+This optional JSON array describes existing persistent paths inside the fallback
+remote runner; it creates no mounts. Custom deployments must declare only paths
+whose retention they provide. Missing declarations remain unspecified.
+
+Keep reusable scripts, non-secret configuration, state, and dependency manifests
+under the declared roots, and make dependency installation reproducible. Neither
+the initial cwd nor `$HOME` proves durability. Files installed into unmounted
+`/opt`, `/etc`, or `/workspace/artifacts` disappear when the container is replaced.
+A plain Docker restart retains its writable layer, but `docker-stack.sh restart`
+reconciles the stack with Compose and can recreate containers.
+
+These declarations apply only to the fallback target. A separately bound PC/Mac
+or isolated environment has its own storage and sharing rules; see
+[disposable execution environments](disposable-execution-environments.md#filesystem-layout).
+A saved cron retains command text and schedule, including the contents loaded
+with `--command @file`, but does not archive referenced scripts or dependencies.
+
 ## Runner Env
 
 Each runner gets its own agent key:

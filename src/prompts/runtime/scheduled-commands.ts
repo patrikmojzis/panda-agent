@@ -1,3 +1,5 @@
+export const SCHEDULED_COMMAND_STORAGE_NOTICE = "Cron saves command text, not referenced files. The session's default execution target is resolved at each run and may differ from this shell. Keep custom scripts, non-secret configuration and state in its persistent storage, and make dependency installation reproducible. Verify the job after runner recreation.";
+
 export function renderScheduledCommandEventPrompt(options: {
   commandId: string;
   runId: string;

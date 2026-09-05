@@ -74,6 +74,7 @@ function renderSenderEnvironment(environment: A2ASenderEnvironmentPrompt | undef
     `- subagent_workspace_path: ${formatMaybeValue(workerPaths?.workspace)}`,
     `- subagent_inbox_path: ${formatMaybeValue(workerPaths?.inbox)}`,
     `- subagent_artifacts_path: ${formatMaybeValue(workerPaths?.artifacts)}`,
+    "- path_scope: Sender and owner-runner coordinates only; they do not establish access from this recipient or target. Use an attachment when no shared mapping is available.",
   ].join("\n");
 }
 

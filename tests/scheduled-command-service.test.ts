@@ -1,5 +1,18 @@
+import {execFile} from "node:child_process";
+import path from "node:path";
+import {promisify} from "node:util";
+
 import {describe, expect, it, vi} from "vitest";
 
+import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
+import {
+  createCronCreateCommand,
+  createCronDeleteCommand,
+  createCronDisableCommand,
+  createCronEnableCommand,
+  createCronRunCommand,
+  createCronUpdateCommand,
+} from "../src/domain/scheduling/scheduled-commands/commands.js";
 import {HmacScheduledCommandIntegrity} from "../src/domain/scheduling/scheduled-commands/integrity.js";
 import {ScheduledCommandService} from "../src/domain/scheduling/scheduled-commands/service.js";
 import {
@@ -7,6 +20,8 @@ import {
   type ScheduledCommandStore,
 } from "../src/domain/scheduling/scheduled-commands/store.js";
 import type {ScheduledCommandRecord} from "../src/domain/scheduling/scheduled-commands/types.js";
+import {startCommandHttpServer} from "../src/integrations/commands/http-server.js";
+import {createTestCommandLeaseVerifier} from "./helpers/command-lease-verifier.js";
 
 function createHarness() {
   const integrity = new HmacScheduledCommandIntegrity({
@@ -72,6 +87,60 @@ function createHarness() {
 }
 
 describe("scheduled command service", () => {
+  it("returns storage guidance through the shim only when creating, updating or enabling a command", async () => {
+    const {service, store} = createHarness();
+    const commands = [
+      createCronCreateCommand(service), createCronUpdateCommand(service), createCronEnableCommand(service),
+      createCronDisableCommand(service), createCronRunCommand(service), createCronDeleteCommand(service),
+    ];
+    const server = await startCommandHttpServer({
+      executor: new RuntimeCommandDispatcher({commands}),
+      leaseVerifier: createTestCommandLeaseVerifier([["cron-test-token", {
+        agentKey: "panda",
+        sessionId: "session-main",
+        allowedCommands: commands.map(({descriptor}) => descriptor.name),
+      }]]),
+    });
+    const execFileAsync = promisify(execFile);
+    const invoke = async (args: string[]): Promise<Record<string, unknown>> => {
+      const {stdout} = await execFileAsync(path.resolve("scripts/agent-command-shim/panda"), ["cron", ...args], {
+        env: {
+          ...process.env,
+          PANDA_COMMAND_ACCESS_FILE: "",
+          PANDA_COMMAND_SOCKET: "",
+          PANDA_COMMAND_URL: server.url,
+          PANDA_COMMAND_TOKEN: "cron-test-token",
+        },
+      });
+      return JSON.parse(stdout);
+    };
+    try {
+      const created = await invoke([
+        "create", "Sync registry", "--cron", "0 * * * *", "--timezone", "UTC",
+        "--command", "/opt/missing/sync --config /etc/missing.toml", "--cwd", "/workspace/missing", "--disabled",
+      ]);
+      const commandId = String(created.commandId);
+      const updated = await invoke(["update", commandId, "--expected-version", "1", "--title", "Sync registry monthly"]);
+      const enabled = await invoke(["enable", commandId, "--expected-version", "2"]);
+      const disabled = await invoke(["disable", commandId, "--expected-version", "3"]);
+      vi.mocked(store.enqueueManualRun).mockResolvedValueOnce({
+        id: "manual-run", commandId, sessionId: "session-main", version: 4,
+        trigger: "manual", scheduledFor: 0, status: "pending", createdAt: 0,
+      });
+      const run = await invoke(["run", commandId, "--expected-version", "4"]);
+      const deleted = await invoke(["delete", commandId, "--expected-version", "4"]);
+
+      expect([created, updated, enabled, disabled, run, deleted].map((result) => result.storageNotice)).toEqual([
+        expect.stringContaining("Cron saves command text, not referenced files."),
+        expect.stringContaining("Cron saves command text, not referenced files."),
+        expect.stringContaining("Cron saves command text, not referenced files."),
+        undefined, undefined, undefined,
+      ]);
+    } finally {
+      await server.close();
+    }
+  });
+
   it("preflights explicitly named credentials and stores a signed definition", async () => {
     const harness = createHarness();
     const created = await harness.service.create({

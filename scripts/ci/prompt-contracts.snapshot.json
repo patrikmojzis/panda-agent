@@ -91,16 +91,16 @@
       "sha256": "61ecd6241a8370f2c8e41d29172e157556890a599b7649f544148416472f9b1b"
     },
     {
-      "bytes": 2844,
-      "lines": 74,
+      "bytes": 3435,
+      "lines": 87,
       "path": "src/panda/contexts/bash-targets-context.ts",
-      "sha256": "3072f55b56c701de2cc2653f7f2b5437fed8ad19f49a13648cb4d0592bf7f2b8"
+      "sha256": "494705b89072fca2db9855d68051818784717a0340d54498f991e439b11f335f"
     },
     {
-      "bytes": 8673,
-      "lines": 229,
+      "bytes": 8740,
+      "lines": 230,
       "path": "src/panda/contexts/builder.ts",
-      "sha256": "79f1cd9fab3acd0b5f3cebb251b4ab9e34f32baad42a3e4b4eb5424a1a2c1fbd"
+      "sha256": "18a260434220e5a7f72ae114229b7a05b47b3bdba1c9133a11f08cf2ceece6cd"
     },
     {
       "bytes": 958,
@@ -121,10 +121,10 @@
       "sha256": "2acb2a543f0ef685dea6afafbeee78a01d6809a1a59cbb390a3f0704348f8550"
     },
     {
-      "bytes": 3880,
-      "lines": 113,
+      "bytes": 4459,
+      "lines": 122,
       "path": "src/panda/contexts/environment-context.ts",
-      "sha256": "c94434f30b6e087cbb99e1f011209b6f17875b97fb62d7eb27a50954a85ab9e0"
+      "sha256": "cdf4224fd637c10697d0c94b6034ef95de98ff56950004c37f0438d382d7cd6c"
     },
     {
       "bytes": 1781,
@@ -157,10 +157,10 @@
       "sha256": "0442c7856dbc2c588da3727ba65157a929c339f912d89884c53a60684dcb7168"
     },
     {
-      "bytes": 1585,
-      "lines": 39,
+      "bytes": 1141,
+      "lines": 31,
       "path": "src/panda/contexts/subagent-runtime-context.ts",
-      "sha256": "86648c823a3098b9e55973b0dad0aa52be02920048a4cf959a4e04729d4785e7"
+      "sha256": "2219105013a33029f99e4263a8d228959ac73a8821fd38e81dad92f89e5cee7e"
     },
     {
       "bytes": 1483,
@@ -187,10 +187,10 @@
       "sha256": "7c64ca4fb20473a6b963db8a263aff6143cea679c7836b8cb306150decd939cb"
     },
     {
-      "bytes": 2904,
-      "lines": 96,
+      "bytes": 3082,
+      "lines": 97,
       "path": "src/prompts/channels/a2a.ts",
-      "sha256": "7ce06cc5e05ee307c4877e8f9299a683f850c831de8001a2bc407c5778eca793"
+      "sha256": "90f9b0c6b7dc518ba87f81530427366222847a9dc4975e7e8c0d7458a5ff5843"
     },
     {
       "bytes": 1198,
@@ -259,10 +259,10 @@
       "sha256": "28c4f4bfcb3ce6887893d95983a821c41f8effa91cfdff092b63b1ab58352e56"
     },
     {
-      "bytes": 2183,
-      "lines": 68,
+      "bytes": 2446,
+      "lines": 74,
       "path": "src/prompts/contexts/bash-targets.ts",
-      "sha256": "07e217dbd207459957ef0f6da2a3e15a2b3f1b56a80033271107a149f59277c2"
+      "sha256": "5ddd1362df652d80c2e6afb67f75361c32c5d08d9ec0744e7403e357aed805c2"
     },
     {
       "bytes": 2030,
@@ -283,10 +283,10 @@
       "sha256": "75e0b0933f180fb199601f3ab0cc4fdae653545dcd28178f2b4b36d961eb8119"
     },
     {
-      "bytes": 368,
-      "lines": 16,
+      "bytes": 2592,
+      "lines": 56,
       "path": "src/prompts/contexts/environment.ts",
-      "sha256": "f8f70a8e981ffd2e8e1f5632ce4ff35e7441990bcd8d02734c4ab34d202810d1"
+      "sha256": "8855057bc5c56760e21513b2f65ced229a7baf02fb69c00d278fabd56283bd3c"
     },
     {
       "bytes": 129,
@@ -319,10 +319,10 @@
       "sha256": "5d8f837c7391c253665f98c26d2ae41bca38d593854b29b030cb6c995a2a61e8"
     },
     {
-      "bytes": 1384,
-      "lines": 35,
+      "bytes": 1034,
+      "lines": 27,
       "path": "src/prompts/contexts/subagent-runtime.ts",
-      "sha256": "e89a7e60fc38cb7440b60356526a5551ea9debaaac190f9f1062f36f37c84fde"
+      "sha256": "3938b588b1694bd3f5fcc4bce9d85c67f22f25a7e799b78ec90ee11eeddc5211"
     },
     {
       "bytes": 1123,
@@ -361,10 +361,10 @@
       "sha256": "5bd899c378ebae1107de331b9150b3cc401391622c9c32e4e6bbc0f5daeaf393"
     },
     {
-      "bytes": 15899,
+      "bytes": 16172,
       "lines": 225,
       "path": "src/prompts/runtime/default-agent.ts",
-      "sha256": "5a17505e5742f50c39e974b64c1eb09891441078706ccd1f5ee651e66ccb9358"
+      "sha256": "c21c3f88e44d2dcd2b5c965a1de34f4519f7c52f9c6a234efb7851c9fc7ac798"
     },
     {
       "bytes": 1707,
@@ -379,10 +379,10 @@
       "sha256": "52372a691db82b895a5e4476a25873acb43ab8af1981d126cb4018f155835f30"
     },
     {
-      "bytes": 764,
-      "lines": 21,
+      "bytes": 1128,
+      "lines": 23,
       "path": "src/prompts/runtime/scheduled-commands.ts",
-      "sha256": "2a589e4556aabba52fa1f15ba800328d1748a565938b7ceaf6858cd4278c2e2c"
+      "sha256": "99b0906bcc5129ba74df08fd5ec17c35620caebc2c2189cfc3f89b1cab5a9bbf"
     },
     {
       "bytes": 361,

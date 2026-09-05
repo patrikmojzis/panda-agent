@@ -13,6 +13,7 @@ import {
   normalizeExecutionTargetAlias,
 } from "../../domain/execution-environments/types.js";
 import {readSubagentSessionMetadata} from "../../domain/subagents/session-metadata.js";
+import {readExecutionEnvironmentPersistentRoots} from "../../domain/execution-environments/filesystem.js";
 import {
   resolveBashExecutionMode,
   resolveRunnerCwd,
@@ -20,6 +21,7 @@ import {
   resolveRunnerUrl,
   resolveRunnerUrlTemplate,
 } from "../../integrations/shell/bash-executor.js";
+import {resolveRunnerPersistentRoots} from "../../domain/execution-environments/runner-config.js";
 
 type ExecutionEnvironmentResolverStore = Pick<ExecutionEnvironmentStore, "getDefaultBinding" | "getBindingByAlias" | "getEnvironment">;
 
@@ -67,6 +69,7 @@ function resolveFallbackEnvironment(
   const initialCwd = executionMode === "remote" && runnerCwdTemplate
     ? resolveRunnerCwd(runnerCwdTemplate, session.agentKey)
     : undefined;
+  const persistentRoots = executionMode === "remote" ? resolveRunnerPersistentRoots(session.agentKey, env) : undefined;
 
   return {
     id: executionMode === "remote"
@@ -78,6 +81,7 @@ function resolveFallbackEnvironment(
     executionMode,
     ...(runnerUrl ? {runnerUrl} : {}),
     ...(initialCwd ? {initialCwd} : {}),
+    ...(persistentRoots ? {persistentRoots} : {}),
     credentialPolicy: policies.credentialPolicy ?? defaultPersistentCredentialPolicy(session),
     skillPolicy: policies.skillPolicy ?? defaultPersistentSkillPolicy(session),
     toolPolicy: policies.toolPolicy,
@@ -188,6 +192,9 @@ export class ExecutionEnvironmentResolver {
     }
 
     const executionMode = resolveExecutionMode(environment);
+    const persistentRoots = environment.kind === "disposable_container"
+      ? undefined
+      : readExecutionEnvironmentPersistentRoots(environment.metadata);
     if (executionMode === "remote" && !environment.runnerUrl) {
       throw new Error(`Remote execution environment ${environment.id} is missing runnerUrl.`);
     }
@@ -202,6 +209,7 @@ export class ExecutionEnvironmentResolver {
       ...(environment.runnerCwd ? {initialCwd: environment.runnerCwd} : {}),
       ...(environment.rootPath ? {rootPath: environment.rootPath} : {}),
       ...(environment.metadata !== undefined ? {metadata: environment.metadata} : {}),
+      ...(persistentRoots ? {persistentRoots} : {}),
       alias: binding.alias,
       credentialPolicy: binding.credentialPolicy,
       skillPolicy: binding.skillPolicy,

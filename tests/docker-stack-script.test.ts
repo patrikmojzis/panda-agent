@@ -1484,6 +1484,10 @@ exit 42
 
     const baseCompose = await readFile(baseComposePath, "utf8");
     expect(baseCompose).toContain("  panda-telegram:\n    image: panda-app:latest");
+    expect(baseCompose).toContain('BASH_SERVER_PERSISTENT_ROOTS_TEMPLATE: \'["/root/.panda/agents/{agentKey}"]\'');
+    for (const agent of ["claw", "luna"]) {
+      expect(generatedCompose).toContain(`- \${HOME}/.panda/agents/${agent}:/root/.panda/agents/${agent}`);
+    }
     expect(baseCompose).toContain('command: ["telegram", "run", "--all-enabled"]');
     expect(baseCompose).toContain("PANDA_TELEGRAM_DB_POOL_MAX: ${PANDA_TELEGRAM_DB_POOL_MAX:-2}");
     expect(baseCompose).toContain("  panda-discord:\n    image: panda-app:latest");

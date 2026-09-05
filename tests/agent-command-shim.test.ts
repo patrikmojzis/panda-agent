@@ -4097,6 +4097,30 @@ printf '{"ok":true,"output":%s}\\n' "$body"
     });
   });
 
+  it("explains cron storage and file input in offline group help", async () => {
+    const {stdout} = await execFileAsync(shimPath, ["cron", "--help"]);
+
+    expect(stdout).toContain("Cron saves command text, not referenced files.");
+    expect(stdout).toContain("--command @file copies the file's contents only");
+  });
+
+  it.each(["create", "update", "enable"])("exposes cron %s storage guidance in text and JSON help", async (operation) => {
+    const server = await startWatchServer();
+    const [textHelp, jsonHelp] = await Promise.all([
+      execFileAsync(shimPath, ["cron", operation, "--help"], {env: shimEnv(server)}),
+      execFileAsync(shimPath, ["cron", operation, "--help", "--json"], {env: shimEnv(server)}),
+    ]);
+
+    expect(textHelp.stdout).toContain("Cron saves command text, not referenced files.");
+    const descriptor = JSON.parse(jsonHelp.stdout);
+    expect(descriptor.description).toContain("resolved at each run and may differ from this shell");
+    expect(descriptor.resultShape.storageNotice).toBe("string");
+    if (operation !== "enable") {
+      expect(descriptor.arguments.find((argument: {name: string}) => argument.name === "command").description)
+        .toContain("copies contents only; referenced files are not bundled");
+    }
+  });
+
   it("executes cron.create and cron.update through native args", async () => {
     const server = await startWatchServer();
     const directory = await mkdtemp(path.join(os.tmpdir(), "panda-cron-shim-"));

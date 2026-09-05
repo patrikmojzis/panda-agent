@@ -536,6 +536,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
         BASH_EXECUTION_MODE: "remote",
         BASH_SERVER_URL_TEMPLATE: "http://runner-{agentKey}:8080",
         BASH_SERVER_CWD_TEMPLATE: "/root/.panda/agents/{agentKey}",
+        BASH_SERVER_PERSISTENT_ROOTS_TEMPLATE: '["/root/.panda/agents/{agentKey}"]',
       } as NodeJS.ProcessEnv,
     });
 
@@ -545,6 +546,7 @@ describe("PostgresExecutionEnvironmentStore", () => {
       executionMode: "remote",
       runnerUrl: "http://runner-panda:8080",
       initialCwd: "/root/.panda/agents/panda",
+      persistentRoots: ["/root/.panda/agents/panda"],
       credentialPolicy: {
         mode: "all_agent",
       },
@@ -563,6 +565,67 @@ describe("PostgresExecutionEnvironmentStore", () => {
         },
       },
     });
+  });
+
+  it.each(["local", "remote"])("does not infer storage retention from %s mode or cwd", async (mode) => {
+    const {environmentStore, sessionStore} = await createHarness();
+    const resolver = new ExecutionEnvironmentResolver({
+      defaultToolPolicy: createDefaultExecutionToolPolicy(DEFAULT_AGENT_COMMAND_CATALOG),
+      store: environmentStore,
+      env: {
+        BASH_EXECUTION_MODE: mode,
+        BASH_SERVER_URL_TEMPLATE: "http://runner-{agentKey}:8080",
+        BASH_SERVER_CWD_TEMPLATE: "/root/.panda/agents/{agentKey}",
+        ...(mode === "local" ? {BASH_SERVER_PERSISTENT_ROOTS_TEMPLATE: '["/remote/home"]'} : {}),
+      },
+    });
+    const resolved = await resolver.resolveDefault(await sessionStore.getSession("session-main"));
+    expect(resolved.persistentRoots).toBeUndefined();
+  });
+
+  it.each(["not-json", '["relative/path"]', '["/safe", 1]', '["/safe\\nmisleading"]'])(
+    "rejects malformed fallback storage declarations: %s", async (declaration) => {
+      const {environmentStore, sessionStore} = await createHarness();
+      const resolver = new ExecutionEnvironmentResolver({
+        defaultToolPolicy: createDefaultExecutionToolPolicy(DEFAULT_AGENT_COMMAND_CATALOG),
+        store: environmentStore,
+        env: {
+          BASH_EXECUTION_MODE: "remote",
+          BASH_SERVER_PERSISTENT_ROOTS_TEMPLATE: declaration,
+        },
+      });
+      await expect(resolver.resolveDefault(await sessionStore.getSession("session-main")))
+        .rejects.toThrow("BASH_SERVER_PERSISTENT_ROOTS_TEMPLATE must be a JSON array of absolute runner paths.");
+    },
+  );
+
+  it.each([
+    {kind: "persistent_agent_runner" as const, storage: {persistentRoots: ["/Volumes/work", "/Volumes/work"]}, expected: ["/Volumes/work"]},
+    {kind: "persistent_agent_runner" as const, storage: {persistentRoots: ["C:\\Users\\panda\\work"]}, expected: ["C:\\Users\\panda\\work"]},
+    {kind: "persistent_agent_runner" as const, storage: {}, expected: undefined},
+    {kind: "persistent_agent_runner" as const, storage: {persistentRoots: ["relative"]}, expected: undefined},
+    {kind: "disposable_container" as const, storage: {persistentRoots: ["/artifacts"]}, expected: undefined},
+  ])("uses only the bound target's valid non-disposable storage declaration ($kind, $storage)", async ({kind, storage, expected}) => {
+    const {environmentStore, sessionStore} = await createHarness();
+    await environmentStore.createEnvironment({
+      id: "env-storage", agentKey: "panda", kind, state: "ready",
+      runnerUrl: "http://custom:8080", runnerCwd: "/project/nested",
+      metadata: {storage},
+    });
+    await environmentStore.bindSession({
+      sessionId: "session-main", environmentId: "env-storage", alias: "custom", isDefault: true,
+    });
+    const resolver = new ExecutionEnvironmentResolver({
+      defaultToolPolicy: createDefaultExecutionToolPolicy(DEFAULT_AGENT_COMMAND_CATALOG),
+      store: environmentStore,
+      env: {BASH_EXECUTION_MODE: "remote", BASH_SERVER_PERSISTENT_ROOTS_TEMPLATE: '["/fallback/home"]'},
+    });
+    const session = await sessionStore.getSession("session-main");
+    for (const target of [undefined, "custom"]) {
+      const resolved = await resolver.resolve(session, target);
+      expect(resolved.initialCwd).toBe("/project/nested");
+      expect(resolved.persistentRoots).toEqual(expected);
+    }
   });
 
   it("rejects legacy worker sessions before environment resolution", async () => {

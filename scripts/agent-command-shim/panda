@@ -2070,6 +2070,12 @@ Usage:
   panda cron delete <command-id> --expected-version <n>
   panda cron run <command-id> --expected-version <n>
   panda cron <subcommand> --json @payload.json
+
+Cron saves command text, not referenced files. The session's default execution
+target is resolved at each run and may differ from this shell. Keep custom scripts,
+non-secret configuration and state in its persistent storage, and make dependency
+installation reproducible. Verify the job after runner recreation.
+--command @file copies the file's contents only; referenced files are not bundled.
 USAGE
         exit 0
         ;;

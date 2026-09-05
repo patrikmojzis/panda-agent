@@ -275,13 +275,15 @@ describe("Panda feature surface", () => {
       nodeVersion: "v25.8.2",
     });
 
-    await expect(context.getContent()).resolves.toBe(
+    await expect(context.getContent()).resolves.toContain(
       [
         "User: patrik @ panda-box",
         "OS: macOS 24.6.0 (arm64)",
         "Hardware: Apple M4 · 10 cores · 16 GB RAM",
         "Runtime: Node v25.8.2 · zsh · Warp",
-        "Workspace: /workspace/panda",
+        'Storage for bash target "default":',
+        "Initial working directory: /workspace/panda",
+        "Persistent roots: unspecified; do not infer durability from HOME or cwd.",
       ].join("\n"),
     );
   });

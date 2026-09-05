@@ -1,6 +1,7 @@
 import {buildEndpointUrl} from "../../lib/http.js";
 import {trimToNull} from "../../lib/strings.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
+import {normalizeExecutionEnvironmentPersistentRoots} from "./filesystem.js";
 
 const DEPRECATED_BASH_SERVER_ENV_MAPPINGS = {
   RUNNER_URL_TEMPLATE: "BASH_SERVER_URL_TEMPLATE",
@@ -88,6 +89,25 @@ export function resolveRunnerUrl(template: string, agentKey: string): string {
 
 export function resolveRunnerCwd(template: string, agentKey: string): string {
   return resolveAgentTemplateValue(template, agentKey);
+}
+
+/** Resolve explicitly configured durable paths for the fallback runner, independently of its cwd. */
+export function resolveRunnerPersistentRoots(agentKey: string, env: NodeJS.ProcessEnv): string[] | undefined {
+  const template = trimToNull(env.BASH_SERVER_PERSISTENT_ROOTS_TEMPLATE);
+  if (!template) return undefined;
+  let value: unknown;
+  try {
+    value = JSON.parse(template);
+  } catch {
+    throw new ToolError("BASH_SERVER_PERSISTENT_ROOTS_TEMPLATE must be a JSON array of absolute runner paths.");
+  }
+  const roots = normalizeExecutionEnvironmentPersistentRoots(
+    Array.isArray(value) ? value.map((root: unknown) => typeof root === "string" ? resolveAgentTemplateValue(root, agentKey) : root) : value,
+  );
+  if (!roots) {
+    throw new ToolError("BASH_SERVER_PERSISTENT_ROOTS_TEMPLATE must be a JSON array of absolute runner paths.");
+  }
+  return roots;
 }
 
 export function resolveRemoteInitialCwd(agentKey: string, env: NodeJS.ProcessEnv = process.env): string | null {

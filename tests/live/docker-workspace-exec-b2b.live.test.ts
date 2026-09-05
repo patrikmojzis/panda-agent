@@ -569,5 +569,61 @@ describeLive("B2b real Docker paired workspace exec smoke", () => {
     expect(await dockerStatus(["inspect", envAWorkspace])).not.toBe(0);
   }, 600_000);
 
+  it("retains shared artifacts and executable packages across container recreation while discarding the writable layer", async () => {
+    const environmentId = `retention-${harness.suffix}`;
+    const created = await createEnvironment(harness, environmentId);
+    const artifactBytes = '{"message":"shared artifact survives recreation"}\n';
+    const written = await runnerPost<BashExecutionResult>(harness, created.runnerUrl, "exec", {
+      requestId: `retention-write-${harness.suffix}`,
+      command: [
+        "set -eu",
+        "cat > /artifacts/report.json <<'ARTIFACT'",
+        artifactBytes.trimEnd(),
+        "ARTIFACT",
+        "cat > /artifacts/run-report <<'SCRIPT'",
+        "#!/bin/bash",
+        "set -eu",
+        'cat "$(dirname "$0")/report.json"',
+        "SCRIPT",
+        "chmod +x /artifacts/run-report",
+        "touch /opt/panda-b2b-ephemeral-package",
+        "/artifacts/run-report",
+      ].join("\n"),
+      cwd: "/workspace",
+      timeoutMs: 30_000,
+      trackedEnvKeys: [],
+      maxOutputChars: 20_000,
+    });
+    expect(written).toMatchObject({success: true, stdout: artifactBytes});
+    expect(await dockerExecStatus(created.metadata.workspaceContainer.name, "test -f /opt/panda-b2b-ephemeral-package")).toBe(0);
+
+    const filesystem = created.metadata.filesystem;
+    const readFromParentMount = async () => (await docker([
+      "run", "--rm", "--network", "none", "--read-only",
+      "--mount", `type=bind,source=${path.dirname(filesystem.root.hostPath)},target=${path.posix.dirname(filesystem.root.parentRunnerPath)},readonly`,
+      harness.workspaceImage,
+      "cat", path.posix.join(filesystem.artifacts.parentRunnerPath, "report.json"),
+    ])).stdout;
+    expect(await readFromParentMount()).toBe(artifactBytes);
+
+    await stopEnvironment(harness, created);
+    expect(await dockerStatus(["inspect", created.metadata.workspaceContainer.name])).not.toBe(0);
+    expect(await readFile(path.join(filesystem.artifacts.hostPath, "report.json"), "utf8")).toBe(artifactBytes);
+
+    const recreated = await createEnvironment(harness, environmentId);
+    expect(recreated.metadata.workspaceContainer.id).not.toBe(created.metadata.workspaceContainer.id);
+    const retained = await runnerPost<BashExecutionResult>(harness, recreated.runnerUrl, "exec", {
+      requestId: `retention-read-${harness.suffix}`,
+      command: "test ! -e /opt/panda-b2b-ephemeral-package && /artifacts/run-report",
+      cwd: "/workspace",
+      timeoutMs: 30_000,
+      trackedEnvKeys: [],
+      maxOutputChars: 20_000,
+    });
+    expect(retained).toMatchObject({success: true, stdout: artifactBytes});
+    expect(await readFromParentMount()).toBe(artifactBytes);
+    await stopEnvironment(harness, recreated);
+  }, 180_000);
+
   it.todo("routes public workspace egress through a broker that blocks host and private-network destinations");
 });

@@ -169,6 +169,8 @@ export interface ResolvedExecutionEnvironment {
   rootPath?: string;
   metadata?: JsonValue;
   alias?: string;
+  /** Declared runner paths retained across recreation; not a filesystem existence check. */
+  persistentRoots?: readonly string[];
   credentialPolicy: ExecutionCredentialPolicy;
   skillPolicy: ExecutionSkillPolicy;
   toolPolicy: ExecutionToolPolicy;

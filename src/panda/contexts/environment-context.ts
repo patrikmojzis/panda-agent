@@ -3,10 +3,13 @@ import path from "node:path";
 
 import {firstNonEmptyString} from "../../lib/strings.js";
 import {LlmContext} from "../../kernel/agent/llm-context.js";
+import {readExecutionEnvironmentFilesystemMetadata} from "../../domain/execution-environments/filesystem.js";
+import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 import {renderEnvironmentContext} from "../../prompts/contexts/environment.js";
 
 export interface EnvironmentContextOptions {
   cwd?: string;
+  executionEnvironment?: ResolvedExecutionEnvironment;
   hostname?: string;
   username?: string;
   shell?: string;
@@ -107,7 +110,13 @@ export class EnvironmentContext extends LlmContext {
       osLabel: formatOperatingSystem(platform, release, arch),
       hardware: joinCompact([cpuModel, `${cpuCount} cores`, formatMemory(totalMemoryBytes)]),
       runtime: joinCompact([`Node ${nodeVersion}`, shell, terminalProgram]),
-      workspace: cwd,
+      storage: {
+        target: "default",
+        cwd,
+        persistentRoots: this.options.executionEnvironment?.persistentRoots,
+        filesystem: readExecutionEnvironmentFilesystemMetadata(this.options.executionEnvironment?.metadata),
+        disposable: this.options.executionEnvironment?.kind === "disposable_container",
+      },
     });
   }
 }

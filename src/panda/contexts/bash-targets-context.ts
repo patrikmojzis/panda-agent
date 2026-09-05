@@ -1,6 +1,10 @@
 import {LlmContext} from "../../kernel/agent/llm-context.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import type {ExecutionEnvironmentRecord} from "../../domain/execution-environments/types.js";
+import {
+  readExecutionEnvironmentFilesystemMetadata,
+  readExecutionEnvironmentPersistentRoots,
+} from "../../domain/execution-environments/filesystem.js";
 import {renderBashTargetsContext, type BashTargetContextItem} from "../../prompts/contexts/bash-targets.js";
 
 export interface BashTargetsContextOptions {
@@ -66,6 +70,15 @@ export class BashTargetsContext extends LlmContext {
         ...(binding.isDefault ? {isDefaultBinding: true} : {}),
         ...(binding.toolPolicy.allowedTools?.length ? {allowedTools: binding.toolPolicy.allowedTools} : {}),
         ...readTargetMetadata(environment),
+        storage: {
+          target: binding.alias,
+          cwd: environment?.runnerCwd,
+          persistentRoots: environment?.kind === "disposable_container"
+            ? undefined
+            : readExecutionEnvironmentPersistentRoots(environment?.metadata),
+          filesystem: readExecutionEnvironmentFilesystemMetadata(environment?.metadata),
+          disposable: environment?.kind === "disposable_container",
+        },
       };
     }));
 

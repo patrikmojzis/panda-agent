@@ -111,6 +111,123 @@ function createEnvironment(
 }
 
 describe("subagent thread definitions", () => {
+  it.each(["main", "branch", "subagent"] as const)("shows declared storage to %s sessions without inventing artifact mounts", async (kind) => {
+    const definition = createThreadDefinition({
+      thread: createThread(),
+      session: {
+        id: "session-subagent",
+        agentKey: "panda",
+        kind,
+        metadata: kind === "subagent" ? createSubagentMetadata() : {},
+      },
+      fallbackContext: {cwd: "/wrong-fallback"},
+      executionEnvironment: createEnvironment({
+        id: "runner-custom",
+        kind: "persistent_agent_runner",
+        executionMode: "remote",
+        initialCwd: "/durable/panda/project",
+        persistentRoots: ["/durable/panda"],
+        source: "binding",
+      }),
+      tools: [],
+    });
+
+    const dump = await gatherContexts(definition.llmContexts ?? []);
+
+    expect(dump).toContain('Storage for bash target "default":');
+    expect(dump).toContain("Initial working directory: /durable/panda/project");
+    expect(dump).toContain("Declared persistent roots: /durable/panda");
+    expect(dump).toContain("Keep reusable source, non-secret configuration, state, and dependency manifests in declared persistent roots.");
+    expect(dump).not.toContain("/wrong-fallback");
+    expect(dump).not.toContain("/workspace");
+    expect(dump).not.toContain("/inbox");
+    expect(dump).not.toContain("/artifacts");
+    if (kind === "subagent") {
+      expect(definition.agent.instructions).toBe("PROFILE PROMPT ONLY");
+      expect(dump).toContain("environmentId: runner-custom");
+    }
+  });
+
+  it.each([
+    {kind: "main" as const},
+    {kind: "branch" as const},
+    {kind: "subagent" as const, execution: "agent_workspace" as const},
+    {kind: "subagent" as const, execution: "isolated_environment" as const},
+  ])("preserves configured handoff coordinates for $kind / $execution", async ({kind, execution}) => {
+    const definition = createThreadDefinition({
+      thread: createThread(),
+      session: {
+        id: "session-subagent",
+        agentKey: "panda",
+        kind,
+        metadata: kind === "subagent" ? createSubagentMetadata({
+          execution,
+          ...(execution === "isolated_environment" ? {environmentId: "env-custom"} : {}),
+        }) : {},
+      },
+      fallbackContext: {cwd: "/wrong-fallback"},
+      executionEnvironment: createEnvironment({
+        id: "env-custom",
+        kind: "disposable_container",
+        executionMode: "remote",
+        initialCwd: "/work/project/src",
+        source: "binding",
+        metadata: {
+          filesystem: {
+            envDir: "custom",
+            root: {corePath: "/core/custom", parentRunnerPath: "/owner/custom"},
+            workspace: {corePath: "/core/custom/work", workerPath: "/work", parentRunnerPath: "/owner/project"},
+            inbox: {corePath: "/core/custom/input", workerPath: "/input", parentRunnerPath: "/owner/input"},
+            artifacts: {corePath: "/core/custom/output", workerPath: "/output", parentRunnerPath: "/owner/deliverables"},
+          },
+        },
+      }),
+      tools: [],
+    });
+
+    const dump = await gatherContexts(definition.llmContexts ?? []);
+
+    expect(dump).toContain("Initial working directory: /work/project/src");
+    expect(dump).toContain("Configured workspace: /work");
+    expect(dump).toContain("Configured inbox: /input");
+    expect(dump).toContain("Configured artifacts: /output");
+    expect(dump).toContain("Owner-runner artifacts: /owner/deliverables");
+    expect(dump).toContain("Environment stop retains these mapped directories; purge deletes them.");
+    expect(dump).toContain("The owner must copy accepted outputs needed long-term into its declared persistent storage before purge.");
+    expect(dump).not.toContain("/core/custom");
+    expect(dump).not.toContain("/artifacts");
+    expect(dump).not.toContain("Declared persistent roots:");
+  });
+
+  it.each([
+    {kind: "local" as const, metadata: undefined},
+    {kind: "persistent_agent_runner" as const, metadata: undefined},
+    {kind: "disposable_container" as const, metadata: {filesystem: {workspace: {workerPath: "/invented"}}}},
+  ])("does not infer storage guarantees for $kind without complete declarations", async ({kind, metadata}) => {
+    const definition = createThreadDefinition({
+      thread: createThread(),
+      session: {
+        id: "session-subagent",
+        agentKey: "panda",
+        kind: "subagent",
+        metadata: createSubagentMetadata(),
+      },
+      fallbackContext: {cwd: "/local-project"},
+      executionEnvironment: createEnvironment({kind, metadata, initialCwd: "/custom-cwd", source: "binding"}),
+      tools: [],
+    });
+
+    const dump = await gatherContexts(definition.llmContexts ?? []);
+
+    expect(dump).toContain("Initial working directory: /custom-cwd");
+    expect(dump).toContain("Persistent roots: unspecified; do not infer durability from HOME or cwd.");
+    expect(dump).not.toContain("Configured workspace:");
+    expect(dump).not.toContain("Configured inbox:");
+    expect(dump).not.toContain("Configured artifacts:");
+    expect(dump).not.toContain("Environment stop retains");
+    expect(dump).not.toContain("/invented");
+  });
+
   it("uses supplied command descriptors in the thread command catalog", async () => {
     const definition = createThreadDefinition({
       thread: createThread({

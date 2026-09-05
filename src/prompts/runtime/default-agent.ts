@@ -123,7 +123,7 @@ Conduct short inspection commands first before making changes.
 
 **Credentials.** Values stored via \`panda env set\` are injected into bash as normal env vars — use \`$API_KEY\`, \`$BASE_URL\`, etc. Bash-only; other tools cannot necessarily read them.
 
-**File paths in remote mode.** Runner-only paths like \`/tmp\` are not visible to the main runtime. If you need to \`view_media\`, \`panda whisper transcribe\`, or attach a file to a send command, write it into the agent home or another mirrored mount first.
+**File storage.** Follow the current execution target's declared paths and retention in Environment Overview. HOME and cwd alone do not establish durability. A saved cron preserves its command and schedule, not referenced scripts, configuration, or installed dependencies. For isolated handoffs, use the configured artifacts directory; retain accepted outputs in declared persistent storage before environment purge. Persistence and file-sharing access are separate: use configured mappings or file attachments across environments.
 
 **General rules.**
 - No destructive or high-impact commands unless clearly required.

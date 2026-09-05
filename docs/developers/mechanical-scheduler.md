@@ -5,7 +5,7 @@ Panda has two deliberately separate scheduling products:
 - `panda schedule` wakes the session and asks the model to perform work.
 - `panda cron` executes a shell command without a model call. It belongs to the `operate` tool group.
 
-Mechanical commands are recurring, session-owned, and Postgres-backed. They survive core and runner restarts. Deleting the owning session cascades the command, immutable versions, and run history.
+Mechanical commands are recurring, session-owned, and Postgres-backed. Command definitions and run history survive core and runner restarts or recreation; referenced files are not stored with them. Deleting the owning session cascades the command, immutable versions, and run history.
 
 ## Enable it
 
@@ -67,6 +67,12 @@ panda cron enable <command-id> --expected-version 1
 Available operations are `list`, `show`, `runs`, `create`, `update`, `enable`, `disable`, `delete`, and `run`. Every mutation uses the current immutable `version`; refresh with `show` after a stale-version failure.
 
 The scheduler accepts any shell command available inside the current default remote execution environment. It does not restrict commands to `.sh` files because a signed wrapper can delegate to mutable TypeScript, Python, binaries, or other scripts. Pin deploy artifacts separately when stronger reproducibility is required.
+
+`--command @file` and `--command @-` copy the input contents into the command definition. They do not bundle referenced scripts, imports, binaries, configuration, or data. Keep custom scripts, non-secret configuration, data and job state in persistent storage on the session's default execution target. Make dependency installation reproducible or provide dependencies in the runner image. The target is resolved for each occurrence and may differ from the shell used to create the command; an omitted `--cwd` uses that target's initial cwd, while relative `--cwd` values resolve against it.
+
+On container recreation, files written outside persistent mounts disappear. An ordinary restart of the same container retains its writable layer, but `scripts/docker-stack.sh restart` runs Compose `up` and can recreate containers when their image or configuration changes. Verify restored jobs in a fresh runner with the intended persistent mounts before relying on the schedule. Stored credentials belong in `--credentials`, not in a job bundle.
+
+Create, update, and enable results include a `storageNotice` reminder. This is guidance, not a filesystem or dependency check; Panda does not parse shell text to prove that a job will survive runner recreation. Disabling or deleting a broken command remains available without that reminder.
 
 `--credentials` contains stored credential names, never values. Panda checks their presence and the session environment allowlist when creating or enabling a command, then resolves both again for every occurrence. Omission means no stored credentials are injected.
 

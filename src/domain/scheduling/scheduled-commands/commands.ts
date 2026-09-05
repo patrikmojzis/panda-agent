@@ -1,5 +1,6 @@
 import type {JsonObject} from "../../../lib/json.js";
 import {isRecord} from "../../../lib/records.js";
+import {SCHEDULED_COMMAND_STORAGE_NOTICE} from "../../../prompts/runtime/scheduled-commands.js";
 import type {CommandDescriptor, CommandRequest, CommandSuccess, RegisteredCommand} from "../../commands/types.js";
 import type {ScheduledCommandActor, ScheduledCommandService} from "./service.js";
 import type {ScheduledCommandListStatus, ScheduledCommandRecord, ScheduledCommandRunRecord} from "./types.js";
@@ -182,50 +183,50 @@ export const cronRunsCommandDescriptor = descriptor({
 export const cronCreateCommandDescriptor = descriptor({
   name: CRON_CREATE_COMMAND_NAME,
   summary: "Create a mechanical scheduled command.",
-  description: "Creates a signed recurring command in the current session's default remote execution environment.",
+  description: `Creates a signed recurring command in the current session's default remote execution environment. ${SCHEDULED_COMMAND_STORAGE_NOTICE}`,
   usage: "panda cron create <title> --cron <expr> --timezone <tz> --command <text|@file|@-> [--cwd <path>] [--credentials <csv>] [--timeout-ms <n>] [--disabled]",
   arguments: [
     {name: "title", description: "Command title.", required: true, kind: "positional", valueType: "string"},
     {name: "cron", description: "Five-field cron expression.", required: true, valueType: "string"},
     {name: "timezone", description: "IANA timezone.", required: true, valueType: "string"},
-    {name: "command", description: "Shell command; accepts literal, @file, or @-.", required: true, valueType: "string", valueSources: ["literal", "file", "stdin"]},
-    {name: "cwd", description: "Working directory relative to the environment root.", valueType: "string"},
+    {name: "command", description: "Shell command; accepts literal, @file, or @-. File/stdin input copies contents only; referenced files are not bundled.", required: true, valueType: "string", valueSources: ["literal", "file", "stdin"]},
+    {name: "cwd", description: "Working directory, absolute or relative to the default target's initial cwd.", valueType: "string"},
     {name: "credentials", description: "Comma-separated stored credential environment names.", valueType: "string"},
     {name: "timeout-ms", description: "Execution timeout in milliseconds.", valueType: "number", minimum: 1000, maximum: 21600000, defaultValue: 300000},
     {name: "disabled", description: "Create without scheduling occurrences.", valueType: "boolean"},
     jsonArgument,
   ],
   examples: [{description: "Refresh gas prices hourly", command: "panda cron create \"sync gas prices\" --cron \"0 * * * *\" --timezone Europe/Bratislava --command @scripts/sync-gas.sh --credentials GAS_API_TOKEN,METABASE_DATABASE_URL"}],
-  resultShape: {commandId: "string", version: "number", enabled: "boolean"},
+  resultShape: {commandId: "string", version: "number", enabled: "boolean", storageNotice: "string"},
 });
 
 export const cronUpdateCommandDescriptor = descriptor({
   name: CRON_UPDATE_COMMAND_NAME,
   summary: "Replace a mechanical scheduled command definition.",
-  description: "Creates a newly signed immutable version after a live credential preflight.",
+  description: `Creates a newly signed immutable version after a live credential preflight. ${SCHEDULED_COMMAND_STORAGE_NOTICE}`,
   usage: "panda cron update <command-id> --expected-version <n> [--title <text>] [--cron <expr>] [--timezone <tz>] [--command <text|@file|@->] [--cwd <path>] [--credentials <csv>] [--timeout-ms <n>]",
   arguments: [commandIdArgument, expectedVersionArgument,
     {name: "title", description: "New title.", valueType: "string"},
     {name: "cron", description: "New cron expression.", valueType: "string"},
     {name: "timezone", description: "New IANA timezone.", valueType: "string"},
-    {name: "command", description: "New shell command; accepts literal, @file, or @-.", valueType: "string", valueSources: ["literal", "file", "stdin"]},
-    {name: "cwd", description: "New working directory.", valueType: "string"},
+    {name: "command", description: "New shell command; accepts literal, @file, or @-. File/stdin input copies contents only; referenced files are not bundled.", valueType: "string", valueSources: ["literal", "file", "stdin"]},
+    {name: "cwd", description: "New working directory, absolute or relative to the default target's initial cwd.", valueType: "string"},
     {name: "credentials", description: "Replacement comma-separated credential names.", valueType: "string"},
     {name: "timeout-ms", description: "New timeout in milliseconds.", valueType: "number", minimum: 1000, maximum: 21600000},
     jsonArgument],
   examples: [{description: "Update a script", command: "panda cron update <command-id> --expected-version 1 --command @scripts/sync-gas.sh"}],
-  resultShape: {commandId: "string", version: "number", updated: true},
+  resultShape: {commandId: "string", version: "number", updated: true, storageNotice: "string"},
 });
 
 function stateDescriptor(name: typeof CRON_ENABLE_COMMAND_NAME | typeof CRON_DISABLE_COMMAND_NAME, enabled: boolean): CommandDescriptor {
   return descriptor({
     name,
     summary: `${enabled ? "Enable" : "Disable"} a mechanical scheduled command.`,
-    description: `Creates a signed immutable version with scheduling ${enabled ? "enabled" : "disabled"}.`,
+    description: `Creates a signed immutable version with scheduling ${enabled ? "enabled" : "disabled"}.${enabled ? ` ${SCHEDULED_COMMAND_STORAGE_NOTICE}` : ""}`,
     usage: `panda cron ${enabled ? "enable" : "disable"} <command-id> --expected-version <n>`,
     arguments: [commandIdArgument, expectedVersionArgument, jsonArgument],
     examples: [{description: `${enabled ? "Enable" : "Disable"} a command`, command: `panda cron ${enabled ? "enable" : "disable"} <command-id> --expected-version 1`}],
-    resultShape: {commandId: "string", version: "number", enabled},
+    resultShape: {commandId: "string", version: "number", enabled, ...(enabled ? {storageNotice: "string"} : {})},
   });
 }
 
@@ -302,7 +303,7 @@ export function createCronCreateCommand(service: ScheduledCommandService): Regis
       timeoutMs: optionalPositiveInteger(input.timeoutMs, "cron.create timeoutMs"),
       enabled: enabled ?? !(disabled ?? false),
     });
-    return {ok: true, command: CRON_CREATE_COMMAND_NAME, output: {commandId: record.commandId, version: record.version, enabled: record.enabled}, summary: `Created mechanical scheduled command ${record.commandId}.`};
+    return {ok: true, command: CRON_CREATE_COMMAND_NAME, output: {commandId: record.commandId, version: record.version, enabled: record.enabled, storageNotice: SCHEDULED_COMMAND_STORAGE_NOTICE}, summary: `Created mechanical scheduled command ${record.commandId}.`};
   }};
 }
 
@@ -319,7 +320,7 @@ export function createCronUpdateCommand(service: ScheduledCommandService): Regis
       credentialNames: credentials(input.credentials ?? input.credentialNames, "cron.update credentials"),
       timeoutMs: optionalPositiveInteger(input.timeoutMs, "cron.update timeoutMs"),
     });
-    return {ok: true, command: CRON_UPDATE_COMMAND_NAME, output: {commandId: record.commandId, version: record.version, updated: true}, summary: `Updated mechanical scheduled command ${record.commandId} to version ${record.version}.`};
+    return {ok: true, command: CRON_UPDATE_COMMAND_NAME, output: {commandId: record.commandId, version: record.version, updated: true, storageNotice: SCHEDULED_COMMAND_STORAGE_NOTICE}, summary: `Updated mechanical scheduled command ${record.commandId} to version ${record.version}.`};
   }};
 }
 
@@ -330,7 +331,7 @@ function createStateCommand(service: ScheduledCommandService, enabled: boolean):
     const input = objectInput(request.input, name);
     const record = await service.setEnabled(actor(request), requiredString(input.commandId, `${name} commandId`), enabled,
       requiredPositiveInteger(input.expectedVersion, `${name} expectedVersion`));
-    return {ok: true, command: name, output: {commandId: record.commandId, version: record.version, enabled}, summary: `${enabled ? "Enabled" : "Disabled"} mechanical scheduled command ${record.commandId}.`};
+    return {ok: true, command: name, output: {commandId: record.commandId, version: record.version, enabled, ...(enabled ? {storageNotice: SCHEDULED_COMMAND_STORAGE_NOTICE} : {})}, summary: `${enabled ? "Enabled" : "Disabled"} mechanical scheduled command ${record.commandId}.`};
   }};
 }
 

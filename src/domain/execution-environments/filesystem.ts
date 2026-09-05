@@ -25,6 +25,26 @@ export interface ExecutionEnvironmentFilesystemMetadata {
   artifacts: ExecutionEnvironmentFilesystemPathSet;
 }
 
+/** Validate declared paths in the target runner's namespace without probing its filesystem. */
+export function normalizeExecutionEnvironmentPersistentRoots(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length > 32) return undefined;
+  const roots: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") return undefined;
+    const root = entry.trim();
+    if (!root || root.length > 4096 || /[\x00-\x1f\x7f]/.test(root)
+      || (!path.posix.isAbsolute(root) && !path.win32.isAbsolute(root))) return undefined;
+    roots.push(root);
+  }
+  return [...new Set(roots)];
+}
+
+/** Read optional deployment/operator storage declarations; malformed metadata grants no guarantee. */
+export function readExecutionEnvironmentPersistentRoots(metadata: JsonValue | undefined): string[] | undefined {
+  if (!isRecord(metadata) || !isRecord(metadata.storage)) return undefined;
+  return normalizeExecutionEnvironmentPersistentRoots(metadata.storage.persistentRoots);
+}
+
 export function isPathWithinRoot(rootPath: string, candidatePath: string): boolean {
   const relative = path.relative(path.resolve(rootPath), path.resolve(candidatePath));
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));

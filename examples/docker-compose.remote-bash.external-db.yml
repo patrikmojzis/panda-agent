@@ -29,6 +29,7 @@ services:
       CODEX_HOME: /root/.codex
       BASH_SERVER_URL_TEMPLATE: http://panda-runner-{agentKey}:8080
       BASH_SERVER_CWD_TEMPLATE: /root/.panda/agents/{agentKey}
+      BASH_SERVER_PERSISTENT_ROOTS_TEMPLATE: '["/root/.panda/agents/{agentKey}"]'
       PANDA_COMMAND_SERVER_ENABLED: ${PANDA_COMMAND_SERVER_ENABLED:-true}
       PANDA_COMMAND_SERVER_HOST: ${PANDA_COMMAND_SERVER_HOST:-0.0.0.0}
       PANDA_COMMAND_SERVER_PORT: ${PANDA_COMMAND_SERVER_PORT:-8096}
