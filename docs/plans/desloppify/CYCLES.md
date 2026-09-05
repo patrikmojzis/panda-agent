@@ -328,6 +328,24 @@ Channel token-redaction paths have different Error-identity behavior and remain
 separate. Numeric app validators and Brave endpoint adapters retain meaningful
 input/error differences; this pass did not justify a generic replacement.
 
+## Cycle 14 — Share Whisper command execution
+
+- Finding: transcribe and translate repeated input parsing, authentication, file
+  resolution, request configuration and result wrapping; the private transcription
+  factory added another forwarding hop. Endpoint and operation were redundant
+  parameters of the private file runner.
+- Change: both supported command factories use one operation-specific executor.
+  The operation determines the endpoint. Their separate input schemas, descriptor
+  objects, result fields, summaries and option-capture timing remain unchanged.
+- Result: 42 fewer production lines; two net test lines added to pin endpoint
+  selection and translation's removal of an irrelevant language input.
+- Evidence: 40 audio/CLI tests pass. Independent review passed the two focused
+  audio tests and all 192 before/after cases covering parsing, option mutation,
+  multipart bodies, file resolution and failures. Typecheck, shim and prompt
+  contracts pass. Existing cancellation/progress behavior was not changed.
+- State: reviewed and committed locally with this cycle; not pushed or deployed.
+  No provider request or production action was performed by the focused tests.
+
 ## Combined verification after cycles 1–5
 
 The final combined source passed the TypeScript build, all three package-export

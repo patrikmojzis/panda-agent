@@ -238,7 +238,6 @@ async function runWhisperAudioFile(params: {
   apiKey: string;
   fetchImpl: typeof fetch;
   timeoutMs: number;
-  endpoint: string;
   operation: "transcribe" | "translate";
   language?: string;
   prompt?: string;
@@ -277,7 +276,8 @@ async function runWhisperAudioFile(params: {
   const startedAt = Date.now();
 
   try {
-    const response = await params.fetchImpl(params.endpoint, {
+    const endpoint = params.operation === "translate" ? OPENAI_TRANSLATION_ENDPOINT : OPENAI_TRANSCRIPTION_ENDPOINT;
+    const response = await params.fetchImpl(endpoint, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${params.apiKey}`,
@@ -330,72 +330,31 @@ export function createWhisperTranscribeCommand(
   options: WhisperAudioCommandOptions = {},
   fileResolver?: CommandFileResolver,
 ): RegisteredCommand {
-  return createTranscribeCommand(options, fileResolver);
+  return createWhisperCommand("transcribe", options, fileResolver);
 }
 
 export function createWhisperTranslateCommand(
   options: WhisperAudioCommandOptions = {},
   fileResolver?: CommandFileResolver,
 ): RegisteredCommand {
-  const env = options.env ?? process.env;
-  const fetchImpl = options.fetchImpl ?? fetch;
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-
-  return {
-    descriptor: whisperTranslateCommandDescriptor,
-    async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
-      const args = whisperTranslateInputSchema.parse(request.input);
-      const apiKey = trimToNull(options.apiKey) ?? trimToNull(env.OPENAI_API_KEY);
-      if (!apiKey) {
-        throw new ToolError("OPENAI_API_KEY is not configured.");
-      }
-
-      const resolved = fileResolver
-        ? await fileResolver.resolveReadablePath({
-          request,
-          file: {
-            path: args.path,
-          },
-        })
-        : {path: args.path};
-      const translation = await runWhisperAudioFile({
-        filePath: resolved.path,
-        originalPath: args.path,
-        apiKey,
-        fetchImpl,
-        timeoutMs,
-        endpoint: OPENAI_TRANSLATION_ENDPOINT,
-        operation: "translate",
-        prompt: args.prompt,
-      });
-      const output = {
-        text: translation.text,
-        ...translation.details,
-        targetLanguage: "en",
-      };
-
-      return {
-        ok: true,
-        command: WHISPER_TRANSLATE_COMMAND_NAME,
-        output,
-        summary: `Translated ${args.path} to English.`,
-      };
-    },
-  };
+  return createWhisperCommand("translate", options, fileResolver);
 }
 
-function createTranscribeCommand(
-  options: WhisperAudioCommandOptions = {},
+function createWhisperCommand(
+  operation: "transcribe" | "translate",
+  options: WhisperAudioCommandOptions,
   fileResolver?: CommandFileResolver,
 ): RegisteredCommand {
   const env = options.env ?? process.env;
   const fetchImpl = options.fetchImpl ?? fetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const translating = operation === "translate";
+  const inputSchema = translating ? whisperTranslateInputSchema : whisperTranscribeInputSchema;
 
   return {
-    descriptor: whisperTranscribeCommandDescriptor,
+    descriptor: translating ? whisperTranslateCommandDescriptor : whisperTranscribeCommandDescriptor,
     async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
-      const args = whisperTranscribeInputSchema.parse(request.input);
+      const args: z.output<typeof whisperTranscribeInputSchema> = inputSchema.parse(request.input);
       const apiKey = trimToNull(options.apiKey) ?? trimToNull(env.OPENAI_API_KEY);
       if (!apiKey) {
         throw new ToolError("OPENAI_API_KEY is not configured.");
@@ -409,27 +368,26 @@ function createTranscribeCommand(
           },
         })
         : {path: args.path};
-      const transcript = await runWhisperAudioFile({
+      const result = await runWhisperAudioFile({
         filePath: resolved.path,
         originalPath: args.path,
         apiKey,
         fetchImpl,
         timeoutMs,
-        endpoint: OPENAI_TRANSCRIPTION_ENDPOINT,
-        operation: "transcribe",
+        operation,
         language: args.language,
         prompt: args.prompt,
       });
-      const output = {
-        text: transcript.text,
-        ...transcript.details,
-      };
 
       return {
         ok: true,
-        command: WHISPER_TRANSCRIBE_COMMAND_NAME,
-        output,
-        summary: `Transcribed ${args.path}.`,
+        command: translating ? WHISPER_TRANSLATE_COMMAND_NAME : WHISPER_TRANSCRIBE_COMMAND_NAME,
+        output: {
+          text: result.text,
+          ...result.details,
+          ...(translating ? {targetLanguage: "en"} : {}),
+        },
+        summary: translating ? `Translated ${args.path} to English.` : `Transcribed ${args.path}.`,
       };
     },
   };

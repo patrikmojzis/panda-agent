@@ -17,7 +17,8 @@ describe("whisper audio commands", () => {
     const audioBytes = Buffer.from("fake-audio-data");
     try {
       await writeFile(path.join(workspace, "voice.mp3"), audioBytes);
-      const fetchImpl = vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => {
+      const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+        expect(String(input)).toBe("https://api.openai.com/v1/audio/transcriptions");
         const body = init?.body;
         expect(body).toBeInstanceOf(FormData);
         if (!(body instanceof FormData)) {
@@ -119,6 +120,7 @@ describe("whisper audio commands", () => {
         input: {
           path: "voice.mp3",
           prompt: "Panda vocabulary",
+          language: "sk",
         },
         scope: {
           agentKey: "panda",
