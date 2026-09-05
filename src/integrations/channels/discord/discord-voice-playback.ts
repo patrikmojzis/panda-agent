@@ -3,7 +3,7 @@ import {Readable} from "node:stream";
 import {AudioPlayerStatus, StreamType, createAudioResource, type createAudioPlayer} from "@discordjs/voice";
 import type {OpusEncoderHandle} from "libopus-wasm";
 
-import {hasAudiblePcm16, resamplePcm16} from "../../voice/pcm.js";
+import {hasAudiblePcm16, pcm16leToSamples, resamplePcm16} from "../../voice/pcm.js";
 
 const LIVE_FRAME_BYTES = 960;
 const DISCORD_FRAME_SAMPLES = 960;
@@ -38,14 +38,8 @@ interface DiscordVoicePlaybackOptions {
 
 function errorOf(error: unknown): Error { return error instanceof Error ? error : new Error(String(error)); }
 
-function bufferToSamples(buffer: Buffer): Int16Array {
-  const output = new Int16Array(Math.floor(buffer.length / 2));
-  for (let index = 0; index < output.length; index += 1) output[index] = buffer.readInt16LE(index * 2);
-  return output;
-}
-
 function livePcmToDiscord(pcm: Buffer): Int16Array {
-  const mono = resamplePcm16(bufferToSamples(pcm), 24_000, 48_000);
+  const mono = resamplePcm16(pcm16leToSamples(pcm), 24_000, 48_000);
   const stereo = new Int16Array(mono.length * 2);
   for (let index = 0; index < mono.length; index += 1) stereo[index * 2] = stereo[index * 2 + 1] = mono[index] ?? 0;
   return stereo;

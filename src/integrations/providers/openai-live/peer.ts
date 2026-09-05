@@ -1,6 +1,6 @@
 import {randomInt} from "node:crypto";
 
-import {resamplePcm16} from "../../voice/pcm.js";
+import {pcm16leToSamples, resamplePcm16, samplesToPcm16le} from "../../voice/pcm.js";
 import {RtpReorderBuffer, type RtpReorderOutput} from "../../voice/rtp-reorder.js";
 
 const PROVIDER_RATE = 48_000;
@@ -52,20 +52,8 @@ export class OpenAILiveRtpReorderBuffer<T> extends RtpReorderBuffer<T> {
   constructor() { super(RTP_REORDER_DEPTH); }
 }
 
-function bufferToSamples(buffer: Buffer): Int16Array {
-  const samples = new Int16Array(Math.floor(buffer.length / 2));
-  for (let i = 0; i < samples.length; i += 1) samples[i] = buffer.readInt16LE(i * 2);
-  return samples;
-}
-
-function samplesToBuffer(samples: Int16Array): Buffer {
-  const output = Buffer.alloc(samples.length * 2);
-  for (let i = 0; i < samples.length; i += 1) output.writeInt16LE(samples[i] ?? 0, i * 2);
-  return output;
-}
-
 function relayToProvider(buffer: Buffer): Int16Array {
-  const mono = resamplePcm16(bufferToSamples(buffer), RELAY_RATE, PROVIDER_RATE);
+  const mono = resamplePcm16(pcm16leToSamples(buffer), RELAY_RATE, PROVIDER_RATE);
   const stereo = new Int16Array(mono.length * 2);
   for (let i = 0; i < mono.length; i += 1) stereo[i * 2] = stereo[i * 2 + 1] = mono[i] ?? 0;
   return stereo;
@@ -74,7 +62,7 @@ function relayToProvider(buffer: Buffer): Int16Array {
 function providerToRelay(stereo: Int16Array): Buffer {
   const mono = new Int16Array(Math.floor(stereo.length / 2));
   for (let i = 0; i < mono.length; i += 1) mono[i] = Math.round(((stereo[i * 2] ?? 0) + (stereo[i * 2 + 1] ?? 0)) / 2);
-  return samplesToBuffer(resamplePcm16(mono, PROVIDER_RATE, RELAY_RATE));
+  return samplesToPcm16le(resamplePcm16(mono, PROVIDER_RATE, RELAY_RATE));
 }
 
 class RelayPcmQueue {

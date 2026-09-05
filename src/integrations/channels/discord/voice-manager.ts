@@ -19,7 +19,7 @@ import {prepareLiveVoiceCall, resolveLiveVoiceSelection} from "../../voice/call-
 import type {LiveVoiceCall} from "../../voice/live-call.js";
 import type {LiveVoiceProviderDefinition} from "../../voice/provider.js";
 import {renderLiveVoiceProviderInstructions} from "../../../prompts/channels/live-voice.js";
-import {resamplePcm16} from "../../voice/pcm.js";
+import {resamplePcm16, samplesToPcm16le} from "../../voice/pcm.js";
 import type {DiscordChannelMetadata, DiscordWorkerRestClient} from "./api.js";
 import {createOpenAILiveVoiceProvider} from "../../providers/openai-live/provider.js";
 import type {DiscordVoiceControlRepo} from "./voice-postgres.js";
@@ -132,16 +132,10 @@ function requireVoiceChannel(metadata: DiscordChannelMetadata): {guildId: string
   return {guildId: metadata.guildId, channelId: metadata.id};
 }
 
-function samplesToBuffer(samples: Int16Array): Buffer {
-  const output = Buffer.alloc(samples.length * 2);
-  for (let index = 0; index < samples.length; index += 1) output.writeInt16LE(samples[index] ?? 0, index * 2);
-  return output;
-}
-
 function discordPcmToLive(decoded: Int16Array): Buffer {
   const mono = new Int16Array(Math.floor(decoded.length / 2));
   for (let i = 0; i < mono.length; i += 1) mono[i] = Math.round(((decoded[i * 2] ?? 0) + (decoded[i * 2 + 1] ?? 0)) / 2);
-  return samplesToBuffer(resamplePcm16(mono, 48_000, 24_000));
+  return samplesToPcm16le(resamplePcm16(mono, 48_000, 24_000));
 }
 
 function destroyVoiceConnection(connection: VoiceConnection): void {

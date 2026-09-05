@@ -2627,3 +2627,55 @@ Cycle 72 below implements that policy.
   tests. The earlier 25 shipped shim lines remain separate.
 - State: independently reviewed and committed locally with this cycle.
   Cycle 76 is committed as `ac3aef0b`. No production access, push or deployment.
+
+## Cycle 78 — Share identical PCM16 conversion
+
+- Finding: three decoders and three encoders duplicate little-endian PCM16
+  conversion in OpenAI live peer, WhatsApp call peer, Discord playback and
+  Discord voice manager. The existing `src/integrations/voice/pcm.ts` already
+  owns shared PCM operations.
+- Change: replace those private copies with `pcm16leToSamples` and
+  `samplesToPcm16le` in that leaf module. Retain complete-sample decoding,
+  signed values, explicit little-endian access and fresh output storage. Keep
+  protocol rates, channel averaging, resampling, codecs, queues, cancellation
+  and RTP handling local and unchanged. The OpenAI and WhatsApp queues have
+  different discard rules and are deliberately not combined.
+- Evidence: exact reconstruction permits only six converter deletions, imports
+  and call replacements in the four callers. The author records 804 behavior
+  comparisons; independent review checks all six originals against the shared
+  helpers over every signed 16-bit value, plus empty, odd-tail and offset views.
+  Two persistent tests exercise signed/endian values and independent storage at
+  the new shared PCM seam. All 42 focused tests across five files pass; the
+  reviewer separately passes 17 PCM/Discord playback tests. Artifacts:
+  `.temp/desloppify-pcm-frozen.json`, `.temp/desloppify-pcm-parity.json` and
+  `.temp/desloppify-pcm-focused-permitted-tests.json`.
+- Verification limit: the first focused run passed 41 of 42 tests; an existing
+  real Werift/WhatsApp negotiation exceeded its five-second deadline. The same
+  unchanged fixture then passed in isolation and in the full focused run with
+  permitted local sockets. The exact cause of that timeout is not established;
+  no timeout, retry or production behavior was changed to make it pass.
+- Gates: the final frozen tree passes **3,309 unit tests across 341 files** with
+  no failures, skips or todo cases, plus build/typecheck, import law and
+  prompt/shim contracts. All 19 compiled package imports and shared `Thread`
+  identity pass. Of 981 compiled declaration files, this batch changes only
+  the internal PCM declaration; the helpers are absent from all 1,021 resolved
+  public export symbols. Barrels, generated routes and prompt snapshot stay
+  unchanged. The preceding five real-PostgreSQL Control tests also pass, and
+  their disposable cluster is stopped.
+- Result: **22 fewer production lines**, 24 added test lines and two new cases.
+  The established counter becomes **5,995 fewer production lines across 79
+  cleanup commits**, including 75 lines moved into tests. The earlier 25
+  shipped command-shim lines remain separate.
+- State: independently reviewed and committed locally with this cycle.
+  Cycle 77 is committed as `081b5fe2`. No production access, push or deployment.
+
+### Next command-adapter candidate
+
+Recon found three native channel-history parsing blocks in the command shim
+that differ only in their channel target names and diagnostic spelling. A
+channel-history-specific helper may remove that repetition without changing
+backend protocol policy. Before implementing, preserve exact errors, option
+order, repeated-value handling, empty values, defaults and no-transport parser
+failures through public subprocess tests. This candidate is not implemented
+or counted as a deletion. Broader watch/schedule parser reuse was rejected
+because their required, optional and shortcut semantics differ.

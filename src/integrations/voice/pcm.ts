@@ -21,3 +21,17 @@ export function hasAudiblePcm16(input: Buffer, threshold = 8): boolean {
   }
   return false;
 }
+
+/** Decodes complete little-endian PCM16 samples into independent storage. */
+export function pcm16leToSamples(buffer: Buffer): Int16Array {
+  const output = new Int16Array(Math.floor(buffer.length / 2));
+  for (let index = 0; index < output.length; index += 1) output[index] = buffer.readInt16LE(index * 2);
+  return output;
+}
+
+/** Encodes PCM16 samples as independent little-endian bytes. */
+export function samplesToPcm16le(samples: Int16Array): Buffer {
+  const output = Buffer.alloc(samples.length * 2);
+  for (let index = 0; index < samples.length; index += 1) output.writeInt16LE(samples[index] ?? 0, index * 2);
+  return output;
+}

@@ -4,7 +4,7 @@ import ipaddr from "ipaddr.js";
 import {Application, createDecoder, createEncoder, type OpusDecoderHandle, type OpusEncoderHandle} from "libopus-wasm";
 import {RTCPeerConnection, RtpHeader, RtpPacket, dePacketizeRtpPackets, useOPUS, type MediaStreamTrack, type RTCRtpTransceiver} from "werift";
 
-import {resamplePcm16} from "../../../voice/pcm.js";
+import {pcm16leToSamples, resamplePcm16, samplesToPcm16le} from "../../../voice/pcm.js";
 import {RtpReorderBuffer, type RtpReorderOutput} from "../../../voice/rtp-reorder.js";
 
 const OPUS_RATE = 48_000;
@@ -45,18 +45,6 @@ export function validateWhatsAppOfferSdp(offerSdp: string, allowRemoteCandidate:
     const host = fields[4];
     if (!host || fields[6] !== "typ" || !allowRemoteCandidate(host)) throw new Error("WhatsApp SDP offer contains an unsafe ICE candidate.");
   }
-}
-
-function toSamples(buffer: Buffer): Int16Array {
-  const output = new Int16Array(Math.floor(buffer.length / 2));
-  for (let index = 0; index < output.length; index += 1) output[index] = buffer.readInt16LE(index * 2);
-  return output;
-}
-
-function toBuffer(samples: Int16Array): Buffer {
-  const output = Buffer.alloc(samples.length * 2);
-  for (let index = 0; index < samples.length; index += 1) output.writeInt16LE(samples[index] ?? 0, index * 2);
-  return output;
 }
 
 class PcmQueue {
@@ -283,7 +271,7 @@ export class WhatsAppCallPeer implements WhatsAppCallPeerLike {
             decoded = this.input.decoder.decodePacketLoss(FRAME_SAMPLES);
           }
         }
-        this.input.onAudio(toBuffer(resamplePcm16(decoded, OPUS_RATE, RELAY_RATE)));
+        this.input.onAudio(samplesToPcm16le(resamplePcm16(decoded, OPUS_RATE, RELAY_RATE)));
       } catch (error) { this.decodeFailures += 1; this.input.onFailure(error instanceof Error ? error : new Error(String(error))); }
     }
   }
@@ -298,7 +286,7 @@ export class WhatsAppCallPeer implements WhatsAppCallPeerLike {
     this.sending = true;
     try {
       const pcm24 = this.queue.shift(FRAME_BYTES);
-      const pcm48 = resamplePcm16(toSamples(pcm24), RELAY_RATE, OPUS_RATE);
+      const pcm48 = resamplePcm16(pcm16leToSamples(pcm24), RELAY_RATE, OPUS_RATE);
       const encoded = this.input.encoder.encode(pcm48, {frameSize: FRAME_SAMPLES});
       const payloadType = this.input.transceiver.getPayloadType("audio/opus") ?? this.input.transceiver.sender.codec?.payloadType ?? 111;
       const packet = new RtpPacket(new RtpHeader({payloadType, sequenceNumber: this.sequence, timestamp: this.timestamp, ssrc: this.input.transceiver.sender.ssrc}), Buffer.from(encoded));

@@ -14,13 +14,13 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–77; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–78; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,973 production lines**, including
+Together, these cleanup commits remove **5,995 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration. This established counter covers `src/` and
 `apps/`; cycle 75 additionally removes 25 lines from the shipped command shim,
-recorded separately. There are 78 cleanup commits including the initial pass.
+recorded separately. There are 79 cleanup commits including the initial pass.
 
 Control now separates single-agent authorization and bulk visible-key reads from
 agent-list enrichment. Cycle 57 added 23 production lines to remove unnecessary
@@ -148,7 +148,14 @@ the projection now uses those guarantees and keeps timestamp validation.
 Running/scheduled labels, scope, ordering and bounds remain unchanged. Six Home
 HTTP cases, 581 caller comparisons and five actual PostgreSQL read tests pass.
 
-The combined worktree passes **3,309 unit tests across 341 files**, root build/typecheck,
+Cycle 78 consolidates six identical PCM16 converters into two helpers in the
+existing voice PCM module, removing 22 production lines. Discord, WhatsApp and
+OpenAI retain their own resampling, channel mixing, codecs and queues. Signed
+samples, little-endian bytes, incomplete tails, offsets and independent storage
+remain unchanged. All 42 focused voice tests pass; independent review checks
+every signed 16-bit value and confirms the public exports stay unchanged.
+
+The frozen worktree passes **3,309 unit tests across 341 files**, root build/typecheck,
 import law, all 19 compiled package
 imports and shared `Thread` identity. The initial failure of an unchanged
 cancellation test and its passing isolated/file/full reruns are recorded under
@@ -161,9 +168,10 @@ messages and idle state. It used injected model responses and blocked external
 requests. Focused bootstrap and observer tests prove the ownership repairs; the
 smoke avoids application bootstrap and does not exercise those failure paths or
 the actor listings. The test cluster was stopped afterward. Prompt/shim contracts
-pass; cycle 72 leaves the snapshot unchanged. Cycle 74 changes only the deleted
+pass; the latest cycles leave the snapshot unchanged. Cycle 74 changes only the deleted
 internal helper's declaration among 981 compiled declaration files; all 19
-supported entrypoints retain their exports. Runtime-activity history reads remain open, with their
+supported entrypoints retain their exports. Cycle 78 adds only the two internal
+PCM declarations. Runtime-activity history reads remain open, with their
 compatibility constraints recorded in the cycle record. Cleanup cannot bypass a
 hanging step or resume sibling operations skipped inside one failed step. The
 inspect/review/commit loop remains active.
