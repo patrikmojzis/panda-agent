@@ -76,7 +76,6 @@ describe("Panda feature surface", () => {
     );
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("**Background bash** is isolated.");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("the runtime may inject a machine-generated event on the next cycle");
-    expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("If the current instruction says to run exact commands and stop, run only those commands and stop.");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain("Ask first before sending private material anywhere new");
     expect(DEFAULT_AGENT_INSTRUCTIONS).toContain(
       'Do not leak sensitive details through "just a summary," paraphrase, excerpt, or forwarding the emotional gist.',

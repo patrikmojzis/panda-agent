@@ -361,10 +361,10 @@
       "sha256": "5bd899c378ebae1107de331b9150b3cc401391622c9c32e4e6bbc0f5daeaf393"
     },
     {
-      "bytes": 16172,
-      "lines": 225,
+      "bytes": 15314,
+      "lines": 216,
       "path": "src/prompts/runtime/default-agent.ts",
-      "sha256": "c21c3f88e44d2dcd2b5c965a1de34f4519f7c52f9c6a234efb7851c9fc7ac798"
+      "sha256": "fc22631aad008b7b6f2157eac820ecfa3fc9fc66443faf05207f4a18d77e2e37"
     },
     {
       "bytes": 1707,
