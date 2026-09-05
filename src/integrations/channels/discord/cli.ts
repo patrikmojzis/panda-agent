@@ -2,7 +2,6 @@ import process from "node:process";
 
 import {Command, InvalidArgumentError} from "commander";
 
-import {writeCommandDescriptorHelp} from "../../../domain/commands/cli.js";
 import {PostgresAgentStore} from "../../../domain/agents/postgres.js";
 import {normalizeAgentKey} from "../../../domain/agents/types.js";
 import {PostgresConnectorAccountStore} from "../../../domain/connectors/postgres.js";
@@ -26,14 +25,6 @@ import {
 } from "./account.js";
 import {createDiscordRestClient, type DiscordCurrentUser, type DiscordRestClient} from "./api.js";
 import {DISCORD_SOURCE} from "./config.js";
-import {
-  discordChannelListCommandDescriptor,
-  discordGifSendCommandDescriptor,
-  discordHistoryCommandDescriptor,
-  discordSendCommandDescriptor,
-  discordStickerListCommandDescriptor,
-  discordStickerSendCommandDescriptor,
-} from "./commands.js";
 import {DiscordService} from "./service.js";
 import {ConnectorAccountSupervisor} from "../account-supervisor.js";
 import {
@@ -48,26 +39,6 @@ interface DiscordAccountCliOptions {
 
 interface DiscordRunCliOptions extends DiscordAccountCliOptions {
   allEnabled?: boolean;
-}
-
-interface DiscordSendCliOptions {
-  help?: boolean;
-  json?: boolean | string;
-}
-
-interface DiscordChannelListCliOptions {
-  help?: boolean;
-  json?: boolean | string;
-}
-
-interface DiscordHistoryCliOptions {
-  help?: boolean;
-  json?: boolean | string;
-}
-
-interface DiscordMediaCommandCliOptions {
-  help?: boolean;
-  json?: boolean | string;
 }
 
 interface DiscordBindChannelCliOptions extends DiscordAccountCliOptions {
@@ -951,157 +922,17 @@ export function registerDiscordCommands(
     .command("discord")
     .description("Run and manage the Discord channel");
 
-  const channelProgram = discordProgram
+  discordProgram
     .command("channel")
     .description("Inspect Discord channels");
 
-  channelProgram
-    .command("list")
-    .description(discordChannelListCommandDescriptor.summary)
-    .helpOption(false)
-    .allowUnknownOption(true)
-    .allowExcessArguments(true)
-    .option("--help", "Show command help")
-    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
-    .option("--connector <connectorKey>", "Discord connector key")
-    .action((options: DiscordChannelListCliOptions) => {
-      if (options.help) {
-        writeCommandDescriptorHelp(discordChannelListCommandDescriptor, Boolean(options.json));
-        return;
-      }
-
-      throw new Error(
-        "panda discord channel list execution requires the agent command shim transport; use --help for the command contract.",
-      );
-    });
-
   discordProgram
-    .command("history")
-    .description(discordHistoryCommandDescriptor.summary)
-    .helpOption(false)
-    .allowUnknownOption(true)
-    .allowExcessArguments(true)
-    .option("--help", "Show command help")
-    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
-    .option("--channel <channelId>", "Discord parent channel id")
-    .option("--connector <connectorKey>", "Discord connector key")
-    .option("--direction <direction>", "History direction: inbound, outbound, or all")
-    .option("--limit <n>", "Maximum number of history items")
-    .action((options: DiscordHistoryCliOptions) => {
-      if (options.help) {
-        writeCommandDescriptorHelp(discordHistoryCommandDescriptor, Boolean(options.json));
-        return;
-      }
-
-      throw new Error(
-        "panda discord history execution requires the agent command shim transport; use --help for the command contract.",
-      );
-    });
-
-  const stickerProgram = discordProgram
     .command("sticker")
     .description("Discover and send Discord guild stickers");
 
-  stickerProgram
-    .command("list")
-    .description(discordStickerListCommandDescriptor.summary)
-    .helpOption(false)
-    .allowUnknownOption(true)
-    .allowExcessArguments(true)
-    .option("--help", "Show command help")
-    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
-    .option("--channel <channelId>", "Bound Discord parent channel id")
-    .option("--connector <connectorKey>", "Discord connector key")
-    .action((options: DiscordMediaCommandCliOptions) => {
-      if (options.help) {
-        writeCommandDescriptorHelp(discordStickerListCommandDescriptor, Boolean(options.json));
-        return;
-      }
-      throw new Error(
-        "panda discord sticker list execution requires the agent command shim transport; use --help for the command contract.",
-      );
-    });
-
-  stickerProgram
-    .command("send")
-    .description(discordStickerSendCommandDescriptor.summary)
-    .helpOption(false)
-    .allowUnknownOption(true)
-    .allowExcessArguments(true)
-    .option("--help", "Show command help")
-    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
-    .option("--channel <channelId>", "Bound Discord parent channel id")
-    .option("--connector <connectorKey>", "Discord connector key")
-    .option("--sticker <stickerId>", "Discord sticker id; repeat up to three times")
-    .option("--thread <threadId>", "Discord thread id")
-    .option("--guild <guildId>", "Discord guild id")
-    .option("--reply-to-message-id <messageId>", "Discord message id to reply to")
-    .action((options: DiscordMediaCommandCliOptions) => {
-      if (options.help) {
-        writeCommandDescriptorHelp(discordStickerSendCommandDescriptor, Boolean(options.json));
-        return;
-      }
-      throw new Error(
-        "panda discord sticker send execution requires the agent command shim transport; use --help for the command contract.",
-      );
-    });
-
-  const gifProgram = discordProgram
+  discordProgram
     .command("gif")
     .description("Send validated Discord GIF assets");
-
-  gifProgram
-    .command("send")
-    .description(discordGifSendCommandDescriptor.summary)
-    .helpOption(false)
-    .allowUnknownOption(true)
-    .allowExcessArguments(true)
-    .option("--help", "Show command help")
-    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
-    .option("--channel <channelId>", "Bound Discord parent channel id")
-    .option("--connector <connectorKey>", "Discord connector key")
-    .option("--file <path>", "Readable local GIF path")
-    .option("--url <httpsUrl>", "Direct public HTTPS GIF asset")
-    .option("--caption <text>", "Optional GIF caption")
-    .option("--thread <threadId>", "Discord thread id")
-    .option("--guild <guildId>", "Discord guild id")
-    .option("--reply-to-message-id <messageId>", "Discord message id to reply to")
-    .action((options: DiscordMediaCommandCliOptions) => {
-      if (options.help) {
-        writeCommandDescriptorHelp(discordGifSendCommandDescriptor, Boolean(options.json));
-        return;
-      }
-      throw new Error(
-        "panda discord gif send execution requires the agent command shim transport; use --help for the command contract.",
-      );
-    });
-
-  discordProgram
-    .command("send")
-    .description(discordSendCommandDescriptor.summary)
-    .helpOption(false)
-    .allowUnknownOption(true)
-    .allowExcessArguments(true)
-    .option("--help", "Show command help")
-    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
-    .option("--channel <channelId>", "Discord channel id")
-    .option("--connector <connectorKey>", "Discord connector key")
-    .option("--thread <threadId>", "Discord thread id")
-    .option("--guild <guildId>", "Discord guild id")
-    .option("--text <text>", "Text message body")
-    .option("--image <path>", "Repeatable image path")
-    .option("--file <path>", "Repeatable file path")
-    .option("--reply-to-message-id <messageId>", "Discord message id to reply to")
-    .action((options: DiscordSendCliOptions) => {
-      if (options.help) {
-        writeCommandDescriptorHelp(discordSendCommandDescriptor, Boolean(options.json));
-        return;
-      }
-
-      throw new Error(
-        "panda discord send execution requires the agent command shim transport; use --help for the command contract.",
-      );
-    });
 
   discordProgram
     .command("run")

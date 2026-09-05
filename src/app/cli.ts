@@ -48,7 +48,6 @@ import {registerSmokeCommand} from "./smoke/cli.js";
 import {registerSubagentCommands} from "./subagents/cli.js";
 import {DEFAULT_AGENT_COMMAND_DESCRIPTORS} from "../panda/commands/agent-command-descriptors.js";
 import {DEFAULT_AGENT_COMMAND_CATALOG} from "../panda/commands/agent-command-modules.js";
-import {registerImageCommandHelpCommands} from "../panda/commands/image-cli.js";
 import {registerDatabaseCommands} from "./database/cli.js";
 import {createPandaSchemaVerifier} from "../integrations/postgres/schema-version.js";
 import {
@@ -551,7 +550,6 @@ registerCommandCatalogCommands(program, DEFAULT_AGENT_COMMAND_DESCRIPTORS);
 registerEmailCommands(program);
 registerGatewayCommands(program);
 registerIdentityCommands(program);
-registerImageCommandHelpCommands(program);
 registerSessionCommands(program);
 registerWikiCommands(program);
 registerTelegramCommands(program);

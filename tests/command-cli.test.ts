@@ -32,7 +32,6 @@ import {whisperTranscribeCommandDescriptor, whisperTranslateCommandDescriptor} f
 import {registerWikiCommands} from "../src/domain/wiki/cli.js";
 import {DEFAULT_AGENT_COMMAND_DESCRIPTORS} from "../src/panda/commands/agent-command-descriptors.js";
 import {DEFAULT_AGENT_COMMAND_CATALOG} from "../src/panda/commands/agent-command-modules.js";
-import {registerImageCommandHelpCommands} from "../src/panda/commands/image-cli.js";
 import {todoClearCommandDescriptor} from "../src/domain/sessions/todo-commands.js";
 
 const defaultCommandRouteTree = buildCommandRouteTree({
@@ -49,7 +48,6 @@ function extractUsageOptionNames(usage: string): string[] {
 function createProgram(): Command {
   const program = new Command();
   registerCommandCatalogCommands(program, DEFAULT_AGENT_COMMAND_DESCRIPTORS);
-  registerImageCommandHelpCommands(program);
   registerWikiCommands(program);
   registerSessionCommands(program);
   registerA2ACommands(program);
@@ -2034,6 +2032,7 @@ describe("Panda command CLI discovery", () => {
   it("exposes current-session prompt command help without colliding with operator prompt commands", async () => {
     const program = new Command();
     registerSessionCommands(program);
+    registerCommandRouteHelpCommands(program, defaultCommandRouteTree);
     const write = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     await program.parseAsync(["session", "prompt", "current", "read", "--help", "--json"], {from: "user"});

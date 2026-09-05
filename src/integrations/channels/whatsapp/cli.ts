@@ -6,7 +6,6 @@ import type {Pool} from "pg";
 
 import {PostgresAgentStore} from "../../../domain/agents/postgres.js";
 import {normalizeAgentKey} from "../../../domain/agents/types.js";
-import {writeCommandDescriptorHelp} from "../../../domain/commands/cli.js";
 import {PostgresConnectorAccountStore} from "../../../domain/connectors/postgres.js";
 import type {ConnectorAccountRecord} from "../../../domain/connectors/types.js";
 import {normalizeConnectorAccountKey} from "../../../domain/connectors/types.js";
@@ -21,7 +20,6 @@ import {type HealthServer, resolveOptionalHealthServerBinding, startHealthServer
 import {withPostgresPool} from "../../../lib/postgres-database.js";
 import {runCleanupSteps} from "../../../lib/cleanup.js";
 import {PostgresWhatsAppAuthStore} from "./auth-store.js";
-import {whatsappChatListCommandDescriptor, whatsappHistoryCommandDescriptor, whatsappSendCommandDescriptor} from "./commands.js";
 import {resolveWhatsAppIngressLimits, WHATSAPP_SOURCE} from "./config.js";
 import {
   createWhatsAppConnectorAccount,
@@ -34,7 +32,6 @@ import {parseWhatsAppMetaCallingConfig} from "./calls/config.js";
 import {WhatsAppCallWebhookServer} from "./calls/webhook.js";
 import {WHATSAPP_META_ACCESS_TOKEN_SECRET, WHATSAPP_META_APP_SECRET, WHATSAPP_META_VERIFY_TOKEN_SECRET} from "./calls/types.js";
 import {WHATSAPP_CALL_NOTIFICATION_CHANNEL, parseWhatsAppCallNotification} from "./calls/postgres.js";
-import {whatsappCallHangupCommandDescriptor, whatsappCallSendCommandDescriptor, whatsappCallStatusCommandDescriptor} from "./calls/commands.js";
 import {WhatsAppMediaWorkQueue} from "./media-work-queue.js";
 import {ConnectorAccountSupervisor, type ConnectorAccountSupervisorWorker} from "../account-supervisor.js";
 import {startConnectorDaemonRuntime, type ConnectorDaemonRuntimeHandle} from "../worker-runtime.js";
@@ -74,11 +71,6 @@ interface WhatsAppPairCliOptions extends WhatsAppDatabaseOptions {
 interface WhatsAppUnpairCliOptions extends WhatsAppDatabaseOptions {
   account: string;
   actor: string;
-}
-
-interface CommandShimOptions {
-  help?: boolean;
-  json?: boolean | string;
 }
 
 interface WhatsAppAccountStores {
@@ -566,61 +558,9 @@ export async function whatsappRunCommand(
 
 export function registerWhatsAppCommands(program: Command, dependencies: WhatsAppCliDependencies = {}): void {
   const whatsappProgram = program.command("whatsapp").description("Run and manage the WhatsApp channel");
-  const chatProgram = whatsappProgram.command("chat").description("Inspect WhatsApp chats");
+  whatsappProgram.command("chat").description("Inspect WhatsApp chats");
 
-  chatProgram.command("list")
-    .description(whatsappChatListCommandDescriptor.summary)
-    .helpOption(false).allowUnknownOption(true).allowExcessArguments(true)
-    .option("--help", "Show command help")
-    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
-    .option("--connector <connectorKey>", "WhatsApp connector key")
-    .action((options: CommandShimOptions) => {
-      if (options.help) return writeCommandDescriptorHelp(whatsappChatListCommandDescriptor, Boolean(options.json));
-      throw new Error("panda whatsapp chat list execution requires the agent command shim transport; use --help for the command contract.");
-    });
-
-  whatsappProgram.command("history")
-    .description(whatsappHistoryCommandDescriptor.summary)
-    .helpOption(false).allowUnknownOption(true).allowExcessArguments(true)
-    .option("--help", "Show command help")
-    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
-    .option("--chat <jidOrPhone>", "WhatsApp phone number or chat JID")
-    .option("--connector <connectorKey>", "WhatsApp connector key")
-    .option("--direction <direction>", "History direction: inbound, outbound, or all")
-    .option("--limit <n>", "Maximum number of history items")
-    .action((options: CommandShimOptions) => {
-      if (options.help) return writeCommandDescriptorHelp(whatsappHistoryCommandDescriptor, Boolean(options.json));
-      throw new Error("panda whatsapp history execution requires the agent command shim transport; use --help for the command contract.");
-    });
-
-  whatsappProgram.command("send")
-    .description(whatsappSendCommandDescriptor.summary)
-    .helpOption(false).allowUnknownOption(true).allowExcessArguments(true)
-    .option("--help", "Show command help")
-    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
-    .option("--chat <jidOrPhone>", "WhatsApp phone number or chat JID")
-    .option("--connector <connectorKey>", "WhatsApp connector key")
-    .option("--text <text>", "Text message body")
-    .option("--image <path>", "Repeatable image path")
-    .option("--file <path>", "Repeatable file path")
-    .action((options: CommandShimOptions) => {
-      if (options.help) return writeCommandDescriptorHelp(whatsappSendCommandDescriptor, Boolean(options.json));
-      throw new Error("panda whatsapp send execution requires the agent command shim transport; use --help for the command contract.");
-    });
-
-  const callProgram = whatsappProgram.command("call").description("Manage live WhatsApp calls");
-  callProgram.command("status")
-    .description(whatsappCallStatusCommandDescriptor.summary).helpOption(false).allowUnknownOption(true).allowExcessArguments(true)
-    .option("--help", "Show command help").option("--json [input]", "Use JSON input/output").option("--connector <key>", "WhatsApp connector key")
-    .action((options: CommandShimOptions) => { if (options.help) return writeCommandDescriptorHelp(whatsappCallStatusCommandDescriptor, Boolean(options.json)); throw new Error("panda whatsapp call status execution requires the agent command shim transport; use --help for the command contract."); });
-  callProgram.command("send")
-    .description(whatsappCallSendCommandDescriptor.summary).helpOption(false).allowUnknownOption(true).allowExcessArguments(true)
-    .option("--help", "Show command help").option("--json [input]", "Use JSON input/output").option("--text <text>", "Text to speak").option("--mode <mode>", "progress or final").option("--call <id>", "WhatsApp call id").option("--turn <id>", "Live voice turn id").option("--connector <key>", "WhatsApp connector key")
-    .action((options: CommandShimOptions) => { if (options.help) return writeCommandDescriptorHelp(whatsappCallSendCommandDescriptor, Boolean(options.json)); throw new Error("panda whatsapp call send execution requires the agent command shim transport; use --help for the command contract."); });
-  callProgram.command("hangup")
-    .description(whatsappCallHangupCommandDescriptor.summary).helpOption(false).allowUnknownOption(true).allowExcessArguments(true)
-    .option("--help", "Show command help").option("--json [input]", "Use JSON input/output").option("--call <id>", "WhatsApp call id").option("--turn <id>", "Live voice turn id").option("--connector <key>", "WhatsApp connector key")
-    .action((options: CommandShimOptions) => { if (options.help) return writeCommandDescriptorHelp(whatsappCallHangupCommandDescriptor, Boolean(options.json)); throw new Error("panda whatsapp call hangup execution requires the agent command shim transport; use --help for the command contract."); });
+  whatsappProgram.command("call").description("Manage live WhatsApp calls");
 
   const accountProgram = whatsappProgram.command("account").description("Manage agent-owned WhatsApp accounts");
   accountProgram.command("create")

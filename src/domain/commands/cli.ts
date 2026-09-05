@@ -15,7 +15,7 @@ interface CommandRouteHelpOptions {
   json?: boolean | string;
 }
 
-export function writeCommandDescriptorHelp(descriptor: CommandDescriptor, json: boolean | undefined): void {
+function writeCommandDescriptorHelp(descriptor: CommandDescriptor, json: boolean | undefined): void {
   if (json) {
     process.stdout.write(`${JSON.stringify(commandDescriptorToJson(descriptor, {
       includeSchemaCatalog: true,

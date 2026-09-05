@@ -79,7 +79,8 @@ formatter's unreachable role branches and redundant tool-result cast.
   check that a repeated refresh does not print a run failure again. Typecheck and
   import law passed. Independent review compared the old and new run-state
   function across 40 cases and found identical observable behavior and no blockers.
-- State: reviewed and committed locally with this cycle; not pushed or deployed.
+- Commit: `779e7647` — `refactor(tui): carry latest run directly through stored snapshots`.
+- State: committed locally; not pushed or deployed.
 
 ## Cycle 4 — Remove copied help from mixed operator registrars
 
@@ -92,5 +93,50 @@ constructors only retain the pool and table names, with no startup side effects.
 - Recon evidence: 108 text/JSON outputs match when the catalog supplies all 54
   leaves. Forty-nine transport errors also match; five Telegram sticker errors
   gain the standard help-discovery suffix. No image-generation behavior changes.
-- State: implementation in progress; current tests and an independent final
-  review are required before committing this cycle.
+- Result: 1,061 fewer production lines and one fewer test line. Removed all 54
+  stubs and seven unused store constructions. The descriptor help writer and two
+  session store helpers are now private to their owning module.
+- Evidence: all 108 help outputs still match, and all 59 native leaf definitions
+  in the mixed registrars retain their callbacks, arguments and options. All 328
+  focused CLI/channel/session/A2A/email/shim tests passed across 10 files, plus
+  typecheck, import law, shim generation and prompt contracts. Four actual app
+  help subprocesses passed beneath session/Telegram/WhatsApp/email ancestor groups
+  with an unusable database URL.
+- Review: no blockers. The independent reviewer confirmed all 68 native action
+  registrations across the full scope are unchanged, including argument parsers,
+  option defaults and callbacks. It reran 121 CLI/schema/session/channel tests,
+  checked ancestor groups and final registration order, and verified the parity
+  results against the previous commit.
+- State: reviewed and committed locally with this cycle; not pushed or deployed.
+
+## Cycle 5 — Make attachment no-overwrite behavior atomic
+
+Email and Telegram attachment fetch both check the destination with `stat`, catch
+their own refusal by comparing error-message strings, then copy separately. A
+concurrent save can create the destination after that check and be overwritten.
+Use exclusive copy when overwrite is disabled, mapping only the destination-exists
+error to the existing refusal. Keep authorization and path resolution at their
+current command boundaries; do not add another filesystem abstraction.
+
+- Scope: the two attachment fetch implementations and caller-level tests using
+  real temporary files; remove the internal test-only email auth parser wrapper
+  and exercise the production parser directly.
+- Required evidence: existing destination remains intact, explicit overwrite
+  still succeeds, and competing saves without overwrite produce exactly one
+  success. Preserve ownership checks, display paths and other filesystem errors.
+- Result: 18 fewer production lines, with 134 lines of caller-level regression
+  tests added. Both command boundaries use exclusive copy directly; the internal
+  auth wrapper is gone and its existing tests call the production parser.
+- Evidence: all 48 focused tests passed, plus typecheck and import law. Real-file
+  cases cover existing targets, explicit overwrite, competing distinct payloads
+  synchronized at path resolution, and source disappearance after resolution.
+- Review: no actionable findings. Independent review passed 44 tests across six
+  files, including file authority and path-context coverage, and verified unchanged
+  authorization, path mapping, source checks and explicit overwrite semantics.
+- State: independently reviewed; awaiting its separate local commit.
+
+## Deferred after reconnaissance
+
+The wiki crypto service and command-result validation protect real boundaries.
+No worthwhile simplification was demonstrated in that bounded review; leave them
+intact rather than adding churn.

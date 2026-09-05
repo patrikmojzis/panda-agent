@@ -6,16 +6,12 @@ import type {Pool} from "pg";
 import {DB_URL_OPTION_DESCRIPTION} from "../../lib/cli.js";
 import {normalizeAgentKey} from "../../domain/agents/types.js";
 import {withPostgresPool} from "../../lib/postgres-database.js";
-import {PostgresAgentStore} from "../../domain/agents/postgres.js";
 import {
   type SessionCliOptions,
   registerSessionManagementCommands,
 } from "../../domain/sessions/cli.js";
-import {ConversationRepo} from "../../domain/sessions/conversations/repo.js";
 import {PostgresSessionStore} from "../../domain/sessions/postgres.js";
-import {PostgresThreadRuntimeStore} from "../../domain/threads/runtime/postgres.js";
 import {RuntimeRequestRepo} from "../../domain/threads/requests/repo.js";
-import {PostgresIdentityStore} from "../../domain/identity/postgres.js";
 import {DAEMON_REQUEST_TIMEOUT_MS, DAEMON_STALE_AFTER_MS, DEFAULT_DAEMON_KEY} from "../runtime/daemon.js";
 import {DaemonStateRepo} from "../runtime/state/repo.js";
 
@@ -40,20 +36,11 @@ interface WithSessionResetStores {
   daemonState: DaemonStateRepo;
 }
 
-function createSessionResetStores(pool: Pool): WithSessionResetStores & {
-  agentStore: PostgresAgentStore;
-  identityStore: PostgresIdentityStore;
-  threadStore: PostgresThreadRuntimeStore;
-  conversations: ConversationRepo;
-} {
+function createSessionResetStores(pool: Pool): WithSessionResetStores {
   return {
-    agentStore: new PostgresAgentStore({pool}),
-    identityStore: new PostgresIdentityStore({pool}),
     sessionStore: new PostgresSessionStore({pool}),
-    threadStore: new PostgresThreadRuntimeStore({pool}),
     requests: new RuntimeRequestRepo({pool}),
     daemonState: new DaemonStateRepo({pool}),
-    conversations: new ConversationRepo({pool}),
   };
 }
 

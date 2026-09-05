@@ -5,8 +5,6 @@ import {Command, InvalidArgumentError} from "commander";
 import type {Pool} from "pg";
 
 import {DB_URL_OPTION_DESCRIPTION, parsePositiveIntegerOption} from "../../lib/cli.js";
-import {writeCommandDescriptorHelp} from "../commands/cli.js";
-import type {CommandDescriptor} from "../commands/types.js";
 import {withPostgresPool} from "../../lib/postgres-database.js";
 import {PostgresAgentStore} from "../agents/postgres.js";
 import {normalizeAgentKey} from "../agents/types.js";
@@ -20,15 +18,9 @@ import type {
 } from "../execution-environments/types.js";
 import {normalizeExecutionEnvironmentAlias} from "../execution-environments/types.js";
 import {buildRunnerEndpoint, makeNetworkTimeoutSignal, resolveBashExecutionMode, resolveRunnerUrl, resolveRunnerUrlTemplate} from "../execution-environments/runner-config.js";
-import {PostgresIdentityStore} from "../identity/postgres.js";
 import {createSessionWithInitialThread} from "./lifecycle.js";
 import {PostgresSessionStore} from "./postgres.js";
 import {SESSION_BRIEF_PROMPT_SLUG, normalizeSessionAlias, normalizeSessionPromptSlug, type SessionPromptSlug, type SessionRecord} from "./types.js";
-import {
-  sessionPromptReadCommandDescriptor,
-  sessionPromptSetCommandDescriptor,
-  sessionPromptTransformCommandDescriptor,
-} from "./prompt-commands.js";
 
 export interface SessionCliOptions {
   dbUrl?: string;
@@ -67,11 +59,6 @@ interface SessionPromptCliOptions extends ScopedSessionRefCliOptions {
   stdin?: boolean;
 }
 
-interface SessionPromptCommandHelpOptions {
-  help?: boolean;
-  json?: boolean | string;
-}
-
 interface SessionTargetListCliOptions extends ScopedSessionRefCliOptions {
   alias?: string;
 }
@@ -96,14 +83,10 @@ interface WithSessionStores {
   conversations: ConversationRepo;
 }
 
-export function createSessionCliStores(pool: Pool): WithSessionStores & {
-  identityStore: PostgresIdentityStore;
-} {
-  const identityStore = new PostgresIdentityStore({pool});
+function createSessionCliStores(pool: Pool): WithSessionStores {
   return {
     pool,
     agentStore: new PostgresAgentStore({pool}),
-    identityStore,
     sessionStore: new PostgresSessionStore({pool}),
     threadStore: new PostgresThreadRuntimeStore({pool}),
     executionEnvironmentStore: new PostgresExecutionEnvironmentStore({pool}),
@@ -111,7 +94,7 @@ export function createSessionCliStores(pool: Pool): WithSessionStores & {
   };
 }
 
-export async function withSessionStores<T>(
+async function withSessionStores<T>(
   options: SessionCliOptions,
   fn: (stores: WithSessionStores) => Promise<T>,
 ): Promise<T> {
@@ -547,41 +530,6 @@ async function readSessionPromptCommand(
   });
 }
 
-function registerCurrentSessionPromptHelpCommand(
-  promptProgram: Command,
-  subcommand: string,
-  descriptor: CommandDescriptor,
-): void {
-  promptProgram
-    .command(subcommand)
-    .description(descriptor.summary)
-    .helpOption(false)
-    .allowUnknownOption(true)
-    .allowExcessArguments(true)
-    .option("--help", "Show agent command help")
-    .option("--json [input]", "Use JSON input/output; pass @file or @- when execution transport is wired")
-    .action((options: SessionPromptCommandHelpOptions) => {
-      if (options.help) {
-        writeCommandDescriptorHelp(descriptor, Boolean(options.json));
-        return;
-      }
-
-      throw new Error(
-        `panda session prompt current ${subcommand} execution requires the agent command shim transport; use --help for the command contract.`,
-      );
-    });
-}
-
-function registerCurrentSessionPromptHelpCommands(promptProgram: Command): void {
-  const currentProgram = promptProgram
-    .command("current")
-    .description("Use agent-facing current-session prompt commands");
-
-  registerCurrentSessionPromptHelpCommand(currentProgram, "read", sessionPromptReadCommandDescriptor);
-  registerCurrentSessionPromptHelpCommand(currentProgram, "set", sessionPromptSetCommandDescriptor);
-  registerCurrentSessionPromptHelpCommand(currentProgram, "transform", sessionPromptTransformCommandDescriptor);
-}
-
 async function setSessionPromptCommand(
   sessionRef: string,
   content: string | undefined,
@@ -920,7 +868,9 @@ export function registerSessionManagementCommands(sessionProgram: Command): void
     .command("prompt")
     .description("Manage session prompts");
 
-  registerCurrentSessionPromptHelpCommands(promptProgram);
+  promptProgram
+    .command("current")
+    .description("Use agent-facing current-session prompt commands");
 
   promptProgram
     .command("list")

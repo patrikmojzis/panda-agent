@@ -25,9 +25,10 @@ current-pass record. Production remains undeployed by this cleanup work.
 The first two passes are committed as `ca5a689d`. Cycle 1 is committed as
 `2e3aa496`, removing another 834 production lines of duplicated host CLI help.
 Browser action completion is committed as `161ed329`; terminal snapshots are
-independently reviewed and committed with their own cycle. These passes remove
-another 125 production lines. The active cycle removes copied help from mixed
-operator registrars. The cycle log is the current progress record.
+committed as `779e7647`. These passes remove another 125 production lines. The
+mixed operator CLI cleanup removes another 1,061 lines and is independently
+reviewed and committed with its cycle. The attachment-save race fix is reviewed
+and awaiting its own commit. The cycle log is the current progress record.
 
 Production access remains strictly read-only. No deployment, migration, restart,
 message replay or historical-data cleanup is part of this work. The production
