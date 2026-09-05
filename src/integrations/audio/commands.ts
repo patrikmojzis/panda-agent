@@ -242,7 +242,6 @@ async function runWhisperAudioFile(params: {
   language?: string;
   prompt?: string;
   signal?: AbortSignal;
-  emitProgress?: (progress: JsonObject) => void;
 }): Promise<{
   text: string;
   details: JsonObject;
@@ -262,14 +261,6 @@ async function runWhisperAudioFile(params: {
   if (params.prompt) {
     body.append("prompt", params.prompt);
   }
-
-  const progressStatus = params.operation === "translate" ? "translating" : "transcribing";
-  params.emitProgress?.({
-    status: progressStatus,
-    model: DEFAULT_MODEL,
-    path: params.filePath,
-    sizeBytes,
-  });
 
   const timeoutSignal = AbortSignal.timeout(params.timeoutMs);
   const signal = params.signal ? AbortSignal.any([params.signal, timeoutSignal]) : timeoutSignal;
@@ -377,6 +368,7 @@ function createWhisperCommand(
         operation,
         language: args.language,
         prompt: args.prompt,
+        signal: request.signal,
       });
 
       return {

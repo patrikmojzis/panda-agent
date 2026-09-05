@@ -12,6 +12,41 @@ import {
 } from "../src/integrations/audio/commands.js";
 
 describe("whisper audio commands", () => {
+  describe.each([
+    ["transcribe", createWhisperTranscribeCommand],
+    ["translate", createWhisperTranslateCommand],
+  ] as const)("%s cancellation", (operation, createCommand) => {
+    it.each(["before execution", "during fetch", "timeout"] as const)("handles %s", async (when) => {
+      const workspace = await mkdtemp(path.join(tmpdir(), "panda-audio-cancellation-"));
+      try {
+        const audioPath = path.join(workspace, "voice.mp3");
+        await writeFile(audioPath, "fake-audio-data");
+        const controller = new AbortController();
+        if (when === "before execution") controller.abort();
+        const fetchImpl = vi.fn((_input: URL | RequestInfo, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          if (!signal) throw new Error("Expected a cancellation signal.");
+          const abort = () => reject(signal.reason);
+          if (signal.aborted) abort();
+          else signal.addEventListener("abort", abort, {once: true});
+          if (when === "during fetch") controller.abort();
+        }));
+        const command = createCommand({apiKey: "openai-test-key", fetchImpl, timeoutMs: 20});
+        await expect(command.execute({
+          command: command.descriptor.name,
+          input: {path: audioPath},
+          scope: {agentKey: "panda", sessionId: "session-main"},
+          signal: controller.signal,
+        })).rejects.toThrow(when === "timeout"
+          ? `Whisper ${operation} timed out after 20ms.`
+          : `Whisper ${operation} was aborted.`);
+        expect(fetchImpl).toHaveBeenCalledOnce();
+      } finally {
+        await rm(workspace, {recursive: true, force: true});
+      }
+    });
+  });
+
   it("transcribes a resolved local audio file", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "panda-audio-command-"));
     const audioBytes = Buffer.from("fake-audio-data");

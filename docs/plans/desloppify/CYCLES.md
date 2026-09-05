@@ -469,3 +469,22 @@ intact rather than adding churn.
   before/after combinations match, including private profile metadata.
 - State: reviewed and committed locally with this cycle. No model-facing text,
   tool catalog, tool set or subagent permission group changed.
+
+## Cycle 20 — Honor Whisper command cancellation
+
+- Finding: HTTP command disconnects supply an abort signal, and the dispatcher
+  preserves it, but Whisper command assembly dropped it. The private runner's
+  caller-cancellation branch was therefore unreachable. Its progress callback
+  also had no caller.
+- Change: forward the command signal into the existing timeout/cancellation
+  composition and delete the unused progress callback and payload construction.
+- Result: eight fewer production lines; 35 test lines added.
+- Evidence: four new pre-abort/in-flight cases failed before the fix and pass
+  afterward for transcribe and translate. All eight audio cases, including both
+  timeout cases, pass; 76 audio/command tests pass. Independent review also
+  exercised shim and HTTP-disconnect cancellation. All 192 before/after cases
+  without caller cancellation match for schemas, option timing, file resolution,
+  multipart requests, errors and output. Typecheck, import law and contracts pass.
+- State: reviewed and committed locally with this cycle. Caller cancellation is
+  the intentional behavior change. No provider request was made by these focused
+  tests, and no production service was changed.
