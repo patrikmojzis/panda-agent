@@ -363,6 +363,25 @@ input/error differences; this pass did not justify a generic replacement.
 - State: reviewed and committed locally with this cycle; not pushed or deployed.
   No image-generation behavior or supported public export changed.
 
+## Cycle 16 — Remove foreign Control form-error scaffolding
+
+- Finding: the Control UI carried Pydantic location parsing, structured field
+  errors and an unused field-name map. Its sole API transport targets Control,
+  whose errors use `{error: string}`; version conflicts may add `currentVersion`.
+  No caller supplies the removed field-name option or consumes those foreign
+  payload formats.
+- Change: remove the unreachable structured-error path. Keep message-to-field
+  mapping, status-specific feedback and ordinary thrown errors. Null/non-JSON
+  responses now reach visible fallback feedback instead of crashing on `body.data`.
+- Result: 55 fewer production lines; 72 test lines added.
+- Evidence: 14 new cases exercise the real `apiWrite`/response parser; all 21
+  focused form/model tests and independent review pass. Control typecheck and
+  production build pass using installed binaries, as do root typecheck/import law.
+  The test mocks Sonner's ESM entry because the package-directory path selects
+  CJS; the alternative was rejected and all 14 tests passed after restoration.
+- State: reviewed and committed locally with this cycle; not pushed or deployed.
+  The only intended behavior change is reliable feedback for malformed responses.
+
 ## Combined verification after cycles 1–5
 
 The final combined source passed the TypeScript build, all three package-export

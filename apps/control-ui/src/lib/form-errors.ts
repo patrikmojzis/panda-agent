@@ -1,6 +1,6 @@
 import { toast } from "sonner"
 
-import { ApiError } from "@/lib/api"
+import { ApiError } from "./api"
 
 type FormErrorApi = {
   setErrorMap: (errorMap: {
@@ -10,22 +10,7 @@ type FormErrorApi = {
   }) => void
 }
 
-type PydanticErrorBody = {
-  data?: Array<{
-    loc: Array<string | number>
-    msg: string
-  }>
-}
-
-type FieldErrorBody = {
-  errors?: Array<{
-    field?: string
-    message?: string
-  }>
-}
-
 type ControlFormErrorOptions = {
-  fieldMap?: Record<string, string>
   messageFieldMap?: Record<string, string | string[]>
 }
 
@@ -37,20 +22,6 @@ function bodyMessage(body: unknown) {
   return isRecord(body) && typeof body.error === "string" ? body.error : undefined
 }
 
-function pydanticLocToField(loc: Array<string | number>): string {
-  return loc
-    .filter((part) => part !== "body" && part !== "query" && part !== "path")
-    .reduce<string>((path, part) => {
-      if (typeof part === "number" || /^\d+$/.test(String(part))) return `${path}[${part}]`
-      const key = String(part)
-      return path ? `${path}.${key}` : key
-    }, "")
-}
-
-function mapField(field: string, options?: ControlFormErrorOptions) {
-  return options?.fieldMap?.[field] ?? field
-}
-
 function setFormErrors(formApi: FormErrorApi, fields: Record<string, string>) {
   formApi.setErrorMap({
     onSubmit: {
@@ -59,30 +30,6 @@ function setFormErrors(formApi: FormErrorApi, fields: Record<string, string>) {
       ),
     },
   })
-}
-
-function applyStructuredErrors(
-  formApi: FormErrorApi,
-  body: unknown,
-  options?: ControlFormErrorOptions
-) {
-  const fields: Record<string, string> = {}
-  const pydantic = body as PydanticErrorBody
-  for (const error of pydantic.data ?? []) {
-    const field = mapField(pydanticLocToField(error.loc), options)
-    if (field && !fields[field]) fields[field] = error.msg
-  }
-
-  const fieldErrors = body as FieldErrorBody
-  for (const error of fieldErrors.errors ?? []) {
-    if (!error.field || !error.message) continue
-    const field = mapField(error.field, options)
-    if (field && !fields[field]) fields[field] = error.message
-  }
-
-  if (Object.keys(fields).length === 0) return false
-  setFormErrors(formApi, fields)
-  return true
 }
 
 function applyMessageError(
@@ -114,8 +61,6 @@ export async function handleControlFormError(
     toast.error(error instanceof Error ? error.message : "Control write failed")
     return
   }
-
-  if (applyStructuredErrors(formApi, error.body, options)) return
 
   const message = bodyMessage(error.body) ?? error.message
   if (applyMessageError(formApi, message, options)) return
