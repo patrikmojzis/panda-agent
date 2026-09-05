@@ -13,9 +13,9 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–66; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–67; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,721 production lines**, including
+Together, these cleanup commits remove **5,768 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
@@ -75,6 +75,12 @@ eight production lines and five regression cases, retaining prior observers and
 pool callback/promise behavior. Earlier setup failures and eager bootstrap
 ownership remain separate boundaries.
 
+Cycle 67 removes 47 more UI lines from Automations, Watches and Gateway. These
+panels now pass through the required paginated responses instead of copying them
+and inventing fallback metadata. API aliases remain intact. Seventy-two React
+render comparisons pass, including page metrics, previous data, errors and
+Gateway source selection; Control typecheck and production build pass.
+
 The frozen backend passes **3,260 unit tests across 341 files**, root build/typecheck,
 import law, all 19 compiled package
 imports and shared `Thread` identity. The initial failure of an unchanged
@@ -89,7 +95,7 @@ requests. Focused bootstrap and observer tests prove the ownership repairs; the
 smoke avoids application bootstrap and does not exercise those failure paths or
 the actor listings. The test cluster was stopped afterward. Prompt/shim contracts
 pass; cycle 66 leaves the snapshot unchanged. Runtime-activity reads and eager
-bootstrap ownership remain under investigation, with
+bootstrap ownership remain open, with a reproduced eager-startup failure and
 their constraints recorded in the cycle record. The inspect/review/commit loop
 remains active.
 

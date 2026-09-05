@@ -65,21 +65,8 @@ export function AutomationsPanel({
     }
   )
   const tasks = useScheduledTasks(agentKey, sessionId, table.params)
-  const rawResponse = tasks.data?.scheduledTasks
-  const rows = rawResponse?.data ?? rawResponse?.tasks ?? []
-  const response = rawResponse
-    ? ({
-        ...rawResponse,
-        data: rows,
-        tasks: rawResponse.tasks ?? rows,
-        meta: rawResponse.meta ?? {
-          current_page: table.pagination.pageIndex + 1,
-          last_page: 1,
-          per_page: table.pagination.pageSize,
-          total: rows.length,
-        },
-      } satisfies ScheduledTasks)
-    : undefined
+  const response = tasks.data?.scheduledTasks
+  const rows = response?.data ?? []
   const total = response?.meta.total ?? 0
   const pageEnabled = rows.filter((task) => task.enabled).length
   const pageRunning = rows.filter(

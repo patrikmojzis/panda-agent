@@ -57,7 +57,6 @@ import {
 import { sessionReferenceLabel } from "@/features/control/session-labels"
 import {
   controlApi,
-  type GatewayDevices,
   type GatewayDeviceRow,
   type GatewayEventRow,
   type GatewayEventTypeRow,
@@ -151,26 +150,6 @@ export function GatewayPanel({
     { enabled: Boolean(effectiveDeviceSourceId && !sessionId) }
   )
   const events = useScopedGatewayEvents(agentKey, sessionId, eventTable.params)
-  const deviceRows = devices.data?.data ?? devices.data?.devices ?? []
-  const deviceResponse = React.useMemo<GatewayDevices | undefined>(() => {
-    if (!devices.data) return undefined
-    return {
-      ...devices.data,
-      data: deviceRows,
-      meta: devices.data.meta ?? {
-        current_page: deviceTable.pagination.pageIndex + 1,
-        last_page: 1,
-        per_page: deviceTable.pagination.pageSize,
-        total: deviceRows.length,
-      },
-      devices: devices.data.devices ?? deviceRows,
-    }
-  }, [
-    devices.data,
-    deviceRows,
-    deviceTable.pagination.pageIndex,
-    deviceTable.pagination.pageSize,
-  ])
   const selectedDeviceSource = focusSourceRows.find(
     (source) => source.sourceId === effectiveDeviceSourceId
   )
@@ -749,7 +728,7 @@ export function GatewayPanel({
           {effectiveDeviceSourceId ? (
             <DataTableView
               columns={deviceColumns}
-              response={deviceResponse}
+              response={devices.data}
               state={deviceTable}
               error={devices.error}
               filters={

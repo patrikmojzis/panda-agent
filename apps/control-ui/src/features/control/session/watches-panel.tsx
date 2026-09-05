@@ -54,21 +54,8 @@ export function WatchesPanel({
     sort_direction: "asc",
   })
   const watches = useWatches(agentKey, sessionId, table.params)
-  const rawResponse = watches.data?.watches
-  const rows = rawResponse?.data ?? rawResponse?.watches ?? []
-  const response = rawResponse
-    ? ({
-        ...rawResponse,
-        data: rows,
-        watches: rawResponse.watches ?? rows,
-        meta: rawResponse.meta ?? {
-          current_page: table.pagination.pageIndex + 1,
-          last_page: 1,
-          per_page: table.pagination.pageSize,
-          total: rows.length,
-        },
-      } satisfies Watches)
-    : undefined
+  const response = watches.data?.watches
+  const rows = response?.data ?? []
   const total = response?.meta.total ?? 0
   const pageEnabled = rows.filter((watch) => watch.enabled).length
   const pageEvents = rows.reduce((count, watch) => count + watch.eventCount, 0)

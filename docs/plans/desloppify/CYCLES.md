@@ -2126,3 +2126,59 @@ restoration, although it can no longer replace the original startup failure.
 Eager bootstrap allocates its pools before its broader cleanup boundary; that
 ownership path is under separate review. Do not treat these scoped fixes as
 evidence that every possible initialization failure is now covered.
+
+## Cycle 67 — Pass required paginated responses directly to tables
+
+- Finding: Automations and Watches copy already-paginated responses while
+  fabricating fallback metadata and array aliases. Gateway adds the same
+  fallback through a memo and synthesizes an unused `devices` alias. The actual
+  producers require and return `data` and `meta`.
+- Change: use the fetched responses directly in all three panels. Read page
+  metrics from their existing data arrays. Remove only the response wrappers
+  and the unused Gateway response-type import; keep API types, backend task/watch
+  aliases, all queries, metrics, forms, filters, authorization and rendering.
+- Contract evidence: current producers and recorded checkout `8336db3` return
+  required pagination fields. This is historical compatibility evidence, not a
+  refreshed production audit. Queries have no persisted response cache or manual
+  cache writer. The sole table consumer uses the original inner data array and
+  metadata; no effect observes the discarded outer wrapper's identity. Passing
+  the fetched object preserves those array/metadata references during refetch.
+- Verification: 72 actual baseline/current React component render comparisons
+  use 13 DTOs produced by the scheduled-task, watch and operator services.
+  They cover undefined/loading data, initial and cached errors, kept previous
+  pages with different pending parameters, filtered totals versus page metrics,
+  empty/high pages, roles, Gateway source availability and session gating, and
+  the source-filter/page-reset callback. Query, presentation and external store
+  boundaries are mocked; this proves component parity, not browser lifecycle or
+  SQL behavior. Evidence: `.temp/desloppify-cycle67-ui-parity.mjs` and
+  `.temp/desloppify-cycle67-ui-parity-output.log`.
+- Gates: Control app/node typechecks, production build and scoped diff checks
+  pass. Independent review verifies all three hashes and exact whole-file
+  reconstruction outside the deleted wrappers. The preceding backend suite at
+  cycle 66 passed 3,260 tests across 341 files; no backend source, persistent
+  tests, schemas or generated contracts change in this cycle.
+- Result: five production lines added and 52 removed, net **47 fewer**: 13 each
+  from Automations and Watches, and 21 from Gateway. Cumulative reduction becomes
+  **5,768 production lines across 68 cleanup commits**, including 75 lines moved
+  into tests.
+- State: independently reviewed and committed locally with this cycle. No
+  production access, push or deployment. Cycle 66 is committed as `4243972e`.
+
+### Next: eager bootstrap ownership
+
+The actual `createRuntime` probe now reproduces a separate initialization leak:
+ready logging can fail on the first, second or third eager pool before bootstrap
+enters its cleanup boundary. The respective one, two or three allocated pools
+and observers remain unclosed. Cycle 66 rolls back the observer whose startup
+log fails, but earlier observers and allocated pools still need an owner.
+The seven-case probe includes healthy startup/shutdown and cleans its own fake
+timers, pools and logging spies. Evidence:
+`.temp/desloppify-eager-bootstrap-before.json`.
+
+Capture each eager pool and returned observer immediately in a stable private
+ownership record, move the existing bootstrap `try` before eager allocation,
+and reuse the existing cleanup implementation with nullable partial handles.
+Preserve synchronous initialization order, readonly configuration capture,
+normal cleanup labels/order and the original initialization error. Keep the lazy
+path separate; no generic pool framework or source-line reduction is required
+to justify this resource-ownership repair.
