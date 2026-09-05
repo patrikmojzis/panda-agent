@@ -1,6 +1,7 @@
 import type {JsonObject} from "../../lib/json.js";
 import {isJsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
+import {optionalNonEmptyString, requireNonEmptyString} from "../../lib/strings.js";
 import type {CommandFileResolver} from "../commands/files.js";
 import type {
   CommandArtifactDescriptor,
@@ -193,22 +194,6 @@ const WIKI_PATH_RESOLUTION_RESULT_SHAPE = {
   resolvedPath: "string",
 } as const;
 
-function readRequiredString(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${label} must not be empty.`);
-  }
-
-  return value.trim();
-}
-
-function readOptionalString(value: unknown, label: string): string | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-
-  return readRequiredString(value, label);
-}
-
 function readOptionalWikiReadFormat(value: unknown): WikiReadFormat | undefined {
   if (value === undefined || value === null) {
     return undefined;
@@ -261,7 +246,7 @@ function readOptionalStringArray(value: unknown, label: string): string[] | unde
     throw new Error(`${label} must be an array of strings.`);
   }
 
-  return value.map((entry, index) => readRequiredString(entry, `${label}[${index}]`));
+  return value.map((entry, index) => requireNonEmptyString(entry, `${label}[${index}] must not be empty.`));
 }
 
 function requireInputObject(input: unknown, label: string): Record<string, unknown> {
@@ -281,9 +266,9 @@ function requireCommandJsonObject(value: unknown, label: string): JsonObject {
 }
 
 function readWikiPathResolution(output: JsonObject): JsonObject {
-  const namespacePath = readOptionalString(output.namespacePath, "wiki output namespacePath");
-  const inputPath = readOptionalString(output.inputPath, "wiki output inputPath");
-  const resolvedPath = readOptionalString(output.resolvedPath, "wiki output resolvedPath");
+  const namespacePath = optionalNonEmptyString(output.namespacePath, "wiki output namespacePath must not be empty.");
+  const inputPath = optionalNonEmptyString(output.inputPath, "wiki output inputPath must not be empty.");
+  const resolvedPath = optionalNonEmptyString(output.resolvedPath, "wiki output resolvedPath must not be empty.");
   return {
     ...(namespacePath ? {namespacePath} : {}),
     ...(inputPath ? {inputPath} : {}),
@@ -297,8 +282,8 @@ function formatWikiReadOutput(output: JsonObject, input: WikiReadCommandInput): 
   }
 
   if (output.found === false) {
-    const path = readOptionalString(output.path, "wiki.read output path") ?? input.path;
-    const locale = readOptionalString(output.locale, "wiki.read output locale") ?? input.locale;
+    const path = optionalNonEmptyString(output.path, "wiki.read output path must not be empty.") ?? input.path;
+    const locale = optionalNonEmptyString(output.locale, "wiki.read output locale must not be empty.") ?? input.locale;
 
     return {
       operation: "read",
@@ -310,10 +295,10 @@ function formatWikiReadOutput(output: JsonObject, input: WikiReadCommandInput): 
     };
   }
 
-  const path = readOptionalString(output.path, "wiki.read output path") ?? input.path;
-  const locale = readOptionalString(output.locale, "wiki.read output locale") ?? input.locale;
-  const title = readOptionalString(output.title, "wiki.read output title");
-  const updatedAt = readOptionalString(output.updatedAt, "wiki.read output updatedAt");
+  const path = optionalNonEmptyString(output.path, "wiki.read output path must not be empty.") ?? input.path;
+  const locale = optionalNonEmptyString(output.locale, "wiki.read output locale must not be empty.") ?? input.locale;
+  const title = optionalNonEmptyString(output.title, "wiki.read output title must not be empty.");
+  const updatedAt = optionalNonEmptyString(output.updatedAt, "wiki.read output updatedAt must not be empty.");
 
   return {
     operation: "read",
@@ -324,17 +309,17 @@ function formatWikiReadOutput(output: JsonObject, input: WikiReadCommandInput): 
     ...(title ? {title} : {}),
     ...(updatedAt ? {updatedAt} : {}),
     ...readWikiPathResolution(output),
-    content: readRequiredString(output.content, "wiki.read output content"),
+    content: requireNonEmptyString(output.content, "wiki.read output content must not be empty."),
   };
 }
 
 function parseWikiReadInput(input: unknown): WikiReadCommandInput {
   const object = requireInputObject(input, WIKI_READ_COMMAND_NAME);
-  const locale = readOptionalString(object.locale, "wiki.read locale");
+  const locale = optionalNonEmptyString(object.locale, "wiki.read locale must not be empty.");
   const format = readOptionalWikiReadFormat(object.format);
 
   return {
-    path: readRequiredString(object.path, "wiki.read path"),
+    path: requireNonEmptyString(object.path, "wiki.read path must not be empty."),
     ...(locale ? {locale} : {}),
     ...(format ? {format} : {}),
   };
@@ -342,19 +327,19 @@ function parseWikiReadInput(input: unknown): WikiReadCommandInput {
 
 function parseWikiOverviewInput(input: unknown): WikiOverviewCommandInput {
   const object = requireInputObject(input, WIKI_OVERVIEW_COMMAND_NAME);
-  const locale = readOptionalString(object.locale, "wiki.overview locale");
+  const locale = optionalNonEmptyString(object.locale, "wiki.overview locale must not be empty.");
 
   return locale ? {locale} : {};
 }
 
 function parseWikiSearchInput(input: unknown): WikiSearchCommandInput {
   const object = requireInputObject(input, WIKI_SEARCH_COMMAND_NAME);
-  const path = readOptionalString(object.path, "wiki.search path");
-  const locale = readOptionalString(object.locale, "wiki.search locale");
+  const path = optionalNonEmptyString(object.path, "wiki.search path must not be empty.");
+  const locale = optionalNonEmptyString(object.locale, "wiki.search locale must not be empty.");
   const limit = readOptionalPositiveInteger(object.limit, "wiki.search limit");
 
   return {
-    query: readRequiredString(object.query, "wiki.search query"),
+    query: requireNonEmptyString(object.query, "wiki.search query must not be empty."),
     ...(path ? {path} : {}),
     ...(locale ? {locale} : {}),
     ...(limit === undefined ? {} : {limit}),
@@ -363,8 +348,8 @@ function parseWikiSearchInput(input: unknown): WikiSearchCommandInput {
 
 function parseWikiListInput(input: unknown): WikiListCommandInput {
   const object = requireInputObject(input, WIKI_LIST_COMMAND_NAME);
-  const path = readOptionalString(object.path, "wiki.list path");
-  const locale = readOptionalString(object.locale, "wiki.list locale");
+  const path = optionalNonEmptyString(object.path, "wiki.list path must not be empty.");
+  const locale = optionalNonEmptyString(object.locale, "wiki.list locale must not be empty.");
   const limit = readOptionalPositiveInteger(object.limit, "wiki.list limit");
   const includeArchived = readOptionalBoolean(object.includeArchived, "wiki.list includeArchived");
 
@@ -378,12 +363,12 @@ function parseWikiListInput(input: unknown): WikiListCommandInput {
 
 function parseWikiDiffInput(input: unknown): WikiDiffCommandInput {
   const object = requireInputObject(input, WIKI_DIFF_COMMAND_NAME);
-  const locale = readOptionalString(object.locale, "wiki.diff locale");
+  const locale = optionalNonEmptyString(object.locale, "wiki.diff locale must not be empty.");
   const contextLines = readOptionalNonNegativeInteger(object.contextLines, "wiki.diff contextLines");
 
   return {
-    leftPath: readRequiredString(object.leftPath, "wiki.diff leftPath"),
-    rightPath: readRequiredString(object.rightPath, "wiki.diff rightPath"),
+    leftPath: requireNonEmptyString(object.leftPath, "wiki.diff leftPath must not be empty."),
+    rightPath: requireNonEmptyString(object.rightPath, "wiki.diff rightPath must not be empty."),
     ...(locale ? {locale} : {}),
     ...(contextLines === undefined ? {} : {contextLines}),
   };
@@ -391,21 +376,21 @@ function parseWikiDiffInput(input: unknown): WikiDiffCommandInput {
 
 function parseWikiWriteInput(input: unknown): WikiWriteCommandInput {
   const object = requireInputObject(input, WIKI_WRITE_COMMAND_NAME);
-  const locale = readOptionalString(object.locale, "wiki.write locale");
-  const title = readOptionalString(object.title, "wiki.write title");
-  const description = readOptionalString(object.description, "wiki.write description");
+  const locale = optionalNonEmptyString(object.locale, "wiki.write locale must not be empty.");
+  const title = optionalNonEmptyString(object.title, "wiki.write title must not be empty.");
+  const description = optionalNonEmptyString(object.description, "wiki.write description must not be empty.");
   const tags = readOptionalStringArray(object.tags, "wiki.write tags");
   const isPublished = readOptionalBoolean(object.isPublished, "wiki.write isPublished");
   const isPrivate = readOptionalBoolean(object.isPrivate, "wiki.write isPrivate");
   const createIfMissing = readOptionalBoolean(object.createIfMissing, "wiki.write createIfMissing");
-  const baseUpdatedAt = readOptionalString(object.baseUpdatedAt, "wiki.write baseUpdatedAt");
+  const baseUpdatedAt = optionalNonEmptyString(object.baseUpdatedAt, "wiki.write baseUpdatedAt must not be empty.");
 
   return {
-    path: readRequiredString(object.path, "wiki.write path"),
+    path: requireNonEmptyString(object.path, "wiki.write path must not be empty."),
     ...(locale ? {locale} : {}),
     ...(title ? {title} : {}),
     ...(description ? {description} : {}),
-    content: readRequiredString(object.content, "wiki.write content"),
+    content: requireNonEmptyString(object.content, "wiki.write content must not be empty."),
     ...(tags ? {tags} : {}),
     ...(isPublished === undefined ? {} : {isPublished}),
     ...(isPrivate === undefined ? {} : {isPrivate}),
@@ -416,16 +401,16 @@ function parseWikiWriteInput(input: unknown): WikiWriteCommandInput {
 
 function parseWikiWriteSectionInput(input: unknown): WikiWriteSectionCommandInput {
   const object = requireInputObject(input, WIKI_WRITE_SECTION_COMMAND_NAME);
-  const locale = readOptionalString(object.locale, "wiki.write.section locale");
-  const title = readOptionalString(object.title, "wiki.write.section title");
+  const locale = optionalNonEmptyString(object.locale, "wiki.write.section locale must not be empty.");
+  const title = optionalNonEmptyString(object.title, "wiki.write.section title must not be empty.");
   const createIfMissing = readOptionalBoolean(object.createIfMissing, "wiki.write.section createIfMissing");
-  const baseUpdatedAt = readOptionalString(object.baseUpdatedAt, "wiki.write.section baseUpdatedAt");
+  const baseUpdatedAt = optionalNonEmptyString(object.baseUpdatedAt, "wiki.write.section baseUpdatedAt must not be empty.");
 
   return {
-    path: readRequiredString(object.path, "wiki.write.section path"),
+    path: requireNonEmptyString(object.path, "wiki.write.section path must not be empty."),
     ...(locale ? {locale} : {}),
-    section: readRequiredString(object.section, "wiki.write.section section"),
-    content: readRequiredString(object.content, "wiki.write.section content"),
+    section: requireNonEmptyString(object.section, "wiki.write.section section must not be empty."),
+    content: requireNonEmptyString(object.content, "wiki.write.section content must not be empty."),
     ...(title ? {title} : {}),
     ...(createIfMissing === undefined ? {} : {createIfMissing}),
     ...(baseUpdatedAt ? {baseUpdatedAt} : {}),
@@ -434,14 +419,14 @@ function parseWikiWriteSectionInput(input: unknown): WikiWriteSectionCommandInpu
 
 function parseWikiMoveInput(input: unknown): WikiMoveCommandInput {
   const object = requireInputObject(input, WIKI_MOVE_COMMAND_NAME);
-  const locale = readOptionalString(object.locale, "wiki.move locale");
+  const locale = optionalNonEmptyString(object.locale, "wiki.move locale must not be empty.");
   const rewriteLinks = readOptionalBoolean(object.rewriteLinks, "wiki.move rewriteLinks");
-  const baseUpdatedAt = readOptionalString(object.baseUpdatedAt, "wiki.move baseUpdatedAt");
+  const baseUpdatedAt = optionalNonEmptyString(object.baseUpdatedAt, "wiki.move baseUpdatedAt must not be empty.");
 
   return {
-    path: readRequiredString(object.path, "wiki.move path"),
+    path: requireNonEmptyString(object.path, "wiki.move path must not be empty."),
     ...(locale ? {locale} : {}),
-    destinationPath: readRequiredString(object.destinationPath, "wiki.move destinationPath"),
+    destinationPath: requireNonEmptyString(object.destinationPath, "wiki.move destinationPath must not be empty."),
     ...(rewriteLinks === undefined ? {} : {rewriteLinks}),
     ...(baseUpdatedAt ? {baseUpdatedAt} : {}),
   };
@@ -449,11 +434,11 @@ function parseWikiMoveInput(input: unknown): WikiMoveCommandInput {
 
 function parseWikiArchiveInput(input: unknown): WikiArchiveCommandInput {
   const object = requireInputObject(input, WIKI_ARCHIVE_COMMAND_NAME);
-  const locale = readOptionalString(object.locale, "wiki.archive locale");
-  const baseUpdatedAt = readOptionalString(object.baseUpdatedAt, "wiki.archive baseUpdatedAt");
+  const locale = optionalNonEmptyString(object.locale, "wiki.archive locale must not be empty.");
+  const baseUpdatedAt = optionalNonEmptyString(object.baseUpdatedAt, "wiki.archive baseUpdatedAt must not be empty.");
 
   return {
-    path: readRequiredString(object.path, "wiki.archive path"),
+    path: requireNonEmptyString(object.path, "wiki.archive path must not be empty."),
     ...(locale ? {locale} : {}),
     ...(baseUpdatedAt ? {baseUpdatedAt} : {}),
   };
@@ -461,12 +446,12 @@ function parseWikiArchiveInput(input: unknown): WikiArchiveCommandInput {
 
 function parseWikiRestoreInput(input: unknown): WikiRestoreCommandInput {
   const object = requireInputObject(input, WIKI_RESTORE_COMMAND_NAME);
-  const locale = readOptionalString(object.locale, "wiki.restore locale");
-  const baseUpdatedAt = readOptionalString(object.baseUpdatedAt, "wiki.restore baseUpdatedAt");
+  const locale = optionalNonEmptyString(object.locale, "wiki.restore locale must not be empty.");
+  const baseUpdatedAt = optionalNonEmptyString(object.baseUpdatedAt, "wiki.restore baseUpdatedAt must not be empty.");
 
   return {
-    path: readRequiredString(object.path, "wiki.restore path"),
-    destinationPath: readRequiredString(object.destinationPath, "wiki.restore destinationPath"),
+    path: requireNonEmptyString(object.path, "wiki.restore path must not be empty."),
+    destinationPath: requireNonEmptyString(object.destinationPath, "wiki.restore destinationPath must not be empty."),
     ...(locale ? {locale} : {}),
     ...(baseUpdatedAt ? {baseUpdatedAt} : {}),
   };
@@ -474,19 +459,19 @@ function parseWikiRestoreInput(input: unknown): WikiRestoreCommandInput {
 
 function parseWikiAttachImageInput(input: unknown): WikiAttachImageCommandInput {
   const object = requireInputObject(input, WIKI_ATTACH_IMAGE_COMMAND_NAME);
-  const locale = readOptionalString(object.locale, "wiki.attach.image locale");
-  const caption = readOptionalString(object.caption, "wiki.attach.image caption");
-  const title = readOptionalString(object.title, "wiki.attach.image title");
+  const locale = optionalNonEmptyString(object.locale, "wiki.attach.image locale must not be empty.");
+  const caption = optionalNonEmptyString(object.caption, "wiki.attach.image caption must not be empty.");
+  const title = optionalNonEmptyString(object.title, "wiki.attach.image title must not be empty.");
   const createIfMissing = readOptionalBoolean(object.createIfMissing, "wiki.attach.image createIfMissing");
-  const baseUpdatedAt = readOptionalString(object.baseUpdatedAt, "wiki.attach.image baseUpdatedAt");
+  const baseUpdatedAt = optionalNonEmptyString(object.baseUpdatedAt, "wiki.attach.image baseUpdatedAt must not be empty.");
 
   return {
-    path: readRequiredString(object.path, "wiki.attach.image path"),
+    path: requireNonEmptyString(object.path, "wiki.attach.image path must not be empty."),
     ...(locale ? {locale} : {}),
-    section: readRequiredString(object.section, "wiki.attach.image section"),
-    slot: readRequiredString(object.slot, "wiki.attach.image slot"),
-    sourcePath: readRequiredString(object.sourcePath, "wiki.attach.image sourcePath"),
-    alt: readRequiredString(object.alt, "wiki.attach.image alt"),
+    section: requireNonEmptyString(object.section, "wiki.attach.image section must not be empty."),
+    slot: requireNonEmptyString(object.slot, "wiki.attach.image slot must not be empty."),
+    sourcePath: requireNonEmptyString(object.sourcePath, "wiki.attach.image sourcePath must not be empty."),
+    alt: requireNonEmptyString(object.alt, "wiki.attach.image alt must not be empty."),
     ...(caption ? {caption} : {}),
     ...(title ? {title} : {}),
     ...(createIfMissing === undefined ? {} : {createIfMissing}),
@@ -498,7 +483,7 @@ function parseWikiFetchAssetInput(input: unknown): WikiFetchAssetCommandInput {
   const object = requireInputObject(input, WIKI_FETCH_ASSET_COMMAND_NAME);
 
   return {
-    assetPath: readRequiredString(object.assetPath, "wiki.fetch.asset assetPath"),
+    assetPath: requireNonEmptyString(object.assetPath, "wiki.fetch.asset assetPath must not be empty."),
   };
 }
 
@@ -506,7 +491,7 @@ function parseWikiDeleteAssetInput(input: unknown): WikiDeleteAssetCommandInput 
   const object = requireInputObject(input, WIKI_DELETE_ASSET_COMMAND_NAME);
 
   return {
-    assetPath: readRequiredString(object.assetPath, "wiki.delete.asset assetPath"),
+    assetPath: requireNonEmptyString(object.assetPath, "wiki.delete.asset assetPath must not be empty."),
   };
 }
 

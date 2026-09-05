@@ -1,6 +1,7 @@
 import type {JsonObject} from "../../lib/json.js";
 import {isJsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
+import {requireNonEmptyString} from "../../lib/strings.js";
 import type {CommandDescriptor, CommandRequest, CommandSuccess, RegisteredCommand} from "../commands/types.js";
 import type {SessionStore} from "./store.js";
 import {validateSessionPromptTransformExpression} from "./prompt-transform.js";
@@ -65,14 +66,6 @@ function requireCommandJsonObject(value: unknown, label: string): JsonObject {
   return value;
 }
 
-function readRequiredString(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${label} must not be empty.`);
-  }
-
-  return value.trim();
-}
-
 function readLiteralString(value: unknown, label: string): string {
   if (typeof value !== "string") {
     throw new Error(`${label} must be a string.`);
@@ -92,7 +85,7 @@ function readRequiredLiteralString(value: unknown, label: string): string {
 }
 
 function readSessionPromptSlug(value: unknown, commandName: string): SessionPromptSlug {
-  return normalizeSessionPromptSlug(readRequiredString(value, `${commandName} slug`));
+  return normalizeSessionPromptSlug(requireNonEmptyString(value, `${commandName} slug must not be empty.`));
 }
 
 function rejectUnknownKeys(input: Record<string, unknown>, commandName: string, allowedKeys: readonly string[]): void {
@@ -155,7 +148,7 @@ function parseSessionPromptSetInput(input: unknown) {
   return {
     slug,
     content: unwrapSessionPromptContent(
-      readRequiredString(input.content, "session.prompt.set content"),
+      requireNonEmptyString(input.content, "session.prompt.set content must not be empty."),
       slug,
     ),
   };

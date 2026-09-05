@@ -1197,3 +1197,27 @@ That candidate is not implemented in this batch.
   owned run, an applied input and zero external requests. Evidence:
   `.temp/desloppify-cycle46-offline-smoke-output.log`. The isolated cluster was
   stopped afterward. No production access, migration, push or deployment.
+
+## Cycle 47 — Reuse remaining matching command string parsers
+
+- Finding: A2A, subagent, Wiki and session-prompt commands carried seven private
+  copies of required/optional string validation already supplied by `lib/strings`.
+- Change: reuse those existing helpers at all 78 call sites with complete original
+  error text, including indexed and interpolated labels. Keep numeric, object,
+  enum and subsystem-specific validation local. Skill/todo whitespace behavior
+  and MCP structured errors are outside this change.
+- Result: 52 fewer production lines; cumulative reduction 5,275, including the
+  75 lines previously relocated into tests. No test scaffolding added.
+- Evidence: 4,212 old/new value-and-label comparisons match; all 217 retained
+  top-level statements reconstruct byte-for-byte after reversing only permitted
+  imports, helper removal and call/error substitutions. All 248 focused tests
+  pass, including the complete 177-test agent command shim suite. Local proof:
+  `.temp/desloppify-cycle47-parity.mjs`.
+- Independent review: 85 focused tests, 567 helper comparisons and 180 public
+  session-prompt command comparisons pass. Recording stores confirm descriptors,
+  parsed calls, validation/effect order, envelope unwrapping, results and errors.
+- State: independently reviewed and committed locally with this cycle. Public
+  factories/descriptors, validation and authority order, null/undefined absence,
+  rejection of present empty/non-string values and stored results remain.
+  Typecheck, import law, shim generation and diff checks pass. No production
+  access, push or deployment. Profile upserts are committed as `dd89f05a`.

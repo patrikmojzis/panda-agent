@@ -1,5 +1,6 @@
 import type {JsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
+import {optionalNonEmptyString, requireNonEmptyString} from "../../lib/strings.js";
 import type {OutboundItem} from "../channels/types.js";
 import {commandScopeDenied} from "../commands/errors.js";
 import type {CommandUploadStore} from "../commands/uploads.js";
@@ -60,22 +61,6 @@ export interface A2ADeliveryReader {
   }): Promise<readonly A2ADeliveryRecord[]>;
 }
 
-function readRequiredString(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${label} must not be empty.`);
-  }
-
-  return value.trim();
-}
-
-function readOptionalString(value: unknown, label: string): string | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-
-  return readRequiredString(value, label);
-}
-
 function requireInputObject(input: unknown, commandLabel: string): Record<string, unknown> {
   if (!isRecord(input)) {
     throw new Error(`${commandLabel} input must be a JSON object.`);
@@ -120,7 +105,7 @@ function parseA2AInspectInput(input: unknown): {deliveryId: string} {
   rejectUnexpectedKeys(object, A2A_INSPECT_COMMAND_NAME, ["deliveryId"]);
 
   return {
-    deliveryId: readRequiredString(object.deliveryId, "a2a.inspect deliveryId"),
+    deliveryId: requireNonEmptyString(object.deliveryId, "a2a.inspect deliveryId must not be empty."),
   };
 }
 
@@ -131,7 +116,7 @@ function parseA2AHistoryInput(input: unknown): {
 } {
   const object = requireInputObject(input, A2A_HISTORY_COMMAND_NAME);
   rejectUnexpectedKeys(object, A2A_HISTORY_COMMAND_NAME, ["peerSessionId", "direction", "limit"]);
-  const peerSessionId = readOptionalString(object.peerSessionId, "a2a.history peerSessionId");
+  const peerSessionId = optionalNonEmptyString(object.peerSessionId, "a2a.history peerSessionId must not be empty.");
   const direction = readOptionalDirection(object.direction);
 
   return {
@@ -155,7 +140,7 @@ function parseMessageAgentItem(value: unknown, label: string): ParsedMessageAgen
       rejectUnexpectedKeys(value, label, ["type", "text"]);
       return {
         type: "text",
-        text: readRequiredString(value.text, `${label}.text`),
+        text: requireNonEmptyString(value.text, `${label}.text must not be empty.`),
       };
     case "image": {
       throw new Error(`${label}.type image is not accepted; use type=file for A2A attachments.`);
@@ -165,10 +150,10 @@ function parseMessageAgentItem(value: unknown, label: string): ParsedMessageAgen
         throw new Error(`${label} does not accept path; upload the client-local file and pass uploadRef.`);
       }
       rejectUnexpectedKeys(value, label, ["type", "uploadRef", "filename", "caption", "mimeType"]);
-      const caption = readOptionalString(value.caption, `${label}.caption`);
+      const caption = optionalNonEmptyString(value.caption, `${label}.caption must not be empty.`);
       return {
         type: "file",
-        uploadRef: readRequiredString(value.uploadRef, `${label}.uploadRef`),
+        uploadRef: requireNonEmptyString(value.uploadRef, `${label}.uploadRef must not be empty.`),
         ...(caption ? {caption} : {}),
       };
     }
@@ -183,8 +168,8 @@ function parseMessageAgentSendCommandInput(input: unknown, commandLabel: string)
   items: readonly ParsedMessageAgentItem[];
 } {
   const object = requireInputObject(input, commandLabel);
-  const agentKey = readOptionalString(object.agentKey, `${commandLabel} agentKey`);
-  const sessionId = readOptionalString(object.sessionId, `${commandLabel} sessionId`);
+  const agentKey = optionalNonEmptyString(object.agentKey, `${commandLabel} agentKey must not be empty.`);
+  const sessionId = optionalNonEmptyString(object.sessionId, `${commandLabel} sessionId must not be empty.`);
   if (!agentKey && !sessionId) {
     throw new Error(`${commandLabel} requires agentKey or sessionId.`);
   }

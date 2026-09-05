@@ -1,6 +1,7 @@
 import type {JsonObject} from "../../lib/json.js";
 import {isJsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
+import {optionalNonEmptyString, requireNonEmptyString} from "../../lib/strings.js";
 import type {CommandDescriptor, CommandRequest, CommandSuccess, RegisteredCommand} from "../commands/types.js";
 import type {ExecutionEnvironmentRecord} from "../execution-environments/types.js";
 import type {SessionRecord} from "../sessions/types.js";
@@ -73,22 +74,6 @@ const LIST_PROFILE_ALLOWED_INPUT_KEYS = new Set(["includeDisabled"]);
 const SHOW_PROFILE_ALLOWED_INPUT_KEYS = new Set(["slug", "includeDisabled"]);
 const PROFILE_STATE_ALLOWED_INPUT_KEYS = new Set(["slug"]);
 
-function readRequiredString(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${label} must not be empty.`);
-  }
-
-  return value.trim();
-}
-
-function readOptionalString(value: unknown, label: string): string | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-
-  return readRequiredString(value, label);
-}
-
 function readOptionalBoolean(value: unknown, label: string): boolean | undefined {
   if (value === undefined || value === null) {
     return undefined;
@@ -107,7 +92,7 @@ function readToolGroups(value: unknown): string[] {
   if (value.length === 0 || value.length > 20) {
     throw new Error("subagent.profile.upsert toolGroups must contain 1 to 20 entries.");
   }
-  return value.map((entry, index) => readRequiredString(entry, `subagent.profile.upsert toolGroups[${index}]`));
+  return value.map((entry, index) => requireNonEmptyString(entry, `subagent.profile.upsert toolGroups[${index}] must not be empty.`));
 }
 
 function readSpawnToolGroups(value: unknown): SubagentToolGroup[] | undefined {
@@ -121,7 +106,7 @@ function readSpawnToolGroups(value: unknown): SubagentToolGroup[] | undefined {
     throw new Error("subagent.spawn toolGroups must contain 1 to 20 entries.");
   }
   return value.map((entry, index) => {
-    const group = readRequiredString(entry, `subagent.spawn toolGroups[${index}]`);
+    const group = requireNonEmptyString(entry, `subagent.spawn toolGroups[${index}] must not be empty.`);
     if (!SUBAGENT_TOOL_GROUP_KEYS.includes(group as SubagentToolGroup)) {
       throw new Error(`subagent.spawn toolGroups[${index}] must be a known subagent tool group.`);
     }
@@ -139,7 +124,7 @@ function readCredentialAllowlist(value: unknown, field = "credentialAllowlist"):
   if (value.length > 50) {
     throw new Error(`subagent.spawn ${field} must contain at most 50 entries.`);
   }
-  return value.map((entry, index) => readRequiredString(entry, `subagent.spawn ${field}[${index}]`));
+  return value.map((entry, index) => requireNonEmptyString(entry, `subagent.spawn ${field}[${index}] must not be empty.`));
 }
 
 function readSpawnExecution(value: unknown): SubagentExecutionMode | undefined {
@@ -174,13 +159,13 @@ function parseUpsertProfileInput(input: unknown) {
     }
   }
 
-  const model = readOptionalString(input.model, "subagent.profile.upsert model");
+  const model = optionalNonEmptyString(input.model, "subagent.profile.upsert model must not be empty.");
   const thinking = readThinking(input.thinking);
   const enabled = readOptionalBoolean(input.enabled, "subagent.profile.upsert enabled");
   return {
-    slug: readRequiredString(input.slug, "subagent.profile.upsert slug"),
-    description: readRequiredString(input.description, "subagent.profile.upsert description"),
-    prompt: readRequiredString(input.prompt, "subagent.profile.upsert prompt"),
+    slug: requireNonEmptyString(input.slug, "subagent.profile.upsert slug must not be empty."),
+    description: requireNonEmptyString(input.description, "subagent.profile.upsert description must not be empty."),
+    prompt: requireNonEmptyString(input.prompt, "subagent.profile.upsert prompt must not be empty."),
     toolGroups: readToolGroups(input.toolGroups),
     ...(model ? {model} : {}),
     ...(thinking ? {thinking} : {}),
@@ -218,7 +203,7 @@ function parseShowProfileInput(input: unknown) {
   rejectUnexpectedProfileKeys(input, SUBAGENT_PROFILE_SHOW_COMMAND_NAME, SHOW_PROFILE_ALLOWED_INPUT_KEYS);
 
   return {
-    slug: readRequiredString(input.slug, "subagent.profile.show slug"),
+    slug: requireNonEmptyString(input.slug, "subagent.profile.show slug must not be empty."),
     includeDisabled: readOptionalBoolean(input.includeDisabled, "subagent.profile.show includeDisabled") ?? false,
   };
 }
@@ -230,7 +215,7 @@ function parseProfileStateInput(input: unknown, commandName: string) {
   rejectUnexpectedProfileKeys(input, commandName, PROFILE_STATE_ALLOWED_INPUT_KEYS);
 
   return {
-    slug: readRequiredString(input.slug, `${commandName} slug`),
+    slug: requireNonEmptyString(input.slug, `${commandName} slug must not be empty.`),
   };
 }
 
@@ -244,16 +229,16 @@ function parseSpawnInput(input: unknown) {
     }
   }
 
-  const profile = readOptionalString(input.profile, "subagent.spawn profile");
-  const context = readOptionalString(input.context, "subagent.spawn context");
+  const profile = optionalNonEmptyString(input.profile, "subagent.spawn profile must not be empty.");
+  const context = optionalNonEmptyString(input.context, "subagent.spawn context must not be empty.");
   const execution = readSpawnExecution(input.execution);
-  const environmentId = readOptionalString(input.environmentId, "subagent.spawn environmentId");
+  const environmentId = optionalNonEmptyString(input.environmentId, "subagent.spawn environmentId must not be empty.");
   const credentialAllowlist = readCredentialAllowlist(input.credentialAllowlist);
   const credentialRefAllowlist = readCredentialAllowlist(input.credentialRefAllowlist, "credentialRefAllowlist");
   const toolGroups = readSpawnToolGroups(input.toolGroups);
 
   return {
-    prompt: readRequiredString(input.prompt, "subagent.spawn prompt"),
+    prompt: requireNonEmptyString(input.prompt, "subagent.spawn prompt must not be empty."),
     ...(profile ? {profile} : {}),
     ...(context ? {context} : {}),
     ...(execution ? {execution} : {}),
