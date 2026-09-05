@@ -230,6 +230,33 @@ describe("createRuntime", () => {
     expect(browserMocks.close).toHaveBeenCalledTimes(1);
   });
 
+  it("shares core tool instances with subagents and appends browser in a stable order", async () => {
+    const runtime = await createRuntime({
+      dbUrl: "postgres://panda:test@localhost:5432/panda",
+      resolveDefinition: vi.fn(),
+    });
+
+    try {
+      expect(runtime.mainTools.map((tool) => tool.name)).toEqual([
+        "bash",
+        "background_job_status",
+        "background_job_wait",
+        "background_job_cancel",
+        "view_media",
+        "thinking_set",
+      ]);
+      expect(runtime.subagentTools.map((tool) => tool.name)).toEqual([
+        ...runtime.mainTools.map((tool) => tool.name),
+        "browser",
+      ]);
+      for (const [index, tool] of runtime.mainTools.entries()) {
+        expect(runtime.subagentTools[index]).toBe(tool);
+      }
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("closes provider transport caches after thread work drains", async () => {
     const closeOrder: string[] = [];
     runtimeMocks.coordinatorStop.mockImplementationOnce(async () => {

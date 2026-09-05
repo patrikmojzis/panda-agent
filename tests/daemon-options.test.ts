@@ -1,10 +1,26 @@
-import {describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {createCommandCatalog, type CommandCatalogModule} from "../src/domain/commands/index.js";
-import type {DaemonOptions} from "../src/app/runtime/index.js";
+import {createDaemon, type DaemonOptions} from "../src/app/runtime/index.js";
 
 describe("DaemonOptions", () => {
-  it("retains the legacy commandModules compatibility option", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("rejects mixed catalog options before requiring a database", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
+    await expect(createDaemon({
+      cwd: "/tmp/panda",
+      commandCatalog: createCommandCatalog([]),
+      commandModules: [],
+    })).rejects.toThrow("Pass either commandCatalog or commandModules, not both.");
+  });
+
+  it("rejects duplicate legacy command modules before requiring a database", async () => {
+    vi.stubEnv("DATABASE_URL", "");
+
     const module = {
       descriptor: {
         name: "custom.echo",
@@ -43,7 +59,10 @@ describe("DaemonOptions", () => {
       commandModules: [module],
     } satisfies DaemonOptions;
 
-    expect(options.commandModules?.[0]?.descriptor.name).toBe("custom.echo");
+    await expect(createDaemon({
+      ...options,
+      commandModules: [module, module],
+    })).rejects.toThrow("Duplicate Panda command module custom.echo.");
   });
 
   it("accepts a supplied command catalog", () => {

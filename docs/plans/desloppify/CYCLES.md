@@ -170,7 +170,8 @@ store contract, conflict error and Postgres implementation.
   and successful SSE stream closure reaching the real fetch signal. Independent
   review verified identical class members and passed 30 transport/OAuth tests.
   Typecheck, import law and public-export checks passed.
-- State: reviewed and committed locally with this cycle; not pushed or deployed.
+- Commit: `598a7ef4` — `refactor(mcp): use native abort composition and isolate the test store`.
+- State: committed locally; not pushed or deployed.
 
 ## Cycle 8 — Remove redundant runtime composition
 
@@ -185,8 +186,8 @@ bootstrap result member, preserving the live readonly command dependency.
   Independent review passed 14 changed-file tests and checked actual tool order
   and shared object identity with and without background jobs, catalog identity,
   duplicate/conflicting module rejection, early validation and readonly wiring.
-- State: independently reviewed; awaiting its separate local commit and scoped
-  source-metadata snapshot update.
+- State: reviewed and committed locally with this cycle, including only the two
+  bootstrap source-metadata records; not pushed or deployed.
 
 ## Cycle 9 — Let remote-start compensation own its outcome
 

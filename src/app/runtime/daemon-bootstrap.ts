@@ -25,9 +25,8 @@ import {DEFAULT_RUNTIME_REQUEST_CLAIM_LEASE_MS, RuntimeRequestRepo,} from "../..
 import {createChannelTypingEventHandler} from "../../domain/threads/runtime/channel-typing.js";
 import {A2AMessagingService} from "../../domain/a2a/service.js";
 import {createWatchEvaluator} from "../../integrations/watches/evaluator.js";
-import {createCommandCatalog, type CommandCatalog} from "../../domain/commands/modules.js";
-import type {CommandCatalogModule} from "../../domain/commands/types.js";
 import {createRuntime, createThreadDefinition, type RuntimeServices,} from "./create-runtime.js";
+import {resolveRuntimeCommandCatalog} from "./runtime-bootstrap.js";
 import {buildDaemonChannelCommandDependencies} from "./command-dependencies.js";
 import type {AgentCommandModuleDependencies} from "../../panda/commands/agent-command-modules.js";
 import {resolveVisibleCommandDescriptors} from "./command-visibility.js";
@@ -84,22 +83,6 @@ interface DaemonContext {
   discordVoice: {controls: DiscordVoiceControlRepo; live: LiveVoiceRepo; close(): Promise<void>};
 }
 
-function resolveDaemonCommandCatalog(
-  options: Pick<DaemonOptions, "commandCatalog" | "commandModules">,
-): CommandCatalog<any, CommandCatalogModule<any>> | undefined {
-  if (options.commandCatalog && options.commandModules) {
-    throw new Error("Pass either commandCatalog or commandModules, not both.");
-  }
-  if (options.commandCatalog) {
-    return options.commandCatalog;
-  }
-  if (options.commandModules) {
-    return createCommandCatalog(options.commandModules);
-  }
-
-  return undefined;
-}
-
 export async function bootstrapDaemonContext(
   options: DaemonOptions,
 ): Promise<DaemonContext> {
@@ -146,7 +129,7 @@ export async function bootstrapDaemonContext(
     },
   ]);
 
-  const commandCatalog = resolveDaemonCommandCatalog(options);
+  const commandCatalog = resolveRuntimeCommandCatalog(options);
   const readonlyPostgresCommandAllowed = Boolean(
     trimToNull(options.readOnlyDbUrl) ?? trimToNull(process.env.READONLY_DATABASE_URL),
   );
@@ -156,7 +139,7 @@ export async function bootstrapDaemonContext(
     dbUrl: options.dbUrl,
     readOnlyDbUrl: options.readOnlyDbUrl,
     cwd: options.cwd,
-    ...(commandCatalog ? {commandCatalog} : {}),
+    commandCatalog,
     onEvent: async (event) => {
       await typingEventHandler(event);
       try {

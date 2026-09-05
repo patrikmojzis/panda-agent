@@ -45,7 +45,6 @@ import type {ThreadShellStateStore} from "../../domain/threads/runtime/shell-sta
 import type {Tool} from "../../kernel/agent/tool.js";
 import {
     buildCoreAgentToolsFromRegistry,
-    buildDefaultAgentToolsetsFromRegistry,
     createDefaultAgentToolRegistry,
 } from "../../panda/definition.js";
 import {
@@ -139,21 +138,6 @@ function logRuntimeEvent(event: string, payload: Record<string, unknown>): void 
   })}\n`);
 }
 
-function mergeToolsByName(toolGroups: readonly (readonly Tool[])[]): readonly Tool[] {
-  const seen = new Set<string>();
-  const merged: Tool[] = [];
-  for (const tools of toolGroups) {
-    for (const tool of tools) {
-      if (seen.has(tool.name)) {
-        continue;
-      }
-      seen.add(tool.name);
-      merged.push(tool);
-    }
-  }
-  return merged;
-}
-
 interface RuntimeBootstrapOptions extends Omit<RuntimeOptions, "dbUrl"> {
   dbUrl: string;
 }
@@ -202,7 +186,6 @@ interface RuntimeBootstrapResult {
   commandModules: readonly CommandCatalogModule<any>[];
   wikiBindingService: WikiBindingService | null;
   a2aBindings: A2ASessionBindingRepo;
-  postgresReadonly: PostgresReadonlyQueryCommandOptions;
   mainTools: readonly Tool[];
   subagentTools: readonly Tool[];
   pool: Pool;
@@ -216,7 +199,8 @@ interface ObservedPoolState {
   initializing: Promise<Pool> | null;
 }
 
-function resolveRuntimeCommandCatalog(
+/** Resolves the configured catalog before daemon startup acquires runtime resources. */
+export function resolveRuntimeCommandCatalog(
   options: Pick<RuntimeOptions, "commandCatalog" | "commandModules">,
 ): CommandCatalog<any, CommandCatalogModule<any>> {
   if (options.commandCatalog && options.commandModules) {
@@ -817,19 +801,8 @@ export async function bootstrapRuntime(
     if (wikiEnabled && !wikiBindingService) {
       throw new Error("Wiki bindings require CREDENTIALS_MASTER_KEY when WIKI_URL or WIKI_DB_URL is set.");
     }
-    const defaultToolsets = buildDefaultAgentToolsetsFromRegistry(
-      toolRegistry,
-      [],
-    );
-
     const mainTools = buildCoreAgentToolsFromRegistry(toolRegistry);
-    const subagentTools = mergeToolsByName([
-      mainTools,
-      defaultToolsets.workspace,
-      defaultToolsets.memory,
-      defaultToolsets.browser,
-      defaultToolsets.skill_maintainer,
-    ]);
+    const subagentTools = [...mainTools, toolRegistry.browser];
 
     return {
       sessionLifecycle: createPostgresSessionLifecycle({pool: postgresPool, sessionStore, threadStore: store}),
@@ -875,7 +848,6 @@ export async function bootstrapRuntime(
       commandModules,
       wikiBindingService,
       a2aBindings,
-      postgresReadonly: postgresReadonlyCommandOptions,
       mainTools,
       subagentTools,
       pool: postgresPool,
