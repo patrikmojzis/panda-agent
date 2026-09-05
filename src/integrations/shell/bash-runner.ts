@@ -30,7 +30,7 @@ import {
 } from "./bash-protocol.js";
 import {ManagedBashJob} from "./bash-background-job.js";
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
-import {assertNoDeprecatedBashServerEnv, BASH_SERVER_PROCESS_ENV_NAMES} from "./bash-server-env.js";
+import {assertNoDeprecatedBashServerEnv, BASH_SERVER_PROCESS_ENV_NAMES} from "../../domain/execution-environments/runner-config.js";
 import {executeBashCommand} from "./bash-execution.js";
 import {readJsonHttpBody} from "../http-body.js";
 import {buildSafeCommandEnv, SAFE_SHELL} from "./environment.js";

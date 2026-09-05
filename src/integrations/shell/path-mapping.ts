@@ -2,7 +2,7 @@ import path from "node:path";
 
 import {resolveAgentDir} from "../../lib/data-dir.js";
 import {mapPathBetweenRoots} from "../../domain/execution-environments/filesystem.js";
-import {resolveBashExecutionMode, resolveRunnerCwd, resolveRunnerCwdTemplate,} from "./bash-executor.js";
+import {resolveBashExecutionMode, resolveRunnerCwd, resolveRunnerCwdTemplate,} from "../../domain/execution-environments/runner-config.js";
 
 function resolveRemoteAgentRoots(
   agentKey: string,

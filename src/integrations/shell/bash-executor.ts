@@ -17,37 +17,18 @@ import {
   parseBashRunnerResponse,
 } from "./bash-protocol.js";
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
-import {assertNoDeprecatedBashServerEnv, CORE_BASH_SERVER_ENV_NAMES} from "./bash-server-env.js";
 import type {ShellExecutionContext} from "./types.js";
 import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
 import {buildShellProcessEnv, SAFE_SHELL} from "./environment.js";
 import {redactSecretsInJsonObject} from "./redaction.js";
 import {
-  buildRunnerEndpoint,
-  makeNetworkTimeoutSignal,
+  assertNoDeprecatedBashServerEnv,
+  CORE_BASH_SERVER_ENV_NAMES,
   resolveBashExecutionMode,
-  resolveRemoteInitialCwd,
-  resolveRunnerCwd,
-  resolveRunnerCwdTemplate,
-  resolveRunnerUrl,
   resolveRunnerUrlTemplate,
-  type BashExecutionMode,
 } from "../../domain/execution-environments/runner-config.js";
-import {buildRunnerRequestHeaders, RunnerTransport} from "./runner-transport.js";
+import {RunnerTransport} from "./runner-transport.js";
 import type {RunnerTokenAuthority} from "./runner-auth.js";
-
-export {
-  buildRunnerEndpoint,
-  makeNetworkTimeoutSignal,
-  resolveBashExecutionMode,
-  resolveRemoteInitialCwd,
-  resolveRunnerCwd,
-  resolveRunnerCwdTemplate,
-  resolveRunnerUrl,
-  resolveRunnerUrlTemplate,
-  buildRunnerRequestHeaders,
-  type BashExecutionMode,
-};
 
 const DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS = 5_000;
 

@@ -24,7 +24,8 @@ import {ExecutionEnvironmentResolver} from "../src/app/runtime/execution-environ
 import {PostgresExecutionEnvironmentStore} from "../src/domain/execution-environments/postgres.js";
 import {ensurePostgresExecutionEnvironmentSchema} from "../src/domain/execution-environments/postgres-schema.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
-import {RemoteShellExecutor, resolveRunnerUrl,} from "../src/integrations/shell/bash-executor.js";
+import {RemoteShellExecutor} from "../src/integrations/shell/bash-executor.js";
+import {resolveRunnerUrl} from "../src/domain/execution-environments/runner-config.js";
 import {HmacRunnerTokenAuthority} from "../src/integrations/shell/runner-auth.js";
 import {
   type CommandExecutor,
@@ -2664,7 +2665,10 @@ describe("remote bash runner", () => {
     ]);
   }, 10_000);
 
-  it("compensates when a proxy rejects an origin-accepted remote start", async () => {
+  it.each([
+    {status: 502, payload: {ok: false, error: "proxy lost the origin response"}, error: "proxy lost the origin response"},
+    {status: 200, payload: {ok: true}, error: "Remote bash runner returned an invalid background job response."},
+  ])("compensates an origin-accepted remote start with an unusable $status response", async ({status, payload, error}) => {
     const agentHome = await createWorkspace("runtime-agent-home-");
     const runner = await createRunner("panda");
     const store = new TestThreadRuntimeStore();
@@ -2688,8 +2692,8 @@ describe("remote bash runner", () => {
           return false;
         }
       });
-      return new Response(JSON.stringify({ok: false, error: "proxy lost the origin response"}), {
-        status: 502,
+      return new Response(JSON.stringify(payload), {
+        status,
         headers: {"content-type": "application/json"},
       });
     };
@@ -2711,7 +2715,7 @@ describe("remote bash runner", () => {
     await expect(bash.run({
       command: `printf '%s' "$$" > ${JSON.stringify(pidFile)}; exec sleep 60`,
       background: true,
-    }, createRunContext(context))).rejects.toThrow("proxy lost the origin response");
+    }, createRunContext(context))).rejects.toThrow(error);
     const pid = Number((await readFile(pidFile, "utf8")).trim());
     await waitFor(() => {
       try {

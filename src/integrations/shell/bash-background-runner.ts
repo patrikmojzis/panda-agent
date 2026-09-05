@@ -5,16 +5,17 @@ import type {
     BackgroundToolJobSnapshot,
 } from "../../domain/threads/runtime/tool-job-service.js";
 import type {JsonObject} from "../../lib/json.js";
-import {
-    readRunnerError,
-    resolveBashExecutionMode,
-    resolveRunnerUrlTemplate,
-} from "./bash-executor.js";
+import {readRunnerError} from "./bash-executor.js";
 import {RunnerTransport, type RunnerTransportTarget} from "./runner-transport.js";
 import {ManagedBashJob} from "./bash-background-job.js";
 import {buildShellProcessEnv, SAFE_SHELL} from "./environment.js";
 import {readBashSpawnPreflightFailure} from "./bash-spawn-preflight.js";
-import {assertNoDeprecatedBashServerEnv, CORE_BASH_SERVER_ENV_NAMES} from "./bash-server-env.js";
+import {
+  assertNoDeprecatedBashServerEnv,
+  CORE_BASH_SERVER_ENV_NAMES,
+  resolveBashExecutionMode,
+  resolveRunnerUrlTemplate,
+} from "../../domain/execution-environments/runner-config.js";
 import type {
     BashJobSnapshot,
     BashRunnerJobCancelRequest,
@@ -150,20 +151,27 @@ async function compensateAmbiguousRemoteStart(input: {
   transport: RunnerTransport;
   target: RunnerTransportTarget;
   jobId: string;
-}): Promise<void> {
-  const response = await input.transport.request(input.target, "jobs/cancel", {
-    body: {
-      jobId: input.jobId,
-      timeoutMs: DEFAULT_REMOTE_CANCEL_WAIT_TIMEOUT_MS,
-      reserveIfMissing: true,
-    } satisfies BashRunnerJobCancelRequest,
-    // The startup signal is already aborted. Compensation needs an independent
-    // bounded request or it would be cancelled before reaching the runner.
-    timeoutMs: DEFAULT_REMOTE_TIMEOUT_BUFFER_MS,
-  });
-  if (!response.ok) {
-    await readRunnerError(response);
+  error: unknown;
+  failureMessage: string;
+}): Promise<never> {
+  try {
+    const response = await input.transport.request(input.target, "jobs/cancel", {
+      body: {
+        jobId: input.jobId,
+        timeoutMs: DEFAULT_REMOTE_CANCEL_WAIT_TIMEOUT_MS,
+        reserveIfMissing: true,
+      } satisfies BashRunnerJobCancelRequest,
+      // The startup signal is already aborted. Compensation needs an independent
+      // bounded request or it would be cancelled before reaching the runner.
+      timeoutMs: DEFAULT_REMOTE_TIMEOUT_BUFFER_MS,
+    });
+    if (!response.ok) {
+      await readRunnerError(response);
+    }
+  } catch (compensationError) {
+    throw new AggregateError([input.error, compensationError], input.failureMessage);
   }
+  throw input.error;
 }
 
 export async function startBashBackgroundJob<TContext extends ShellExecutionContext>(
@@ -266,47 +274,30 @@ export async function startBashBackgroundJob<TContext extends ShellExecutionCont
       signal: options.signal,
     });
   } catch (error) {
-    try {
-      await compensateAmbiguousRemoteStart({transport, target, jobId: options.jobId});
-    } catch (compensationError) {
-      throw new AggregateError(
-        [error, compensationError],
-        `Remote background job ${options.jobId} start was ambiguous and compensation failed.`,
-      );
-    }
-    throw error;
+    return compensateAmbiguousRemoteStart({
+      transport, target, jobId: options.jobId, error,
+      failureMessage: `Remote background job ${options.jobId} start was ambiguous and compensation failed.`,
+    });
   }
   if (!response.ok) {
-    let startError: unknown;
     try {
       await readRunnerError(response);
     } catch (error) {
-      startError = error;
+      return compensateAmbiguousRemoteStart({
+        transport, target, jobId: options.jobId, error,
+        failureMessage: `Remote background job ${options.jobId} was rejected ambiguously and compensation failed.`,
+      });
     }
-    try {
-      await compensateAmbiguousRemoteStart({transport, target, jobId: options.jobId});
-    } catch (compensationError) {
-      throw new AggregateError(
-        [startError, compensationError],
-        `Remote background job ${options.jobId} was rejected ambiguously and compensation failed.`,
-      );
-    }
-    throw startError;
   }
 
   let initial: BashJobSnapshot;
   try {
     initial = sanitizeSnapshot(await parseJobResponse(response), options);
   } catch (error) {
-    try {
-      await compensateAmbiguousRemoteStart({transport, target, jobId: options.jobId});
-    } catch (compensationError) {
-      throw new AggregateError(
-        [error, compensationError],
-        `Remote background job ${options.jobId} returned an ambiguous response and compensation failed.`,
-      );
-    }
-    throw error;
+    return compensateAmbiguousRemoteStart({
+      transport, target, jobId: options.jobId, error,
+      failureMessage: `Remote background job ${options.jobId} returned an ambiguous response and compensation failed.`,
+    });
   }
 
   const readRemoteSnapshot = async (

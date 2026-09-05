@@ -16,21 +16,22 @@ export {
   createDefaultBashExecutor,
   LocalShellExecutor,
   RemoteShellExecutor,
-  resolveBashExecutionMode,
-  resolveRemoteInitialCwd,
-  resolveRunnerUrl,
-  resolveRunnerUrlTemplate,
-  buildRunnerEndpoint,
-  buildRunnerRequestHeaders,
-  makeNetworkTimeoutSignal,
   parseRunnerResponse,
   readRunnerError,
-  type BashExecutionMode,
   type BashExecutor,
   type BashExecutorOptions,
   type LocalShellExecutorOptions,
   type RemoteShellExecutorOptions,
 } from "./bash-executor.js";
+export {
+  resolveBashExecutionMode,
+  resolveRemoteInitialCwd,
+  resolveRunnerUrl,
+  resolveRunnerUrlTemplate,
+  buildRunnerEndpoint,
+  makeNetworkTimeoutSignal,
+  type BashExecutionMode,
+} from "../../domain/execution-environments/runner-config.js";
 export {
   createWorkspaceExecCredential,
   DockerApiError,
@@ -60,6 +61,7 @@ export {
   type RunnerTokenAuthority,
 } from "./runner-auth.js";
 export {
+  buildRunnerRequestHeaders,
   RunnerTransport,
   type RunnerTransportOptions,
   type RunnerTransportTarget,

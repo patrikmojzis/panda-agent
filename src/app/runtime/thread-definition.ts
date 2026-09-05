@@ -24,7 +24,7 @@ import type {SubagentProfileStore} from "../../domain/subagents/store.js";
 import type {DefaultAgentSessionContext} from "./panda-session-context.js";
 import type {BashToolOptions} from "../../panda/tools/bash-tool.js";
 import type {BrowserToolOptions} from "../../panda/tools/browser-tool.js";
-import {resolveRemoteInitialCwd} from "../../integrations/shell/bash-executor.js";
+import {resolveRemoteInitialCwd} from "../../domain/execution-environments/runner-config.js";
 import {mapHostAgentPathToRunner} from "../../integrations/shell/path-mapping.js";
 import type {Tool} from "../../kernel/agent/tool.js";
 import type {WikiBindingService} from "../../domain/wiki/service.js";

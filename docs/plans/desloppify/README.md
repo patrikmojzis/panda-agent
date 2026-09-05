@@ -31,10 +31,13 @@ lines. The attachment-save race fix removes 18 more production lines and is
 reviewed and committed with its cycle. In total, these cleanup commits remove
 4,159 production lines relative to the first cleanup commit's parent, excluding
 tests, documentation and configuration. Cycles 6–9 simplify provider projections,
-MCP cancellation, runtime composition and shell compensation. They are verified
-in an isolated checkout and being committed separately; concurrent storage and
-prompt changes belong to another task. The cycle log is the current progress
-record; the inspect/review/commit loop remains active.
+MCP cancellation, runtime composition and shell compensation, removing another
+230 production lines, including 75 relocated into tests. Provider, MCP and runtime
+changes are committed as `07cabc01`, `598a7ef4` and `bd8382a7`; shell compensation
+is committed with its own cycle. Combined isolated verification covered 2,957
+tests and a passing model/bash smoke. The separate storage commit `89dfea95` is
+excluded from these counts. The cycle log is the current progress record; the
+inspect/review/commit loop remains active.
 
 Production access remains strictly read-only. No deployment, migration, restart,
 message replay or historical-data cleanup is part of this work. The production

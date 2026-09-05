@@ -186,8 +186,9 @@ bootstrap result member, preserving the live readonly command dependency.
   Independent review passed 14 changed-file tests and checked actual tool order
   and shared object identity with and without background jobs, catalog identity,
   duplicate/conflicting module rejection, early validation and readonly wiring.
-- State: reviewed and committed locally with this cycle, including only the two
-  bootstrap source-metadata records; not pushed or deployed.
+- Commit: `bd8382a7` — `refactor(runtime): simplify tools and share catalog resolution`.
+- State: committed locally, including only the two bootstrap source-metadata
+  records; not pushed or deployed.
 
 ## Cycle 9 — Let remote-start compensation own its outcome
 
@@ -202,8 +203,9 @@ the supported shell package exports.
   scenarios, all 50 named/type exports and 31 runtime export references. Its
   broader run passed 91 tests; one unchanged cancellation timing assertion passed
   on isolated retry. New compensation cases passed on their first run.
-- State: independently reviewed; awaiting its separate local commit. Three files
-  also contain concurrent storage work; stage only our import changes there.
+- State: reviewed and committed locally with this cycle, including only its
+  thread-definition source-metadata record; not pushed or deployed. The three
+  shared files include only this cycle's import changes in the cleanup commit.
 
 ## Isolated verification after cycles 6–9
 
@@ -223,6 +225,10 @@ Postgres. That temporary database server was stopped afterward.
 
 Preserve the unrelated edits. Commit source-metadata updates only for our files;
 do not regenerate and include another task's prompt changes with this cleanup.
+The concurrent storage work was committed separately as `89dfea95` and is excluded
+from cleanup statistics. Cycles 6–9 remove 230 production lines, including 75
+relocated to tests. The actual production-code deletion excluding relocation is
+155 lines; the tests and cycle records account for additional repository lines.
 
 ## Combined verification after cycles 1–5
 

@@ -36,7 +36,7 @@ import {readJsonHttpBody} from "../http-body.js";
 import {buildSafeCommandBaseEnv} from "./environment.js";
 import {appendOutput, createOutputCapture, finalizeOutputCapture} from "./bash-output.js";
 import type {WorkspaceExecAction, WorkspaceExecStartRequest, WorkspaceProcessSnapshot} from "./workspace-exec-protocol.js";
-import {assertNoDeprecatedBashServerEnv, DOCKER_MANAGER_BASH_SERVER_ENV_NAMES} from "./bash-server-env.js";
+import {assertNoDeprecatedBashServerEnv, DOCKER_MANAGER_BASH_SERVER_ENV_NAMES} from "../../domain/execution-environments/runner-config.js";
 
 const DEFAULT_MANAGER_HOST = "127.0.0.1";
 const DEFAULT_MANAGER_PORT = 8095;

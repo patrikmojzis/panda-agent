@@ -8,7 +8,8 @@ import {promisify} from "node:util";
 import {afterAll, beforeAll, describe, expect, it} from "vitest";
 
 import {RemoteExecutionEnvironmentSetupRunner} from "../../src/app/runtime/execution-environment-setup-runner.js";
-import {buildRunnerEndpoint, buildRunnerRequestHeaders} from "../../src/integrations/shell/bash-executor.js";
+import {buildRunnerEndpoint} from "../../src/domain/execution-environments/runner-config.js";
+import {buildRunnerRequestHeaders} from "../../src/integrations/shell/runner-transport.js";
 import {executionEnvironmentRunnerAuthScope, HmacRunnerTokenAuthority} from "../../src/integrations/shell/runner-auth.js";
 import type {BashExecutionResult, BashJobSnapshot} from "../../src/integrations/shell/bash-protocol.js";
 import {

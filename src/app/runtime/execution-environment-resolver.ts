@@ -18,10 +18,10 @@ import {
   resolveBashExecutionMode,
   resolveRunnerCwd,
   resolveRunnerCwdTemplate,
+  resolveRunnerPersistentRoots,
   resolveRunnerUrl,
   resolveRunnerUrlTemplate,
-} from "../../integrations/shell/bash-executor.js";
-import {resolveRunnerPersistentRoots} from "../../domain/execution-environments/runner-config.js";
+} from "../../domain/execution-environments/runner-config.js";
 
 type ExecutionEnvironmentResolverStore = Pick<ExecutionEnvironmentStore, "getDefaultBinding" | "getBindingByAlias" | "getEnvironment">;
 

@@ -19,7 +19,7 @@ import {
 } from "../src/panda/definition.js";
 import {BackgroundToolJobService} from "../src/domain/threads/runtime/tool-job-service.js";
 import {resolveStoredContext} from "../src/app/runtime/create-runtime.js";
-import {resolveRemoteInitialCwd} from "../src/integrations/shell/bash-executor.js";
+import {resolveRemoteInitialCwd} from "../src/domain/execution-environments/runner-config.js";
 import {TestThreadRuntimeStore} from "./helpers/test-runtime-store.js";
 
 function createBackgroundJobService(): BackgroundToolJobService {
