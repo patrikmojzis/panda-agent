@@ -337,27 +337,11 @@ export class ExecutionEnvironmentLifecycleService {
       socketAccessAllowed,
       ...(input.ttlMs === undefined ? {} : {ttlMs: input.ttlMs}),
     });
-    if (!commandLease) {
-      if (
-        input.executionEnvironment.kind === "disposable_container"
-        && input.executionEnvironment.source === "binding"
-      ) {
-        if (!this.manager?.refreshCommandAccess) {
-          return {refreshed: false, reason: "unsupported_manager"};
-        }
-
-        await this.manager.refreshCommandAccess({
-          environmentId: input.executionEnvironment.id,
-        });
-      }
-      return {refreshed: false, reason: "no_allowed_commands"};
-    }
-
-    const commandAccess = {
+    const commandAccess = commandLease ? {
       ...(commandLease.url ? {url: commandLease.url} : {}),
       ...(commandLease.socketPath ? {socketPath: commandLease.socketPath} : {}),
       token: commandLease.token,
-    };
+    } : undefined;
 
     if (
       input.executionEnvironment.kind === "disposable_container"
@@ -369,14 +353,13 @@ export class ExecutionEnvironmentLifecycleService {
 
       await this.manager.refreshCommandAccess({
         environmentId: input.executionEnvironment.id,
-        commandAccess,
+        ...(commandAccess ? {commandAccess} : {}),
       });
     }
 
-    return {
-      refreshed: true,
-      commandAccess,
-    };
+    return commandAccess
+      ? {refreshed: true, commandAccess}
+      : {refreshed: false, reason: "no_allowed_commands"};
   }
 
   async readEnvironmentLogs(input: DisposableEnvironmentLogsRequest): Promise<DisposableEnvironmentLogsResult> {

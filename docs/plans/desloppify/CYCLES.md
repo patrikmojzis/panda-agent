@@ -1512,3 +1512,26 @@ remains preserved. The inspect/review/commit loop remains active.
   `.temp/desloppify-cycles54-56-unit-results.json` and
   `.temp/desloppify-cycles54-56-unit-rerun-results.json`. No cancellation code or
   test was changed to obtain the passing result.
+
+## Cycle 55 — Share command-access grant and clear handling
+
+- Finding: `refreshSessionCommandAccess` in
+  `src/app/runtime/execution-environment-service.ts` duplicated the same bound
+  disposable-environment manager check and refresh call for lease grant and clear.
+- Change: build optional command access once and use one manager branch. Clearing
+  access still omits the `commandAccess` property entirely; an unsupported manager
+  retains precedence over the no-allowed-commands result. Transport resolution,
+  lease refresh, manager calls and raw failures keep their existing order.
+- Result: 17 fewer production lines; cumulative reduction returns to 5,493,
+  including the 75 lines previously relocated into tests. No tests were rewritten
+  to accept a different contract.
+- Evidence: author comparison of the actual old/new method passes 1,440 cases
+  and 138 focused tests. Independent review passes 2,880 comparisons and 77
+  environment/lease tests, including omitted properties, optional URL/socket
+  fields, error identity and returned/manager command-access object identity.
+  Source outside this method remains byte-identical.
+- State: independently reviewed and committed locally with this cycle. The
+  combined tree passes all 3,204 unit tests on the recorded rerun, build/typecheck,
+  import law and prompt/shim contracts. The earlier cancellation failure and its
+  limits remain recorded under cycle 54. Cycle 54 is committed as `2aaa7744`.
+  No schema, production access, push or deployment change.
