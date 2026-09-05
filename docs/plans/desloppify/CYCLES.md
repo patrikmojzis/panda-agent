@@ -1710,3 +1710,35 @@ the public result. Rewriting the duration summary into a manual accumulation
 loop adds four lines and more state; retain the existing expression. Redundant
 finite-duration checks at the already-normalized private boundary are a separate
 candidate under verification.
+
+## Cycle 59 — Use validated runtime durations
+
+- Finding: `publicRun` checked the finiteness of a duration already derived from
+  validated ISO timestamps; the private summary repeated the type/finite checks.
+  Its only caller supplies the records produced by `publicRun`.
+- Change: inline the duration calculation and exclude only null durations from
+  the average. Keep timestamp normalization, field-validation order, numeric
+  accumulation order and the existing summary expression. Successful JavaScript
+  dates are bounded by ±8.64×10¹⁵ milliseconds, so their difference remains finite.
+- Result: one fewer production line and 42 added test lines; cumulative reduction
+  returns to 5,491 production lines across 60 cleanup commits, including the 75
+  lines previously relocated into tests. The cycle 58 collator and owned-array
+  sort remain byte-identical.
+- Evidence: eight new public-service cases passed against the baseline before
+  implementation; author and independent review then pass all 112 tests in the
+  Control HTTP suite. These cases use a controlled query adapter with the actual
+  date helpers, covering date limits, negative/zero/missing durations, zero in
+  the average and timestamp/status/id/abort validation precedence.
+- Parity: 4,830 actual public-method comparisons preserve results, errors and
+  query order: 2,458 successful reads and 2,372 error outcomes. They cover real
+  Date/string/number timestamp inputs, valid extremes, fractions, invalid values
+  and mixed-run pagination. No claim relies on malformed private DTOs that the
+  public mapping cannot produce. Evidence:
+  `.temp/desloppify-cycle59-duration-parity-output.log`.
+- State: independently reviewed and committed locally with this cycle. All
+  3,219 unit tests across 339 files pass without failures or skips:
+  `.temp/desloppify-cycle59-unit-results.json`. Build/typecheck, import law,
+  all 19 compiled package imports and shared `Thread` identity pass. Exact source
+  reconstruction permits only the three duration substitutions; timestamp helpers,
+  SQL and authorization are unchanged. No schema, production access, push or
+  deployment change. Cycle 58 is committed as `94e20aea`.

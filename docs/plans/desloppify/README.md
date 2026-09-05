@@ -13,9 +13,9 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–58; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–59; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,490 production lines**, including
+Together, these cleanup commits remove **5,491 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
@@ -27,19 +27,19 @@ five in the verification fixture. Enriched listings, access policy and admin-wid
 overview/credential scope remain unchanged. The preceding lifecycle changes
 simplify command-access refresh and durable subagent creation replay.
 
-The latest cycle reuses runtime activity's text collator and sorts its already
-owned filtered array, adding one production line. Natural ordering, case/accent
-ties, nulls, filtering, page clamping and unfiltered summaries stay unchanged.
-Its 5,718 public-method comparisons pass across English, Slovak and Turkish
-locales; two new caller tests retain the sorting contract.
+The latest runtime passes reuse the text collator, sort the already-owned
+filtered array and remove redundant checks on validated durations. Ordering,
+case/accent ties, nulls, page clamping and unfiltered summaries stay unchanged.
+Verification includes 5,718 public-method comparisons across English, Slovak and
+Turkish locales, 4,830 duration comparisons and ten new public caller cases.
 
-The frozen tree passes **3,211 unit tests across 339 files**, root
+The frozen tree passes **3,219 unit tests across 339 files**, root
 build/typecheck, import law, all 19 compiled package
 imports and shared `Thread` identity. The initial failure of an unchanged
 cancellation test and its passing isolated/file/full reruns are recorded under
 cycle 54; its precise cause remains unproven. Cycle 57 passed prompt/shim
 contracts, eleven real-PostgreSQL visibility tests and 102 baseline/current
-comparisons. Cycle 58 leaves those queries and authority checks unchanged.
+comparisons. Cycles 58–59 leave those queries and authority checks unchanged.
 The cycle 56 common-runtime smoke applied all 25 migrations to fresh local
 PostgreSQL and completed an owned run with applied input, one tool call, four
 messages and idle state. It used injected model responses and blocked external

@@ -101,14 +101,13 @@ function failureCategory(error: unknown): ControlRuntimeFailureCategory | null {
 function publicRun(row: RunRow): ControlRuntimeActivityRun {
   const startedAt = requireIsoTimestamp(row.started_at, "Runtime run started_at must be a valid timestamp.");
   const finishedAt = nullableIsoTimestamp(row.finished_at, "Runtime run finished_at must be a valid timestamp.");
-  const durationMs = finishedAt ? new Date(finishedAt).getTime() - new Date(startedAt).getTime() : null;
   const status = requiredString(row.status, "Runtime run status") as ThreadRunStatus;
   return {
     id: requiredString(row.id, "Runtime run id"),
     status,
     startedAt,
     finishedAt,
-    durationMs: durationMs !== null && Number.isFinite(durationMs) ? durationMs : null,
+    durationMs: finishedAt ? new Date(finishedAt).getTime() - new Date(startedAt).getTime() : null,
     abortRequestedAt: nullableIsoTimestamp(row.abort_requested_at, "Runtime run abort_requested_at must be a valid timestamp."),
     failureCategory: failureCategory(row.error),
     errorSummary: status === "failed" ? summarizeRuntimeError(row.error) : null,
@@ -118,7 +117,7 @@ function publicRun(row: RunRow): ControlRuntimeActivityRun {
 function summaryFromRuns(runs: readonly ControlRuntimeActivityRun[]): ControlRuntimeActivitySummary {
   const durations = runs
     .map((run) => run.durationMs)
-    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+    .filter((value): value is number => value !== null);
   const summary: ControlRuntimeActivitySummary = {
     total: runs.length,
     running: 0,

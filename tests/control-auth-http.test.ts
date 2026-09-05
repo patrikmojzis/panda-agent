@@ -4954,6 +4954,48 @@ describe("Control Runtime Activity HTTP", () => {
     ]) expect(text).not.toContain(sentinel);
   });
 
+  it("maps normalized runtime durations at date limits and keeps zero in the average", async () => {
+    const maxDate = 8.64e15;
+    const rows = [
+      {started_at: new Date(-maxDate), finished_at: new Date(maxDate).toISOString()},
+      {started_at: maxDate, finished_at: new Date(-maxDate)},
+      {started_at: "1970-01-01T00:00:00.000Z", finished_at: new Date(0)},
+      {started_at: 1000, finished_at: 0},
+      {started_at: 0, finished_at: null},
+      {started_at: 0},
+    ].map((timestamps, index) => ({id: `run-${index}`, status: "completed", ...timestamps}));
+    const query = vi.fn().mockResolvedValueOnce({rows: [{}]}).mockResolvedValueOnce({rows});
+    const service = new ControlRuntimeActivityService({pool: {query}});
+    const result = await service.getRuntimeActivity({
+      id: "login", identityId: "identity", role: "admin", csrfTokenHash: "hash", expiresAt: 1, createdAt: 0, lastSeenAt: 0,
+    }, "panda", "session-panda", {sortBy: "id", sortDirection: "asc"});
+
+    expect(result.data.map((run) => run.durationMs)).toEqual([2 * maxDate, -2 * maxDate, 0, -1000, null, null]);
+    expect(result.summary.averageDurationMs).toBe(-250);
+    expect(result.data[0]).toMatchObject({startedAt: "-271821-04-20T00:00:00.000Z", finishedAt: "+275760-09-13T00:00:00.000Z"});
+    expect(result.data.slice(4).map((run) => run.finishedAt)).toEqual([null, null]);
+  });
+
+  it.each([
+    {row: {started_at: "invalid", finished_at: "invalid", status: ""}, error: Error, message: "Runtime run started_at must be a valid timestamp."},
+    {row: {started_at: 8.64e15 + 1, status: ""}, error: RangeError, message: "Invalid time value"},
+    {row: {finished_at: "invalid", status: ""}, error: Error, message: "Runtime run finished_at must be a valid timestamp."},
+    {row: {finished_at: 8.64e15 + 1, status: ""}, error: RangeError, message: "Invalid time value"},
+    {row: {status: "", id: "", abort_requested_at: "invalid"}, error: Error, message: "Runtime run status is missing."},
+    {row: {id: "", abort_requested_at: "invalid"}, error: Error, message: "Runtime run id is missing."},
+    {row: {abort_requested_at: "invalid"}, error: Error, message: "Runtime run abort_requested_at must be a valid timestamp."},
+  ])("keeps runtime timestamp and row validation precedence: $message", async ({row, error, message}) => {
+    const query = vi.fn().mockResolvedValueOnce({rows: [{}]}).mockResolvedValueOnce({rows: [{
+      id: "run", status: "completed", started_at: 0, finished_at: 0, ...row,
+    }]});
+    const service = new ControlRuntimeActivityService({pool: {query}});
+    const read = service.getRuntimeActivity({
+      id: "login", identityId: "identity", role: "admin", csrfTokenHash: "hash", expiresAt: 1, createdAt: 0, lastSeenAt: 0,
+    }, "panda", "session-panda");
+    await expect(read).rejects.toBeInstanceOf(error);
+    await expect(read).rejects.toThrow(message);
+  });
+
   it.each(["asc", "desc"] as const)("keeps natural runtime text ordering, stable ties and nulls when sorting %s", async (sortDirection) => {
     const harness = await createHarness();
     await seedThreads(harness);
