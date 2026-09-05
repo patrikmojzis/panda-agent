@@ -9,7 +9,8 @@ import type {
 } from "./types.js";
 
 interface RuleWindow {
-  protectedIndexes: Set<number>;
+  protectedFromIndex: number;
+  latestCompactBoundaryIndex: number;
   hasProtectionWindow: boolean;
   cutoffTime?: number;
 }
@@ -73,43 +74,30 @@ function buildRuleWindow(
   rule: InferenceProjectionRule,
   now: number,
 ): RuleWindow {
-  const protectedIndexes = new Set<number>();
   const preserveTailMessages = readPositiveInteger(rule.preserveTailMessages);
   const preserveRecentUserTurns = readPositiveInteger(rule.preserveRecentUserTurns);
-
-  if (preserveTailMessages) {
-    const start = Math.max(0, records.length - preserveTailMessages);
-    for (let index = start; index < records.length; index += 1) {
-      protectedIndexes.add(index);
-    }
-  }
+  let protectedFromIndex = preserveTailMessages
+    ? Math.max(0, records.length - preserveTailMessages)
+    : records.length;
 
   if (preserveRecentUserTurns) {
-    const userIndexes: number[] = [];
-
-    for (const [index, record] of records.entries()) {
+    let remainingUserTurns = preserveRecentUserTurns;
+    for (let index = records.length - 1; index >= 0; index -= 1) {
+      const record = records[index]!;
       if (record.message.role !== "user" || isCompactBoundaryRecord(record)) {
         continue;
       }
 
-      userIndexes.push(index);
-    }
-
-    if (userIndexes.length > 0) {
-      const preservedStartIndex = userIndexes[Math.max(0, userIndexes.length - preserveRecentUserTurns)] ?? 0;
-      for (let index = preservedStartIndex; index < records.length; index += 1) {
-        protectedIndexes.add(index);
-      }
+      protectedFromIndex = Math.min(protectedFromIndex, index);
+      remainingUserTurns -= 1;
+      if (remainingUserTurns === 0) break;
     }
   }
 
-  const latestCompactBoundaryIndex = findLatestCompactBoundaryIndex(records);
-  if (latestCompactBoundaryIndex >= 0) {
-    protectedIndexes.add(latestCompactBoundaryIndex);
-  }
-
+  // Count-based protection covers a suffix; the newest checkpoint can sit outside it.
   return {
-    protectedIndexes,
+    protectedFromIndex,
+    latestCompactBoundaryIndex: findLatestCompactBoundaryIndex(records),
     hasProtectionWindow: preserveTailMessages !== undefined || preserveRecentUserTurns !== undefined,
     cutoffTime: normalizeCutoffTime(now, rule.olderThanMs),
   };
@@ -120,7 +108,7 @@ function isEligibleForRule(
   record: ThreadMessageRecord,
   window: RuleWindow,
 ): boolean {
-  if (window.protectedIndexes.has(index)) {
+  if (index >= window.protectedFromIndex || index === window.latestCompactBoundaryIndex) {
     return false;
   }
 

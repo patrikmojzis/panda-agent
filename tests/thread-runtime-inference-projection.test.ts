@@ -166,6 +166,48 @@ describe("projectTranscriptForInference", () => {
     expect(projected.map((record) => record.sequence)).toEqual([3, 4]);
   });
 
+  it.each([
+    {label: "a longer user-turn floor", rule: {preserveTailMessages: 2, preserveRecentUserTurns: 2}, expected: [5, 6, 7, 8, 9]},
+    {label: "a longer message floor", rule: {preserveTailMessages: 6, preserveRecentUserTurns: 1}, expected: [4, 5, 6, 7, 8, 9]},
+    {label: "fewer user turns than requested", rule: {preserveRecentUserTurns: 99}, expected: [3, 4, 5, 6, 7, 8, 9]},
+    {label: "a checkpoint outside the latest turn", rule: {preserveRecentUserTurns: 1}, expected: [5, 8, 9]},
+  ])("preserves $label without counting compact summaries as user turns", ({rule, expected}) => {
+    const boundary = (sequence: number) => createRecord(sequence, createCompactBoundaryMessage("Saved context"), {
+      origin: "runtime", source: "compact",
+      metadata: {kind: "compact_boundary", compactedThroughSequence: sequence - 1, preservedTailUserTurns: 1, trigger: "manual"},
+    });
+    const transcript = [
+      createRecord(1, createAssistantMessage([{type: "text", text: "preface"}])),
+      boundary(2),
+      createRecord(3, stringToUserMessage("first turn")),
+      createRecord(4, createAssistantMessage([{type: "text", text: "first reply"}])),
+      boundary(5),
+      createRecord(6, stringToUserMessage("second turn")),
+      createRecord(7, createAssistantMessage([{type: "text", text: "second reply"}])),
+      createRecord(8, stringToUserMessage("third turn")),
+      createRecord(9, createAssistantMessage([{type: "text", text: "third reply"}])),
+    ];
+
+    const projected = projectTranscriptForInference(transcript, {dropMessages: rule}, 20_000);
+    expect(projected.map((record) => record.sequence)).toEqual(expected);
+    for (const record of projected) expect(record).toBe(transcript[record.sequence - 1]);
+    expect(transcript).toHaveLength(9);
+  });
+
+  it("keeps only the checkpoint when a user-turn floor has no ordinary user turn", () => {
+    const boundary = createRecord(2, createCompactBoundaryMessage("Saved context"), {
+      origin: "runtime", source: "compact",
+      metadata: {kind: "compact_boundary", compactedThroughSequence: 1, preservedTailUserTurns: 1, trigger: "manual"},
+    });
+    const transcript = [
+      createRecord(1, createAssistantMessage([{type: "text", text: "preface"}])),
+      boundary,
+      createRecord(3, createAssistantMessage([{type: "text", text: "reply"}])),
+    ];
+
+    expect(projectTranscriptForInference(transcript, {dropMessages: {preserveRecentUserTurns: 2}}, 20_000)).toEqual([boundary]);
+  });
+
   it("drops thinking blocks and removes empty assistant messages", () => {
     const transcript = [
       createRecord(1, createAssistantMessage([

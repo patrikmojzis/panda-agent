@@ -1376,3 +1376,34 @@ with this cycle. Earlier runtime smoke evidence remains historical; this batch
 validates the changed Control queries directly against PostgreSQL and makes no
 new external-provider or production-deployment claim. Untracked `output/` remains
 preserved. The inspect/review/commit loop remains active.
+
+## Cycle 52 — Represent transcript protection as a suffix and checkpoint
+
+- Finding: every projection rule materialized a set of protected message indexes
+  and, for user-turn floors, an array of every user index. These protections are
+  always a suffix plus the latest compact checkpoint.
+- Change: retain the suffix start and checkpoint index. Find the requested newest
+  ordinary user turns by scanning backward. Keep rule order, cutoff precedence,
+  checkpoint recognition, tool pairing/pruning and message replacement unchanged.
+  Window bookkeeping now takes constant space; other projection work still
+  materializes its existing result arrays and tool-pairing collections.
+- Result: 12 fewer production lines; cumulative reduction 5,347, including the
+  75 lines previously relocated into tests. Five public projection cases protect
+  the union of both floors, insufficient/no ordinary users and compact summaries
+  that must not count as user turns.
+- Evidence: 101,184 old/new public projection comparisons across 96 immutable
+  transcripts and 486 rule configurations preserve results and original object
+  references. Sixteen other declarations remain byte-identical. Independent
+  review adds 57,330 comparisons over short role/checkpoint sequences and all
+  four rule paths. All 95 focused projection/default/checkpoint/thread tests pass.
+  Local proof: `.temp/desloppify-cycle52-parity.mjs`.
+- Runtime verification: the deterministic fixture enables all four projection
+  rules and runs against fresh isolated PostgreSQL. All 25 migrations apply;
+  an owned run completes after two injected responses and one tool call, with an
+  applied input, four persisted messages and idle state. No external request was
+  attempted. Evidence: `.temp/desloppify-cycle52-offline-smoke-output.log`.
+  The cluster was stopped afterward.
+- State: independently reviewed and committed locally with this cycle. The
+  combined source passes all 3,199 unit tests, build/typecheck, import law,
+  prompt/shim contracts and all 19 compiled package imports. No persisted
+  transcript shape, schema, production access, push or deployment change.
