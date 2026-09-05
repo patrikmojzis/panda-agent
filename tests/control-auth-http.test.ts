@@ -1060,6 +1060,125 @@ describe("Control agent authorization", () => {
   });
 });
 
+describe("Control visible agent reads", () => {
+  it.each(["admin", "scoped"] as const)("preserves %s overview, credential and audit scope without MCP enrichment", async (role) => {
+    const harness = await createHarness();
+    const adminGrant = await harness.auth.createGrant({identityId: "identity-patrik", role: "admin"});
+    const adminSession = (await harness.auth.loginWithToken(adminGrant.loginToken)).session;
+    await harness.operator.setCredential(adminSession, "luna", {envKey: "INACTIVE_AGENT_KEY", value: "fixture"});
+    await harness.pool.query(`UPDATE "runtime"."agents" SET status = 'deleted' WHERE agent_key = 'luna'`);
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const scopedGrant = await harness.auth.createGrant({identityId: "identity-patrik", role: "scoped", agentKey: "panda"});
+    const scopedSession = (await harness.auth.loginWithToken(scopedGrant.loginToken)).session;
+    await harness.auth.createGrant({identityId: "identity-patrik", role: "scoped", agentKey: "panda"});
+    const session = role === "admin" ? adminSession : scopedSession;
+    await harness.auth.recordAudit({identityId: session.identityId, eventType: "control_operator_write", metadata: {agentKey: "panda", action: "set"}});
+    await harness.auth.recordAudit({identityId: session.identityId, eventType: "control_operator_write", metadata: {agentKey: "luna", action: "set"}});
+    const overview = await harness.reads.getOverview(session);
+    const credentials = await harness.reads.listCredentials(session);
+    const audit = await harness.reads.listAuditEvents(session, {eventType: "control_operator_write"});
+    expect(overview).toMatchObject({agents: 1, credentialsPresent: role === "admin" ? 2 : 1});
+    if (role === "admin") expect(overview.sessions).toBe(2);
+    expect(credentials.map((row) => row.agentKey)).toEqual(role === "admin" ? ["luna", "panda"] : ["panda"]);
+    expect(audit.map((row) => row.metadata.agentKey).sort()).toEqual(role === "admin" ? ["luna", "panda"] : ["panda"]);
+    await harness.pool.query(`INSERT INTO "runtime"."agent_mcp_configs" (agent_key, config) VALUES ('panda', '{"servers":null}')`);
+    await expect(harness.reads.listAgents(session)).rejects.toThrow("MCP config must include a servers object.");
+
+    await expect(harness.reads.getOverview(session)).resolves.toEqual(overview);
+    await expect(harness.reads.listAuditEvents(session, {eventType: "control_operator_write"})).resolves.toEqual(audit);
+    const query = vi.spyOn(harness.pool, "query");
+    try {
+      await expect(harness.reads.listCredentials(session)).resolves.toEqual(credentials);
+      expect(query).toHaveBeenCalledTimes(role === "admin" ? 1 : 2);
+      expect(query.mock.calls.every(([sql]) => !/agent_mcp_configs|agent_sessions|COUNT\s*\(/i.test(sql))).toBe(true);
+    } finally {
+      query.mockRestore();
+    }
+  });
+
+  it("keeps identity visibility and pairing counts scoped to unique visible agents", async () => {
+    const harness = await createHarness();
+    await harness.identities.createIdentity({id: "identity-ana", handle: "ana", displayName: "Ana"});
+    await harness.identities.createIdentity({id: "identity-outsider", handle: "outsider", displayName: "Outsider"});
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    await harness.agents.ensurePairing("panda", "identity-ana");
+    await harness.agents.ensurePairing("luna", "identity-outsider");
+    await harness.identities.ensureIdentityBinding({identityId: "identity-ana", source: "telegram", connectorKey: "fixture", externalActorId: "ana-actor"});
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role: "scoped", agentKey: "panda"});
+    const {session} = await harness.auth.loginWithToken(grant.loginToken);
+    await harness.auth.createGrant({identityId: "identity-patrik", role: "scoped", agentKey: "panda"});
+    await harness.pool.query(`INSERT INTO "runtime"."agent_mcp_configs" (agent_key, config) VALUES ('panda', '{"servers":null}')`);
+
+    await expect(harness.operator.listIdentities(session)).resolves.toMatchObject({
+      data: [
+        {id: "identity-ana", agentPairingCount: 1, actorBindingCount: 1},
+        {id: "identity-patrik", agentPairingCount: 1, actorBindingCount: 0},
+      ],
+      meta: {total: 2},
+    });
+    const pairings = vi.spyOn(harness.agents, "listAgentPairings").mockRejectedValue(new Error("pairing read unavailable"));
+    try {
+      await expect(harness.operator.listIdentities(session)).resolves.toMatchObject({data: [], meta: {total: 0}});
+    } finally {
+      pairings.mockRestore();
+    }
+    await harness.agents.deletePairing("panda", "identity-patrik");
+    await expect(harness.operator.listIdentities(session)).resolves.toMatchObject({data: [], meta: {total: 0}});
+    await expect(harness.reads.listAuditEvents(session, {eventType: "login"})).resolves.toMatchObject([{eventType: "login", identityId: session.identityId}]);
+  });
+
+  it("reveals A2A bindings only while both endpoint agents remain visible", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role: "scoped", agentKey: "panda"});
+    const {session} = await harness.auth.loginWithToken(grant.loginToken);
+    await harness.sessions.createSessionRecord({id: "session-panda-branch", agentKey: "panda", kind: "branch", currentThreadId: "thread-panda-branch"});
+    for (const peer of ["session-panda-branch", "session-luna"]) {
+      await harness.a2aBindings.bindSession({senderSessionId: "session-panda", recipientSessionId: peer});
+      await harness.a2aBindings.bindSession({senderSessionId: peer, recipientSessionId: "session-panda"});
+    }
+    await harness.pool.query(`INSERT INTO "runtime"."agent_mcp_configs" (agent_key, config) VALUES ('panda', '{"servers":null}')`);
+
+    const visible = await harness.operator.listSessionA2ABindings(session, "panda", "session-panda");
+    expect(visible.meta.total).toBe(2);
+    expect(visible.data.every((row) => row.senderAgentKey === "panda" && row.recipientAgentKey === "panda")).toBe(true);
+    await expect(harness.operator.listSessionA2ABindings(session, "panda", "session-panda", {search: "luna"})).resolves.toMatchObject({data: [], meta: {total: 0}});
+    await harness.auth.createGrant({identityId: "identity-patrik", role: "scoped", agentKey: "luna"});
+    await harness.agents.ensurePairing("luna", "identity-patrik");
+    await expect(harness.operator.listSessionA2ABindings(session, "panda", "session-panda", {direction: "outbound", search: "luna"})).resolves.toMatchObject({
+      data: [{senderAgentKey: "panda", recipientAgentKey: "luna", direction: "outbound"}],
+      meta: {total: 1},
+    });
+    await harness.agents.deletePairing("luna", "identity-patrik");
+    await expect(harness.operator.listSessionA2ABindings(session, "panda", "session-panda")).resolves.toEqual(visible);
+  });
+
+  it("returns an empty failure page without opening a snapshot when no agents are visible", async () => {
+    const harness = await createHarness();
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role: "scoped", agentKey: "panda"});
+    const {session} = await harness.auth.loginWithToken(grant.loginToken);
+    const connect = vi.spyOn(harness.pool, "connect").mockRejectedValue(new Error("snapshot must not be opened"));
+    try {
+      await expect(harness.operator.listWorkFailures(session, {page: 3, perPage: 200})).resolves.toEqual({
+        data: [],
+        meta: {current_page: 3, last_page: 1, total: 0, per_page: 100},
+        counts: {total: 0, critical: 0, warning: 0},
+      });
+      expect(connect).not.toHaveBeenCalled();
+      const failure = new Error("visibility read unavailable");
+      const query = vi.spyOn(harness.pool, "query").mockRejectedValueOnce(failure);
+      try {
+        await expect(harness.operator.listWorkFailures(session)).rejects.toBe(failure);
+        expect(connect).not.toHaveBeenCalled();
+      } finally {
+        query.mockRestore();
+      }
+    } finally {
+      connect.mockRestore();
+    }
+  });
+});
+
 describe("Control session service access", () => {
   it.each(["briefing", "heartbeat", "scheduled tasks", "watches", "runtime activity"] as const)("rechecks pairing and the session's grant role on every %s read", async (service) => {
     const harness = await createHarness();

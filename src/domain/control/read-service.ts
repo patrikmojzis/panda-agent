@@ -276,6 +276,31 @@ export class ControlReadService {
     return normalized;
   }
 
+  /** Read unique visible agent keys without display counts or MCP configuration. */
+  async listVisibleAgentKeys(session: ControlSessionRecord): Promise<readonly string[]> {
+    const result = session.role === "admin"
+      ? await this.pool.query(`
+        SELECT agent.agent_key
+        FROM ${this.agents.agents} AS agent
+        WHERE agent.status = 'active'
+        ORDER BY agent.agent_key ASC
+      `)
+      : await this.pool.query(`
+        SELECT DISTINCT agent.agent_key
+        FROM ${this.agents.agents} AS agent
+        INNER JOIN ${this.control.grants} AS grant_row
+          ON grant_row.agent_key = agent.agent_key
+         AND grant_row.identity_id = $1
+         AND grant_row.role = 'scoped'
+         AND grant_row.active = TRUE
+        INNER JOIN ${this.agents.agentPairings} AS pairing
+          ON pairing.agent_key = agent.agent_key AND pairing.identity_id = grant_row.identity_id
+        WHERE agent.status = 'active'
+        ORDER BY agent.agent_key ASC
+      `, [session.identityId]);
+    return result.rows.map((raw) => String((raw as Record<string, unknown>).agent_key));
+  }
+
   async listAgents(session: ControlSessionRecord): Promise<readonly ControlAgentSummary[]> {
     const result = session.role === "admin"
       ? await this.pool.query(`
@@ -333,8 +358,7 @@ export class ControlReadService {
   }
 
   async getOverview(session: ControlSessionRecord): Promise<Record<string, unknown>> {
-    const agents = await this.listAgents(session);
-    const agentKeys = agents.map((agent) => agent.agentKey);
+    const agentKeys = await this.listVisibleAgentKeys(session);
     const values: unknown[] = session.role === "admin" ? [] : [agentKeys];
     const agentFilter = session.role === "admin" ? "TRUE" : "agent_key = ANY($1::text[])";
     const runningRunsFilter = session.role === "admin" ? "TRUE" : "agent_session.agent_key = ANY($1::text[])";
@@ -350,7 +374,7 @@ export class ControlReadService {
       this.pool.query(`SELECT COUNT(*)::int AS count FROM ${this.credentials.credentials} WHERE ${agentFilter}`, values),
     ]);
     return {
-      agents: agents.length,
+      agents: agentKeys.length,
       sessions: Number((sessions.rows[0] as Record<string, unknown> | undefined)?.count ?? 0),
       runningRuns: Number((runningRuns.rows[0] as Record<string, unknown> | undefined)?.count ?? 0),
       credentialsPresent: Number((credentials.rows[0] as Record<string, unknown> | undefined)?.count ?? 0),
@@ -379,7 +403,7 @@ export class ControlReadService {
     }
 
     if (session.role === "scoped") {
-      const visibleAgentKeys = (await this.listAgents(session)).map((agent) => agent.agentKey);
+      const visibleAgentKeys = await this.listVisibleAgentKeys(session);
       values.push(session.identityId);
       const identityParam = `$${values.length}`;
       values.push(visibleAgentKeys);
@@ -410,8 +434,7 @@ export class ControlReadService {
   }
 
   async listCredentials(session: ControlSessionRecord): Promise<readonly ControlCredentialSummary[]> {
-    const agents = await this.listAgents(session);
-    const values: unknown[] = session.role === "admin" ? [] : [agents.map((agent) => agent.agentKey)];
+    const values: unknown[] = session.role === "admin" ? [] : [await this.listVisibleAgentKeys(session)];
     const result = await this.pool.query(`
       SELECT agent_key, env_key, created_at, updated_at
       FROM ${this.credentials.credentials}

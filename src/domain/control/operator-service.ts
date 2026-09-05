@@ -520,7 +520,7 @@ export interface ControlGlobalSearchResult {
 
 export interface ControlOperatorServiceOptions {
   pool: PgPoolLike;
-  reads: Pick<ControlReadService, "assertAgentVisible" | "listAgents" | "listAuditEvents">;
+  reads: Pick<ControlReadService, "assertAgentVisible" | "listVisibleAgentKeys" | "listAgents" | "listAuditEvents">;
   a2aBindings: ControlA2ABindingStore;
   agents: AgentStore;
   liveVoice: ControlLiveVoiceCatalog;
@@ -1219,7 +1219,7 @@ function searchResultKindWeight(kind: ControlGlobalSearchResult["kind"]): number
 export class ControlOperatorService {
   private readonly pool: PgPoolLike;
   private readonly identityAccess: PostgresControlIdentityAccess;
-  private readonly reads: Pick<ControlReadService, "assertAgentVisible" | "listAgents" | "listAuditEvents">;
+  private readonly reads: Pick<ControlReadService, "assertAgentVisible" | "listVisibleAgentKeys" | "listAgents" | "listAuditEvents">;
   private readonly a2aBindings: ControlA2ABindingStore;
   private readonly agents: AgentStore;
   private readonly liveVoice: ControlLiveVoiceCatalog;
@@ -1279,9 +1279,9 @@ export class ControlOperatorService {
 
   private async visibleIdentityIds(session: ControlSessionRecord): Promise<Set<string> | null> {
     if (session.role === "admin") return null;
-    const visibleAgents = await this.reads.listAgents(session);
+    const visibleAgentKeys = await this.reads.listVisibleAgentKeys(session);
     const pairings = await Promise.all(
-      visibleAgents.map((agent) => this.agents.listAgentPairings(agent.agentKey).catch(() => [] as readonly AgentPairingRecord[])),
+      visibleAgentKeys.map((agentKey) => this.agents.listAgentPairings(agentKey).catch(() => [] as readonly AgentPairingRecord[])),
     );
     return new Set(pairings.flat().map((pairing) => pairing.identityId));
   }
@@ -1710,12 +1710,12 @@ export class ControlOperatorService {
   async listIdentities(session: ControlSessionRecord, input: ControlIdentityTableInput = {}): Promise<ControlPaginatedResponse<ControlIdentityOptionRow>> {
     const search = normalizeSearch(input.search);
     const visibleIdentityIds = await this.visibleIdentityIds(session);
-    const [identities, visibleAgents] = await Promise.all([
+    const [identities, visibleAgentKeys] = await Promise.all([
       this.identities.listIdentities(),
-      this.reads.listAgents(session),
+      this.reads.listVisibleAgentKeys(session),
     ]);
     const pairings = await Promise.all(
-      visibleAgents.map((agent) => this.agents.listAgentPairings(agent.agentKey).catch(() => [] as readonly AgentPairingRecord[])),
+      visibleAgentKeys.map((agentKey) => this.agents.listAgentPairings(agentKey).catch(() => [] as readonly AgentPairingRecord[])),
     );
     const agentPairingCounts = new Map<string, number>();
     for (const pairing of pairings.flat()) {
@@ -2935,7 +2935,7 @@ export class ControlOperatorService {
   async listSessionA2ABindings(session: ControlSessionRecord, agentKey: string, sessionId: string, input: ControlA2ABindingTableInput = {}): Promise<ControlPaginatedResponse<ControlA2ABindingRow>> {
     const target = await this.assertSessionVisible(session, agentKey, sessionId);
     const search = normalizeSearch(input.search);
-    const visibleAgentKeys = new Set((await this.reads.listAgents(session)).map((agent) => agent.agentKey));
+    const visibleAgentKeys = new Set(await this.reads.listVisibleAgentKeys(session));
     const [outbound, inbound] = await Promise.all([
       input.direction === "inbound" ? Promise.resolve([] as readonly A2ASessionBindingRecord[]) : this.a2aBindings.listBindings({senderSessionId: target.id}),
       input.direction === "outbound" ? Promise.resolve([] as readonly A2ASessionBindingRecord[]) : this.a2aBindings.listBindings({recipientSessionId: target.id}),
@@ -3630,7 +3630,7 @@ export class ControlOperatorService {
   }
 
   async listWorkFailures(session: ControlSessionRecord, input: ControlWorkFailureTableInput = {}): Promise<ControlWorkFailureSnapshot> {
-    const agents = await this.reads.listAgents(session);
-    return readControlWorkFailures(this.pool, agents.map((agent) => agent.agentKey), input);
+    const agentKeys = await this.reads.listVisibleAgentKeys(session);
+    return readControlWorkFailures(this.pool, agentKeys, input);
   }
 }

@@ -1600,3 +1600,67 @@ lines were previously relocated into tests. Untracked `output/` remains preserve
   WhatsApp require that pairing. Preserve these distinct scopes and error/order
   behavior when replacing the fanout. Runtime-activity pagination and pool
   observation ownership remain pending as described after cycle 53.
+
+## Cycle 57 — Read visible agent keys directly
+
+- Finding: seven key-only reads still loaded enriched agent summaries for
+  overview, credentials, audit, identity visibility/counts, A2A visibility and
+  work-failure scope. Admin credential listing discarded the entire agent list.
+- Change: `ControlReadService.listVisibleAgentKeys` returns active agent keys in
+  database order, using the current scoped grant and same-identity pairing rules.
+  Scoped `DISTINCT` preserves the old grouped key uniqueness with duplicate
+  grants. Replace the seven key-only calls; skip visibility reads entirely for
+  admin credentials. Preserve the enriched list and single-target assertion
+  byte-for-byte. Keep existing admin-wide data scope, pairing-read failures,
+  repeated visibility reads and downstream pagination behavior.
+- Result: 23 additional production lines; cumulative reduction becomes 5,491
+  across 58 cleanup commits, including the 75 lines
+  previously relocated into tests. The explicit query seam earns its cost by
+  removing unrelated enrichment and queries; it adds no SQL framework or cache.
+- Unit evidence: author and independent review pass all 106 focused tests
+  (102 Control HTTP and four work-failure tests). Five new caller cases cover
+  malformed MCP isolation, inactive-agent admin scope, identity counts, both A2A
+  endpoints and empty failure pages without opening a snapshot. A scoped session
+  count anomaly in `pg-mem` also reproduces with the unchanged baseline query;
+  the real-PostgreSQL tests assert the exact expected counts instead of encoding
+  that emulator result as the production contract.
+- PostgreSQL evidence: all 11 visibility tests pass, including five new cases for
+  ordered unique keys, admin/scoped counters and credential/audit scope, malformed
+  unrelated MCP data and complete scoped revocation. Fixtures retain duplicate
+  grants, inactive-agent rows, cross-identity grants/pairings, audit redaction and
+  visible MCP audit events from another identity. Root's first fixture setup
+  omitted ownership fields on synthetic running rows and failed before any test
+  ran; the corrected fixture satisfies the existing constraints. No production
+  code changed for this setup error. Evidence:
+  `.temp/desloppify-cycle57-visibility-live-results.json` and retained
+  `.temp/desloppify-cycle57-visibility-fixture-initial-results.json`.
+- Parity evidence: 102 real-PostgreSQL baseline/current comparisons preserve
+  public results, retained dependency order and error identity/causes, including
+  29 error outcomes. Both roles' enriched listings remain equal. In this fixture,
+  overview uses four queries instead of five, admin credentials one instead of
+  three, scoped credentials/audit two instead of three. These are query counts,
+  not latency claims. A2A records are injected while session resolution is real;
+  work-failure comparisons use actual failed rows for visible agents, agents
+  without a scoped grant, and inactive agents. Admin sees two failures and scoped
+  sees one; inactive-agent failures stay excluded from both. Evidence:
+  `.temp/desloppify-cycle57-read-parity-output.log`.
+- State: source and fixture changes independently reviewed; build/typecheck,
+  import law, prompt/shim contracts, all 19 compiled package imports and shared
+  `Thread` identity pass. All 3,209 unit tests across 339 files pass without
+  failures or skips: `.temp/desloppify-cycle57-unit-results.json`. Committed
+  locally with this cycle; reviewed source/test hashes remain unchanged.
+  The isolated PostgreSQL cluster was stopped. No schema, production access,
+  push or deployment change. Cycle 56 is committed as `4c80f29e`.
+
+### Remaining recon
+
+Actor-pairing fanout remains a separate design task. A `pg-mem` public-method
+fixture with 12 identities and two pairings performs 27 Discord reads and nine Telegram reads
+despite requesting one row. Discord includes all identities bound to owned
+accounts, including deleted identities and actors without current agent pairing;
+Telegram/WhatsApp require pairing. Control catches individual identity failures,
+whereas the Discord CLI propagates them. A proposed bulk reader must preserve
+these scopes, sorting ties, search/page totals, metadata redaction and failure
+handling. The supported `listIdentityBindings` identity-existence check stays.
+This is not yet a verified deletion opportunity. Runtime-activity pagination and
+pool observation ownership remain unresolved.
