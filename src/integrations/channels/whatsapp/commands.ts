@@ -1,3 +1,4 @@
+import {optionalNonEmptyString, requireNonEmptyString} from "../../../lib/strings.js";
 import type {JsonObject} from "../../../lib/json.js";
 import {isJsonObject} from "../../../lib/json.js";
 import {isRecord} from "../../../lib/records.js";
@@ -59,25 +60,6 @@ export function normalizeWhatsAppConversationId(value: string): string {
   return `${digits}@s.whatsapp.net`;
 }
 
-function readOptionalString(value: unknown, label: string): string | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${label} must not be empty.`);
-  }
-
-  return value.trim();
-}
-
-function readRequiredString(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${label} must not be empty.`);
-  }
-
-  return value.trim();
-}
-
 function readOptionalPositiveInteger(value: unknown, label: string): number | undefined {
   if (value === undefined || value === null) {
     return undefined;
@@ -124,7 +106,7 @@ function parseWhatsAppChatListCommandInput(input: unknown): {
   }
   rejectUnexpectedKeys(input, ["connectorKey"], "whatsapp.chat.list input");
 
-  const connectorKey = readOptionalString(input.connectorKey, "whatsapp.chat.list connectorKey");
+  const connectorKey = optionalNonEmptyString(input.connectorKey, "whatsapp.chat.list connectorKey must not be empty.");
   return connectorKey ? {connectorKey} : {};
 }
 
@@ -139,12 +121,12 @@ function parseWhatsAppHistoryCommandInput(input: unknown): {
   }
   rejectUnexpectedKeys(input, ["connectorKey", "chatId", "direction", "limit"], "whatsapp.history input");
 
-  const connectorKey = readOptionalString(input.connectorKey, "whatsapp.history connectorKey");
+  const connectorKey = optionalNonEmptyString(input.connectorKey, "whatsapp.history connectorKey must not be empty.");
   const direction = readOptionalWhatsAppHistoryDirection(input.direction);
   const limit = readOptionalPositiveInteger(input.limit, "whatsapp.history limit");
   return {
     ...(connectorKey ? {connectorKey} : {}),
-    chatId: normalizeWhatsAppConversationId(readRequiredString(input.chatId, "whatsapp.history chatId")),
+    chatId: normalizeWhatsAppConversationId(requireNonEmptyString(input.chatId, "whatsapp.history chatId must not be empty.")),
     ...(direction ? {direction} : {}),
     ...(limit === undefined ? {} : {limit}),
   };
@@ -193,9 +175,9 @@ function serializeWhatsAppMedia(metadata: Record<string, unknown>): JsonObject[]
     if (!isRecord(entry)) {
       return [];
     }
-    const id = readOptionalString(entry.id, "whatsapp.history media.id");
-    const mimeType = readOptionalString(entry.mimeType, "whatsapp.history media.mimeType");
-    const originalFilename = readOptionalString(entry.originalFilename, "whatsapp.history media.originalFilename");
+    const id = optionalNonEmptyString(entry.id, "whatsapp.history media.id must not be empty.");
+    const mimeType = optionalNonEmptyString(entry.mimeType, "whatsapp.history media.mimeType must not be empty.");
+    const originalFilename = optionalNonEmptyString(entry.originalFilename, "whatsapp.history media.originalFilename must not be empty.");
     const sizeBytes = typeof entry.sizeBytes === "number" && Number.isFinite(entry.sizeBytes)
       ? entry.sizeBytes
       : undefined;
@@ -210,11 +192,11 @@ function serializeWhatsAppMedia(metadata: Record<string, unknown>): JsonObject[]
 
 function serializeWhatsAppInboundHistoryItem(record: ThreadMessageRecord): JsonObject {
   const whatsapp = readWhatsAppMetadata(record);
-  const sentAt = readOptionalString(whatsapp.sentAt, "whatsapp.history sentAt");
-  const remoteJid = readOptionalString(whatsapp.remoteJid, "whatsapp.history remoteJid");
-  const chatType = readOptionalString(whatsapp.chatType, "whatsapp.history chatType");
-  const pushName = readOptionalString(whatsapp.pushName, "whatsapp.history pushName");
-  const quotedMessageId = readOptionalString(whatsapp.quotedMessageId, "whatsapp.history quotedMessageId");
+  const sentAt = optionalNonEmptyString(whatsapp.sentAt, "whatsapp.history sentAt must not be empty.");
+  const remoteJid = optionalNonEmptyString(whatsapp.remoteJid, "whatsapp.history remoteJid must not be empty.");
+  const chatType = optionalNonEmptyString(whatsapp.chatType, "whatsapp.history chatType must not be empty.");
+  const pushName = optionalNonEmptyString(whatsapp.pushName, "whatsapp.history pushName must not be empty.");
+  const quotedMessageId = optionalNonEmptyString(whatsapp.quotedMessageId, "whatsapp.history quotedMessageId must not be empty.");
   const media = serializeWhatsAppMedia(whatsapp);
 
   return requireCommandJsonObject({

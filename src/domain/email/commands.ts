@@ -5,7 +5,7 @@ import type {JsonObject} from "../../lib/json.js";
 import {isJsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 import {assertPathReadable} from "../../lib/fs.js";
-import {trimToUndefined} from "../../lib/strings.js";
+import {optionalNonEmptyString, requireNonEmptyString, trimToUndefined} from "../../lib/strings.js";
 import type {OutboundDeliveryInput} from "../channels/deliveries/types.js";
 import type {OutboundFileItem, OutboundItem} from "../channels/types.js";
 import {commandScopeDenied} from "../commands/errors.js";
@@ -146,22 +146,6 @@ interface ResolvedEmailDraft {
   threadKey: string;
 }
 
-function readRequiredString(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${label} must not be empty.`);
-  }
-
-  return value.trim();
-}
-
-function readOptionalString(value: unknown, label: string): string | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-
-  return readRequiredString(value, label);
-}
-
 function readOptionalPositiveInteger(value: unknown, label: string): number | undefined {
   if (value === undefined || value === null) {
     return undefined;
@@ -210,9 +194,9 @@ function parseRecipient(value: unknown, label: string): EmailSendRecipientInput 
   }
   rejectUnexpectedKeys(value, ["address", "name"], label);
 
-  const name = readOptionalString(value.name, `${label}.name`);
+  const name = optionalNonEmptyString(value.name, `${label}.name must not be empty.`);
   return {
-    address: readRequiredString(value.address, `${label}.address`),
+    address: requireNonEmptyString(value.address, `${label}.address must not be empty.`),
     ...(name ? {name} : {}),
   };
 }
@@ -248,10 +232,10 @@ function parseAttachment(value: unknown, label: string): EmailSendAttachmentInpu
   }
   rejectUnexpectedKeys(value, ["path", "filename", "mimeType"], label);
 
-  const filename = readOptionalString(value.filename, `${label}.filename`);
-  const mimeType = readOptionalString(value.mimeType, `${label}.mimeType`);
+  const filename = optionalNonEmptyString(value.filename, `${label}.filename must not be empty.`);
+  const mimeType = optionalNonEmptyString(value.mimeType, `${label}.mimeType must not be empty.`);
   return {
-    path: readRequiredString(value.path, `${label}.path`),
+    path: requireNonEmptyString(value.path, `${label}.path must not be empty.`),
     ...(filename ? {filename} : {}),
     ...(mimeType ? {mimeType} : {}),
   };
@@ -285,8 +269,8 @@ function parseEmailListCommandInput(input: unknown): EmailListCommandInput {
   }
   rejectUnexpectedKeys(input, ["accountKey", "mailbox", "direction", "limit"], "email.list input");
 
-  const accountKey = readOptionalString(input.accountKey, "email.list accountKey");
-  const mailbox = readOptionalString(input.mailbox, "email.list mailbox");
+  const accountKey = optionalNonEmptyString(input.accountKey, "email.list accountKey must not be empty.");
+  const mailbox = optionalNonEmptyString(input.mailbox, "email.list mailbox must not be empty.");
   const direction = parseEmailDirection(input.direction, "email.list direction");
   const limit = readOptionalPositiveInteger(input.limit, "email.list limit");
   return {
@@ -304,7 +288,7 @@ function parseEmailReadCommandInput(input: unknown): EmailReadCommandInput {
   rejectUnexpectedKeys(input, ["emailId"], "email.read input");
 
   return {
-    emailId: readRequiredString(input.emailId, "email.read emailId"),
+    emailId: requireNonEmptyString(input.emailId, "email.read emailId must not be empty."),
   };
 }
 
@@ -322,7 +306,7 @@ function parseEmailSearchCommandInput(input: unknown): EmailSearchCommandInput {
 
   return {
     ...listInput,
-    query: readRequiredString(input.query, "email.search query"),
+    query: requireNonEmptyString(input.query, "email.search query must not be empty."),
   };
 }
 
@@ -332,14 +316,14 @@ function parseEmailAttachmentFetchCommandInput(input: unknown): EmailAttachmentF
   }
   rejectUnexpectedKeys(input, ["attachmentId", "save", "overwrite"], "email.attachments.fetch input");
 
-  const save = readOptionalString(input.save, "email.attachments.fetch save");
+  const save = optionalNonEmptyString(input.save, "email.attachments.fetch save must not be empty.");
   const overwrite = input.overwrite;
   if (overwrite !== undefined && typeof overwrite !== "boolean") {
     throw new Error("email.attachments.fetch overwrite must be a boolean.");
   }
 
   return {
-    attachmentId: readRequiredString(input.attachmentId, "email.attachments.fetch attachmentId"),
+    attachmentId: requireNonEmptyString(input.attachmentId, "email.attachments.fetch attachmentId must not be empty."),
     ...(save ? {save} : {}),
     ...(overwrite !== undefined ? {overwrite} : {}),
   };
@@ -361,13 +345,13 @@ function parseEmailSendCommandInput(input: unknown): EmailSendCommandInput {
     "attachments",
   ], "email.send input");
 
-  const replyToEmailId = readOptionalString(input.replyToEmailId, "email.send replyToEmailId");
+  const replyToEmailId = optionalNonEmptyString(input.replyToEmailId, "email.send replyToEmailId must not be empty.");
   const replyMode = input.replyMode;
   if (replyMode !== undefined && replyMode !== "sender" && replyMode !== "all") {
     throw new Error("email.send replyMode must be sender or all.");
   }
 
-  const subject = readOptionalString(input.subject, "email.send subject");
+  const subject = optionalNonEmptyString(input.subject, "email.send subject must not be empty.");
   if (subject && subject.length > 200) {
     throw new Error("email.send subject must be at most 200 characters.");
   }
@@ -388,20 +372,20 @@ function parseEmailSendCommandInput(input: unknown): EmailSendCommandInput {
 
   const to = replyToEmailId ? undefined : parseRecipients(input.to, "email.send to", {required: true});
   const cc = replyToEmailId ? undefined : parseOptionalRecipients(input.cc, "email.send cc") ?? [];
-  const html = readOptionalString(input.html, "email.send html");
+  const html = optionalNonEmptyString(input.html, "email.send html must not be empty.");
   const attachments = parseAttachments(input.attachments);
   if (!replyToEmailId && !subject) {
     throw new Error("email.send subject is required for a fresh email.");
   }
 
   return {
-    accountKey: readRequiredString(input.accountKey, "email.send accountKey"),
+    accountKey: requireNonEmptyString(input.accountKey, "email.send accountKey must not be empty."),
     ...(to ? {to} : {}),
     ...(replyToEmailId ? {} : {cc}),
     ...(subject ? {subject} : {}),
     ...(replyToEmailId ? {replyToEmailId} : {}),
     ...(replyMode ? {replyMode} : {}),
-    text: readRequiredString(input.text, "email.send text"),
+    text: requireNonEmptyString(input.text, "email.send text must not be empty."),
     ...(html ? {html} : {}),
     ...(attachments ? {attachments} : {}),
   };

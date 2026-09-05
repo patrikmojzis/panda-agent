@@ -1,3 +1,4 @@
+import {optionalNonEmptyString, requireNonEmptyString} from "../../lib/strings.js";
 import type {JsonObject} from "../../lib/json.js";
 import {isJsonObject, requireJsonValue} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
@@ -85,22 +86,6 @@ export interface AppCommandOptions {
   resolveLaunchUrls?: (input: {agentKey: string; appSlug: string; token: string}) => AgentAppCommandUrls & {openUrl: string};
 }
 
-function readRequiredString(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${label} must not be empty.`);
-  }
-
-  return value.trim();
-}
-
-function readOptionalString(value: unknown, label: string): string | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-
-  return readRequiredString(value, label);
-}
-
 function readOptionalPositiveInteger(value: unknown, label: string): number | undefined {
   if (value === undefined || value === null) {
     return undefined;
@@ -140,7 +125,7 @@ function parseAppCheckInput(input: unknown): {appSlug?: string} {
   }
 
   return {
-    appSlug: readOptionalString(input.appSlug, "micro-app.check appSlug"),
+    appSlug: optionalNonEmptyString(input.appSlug, "micro-app.check appSlug must not be empty."),
   };
 }
 
@@ -149,16 +134,16 @@ function parseAppCreateInput(input: unknown): CreateBlankAgentAppCommandOptions 
     throw new Error("micro-app.create input must be a JSON object.");
   }
 
-  const description = readOptionalString(input.description, "micro-app.create description");
-  const schemaSql = readOptionalString(input.schemaSql, "micro-app.create schemaSql");
+  const description = optionalNonEmptyString(input.description, "micro-app.create description must not be empty.");
+  const schemaSql = optionalNonEmptyString(input.schemaSql, "micro-app.create schemaSql must not be empty.");
   const identityScoped = input.identityScoped;
   if (identityScoped !== undefined && typeof identityScoped !== "boolean") {
     throw new Error("micro-app.create identityScoped must be a boolean.");
   }
 
   return {
-    slug: readRequiredString(input.slug, "micro-app.create slug"),
-    name: readRequiredString(input.name, "micro-app.create name"),
+    slug: requireNonEmptyString(input.slug, "micro-app.create slug must not be empty."),
+    name: requireNonEmptyString(input.name, "micro-app.create name must not be empty."),
     ...(description ? {description} : {}),
     ...(identityScoped === undefined ? {} : {identityScoped}),
     ...(schemaSql ? {schemaSql} : {}),
@@ -176,7 +161,7 @@ function parseAppLinkCreateInput(input: unknown): {appSlug: string; expiresInMin
   }
 
   return {
-    appSlug: readRequiredString(input.appSlug, "micro-app.link.create appSlug"),
+    appSlug: requireNonEmptyString(input.appSlug, "micro-app.link.create appSlug must not be empty."),
     ...(expiresInMinutes === undefined ? {} : {expiresInMinutes}),
   };
 }
@@ -192,7 +177,7 @@ function parseAppListInput(input: unknown): {appSlug?: string; detail?: "summary
   }
 
   return {
-    appSlug: readOptionalString(input.appSlug, "micro-app.list appSlug"),
+    appSlug: optionalNonEmptyString(input.appSlug, "micro-app.list appSlug must not be empty."),
     detail,
   };
 }
@@ -209,8 +194,8 @@ function parseAppViewInput(input: unknown): {
   }
 
   return {
-    appSlug: readRequiredString(input.appSlug, "micro-app.view appSlug"),
-    viewName: readRequiredString(input.viewName, "micro-app.view viewName"),
+    appSlug: requireNonEmptyString(input.appSlug, "micro-app.view appSlug must not be empty."),
+    viewName: requireNonEmptyString(input.viewName, "micro-app.view viewName must not be empty."),
     params: readOptionalJsonObject(input.params, "micro-app.view params"),
     pageSize: readOptionalPositiveInteger(input.pageSize, "micro-app.view pageSize"),
     offset: readOptionalNonNegativeInteger(input.offset, "micro-app.view offset"),
@@ -227,8 +212,8 @@ function parseAppActionInput(input: unknown): {
   }
 
   return {
-    appSlug: readRequiredString(input.appSlug, "micro-app.action appSlug"),
-    actionName: readRequiredString(input.actionName, "micro-app.action actionName"),
+    appSlug: requireNonEmptyString(input.appSlug, "micro-app.action appSlug must not be empty."),
+    actionName: requireNonEmptyString(input.actionName, "micro-app.action actionName must not be empty."),
     input: readOptionalJsonObject(input.input, "micro-app.action input"),
   };
 }

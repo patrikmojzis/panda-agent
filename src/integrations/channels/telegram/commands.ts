@@ -4,7 +4,7 @@ import path from "node:path";
 import type {JsonObject, JsonValue} from "../../../lib/json.js";
 import {isJsonObject} from "../../../lib/json.js";
 import {isRecord} from "../../../lib/records.js";
-import {trimToUndefined} from "../../../lib/strings.js";
+import {optionalNonEmptyString, requireNonEmptyString, trimToUndefined} from "../../../lib/strings.js";
 import {assertPathReadable} from "../../../lib/fs.js";
 import type {TelegramStickerStore} from "../../../domain/agents/telegram-stickers/store.js";
 import {parseTelegramStickerLibraryRef} from "../../../domain/agents/telegram-stickers/types.js";
@@ -262,22 +262,6 @@ const TELEGRAM_STICKER_SEND_JSON_ARGUMENT = {
   valueType: "json" as const,
 };
 
-function readRequiredString(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${label} must not be empty.`);
-  }
-
-  return value.trim();
-}
-
-function readOptionalString(value: unknown, label: string): string | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-
-  return readRequiredString(value, label);
-}
-
 function readOptionalPositiveInteger(value: unknown, label: string): number | undefined {
   if (value === undefined || value === null) {
     return undefined;
@@ -320,8 +304,8 @@ function readTarget(value: unknown, label = "telegram.react"): TelegramActionTar
   }
 
   return {
-    connectorKey: readRequiredString(value.connectorKey, `${label} target.connectorKey`),
-    conversationId: readRequiredString(value.conversationId, `${label} target.conversationId`),
+    connectorKey: requireNonEmptyString(value.connectorKey, `${label} target.connectorKey must not be empty.`),
+    conversationId: requireNonEmptyString(value.conversationId, `${label} target.conversationId must not be empty.`),
   };
 }
 
@@ -338,10 +322,10 @@ function readCurrentInput(value: unknown): TelegramReactCommandCurrentInput | un
     throw new Error("telegram.react currentInput.metadata must be a JSON object.");
   }
 
-  const channelId = readOptionalString(value.channelId, "telegram.react currentInput.channelId");
-  const externalMessageId = readOptionalString(value.externalMessageId, "telegram.react currentInput.externalMessageId");
+  const channelId = optionalNonEmptyString(value.channelId, "telegram.react currentInput.channelId must not be empty.");
+  const externalMessageId = optionalNonEmptyString(value.externalMessageId, "telegram.react currentInput.externalMessageId must not be empty.");
   return {
-    source: readRequiredString(value.source, "telegram.react currentInput.source"),
+    source: requireNonEmptyString(value.source, "telegram.react currentInput.source must not be empty."),
     ...(channelId ? {channelId} : {}),
     ...(externalMessageId ? {externalMessageId} : {}),
     ...(metadata ? {metadata} : {}),
@@ -366,25 +350,25 @@ function parseTelegramSendItem(value: unknown, label: string): OutboundItem {
       rejectUnexpectedKeys(value, ["type", "text"], label);
       return {
         type: "text",
-        text: readRequiredString(value.text, `${label}.text`),
+        text: requireNonEmptyString(value.text, `${label}.text must not be empty.`),
       };
     case "image": {
       rejectUnexpectedKeys(value, ["type", "path", "caption"], label);
-      const caption = readOptionalString(value.caption, `${label}.caption`);
+      const caption = optionalNonEmptyString(value.caption, `${label}.caption must not be empty.`);
       return {
         type: "image",
-        path: readRequiredString(value.path, `${label}.path`),
+        path: requireNonEmptyString(value.path, `${label}.path must not be empty.`),
         ...(caption ? {caption} : {}),
       };
     }
     case "file": {
       rejectUnexpectedKeys(value, ["type", "path", "filename", "caption", "mimeType"], label);
-      const filename = readOptionalString(value.filename, `${label}.filename`);
-      const caption = readOptionalString(value.caption, `${label}.caption`);
-      const mimeType = readOptionalString(value.mimeType, `${label}.mimeType`);
+      const filename = optionalNonEmptyString(value.filename, `${label}.filename must not be empty.`);
+      const caption = optionalNonEmptyString(value.caption, `${label}.caption must not be empty.`);
+      const mimeType = optionalNonEmptyString(value.mimeType, `${label}.mimeType must not be empty.`);
       return {
         type: "file",
-        path: readRequiredString(value.path, `${label}.path`),
+        path: requireNonEmptyString(value.path, `${label}.path must not be empty.`),
         ...(filename ? {filename} : {}),
         ...(caption ? {caption} : {}),
         ...(mimeType ? {mimeType} : {}),
@@ -410,10 +394,10 @@ function parseTelegramSendCommandInput(input: unknown): {
     throw new Error(`telegram.send items must contain 1-${MAX_TELEGRAM_SEND_ITEMS} items.`);
   }
 
-  const replyToMessageId = readOptionalString(input.replyToMessageId, "telegram.send replyToMessageId");
+  const replyToMessageId = optionalNonEmptyString(input.replyToMessageId, "telegram.send replyToMessageId must not be empty.");
   return {
-    connectorKey: readRequiredString(input.connectorKey, "telegram.send connectorKey"),
-    conversationId: readRequiredString(input.conversationId, "telegram.send conversationId"),
+    connectorKey: requireNonEmptyString(input.connectorKey, "telegram.send connectorKey must not be empty."),
+    conversationId: requireNonEmptyString(input.conversationId, "telegram.send conversationId must not be empty."),
     ...(replyToMessageId ? {replyToMessageId} : {}),
     items: input.items.map((item, index) => parseTelegramSendItem(item, `telegram.send items[${index}]`)),
   };
@@ -427,7 +411,7 @@ function parseTelegramChatListCommandInput(input: unknown): {
   }
   rejectUnexpectedKeys(input, ["connectorKey"], "telegram.chat.list input");
 
-  const connectorKey = readOptionalString(input.connectorKey, "telegram.chat.list connectorKey");
+  const connectorKey = optionalNonEmptyString(input.connectorKey, "telegram.chat.list connectorKey must not be empty.");
   return connectorKey ? {connectorKey} : {};
 }
 
@@ -440,10 +424,10 @@ function parseTelegramChatInfoCommandInput(input: unknown): {
   }
   rejectUnexpectedKeys(input, ["connectorKey", "conversationId"], "telegram.chat.info input");
 
-  const connectorKey = readOptionalString(input.connectorKey, "telegram.chat.info connectorKey");
+  const connectorKey = optionalNonEmptyString(input.connectorKey, "telegram.chat.info connectorKey must not be empty.");
   return {
     ...(connectorKey ? {connectorKey} : {}),
-    conversationId: readRequiredString(input.conversationId, "telegram.chat.info conversationId"),
+    conversationId: requireNonEmptyString(input.conversationId, "telegram.chat.info conversationId must not be empty."),
   };
 }
 
@@ -453,12 +437,12 @@ function parseTelegramHistoryCommandInput(input: unknown): TelegramHistoryComman
   }
   rejectUnexpectedKeys(input, ["connectorKey", "conversationId", "direction", "limit"], "telegram.history input");
 
-  const connectorKey = readOptionalString(input.connectorKey, "telegram.history connectorKey");
+  const connectorKey = optionalNonEmptyString(input.connectorKey, "telegram.history connectorKey must not be empty.");
   const direction = readOptionalTelegramHistoryDirection(input.direction);
   const limit = readOptionalPositiveInteger(input.limit, "telegram.history limit");
   return {
     ...(connectorKey ? {connectorKey} : {}),
-    conversationId: readRequiredString(input.conversationId, "telegram.history conversationId"),
+    conversationId: requireNonEmptyString(input.conversationId, "telegram.history conversationId must not be empty."),
     ...(direction ? {direction} : {}),
     ...(limit === undefined ? {} : {limit}),
   };
@@ -470,13 +454,13 @@ function parseTelegramMediaFetchCommandInput(input: unknown): TelegramMediaFetch
   }
   rejectUnexpectedKeys(input, ["connectorKey", "conversationId", "mediaId", "save", "overwrite"], "telegram.media.fetch input");
 
-  const connectorKey = readOptionalString(input.connectorKey, "telegram.media.fetch connectorKey");
-  const save = readOptionalString(input.save, "telegram.media.fetch save");
+  const connectorKey = optionalNonEmptyString(input.connectorKey, "telegram.media.fetch connectorKey must not be empty.");
+  const save = optionalNonEmptyString(input.save, "telegram.media.fetch save must not be empty.");
   const overwrite = readOptionalBoolean(input.overwrite, "telegram.media.fetch overwrite");
   return {
     ...(connectorKey ? {connectorKey} : {}),
-    conversationId: readRequiredString(input.conversationId, "telegram.media.fetch conversationId"),
-    mediaId: readRequiredString(input.mediaId, "telegram.media.fetch mediaId"),
+    conversationId: requireNonEmptyString(input.conversationId, "telegram.media.fetch conversationId must not be empty."),
+    mediaId: requireNonEmptyString(input.mediaId, "telegram.media.fetch mediaId must not be empty."),
     ...(save ? {save} : {}),
     ...(overwrite === undefined ? {} : {overwrite}),
   };
@@ -492,12 +476,12 @@ function parseTelegramReactCommandInput(input: unknown): TelegramReactCommandInp
     throw new Error("telegram.react remove must be a boolean.");
   }
 
-  const emoji = readOptionalString(input.emoji, "telegram.react emoji");
+  const emoji = optionalNonEmptyString(input.emoji, "telegram.react emoji must not be empty.");
   if (remove !== true && !emoji) {
     throw new Error("telegram.react emoji is required unless remove=true.");
   }
 
-  const messageId = readOptionalString(input.messageId, "telegram.react messageId");
+  const messageId = optionalNonEmptyString(input.messageId, "telegram.react messageId must not be empty.");
   const target = readTarget(input.target);
   const currentInput = readCurrentInput(input.currentInput);
   return {
@@ -516,10 +500,10 @@ function parseTelegramEditCommandInput(input: unknown): TelegramEditCommandInput
   rejectUnexpectedKeys(input, ["connectorKey", "conversationId", "messageId", "text"], "telegram.edit input");
 
   return {
-    connectorKey: readRequiredString(input.connectorKey, "telegram.edit connectorKey"),
-    conversationId: readRequiredString(input.conversationId, "telegram.edit conversationId"),
-    messageId: readRequiredString(input.messageId, "telegram.edit messageId"),
-    text: readRequiredString(input.text, "telegram.edit text"),
+    connectorKey: requireNonEmptyString(input.connectorKey, "telegram.edit connectorKey must not be empty."),
+    conversationId: requireNonEmptyString(input.conversationId, "telegram.edit conversationId must not be empty."),
+    messageId: requireNonEmptyString(input.messageId, "telegram.edit messageId must not be empty."),
+    text: requireNonEmptyString(input.text, "telegram.edit text must not be empty."),
   };
 }
 
@@ -530,9 +514,9 @@ function parseTelegramDeleteCommandInput(input: unknown): TelegramDeleteCommandI
   rejectUnexpectedKeys(input, ["connectorKey", "conversationId", "messageId"], "telegram.delete input");
 
   return {
-    connectorKey: readRequiredString(input.connectorKey, "telegram.delete connectorKey"),
-    conversationId: readRequiredString(input.conversationId, "telegram.delete conversationId"),
-    messageId: readRequiredString(input.messageId, "telegram.delete messageId"),
+    connectorKey: requireNonEmptyString(input.connectorKey, "telegram.delete connectorKey must not be empty."),
+    conversationId: requireNonEmptyString(input.conversationId, "telegram.delete conversationId must not be empty."),
+    messageId: requireNonEmptyString(input.messageId, "telegram.delete messageId must not be empty."),
   };
 }
 
@@ -547,9 +531,9 @@ function parseTelegramPinCommandInput(input: unknown): TelegramPinCommandInput {
   }
 
   return {
-    connectorKey: readRequiredString(input.connectorKey, "telegram.pin connectorKey"),
-    conversationId: readRequiredString(input.conversationId, "telegram.pin conversationId"),
-    messageId: readRequiredString(input.messageId, "telegram.pin messageId"),
+    connectorKey: requireNonEmptyString(input.connectorKey, "telegram.pin connectorKey must not be empty."),
+    conversationId: requireNonEmptyString(input.conversationId, "telegram.pin conversationId must not be empty."),
+    messageId: requireNonEmptyString(input.messageId, "telegram.pin messageId must not be empty."),
     ...(silent !== undefined ? {silent} : {}),
   };
 }
@@ -561,9 +545,9 @@ function parseTelegramUnpinCommandInput(input: unknown): TelegramUnpinCommandInp
   rejectUnexpectedKeys(input, ["connectorKey", "conversationId", "messageId"], "telegram.unpin input");
 
   return {
-    connectorKey: readRequiredString(input.connectorKey, "telegram.unpin connectorKey"),
-    conversationId: readRequiredString(input.conversationId, "telegram.unpin conversationId"),
-    messageId: readRequiredString(input.messageId, "telegram.unpin messageId"),
+    connectorKey: requireNonEmptyString(input.connectorKey, "telegram.unpin connectorKey must not be empty."),
+    conversationId: requireNonEmptyString(input.conversationId, "telegram.unpin conversationId must not be empty."),
+    messageId: requireNonEmptyString(input.messageId, "telegram.unpin messageId must not be empty."),
   };
 }
 
@@ -572,16 +556,16 @@ function parseTelegramStickerSendCommandInput(input: unknown): TelegramStickerSe
     throw new Error("telegram.sticker.send input must be a JSON object.");
   }
   rejectUnexpectedKeys(input, ["connectorKey", "conversationId", "filePath", "fileId", "stickerRef"], "telegram.sticker.send input");
-  const filePath = readOptionalString(input.filePath, "telegram.sticker.send filePath");
-  const fileId = readOptionalString(input.fileId, "telegram.sticker.send fileId");
-  const stickerRef = readOptionalString(input.stickerRef, "telegram.sticker.send stickerRef");
+  const filePath = optionalNonEmptyString(input.filePath, "telegram.sticker.send filePath must not be empty.");
+  const fileId = optionalNonEmptyString(input.fileId, "telegram.sticker.send fileId must not be empty.");
+  const stickerRef = optionalNonEmptyString(input.stickerRef, "telegram.sticker.send stickerRef must not be empty.");
   if ([filePath, fileId, stickerRef].filter(Boolean).length !== 1) {
     throw new Error("telegram.sticker.send requires exactly one of filePath, fileId, or stickerRef.");
   }
 
   return {
-    connectorKey: readRequiredString(input.connectorKey, "telegram.sticker.send connectorKey"),
-    conversationId: readRequiredString(input.conversationId, "telegram.sticker.send conversationId"),
+    connectorKey: requireNonEmptyString(input.connectorKey, "telegram.sticker.send connectorKey must not be empty."),
+    conversationId: requireNonEmptyString(input.conversationId, "telegram.sticker.send conversationId must not be empty."),
     ...(filePath ? {filePath} : {}),
     ...(fileId ? {fileId} : {}),
     ...(stickerRef ? {stickerRef} : {}),
@@ -1239,7 +1223,7 @@ export async function executeTelegramStickerSendCommand(
   } else {
     sticker = {
       type: "file_id" as const,
-      fileId: readRequiredString(input.fileId, "telegram.sticker.send fileId"),
+      fileId: requireNonEmptyString(input.fileId, "telegram.sticker.send fileId must not be empty."),
     };
     resultType = "file_id";
   }
@@ -1565,9 +1549,9 @@ function serializeInboundMedia(metadata: Record<string, unknown>): JsonObject[] 
     if (!isRecord(entry)) {
       return [];
     }
-    const id = readOptionalString(entry.id, "telegram.history media.id");
-    const mimeType = readOptionalString(entry.mimeType, "telegram.history media.mimeType");
-    const originalFilename = readOptionalString(entry.originalFilename, "telegram.history media.originalFilename");
+    const id = optionalNonEmptyString(entry.id, "telegram.history media.id must not be empty.");
+    const mimeType = optionalNonEmptyString(entry.mimeType, "telegram.history media.mimeType must not be empty.");
+    const originalFilename = optionalNonEmptyString(entry.originalFilename, "telegram.history media.originalFilename must not be empty.");
     const sizeBytes = typeof entry.sizeBytes === "number" && Number.isFinite(entry.sizeBytes)
       ? entry.sizeBytes
       : undefined;
@@ -1678,12 +1662,12 @@ function serializeFetchedTelegramMedia(media: MediaDescriptor): JsonObject {
 
 function serializeInboundHistoryItem(record: ThreadMessageRecord): JsonObject {
   const telegram = readTelegramHistoryMetadata(record);
-  const sentAt = readOptionalString(telegram.sentAt, "telegram.history sentAt");
-  const messageId = readOptionalString(record.externalMessageId, "telegram.history externalMessageId")
+  const sentAt = optionalNonEmptyString(telegram.sentAt, "telegram.history sentAt must not be empty.");
+  const messageId = optionalNonEmptyString(record.externalMessageId, "telegram.history externalMessageId must not be empty.")
     ?? (typeof telegram.messageId === "number" ? String(telegram.messageId) : undefined);
-  const username = readOptionalString(telegram.username, "telegram.history username");
-  const firstName = readOptionalString(telegram.firstName, "telegram.history firstName");
-  const lastName = readOptionalString(telegram.lastName, "telegram.history lastName");
+  const username = optionalNonEmptyString(telegram.username, "telegram.history username must not be empty.");
+  const firstName = optionalNonEmptyString(telegram.firstName, "telegram.history firstName must not be empty.");
+  const lastName = optionalNonEmptyString(telegram.lastName, "telegram.history lastName must not be empty.");
   const media = serializeInboundMedia(telegram);
 
   return requireCommandJsonObject({

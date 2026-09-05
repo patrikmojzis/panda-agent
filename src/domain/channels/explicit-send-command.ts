@@ -1,3 +1,4 @@
+import {optionalNonEmptyString, requireNonEmptyString} from "../../lib/strings.js";
 import type {JsonObject, JsonValue} from "../../lib/json.js";
 import {isJsonObject} from "../../lib/json.js";
 import {assertPathReadable} from "../../lib/fs.js";
@@ -37,22 +38,6 @@ interface ExplicitChannelSendInput {
   items: readonly OutboundItem[];
 }
 
-function readRequiredString(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${label} must not be empty.`);
-  }
-
-  return value.trim();
-}
-
-function readOptionalString(value: unknown, label: string): string | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-
-  return readRequiredString(value, label);
-}
-
 function rejectUnexpectedKeys(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
   const allowedSet = new Set(allowed);
   const unexpected = Object.keys(value).filter((key) => !allowedSet.has(key));
@@ -71,25 +56,25 @@ function parseOutboundItem(value: unknown, label: string): OutboundItem {
       rejectUnexpectedKeys(value, ["type", "text"], label);
       return {
         type: "text",
-        text: readRequiredString(value.text, `${label}.text`),
+        text: requireNonEmptyString(value.text, `${label}.text must not be empty.`),
       };
     case "image": {
       rejectUnexpectedKeys(value, ["type", "path", "caption"], label);
-      const caption = readOptionalString(value.caption, `${label}.caption`);
+      const caption = optionalNonEmptyString(value.caption, `${label}.caption must not be empty.`);
       return {
         type: "image",
-        path: readRequiredString(value.path, `${label}.path`),
+        path: requireNonEmptyString(value.path, `${label}.path must not be empty.`),
         ...(caption ? {caption} : {}),
       };
     }
     case "file": {
       rejectUnexpectedKeys(value, ["type", "path", "filename", "caption", "mimeType"], label);
-      const filename = readOptionalString(value.filename, `${label}.filename`);
-      const caption = readOptionalString(value.caption, `${label}.caption`);
-      const mimeType = readOptionalString(value.mimeType, `${label}.mimeType`);
+      const filename = optionalNonEmptyString(value.filename, `${label}.filename must not be empty.`);
+      const caption = optionalNonEmptyString(value.caption, `${label}.caption must not be empty.`);
+      const mimeType = optionalNonEmptyString(value.mimeType, `${label}.mimeType must not be empty.`);
       return {
         type: "file",
-        path: readRequiredString(value.path, `${label}.path`),
+        path: requireNonEmptyString(value.path, `${label}.path must not be empty.`),
         ...(filename ? {filename} : {}),
         ...(caption ? {caption} : {}),
         ...(mimeType ? {mimeType} : {}),
@@ -130,15 +115,15 @@ function parseExplicitChannelSendInput(input: unknown, options: ExplicitChannelS
     throw new Error(`${options.commandName} items must contain 1-${maxItems} items.`);
   }
 
-  const rawConversationId = readRequiredString(input.conversationId, `${options.commandName} conversationId`);
+  const rawConversationId = requireNonEmptyString(input.conversationId, `${options.commandName} conversationId must not be empty.`);
   const conversationId = options.normalizeConversationId
     ? options.normalizeConversationId(rawConversationId)
     : rawConversationId;
   const deliveryContext = parseDeliveryContext(input.deliveryContext, `${options.commandName} deliveryContext`);
-  const replyToMessageId = readOptionalString(input.replyToMessageId, `${options.commandName} replyToMessageId`);
+  const replyToMessageId = optionalNonEmptyString(input.replyToMessageId, `${options.commandName} replyToMessageId must not be empty.`);
 
   return {
-    connectorKey: readRequiredString(input.connectorKey, `${options.commandName} connectorKey`),
+    connectorKey: requireNonEmptyString(input.connectorKey, `${options.commandName} connectorKey must not be empty.`),
     conversationId,
     ...(deliveryContext ? {deliveryContext} : {}),
     ...(replyToMessageId ? {replyToMessageId} : {}),

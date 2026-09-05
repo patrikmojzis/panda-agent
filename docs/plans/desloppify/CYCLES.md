@@ -997,3 +997,22 @@ state. No browser cancellation implementation is included in this batch.
   command factories, command discovery, validation/authority order, delete
   confirmation and store effects are preserved. No production access, push or
   deployment. Browser cancellation is committed as `719074d1`.
+
+## Cycle 40 — Reuse channel, email and app string validation
+
+- Finding: five command modules repeated required/optional string parsers already
+  supplied by `lib/strings`: ten private helpers across explicit channel sends,
+  apps, email, Telegram and WhatsApp.
+- Change: use the existing helpers at all 101 call sites with the exact complete
+  error text. Preserve null/undefined absence, whitespace trimming and rejection
+  of present empty or non-string values. Numeric and domain-specific parsers stay.
+- Result: 80 fewer production lines; cumulative reduction 5,011, including 75
+  lines previously relocated into tests. No new helper or test scaffolding.
+- Evidence: root passed 1,300 old/new helper outcomes and 46 focused public-command
+  tests. Independent review passed 1,150 comparisons and 131 focused tests,
+  including transport, history, attachment, authority and CLI behavior. Reversing
+  only the 101 calls/error suffixes and helper/import changes makes every remaining
+  AST node identical. Descriptors, exports, validation and side-effect order match.
+  Local proof: `.temp/desloppify-cycle40-string-parity.mjs`.
+- State: reviewed and committed locally with this cycle. Typecheck, import law,
+  prompt/shim contracts and diff checks pass. No production access or deployment.
