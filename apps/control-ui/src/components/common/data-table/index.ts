@@ -8,11 +8,10 @@ export { default as TableMultiSelectFilter } from "./ui/table-multi-select-filte
 export { default as TableSelectFilter } from "./ui/table-select-filter"
 export { Cell, CellEmpty } from "./ui/cell"
 export { renderColumnHeader } from "./ui/column-header"
-export { booleanFilterValueSetter, filterPatch } from "./hooks/filter-params"
+export { booleanFilterValueSetter } from "./hooks/filter-params"
 export { useDataTableState } from "./hooks/use-data-table-state"
 export { useTable } from "./hooks/use-table"
 export type {
-  DataTableFilterPatch,
   DataTableFilterValueSetter,
   DataTableFilterValueSetters,
   DataTableGlobalFilter,

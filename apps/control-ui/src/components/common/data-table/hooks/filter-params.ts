@@ -11,33 +11,14 @@ export type DataTableGlobalFilter = {
   [key: string]: TableParamValue
 }
 
-export type DataTableFilterPatch = {
-  __kind: "patch"
-  keepSource?: boolean
-  set: Record<string, unknown>
-  unset?: string[]
-}
-
 export type DataTableFilterValueSetter = (
   value: unknown,
   key: string
-) => unknown | DataTableFilterPatch
+) => unknown
 
 export type DataTableFilterValueSetters = Partial<
   Record<string, DataTableFilterValueSetter>
 >
-
-export function filterPatch(
-  set: Record<string, unknown>,
-  options?: { keepSource?: boolean; unset?: string[] }
-): DataTableFilterPatch {
-  return {
-    __kind: "patch",
-    keepSource: options?.keepSource,
-    set,
-    unset: options?.unset,
-  }
-}
 
 export function booleanFilterValueSetter(value: unknown): boolean | undefined {
   if (typeof value === "boolean") return value
@@ -61,16 +42,6 @@ export function tableFiltersToParams({
     const setter = filterValueSetters?.[key]
     const output = setter ? setter(value, key) : value
 
-    if (isFilterPatch(output)) {
-      for (const [patchKey, patchValue] of Object.entries(output.set)) {
-        setParam(params, patchKey, patchValue)
-      }
-      if (output.keepSource) setParam(params, key, value)
-      else delete params[key]
-      for (const unsetKey of output.unset ?? []) delete params[unsetKey]
-      return
-    }
-
     setParam(params, key, output)
   }
 
@@ -82,14 +53,6 @@ export function tableFiltersToParams({
   }
 
   return params
-}
-
-function isFilterPatch(value: unknown): value is DataTableFilterPatch {
-  return (
-    Boolean(value) &&
-    typeof value === "object" &&
-    (value as DataTableFilterPatch).__kind === "patch"
-  )
 }
 
 function setParam(params: TableParams, key: string, value: unknown) {

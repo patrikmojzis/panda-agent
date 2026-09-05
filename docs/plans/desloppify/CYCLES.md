@@ -1034,3 +1034,51 @@ state. No browser cancellation implementation is included in this batch.
 - State: independently reviewed and committed locally with this cycle. No SQL,
   schema, row mapping, commit/rollback or release behavior changes. Typecheck and
   diff checks pass. No production access, migration, push or deployment.
+
+## Cycle 42 — Delete the unused Control filter-patch format
+
+- Finding: the Control data table carried a `filterPatch` factory, patch type and
+  set/keepSource/unset interpreter with no producer. Its four configured setter
+  sites return ordinary booleans, strings or undefined. Zustand persists only
+  column visibility, so there is no stored filter-patch state to migrate.
+- Change: remove the dead factory/type, dispatch branch and internal reexports.
+  Keep ordinary filter setters, normalization and column/global filter order.
+- Result: 38 fewer production lines and 69 test lines for six behavior cases.
+  Cumulative production reduction is 5,080, including 75 relocated into tests.
+- Evidence: all six new caller/API tests passed before deletion; 47 focused
+  Control tests pass afterward. Author verification matched 2,500 old/new filter
+  projections; independent review matched 3,872 parameter/query-string cases
+  using actual boolean/visibility setters and query encoding. There is no public
+  package exposure or dynamic producer. Root and Control typechecks, Control
+  build, import law and diff checks pass.
+- State: independently reviewed and committed locally with this cycle. False,
+  scalar/list values, empty-value removal, global override order and final API
+  query strings remain. Cycle-16 form-error behavior is untouched. No production
+  access, push or deployment.
+
+## Combined verification after cycles 40–42
+
+All 3,185 tests across 339 files pass without failures or skips:
+`.temp/desloppify-cycles40-42-unit-results.json`. The root TypeScript build, Control
+build/typecheck, import law, prompt/shim contracts, all 19 compiled package imports
+and shared `Thread` identity pass. All nine frozen source/test hashes still match;
+generated contracts and executable migration checksums remain unchanged.
+
+The inspected deterministic runtime fixture passed against a fresh isolated
+Postgres database: 25 migrations, one owned completed run, two injected model
+responses, one tool call, four persisted messages, an applied input and idle state,
+with zero external requests. The cluster was stopped afterward. Evidence:
+`.temp/desloppify-cycles40-42-offline-smoke-output.log`. This verification does not
+exercise an external provider, Bash or real Chromium. The earlier automatic
+rejection of external-model smoke remains respected; production was untouched.
+
+The three cycles remove 149 production lines net, bringing the total to 5,080.
+String-parser reuse is committed as `f899dffd`; email lookup deduplication as
+`07f78739`; Control cleanup and this record are committed with cycle 42. Unrelated
+commits and untracked `output/` remain excluded and preserved.
+
+Further recon found four equivalent private Postgres binary decoders and a
+matching pair of wiki-locale normalizers. Those remain candidates for a separate
+reviewed cycle; integer decoders differ and must not be merged casually. A TUI
+callback-dispatch consolidation also needs an explicit test-seam review before
+acceptance. None of these candidates is implemented in this batch.

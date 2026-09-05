@@ -13,37 +13,27 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–39; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–42; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **4,931 production lines**, including
+Together, these cleanup commits remove **5,080 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
-The latest cycle removes four redundant private skill-command factories: 32
-fewer production lines, with public factories, descriptors, validation and
-authority checks preserved. Exact whole-file reconstruction proves that the
-remaining source is unchanged. The 69 focused tests and 204 independent command
-tests pass, along with typecheck, contracts and 2,176 behavior comparisons; details
-are in cycle 39.
+The latest three cycles remove 149 production lines: command modules reuse
+existing string validation, email persistence uses one mailbox/UID lookup, and
+Control drops an unused filter-patch format. Public command contracts, validation
+and authority order, SQL and live filter/query behavior remain. Six new Control
+behavior tests passed on both the baseline and the simplified implementation.
 
-Cycle 38 repairs browser cancellation across the public tool, HTTP runner
-and session service. Per-scope admission, exact resource ownership and staged
-artifact/storage publication prevent canceled operations from affecting their
-replacement. This correctness repair adds 266 production lines and 1,026 test
-lines; it is not a line-count reduction. The earlier kernel finalization,
-migration export and MCP cancellation changes remain committed.
-
-The frozen cycle-38 source passes **3,179 tests across 338 files**, the TypeScript
-build, import law, prompt/shim contracts, all 19 compiled package imports and a
-deterministic runtime smoke against disposable local Postgres with external
-networking disabled. Browser coverage includes 39 new cases and an actual
-loopback HTTP cancellation from the public tool through fake Chromium teardown.
-Real Chromium closure timing is not validated. Automatic approval review had
-declined the external-model smoke; the local replacement validates migration,
-claiming, tool execution, transcript persistence and idle state, but does not
-exercise an external provider or Bash. The test database was stopped afterward.
-Earlier verification records are historical and do not certify later edits.
-The inspect/review/commit loop remains active.
+The frozen combined tree passes **3,185 tests across 339 files**, root and Control
+builds/typechecks, import law, prompt/shim contracts, all 19 compiled package
+imports and a deterministic runtime smoke against disposable local Postgres with
+external networking disabled. All 25 migrations applied; one owned run completed
+with an applied input, persisted transcript and idle state. The test cluster was
+stopped afterward. This verification uses injected model responses and fake
+Chromium; it does not exercise external providers, Bash or actual browser closure
+latency. Earlier verification records are historical and do not certify later
+edits. The inspect/review/commit loop remains active.
 
 Concurrent credential-name, image-generation and background-job work belongs to
 separate tasks. Preserve those changes and untracked `output/`; they are excluded
