@@ -5,6 +5,8 @@ import {createPandaSchemaMigrator} from "../../src/app/database/migration-catalo
 import {recreateSmokeDatabase} from "../../src/app/smoke/database.js";
 import {PostgresAgentStore} from "../../src/domain/agents/postgres.js";
 import {PostgresControlAuthService} from "../../src/domain/control/auth.js";
+import {ControlHomeService} from "../../src/domain/control/home-service.js";
+import {ControlReadService} from "../../src/domain/control/read-service.js";
 import {ControlScheduledTasksService, type ControlScheduledTaskLifecycleStatus} from "../../src/domain/control/scheduled-tasks-service.js";
 import type {ControlSessionRecord} from "../../src/domain/control/types.js";
 import {ControlWatchesService} from "../../src/domain/control/watches-service.js";
@@ -173,6 +175,24 @@ describe("Control work reads on PostgreSQL", () => {
     expect(result.data).toHaveLength(1);
     expect(result.data[0]).toMatchObject({lifecycleStatus: "failed"});
     expect(result.data[0]!.recentRuns.map((run) => run.status)).toEqual(["failed", "succeeded"]);
+  });
+
+  liveIt("shows only eligible Home tasks with the current running or scheduled lifecycle", async () => {
+    const home = new ControlHomeService({pool, reads: new ControlReadService({pool})});
+    const result = await home.getHome(controlSession);
+
+    expect(result.scope.agents.map((agent) => agent.agentKey)).toEqual(["panda"]);
+    expect(result.sessions.map((session) => session.sessionId)).toEqual([sessionId]);
+    expect(result.upcomingAutomations
+      .map(({title, lifecycleStatus}) => ({title, lifecycleStatus}))
+      .sort((left, right) => left.title.localeCompare(right.title)))
+      .toEqual([
+        {title: "Claimed is running", lifecycleStatus: "running"},
+        {title: "Recurring scheduled", lifecycleStatus: "scheduled"},
+        {title: "Running", lifecycleStatus: "running"},
+        {title: "Scheduled", lifecycleStatus: "scheduled"},
+        {title: "Unfinished failure is scheduled", lifecycleStatus: "scheduled"},
+      ]);
   });
 
   liveIt("fetches at most one latest run per page watch without losing counts or tie order", async () => {

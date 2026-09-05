@@ -2588,3 +2588,42 @@ Cycle 72 below implements that policy.
   remains separate.
 - State: independently reviewed and committed locally with this cycle.
   Cycle 75 is committed as `28f97d90`. No production access, push or deployment.
+
+## Cycle 77 — Use Home's existing SQL eligibility guarantees
+
+- Finding: the Home task query selects only enabled tasks with no completion
+  or cancellation timestamp and a non-null next-fire timestamp. Its JavaScript
+  projection repeats those predicates twice and keeps unreachable lifecycle
+  branches for cancelled, completed and disabled tasks.
+- Change: remove three unused selected fields and the private lifecycle helper
+  from `src/domain/control/home-service.ts`. Use the first already-ordered task
+  and choose `running` or `scheduled` from the query's active-run boolean. Keep
+  timestamp normalization: PostgreSQL can still return infinite timestamps.
+  Authorization, SQL predicates, limits, ordering, summary and attention logic
+  remain unchanged.
+- Evidence: whole-file reconstruction allows only those changes. A new public
+  HTTP case passes before and after the cleanup and protects lifecycle labels
+  plus disabled/completed/cancelled/missing-next-fire exclusions. All six Home
+  HTTP cases pass. A reproducible public-method comparison covers 581 fixtures,
+  including Date/infinite/invalid-Date values, roles, task bounds, latest-run
+  states and dependency failures; DTOs and original errors match. Root reviewed
+  the query and its callers independently. Evidence:
+  `.temp/desloppify-home-task-projection-parity.mjs` and
+  `.temp/desloppify-home-task-projection-parity-output.json`.
+- PostgreSQL: add one actual `ControlHomeService`/`ControlReadService` case to
+  `tests/live/control-work-reads.live.test.ts`, reusing its grants, pairings and
+  lifecycle fixtures. It verifies scoped session visibility and exactly five
+  eligible task labels with real lateral SQL. All five cases pass after all
+  25 migrations on a fresh disposable local database. The cluster is stopped.
+  This checks the SQL that pg-mem's HTTP adapter substitutes. Report:
+  `.temp/desloppify-cycle77-postgres-results.json`.
+- Gates: the frozen combined tree passes 3,309 unit tests across 341 files,
+  build/typecheck, import law, prompt/shim contracts and all 19 compiled package
+  imports. This cycle changes no public declaration, generated contract,
+  migration or index. The following PCM source remains separately staged.
+- Result: **12 fewer production lines**, 52 added test lines and two new cases
+  (one HTTP, one PostgreSQL). The established counter becomes **5,973 fewer
+  production lines across 78 cleanup commits**, including 75 lines moved into
+  tests. The earlier 25 shipped shim lines remain separate.
+- State: independently reviewed and committed locally with this cycle.
+  Cycle 76 is committed as `ac3aef0b`. No production access, push or deployment.

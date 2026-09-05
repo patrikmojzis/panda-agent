@@ -5533,6 +5533,38 @@ describe("Control Home HTTP", () => {
     expect(JSON.stringify(body.home.recentActivity)).toContain("session_heartbeat_config_write");
   });
 
+  it("shows only eligible upcoming tasks with their running or scheduled lifecycle", async () => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const tasks = await Promise.all(["Running", "Scheduled", "Disabled", "Completed", "Cancelled", "No next fire"].map((title, index) =>
+      harness.scheduledTaskStore.createTask({
+        sessionId: "session-panda",
+        title,
+        instruction: "Private task instruction.",
+        schedule: {kind: "once", runAt: new Date(Date.UTC(2040, 0, index + 1)).toISOString()},
+      })
+    ));
+    await harness.pool.query(`UPDATE "runtime"."scheduled_tasks" SET enabled = FALSE WHERE id = $1`, [tasks[2]!.id]);
+    await harness.pool.query(`UPDATE "runtime"."scheduled_tasks" SET completed_at = '2039-12-31T00:00:00.000Z' WHERE id = $1`, [tasks[3]!.id]);
+    await harness.pool.query(`UPDATE "runtime"."scheduled_tasks" SET cancelled_at = '2039-12-31T00:00:00.000Z' WHERE id = $1`, [tasks[4]!.id]);
+    await harness.pool.query(`UPDATE "runtime"."scheduled_tasks" SET next_fire_at = NULL WHERE id = $1`, [tasks[5]!.id]);
+    await harness.pool.query(`
+      INSERT INTO "runtime"."scheduled_task_runs" (id, task_id, session_id, scheduled_for, status)
+      VALUES ('00000000-0000-0000-0000-000000000303', $1, 'session-panda', '2039-12-31T00:00:00.000Z', 'pending')
+    `, [tasks[0]!.id]);
+    const base = await startHarnessServer(harness);
+    const scoped = await login(base, harness);
+
+    const response = await fetch(`${base}/api/control/home`, {headers: {cookie: scoped.cookies}});
+    expect(response.status).toBe(200);
+    const body = await response.json() as {home: {upcomingAutomations: Array<{taskId: string; lifecycleStatus: string}>; sessions: Array<{nextTaskAt: string}>}};
+    expect(body.home.upcomingAutomations.map(({taskId, lifecycleStatus}) => ({taskId, lifecycleStatus}))).toEqual([
+      {taskId: tasks[0]!.id, lifecycleStatus: "running"},
+      {taskId: tasks[1]!.id, lifecycleStatus: "scheduled"},
+    ]);
+    expect(body.home.sessions[0]!.nextTaskAt).toBe("2040-01-01T00:00:00.000Z");
+  });
+
   it("redacts todo content, scheduled instructions, raw errors, credential values, and unknown audit metadata", async () => {
     const harness = await createHarness();
     await harness.agents.ensurePairing("panda", "identity-patrik");

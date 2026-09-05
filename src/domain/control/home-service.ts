@@ -92,14 +92,6 @@ function labelForSession(row: VisibleSessionRow): string {
   return "session";
 }
 
-function lifecycleStatus(row: TaskRow): string {
-  if (row.cancelled_at) return "cancelled";
-  if (row.completed_at) return "completed";
-  if (row.has_active_run === true) return "running";
-  if (row.enabled === false) return "disabled";
-  return "scheduled";
-}
-
 function severityRank(severity: ControlHomeAttentionSeverity): number {
   if (severity === "critical") return 0;
   if (severity === "warning") return 1;
@@ -175,10 +167,7 @@ export class ControlHomeService {
               candidate.session_id,
               candidate.title,
               candidate.schedule_kind,
-              candidate.enabled,
               candidate.next_fire_at,
-              candidate.completed_at,
-              candidate.cancelled_at,
               candidate.created_at,
               EXISTS (
                 SELECT 1
@@ -241,7 +230,7 @@ export class ControlHomeService {
       const label = labelForSession(row);
       const taskRows = tasksBySession.get(sessionId) ?? [];
       const runRows = runsBySession.get(sessionId) ?? [];
-      const nextTask = taskRows.find((task) => task.enabled === true && !task.completed_at && !task.cancelled_at && task.next_fire_at);
+      const nextTask = taskRows[0];
       const lastRun = runRows[0];
       const heartbeatEnabled = row.heartbeat_enabled !== false;
       const heartbeat = {
@@ -267,14 +256,13 @@ export class ControlHomeService {
       }
       for (const task of taskRows) {
         const nextFireAt = toIso(task.next_fire_at);
-        const status = lifecycleStatus(task);
-        if (task.enabled === true && !task.completed_at && !task.cancelled_at && nextFireAt) {
+        if (nextFireAt) {
           upcomingAutomations.push({
             taskId: String(task.id),
             agentKey,
             sessionId,
             title: String(task.title),
-            lifecycleStatus: status,
+            lifecycleStatus: task.has_active_run === true ? "running" : "scheduled",
             nextFireAt,
             scheduleKind: String(task.schedule_kind),
             targetRoute: sessionWorkspaceRoute(agentKey, sessionId, "automations"),
