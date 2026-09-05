@@ -1,6 +1,6 @@
 import type {PgPoolLike} from "../../lib/postgres-query.js";
 import {withTransaction} from "../../lib/postgres-transaction.js";
-import {optionalTimestampMillis, requireTimestampMillis} from "../../lib/postgres-values.js";
+import {optionalTimestampMillis, requirePostgresBuffer, requireTimestampMillis} from "../../lib/postgres-values.js";
 import {requireNonEmptyString} from "../../lib/strings.js";
 import {normalizeAgentKey} from "../agents/types.js";
 import type {EncryptedSecret} from "../secrets/crypto.js";
@@ -11,15 +11,6 @@ import {buildSessionTableNames} from "../sessions/postgres-shared.js";
 import {SessionArchivedError} from "../threads/runtime/store.js";
 
 const sessionTables = buildSessionTableNames();
-
-function binary(value: unknown, label: string): Buffer {
-  if (Buffer.isBuffer(value)) return value;
-  if (value instanceof Uint8Array) return Buffer.from(value);
-  if (typeof value === "string") return value.startsWith("\\x")
-    ? Buffer.from(value.slice(2), "hex")
-    : Buffer.from(value, "utf8");
-  throw new Error(`${label} must be binary.`);
-}
 
 function positiveInteger(value: unknown, label: string): number {
   const parsed = typeof value === "string" ? Number(value) : value;
@@ -34,9 +25,9 @@ function optionalString(value: unknown, label: string): string | undefined {
 
 function encrypted(row: Record<string, unknown>, prefix: "state" | "verifier"): EncryptedSecret {
   return {
-    ciphertext: binary(row[`${prefix}_ciphertext`], `MCP OAuth ${prefix} ciphertext`),
-    iv: binary(row[`${prefix}_iv`], `MCP OAuth ${prefix} IV`),
-    tag: binary(row[`${prefix}_tag`], `MCP OAuth ${prefix} tag`),
+    ciphertext: requirePostgresBuffer(row[`${prefix}_ciphertext`], `MCP OAuth ${prefix} ciphertext must be binary.`),
+    iv: requirePostgresBuffer(row[`${prefix}_iv`], `MCP OAuth ${prefix} IV must be binary.`),
+    tag: requirePostgresBuffer(row[`${prefix}_tag`], `MCP OAuth ${prefix} tag must be binary.`),
     envelopeVersion: positiveInteger(row.envelope_version, "MCP OAuth envelope version"),
   };
 }

@@ -2,7 +2,7 @@ import {randomUUID} from "node:crypto";
 
 import type {PgPoolLike, PgQueryable} from "../../lib/postgres-query.js";
 import {requireNonEmptyString} from "../../lib/strings.js";
-import {requireTimestampMillis} from "../../lib/postgres-values.js";
+import {requirePostgresBuffer, requireTimestampMillis} from "../../lib/postgres-values.js";
 import {buildCredentialTableNames, type CredentialTableNames} from "./postgres-shared.js";
 import {
   type CredentialListFilter,
@@ -15,26 +15,6 @@ import {
 
 export interface PostgresCredentialStoreOptions {
   pool: PgPoolLike;
-}
-
-function toBuffer(value: unknown): Buffer {
-  if (Buffer.isBuffer(value)) {
-    return value;
-  }
-
-  if (value instanceof Uint8Array) {
-    return Buffer.from(value);
-  }
-
-  if (typeof value === "string") {
-    if (value.startsWith("\\x")) {
-      return Buffer.from(value.slice(2), "hex");
-    }
-
-    return Buffer.from(value, "utf8");
-  }
-
-  throw new Error("Credential row is missing a binary field.");
 }
 
 function parseEnvelopeVersion(value: unknown): number {
@@ -54,9 +34,9 @@ function parseCredentialRow(row: Record<string, unknown>): CredentialRecord {
     agentKey: normalizeCredentialAgentKey(
       requireNonEmptyString(row.agent_key, "Credential row is missing agent key."),
     ),
-    valueCiphertext: toBuffer(row.value_ciphertext),
-    valueIv: toBuffer(row.value_iv),
-    valueTag: toBuffer(row.value_tag),
+    valueCiphertext: requirePostgresBuffer(row.value_ciphertext, "Credential row is missing a binary field."),
+    valueIv: requirePostgresBuffer(row.value_iv, "Credential row is missing a binary field."),
+    valueTag: requirePostgresBuffer(row.value_tag, "Credential row is missing a binary field."),
     envelopeVersion: parseEnvelopeVersion(row.envelope_version),
     createdAt: requireTimestampMillis(row.created_at, "Credential created_at must be a valid timestamp."),
     updatedAt: requireTimestampMillis(row.updated_at, "Credential updated_at must be a valid timestamp."),

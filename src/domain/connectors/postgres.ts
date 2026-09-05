@@ -2,7 +2,7 @@ import {randomUUID} from "node:crypto";
 
 import {isJsonObject, readOptionalJsonValue, stringifyOptionalJsonValue, type JsonObject} from "../../lib/json.js";
 import type {PgPoolLike} from "../../lib/postgres-query.js";
-import {requireTimestampMillis} from "../../lib/postgres-values.js";
+import {requirePostgresBuffer, requireTimestampMillis} from "../../lib/postgres-values.js";
 import {requireNonEmptyString, trimToUndefined} from "../../lib/strings.js";
 import type {SecretCrypto, SecretContext} from "../secrets/crypto.js";
 import {buildConnectorAccountTableNames, type ConnectorAccountTableNames} from "./postgres-shared.js";
@@ -31,26 +31,6 @@ interface ConnectorAccountSecretValueRecord extends ConnectorAccountSecretSummar
   valueIv: Buffer;
   valueTag: Buffer;
   envelopeVersion: number;
-}
-
-function toBuffer(value: unknown): Buffer {
-  if (Buffer.isBuffer(value)) {
-    return value;
-  }
-
-  if (value instanceof Uint8Array) {
-    return Buffer.from(value);
-  }
-
-  if (typeof value === "string") {
-    if (value.startsWith("\\x")) {
-      return Buffer.from(value.slice(2), "hex");
-    }
-
-    return Buffer.from(value, "utf8");
-  }
-
-  throw new Error("Connector account secret row is missing a binary field.");
 }
 
 function parseEnvelopeVersion(value: unknown): number {
@@ -134,9 +114,9 @@ function parseSecretSummaryRow(row: Record<string, unknown>): ConnectorAccountSe
 function parseSecretValueRow(row: Record<string, unknown>): ConnectorAccountSecretValueRecord {
   return {
     ...parseSecretSummaryRow(row),
-    valueCiphertext: toBuffer(row.value_ciphertext),
-    valueIv: toBuffer(row.value_iv),
-    valueTag: toBuffer(row.value_tag),
+    valueCiphertext: requirePostgresBuffer(row.value_ciphertext, "Connector account secret row is missing a binary field."),
+    valueIv: requirePostgresBuffer(row.value_iv, "Connector account secret row is missing a binary field."),
+    valueTag: requirePostgresBuffer(row.value_tag, "Connector account secret row is missing a binary field."),
     envelopeVersion: parseEnvelopeVersion(row.envelope_version),
   };
 }

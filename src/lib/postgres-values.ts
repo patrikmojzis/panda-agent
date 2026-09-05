@@ -1,3 +1,24 @@
+/** Reads Postgres binary values while preserving caller-owned validation errors. */
+export function requirePostgresBuffer(value: unknown, errorMessage: string): Buffer {
+  if (Buffer.isBuffer(value)) {
+    return value;
+  }
+
+  if (value instanceof Uint8Array) {
+    return Buffer.from(value);
+  }
+
+  if (typeof value === "string") {
+    if (value.startsWith("\\x")) {
+      return Buffer.from(value.slice(2), "hex");
+    }
+
+    return Buffer.from(value, "utf8");
+  }
+
+  throw new Error(errorMessage);
+}
+
 /**
  * Convert trusted Postgres timestamp row values into epoch milliseconds.
  * TIMESTAMPTZ columns should arrive as Date objects; tests may use numeric

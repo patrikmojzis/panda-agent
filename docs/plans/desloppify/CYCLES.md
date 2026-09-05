@@ -1082,3 +1082,21 @@ matching pair of wiki-locale normalizers. Those remain candidates for a separate
 reviewed cycle; integer decoders differ and must not be merged casually. A TUI
 callback-dispatch consolidation also needs an explicit test-seam review before
 acceptance. None of these candidates is implemented in this batch.
+
+## Cycle 43 — Share Postgres binary decoding
+
+- Finding: credentials, connectors, wiki bindings and MCP OAuth repeated four
+  private binary decoders with the same Buffer, typed-array and string behavior.
+- Change: move that behavior into `requirePostgresBuffer` in the existing generic
+  `src/lib/postgres-values.ts` module. Each of the 12 row-field calls supplies its
+  original validation error; integer and encrypted-envelope parsers stay local.
+- Result: 48 fewer production lines; cumulative reduction 5,128, including the
+  75 lines previously relocated into tests. No new test scaffolding.
+- Evidence: independent review passed 36 tests across seven suites and 128
+  old/new decoder comparisons. Buffer identity, typed-array copying and offsets,
+  UTF-8 strings, lowercase hex prefixes, permissive malformed-hex handling and
+  exact errors match. Whole-file reconstruction confirms that SQL, field order,
+  envelope handling and all other caller behavior remain unchanged.
+- State: independently reviewed and committed locally with this cycle. Typecheck,
+  import law and diff checks pass. No package entrypoint expansion, migration,
+  production access, push or deployment.

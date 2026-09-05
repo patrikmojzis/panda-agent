@@ -1,33 +1,13 @@
 import type {PgQueryable} from "../../lib/postgres-query.js";
 import {requireNonEmptyString} from "../../lib/strings.js";
 import {normalizeAgentKey} from "../agents/types.js";
-import {requireTimestampMillis} from "../../lib/postgres-values.js";
+import {requirePostgresBuffer, requireTimestampMillis} from "../../lib/postgres-values.js";
 import {buildWikiBindingTableNames} from "./postgres-shared.js";
 import type {SetWikiBindingInput, WikiBindingRecord} from "./types.js";
 import {normalizeWikiGroupId, normalizeWikiNamespacePath} from "./types.js";
 
 export interface PostgresWikiBindingStoreOptions {
   pool: PgQueryable;
-}
-
-function toBuffer(value: unknown): Buffer {
-  if (Buffer.isBuffer(value)) {
-    return value;
-  }
-
-  if (value instanceof Uint8Array) {
-    return Buffer.from(value);
-  }
-
-  if (typeof value === "string") {
-    if (value.startsWith("\\x")) {
-      return Buffer.from(value.slice(2), "hex");
-    }
-
-    return Buffer.from(value, "utf8");
-  }
-
-  throw new Error("Wiki binding row is missing a binary field.");
 }
 
 function parsePositiveInteger(value: unknown, errorMessage: string): number {
@@ -50,9 +30,9 @@ function parseWikiBindingRow(row: Record<string, unknown>): WikiBindingRecord {
     namespacePath: normalizeWikiNamespacePath(
       requireNonEmptyString(row.namespace_path, "Wiki binding row is missing namespace path."),
     ),
-    apiTokenCiphertext: toBuffer(row.api_token_ciphertext),
-    apiTokenIv: toBuffer(row.api_token_iv),
-    apiTokenTag: toBuffer(row.api_token_tag),
+    apiTokenCiphertext: requirePostgresBuffer(row.api_token_ciphertext, "Wiki binding row is missing a binary field."),
+    apiTokenIv: requirePostgresBuffer(row.api_token_iv, "Wiki binding row is missing a binary field."),
+    apiTokenTag: requirePostgresBuffer(row.api_token_tag, "Wiki binding row is missing a binary field."),
     envelopeVersion: parsePositiveInteger(
       row.envelope_version,
       "Wiki binding envelope version must be a positive integer.",
