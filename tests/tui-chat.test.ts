@@ -1053,8 +1053,14 @@ describe("thread usage snapshots", () => {
     expect(snapshot.visibleMessages).toBe(3);
     expect(snapshot.storedImages.count).toBe(1);
     expect(snapshot.visibleImages.count).toBe(0);
-    expect(snapshot.totalUsage.responses).toBe(2);
-    expect(snapshot.totalUsage.totalTokens).toBe(540);
+    expect(snapshot.totalUsage).toEqual({
+      responses: 2, input: 7, output: 63, cacheRead: 200, cacheWrite: 270, totalTokens: 540,
+      cost: {
+        input: expect.closeTo(0.002, 8), output: expect.closeTo(0.015, 8),
+        cacheRead: expect.closeTo(0.007, 8), cacheWrite: expect.closeTo(0.010, 8), total: expect.closeTo(0.034, 8),
+      },
+    });
+    expect(snapshot.lastUsage?.sequence).toBe(6);
     expect(snapshot.latestCompaction).toMatchObject({
       trigger: "manual",
       tokensBefore: 1_200,

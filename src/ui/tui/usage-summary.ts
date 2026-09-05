@@ -180,17 +180,7 @@ function collectUsageTotals(transcript: readonly ThreadMessageRecord[]): {
       continue;
     }
 
-    total.responses += 1;
-    total.input += usage.input;
-    total.output += usage.output;
-    total.cacheRead += usage.cacheRead;
-    total.cacheWrite += usage.cacheWrite;
-    total.totalTokens += usage.totalTokens;
-    total.cost.input += usage.cost.input;
-    total.cost.output += usage.cost.output;
-    total.cost.cacheRead += usage.cost.cacheRead;
-    total.cost.cacheWrite += usage.cost.cacheWrite;
-    total.cost.total += usage.cost.total;
+    mergeUsageTotals(total, {...usage, responses: 1});
     last = usage;
   }
 

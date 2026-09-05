@@ -488,3 +488,18 @@ intact rather than adding churn.
 - State: reviewed and committed locally with this cycle. Caller cancellation is
   the intentional behavior change. No provider request was made by these focused
   tests, and no production service was changed.
+
+## Cycle 21 — Reuse the TUI usage accumulator
+
+- Finding: collecting assistant usage repeated the same eleven additions already
+  owned by the local accumulator used for paged transcript totals.
+- Change: send normalized assistant usage to that existing accumulator with one
+  response. Keep the latest-usage record and all paging/normalization behavior.
+- Result: 10 fewer production lines; six net test lines added.
+- Evidence: all 48 focused TUI tests pass, plus typecheck and import law. The
+  existing two-response fixture now verifies every token/cost total and the latest
+  sequence. Root's independent review confirmed identical addition order and
+  unchanged source outside the replaced block; normalized inputs are fresh plain
+  records, so the spread introduces no getter or alias behavior.
+- State: reviewed and committed locally with this cycle. No transcript shape,
+  stored usage, paging policy or user-facing formatting changed.
