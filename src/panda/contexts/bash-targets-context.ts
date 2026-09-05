@@ -1,4 +1,5 @@
 import {LlmContext} from "../../kernel/agent/llm-context.js";
+import {isRecord} from "../../lib/records.js";
 import type {ExecutionEnvironmentStore} from "../../domain/execution-environments/store.js";
 import type {ExecutionEnvironmentRecord} from "../../domain/execution-environments/types.js";
 import {
@@ -10,10 +11,6 @@ import {renderBashTargetsContext, type BashTargetContextItem} from "../../prompt
 export interface BashTargetsContextOptions {
   environments: Pick<ExecutionEnvironmentStore, "getEnvironment" | "listBindingsForSession">;
   sessionId: string;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function readString(value: unknown): string | undefined {

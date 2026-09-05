@@ -91,10 +91,10 @@
       "sha256": "61ecd6241a8370f2c8e41d29172e157556890a599b7649f544148416472f9b1b"
     },
     {
-      "bytes": 3435,
-      "lines": 87,
+      "bytes": 3330,
+      "lines": 84,
       "path": "src/panda/contexts/bash-targets-context.ts",
-      "sha256": "494705b89072fca2db9855d68051818784717a0340d54498f991e439b11f335f"
+      "sha256": "3766c67d6c5bd939f4206a2ef0e803252837fce6c0af21ac1b5c0690c8cc8679"
     },
     {
       "bytes": 8740,

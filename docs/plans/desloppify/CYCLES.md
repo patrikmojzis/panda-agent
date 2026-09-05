@@ -749,3 +749,17 @@ remains an area for further inspection. Two private object-shape guards also
 duplicate `lib/records` in WhatsApp auth storage and Bash-target context; any
 follow-up must verify auth decoding and exact prompt output before removing them.
 No additional implementation is included in this batch.
+
+## Cycle 32 — Reuse object-shape guards
+
+- Finding: WhatsApp auth storage and Bash-target context each copied the exact
+  object-shape check already supplied by `lib/records`.
+- Change: import the existing `isRecord` and remove both private copies.
+- Result: six fewer production lines; no new test scaffolding.
+- Evidence: independent review verified both bodies match the shared helper and
+  all remaining source is byte-identical after import/removal normalization.
+  All 11 auth-store/Bash-target tests pass, alongside typecheck, import law and
+  prompt/shim checks. The generated snapshot changes only the Bash-target source
+  hash, byte count and line count; tool catalogs, toolsets and other records match.
+- State: reviewed and committed locally with this cycle. Auth decoding, generated
+  prompt output, model-facing text and public contracts are unchanged.

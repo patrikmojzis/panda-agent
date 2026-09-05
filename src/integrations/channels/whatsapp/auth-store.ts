@@ -13,6 +13,7 @@ import {buildConnectorAccountTableNames} from "../../../domain/connectors/postgr
 import {normalizeConnectorAccountId} from "../../../domain/connectors/types.js";
 import type {PgPoolLike, PgQueryable} from "../../../lib/postgres-query.js";
 import {requireTimestampMillis} from "../../../lib/postgres-values.js";
+import {isRecord} from "../../../lib/records.js";
 import {requireNonEmptyString, uniqueTrimmedStrings} from "../../../lib/strings.js";
 import {buildWhatsAppAuthTableNames} from "./auth-schema.js";
 
@@ -68,10 +69,6 @@ function parseEncryptedJson<T>(row: Record<string, unknown>, crypto: SecretCrypt
     envelopeVersion: parseEnvelopeVersion(row.envelope_version),
   }, context);
   return JSON.parse(plaintext, BufferJSON.reviver) as T;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function reviveSignalValue<T extends keyof SignalDataTypeMap>(
