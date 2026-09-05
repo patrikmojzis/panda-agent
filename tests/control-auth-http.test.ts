@@ -4859,6 +4859,7 @@ describe("Control Runtime Activity HTTP", () => {
     const response = await fetch(`${base}/api/control/agents/panda/connectors?limit=10`, {headers: {cookie: auth.cookies}});
     expect(response.status).toBe(200);
     const body = await response.json() as {connectors: {agentKey: string; summary: Record<string, number>; accounts: Array<Record<string, unknown>>}};
+    expect(Object.keys(body).sort()).toEqual(["connectors", "data", "meta"]);
     expect(Object.keys(body.connectors).sort()).toEqual(["accounts", "agentKey", "summary"]);
     expect(body.connectors).toMatchObject({agentKey: "panda", summary: {total: 2, agentOwned: 1, systemOwned: 1}});
     expect(body.connectors.accounts.map((account) => account.accountKey).sort()).toEqual(["panda-main", "system-default"]);

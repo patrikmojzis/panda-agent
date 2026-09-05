@@ -799,17 +799,6 @@ function matchConnectorStatusPath(path: string): {agentKey: string; source: stri
   return {agentKey: decodeURIComponent(match[1]!), source: decodeURIComponent(match[2]!), accountKey: decodeURIComponent(match[3]!)};
 }
 
-function matchTelegramSetupStatusPath(path: string): {agentKey: string} | null {
-  const match = /^\/agents\/([^/]+)\/telegram\/setup-status$/.exec(path);
-  if (!match) return null;
-  return {agentKey: decodeURIComponent(match[1]!)};
-}
-
-function matchWhatsAppSetupStatusPath(path: string): {agentKey: string} | null {
-  const match = /^\/agents\/([^/]+)\/whatsapp\/setup-status$/.exec(path);
-  return match ? {agentKey: decodeURIComponent(match[1]!)} : null;
-}
-
 function matchWhatsAppLinkAttemptsPath(path: string): {agentKey: string; accountKey: string} | null {
   const match = /^\/agents\/([^/]+)\/whatsapp\/accounts\/([^/]+)\/link-attempts$/.exec(path);
   return match ? {agentKey: decodeURIComponent(match[1]!), accountKey: decodeURIComponent(match[2]!)} : null;
@@ -915,34 +904,10 @@ function matchGatewayEventTypePath(path: string): {agentKey: string; sourceId: s
   return {agentKey: decodeURIComponent(match[1]!), sourceId: decodeURIComponent(match[2]!), type: decodeURIComponent(match[3]!)};
 }
 
-function matchSessionHeartbeatPath(path: string): {agentKey: string; sessionId: string} | null {
-  const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/heartbeat$/.exec(path);
-  if (!match) return null;
-  return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
-}
-
-function matchSessionWatchesPath(path: string): {agentKey: string; sessionId: string} | null {
-  const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/watches$/.exec(path);
-  if (!match) return null;
-  return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
-}
-
 function matchSessionWatchPath(path: string): {agentKey: string; sessionId: string; watchId: string} | null {
   const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/watches\/([^/]+)$/.exec(path);
   if (!match) return null;
   return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!), watchId: decodeURIComponent(match[3]!)};
-}
-
-function matchSessionRuntimeActivityPath(path: string): {agentKey: string; sessionId: string} | null {
-  const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/runtime-activity$/.exec(path);
-  if (!match) return null;
-  return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
-}
-
-function matchAgentConnectorsPath(path: string): {agentKey: string} | null {
-  const match = /^\/agents\/([^/]+)\/connectors$/.exec(path);
-  if (!match) return null;
-  return {agentKey: decodeURIComponent(match[1]!)};
 }
 
 function matchModelCallTracePath(path: string): {traceId: string} | null {
@@ -951,28 +916,10 @@ function matchModelCallTracePath(path: string): {traceId: string} | null {
   return {traceId: decodeURIComponent(match[1]!)};
 }
 
-function matchSessionScheduledTasksPath(path: string): {agentKey: string; sessionId: string} | null {
-  const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/scheduled-tasks$/.exec(path);
-  if (!match) return null;
-  return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
-}
-
 function matchSessionScheduledTaskPath(path: string): {agentKey: string; sessionId: string; taskId: string} | null {
   const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/scheduled-tasks\/([^/]+)$/.exec(path);
   if (!match) return null;
   return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!), taskId: decodeURIComponent(match[3]!)};
-}
-
-function matchSessionBriefingPath(path: string): {agentKey: string; sessionId: string} | null {
-  const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/briefing$/.exec(path);
-  if (!match) return null;
-  return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
-}
-
-function matchSessionPromptsPath(path: string): {agentKey: string; sessionId: string} | null {
-  const match = /^\/agents\/([^/]+)\/sessions\/([^/]+)\/prompts$/.exec(path);
-  if (!match) return null;
-  return {agentKey: decodeURIComponent(match[1]!), sessionId: decodeURIComponent(match[2]!)};
 }
 
 function matchSessionPromptPath(path: string): {agentKey: string; sessionId: string; slug: string} | null {
@@ -1794,7 +1741,7 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         return;
       }
 
-      const telegramSetupStatusPath = matchTelegramSetupStatusPath(path);
+      const telegramSetupStatusPath = matchAgentResourcePath(path, "telegram/setup-status");
       if (telegramSetupStatusPath && request.method === "GET") {
         try {
           const accountKey = url.searchParams.get("account_key") ?? url.searchParams.get("accountKey") ?? "main";
@@ -1806,7 +1753,7 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         return;
       }
 
-      const whatsAppSetupStatusPath = matchWhatsAppSetupStatusPath(path);
+      const whatsAppSetupStatusPath = matchAgentResourcePath(path, "whatsapp/setup-status");
       if (whatsAppSetupStatusPath && request.method === "GET") {
         try {
           const accountKey = url.searchParams.get("account_key") ?? url.searchParams.get("accountKey");
@@ -2337,23 +2284,7 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         return;
       }
 
-      const connectorsPath = matchAgentConnectorsPath(path);
-      if (connectorsPath && request.method === "GET") {
-        try {
-          const connectors = await options.connectorAccounts.getConnectorAccounts(session, connectorsPath.agentKey, {
-            limit: parseConnectorAccountsLimit(url.searchParams.get("limit")),
-          });
-          writeJsonResponse(response, 200, {connectors});
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "Control connector accounts read failed.";
-          if (message === "Control connector accounts limit must be a positive integer.") throw new ControlHttpError(400, message);
-          throw new ControlHttpError(404, "Control connector accounts target agent was not found or is not visible.");
-        }
-        return;
-      }
-
-
-      const watchesPath = matchSessionWatchesPath(path);
+      const watchesPath = matchSessionActionPath(path, "watches");
       if (watchesPath && request.method === "GET") {
         try {
           const watches = await options.watches.getWatches(
@@ -2423,7 +2354,7 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         return;
       }
 
-      const runtimeActivityPath = matchSessionRuntimeActivityPath(path);
+      const runtimeActivityPath = matchSessionActionPath(path, "runtime-activity");
       if (runtimeActivityPath && request.method === "GET") {
         const tableInput = parseRuntimeActivityTableInput(url.searchParams);
         try {
@@ -2441,7 +2372,7 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         return;
       }
 
-      const scheduledTasksPath = matchSessionScheduledTasksPath(path);
+      const scheduledTasksPath = matchSessionActionPath(path, "scheduled-tasks");
       if (scheduledTasksPath && request.method === "GET") {
         try {
           const scheduledTasks = await options.scheduledTasks.getScheduledTasks(
@@ -2531,7 +2462,7 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         return;
       }
 
-      const heartbeatPath = matchSessionHeartbeatPath(path);
+      const heartbeatPath = matchSessionActionPath(path, "heartbeat");
       if (heartbeatPath && request.method === "GET") {
         try {
           const heartbeat = await options.heartbeats.getHeartbeat(session, heartbeatPath.agentKey, heartbeatPath.sessionId);
@@ -2578,7 +2509,7 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         return;
       }
 
-      const sessionPromptsPath = matchSessionPromptsPath(path);
+      const sessionPromptsPath = matchSessionActionPath(path, "prompts");
       if (sessionPromptsPath && request.method === "GET") {
         try {
           const prompts = await options.briefings.listPrompts(session, sessionPromptsPath.agentKey, sessionPromptsPath.sessionId);
@@ -2636,7 +2567,7 @@ export async function startControlServer(options: StartControlServerOptions): Pr
         return;
       }
 
-      const briefingPath = matchSessionBriefingPath(path);
+      const briefingPath = matchSessionActionPath(path, "briefing");
       if (briefingPath && request.method === "GET") {
         try {
           const briefing = await options.briefings.getBriefing(session, briefingPath.agentKey, briefingPath.sessionId);

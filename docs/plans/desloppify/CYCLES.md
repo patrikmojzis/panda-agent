@@ -588,3 +588,21 @@ callers; no further deletion was justified there.
   combined startup/persistence errors retain their message and member order.
 - State: reviewed and committed locally with this cycle. Durable ownership,
   reset and shutdown behavior are preserved; no claim or persistence SQL changed.
+
+## Cycle 25 — Remove redundant Control routing
+
+- Finding: a second connectors GET handler was unreachable because the earlier
+  identical route always returned or threw. Eight other private matchers copied
+  the behavior of existing resource/action matchers.
+- Change: delete the unreachable handler and its sole-use matcher; call the
+  existing matchers with literal resources at the original evaluation positions.
+- Result: 69 fewer production lines; one test line added to assert the complete
+  live connector response keys: `data`, `meta` and `connectors`.
+- Evidence: all 92 Control HTTP tests pass, including authorization and privacy.
+  Independent review matched 3,240 route results/errors across encoded IDs,
+  malformed escapes/UTF-8, empty segments and suffixes. It confirmed the earlier
+  decode already executes for every method, preserving decode-error precedence.
+  The implementer also verified 106 other function bodies are unchanged.
+  Typecheck, import law and diff checks pass.
+- State: reviewed and committed locally with this cycle. Route availability,
+  response shapes, authorization and protocol behavior are unchanged.
