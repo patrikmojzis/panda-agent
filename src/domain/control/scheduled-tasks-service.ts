@@ -104,15 +104,6 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function lifecycleStatus(row: TaskRow): ControlScheduledTaskLifecycleStatus {
-  if (row.cancelled_at) return "cancelled";
-  if (row.completed_at && row.latest_run_status === "failed") return "failed";
-  if (row.completed_at) return "completed";
-  if (row.has_active_run === true) return "running";
-  if (row.enabled === false) return "disabled";
-  return "scheduled";
-}
-
 function publicSchedule(row: TaskRow): ScheduledTaskSchedule {
   const kind = requiredString(row.schedule_kind, "Schedule kind");
   if (kind === "once") {
@@ -228,7 +219,7 @@ function publicTask(row: TaskRow, runs: readonly ControlScheduledTaskRun[]): Con
     title: requiredString(row.title, "Scheduled task title"),
     schedule: publicSchedule(row),
     enabled: row.enabled === true,
-    lifecycleStatus: lifecycleStatus(row),
+    lifecycleStatus: requiredString(row.lifecycle_status, "Scheduled task lifecycle status") as ControlScheduledTaskLifecycleStatus,
     nextFireAt: nullableIsoTimestamp(row.next_fire_at, "Scheduled task next_fire_at must be a valid timestamp."),
     completedAt: nullableIsoTimestamp(row.completed_at, "Scheduled task completed_at must be a valid timestamp."),
     cancelledAt: nullableIsoTimestamp(row.cancelled_at, "Scheduled task cancelled_at must be a valid timestamp."),
@@ -369,19 +360,7 @@ export class ControlScheduledTasksService {
         task_row.cancelled_at,
         task_row.created_at,
         task_row.updated_at,
-        (
-          SELECT latest_run.status
-          FROM ${this.scheduled.scheduledTaskRuns} AS latest_run
-          WHERE latest_run.task_id = task_row.id
-          ORDER BY latest_run.created_at DESC, latest_run.id ASC
-          LIMIT 1
-        ) AS latest_run_status,
-        EXISTS (
-          SELECT 1
-          FROM ${this.scheduled.scheduledTaskRuns} AS active_run
-          WHERE active_run.task_id = task_row.id
-            AND active_run.status IN ('pending', 'claimed', 'running')
-        ) AS has_active_run
+        ${lifecycleStatusExpression("task_row")} AS lifecycle_status
       FROM ${this.scheduled.scheduledTasks} AS task_row
       WHERE ${whereClause}
       ORDER BY ${sortExpression(input.sortBy)} ${direction} NULLS LAST, task_row.id ASC

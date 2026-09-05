@@ -121,14 +121,10 @@ function createPgMemControlReadQueryable(pool: {query(text: string, values?: rea
     const lifecycle = filterValues.find((value) => typeof value === "string" && lifecycleStatuses.has(value));
     const enabled = filterValues.find((value) => typeof value === "boolean");
     const needle = typeof search === "string" ? search.slice(1, -1).toLowerCase() : undefined;
-    const decorated = tasks.rows.map((task) => {
-      const taskRuns = runsByTask.get(String(task.id)) ?? [];
-      return {
-        ...task,
-        latest_run_status: taskRuns[0]?.status ?? null,
-        has_active_run: taskRuns.some((run) => ["pending", "claimed", "running"].includes(run.status)),
-      };
-    }).filter((task) => {
+    const decorated = tasks.rows.map((task) => ({
+      ...task,
+      lifecycle_status: statusOf(task),
+    })).filter((task) => {
       const searchable = [task.id, task.title, task.schedule_kind, task.cron_expr, task.timezone]
         .filter(Boolean)
         .join(" ")
@@ -159,11 +155,11 @@ function createPgMemControlReadQueryable(pool: {query(text: string, values?: rea
           if (text.includes("ORDER BY task_row.updated_at")) return row.updated_at;
           if (text.includes("ORDER BY task_row.completed_at")) return row.completed_at;
           if (text.includes("ORDER BY task_row.cancelled_at")) return row.cancelled_at;
-          if (text.includes("ORDER BY CASE")) {
-            return text.includes("cancelled_at IS NOT NULL")
+          if (/\bORDER BY\s+CASE/.test(text)) {
+            return /\bORDER BY\s+CASE\s+WHEN task_row\.cancelled_at IS NOT NULL/.test(text)
               ? statusOf(row)
               : row.schedule_kind === "once"
-                ? row.run_at
+                ? row.run_at == null ? "" : new Date(row.run_at).toISOString()
                 : `${row.cron_expr ?? ""} ${row.timezone ?? ""}`;
           }
           return row.next_fire_at;

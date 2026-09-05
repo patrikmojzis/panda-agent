@@ -1302,3 +1302,29 @@ unimplemented and needs caller-level service/HTTP verification.
 - State: independently reviewed and committed locally with this cycle. Typecheck,
   import law, prompt contracts and diff checks pass. No SQL, schema, public package
   export, production access, push or deployment change.
+
+## Cycle 50 — Use the existing SQL task lifecycle for display
+
+- Finding: scheduled-task reads classified lifecycle twice: SQL for filters and
+  sorting, then a separate TypeScript classifier for displayed rows.
+- Change: project the existing SQL lifecycle expression into the selected row and
+  remove the duplicate classifier and its two intermediate projections. Keep the
+  distinct mutation-record classifier, authority checks and query scope unchanged.
+- Result: 21 fewer production lines; cumulative reduction 5,331, including the
+  75 lines previously relocated into tests. The existing HTTP test adapter also
+  loses four lines. Its sort detection now reads the outer `ORDER BY CASE`, and
+  mixed once/recurring schedule keys compare as text, matching the actual query.
+- Evidence: 88 old/new public-service query comparisons preserve results, query
+  scope, counts, ordering and parameters. Four service-to-adapter comparisons
+  cover schedule/lifecycle sorting in both directions. All 92 Control HTTP tests
+  pass in both author verification and independent review. Literal reconstruction
+  confirms unchanged lifecycle precedence, latest-run tie order and mutations.
+  Local proof: `.temp/desloppify-cycle50-proof.mjs`.
+- PostgreSQL verification: real migrated fixtures cover all six lifecycle states,
+  conflicting active/terminal states, epoch completion/cancellation timestamps,
+  failed history without completion, tied run timestamps and displayed/filter/sort
+  agreement. The shared persistent live tests are added with cycle 51 below.
+- State: independently reviewed and committed locally with this cycle. The final
+  combined tree passes all 3,195 unit tests, build, import law and prompt/shim
+  contracts. Timestamp conversion is committed as `bc95aa1b`. No migration,
+  production access, push or deployment.
