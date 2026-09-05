@@ -936,7 +936,8 @@ interface WebResearchCommandInput {
   reasoningEffort?: WebResearchReasoningEffort;
 }
 
-function readWebResearchInput(input: unknown, label = OPENAI_WEB_RESEARCH_COMMAND_NAME): WebResearchCommandInput {
+function readWebResearchInput(input: unknown): WebResearchCommandInput {
+  const label = OPENAI_WEB_RESEARCH_COMMAND_NAME;
   if (!isRecord(input) || typeof input.query !== "string" || !input.query.trim()) {
     throw new Error(`${label} query must be a non-empty string.`);
   }
@@ -1779,7 +1780,7 @@ export function createBravePlaceDescriptionCommand(options: BraveCommandOptions 
   };
 }
 
-function createWebResearchRegisteredCommand(options: {
+export function createOpenAIWebResearchCommand(options: {
   jobService: BackgroundToolJobService;
   apiKey?: string;
   env?: NodeJS.ProcessEnv;
@@ -1787,16 +1788,14 @@ function createWebResearchRegisteredCommand(options: {
   timeoutMs?: number;
   model?: string;
   reasoningEffort?: WebResearchReasoningEffort;
-  descriptor: CommandDescriptor;
-  commandName: typeof OPENAI_WEB_RESEARCH_COMMAND_NAME;
-  label: string;
 }): RegisteredCommand {
+  options = {...options};
   return {
-    descriptor: options.descriptor,
+    descriptor: openAIWebResearchCommandDescriptor,
     async execute(request: CommandRequest): Promise<CommandSuccess<JsonObject>> {
-      const input = readWebResearchInput(request.input, options.label);
+      const input = readWebResearchInput(request.input);
       if (!request.scope.threadId) {
-        throw new Error(`${options.label} requires resolved command thread scope.`);
+        throw new Error(`${OPENAI_WEB_RESEARCH_COMMAND_NAME} requires resolved command thread scope.`);
       }
 
       const model = input.model ?? options.model ?? DEFAULT_WEB_RESEARCH_MODEL;
@@ -1832,27 +1831,10 @@ function createWebResearchRegisteredCommand(options: {
 
       return {
         ok: true,
-        command: options.commandName,
+        command: OPENAI_WEB_RESEARCH_COMMAND_NAME,
         output: backgroundJobPayload(record),
         summary: `Started web research job ${record.id}.`,
       };
     },
   };
-}
-
-export function createOpenAIWebResearchCommand(options: {
-  jobService: BackgroundToolJobService;
-  apiKey?: string;
-  env?: NodeJS.ProcessEnv;
-  fetchImpl?: typeof fetch;
-  timeoutMs?: number;
-  model?: string;
-  reasoningEffort?: WebResearchReasoningEffort;
-}): RegisteredCommand {
-  return createWebResearchRegisteredCommand({
-    ...options,
-    descriptor: openAIWebResearchCommandDescriptor,
-    commandName: OPENAI_WEB_RESEARCH_COMMAND_NAME,
-    label: OPENAI_WEB_RESEARCH_COMMAND_NAME,
-  });
 }

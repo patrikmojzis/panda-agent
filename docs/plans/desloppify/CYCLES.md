@@ -230,6 +230,31 @@ from cleanup statistics. Cycles 6–9 remove 230 production lines, including 75
 relocated to tests. The actual production-code deletion excluding relocation is
 155 lines; the tests and cycle records account for additional repository lines.
 
+## Combined verification after cycles 6–9
+
+The committed checkout at `338893f2`, including the separately committed storage
+work, passes root typecheck, import law, shim generation and prompt contracts.
+All 76 focused environment/runtime/shell/package tests pass. The TypeScript
+build and all 19 compiled package imports pass, including root/subpath `Thread`
+identity. The earlier isolated test and smoke artifacts remain in `.temp`; the
+disposable validation worktree was removed after preserving those artifacts.
+
+## Cycle 10 — Remove the pretend web-research factory
+
+- Finding: the private web-research factory accepted a descriptor, command name
+  and label, but its only caller always supplied the same OpenAI constants.
+- Change: the supported `createOpenAIWebResearchCommand` now owns the operation
+  directly. It still snapshots constructor options and uses the same descriptor,
+  input validation, thread-scope guard, background-job lifecycle and diagnostics.
+- Result: 18 fewer production lines; no public export or command-surface change.
+- Evidence: 203 web research/search/shim tests pass, plus 75 before/after cases
+  covering malformed inputs, configured/default options, caller option mutation,
+  missing thread scope and job-start errors. Typecheck, shim and prompt contracts
+  pass. No new test was needed for this removal; the comparison harness is local.
+- Review: independent inspection and rerun of all 75 comparison cases found no
+  blockers.
+- State: reviewed and committed locally with this cycle; not pushed or deployed.
+
 ## Combined verification after cycles 1–5
 
 The final combined source passed the TypeScript build, all three package-export
