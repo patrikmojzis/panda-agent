@@ -2333,3 +2333,38 @@ verify that policy before implementation is accepted. The three connector cases
 and five falsy-value checks are recorded in
 `.temp/desloppify-cleanup-reporting-before.json`; they use supplied local
 workers and callbacks with no database, network or persistent resources.
+
+Keep the existing serial cleanup order. Delaying a reporter rejection means
+later cleanup must settle first; an already hanging step can delay that
+rejection. This repair should not introduce a new timeout framework or change
+how an outer default cleanup loop handles a rejected inner cleanup operation.
+
+## Cycle 71 — Delete the orphaned detail-tabs implementation
+
+- Finding: `DetailTabsList` in
+  `apps/control-ui/src/components/common/shared/page-layout.tsx` has no caller.
+  Its exported `DetailTabInput` type and local `titleCase` function serve only
+  that component. Seven consumers import the module's other exports by name;
+  no namespace/dynamic import, module discovery, test or supported package
+  entrypoint exposes the orphan. Control UI remains a private application.
+- Change: delete those three declarations and their separators. All 15 retained
+  statements, including six imports, remain byte-for-byte identical. Active
+  `DetailPageContent`, its private `DetailContentTabsList`, `PageHeader` and
+  breadcrumb/count rendering remain intact. The seven callers and the separate
+  `titleCase` in `apps/control-ui/src/components/layout/app-head.tsx` are unchanged.
+- Verification: exact whole-file reconstruction and a 1,304-file tracked source
+  scan verify the deletion, consumers and absence of module discovery. Root's
+  independent AST comparison and a separate reviewer confirm the frozen hash
+  and unchanged live statements. Evidence:
+  `.temp/desloppify-cycle71-proof.mjs` and
+  `.temp/desloppify-cycle71-proof-output.log`.
+- Gates: Control app/node typechecks, TypeScript/Vite production build and scoped
+  diff check pass. No persistent absence-only test is added. The preceding
+  backend gate remains 3,270 passing tests across 341 files; this cycle changes
+  no backend source, schema, API response, generated contract or test file.
+- Result: **81 fewer production lines**, with zero added. Cumulative reduction
+  becomes **5,918 production lines across 72 cleanup commits**, including 75
+  lines moved into tests.
+- State: independently reviewed and committed locally with this cycle. No
+  production access, push or deployment. Cycle 70 is committed as `ca4e803c`.
+  Runtime-activity history reads and cleanup-error reporting remain open.

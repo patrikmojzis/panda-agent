@@ -13,9 +13,9 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–70; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–71; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,837 production lines**, including
+Together, these cleanup commits remove **5,918 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
@@ -99,6 +99,11 @@ runtime resources while preserving the original failure. Required commands
 returning null receive the same cleanup. Three regressions pass; normal shutdown
 and successful registration order remain unchanged. The repair adds three
 production lines and 65 test lines.
+
+Cycle 71 deletes the unused `DetailTabsList` component and its exclusive type
+and text helper, removing 81 UI lines. All live tab/page implementations, six
+imports and seven consumers remain unchanged. Caller/export checks, Control
+typecheck and production build pass.
 
 The frozen backend passes **3,270 unit tests across 341 files**, root build/typecheck,
 import law, all 19 compiled package

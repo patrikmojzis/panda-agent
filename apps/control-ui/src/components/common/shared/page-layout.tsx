@@ -24,14 +24,6 @@ export type PageBreadcrumb = {
   to?: string
 }
 
-export type DetailTabInput =
-  | string
-  | {
-      count?: number
-      label?: string
-      value: string
-    }
-
 export type DetailContentTab = {
   content: React.ReactNode
   count?: number
@@ -68,71 +60,6 @@ export function PageHeader({
       {actions ? (
         <div className="flex shrink-0 flex-wrap gap-2">{actions}</div>
       ) : null}
-    </div>
-  )
-}
-
-export function DetailTabsList({
-  label,
-  onValueChange,
-  value,
-  tabs,
-}: {
-  label: string
-  onValueChange: (value: string) => void
-  tabs: DetailTabInput[]
-  value: string
-}) {
-  const listRef = React.useRef<HTMLDivElement | null>(null)
-  const normalizedTabs = React.useMemo(
-    () =>
-      tabs.map((tab) =>
-        typeof tab === "string"
-          ? { value: tab, label: titleCase(tab) }
-          : { ...tab, label: tab.label ?? titleCase(tab.value) }
-      ),
-    [tabs]
-  )
-
-  React.useEffect(() => {
-    const activeTab = listRef.current?.querySelector<HTMLElement>(
-      "[data-state='active'], [data-active]"
-    )
-    activeTab?.scrollIntoView({ block: "nearest", inline: "center" })
-  }, [value])
-
-  return (
-    <div className="mb-4 grid gap-2">
-      <Select value={value} onValueChange={onValueChange}>
-        <SelectTrigger className="w-full lg:hidden" aria-label={label}>
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent align="start">
-          {normalizedTabs.map((tab) => (
-            <SelectItem key={tab.value} value={tab.value}>
-              <DetailTabLabel tab={tab} />
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      <div className="relative hidden overflow-hidden border-b lg:block">
-        <TabsList
-          ref={listRef}
-          variant="line"
-          className="flex w-full max-w-full touch-pan-x justify-start gap-1 overflow-x-auto overflow-y-hidden overscroll-x-contain px-3 pb-1 [mask-image:linear-gradient(to_right,transparent,black_1.5rem,black_calc(100%-1.5rem),transparent)] [scroll-padding-inline:0.75rem] [scrollbar-width:none] sm:px-0 sm:[mask-image:none] [&::-webkit-scrollbar]:hidden"
-          aria-label={label}
-        >
-          {normalizedTabs.map((tab) => (
-            <TabsTrigger
-              key={tab.value}
-              value={tab.value}
-              className="shrink-0 flex-none px-2"
-            >
-              <DetailTabLabel tab={tab} />
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </div>
     </div>
   )
 }
@@ -350,14 +277,6 @@ function DetailTabLabel({
       ) : null}
     </span>
   )
-}
-
-function titleCase(value: string) {
-  return value
-    .split(/[-_\s]+/)
-    .filter(Boolean)
-    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
-    .join(" ")
 }
 
 const numberFormatter = new Intl.NumberFormat()
