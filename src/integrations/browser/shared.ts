@@ -1,7 +1,7 @@
 import {randomUUID} from "node:crypto";
 
 import type {ResolvedExecutionEnvironment} from "../../domain/execution-environments/types.js";
-import {normalizePathLabel, readSafePathSegment} from "../../lib/path-segments.js";
+import {readSafePathSegment} from "../../lib/path-segments.js";
 import {trimToUndefined} from "../../lib/strings.js";
 import {ToolError} from "../../kernel/agent/exceptions.js";
 import type {BrowserDeviceProfile, BrowserSessionScope} from "./action-types.js";
@@ -13,13 +13,6 @@ export interface BrowserRuntimeContext {
   sessionId?: string;
   threadId?: string;
   executionEnvironment?: ResolvedExecutionEnvironment;
-}
-
-/**
- * Normalizes browser labels into a filesystem-safe token.
- */
-export function normalizeBrowserLabelValue(value: string): string {
-  return normalizePathLabel(value);
 }
 
 /**

@@ -16,6 +16,7 @@ import type {RunContext} from "../../kernel/agent/run-context.js";
 import type {ToolResultPayload} from "../../kernel/agent/types.js";
 import {sleep} from "../../lib/async.js";
 import {pathExists} from "../../lib/fs.js";
+import {normalizePathLabel} from "../../lib/path-segments.js";
 import type {JsonObject} from "../../lib/json.js";
 import {trimToUndefined, truncateTextWithStatus} from "../../lib/strings.js";
 import {
@@ -59,7 +60,6 @@ import {buildSnapshotChanges, toJsonSnapshotChanges} from "./snapshot-changes.js
 import {defaultLookupHostname, type LookupHostname, resolveSafeHttpTarget,} from "../web/safe-web-target.js";
 import type {BrowserPreviewOriginGrant} from "./protocol.js";
 import {
-    normalizeBrowserLabelValue,
     normalizeBrowserSessionScopeKey,
     type BrowserRuntimeContext,
     safeAgentKey,
@@ -363,13 +363,6 @@ function resolveBrowserRunnerRoot(dataDir: string | undefined, env: NodeJS.Proce
   return path.join(resolveDataDir(env), DEFAULT_BROWSER_RUNNER_SUBDIR);
 }
 
-function normalizeScopeKey(
-  context: BrowserRuntimeContext,
-  action: BrowserAction,
-): BrowserResolvedSessionScope {
-  return normalizeBrowserSessionScopeKey(context, action.deviceProfile);
-}
-
 function resolveSessionContext(context: BrowserRuntimeContext | undefined): BrowserRuntimeContext {
   return context ?? {
     agentKey: "",
@@ -568,34 +561,20 @@ export class BrowserSessionService {
     timeoutMs: number,
     operation: (scopeVersion: number) => Promise<T>,
   ): Promise<T> {
-    let timedOut = false;
-    let timer: NodeJS.Timeout | null = null;
     const scopeVersion = this.readScopeVersion(scopeKey);
     const actionPromise = operation(scopeVersion);
-    const timeoutPromise = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => {
-        timedOut = true;
-        reject(buildTimeoutError(`browser action ${action.action}`, timeoutMs, {
-          action: action.action,
-        }));
-      }, timeoutMs);
-      timer.unref?.();
-    });
-
     try {
-      return await Promise.race([actionPromise, timeoutPromise]);
+      return await withTimeout(actionPromise, timeoutMs, `browser action ${action.action}`, {
+        action: action.action,
+      });
     } catch (error) {
-      if (timedOut || isTimeoutToolError(error)) {
+      if (isTimeoutToolError(error)) {
         this.invalidateScope(scopeKey);
         // Remove the dirty session immediately; the async close may continue in
         // the background, but future actions must not reuse a wedged page.
         void this.closeSession(scopeKey).catch(() => undefined);
       }
       throw error;
-    } finally {
-      if (timer) {
-        clearTimeout(timer);
-      }
     }
   }
 
@@ -684,7 +663,7 @@ export class BrowserSessionService {
     const sessionRoot = path.join(
       resolveBrowserSessionRoot(resolveSessionContext(run.context), this.dataDir, this.env),
       "sessions",
-      normalizeBrowserLabelValue(scope.key),
+      normalizePathLabel(scope.key),
     );
     const artifactDir = path.join(sessionRoot, "artifacts");
     const storageStatePath = scope.scope !== "ephemeral"
@@ -1262,7 +1241,7 @@ export class BrowserSessionService {
   ): Promise<ToolResultPayload> {
     await this.ensureStarted();
 
-    const scope = normalizeScopeKey(resolveSessionContext(run.context), action);
+    const scope = normalizeBrowserSessionScopeKey(resolveSessionContext(run.context), action.deviceProfile);
     const timeoutMs = this.resolveActionTimeout(action);
     return await this.runWithActionTimeout(
       action,
@@ -1325,28 +1304,30 @@ export class BrowserSessionService {
       const page = await this.ensureActivePage(session);
 
       switch (action.action) {
+        case "snapshot":
+          this.emitProgress(run, "snapshotting", {action: "snapshot"});
+          return await this.buildSnapshotPayload(session, "snapshot", snapshotMode, undefined, undefined, timeoutMs);
+        case "evaluate":
+          this.emitProgress(run, "evaluating", {action: "evaluate"});
+          return await this.buildEvaluatePayload(session, action);
+        case "screenshot":
+          this.emitProgress(run, "capturing", {action: "screenshot"});
+          return await this.buildScreenshotPayload(session, action, timeoutMs);
+        case "pdf":
+          this.emitProgress(run, "capturing", {action: "pdf"});
+          return await this.buildPdfPayload(session, timeoutMs);
+      }
+
+      const baseline = await this.captureActionBaseline(session, timeoutMs);
+      switch (action.action) {
         case "navigate": {
-          const baseline = await this.captureActionBaseline(session, timeoutMs);
           await baseline.page.goto(action.url, {
             waitUntil: "domcontentloaded",
             timeout: timeoutMs,
           });
-          const settledPage = await this.settlePage(session, timeoutMs);
-          return await this.buildChangedActionSnapshotPayload(
-            run,
-            session,
-            action,
-            baseline,
-            settledPage,
-            snapshotMode,
-            timeoutMs,
-          );
+          break;
         }
-        case "snapshot":
-          this.emitProgress(run, "snapshotting", {action: "snapshot"});
-          return await this.buildSnapshotPayload(session, "snapshot", snapshotMode, undefined, undefined, timeoutMs);
         case "click": {
-          const baseline = await this.captureActionBaseline(session, timeoutMs);
           const target = formatActionTarget(action);
           this.emitProgress(run, "acting", {
             action: "click",
@@ -1356,19 +1337,9 @@ export class BrowserSessionService {
           await locator.click({
             timeout: timeoutMs,
           });
-          const settledPage = await this.settlePage(session, timeoutMs);
-          return await this.buildChangedActionSnapshotPayload(
-            run,
-            session,
-            action,
-            baseline,
-            settledPage,
-            snapshotMode,
-            timeoutMs,
-          );
+          break;
         }
         case "type": {
-          const baseline = await this.captureActionBaseline(session, timeoutMs);
           const target = formatActionTarget(action);
           this.emitProgress(run, "acting", {
             action: "type",
@@ -1392,19 +1363,9 @@ export class BrowserSessionService {
               await withTimeout(page.keyboard.press("Enter"), timeoutMs, "browser key press");
             });
           }
-          const settledPage = await this.settlePage(session, timeoutMs);
-          return await this.buildChangedActionSnapshotPayload(
-            run,
-            session,
-            action,
-            baseline,
-            settledPage,
-            snapshotMode,
-            timeoutMs,
-          );
+          break;
         }
         case "press": {
-          const baseline = await this.captureActionBaseline(session, timeoutMs);
           this.emitProgress(run, "acting", {action: "press", key: action.key});
           if (trimToUndefined(action.ref) || trimToUndefined(action.selector)) {
             await (await this.targetLocator(page, action, timeoutMs)).press(action.key, {
@@ -1413,19 +1374,9 @@ export class BrowserSessionService {
           } else {
             await withTimeout(page.keyboard.press(action.key), timeoutMs, "browser key press");
           }
-          const settledPage = await this.settlePage(session, timeoutMs);
-          return await this.buildChangedActionSnapshotPayload(
-            run,
-            session,
-            action,
-            baseline,
-            settledPage,
-            snapshotMode,
-            timeoutMs,
-          );
+          break;
         }
         case "select": {
-          const baseline = await this.captureActionBaseline(session, timeoutMs);
           const target = formatActionTarget(action);
           this.emitProgress(run, "acting", {
             action: "select",
@@ -1442,19 +1393,9 @@ export class BrowserSessionService {
               timeout: timeoutMs,
             },
           );
-          const settledPage = await this.settlePage(session, timeoutMs);
-          return await this.buildChangedActionSnapshotPayload(
-            run,
-            session,
-            action,
-            baseline,
-            settledPage,
-            snapshotMode,
-            timeoutMs,
-          );
+          break;
         }
         case "wait": {
-          const baseline = await this.captureActionBaseline(session, timeoutMs);
           this.emitProgress(run, "acting", {action: buildWaitLabel(action)});
           if (action.loadState) {
             await page.waitForLoadState(action.loadState, {
@@ -1480,28 +1421,21 @@ export class BrowserSessionService {
               timeout: timeoutMs,
             });
           }
-          const settledPage = await this.settlePage(session, timeoutMs);
-          return await this.buildChangedActionSnapshotPayload(
-            run,
-            session,
-            action,
-            baseline,
-            settledPage,
-            snapshotMode,
-            timeoutMs,
-          );
+          break;
         }
-        case "evaluate":
-          this.emitProgress(run, "evaluating", {action: "evaluate"});
-          return await this.buildEvaluatePayload(session, action);
-        case "screenshot":
-          this.emitProgress(run, "capturing", {action: "screenshot"});
-          return await this.buildScreenshotPayload(session, action, timeoutMs);
-        case "pdf":
-          this.emitProgress(run, "capturing", {action: "pdf"});
-          return await this.buildPdfPayload(session, timeoutMs);
+        default:
+          throw new ToolError("browser reached an invalid action.");
       }
-      throw new ToolError("browser reached an invalid action.");
+      const settledPage = await this.settlePage(session, timeoutMs);
+      return await this.buildChangedActionSnapshotPayload(
+        run,
+        session,
+        action,
+        baseline,
+        settledPage,
+        snapshotMode,
+        timeoutMs,
+      );
     } finally {
       if (session) {
         session.lastUsedAtMs = this.now();

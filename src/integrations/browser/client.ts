@@ -10,6 +10,7 @@ import type {ToolResultPayload} from "../../kernel/agent/types.js";
 import {buildEndpointUrl, isLoopbackHttpHostname} from "../../lib/http.js";
 import type {JsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
+import {normalizePathLabel} from "../../lib/path-segments.js";
 import {trimToUndefined} from "../../lib/strings.js";
 import type {BrowserAction} from "./action-types.js";
 import type {
@@ -18,7 +19,7 @@ import type {
     BrowserRunnerArtifact,
 } from "./protocol.js";
 import {parseBrowserRunnerActionResponse} from "./protocol.js";
-import {normalizeBrowserArtifactScopeKey, normalizeBrowserLabelValue, safeAgentKey, type BrowserRuntimeContext,} from "./shared.js";
+import {normalizeBrowserArtifactScopeKey, safeAgentKey, type BrowserRuntimeContext,} from "./shared.js";
 
 const DEFAULT_REMOTE_FETCH_TIMEOUT_BUFFER_MS = 5_000;
 
@@ -29,10 +30,6 @@ export interface BrowserRunnerClientOptions {
   sharedSecret?: string;
   actionTimeoutMs?: number;
   dataDir?: string;
-}
-
-function normalizeScopeKey(context: BrowserRuntimeContext): {scope: "thread" | "ephemeral"; key: string} {
-  return normalizeBrowserArtifactScopeKey(context);
 }
 
 function resolveBrowserMediaRoot(
@@ -274,9 +271,9 @@ export class BrowserRunnerClient<TContext extends BrowserRuntimeContext = Browse
     context: BrowserRuntimeContext,
     artifact: BrowserRunnerArtifact,
   ): Promise<{path: string; storagePath: string; bytes: number}> {
-    const scope = normalizeScopeKey(context);
+    const scope = normalizeBrowserArtifactScopeKey(context);
     const roots = resolveBrowserMediaRoots(context, this.dataDir, this.env);
-    const artifactSubdir = path.join("browser", normalizeBrowserLabelValue(scope.key));
+    const artifactSubdir = path.join("browser", normalizePathLabel(scope.key));
     const storageDir = path.join(roots.storageRoot, artifactSubdir);
     const displayDir = path.join(roots.displayRoot, artifactSubdir);
     await mkdir(storageDir, {recursive: true});

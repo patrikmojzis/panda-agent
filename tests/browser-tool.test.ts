@@ -6,6 +6,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {Agent, type DefaultAgentSessionContext, type JsonObject, RunContext, ToolError,} from "../src/index.js";
 import type {BrowserRunner} from "../src/integrations/browser/runner.js";
+import type {BrowserAction} from "../src/integrations/browser/action-types.js";
 import {
   BrowserSessionService,
   type BrowserSessionServiceOptions,
@@ -1186,6 +1187,62 @@ describe("BrowserTool", () => {
     });
     expect(page.locatorSelectors).toContain('[data-runtime-ref="e1"]');
     expect(click.details).toMatchObject({action: "click"});
+  });
+
+  it.each<{
+    action: BrowserAction;
+    prepare(page: FakePage): void;
+    changes: JsonObject;
+    text: string;
+  }>([
+    {
+      action: {action: "press", key: "Enter"},
+      prepare(page) {
+        page.keyboard.press = async () => {
+          page.snapshot.signals = ["dialog"];
+          page.snapshot.dialogText = "Keyboard dialog";
+        };
+      },
+      changes: {dialogAppeared: true, signalsAdded: ["dialog"]},
+      text: "Dialog appeared",
+    },
+    {
+      action: {action: "select", ref: "e1", value: "confirmed"},
+      prepare(page) {
+        page.snapshot.elements = [{ref: "e1", tag: "select", role: "combobox", text: "Choice", value: "", selected: false}];
+      },
+      changes: {target: {ref: "e1", changed: ["value", "selected"]}},
+      text: 'value="confirmed"',
+    },
+    {
+      action: {action: "wait", text: "Ready"},
+      prepare(page) {
+        page.waitForFunction = async () => {
+          page.snapshot.title = "Ready";
+          page.currentTitle = "Ready";
+        };
+      },
+      changes: {titleChanged: {before: "Example", after: "Ready"}},
+      text: "Ready",
+    },
+  ])("returns the completed $action.action effect against its prior snapshot", async ({action, prepare, changes, text}) => {
+    const page = new FakePage();
+    prepare(page);
+    const tempDir = await mkdtemp(path.join(os.tmpdir(), "runtime-browser-"));
+    tempDirs.push(tempDir);
+    const service = new BrowserSessionService({launchBrowserImpl: launchFakePage(page), dataDir: tempDir});
+    services.push(service);
+    const progress: JsonObject[] = [];
+
+    const result = await service.handle(action, createRunContext(
+      {cwd: "/workspace/panda", sessionId: "session-1", threadId: "thread-1"},
+      {onToolProgress: (event) => { progress.push(event); }},
+    ));
+
+    expect(result.details).toMatchObject({action: action.action, scope: "session", changes,
+      externalContent: {source: "browser", kind: "snapshot", untrusted: true, wrapped: true}});
+    expect(result.content[0]).toMatchObject({type: "text", text: expect.stringContaining(text)});
+    expect(progress.map((event) => event.status)).toEqual(["starting", "connecting", "acting", "snapshotting"]);
   });
 
   it("switches to the newest popup page automatically", async () => {

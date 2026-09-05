@@ -40,7 +40,8 @@ help/JSON output before and after; do not create another command inventory.
   and schema-gate tests successfully. Tests protect complete descriptor output,
   native callback/options retention through repeated registration, and DB-free
   generated help. No references to the deleted modules remain.
-- State: reviewed and committed locally with this cycle; not pushed or deployed.
+- Commit: `2e3aa496` — `refactor(cli): derive help-only routes from the command catalog`.
+- State: committed locally; not pushed or deployed.
 
 ## Cycle 2 — Simplify browser action completion
 
@@ -51,5 +52,44 @@ invalidation. Reuse the existing timeout helper without weakening dirty-session
 closure after timeout. Remove trivial naming adapters only where direct calls
 remain clear.
 
-- State: implementation in progress; terminal snapshot/rendering simplifications
-  are being investigated separately for the following cycle.
+- Result: 76 fewer production lines. The six action branches now share their
+  existing completion tail; no new action framework or protocol was introduced.
+  Three forwarding scope/path helpers and the duplicate deadline timer are gone.
+- Evidence: all 51 browser tool/protocol/runner tests passed, including three new
+  press/select/wait cases checking completed effects against the prior snapshot
+  and the public progress sequence. Typecheck and import law passed.
+- Review: independent review found no blockers and reran all 51 browser tests.
+  It verified timer/error behavior, late promise handling, dirty-session removal,
+  startup fencing, action ordering, popup and final-URL checks, and normalizer parity.
+- State: reviewed and committed locally with this cycle; not pushed or deployed.
+
+## Cycle 3 — Carry the latest stored run directly to terminal views
+
+The store already reads only its latest run. Its UI snapshot nevertheless wraps
+that nullable value in an array, which every consumer immediately unwraps. Carry
+the actual nullable record through chat and observe instead. Collapse repeated
+run-state calculations, preserving transition detection, error suppression,
+started-at values and close-after-run behavior. Delete the private transcript
+formatter's unreachable role branches and redundant tool-result cast.
+
+- Result: 49 fewer production lines; persisted records and package exports are
+  unchanged. Transcript cursor and session/reset handling remain in place.
+- Evidence: all 75 terminal/observer tests passed across 10 files, including a
+  check that a repeated refresh does not print a run failure again. Typecheck and
+  import law passed. Independent review compared the old and new run-state
+  function across 40 cases and found identical observable behavior and no blockers.
+- State: implemented and independently reviewed; awaiting its separate local commit.
+
+## Cycle 4 — Remove copied help from mixed operator registrars
+
+The remaining mixed operator registrars contain 53 descriptor-only help stubs,
+plus one image help registrar. Their routes already exist in the command catalog.
+Remove the stubs while preserving native callbacks, options and ancestor groups.
+Also remove seven verified unused store constructions from CLI assembly; their
+constructors only retain the pool and table names, with no startup side effects.
+
+- Recon evidence: 108 text/JSON outputs match when the catalog supplies all 54
+  leaves. Forty-nine transport errors also match; five Telegram sticker errors
+  gain the standard help-discovery suffix. No image-generation behavior changes.
+- State: implementation in progress; current tests and an independent final
+  review are required before committing this cycle.
