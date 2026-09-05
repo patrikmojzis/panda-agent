@@ -12,24 +12,24 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–31; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–35; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,106 production lines**, including
+Together, these cleanup commits remove **5,125 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
-The latest four cycles remove 86 production lines net: a duplicate app HTTP type,
-a terminal entry factory and copied command parsers, plus a streaming MCP redactor
-fix. The redactor now terminates for secrets at offset zero, preserves overlap
-precedence and keeps Unicode context across chunks. Other supported behavior and
-public contracts remain intact.
+The latest four cycles remove 19 production lines net: copied object/string
+validators, the browser client singleton, and an MCP cancellation repair. Default
+browser tools now retain their own configuration. MCP commands observe caller
+cancellation, preserve first-abort attribution and still clean up sessions and
+processes. Queued OAuth cancellation still waits for the preceding operation.
 
-The frozen combined source passes **3,107 tests across 335 files**, the TypeScript
+The frozen combined source passes **3,120 tests across 335 files**, the TypeScript
 build, import law, prompt/shim contracts, all 19 compiled package imports and a
 model/bash smoke against disposable local Postgres. The test database was stopped
 afterward. Earlier verification records are historical and do not certify later
 edits. The inspect/review/commit loop remains active; the next recon candidates
-are recorded after cycle 31.
+are recorded after cycle 35.
 
 Concurrent credential-name, image-generation and background-job work belongs to
 separate tasks. Preserve those changes and untracked `output/`; they are excluded

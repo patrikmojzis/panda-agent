@@ -96,6 +96,7 @@ export type McpResolvedServerConfig = McpResolvedStdioServerConfig | McpResolved
 export interface McpResolvedInvocation {
   config: McpResolvedServerConfig;
   knownSecrets: readonly string[];
+  signal?: AbortSignal;
 }
 
 export interface McpStdioDiagnostics {

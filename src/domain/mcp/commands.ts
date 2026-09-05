@@ -177,7 +177,8 @@ function normalizeMcpError(error: unknown): McpCommandError {
   const runner = runnerErrorDetails(error);
   if (runner) {
     return commandError(
-      runner.exitCode === 124 ? "MCP command timed out." : "MCP transport/protocol command failed.",
+      runner.exitCode === 124 ? "MCP command timed out."
+        : runner.phase === "aborted" ? "MCP command was aborted." : "MCP transport/protocol command failed.",
       runner.exitCode,
       runner.phase,
       {
@@ -195,7 +196,7 @@ async function resolveInvocation(
   serverName: string,
   timeoutMs?: number,
 ): ReturnType<typeof resolveMcpInvocation> {
-  return resolveMcpInvocation({
+  const invocation = await resolveMcpInvocation({
     configs: options.configs,
     credentials: options.credentials,
     agentKey: request.scope.agentKey,
@@ -203,6 +204,7 @@ async function resolveInvocation(
     credentialPolicy: request.scope.credentialPolicy,
     ...(timeoutMs === undefined ? {} : {timeoutMs}),
   });
+  return {...invocation, ...(request.signal ? {signal: request.signal} : {})};
 }
 
 export const mcpToolsCommandDescriptor: CommandDescriptor = {

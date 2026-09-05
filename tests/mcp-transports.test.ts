@@ -7,6 +7,8 @@ import {fileURLToPath} from "node:url";
 import {promisify} from "node:util";
 import {afterEach, describe, expect, it, vi} from "vitest";
 
+import {RuntimeCommandDispatcher} from "../src/app/runtime/command-dispatcher.js";
+import {createMcpCallCommand, createMcpToolsCommand} from "../src/domain/mcp/commands.js";
 import {SdkMcpRunner} from "../src/integrations/mcp/client.js";
 import {BoundedStdioClientTransport} from "../src/integrations/mcp/stdio-transport.js";
 import {
@@ -15,7 +17,8 @@ import {
   redactExactString,
   StreamingSecretRedactor,
 } from "../src/integrations/mcp/redaction.js";
-import type {McpResolvedInvocation, McpResolvedServerConfig} from "../src/domain/mcp/types.js";
+import type {McpResolvedInvocation, McpResolvedServerConfig, McpServerConfig} from "../src/domain/mcp/types.js";
+import {InMemoryMcpConfigStore} from "./helpers/in-memory-mcp-config-store.js";
 import {waitFor} from "./helpers/wait-for.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -65,6 +68,20 @@ async function readProcessTreeState(statePath: string): Promise<ProcessTreeState
 
 function invocation(config: McpResolvedServerConfig): McpResolvedInvocation {
   return {config, knownSecrets: [secret]};
+}
+
+function executeFixtureCommand(config: McpServerConfig, command: "mcp.tools" | "mcp.call", signal?: AbortSignal) {
+  const options = {
+    configs: new InMemoryMcpConfigStore({panda: {servers: {fixture: config}}}),
+    credentials: {resolveCredential: vi.fn(async () => null)},
+    runner: new SdkMcpRunner(),
+  };
+  return new RuntimeCommandDispatcher({commands: [createMcpToolsCommand(options), createMcpCallCommand(options)]}).execute({
+    command,
+    input: {server: "fixture", ...(command === "mcp.call" ? {tool: "delay", input: {delayMs: 10_000}} : {})},
+    scope: {agentKey: "panda", sessionId: "session-panda", allowedCommands: ["mcp.tools", "mcp.call"]},
+    signal,
+  });
 }
 
 async function startHttpFixture(mode = "normal"): Promise<{base: string; mcp: string; sse: string}> {
@@ -211,6 +228,118 @@ describe("MCP exact raw secret redaction", () => {
       expect(redactChunks([bytes.subarray(0, split), bytes.subarray(split)])).toBe(expected);
     }
     expect(redactChunks([...bytes].map((byte) => Buffer.from([byte])))).toBe(expected);
+  });
+});
+
+describe("MCP command cancellation", () => {
+  it.each(["mcp.tools", "mcp.call"] as const)("does not spawn stdio work for a pre-aborted %s request", async (command) => {
+    const directory = await mkdtemp(path.join(tmpdir(), "panda-mcp-preabort-"));
+    const markerPath = path.join(directory, "started");
+    const controller = new AbortController();
+    controller.abort(new Error(secret));
+    try {
+      const result = await executeFixtureCommand({
+        transport: "stdio", enabled: true, command: process.execPath,
+        args: ["-e", "require('node:fs').writeFileSync(process.argv[1], 'started')", markerPath],
+        timeoutMs: 1_000,
+      }, command, controller.signal);
+      await expect(readFile(markerPath)).rejects.toMatchObject({code: "ENOENT"});
+      expect(result).toMatchObject({ok: false, error: {message: "MCP command was aborted.", details: {exitCode: 3, kind: "aborted"}}});
+      expect(JSON.stringify(result)).not.toContain(secret);
+    } finally {
+      await rm(directory, {recursive: true, force: true});
+    }
+  });
+
+  it.each(["streamable-http", "sse"] as const)("does not send pre-aborted commands over %s", async (transport) => {
+    const fixture = await startHttpFixture();
+    for (const command of ["mcp.tools", "mcp.call"] as const) {
+      const result = await executeFixtureCommand({
+        transport, enabled: true, url: transport === "sse" ? fixture.sse : fixture.mcp, timeoutMs: 1_000,
+      }, command, AbortSignal.abort());
+      expect(result).toMatchObject({ok: false, error: {details: {exitCode: 3, kind: "aborted"}}});
+    }
+    const events = await fetch(`${fixture.base}/events`).then((response) => response.json());
+    expect(events.events).toEqual([]);
+  });
+
+  it.each(["streamable-http", "sse"] as const)("cancels an in-flight %s call and closes its session without replay", async (transport) => {
+    const fixture = await startHttpFixture();
+    const controller = new AbortController();
+    const originalFetch = globalThis.fetch;
+    let calls = 0;
+    let streamSignal: AbortSignal | null | undefined;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((request, init) => {
+      if (request instanceof Request) {
+        if (request.url === fixture.sse) streamSignal = init?.signal;
+        if (request.method === "POST") {
+          void request.clone().json().then((body) => { if (body.method === "tools/call") calls += 1; });
+        }
+      }
+      return originalFetch(request, init);
+    });
+    try {
+      const operation = executeFixtureCommand({
+        transport, enabled: true, url: transport === "sse" ? fixture.sse : fixture.mcp, timeoutMs: 5_000,
+      }, "mcp.call", controller.signal);
+      await waitFor(() => expect(calls).toBe(1), 2_000);
+      const abortedAt = Date.now();
+      controller.abort(new Error(secret));
+      const result = await operation;
+      expect(Date.now() - abortedAt).toBeLessThan(1_000);
+      expect(result).toMatchObject({ok: false, error: {details: {exitCode: 3, kind: "aborted"}}});
+      expect(JSON.stringify(result)).not.toContain(secret);
+      expect(calls).toBe(1);
+      if (transport === "sse") {
+        expect(streamSignal?.aborted).toBe(true);
+      } else {
+        const events = await originalFetch(`${fixture.base}/events`).then((response) => response.json());
+        expect(events.events.filter((event: {method: string}) => event.method === "DELETE")).toHaveLength(1);
+      }
+    } finally {
+      controller.abort();
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("kills the stdio process group when its command caller aborts", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "panda-mcp-command-abort-"));
+    const statePath = path.join(directory, "state.json");
+    const controller = new AbortController();
+    let state: ProcessTreeState | undefined;
+    try {
+      const operation = executeFixtureCommand({
+        transport: "stdio", enabled: true, command: process.execPath,
+        args: [fixturePath, "--transport", "stdio", "--mode", "process-tree"],
+        env: {FIXTURE_PROCESS_TREE_MARKER: {value: randomUUID()}, FIXTURE_PROCESS_TREE_STATE: {value: statePath}},
+        timeoutMs: 5_000,
+      }, "mcp.call", controller.signal);
+      state = await readProcessTreeState(statePath);
+      expect(processExists(state.parentPid)).toBe(true);
+      expect(processExists(state.descendantPid)).toBe(true);
+      controller.abort();
+      await expect(operation).resolves.toMatchObject({ok: false, error: {details: {exitCode: 3, kind: "aborted"}}});
+      await waitForProcessesToExit(state.parentPid, state.descendantPid);
+    } finally {
+      controller.abort();
+      if (!state) state = await readFile(statePath, "utf8").then((value) => JSON.parse(value) as ProcessTreeState).catch(() => undefined);
+      if (state) {
+        forceKill(state.parentPid);
+        forceKill(state.descendantPid);
+        await waitForProcessesToExit(state.parentPid, state.descendantPid);
+      }
+      await rm(directory, {recursive: true, force: true});
+    }
+  });
+
+  it("keeps an ordinary command deadline distinct from caller cancellation", async () => {
+    const controller = new AbortController();
+    const result = await executeFixtureCommand({
+      transport: "stdio", enabled: true, command: process.execPath,
+      args: [fixturePath, "--transport", "stdio"], timeoutMs: 1_000,
+    }, "mcp.call", controller.signal);
+    expect(controller.signal.aborted).toBe(false);
+    expect(result).toMatchObject({ok: false, error: {message: "MCP command timed out.", details: {exitCode: 124, kind: "timeout"}}});
   });
 });
 

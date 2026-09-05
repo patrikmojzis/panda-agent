@@ -2,7 +2,7 @@ import {spawn, type ChildProcess} from "node:child_process";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
 
-import {afterEach, describe, expect, it} from "vitest";
+import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {PostgresAgentStore} from "../src/domain/agents/postgres.js";
@@ -22,6 +22,7 @@ import {
   McpOAuthRuntime,
   startMcpOAuthAuthorization,
 } from "../src/integrations/mcp/oauth.js";
+import {waitFor} from "./helpers/wait-for.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const processes: ChildProcess[] = [];
@@ -69,6 +70,53 @@ async function serviceHarness(): Promise<McpOAuthService> {
 }
 
 describe("MCP OAuth lifecycle", () => {
+  it.each(["pre-aborted", "caller-first", "deadline-first", "no-signal"] as const)(
+    "preserves %s cancellation ownership while the OAuth queue is held",
+    async (scenario) => {
+      const service = await serviceHarness();
+      const connection = await service.saveConnection({
+        agentKey: "panda", serverName: "fixture", expectedVersion: null,
+        state: {version: 1, clientInformation: {client_id: "synthetic-client"}, tokens: {access_token: "synthetic-token", token_type: "Bearer"}},
+      });
+      const runtime = new McpOAuthRuntime({service, redirectUrl: "http://127.0.0.1/callback"});
+      let release!: () => void;
+      const held = runtime.runExclusive("panda:fixture", () => new Promise<void>((resolve) => { release = resolve; }));
+      await waitFor(() => expect(release).toBeTypeOf("function"));
+      const queued = vi.spyOn(runtime, "runExclusive");
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected network work after cancellation."));
+      const controller = new AbortController();
+      if (scenario === "pre-aborted") controller.abort(new Error("synthetic-secret-reason"));
+      try {
+        const operation = new SdkMcpRunner({oauth: runtime}).listTools({
+          config: {
+            transport: "streamable-http", enabled: true, url: "https://mcp.invalid/", timeoutMs: 1_000,
+            oauth: {agentKey: "panda", serverName: "fixture", auth: {type: "oauth", registration: {mode: "dynamic"}, scope: {mode: "explicit", values: []}}},
+          },
+          knownSecrets: [],
+          ...(scenario === "no-signal" ? {} : {signal: controller.signal}),
+        }).catch((error: unknown) => error);
+        if (scenario !== "pre-aborted") {
+          await waitFor(() => expect(queued).toHaveBeenCalledOnce());
+          if (scenario === "caller-first") controller.abort(new Error("synthetic-secret-reason"));
+          await new Promise((resolve) => setTimeout(resolve, 1_100));
+          if (scenario === "deadline-first") controller.abort(new Error("synthetic-secret-reason"));
+          release();
+        }
+        const error = await operation;
+        expect(error).toMatchObject(scenario === "caller-first" || scenario === "pre-aborted"
+          ? {exitCode: 3, phase: "aborted", message: "MCP streamable-http command was aborted."}
+          : {exitCode: 124, phase: "timeout", message: "MCP streamable-http command timed out."});
+        expect(fetchSpy).not.toHaveBeenCalled();
+        expect(await service.getConnection("panda", "fixture")).toEqual(connection);
+      } finally {
+        release();
+        await held;
+        queued.mockRestore();
+        fetchSpy.mockRestore();
+      }
+    },
+  );
+
   it("runs DCR, PKCE, tools, rotating refresh, and revoke through the public runtime", async () => {
     const serverUrl = await startFixture();
     const service = await serviceHarness();

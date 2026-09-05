@@ -796,3 +796,63 @@ No additional implementation is included in this batch.
   is intentionally corrected. The daemon still injects its owned shared client;
   remote browser-session ownership, explicit `close()` and TTL cleanup remain.
   No live Chromium or production checks were performed.
+
+## Cycle 35 — Carry caller cancellation through MCP
+
+- Finding: MCP commands discarded `CommandRequest.signal`; even a pre-aborted
+  command spawned its stdio fixture and returned success. In-flight operations
+  waited for their separate deadline instead of observing caller cancellation.
+- Change: attach the optional caller signal after the existing config/credential
+  resolution, compose it with the absolute deadline and check it before external
+  work. Preserve HTTP session deletion under the deadline during caller abort,
+  and retain stdio process-group cleanup. Track which cancellation happened first
+  without relying on lazily resolved composed-signal reasons.
+- Result: 21 production lines added and 177 net test lines added. This is a
+  correctness repair, not a line-count reduction.
+- Evidence: all 75 focused MCP tests pass. Public command regressions cover
+  pre-aborted stdio/HTTP/SSE calls, in-flight cancellation, no replay, session
+  deletion, descendant termination, sanitized reasons and unchanged timeout codes.
+  Independent review reproduced a queued-OAuth caller-first attribution defect
+  in the first patch; it is fixed before commit. Four real OAuth queue regressions
+  now pass. Five additional independent cases verify first-abort ordering,
+  pre-abort, absent signals, auth-create failure and zero retained caller listeners.
+  Cancelled queue admission performs no reload, reauthorization write or fetch.
+- State: reviewed and committed locally with this cycle. Caller aborts now report
+  `aborted`/3; ordinary deadlines remain `timeout`/124. Authority/config ordering,
+  protocol boundaries and required cleanup remain intact. The existing OAuth
+  exclusive queue still waits for its predecessor before settling cancellation
+  or timeout; this patch prevents late execution but does not guarantee immediate
+  completion while queued. No production access was needed.
+
+## Combined verification after cycles 32–35
+
+All 3,120 tests across 335 files pass with no failures or skips on the corrected
+source: `.temp/desloppify-cycles32-35-unit-results.json`. TypeScript build, import
+law, prompt/shim contracts, all 19 compiled package imports and shared `Thread`
+identity pass. Snapshot changes are limited to the Bash-target source metadata
+record; model-facing contracts are unchanged. All 113 local plan links resolve.
+
+The final model/bash smoke passed all five assertions against disposable local
+Postgres: `.temp/runtime-smoke/desloppify-cycles32-35-20260905/summary.json`.
+The temporary server was stopped afterward. Production received no writes or
+operational changes.
+
+These four cycles remove 19 production lines net, bringing the cleanup total to
+5,125, including 75 lines previously relocated into tests. Object guards, command
+parsers and browser client ownership are committed as `17cf72c2`, `0f191bdc` and
+`64a0404e`; MCP cancellation and this record are committed with cycle 35.
+Unrelated commits and `output/` remain excluded and preserved.
+
+Recon found a duplicated 24-line post-assistant sequence in the normal and
+streaming kernel paths; the existing private finalization method can own it.
+Browser cancellation also needs further work: a pre-aborted public tool call
+still sends its request, and runner/service disconnect behavior needs an end-to-end
+review before changing it. Neither follow-up is implemented in this cycle.
+
+Credential schema probes accept same-name tables/columns from any schema, but
+the production baseline contains a frozen, checksum-pinned copy. Changing the
+fixture alone would not repair production bootstrap. Leave this outside cleanup
+until a migration/bootstrap change has cross-schema evidence. Sixteen unused
+migration-constant reexports are optional future deletion; manifest/checksums and
+schema behavior must remain unchanged. Trace/pool/lifecycle helpers inspected in
+this pass retain meaningful policy and were left intact.

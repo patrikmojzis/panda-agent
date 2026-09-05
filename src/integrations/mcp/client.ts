@@ -32,6 +32,7 @@ export type McpRunnerPhase =
   | "protocol"
   | "session_expired"
   | "authentication"
+  | "aborted"
   | "timeout"
   | "output_limit";
 
@@ -127,6 +128,7 @@ function phaseForHttpStatus(status: number, sessionRequest: boolean): Extract<Mc
 function createBoundedFetch(
   config: McpResolvedHttpServerConfig,
   deadlineSignal: AbortSignal,
+  operationSignal: AbortSignal,
   onResponse: () => void,
 ): typeof fetch {
   const configured = new URL(config.url);
@@ -142,13 +144,15 @@ function createBoundedFetch(
     const resourceRequest = requestUrl.origin === configured.origin
       && requestUrl.pathname === configured.pathname
       && requestUrl.search === configured.search;
-    const signal = AbortSignal.any([deadlineSignal, request.signal]);
+    // Session deletion must still run after caller cancellation.
+    const boundarySignal = request.method === "DELETE" ? deadlineSignal : operationSignal;
+    const signal = AbortSignal.any([boundarySignal, request.signal]);
     let response: Response;
     try {
       response = await fetch(request, {redirect: "manual", signal});
       onResponse();
     } catch (error) {
-      if (deadlineSignal.aborted || (error instanceof DOMException && error.name === "AbortError")) throw error;
+      if (boundarySignal.aborted || (error instanceof DOMException && error.name === "AbortError")) throw error;
       throw new McpHttpBoundaryError("connect");
     }
     if (response.status >= 300 && response.status < 400) {
@@ -250,6 +254,7 @@ function runnerErrorMessage(transport: McpResolvedInvocation["config"]["transpor
     protocol: `MCP ${transport} protocol operation failed.`,
     session_expired: "MCP HTTP session expired.",
     authentication: "MCP HTTP authentication failed.",
+    aborted: `MCP ${transport} command was aborted.`,
     timeout: `MCP ${transport} command timed out.`,
     output_limit: `MCP ${transport} response exceeded a configured limit.`,
   };
@@ -312,7 +317,12 @@ export class SdkMcpRunner implements McpRunner {
     const deadline = new AbortController();
     const timer = setTimeout(() => deadline.abort(new DOMException("MCP deadline exceeded", "AbortError")), config.timeoutMs);
     timer.unref();
-    const requestOptions = {signal: deadline.signal, timeout: config.timeoutMs, maxTotalTimeout: config.timeoutMs};
+    let callerAbortedFirst = invocation.signal?.aborted === true;
+    // Observe ownership eagerly; composed signal reasons can be resolved lazily.
+    const onCallerAbort = () => { callerAbortedFirst ||= !deadline.signal.aborted; };
+    invocation.signal?.addEventListener("abort", onCallerAbort, {once: true});
+    const signal = invocation.signal ? AbortSignal.any([deadline.signal, invocation.signal]) : deadline.signal;
+    const requestOptions = {signal, timeout: config.timeoutMs, maxTotalTimeout: config.timeoutMs};
     const client = createClient();
     let transport: BoundedStdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport;
     let stage: "connect" | "operation" = "connect";
@@ -331,7 +341,7 @@ export class SdkMcpRunner implements McpRunner {
         ...(config.env ? {env: config.env} : {}),
         maxLineBytes: MCP_STDIO_LINE_MAX_BYTES,
         deadlineAt,
-        signal: deadline.signal,
+        signal,
       });
       redactor = new StreamingSecretRedactor(knownSecrets, (text) => {
         const remainingBytes = MCP_STDERR_MAX_BYTES - Buffer.byteLength(stderr, "utf8");
@@ -360,6 +370,7 @@ export class SdkMcpRunner implements McpRunner {
           });
         } catch {
           clearTimeout(timer);
+          invocation.signal?.removeEventListener("abort", onCallerAbort);
           throw new McpRunnerError({
             message: runnerErrorMessage(config.transport, "authentication"),
             exitCode: 3,
@@ -368,7 +379,7 @@ export class SdkMcpRunner implements McpRunner {
           });
         }
       }
-      const fetch = createBoundedFetch(config, deadline.signal, () => {
+      const fetch = createBoundedFetch(config, deadline.signal, signal, () => {
         httpResponseReceived = true;
       });
       const requestInit = {headers: config.headers};
@@ -382,8 +393,11 @@ export class SdkMcpRunner implements McpRunner {
       : httpDiagnostics(config.transport);
 
     try {
+      signal.throwIfAborted();
       const execute = async () => {
+        signal.throwIfAborted();
         if (oauthSession) await oauthSession.reload();
+        signal.throwIfAborted();
         await client.connect(transport, requestOptions);
         stage = "operation";
         return operation(client, requestOptions);
@@ -413,16 +427,19 @@ export class SdkMcpRunner implements McpRunner {
         redactor.finish();
         stderrFinished = true;
       }
-      const timeout = isTimeout(error, deadline.signal);
+      const aborted = callerAbortedFirst;
+      const timeout = !aborted && isTimeout(error, deadline.signal);
       const initializationProtocolDataReceived = httpResponseReceived
         || (transport instanceof BoundedStdioClientTransport && transport.protocolMessageReceived);
-      const authenticationError = error instanceof UnauthorizedError
+      const authenticationError = !aborted && (error instanceof UnauthorizedError
         || error instanceof OAuthError
-        || error instanceof McpOAuthAuthorizationRequiredError;
+        || error instanceof McpOAuthAuthorizationRequiredError);
       if (oauthSession && authenticationError) {
         await oauthSession.markReauthorizationRequired(true).catch(() => undefined);
       }
-      const phase: McpRunnerPhase = timeout
+      const phase: McpRunnerPhase = aborted
+        ? "aborted"
+        : timeout
         ? "timeout"
         : error instanceof McpOutputLimitError
             || error instanceof McpStdioIngressLimitError
@@ -446,6 +463,7 @@ export class SdkMcpRunner implements McpRunner {
         ...(status === undefined ? {} : {httpStatus: status}),
       });
     } finally {
+      invocation.signal?.removeEventListener("abort", onCallerAbort);
       if (transport instanceof StreamableHTTPClientTransport) {
         await terminateSession(transport, deadlineAt);
       }
