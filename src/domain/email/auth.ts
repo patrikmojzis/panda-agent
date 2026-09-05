@@ -189,7 +189,3 @@ export function parseEmailAuthenticationHeaders(headers: EmailAuthenticationHead
     authSummary: summarizeEmailAuthentication({authSpf, authDkim, authDmarc}),
   };
 }
-
-export function parseEmailAuthenticationResults(header: string | undefined): ParsedEmailAuthentication {
-  return parseEmailAuthenticationHeaders({authenticationResults: header});
-}

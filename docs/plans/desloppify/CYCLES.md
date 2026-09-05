@@ -107,7 +107,8 @@ constructors only retain the pool and table names, with no startup side effects.
   option defaults and callbacks. It reran 121 CLI/schema/session/channel tests,
   checked ancestor groups and final registration order, and verified the parity
   results against the previous commit.
-- State: reviewed and committed locally with this cycle; not pushed or deployed.
+- Commit: `8686d315` — `refactor(cli): remove copied help stubs from operator modules`.
+- State: committed locally; not pushed or deployed.
 
 ## Cycle 5 — Make attachment no-overwrite behavior atomic
 
@@ -133,7 +134,15 @@ current command boundaries; do not add another filesystem abstraction.
 - Review: no actionable findings. Independent review passed 44 tests across six
   files, including file authority and path-context coverage, and verified unchanged
   authorization, path mapping, source checks and explicit overwrite semantics.
-- State: independently reviewed; awaiting its separate local commit.
+- State: reviewed and committed locally with this cycle; not pushed or deployed.
+
+## Combined verification after cycles 1–5
+
+The final combined source passed the TypeScript build, all three package-export
+tests, import of all 19 compiled package entrypoints, and the shared root/subpath
+`Thread` identity check. All 113 local links in this folder resolve. Focused test
+counts above describe their particular seams; they are not a new full-suite run.
+Production has not been modified by any of these cycles.
 
 ## Deferred after reconnaissance
 

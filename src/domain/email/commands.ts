@@ -1,4 +1,4 @@
-import {copyFile, mkdir, stat} from "node:fs/promises";
+import {constants, copyFile, mkdir, stat} from "node:fs/promises";
 import path from "node:path";
 
 import type {JsonObject} from "../../lib/json.js";
@@ -913,22 +913,15 @@ export async function executeEmailAttachmentFetchCommand(
       path: savePath,
     },
   });
-  if (!input.overwrite) {
-    try {
-      await stat(resolved.path);
-      throw new Error(`Refusing to overwrite existing file at ${resolved.displayPath}; pass --overwrite to replace it.`);
-    } catch (error) {
-      if (
-        error instanceof Error
-        && error.message === `Refusing to overwrite existing file at ${resolved.displayPath}; pass --overwrite to replace it.`
-      ) {
-        throw error;
-      }
-    }
-  }
-
   await mkdir(path.dirname(resolved.path), {recursive: true});
-  await copyFile(attachment.localPath, resolved.path);
+  try {
+    await copyFile(attachment.localPath, resolved.path, input.overwrite ? 0 : constants.COPYFILE_EXCL);
+  } catch (error) {
+    if (!input.overwrite && isRecord(error) && error.code === "EEXIST") {
+      throw new Error(`Refusing to overwrite existing file at ${resolved.displayPath}; pass --overwrite to replace it.`);
+    }
+    throw error;
+  }
   const bytes = sourceStat.size;
   const mimeType = inferAttachmentMimeType(attachment);
   const artifact = toAttachmentArtifact({...attachment, sizeBytes: attachment.sizeBytes ?? bytes}, resolved.path);
