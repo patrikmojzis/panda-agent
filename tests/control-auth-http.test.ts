@@ -984,6 +984,32 @@ describe("Control auth HTTP", () => {
   });
 });
 
+describe("Control session service access", () => {
+  it.each(["briefing", "heartbeat", "scheduled tasks", "watches", "runtime activity"] as const)("rechecks pairing and the session's grant role on every %s read", async (service) => {
+    const harness = await createHarness();
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    await harness.auth.createGrant({identityId: "identity-patrik", role: "admin"});
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role: "scoped", agentKey: "panda"});
+    const {session} = await harness.auth.loginWithToken(grant.loginToken);
+    const read = {
+      briefing: () => harness.briefings.getBriefing(session, "panda", "session-panda"),
+      heartbeat: () => harness.heartbeats.getHeartbeat(session, "panda", "session-panda"),
+      "scheduled tasks": () => harness.controlScheduledTasks.getScheduledTasks(session, "panda", "session-panda"),
+      watches: () => harness.controlWatches.getWatches(session, "panda", "session-panda"),
+      "runtime activity": () => harness.controlRuntimeActivity.getRuntimeActivity(session, "panda", "session-panda"),
+    }[service];
+    const denied = `Control ${service} target session was not found or is not visible.`;
+
+    await expect(read()).resolves.toBeDefined();
+    await harness.agents.deletePairing("panda", "identity-patrik");
+    await expect(read()).rejects.toThrow(denied);
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    await expect(read()).resolves.toBeDefined();
+    await harness.pool.query(`UPDATE "runtime"."control_grants" SET active = FALSE WHERE id = $1`, [grant.grant.id]);
+    await expect(read()).rejects.toThrow(denied);
+  });
+});
+
 describe("Control operator HTTP", () => {
   async function login(base: string, harness: Awaited<ReturnType<typeof createHarness>>) {
     const grant = await harness.auth.createGrant({identityId: "identity-patrik", role: "admin"});

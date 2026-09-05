@@ -2,13 +2,11 @@ import {createHash} from "node:crypto";
 
 import type {PgQueryable} from "../../lib/postgres-query.js";
 import {requireNonEmptyString} from "../../lib/strings.js";
-import {buildAgentTableNames} from "../agents/postgres-shared.js";
 import {buildScheduledTaskTableNames} from "../scheduling/tasks/postgres-shared.js";
 import {normalizeScheduledTaskSchedule} from "../scheduling/tasks/schedule.js";
 import type {ScheduledTaskStore} from "../scheduling/tasks/store.js";
 import type {ScheduledTaskRecord, ScheduledTaskRunStatus, ScheduledTaskSchedule} from "../scheduling/tasks/types.js";
-import {buildSessionTableNames} from "../sessions/postgres-shared.js";
-import {buildControlTableNames} from "./postgres-shared.js";
+import {assertControlSessionAccess} from "./session-access.js";
 import type {ControlSessionRecord} from "./types.js";
 
 const DEFAULT_TASK_LIMIT = 25;
@@ -316,9 +314,6 @@ function scheduleSummary(schedule: ScheduledTaskSchedule): Record<string, unknow
 export class ControlScheduledTasksService {
   private readonly pool: PgQueryable;
   private readonly store: ControlScheduledTaskStore;
-  private readonly agents = buildAgentTableNames();
-  private readonly sessionTables = buildSessionTableNames();
-  private readonly control = buildControlTableNames();
   private readonly scheduled = buildScheduledTaskTableNames();
 
   constructor(options: {pool: PgQueryable; store: ControlScheduledTaskStore}) {
@@ -327,27 +322,8 @@ export class ControlScheduledTasksService {
   }
 
   private async assertCanAccess(session: ControlSessionRecord, agentKey: string, targetSessionId: string): Promise<void> {
-    const normalizedAgentKey = requireNonEmptyString(agentKey, "Agent key is required.");
-    const normalizedSessionId = requireNonEmptyString(targetSessionId, "Session id is required.");
-    const result = await this.pool.query(`
-      SELECT 1
-      FROM ${this.sessionTables.sessions} AS target_session
-      INNER JOIN ${this.control.grants} AS grant_row
-        ON grant_row.identity_id = $1
-       AND grant_row.active = TRUE
-       AND grant_row.role = $4
-       AND (grant_row.role = 'admin' OR grant_row.agent_key = target_session.agent_key)
-      LEFT JOIN ${this.agents.agentPairings} AS pairing
-        ON pairing.agent_key = target_session.agent_key
-       AND pairing.identity_id = $1
-      WHERE target_session.id = $2
-        AND target_session.agent_key = $3
-        AND (grant_row.role = 'admin' OR pairing.identity_id IS NOT NULL)
-      LIMIT 1
-    `, [session.identityId, normalizedSessionId, normalizedAgentKey, session.role]);
-    if (result.rows.length === 0) {
-      throw new Error("Control scheduled tasks target session was not found or is not visible.");
-    }
+    await assertControlSessionAccess(this.pool, session, agentKey, targetSessionId,
+      "Control scheduled tasks target session was not found or is not visible.");
   }
 
   async getScheduledTasks(session: ControlSessionRecord, agentKey: string, targetSessionId: string, input: GetScheduledTasksInput = {}): Promise<ControlScheduledTasksRecord> {

@@ -255,6 +255,22 @@ disposable validation worktree was removed after preserving those artifacts.
   blockers.
 - State: reviewed and committed locally with this cycle; not pushed or deployed.
 
+## Cycle 11 — Keep Control session access policy in one place
+
+- Finding: briefing, heartbeat, scheduled tasks, watches and runtime activity
+  repeated the same grant/role/pairing query and session normalization.
+- Change: `src/domain/control/session-access.ts` owns that query. The five services
+  retain their authorization call sites and exact denial messages. The helper
+  receives the caller's pool, rechecks every request and caches no access result.
+- Result: 79 fewer production lines, including the new helper; 26 test lines added.
+- Evidence: all 89 Control HTTP tests pass, including five new caller-level tests
+  for pairing revocation and grant-role isolation. Independent review passed 36
+  focused authorization tests and 70 before/after comparisons of exact SQL,
+  parameters, validation order and errors. All 17 service method bodies and 15
+  authorization calls are unchanged. Import law passes.
+- State: reviewed and committed locally with this cycle; not pushed or deployed.
+  No query semantics, schema, migration or authority policy changed.
+
 ## Combined verification after cycles 1–5
 
 The final combined source passed the TypeScript build, all three package-export
