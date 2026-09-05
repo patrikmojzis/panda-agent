@@ -183,47 +183,32 @@ function applyDropImages(
   const window = buildRuleWindow(records, rule, now);
 
   return records.flatMap((record, index) => {
-    if (!isEligibleForRule(index, record, window)) {
+    const message = record.message;
+    if (!isEligibleForRule(index, record, window)
+      || (message.role !== "user" && message.role !== "toolResult")) {
       return [record];
     }
 
-    if (record.message.role === "user") {
-      if (typeof record.message.content === "string") {
+    let sourceContent;
+    if (message.role === "user") {
+      if (typeof message.content === "string") {
         return [record];
       }
-
-      const content = record.message.content.filter((block) => block.type !== "image");
-      if (content.length === record.message.content.length) {
-        return [record];
-      }
-
-      if (content.length === 0) {
-        return [];
-      }
-
-      return [replaceRecordMessage(record, {
-        ...record.message,
-        content,
-      })];
+      sourceContent = message.content;
+    } else {
+      sourceContent = message.content;
     }
 
-    if (record.message.role === "toolResult") {
-      const content = record.message.content.filter((block) => block.type !== "image");
-      if (content.length === record.message.content.length) {
-        return [record];
-      }
-
-      if (content.length === 0) {
-        return [];
-      }
-
-      return [replaceRecordMessage(record, {
-        ...record.message,
-        content,
-      })];
+    const content = sourceContent.filter((block) => block.type !== "image");
+    if (content.length === sourceContent.length) {
+      return [record];
     }
 
-    return [record];
+    if (content.length === 0) {
+      return [];
+    }
+
+    return [replaceRecordMessage(record, {...message, content})];
   });
 }
 

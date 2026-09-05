@@ -36,8 +36,13 @@ MCP cancellation, runtime composition and shell compensation, removing another
 changes are committed as `07cabc01`, `598a7ef4` and `bd8382a7`; shell compensation
 is committed with its own cycle. Combined isolated verification covered 2,957
 tests and a passing model/bash smoke. The separate storage commit `89dfea95` is
-excluded from these counts. The cycle log is the current progress record; the
-inspect/review/commit loop remains active.
+excluded from these counts. Cycles 10–13 remove another 188 production lines:
+the single-use web-research factory, repeated Control access queries, duplicated
+channel-history text handling and redundant transcript projection/segment code.
+The cleanup total is 4,577 fewer production lines, including the 75 relocated
+into tests. Independent reviews, focused tests, current build/contracts and a
+fresh disposable-Postgres model/bash smoke passed. The cycle log is the current
+progress record; the inspect/review/commit loop remains active.
 
 Production access remains strictly read-only. No deployment, migration, restart,
 message replay or historical-data cleanup is part of this work. The production

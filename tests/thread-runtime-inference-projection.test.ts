@@ -249,9 +249,13 @@ describe("projectTranscriptForInference", () => {
       }),
       createRecord(3, createAssistantMessage([
         {type: "toolCall", id: "call-1", name: "echo", arguments: {message: "preview"}},
+        {type: "toolCall", id: "call-2", name: "echo", arguments: {message: "image only"}},
       ])),
       createRecord(4, createToolResultMessage("call-1", [
         {type: "text", text: "preview"},
+        {type: "image", data: "ZmFrZQ==", mimeType: "image/png"},
+      ])),
+      createRecord(5, createToolResultMessage("call-2", [
         {type: "image", data: "ZmFrZQ==", mimeType: "image/png"},
       ])),
     ];
@@ -265,14 +269,41 @@ describe("projectTranscriptForInference", () => {
       role: "user",
       content: [{type: "text", text: "See attachment"}],
     });
-    expect(projected[1]?.message).toMatchObject({
-      role: "assistant",
-      content: [{type: "toolCall", id: "call-1", name: "echo", arguments: {message: "preview"}}],
-    });
+    expect(projected[1]).toBe(transcript[2]);
     expect(projected[2]?.message).toMatchObject({
       role: "toolResult",
       content: [{type: "text", text: "preview"}],
     });
+  });
+
+  it("preserves unchanged message instances and whitespace when dropping images", () => {
+    const transcript = [
+      createRecord(1, stringToUserMessage("  plain text\n")),
+      createRecord(2, {role: "user", content: [{type: "text", text: "  block text\n"}], timestamp: 2}),
+      createRecord(3, {role: "user", content: [], timestamp: 3}),
+      createRecord(4, createAssistantMessage([
+        {type: "toolCall", id: "call-1", name: "echo", arguments: {}},
+        {type: "toolCall", id: "call-2", name: "echo", arguments: {}},
+      ])),
+      createRecord(5, createToolResultMessage("call-1", [{type: "text", text: "  tool text\n"}])),
+      createRecord(6, createToolResultMessage("call-2", [])),
+      createRecord(7, {
+        role: "user",
+        content: [{type: "image", data: "ZmFrZQ==", mimeType: "image/png"}],
+        timestamp: 7,
+      }),
+    ];
+    const original = structuredClone(transcript);
+
+    const projected = projectTranscriptForInference(transcript, {
+      dropImages: {preserveTailMessages: 1},
+    }, 20_000);
+
+    expect(projected).toHaveLength(transcript.length);
+    for (const [index, record] of transcript.entries()) {
+      expect(projected[index]).toBe(record);
+    }
+    expect(transcript).toEqual(original);
   });
 
   it("applies combined rules without leaving empty messages or dangling tool results", () => {

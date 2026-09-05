@@ -288,6 +288,46 @@ disposable validation worktree was removed after preserving those artifacts.
 - State: reviewed and committed locally with this cycle; not pushed or deployed.
   The helper is internal, with no new package export or provider call.
 
+## Cycle 13 — Share image filtering and construct replay segments directly
+
+- Finding: user and tool-result messages duplicated image filtering, unchanged
+  record handling and empty-message removal. A separate segment factory only
+  recopied fields and cloned issue arrays already created by its callers.
+- Change: supported roles feed one image-filtering path; user strings retain
+  their original bypass. Replay grouping constructs the same segment literals
+  directly, including ordinary-message empty issue arrays. Both projection stages
+  around artifact rehydration remain in place.
+- Result: 30 fewer production lines; 31 test lines added.
+- Evidence: 76 focused transcript/compaction tests passed; after the final guard
+  adjustment, all 17 affected inference/default tests and typecheck passed again.
+  Root's independent review compared 6,900 output, identity, replay grouping and
+  budget cases with the previous implementation. Review caught and corrected a
+  guard that initially broadened malformed tool-result handling. No casts or
+  persisted transcript changes were needed.
+- State: reviewed and committed locally with this cycle; not pushed or deployed.
+
+## Combined verification after cycles 10–13
+
+All four source patches were frozen before the combined build, import law, shim
+and prompt checks passed. All 19 compiled package imports and shared `Thread`
+identity pass; all 113 local plan links resolve. The model/bash smoke passed against disposable local
+Postgres: expected text/tool, no failed run, idle thread and no tool error. Its
+summary is `.temp/runtime-smoke/desloppify-cycles10-13-20260905/summary.json`.
+That temporary database server was stopped afterward. These cycles add no schema
+migration and modify no production service. Their combined source reduction is
+188 lines; all cleanup commits through cycle 13 remove 4,577 production lines,
+including the previously recorded 75 lines relocated into tests.
+
+Web, Control and channel commits are `1bcf1e67`, `f040e8b9` and `90aa0a8c`.
+The kernel change and this combined verification record are committed with
+cycle 13. Earlier unrelated commits remain excluded from cleanup measurements.
+
+Further recon identified Control UI error parsing and a small thinking-diagnostic
+formatter as possible later candidates; neither was accepted or changed here.
+Channel token-redaction paths have different Error-identity behavior and remain
+separate. Numeric app validators and Brave endpoint adapters retain meaningful
+input/error differences; this pass did not justify a generic replacement.
+
 ## Combined verification after cycles 1–5
 
 The final combined source passed the TypeScript build, all three package-export

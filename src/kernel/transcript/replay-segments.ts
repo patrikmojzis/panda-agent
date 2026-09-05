@@ -31,22 +31,6 @@ function collectAssistantToolCallIds(message: Extract<Message, {role: "assistant
   return message.content.flatMap((block) => block.type === "toolCall" ? [block.id] : []);
 }
 
-function createSegment(options: {
-  kind: ReplaySegmentKind;
-  startIndex: number;
-  endIndex: number;
-  messages: Message[];
-  issues?: readonly ReplaySegmentIssue[];
-}): ReplaySegment {
-  return {
-    kind: options.kind,
-    startIndex: options.startIndex,
-    endIndex: options.endIndex,
-    messages: options.messages,
-    issues: options.issues ? [...options.issues] : [],
-  };
-}
-
 function analyzeToolExchange(
   toolCallIds: readonly string[],
   toolResults: readonly Extract<Message, {role: "toolResult"}>[],
@@ -100,13 +84,13 @@ export function buildReplaySegments(messages: readonly Message[]): ReplaySegment
         index += 1;
       }
 
-      segments.push(createSegment({
+      segments.push({
         kind: "orphan_tool_results",
         startIndex,
         endIndex: index - 1,
         messages: segmentMessages,
         issues: ["orphan_tool_results"],
-      }));
+      });
       continue;
     }
 
@@ -129,23 +113,24 @@ export function buildReplaySegments(messages: readonly Message[]): ReplaySegment
           index += 1;
         }
 
-        segments.push(createSegment({
+        segments.push({
           kind: "tool_exchange",
           startIndex,
           endIndex: index - 1,
           messages: segmentMessages,
           issues: analyzeToolExchange(toolCallIds, toolResults),
-        }));
+        });
         continue;
       }
     }
 
-    segments.push(createSegment({
+    segments.push({
       kind: "message",
       startIndex: index,
       endIndex: index,
       messages: [message],
-    }));
+      issues: [],
+    });
     index += 1;
   }
 
