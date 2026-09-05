@@ -19,6 +19,7 @@ import {
     stringToUserMessage,
     Thread,
     type ThreadRunEvent,
+    type ThreadStreamEvent,
     Tool,
     type ToolResultPayload,
     z,
@@ -249,6 +250,23 @@ function completedStream(response: AssistantMessage): AssistantMessageEventStrea
   } as AssistantMessageEventStream;
 }
 
+function createSuccessfulRuntime(...responses: AssistantMessage[]): LlmRuntime {
+  const nextResponse = () => {
+    const response = responses.shift();
+    if (!response) throw new Error("No more mock responses queued");
+    return response;
+  };
+  return {
+    complete: vi.fn(async () => nextResponse()),
+    stream: vi.fn(() => {
+      const response = nextResponse();
+      const stream = createAssistantMessageEventStream();
+      stream.push({type: "done", reason: response.stopReason === "toolUse" ? "toolUse" : "stop", message: response});
+      return stream;
+    }),
+  };
+}
+
 function terminalErrorStream(errorMessage: string): AssistantMessageEventStream {
   const response = createAssistantMessage([], {stopReason: "error", errorMessage});
   const stream = createAssistantMessageEventStream();
@@ -256,7 +274,7 @@ function terminalErrorStream(errorMessage: string): AssistantMessageEventStream 
   return stream;
 }
 
-function eventKind(event: ThreadRunEvent): string {
+function eventKind(event: ThreadRunEvent | ThreadStreamEvent): string {
   return "type" in event ? event.type : event.role;
 }
 
@@ -856,9 +874,9 @@ describe("Thread", () => {
     expect(sideEffect).not.toHaveBeenCalled();
   });
 
-  it("runs recursive tool calls and hook/pipeline callbacks", async () => {
+  it.each(["run", "stream"] as const)("%s runs recursive tool calls and hook/pipeline callbacks", async (mode) => {
     const events: string[] = [];
-    const runtime = createMockRuntime(
+    const runtime = createSuccessfulRuntime(
       createAssistantMessage([
         {
           type: "toolCall",
@@ -881,17 +899,18 @@ describe("Thread", () => {
       runtime,
       hooks: [new RecordingHook(events)],
       runPipelines: [new RecordingPipeline(events)],
+      checkpoint: ({phase}) => { events.push(phase); },
     });
 
-    const outputs: ThreadRunEvent[] = [];
-    for await (const output of thread.run()) {
+    const outputs: Array<ThreadRunEvent | ThreadStreamEvent> = [];
+    for await (const output of thread[mode]()) {
       outputs.push(output);
     }
 
     expect(outputs.map(eventKind)).toEqual([
-      "assistant",
+      mode === "run" ? "assistant" : "done",
       "toolResult",
-      "assistant",
+      mode === "run" ? "assistant" : "done",
     ]);
     expect(outputs[1]).toMatchObject({
       role: "toolResult",
@@ -906,11 +925,101 @@ describe("Thread", () => {
       "start",
       "end",
       "postflight",
+      "after_assistant",
+      "after_tool_result",
       "preflight",
       "start",
       "end",
       "postflight",
     ]);
+  });
+
+  describe.each(["run", "stream"] as const)("%s checkpoint boundaries", (mode) => {
+    it.each((["after_assistant", "after_tool_result"] as const).flatMap((phase) => [
+      {phase, cancelPendingToolCalls: undefined, reason: undefined},
+      {phase, cancelPendingToolCalls: true, reason: "Stop at this checkpoint."},
+      {phase, cancelPendingToolCalls: false, reason: "Keep pending calls."},
+    ]))("preserves $phase interruption with cancellation=$cancelPendingToolCalls", async ({phase, cancelPendingToolCalls, reason}) => {
+      const input = stringToUserMessage("run both tools");
+      const response = createAssistantMessage(["first", "second"].map((id) => ({
+        type: "toolCall", id, name: "counting", arguments: {},
+      })));
+      const sideEffect = vi.fn();
+      const thread = new Thread({
+        agent: new Agent({tools: [new CountingTool(sideEffect)]}),
+        model: "openai/gpt-4o-mini",
+        messages: [input],
+        runtime: createSuccessfulRuntime(response),
+        checkpoint: (checkpoint) => {
+          expect(checkpoint.runContext.messages).toEqual(thread.messages);
+          if (checkpoint.phase === phase) return {action: "interrupt", cancelPendingToolCalls, reason};
+        },
+      });
+
+      const results = [];
+      for await (const event of thread[mode]()) {
+        if ("role" in event && event.role === "toolResult") results.push(event);
+      }
+
+      const executed = phase === "after_tool_result" ? 1 : 0;
+      expect(sideEffect).toHaveBeenCalledTimes(executed);
+      expect(results).toHaveLength(cancelPendingToolCalls === false ? executed : 2);
+      if (executed) expect(results[0]).toMatchObject({toolCallId: "first", isError: false, details: {counted: true}});
+      for (const [index, result] of results.slice(executed).entries()) {
+        expect(result).toMatchObject({
+          toolCallId: executed + index === 0 ? "first" : "second",
+          isError: true,
+          content: [{type: "text", text: reason ?? "Tool call cancelled before execution."}],
+          details: reason ? {cancelled: true, reason} : {cancelled: true},
+        });
+      }
+      expect(thread.messages).toEqual([input, response, ...results]);
+      expect(thread.turnCount).toBe(1);
+    });
+
+    it.each(["assistant", "tool_result", "cancelled_result"] as const)("stops at the yielded %s when its iterator is closed", async (boundary) => {
+      const input = stringToUserMessage("adjust thinking then count");
+      const response = createAssistantMessage([
+        {type: "toolCall", id: "first", name: "adjust-thinking", arguments: {level: "high"}},
+        {type: "toolCall", id: "second", name: "counting", arguments: {}},
+      ]);
+      const events: string[] = [];
+      const sideEffect = vi.fn();
+      const thread = new Thread({
+        agent: new Agent({tools: [new AdjustThinkingTool(), new CountingTool(sideEffect)]}),
+        model: "openai/gpt-4o-mini",
+        messages: [input],
+        thinking: "low",
+        runtime: createSuccessfulRuntime(response),
+        hooks: [new RecordingHook(events)],
+        runPipelines: [new RecordingPipeline(events)],
+        checkpoint: ({phase, runContext}) => {
+          events.push(phase);
+          if (boundary === "cancelled_result") {
+            runContext.setThinking("high");
+            return {action: "interrupt", reason: "Stop tools."};
+          }
+        },
+      });
+      const iterator = thread[mode]();
+      const assistantEvent = await iterator.next();
+      expect(assistantEvent.done).toBe(false);
+      expect(thread.messages).toEqual([input]);
+      const yieldedResult = boundary === "assistant" ? undefined : (await iterator.next()).value;
+      if (boundary !== "assistant") {
+        expect(yieldedResult).toMatchObject({role: "toolResult", toolCallId: "first", isError: boundary === "cancelled_result"});
+        expect(thread.thinking).toBe("high");
+      }
+
+      await iterator.return(undefined);
+
+      expect(thread.thinking).toBe("low");
+      expect(sideEffect).not.toHaveBeenCalled();
+      expect(thread.messages).toEqual(boundary === "assistant" ? [input] : [input, response, yieldedResult]);
+      expect(events).toEqual(boundary === "assistant"
+        ? ["preflight", "start"]
+        : ["preflight", "start", "end", "postflight", "after_assistant"]);
+    });
   });
 
   it("exposes the provider tool call id only on the per-tool run context", async () => {
@@ -1370,8 +1479,8 @@ describe("Thread", () => {
     expect(requests.map((request) => request.thinking ?? null)).toEqual(["low", "high"]);
   });
 
-  it("streams tool progress events before the final tool result", async () => {
-    const runtime = createMockRuntime(
+  it.each(["run", "stream"] as const)("%s emits tool progress events before the final tool result", async (mode) => {
+    const runtime = createSuccessfulRuntime(
       createAssistantMessage([
         {
           type: "toolCall",
@@ -1394,17 +1503,17 @@ describe("Thread", () => {
       runtime,
     });
 
-    const outputs: ThreadRunEvent[] = [];
-    for await (const output of thread.run()) {
+    const outputs: Array<ThreadRunEvent | ThreadStreamEvent> = [];
+    for await (const output of thread[mode]()) {
       outputs.push(output);
     }
 
     expect(outputs.map(eventKind)).toEqual([
-      "assistant",
+      mode === "run" ? "assistant" : "done",
       "tool_progress",
       "tool_progress",
       "toolResult",
-      "assistant",
+      mode === "run" ? "assistant" : "done",
     ]);
     expect(outputs[1]).toMatchObject({
       type: "tool_progress",

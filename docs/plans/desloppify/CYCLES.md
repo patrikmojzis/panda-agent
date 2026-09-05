@@ -856,3 +856,22 @@ until a migration/bootstrap change has cross-schema evidence. Sixteen unused
 migration-constant reexports are optional future deletion; manifest/checksums and
 schema behavior must remain unchanged. Trace/pool/lifecycle helpers inspected in
 this pass retain meaningful policy and were left intact.
+
+## Cycle 36 — Centralize assistant-turn finalization
+
+- Finding: normal and streaming kernel paths duplicated the same 24-line
+  post-assistant checkpoint/cancellation/tool-execution sequence.
+- Change: deepen the existing private `finalizeAssistantTurn` into an async
+  generator that owns the sequence and returns `ThreadStepResult`; both paths
+  delegate after their original provider, abort and yield boundaries.
+- Result: 23 fewer production lines; 109 net test lines for 20 additional cases.
+- Evidence: all 23 targeted behavior cases passed on the unchanged implementation
+  before the move. The patch passes 193 focused tests across nine suites and 97
+  independent review cases. Root reconstructed the entire new source from the
+  exact moved tails, signature and two call substitutions; all other source is
+  byte-identical. The combined suite passes 3,140 tests across 335 files, with
+  typecheck, import law, prompt/shim checks and 19 compiled package imports.
+- State: reviewed and committed locally with this cycle. Normal/streaming hook,
+  pipeline, checkpoint and tool order remains; interruption options, cancellation
+  reasons, progress, early iterator closure and thinking restoration are covered.
+  Provider retries, public APIs and persisted transcript formats are unchanged.

@@ -886,10 +886,10 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     };
   }
 
-  private async finalizeAssistantTurn(
+  private async *finalizeAssistantTurn(
     response: AssistantMessage,
     runContext: RunContext<TContext>,
-  ): Promise<ToolCall[]> {
+  ): AsyncGenerator<ToolProgressEvent | ToolResultMessage<JsonValue>, ThreadStepResult> {
     this.addMessage(response);
     runContext.messages.push(response);
 
@@ -901,7 +901,30 @@ export class Thread<TContext = unknown, TOutput = unknown> {
       await Promise.all(this.runPipelines.map((pipeline) => pipeline.postflight(this, response)));
     }
 
-    return collectAssistantToolCalls(response);
+    const functionCalls = collectAssistantToolCalls(response);
+    if (functionCalls.length === 0) {
+      return this.buildStepResult(false);
+    }
+
+    if (this.checkpoint) {
+      const decision = this.resolveCheckpointDecision(await this.checkpoint({
+        phase: "after_assistant",
+        runContext,
+        assistantMessage: response,
+        toolCalls: functionCalls,
+      }));
+
+      if (decision.action === "interrupt") {
+        if (decision.cancelPendingToolCalls !== false) {
+          yield* this.emitCancelledToolResults(functionCalls, runContext, decision.reason);
+        }
+
+        return this.buildStepResult(false);
+      }
+    }
+
+    const needsAnotherTurn = yield* this.executeToolCalls(functionCalls, runContext);
+    return this.buildStepResult(needsAnotherTurn);
   }
 
   async *executeToolCalls(
@@ -1242,30 +1265,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
 
     yield response;
 
-    const functionCalls = await this.finalizeAssistantTurn(response, runContext);
-    if (functionCalls.length === 0) {
-      return this.buildStepResult(false);
-    }
-
-    if (this.checkpoint) {
-      const decision = this.resolveCheckpointDecision(await this.checkpoint({
-        phase: "after_assistant",
-        runContext,
-        assistantMessage: response,
-        toolCalls: functionCalls,
-      }));
-
-      if (decision.action === "interrupt") {
-        if (decision.cancelPendingToolCalls !== false) {
-          yield* this.emitCancelledToolResults(functionCalls, runContext, decision.reason);
-        }
-
-        return this.buildStepResult(false);
-      }
-    }
-
-    const needsAnotherTurn = yield* this.executeToolCalls(functionCalls, runContext);
-    return this.buildStepResult(needsAnotherTurn);
+    return yield* this.finalizeAssistantTurn(response, runContext);
   }
 
   async *[runThreadStepSymbol](): AsyncGenerator<ThreadRunEvent, ThreadStepResult> {
@@ -1364,30 +1364,7 @@ export class Thread<TContext = unknown, TOutput = unknown> {
     }
     throwIfAborted(this.signal);
 
-    const functionCalls = await this.finalizeAssistantTurn(response, runContext);
-    if (functionCalls.length === 0) {
-      return this.buildStepResult(false);
-    }
-
-    if (this.checkpoint) {
-      const decision = this.resolveCheckpointDecision(await this.checkpoint({
-        phase: "after_assistant",
-        runContext,
-        assistantMessage: response,
-        toolCalls: functionCalls,
-      }));
-
-      if (decision.action === "interrupt") {
-        if (decision.cancelPendingToolCalls !== false) {
-          yield* this.emitCancelledToolResults(functionCalls, runContext, decision.reason);
-        }
-
-        return this.buildStepResult(false);
-      }
-    }
-
-    const needsAnotherTurn = yield* this.executeToolCalls(functionCalls, runContext);
-    return this.buildStepResult(needsAnotherTurn);
+    return yield* this.finalizeAssistantTurn(response, runContext);
   }
 
   async *stream(): AsyncGenerator<ThreadStreamEvent> {
