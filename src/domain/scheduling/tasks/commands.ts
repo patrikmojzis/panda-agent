@@ -1,3 +1,4 @@
+import {optionalNonEmptyString, requireNonEmptyString} from "../../../lib/strings.js";
 import {isRecord} from "../../../lib/records.js";
 import {normalizeToJsonValue, type JsonObject} from "../../../lib/json.js";
 import {commandScopeDenied} from "../../commands/errors.js";
@@ -91,22 +92,6 @@ export interface ScheduleRunsCommandOutput extends JsonObject {
   count: number;
 }
 
-function readRequiredString(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${label} must not be empty.`);
-  }
-
-  return value.trim();
-}
-
-function readOptionalString(value: unknown, label: string): string | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-
-  return readRequiredString(value, label);
-}
-
 function readOptionalBoolean(value: unknown, label: string): boolean | undefined {
   if (value === undefined || value === null) {
     return undefined;
@@ -166,7 +151,7 @@ function readSchedule(value: unknown, label: string): ScheduledTaskSchedule {
     rejectUnexpectedKeys(value, ["kind", "runAt"], label);
     return normalizeScheduledTaskSchedule({
       kind: "once",
-      runAt: readRequiredString(value.runAt, `${label}.runAt`),
+      runAt: requireNonEmptyString(value.runAt, `${label}.runAt must not be empty.`),
     });
   }
 
@@ -174,8 +159,8 @@ function readSchedule(value: unknown, label: string): ScheduledTaskSchedule {
     rejectUnexpectedKeys(value, ["kind", "cron", "timezone"], label);
     return normalizeScheduledTaskSchedule({
       kind: "recurring",
-      cron: readRequiredString(value.cron, `${label}.cron`),
-      timezone: readRequiredString(value.timezone, `${label}.timezone`),
+      cron: requireNonEmptyString(value.cron, `${label}.cron must not be empty.`),
+      timezone: requireNonEmptyString(value.timezone, `${label}.timezone must not be empty.`),
     });
   }
 
@@ -196,8 +181,8 @@ function parseScheduleCreateCommandInput(input: unknown): ScheduleCreateCommandI
   }
 
   return {
-    title: readRequiredString(input.title, "schedule.create title"),
-    instruction: readRequiredString(input.instruction, "schedule.create instruction"),
+    title: requireNonEmptyString(input.title, "schedule.create title must not be empty."),
+    instruction: requireNonEmptyString(input.instruction, "schedule.create instruction must not be empty."),
     schedule: readSchedule(input.schedule, "schedule.create schedule"),
     enabled: readOptionalBoolean(input.enabled, "schedule.create enabled"),
   };
@@ -220,7 +205,7 @@ function parseScheduleShowCommandInput(input: unknown): ScheduleShowCommandInput
   }
 
   return {
-    taskId: readRequiredString(input.taskId, "schedule.show taskId"),
+    taskId: requireNonEmptyString(input.taskId, "schedule.show taskId must not be empty."),
   };
 }
 
@@ -230,7 +215,7 @@ function parseScheduleRunsCommandInput(input: unknown): ScheduleRunsCommandInput
   }
 
   return {
-    taskId: readRequiredString(input.taskId, "schedule.runs taskId"),
+    taskId: requireNonEmptyString(input.taskId, "schedule.runs taskId must not be empty."),
     limit: readOptionalPositiveInteger(input.limit, "schedule.runs limit"),
   };
 }
@@ -241,9 +226,9 @@ function parseScheduleUpdateCommandInput(input: unknown): ScheduleUpdateCommandI
   }
 
   return {
-    taskId: readRequiredString(input.taskId, "schedule.update taskId"),
-    title: readOptionalString(input.title, "schedule.update title"),
-    instruction: readOptionalString(input.instruction, "schedule.update instruction"),
+    taskId: requireNonEmptyString(input.taskId, "schedule.update taskId must not be empty."),
+    title: optionalNonEmptyString(input.title, "schedule.update title must not be empty."),
+    instruction: optionalNonEmptyString(input.instruction, "schedule.update instruction must not be empty."),
     schedule: readOptionalSchedule(input.schedule, "schedule.update schedule"),
     enabled: readOptionalBoolean(input.enabled, "schedule.update enabled"),
   };
@@ -255,8 +240,8 @@ function parseScheduleCancelCommandInput(input: unknown): ScheduleCancelCommandI
   }
 
   return {
-    taskId: readRequiredString(input.taskId, "schedule.cancel taskId"),
-    reason: readOptionalString(input.reason, "schedule.cancel reason"),
+    taskId: requireNonEmptyString(input.taskId, "schedule.cancel taskId must not be empty."),
+    reason: optionalNonEmptyString(input.reason, "schedule.cancel reason must not be empty."),
   };
 }
 

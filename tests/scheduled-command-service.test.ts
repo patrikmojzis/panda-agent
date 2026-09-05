@@ -50,6 +50,7 @@ function createHarness() {
       record = {
         ...record,
         ...input.definition,
+        cwd: input.definition.cwd,
         version: input.expectedVersion + 1,
         nextFireAt: input.nextFireAt,
         updatedAt: now,
@@ -87,6 +88,44 @@ function createHarness() {
 }
 
 describe("scheduled command service", () => {
+  it.each([undefined, null, "", " \t ", 42, false])("rejects invalid cron titles before credential or store access: %s", async (title) => {
+    const {service, store, resolveCredential} = createHarness();
+    await expect(createCronCreateCommand(service).execute({
+      command: "cron.create", scope: {sessionId: "session-main", agentKey: "panda"},
+      input: {command: "./sync.sh", cron: "0 * * * *", timezone: "UTC", ...(title === undefined ? {} : {title})},
+    })).rejects.toThrow("cron.create title must not be empty.");
+    expect(store.createCommand).not.toHaveBeenCalled();
+    expect(resolveCredential).not.toHaveBeenCalled();
+  });
+
+  it.each(["", " \t ", 42, false])("rejects invalid optional cron cwd before writing: %s", async (cwd) => {
+    const {service, store} = createHarness();
+    await expect(createCronCreateCommand(service).execute({
+      command: "cron.create", scope: {sessionId: "session-main", agentKey: "panda"},
+      input: {title: "Sync", command: "./sync.sh", cron: "0 * * * *", timezone: "UTC", cwd},
+    })).rejects.toThrow("cron.create cwd must not be empty.");
+    expect(store.createCommand).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, null, "  /workspace/new\t"])("preserves omitted, cleared, and trimmed cron cwd on update: %s", async (cwd) => {
+    const {service} = createHarness();
+    const scope = {sessionId: "session-main", agentKey: "panda"};
+    const created = await service.create(scope, {
+      title: "Sync", command: "./sync.sh", cron: "0 * * * *", timezone: "UTC", cwd: "/workspace/old",
+    });
+    await expect(createCronUpdateCommand(service).execute({
+      command: "cron.update", scope,
+      input: {
+        commandId: `  ${created.commandId}\n`, expectedVersion: 1, title: "  Updated sync\n", command: null,
+        ...(cwd === undefined ? {} : {cwd}),
+      },
+    })).resolves.toMatchObject({ok: true, output: {version: 2}});
+    await expect(service.show(scope.sessionId, created.commandId)).resolves.toMatchObject({
+      title: "Updated sync", command: "./sync.sh",
+      cwd: cwd === null ? undefined : cwd === undefined ? "/workspace/old" : cwd.trim(),
+    });
+  });
+
   it("returns storage guidance through the shim only when creating, updating or enabling a command", async () => {
     const {service, store} = createHarness();
     const commands = [

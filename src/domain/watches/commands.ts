@@ -1,3 +1,4 @@
+import {optionalNonEmptyString, requireNonEmptyString} from "../../lib/strings.js";
 import {isRecord} from "../../lib/records.js";
 import {normalizeToJsonValue, type JsonObject} from "../../lib/json.js";
 import {commandScopeDenied} from "../commands/errors.js";
@@ -96,22 +97,6 @@ export interface WatchRunsCommandOutput extends JsonObject {
 
 const WATCH_SCHEMA_CATALOG = getWatchSchemaCatalog();
 
-function readRequiredString(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${label} must not be empty.`);
-  }
-
-  return value.trim();
-}
-
-function readOptionalString(value: unknown, label: string): string | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-
-  return readRequiredString(value, label);
-}
-
 function readPositiveInteger(value: unknown, label: string): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
     throw new Error(`${label} must be a positive integer.`);
@@ -171,7 +156,7 @@ function parseWatchShowCommandInput(input: unknown): WatchShowCommandInput {
   }
 
   return {
-    watchId: readRequiredString(input.watchId, "watch.show watchId"),
+    watchId: requireNonEmptyString(input.watchId, "watch.show watchId must not be empty."),
   };
 }
 
@@ -181,7 +166,7 @@ function parseWatchRunsCommandInput(input: unknown): WatchRunsCommandInput {
   }
 
   return {
-    watchId: readRequiredString(input.watchId, "watch.runs watchId"),
+    watchId: requireNonEmptyString(input.watchId, "watch.runs watchId must not be empty."),
     limit: readOptionalPositiveInteger(input.limit, "watch.runs limit"),
   };
 }
@@ -192,7 +177,7 @@ function parseWatchCreateCommandInput(input: unknown): WatchCreateCommandInput {
   }
 
   return {
-    title: readRequiredString(input.title, "watch.create title"),
+    title: requireNonEmptyString(input.title, "watch.create title must not be empty."),
     intervalMinutes: readPositiveInteger(input.intervalMinutes, "watch.create intervalMinutes"),
     source: input.source,
     detector: input.detector,
@@ -206,8 +191,8 @@ function parseWatchUpdateCommandInput(input: unknown): WatchUpdateCommandInput {
   }
 
   return {
-    watchId: readRequiredString(input.watchId, "watch.update watchId"),
-    title: readOptionalString(input.title, "watch.update title"),
+    watchId: requireNonEmptyString(input.watchId, "watch.update watchId must not be empty."),
+    title: optionalNonEmptyString(input.title, "watch.update title must not be empty."),
     intervalMinutes: readOptionalPositiveInteger(input.intervalMinutes, "watch.update intervalMinutes"),
     source: readOptionalConfig(input.source),
     detector: readOptionalConfig(input.detector),
@@ -221,8 +206,8 @@ function parseWatchDisableCommandInput(input: unknown): WatchDisableCommandInput
   }
 
   return {
-    watchId: readRequiredString(input.watchId, "watch.disable watchId"),
-    reason: readOptionalString(input.reason, "watch.disable reason"),
+    watchId: requireNonEmptyString(input.watchId, "watch.disable watchId must not be empty."),
+    reason: optionalNonEmptyString(input.reason, "watch.disable reason must not be empty."),
   };
 }
 

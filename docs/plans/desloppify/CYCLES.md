@@ -687,3 +687,18 @@ and supported runtime context exports retain meaningful policy or public callers
   counters, ordering and cache IDs. The helper was not a supported package export.
 - State: reviewed and committed locally with this cycle. Transcript rendering,
   persisted shapes, UI output and entry-identity behavior are unchanged.
+
+## Cycle 30 — Reuse command string validation
+
+- Finding: watch, scheduled-task and scheduled-command modules copied required
+  and optional string parsing already provided by `lib/strings`.
+- Change: replace six private helpers with the existing functions at all 35 call
+  sites, retaining complete error messages and validation positions.
+- Result: 38 fewer production lines; 110 net test lines added for 42 cases.
+- Evidence: all 109 focused command/CLI/service tests, typecheck, import law and
+  prompt/shim checks pass. Independent review ran 86 cases and matched 138
+  before/after value/error outcomes, including Unicode whitespace, nonstrings,
+  nested labels and dynamic command names. Cron's `cwd: null` clearing remains
+  explicit. Its test store now replaces cwd like the real Postgres adapter.
+- State: reviewed and committed locally with this cycle. Command descriptors,
+  authority, mutation order, null semantics and error behavior are unchanged.

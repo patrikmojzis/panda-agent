@@ -1,3 +1,4 @@
+import {optionalNonEmptyString, requireNonEmptyString} from "../../../lib/strings.js";
 import type {JsonObject} from "../../../lib/json.js";
 import {isRecord} from "../../../lib/records.js";
 import {SCHEDULED_COMMAND_STORAGE_NOTICE} from "../../../prompts/runtime/scheduled-commands.js";
@@ -14,15 +15,6 @@ export const CRON_ENABLE_COMMAND_NAME = "cron.enable";
 export const CRON_DISABLE_COMMAND_NAME = "cron.disable";
 export const CRON_DELETE_COMMAND_NAME = "cron.delete";
 export const CRON_RUN_COMMAND_NAME = "cron.run";
-
-function requiredString(value: unknown, label: string): string {
-  if (typeof value !== "string" || !value.trim()) throw new Error(`${label} must not be empty.`);
-  return value.trim();
-}
-
-function optionalString(value: unknown, label: string): string | undefined {
-  return value === undefined || value === null ? undefined : requiredString(value, label);
-}
 
 function optionalBoolean(value: unknown, label: string): boolean | undefined {
   if (value === undefined || value === null) return undefined;
@@ -271,7 +263,7 @@ export function createCronListCommand(service: ScheduledCommandService): Registe
 export function createCronShowCommand(service: ScheduledCommandService): RegisteredCommand {
   return {descriptor: cronShowCommandDescriptor, async execute(request): Promise<CommandSuccess<JsonObject>> {
     const input = objectInput(request.input, CRON_SHOW_COMMAND_NAME);
-    const record = await service.show(request.scope.sessionId, requiredString(input.commandId, "cron.show commandId"));
+    const record = await service.show(request.scope.sessionId, requireNonEmptyString(input.commandId, "cron.show commandId must not be empty."));
     return {ok: true, command: CRON_SHOW_COMMAND_NAME, output: {operation: "show", ...serializeDetail(service, record)}, summary: `Showed mechanical scheduled command ${record.commandId}.`};
   }};
 }
@@ -279,7 +271,7 @@ export function createCronShowCommand(service: ScheduledCommandService): Registe
 export function createCronRunsCommand(service: ScheduledCommandService): RegisteredCommand {
   return {descriptor: cronRunsCommandDescriptor, async execute(request): Promise<CommandSuccess<JsonObject>> {
     const input = objectInput(request.input, CRON_RUNS_COMMAND_NAME);
-    const commandId = requiredString(input.commandId, "cron.runs commandId");
+    const commandId = requireNonEmptyString(input.commandId, "cron.runs commandId must not be empty.");
     const runs = await service.runs(request.scope.sessionId, commandId, optionalPositiveInteger(input.limit, "cron.runs limit"));
     return {ok: true, command: CRON_RUNS_COMMAND_NAME, output: {operation: "runs", commandId, count: runs.length, runs: runs.map(serializeRun)}, summary: `Listed ${runs.length} run${runs.length === 1 ? "" : "s"} for ${commandId}.`};
   }};
@@ -294,11 +286,11 @@ export function createCronCreateCommand(service: ScheduledCommandService): Regis
       throw new Error("cron.create accepts enabled or disabled, not both.");
     }
     const record = await service.create(actor(request), {
-      title: requiredString(input.title, "cron.create title"),
-      command: requiredString(input.command, "cron.create command"),
-      cwd: optionalString(input.cwd, "cron.create cwd"),
-      cron: requiredString(input.cron, "cron.create cron"),
-      timezone: requiredString(input.timezone, "cron.create timezone"),
+      title: requireNonEmptyString(input.title, "cron.create title must not be empty."),
+      command: requireNonEmptyString(input.command, "cron.create command must not be empty."),
+      cwd: optionalNonEmptyString(input.cwd, "cron.create cwd must not be empty."),
+      cron: requireNonEmptyString(input.cron, "cron.create cron must not be empty."),
+      timezone: requireNonEmptyString(input.timezone, "cron.create timezone must not be empty."),
       credentialNames: credentials(input.credentials ?? input.credentialNames, "cron.create credentials"),
       timeoutMs: optionalPositiveInteger(input.timeoutMs, "cron.create timeoutMs"),
       enabled: enabled ?? !(disabled ?? false),
@@ -310,13 +302,13 @@ export function createCronCreateCommand(service: ScheduledCommandService): Regis
 export function createCronUpdateCommand(service: ScheduledCommandService): RegisteredCommand {
   return {descriptor: cronUpdateCommandDescriptor, async execute(request): Promise<CommandSuccess<JsonObject>> {
     const input = objectInput(request.input, CRON_UPDATE_COMMAND_NAME);
-    const record = await service.update(actor(request), requiredString(input.commandId, "cron.update commandId"), {
+    const record = await service.update(actor(request), requireNonEmptyString(input.commandId, "cron.update commandId must not be empty."), {
       expectedVersion: requiredPositiveInteger(input.expectedVersion, "cron.update expectedVersion"),
-      title: optionalString(input.title, "cron.update title"),
-      command: optionalString(input.command, "cron.update command"),
-      cwd: input.cwd === null ? null : optionalString(input.cwd, "cron.update cwd"),
-      cron: optionalString(input.cron, "cron.update cron"),
-      timezone: optionalString(input.timezone, "cron.update timezone"),
+      title: optionalNonEmptyString(input.title, "cron.update title must not be empty."),
+      command: optionalNonEmptyString(input.command, "cron.update command must not be empty."),
+      cwd: input.cwd === null ? null : optionalNonEmptyString(input.cwd, "cron.update cwd must not be empty."),
+      cron: optionalNonEmptyString(input.cron, "cron.update cron must not be empty."),
+      timezone: optionalNonEmptyString(input.timezone, "cron.update timezone must not be empty."),
       credentialNames: credentials(input.credentials ?? input.credentialNames, "cron.update credentials"),
       timeoutMs: optionalPositiveInteger(input.timeoutMs, "cron.update timeoutMs"),
     });
@@ -329,7 +321,7 @@ function createStateCommand(service: ScheduledCommandService, enabled: boolean):
   const commandDescriptor = enabled ? cronEnableCommandDescriptor : cronDisableCommandDescriptor;
   return {descriptor: commandDescriptor, async execute(request): Promise<CommandSuccess<JsonObject>> {
     const input = objectInput(request.input, name);
-    const record = await service.setEnabled(actor(request), requiredString(input.commandId, `${name} commandId`), enabled,
+    const record = await service.setEnabled(actor(request), requireNonEmptyString(input.commandId, `${name} commandId must not be empty.`), enabled,
       requiredPositiveInteger(input.expectedVersion, `${name} expectedVersion`));
     return {ok: true, command: name, output: {commandId: record.commandId, version: record.version, enabled, ...(enabled ? {storageNotice: SCHEDULED_COMMAND_STORAGE_NOTICE} : {})}, summary: `${enabled ? "Enabled" : "Disabled"} mechanical scheduled command ${record.commandId}.`};
   }};
@@ -341,7 +333,7 @@ export const createCronDisableCommand = (service: ScheduledCommandService): Regi
 export function createCronDeleteCommand(service: ScheduledCommandService): RegisteredCommand {
   return {descriptor: cronDeleteCommandDescriptor, async execute(request): Promise<CommandSuccess<JsonObject>> {
     const input = objectInput(request.input, CRON_DELETE_COMMAND_NAME);
-    const commandId = requiredString(input.commandId, "cron.delete commandId");
+    const commandId = requireNonEmptyString(input.commandId, "cron.delete commandId must not be empty.");
     await service.delete({sessionId: request.scope.sessionId}, commandId, requiredPositiveInteger(input.expectedVersion, "cron.delete expectedVersion"));
     return {ok: true, command: CRON_DELETE_COMMAND_NAME, output: {commandId, deleted: true}, summary: `Deleted mechanical scheduled command ${commandId} and its history.`};
   }};
@@ -350,7 +342,7 @@ export function createCronDeleteCommand(service: ScheduledCommandService): Regis
 export function createCronRunCommand(service: ScheduledCommandService): RegisteredCommand {
   return {descriptor: cronRunCommandDescriptor, async execute(request): Promise<CommandSuccess<JsonObject>> {
     const input = objectInput(request.input, CRON_RUN_COMMAND_NAME);
-    const commandId = requiredString(input.commandId, "cron.run commandId");
+    const commandId = requireNonEmptyString(input.commandId, "cron.run commandId must not be empty.");
     const run = await service.runNow(actor(request), commandId, requiredPositiveInteger(input.expectedVersion, "cron.run expectedVersion"));
     return {ok: true, command: CRON_RUN_COMMAND_NAME, output: {commandId, runId: run.id, queued: true}, summary: `Queued mechanical scheduled command ${commandId} as run ${run.id}.`};
   }};
