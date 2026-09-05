@@ -76,7 +76,7 @@ import {
   commandRoutesFromModules,
 } from "../src/domain/commands/modules.js";
 import {buildCommandRouteTree} from "../src/domain/commands/route-tree.js";
-import type {CommandDescriptor, RegisteredCommand} from "../src/domain/commands/types.js";
+import type {CommandArtifactDescriptor, CommandDescriptor, CommandRequest, RegisteredCommand} from "../src/domain/commands/types.js";
 import {
   mcpOauthDiscoverCommandDescriptor,
   mcpOauthDisconnectCommandDescriptor,
@@ -2280,6 +2280,96 @@ describe("agent command shim", () => {
 
     const deleted = await execFileAsync(shimPath, ["mcp", "server", "delete", "fixture", "--expected-version", "4"], {env});
     expect(JSON.parse(deleted.stdout)).toEqual({server: "fixture", expectedVersion: 4});
+  });
+
+  it.each<{label: string; output: Record<string, number | boolean | null>; nativeExit: number}>([
+    {label: "ordinary success", output: {}, nativeExit: 0},
+    {label: "tool error", output: {isError: true}, nativeExit: 4},
+    {label: "explicit failure", output: {exitCode: 7}, nativeExit: 7},
+    {label: "explicit success before tool error", output: {exitCode: 0, isError: true}, nativeExit: 0},
+    {label: "null exit code before tool error", output: {exitCode: null, isError: true}, nativeExit: 4},
+  ])("preserves native MCP versus generated JSON exit policy for $label", async ({output, nativeExit}) => {
+    const requests: CommandRequest[] = [];
+    const artifact: CommandArtifactDescriptor = {kind: "image", source: "view_media", path: "/tmp/mcp-result.png", mimeType: "image/png"};
+    const command: RegisteredCommand = {
+      descriptor: mcpServerListCommandDescriptor,
+      async execute(request) {
+        requests.push(request);
+        return {ok: true, command: request.command, output, artifact};
+      },
+    };
+    const server = await startCommandHttpServer({
+      executor: new RuntimeCommandDispatcher({commands: [command]}),
+      leaseVerifier: createTestCommandLeaseVerifier([["token-a", {
+        agentKey: "panda", sessionId: "session-main", allowedCommands: [command.descriptor.name],
+      }]]),
+    });
+    servers.push(server);
+
+    for (const json of [false, true]) {
+      const result = await execFileAsync(shimPath, ["mcp", "server", "list", ...(json ? ["--json", "{}"] : [])], {
+        env: shimEnv(server),
+      }).then(
+        ({stdout, stderr}) => ({code: 0, stdout, stderr}),
+        (error: {code: number; stdout: string; stderr: string}) => error,
+      );
+      expect(result.code).toBe(json ? 0 : nativeExit);
+      expect(result.stdout).toBe(`${JSON.stringify({...output, artifact})}\n`);
+      expect(result.stderr).toBe("");
+    }
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request).toMatchObject({command: command.descriptor.name, input: {}, outputMode: "json", workingDirectory: process.cwd()});
+    }
+  });
+
+  it.each([false, true])("preserves MCP command failure envelopes with generated JSON=%s", async (json) => {
+    const failure = {ok: false as const, command: "mcp.server.list", error: {
+      code: "command_failed" as const, message: "MCP operation failed.", details: {exitCode: 7},
+    }};
+    const server = await startCommandHttpServer({
+      executor: new RuntimeCommandDispatcher({commands: [{descriptor: mcpServerListCommandDescriptor, execute: async () => failure}]}),
+      leaseVerifier: createTestCommandLeaseVerifier([["token-a", {
+        agentKey: "panda", sessionId: "session-main", allowedCommands: [failure.command],
+      }]]),
+    });
+    servers.push(server);
+
+    await expect(execFileAsync(shimPath, ["mcp", "server", "list", ...(json ? ["--json", "{}"] : [])], {
+      env: shimEnv(server),
+    })).rejects.toMatchObject({code: 7, stdout: "", stderr: `${JSON.stringify(failure)}\n`});
+  });
+
+  it.each([false, true])("preserves MCP permission denials with generated JSON=%s", async (json) => {
+    const execute = vi.fn(echoInputCommand(mcpServerListCommandDescriptor).execute);
+    const server = await startCommandHttpServer({
+      executor: new RuntimeCommandDispatcher({commands: [{descriptor: mcpServerListCommandDescriptor, execute}]}),
+      leaseVerifier: createTestCommandLeaseVerifier([["token-a", {
+        agentKey: "panda", sessionId: "session-main", allowedCommands: ["time.now"],
+      }]]),
+    });
+    servers.push(server);
+
+    const error = await execFileAsync(shimPath, ["mcp", "server", "list", ...(json ? ["--json", "{}"] : [])], {
+      env: shimEnv(server),
+    }).then(() => null, (reason: unknown) => reason as {code: number; stdout: string; stderr: string});
+    expect(error).toMatchObject({code: 3, stdout: ""});
+    expect(JSON.parse(error!.stderr)).toMatchObject({ok: false, command: "mcp.server.list", error: {
+      code: "forbidden", details: {failureCode: "capability_missing", exitCode: 3},
+    }});
+    expect(error!.stderr).not.toContain("token-a");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("preserves MCP transport failures with generated JSON=%s", async (json) => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "mcp-shim-"));
+    directories.push(directory);
+    const error = await execFileAsync(shimPath, ["mcp", "server", "list", ...(json ? ["--json", "{}"] : [])], {
+      env: {...process.env, PANDA_COMMAND_SOCKET: path.join(directory, "missing.sock"), PANDA_COMMAND_TOKEN: "private-mcp-token"},
+    }).then(() => null, (reason: unknown) => reason as {code: number; stdout: string; stderr: string});
+    expect(error).toMatchObject({code: 7, stdout: ""});
+    expect(error!.stderr).toContain("curl: (7)");
+    expect(error!.stderr).not.toContain("private-mcp-token");
   });
 
   it("uses canonical command names instead of removed namespace wildcards in test leases", () => {

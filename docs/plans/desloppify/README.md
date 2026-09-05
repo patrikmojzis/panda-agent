@@ -14,11 +14,13 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–74; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–75; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
 Together, these cleanup commits remove **5,961 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
-documentation and configuration.
+documentation and configuration. This established counter covers `src/` and
+`apps/`; cycle 75 additionally removes 25 lines from the shipped command shim,
+recorded separately. There are 76 cleanup commits including the initial pass.
 
 Control now separates single-agent authorization and bulk visible-key reads from
 agent-list enrichment. Cycle 57 added 23 production lines to remove unnecessary
@@ -126,7 +128,14 @@ Read-only production measurements defer selective runtime-error loading: the
 largest session has 8,231 runs but only 48,099 raw error bytes. Full-history
 metadata processing remains open; no endpoint-latency claim is made.
 
-The combined current worktree passes **3,306 unit tests across 341 files**, root build/typecheck,
+Cycle 75 removes 25 shipped script lines by consolidating the command shim's
+duplicated JSON executors. Seven native MCP callers explicitly retain their
+success exit-code policy; generated `--json` dispatch retains ordinary success
+handling. Eleven new subprocess cases protect exits, artifacts, failure
+envelopes, permissions and transport errors. Independent review and all 188
+shim tests pass; no command route or catalog changes.
+
+The frozen worktree passes **3,306 unit tests across 341 files**, root build/typecheck,
 import law, all 19 compiled package
 imports and shared `Thread` identity. The initial failure of an unchanged
 cancellation test and its passing isolated/file/full reruns are recorded under

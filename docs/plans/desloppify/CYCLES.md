@@ -2509,3 +2509,43 @@ Cycle 72 below implements that policy.
 - State: independently reviewed and committed locally with this cycle.
   Cycle 73 is committed as `405d5bc8`. The command-shim consolidation is a
   separately scoped following cycle.
+
+## Cycle 75 — Consolidate command-shim JSON execution
+
+- Finding: `execute_json_command` and `mcp_execute_json_command` in
+  `scripts/agent-command-shim/panda` duplicate body construction, transport,
+  response decoding, artifact output and failure handling. They differ only
+  in the success exit policy: native MCP honors `output.exitCode`, then
+  `output.isError`; ordinary execution returns zero.
+- Change: let the existing executor apply that policy only when passed the
+  explicit third argument `mcp`. Replace the seven native MCP calls and delete
+  the duplicate function. Earlier generated `--json` dispatch remains
+  unflagged. Input parsing, routes, authorization, SIGPIPE handling, shell flags,
+  quoted arguments and error envelopes remain unchanged.
+- Evidence: exact whole-script reconstruction allows only this consolidation
+  and the seven call substitutions. Eleven new public subprocess cases cover
+  native/generated exit behavior, explicit zero precedence, null exit fallback,
+  artifacts, command failures, permission denials and transport failures. Nine
+  cases pass against the original script before implementation; all 188 shim
+  tests pass on the final source. Independent review confirms frozen hashes
+  and reports 76 baseline/current Bash comparisons plus ten explicit exit-policy
+  checks without network access. Artifacts:
+  `.temp/desloppify-cycle75-frozen.json`,
+  `.temp/desloppify-cycle75-before-results.json`,
+  `.temp/desloppify-cycle75-after-results.json` and
+  `.temp/desloppify-cycle75-source-proof.json`.
+- Gates: the frozen combined source from cycles 74–75 passes **3,306 tests
+  across 341 files**, with no failures, skips or todo cases. Bash syntax,
+  root typecheck/build, import law and shim/prompt contracts pass. Generated
+  routes and the prompt snapshot stay unchanged; all 19 compiled package
+  entrypoints retain their exports and shared `Thread` identity. No additional
+  PostgreSQL run is needed for this script-only source change; cycle 74's
+  offline common-runtime smoke has passed and its cluster is stopped.
+- Result: **25 fewer shipped script lines** and 90 added test lines. The
+  established `src/` and `apps/` counter remains **5,961 fewer production lines
+  across 76 cleanup commits**, including 75 lines moved into tests. The 25
+  script lines are additional and are not silently folded into that counter.
+- State: independently reviewed and committed locally with this cycle.
+  Cycle 74 is committed as `bd92e101`. No production access for this change,
+  push or deployment. Runtime-history processing remains open under the
+  measured decision recorded with cycle 74.

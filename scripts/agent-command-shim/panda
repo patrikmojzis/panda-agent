@@ -284,6 +284,10 @@ execute_json_command() {
   }
   if [ "$ok" = "true" ]; then
     allow_sigpipe jq -c 'if (.artifact and (.output | type) == "object") then (.output + {artifact: .artifact}) else .output end' <<<"$response"
+    if [ "${3:-}" = "mcp" ]; then
+      exit_code="$(printf '%s' "$response" | jq -r 'if .output.exitCode != null then .output.exitCode elif .output.isError == true then 4 else 0 end')" || return 1
+      return "$exit_code"
+    fi
     return 0
   fi
 
@@ -367,35 +371,6 @@ read_mcp_json_object_input() {
     return 2
   fi
   printf '%s' "$json_value"
-}
-
-mcp_execute_json_command() {
-  local command="$1"
-  local input="$2"
-  local body response status ok exit_code
-  body="$(jq -n --arg command "$command" --arg cwd "$PWD" --argjson input "$input" '{command: $command, input: $input, outputMode: "json", workingDirectory: $cwd}')"
-  set +e
-  response="$(curl_command_raw -H "content-type: application/json" -X POST --data "$body" "$(command_url "/commands/execute")")"
-  status=$?
-  set -e
-  if [ "$status" -ne 0 ]; then
-    [ -z "$response" ] || printf '%s\n' "$response" >&2
-    return "$status"
-  fi
-
-  ok="$(printf '%s' "$response" | jq -r '.ok // empty')" || {
-    printf '%s\n' "$response" >&2
-    return 1
-  }
-  if [ "$ok" = "true" ]; then
-    allow_sigpipe jq -c 'if (.artifact and (.output | type) == "object") then (.output + {artifact: .artifact}) else .output end' <<<"$response"
-    exit_code="$(printf '%s' "$response" | jq -r 'if .output.exitCode != null then .output.exitCode elif .output.isError == true then 4 else 0 end')" || return 1
-    return "$exit_code"
-  fi
-
-  print_command_failure_envelope "$response" || return 1
-  exit_code="$(command_failure_exit_code "$response")"
-  return "$exit_code"
 }
 
 execute_audio_file_command() {
@@ -6973,7 +6948,7 @@ USAGE
         shift
         [ -n "${1:-}" ] || mcp_input_error "panda mcp ${mcp_namespace} ${mcp_action} --json requires @file, @-, or inline JSON."
         payload="$(read_mcp_json_object_input "$1" "panda mcp ${mcp_namespace} ${mcp_action} --json")"
-        mcp_execute_json_command "$command_name" "$payload"
+        execute_json_command "$command_name" "$payload" mcp
         exit $?
       fi
       if [ "$mcp_namespace" = "oauth" ]; then
@@ -6994,12 +6969,12 @@ USAGE
           esac
         done
         payload="$(jq -n --arg server "$server_key" --argjson manualClient "${manual_client:-null}" '{server: $server} + (if $manualClient != null then {manualClient: $manualClient} else {} end)')"
-        mcp_execute_json_command "$command_name" "$payload"
+        execute_json_command "$command_name" "$payload" mcp
         exit $?
       fi
       if [ "$mcp_action" = "list" ]; then
         [ "$#" -eq 0 ] || mcp_input_error "panda mcp server list does not accept arguments."
-        mcp_execute_json_command "$command_name" '{}'
+        execute_json_command "$command_name" '{}' mcp
         exit $?
       fi
       server_key="${1:-}"
@@ -7046,7 +7021,7 @@ USAGE
         show) payload="$(jq -n --arg server "$server_key" '{server: $server}')" ;;
         test) payload="$(jq -n --arg server "$server_key" --arg timeoutMs "$timeout_ms" '{server: $server} + (if $timeoutMs != "" then {timeoutMs: ($timeoutMs | tonumber)} else {} end)')" ;;
       esac
-      mcp_execute_json_command "$command_name" "$payload"
+      execute_json_command "$command_name" "$payload" mcp
       exit $?
     fi
     subcommand="${1:-}"
@@ -7079,7 +7054,7 @@ USAGE
       shift
       [ -n "${1:-}" ] || mcp_input_error "panda mcp ${subcommand} --json requires @file, @-, or inline JSON."
       payload="$(read_mcp_json_object_input "$1" "panda mcp ${subcommand} --json")"
-      mcp_execute_json_command "$command_name" "$payload"
+      execute_json_command "$command_name" "$payload" mcp
       exit $?
     fi
     case "$subcommand" in
@@ -7103,7 +7078,7 @@ USAGE
           esac
         done
         payload="$(jq -n --arg server "$server_key" --arg timeoutMs "$timeout_ms" '{server: $server} + (if $timeoutMs != "" then {timeoutMs: ($timeoutMs | tonumber)} else {} end)')"
-        mcp_execute_json_command "$command_name" "$payload"
+        execute_json_command "$command_name" "$payload" mcp
         exit $?
         ;;
       call)
@@ -7145,7 +7120,7 @@ USAGE
           --argjson input "$input_json" \
           '{server: $server, tool: $tool, input: $input}
            + (if $timeoutMs != "" then {timeoutMs: ($timeoutMs | tonumber)} else {} end)')"
-        mcp_execute_json_command "$command_name" "$payload"
+        execute_json_command "$command_name" "$payload" mcp
         exit $?
         ;;
     esac
