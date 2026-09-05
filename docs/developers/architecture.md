@@ -605,11 +605,11 @@ Internal stays internal.
 - Panda tool artifact media-root, agent-key, and scope-key handling is centralized
   in `src/panda/tools/artifact-paths.ts`; image, view_media, wiki, and future
   media tools should not clone filesystem path guards.
-- `src/panda/subagents/service.ts` and related Panda helpers are internal, not public persona API
 - shared web-fetch, web-research, and SSRF helpers live under `src/integrations/web`; Panda tool leaf files call them instead of owning them
 - readable HTML cleanup/extraction lives in `src/integrations/web/html-content.ts`;
-  `web-fetch.ts` owns safe HTTP fetching, DNS pinning, redirects, byte limits,
-  and content-type gating, then delegates page readability there
+  `web-fetch.ts` owns safe HTTP fetching, DNS pinning, redirects and byte limits.
+  Web commands and watch evaluation own content-type decisions and call HTML
+  extraction as needed.
 
 Leaf-folder barrels are gone on purpose.
 If you feel tempted to add `tools/index.ts` or `contexts/index.ts` again, don't.

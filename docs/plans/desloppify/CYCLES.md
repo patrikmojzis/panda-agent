@@ -1407,3 +1407,65 @@ preserved. The inspect/review/commit loop remains active.
   combined source passes all 3,199 unit tests, build/typecheck, import law,
   prompt/shim contracts and all 19 compiled package imports. No persisted
   transcript shape, schema, production access, push or deployment change.
+
+## Cycle 53 — Delete the unused HTML-only web reader
+
+- Finding: `fetchReadableWebPage` survived as an HTML-only predecessor to the
+  current web command. Its only remaining caller was a stale test labelled
+  watch-facing; actual watch evaluation already used `fetchSafeHttpResource`.
+- Change: delete that function and its exclusive options/result/progress types,
+  content limit, error formatter and content-type parser. Remove the stale test
+  and import. Keep the HTTP resource reader and current command/watch extraction
+  implementations unchanged. Correct the architecture document's extraction
+  ownership sentence and remove its stale reference to the retired subagent runner.
+- Result: 146 fewer production lines and 15 fewer test lines; cumulative source
+  reduction 5,493, including the 75 lines previously relocated into tests.
+- Evidence: exact reconstruction preserves all retained source/test declarations
+  after only the allowed deletions and import/export cleanup. The four live
+  caller/extraction files are byte-identical. Author verification passes all
+  266 focused web command, pinned HTTP, watch, Discord GIF, CLI and shim tests.
+  Independent review resolves 1,021 exports across all 19 supported entrypoints:
+  none expose the deleted reader or its module. It also verifies unchanged SSRF
+  handling and passes 51 focused tests. Local proof:
+  `.temp/desloppify-cycle53-proof.mjs`.
+- State: independently reviewed and committed locally with this cycle. The HTTP
+  target checks, DNS pinning, redirects, cancellation, byte limits and current
+  extraction policies remain. Transcript protection is committed as `243983a3`.
+  No production access, migration, push or deployment.
+
+## Combined verification after cycles 52–53
+
+All 3,199 unit tests across 339 files pass without failures or skips:
+`.temp/desloppify-cycles52-53-unit-results.json`. Build/typecheck, import law,
+prompt/shim contracts, all 19 compiled package imports and shared `Thread`
+identity pass. The projection-enabled runtime smoke applies all 25 migrations
+to a fresh isolated database and completes one owned run with an applied input,
+one tool call, four persisted messages and idle state. Its model responses are
+injected; external requests are prohibited and none were attempted. The cluster
+was stopped afterward. Source/test hashes still match independent review.
+
+These two cycles remove 158 production lines net, bringing the total to 5,493
+across 54 cleanup commits. Counts exclude unrelated work, tests and docs;
+75 source lines were previously relocated into tests. Untracked `output/`
+remains preserved. The inspect/review/commit loop remains active.
+
+### Next recon findings
+
+- Prioritize a narrow agent-visibility read in `src/domain/control/read-service.ts`.
+  Operator and MCP authorization currently call `listAgents`, which computes
+  session counts and loads/normalizes MCP configuration for every visible agent
+  just to check one agent key. Preserve active-agent, admin/scoped grant and
+  pairing policy, errors and mutation order; verify denied/revoked access and
+  absence of configuration reads at public service methods.
+- Runtime activity still fetches all session runs before local filtering/sorting/
+  pagination. A proper replacement must preserve complete counts, the unfiltered
+  summary, clamped pages, natural sorting, null order and sanitized-error search.
+  Do not substitute a bare SQL limit for that contract.
+- Actor-pairing reads repeat identity lookups before pagination. Bulk reads must
+  retain the different Discord and Telegram/WhatsApp pairing scopes.
+- Two smaller runtime candidates were verified but left unimplemented:
+  `src/app/runtime/execution-environment-service.ts` can unify lease grant/clear manager calls
+  while preserving omitted `commandAccess` on clear (1,440 proposed-method parity
+  cases); `src/app/runtime/subagent-session-service.ts` has unreachable no-operation replay
+  branches after an operation guard (192 parity cases). Pool-observation sharing
+  remains deferred because ownership is published at different times on failure.

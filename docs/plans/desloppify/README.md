@@ -13,28 +13,29 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–51; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–53; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,335 production lines**, including
+Together, these cleanup commits remove **5,493 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
-The latest three cycles remove 42 production lines: Control services share
-timestamp conversion, task display uses the existing SQL lifecycle classifier,
-and watch pages select one latest run per watch in PostgreSQL. A real before/after
-fixture returns two latest-run rows instead of 602 with identical public results.
-Four new PostgreSQL tests cover lifecycle precedence, filters/sorts, ties,
-pagination/counts and scoped access. The row reduction bounds transfer and
-JavaScript allocation, not necessarily database scans.
+The latest two cycles remove 158 production lines: transcript projection stores
+a suffix boundary and checkpoint instead of materializing protected indexes,
+and the unused HTML-only web reader is deleted. Current web command/watch
+extraction and HTTP safety remain unchanged. Five public projection tests and
+158,514 old/new comparisons cover protection floors, checkpoints, rule order,
+object identity and unchanged input records.
 
-The frozen combined tree passes **3,195 unit tests across 339 files** and **four
-new PostgreSQL tests**, root build/typecheck, import law, prompt/shim contracts,
-all 19 compiled package imports and shared `Thread` identity. The test cluster was
-stopped afterward. The earlier seven profile-store tests and deterministic runtime
-smoke are recorded under cycles 46–48; those historical checks do not certify
-later edits. This batch tests the changed Control reads against actual PostgreSQL.
-It makes no new external-provider or production-deployment claim. The
-inspect/review/commit loop remains active.
+The frozen combined tree passes **3,199 unit tests across 339 files**, root
+build/typecheck, import law, prompt/shim contracts, all 19 compiled package
+imports and shared `Thread` identity. A projection-enabled runtime smoke applies
+all 25 migrations to fresh local PostgreSQL and completes an owned run with an
+applied input, one tool call, four messages and idle state. It uses injected model
+responses and blocks external requests. The test cluster was stopped afterward.
+Earlier subsystem-specific PostgreSQL tests remain recorded with their cycles.
+The next priority is removing agent-list enrichment from Control authorization;
+the scoped findings are recorded after cycle 53. The inspect/review/commit loop
+remains active.
 
 Concurrent credential-name, image-generation and background-job work belongs to
 separate tasks. Preserve those changes and untracked `output/`; they are excluded

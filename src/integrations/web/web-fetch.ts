@@ -2,13 +2,7 @@ import * as http from "node:http";
 import * as https from "node:https";
 
 import {ToolError} from "../../kernel/agent/exceptions.js";
-import {trimToUndefined, truncateTextWithStatus} from "../../lib/strings.js";
-import {
-    extractReadableContentFromHtml,
-    looksLikeHtml,
-    sanitizeHtmlTextSnippet,
-    type WebFetchLink,
-} from "./html-content.js";
+import {trimToUndefined} from "../../lib/strings.js";
 import {
     defaultLookupHostname,
     type LookupHostname,
@@ -19,46 +13,12 @@ import {
 const DEFAULT_WEB_FETCH_TIMEOUT_MS = 20_000;
 const DEFAULT_WEB_FETCH_MAX_REDIRECTS = 3;
 const DEFAULT_WEB_FETCH_MAX_RESPONSE_BYTES = 2_000_000;
-const DEFAULT_WEB_FETCH_MAX_CONTENT_CHARS = 20_000;
 const DEFAULT_WEB_FETCH_USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const DEFAULT_ACCEPT_LANGUAGE = "en-US,en;q=0.9";
 const DEFAULT_ACCEPT_ENCODING = "identity";
-const MAX_ERROR_BYTES = 64_000;
-type WebFetchProgressStatus = "validating" | "fetching" | "extracting";
-type WebFetchProgress = {
-  status: WebFetchProgressStatus;
-  url?: string;
-  finalUrl?: string;
-  redirectCount?: number;
-};
 
 export type FetchImpl = (input: string | URL, init?: RequestInit) => Promise<Response>;
-
-interface FetchReadableWebPageOptions {
-  fetchImpl?: FetchImpl;
-  lookupHostname?: LookupHostname;
-  timeoutMs?: number;
-  maxRedirects?: number;
-  maxResponseBytes?: number;
-  maxContentChars?: number;
-  userAgent?: string;
-  signal?: AbortSignal;
-  onProgress?: (progress: WebFetchProgress) => void;
-}
-
-interface FetchReadableWebPageResult {
-  url: string;
-  finalUrl: string;
-  status: number;
-  contentType: string | null;
-  title: string | null;
-  description: string | null;
-  siteName: string | null;
-  truncated: boolean;
-  links: readonly WebFetchLink[];
-  content: string;
-}
 
 export interface FetchSafeHttpResourceOptions {
   fetchImpl?: FetchImpl;
@@ -94,11 +54,6 @@ type FetchedResponse = {
   bodyBytes: Uint8Array;
   bodyText: string;
 };
-
-function parseBaseContentType(value: string | null): string | undefined {
-  const [rawType] = value?.split(";") ?? [];
-  return trimToUndefined(rawType)?.toLowerCase();
-}
 
 function parseCharset(value: string | null): string | undefined {
   const match = /charset\s*=\s*("?)([^";]+)\1/i.exec(value ?? "");
@@ -375,11 +330,6 @@ async function readResponseBody(
   };
 }
 
-function formatHttpError(status: number, statusText: string, detail: string): string {
-  const prefix = `web.fetch failed with HTTP ${status}${statusText ? ` ${statusText}` : ""}`;
-  return detail ? `${prefix}: ${detail}` : prefix;
-}
-
 /** Fetches an HTTP resource through safe-target validation, DNS pinning, redirect checks, and byte limits. */
 export async function fetchSafeHttpResource(
   url: string,
@@ -500,103 +450,7 @@ export async function fetchSafeHttpResource(
   }
 }
 
-/** Fetches a public HTML page and returns the readable page payload used by web.fetch and watch probes. */
-export async function fetchReadableWebPage(
-  url: string,
-  options: FetchReadableWebPageOptions = {},
-): Promise<FetchReadableWebPageResult> {
-  const lookupHostname = options.lookupHostname ?? defaultLookupHostname;
-  const timeoutMs = Math.max(1, Math.floor(options.timeoutMs ?? DEFAULT_WEB_FETCH_TIMEOUT_MS));
-  const maxRedirects = Math.max(0, Math.floor(options.maxRedirects ?? DEFAULT_WEB_FETCH_MAX_REDIRECTS));
-  const maxResponseBytes = Math.max(
-    1,
-    Math.floor(options.maxResponseBytes ?? DEFAULT_WEB_FETCH_MAX_RESPONSE_BYTES),
-  );
-  const maxContentChars = Math.max(
-    1,
-    Math.floor(options.maxContentChars ?? DEFAULT_WEB_FETCH_MAX_CONTENT_CHARS),
-  );
-  const userAgent = trimToUndefined(options.userAgent) ?? DEFAULT_WEB_FETCH_USER_AGENT;
-
-  let currentUrl: URL;
-  try {
-    currentUrl = new URL(url);
-  } catch {
-    throw new ToolError("web.fetch requires a valid URL.");
-  }
-
-  options.onProgress?.({
-    status: "validating",
-    url: currentUrl.toString(),
-  });
-
-  try {
-    options.onProgress?.({
-      status: "fetching",
-      url: currentUrl.toString(),
-      redirectCount: 0,
-    });
-
-    const response = await fetchSafeHttpResource(url, {
-      fetchImpl: options.fetchImpl,
-      lookupHostname,
-      timeoutMs,
-      maxRedirects,
-      maxResponseBytes,
-      userAgent,
-      signal: options.signal,
-    });
-    currentUrl = new URL(response.finalUrl);
-
-    if (response.status < 200 || response.status >= 300) {
-      const detail = sanitizeHtmlTextSnippet(response.bodyText.slice(0, MAX_ERROR_BYTES));
-      throw new ToolError(formatHttpError(response.status, response.statusText, detail));
-    }
-
-    const body = response.bodyText;
-    const contentType = parseBaseContentType(response.contentType);
-    if (contentType !== "text/html" && !looksLikeHtml(body)) {
-      throw new ToolError(
-        `web.fetch only supports HTML pages right now (got ${contentType ?? "unknown"}).`,
-      );
-    }
-
-    options.onProgress?.({
-      status: "extracting",
-      url,
-      finalUrl: currentUrl.toString(),
-    });
-
-    const extracted = extractReadableContentFromHtml({
-      html: body,
-      url: currentUrl.toString(),
-    });
-    const truncated = truncateTextWithStatus(extracted.content, maxContentChars);
-
-    return {
-      url,
-      finalUrl: currentUrl.toString(),
-      status: response.status,
-      contentType: contentType ?? null,
-      title: extracted.title ?? null,
-      description: extracted.description ?? null,
-      siteName: extracted.siteName ?? null,
-      truncated: truncated.truncated,
-      links: extracted.links,
-      content: truncated.text,
-    };
-  } catch (error) {
-    if (error instanceof ToolError) {
-      throw error;
-    }
-
-    const message = error instanceof Error ? error.message : String(error);
-    throw new ToolError(`web.fetch failed: ${message}`);
-  }
-}
-
 export {
-  DEFAULT_WEB_FETCH_MAX_CONTENT_CHARS,
   DEFAULT_WEB_FETCH_MAX_REDIRECTS,
   DEFAULT_WEB_FETCH_MAX_RESPONSE_BYTES,
   DEFAULT_WEB_FETCH_TIMEOUT_MS,

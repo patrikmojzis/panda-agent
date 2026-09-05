@@ -5,7 +5,6 @@ import path from "node:path";
 import {afterEach, describe, expect, it, vi} from "vitest";
 
 import {createWebFetchCommand, createWebReadCommand, WEB_FETCH_COMMAND_NAME, WEB_READ_COMMAND_NAME} from "../src/integrations/web/commands.js";
-import {fetchReadableWebPage} from "../src/integrations/web/web-fetch.js";
 import {FileSystemWebResourceStore} from "../src/integrations/web/web-resources.js";
 
 describe("web fetch command", () => {
@@ -602,19 +601,5 @@ describe("web fetch command", () => {
       pandaCommandErrorDetails: expect.objectContaining({failureCode: "private_target", retryable: false}),
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps the watch-facing readable HTML behavior unchanged", async () => {
-    const result = await fetchReadableWebPage("https://example.com/article", {
-      fetchImpl: async () => new Response("<html><body><main><p>abcdefghij</p></main></body></html>", {headers: {"content-type": "text/html"}}),
-      lookupHostname: async () => ["93.184.216.34"],
-      maxContentChars: 4,
-    });
-
-    expect(result).toMatchObject({content: "abcd", truncated: true, contentType: "text/html"});
-    await expect(fetchReadableWebPage("https://example.com/plain", {
-      fetchImpl: async () => new Response("plain", {headers: {"content-type": "text/plain"}}),
-      lookupHostname: async () => ["93.184.216.34"],
-    })).rejects.toThrow("web.fetch only supports HTML pages right now");
   });
 });
