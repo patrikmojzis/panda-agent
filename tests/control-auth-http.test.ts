@@ -980,6 +980,86 @@ describe("Control auth HTTP", () => {
   });
 });
 
+describe("Control agent authorization", () => {
+  it.each(["admin", "scoped"] as const)("authorizes a normalized %s target with one bounded query", async (role) => {
+    const harness = await createHarness();
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role, ...(role === "scoped" ? {agentKey: "panda"} : {})});
+    const {session} = await harness.auth.loginWithToken(grant.loginToken);
+    if (role === "scoped") await harness.agents.ensurePairing("panda", "identity-patrik");
+    const query = vi.spyOn(harness.pool, "query");
+    try {
+      for (const agentKey of ["", " \t\n", null, undefined, 0, {}]) {
+        await expect(harness.reads.assertAgentVisible(session, agentKey as string)).rejects.toThrow("Agent key is required.");
+      }
+      expect(query).not.toHaveBeenCalled();
+
+      await expect(harness.reads.assertAgentVisible(session, " \tpanda\n")).resolves.toBe("panda");
+      expect(query).toHaveBeenCalledTimes(1);
+      const [sql, values] = query.mock.calls[0]!;
+      expect(sql).toMatch(/LIMIT 1/);
+      expect(sql).not.toMatch(/COUNT|agent_sessions|agent_mcp_configs/);
+      expect(values).toEqual(role === "admin" ? ["panda"] : [session.identityId, "panda"]);
+    } finally {
+      query.mockRestore();
+    }
+  });
+
+  it("writes a target's credential without enriching unrelated visible agents", async () => {
+    const harness = await createHarness();
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role: "admin"});
+    const {session} = await harness.auth.loginWithToken(grant.loginToken);
+    await harness.pool.query(`
+      INSERT INTO "runtime"."agent_mcp_configs" (agent_key, config, version)
+      VALUES ($1, $2::jsonb, 1)
+    `, ["luna", JSON.stringify({servers: null})]);
+    await expect(harness.reads.listAgents(session)).rejects.toThrow("MCP config must include a servers object.");
+
+    await expect(harness.operator.setCredential(session, " panda ", {envKey: " TEST_KEY ", value: "test-value"})).resolves.toMatchObject({
+      credential: {agentKey: "panda", envKey: "TEST_KEY", present: true},
+      audit: {action: "set", agentKey: "panda", envKey: "TEST_KEY"},
+    });
+    await expect(harness.operator.listCredentials(session, "panda", {search: "TEST_KEY"})).resolves.toMatchObject({
+      data: [{agentKey: "panda", envKey: "TEST_KEY", present: true}],
+      meta: {total: 1},
+    });
+  });
+
+  it("denies invisible targets before credential and MCP validation or effects", async () => {
+    const harness = await createHarness();
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role: "scoped", agentKey: "panda"});
+    const {session} = await harness.auth.loginWithToken(grant.loginToken);
+    const query = vi.spyOn(harness.pool, "query");
+    try {
+      await expect(harness.operator.setCredential(session, "panda", {})).rejects.toThrow("Control target agent was not found or is not visible.");
+      await expect(harness.controlMcp.putServer(session, "panda", "", null)).rejects.toThrow("Control target agent was not found or is not visible.");
+      expect(query).toHaveBeenCalledTimes(2);
+      expect(query.mock.calls.every(([sql]) => /^\s*SELECT agent\.agent_key/.test(sql))).toBe(true);
+    } finally {
+      query.mockRestore();
+    }
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    await expect(harness.operator.listCredentials(session, "panda", {search: "TEST_KEY"})).resolves.toMatchObject({data: [], meta: {total: 0}});
+    await expect(harness.controlMcp.listServers(session, "panda")).resolves.toMatchObject({servers: [], count: 0, version: 0});
+  });
+
+  it("propagates authorization query errors before operator or MCP effects", async () => {
+    const harness = await createHarness();
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role: "admin"});
+    const {session} = await harness.auth.loginWithToken(grant.loginToken);
+    const failure = new Error("visibility query unavailable");
+    const query = vi.spyOn(harness.pool, "query").mockRejectedValue(failure);
+    try {
+      await expect(harness.operator.setCredential(session, "panda", {envKey: "TEST_KEY", value: "test-value"})).rejects.toBe(failure);
+      await expect(harness.controlMcp.putServer(session, "panda", "fixture", {transport: "stdio", command: "fixture"})).rejects.toBe(failure);
+      expect(query).toHaveBeenCalledTimes(2);
+    } finally {
+      query.mockRestore();
+    }
+    await expect(harness.operator.listCredentials(session, "panda", {search: "TEST_KEY"})).resolves.toMatchObject({data: [], meta: {total: 0}});
+    await expect(harness.controlMcp.listServers(session, "panda")).resolves.toMatchObject({servers: [], count: 0, version: 0});
+  });
+});
+
 describe("Control session service access", () => {
   it.each(["briefing", "heartbeat", "scheduled tasks", "watches", "runtime activity"] as const)("rechecks pairing and the session's grant role on every %s read", async (service) => {
     const harness = await createHarness();

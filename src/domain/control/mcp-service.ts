@@ -1,5 +1,4 @@
 import type {JsonObject} from "../../lib/json.js";
-import {requireNonEmptyString} from "../../lib/strings.js";
 import type {McpManagementActor, McpManagementService} from "../mcp/management-service.js";
 import type {McpOAuthDiscoverySummary} from "../mcp/oauth-types.js";
 import type {ControlReadService} from "./read-service.js";
@@ -8,7 +7,7 @@ import type {ControlSessionRecord} from "./types.js";
 export type ControlMcpServerRow = JsonObject;
 
 export interface ControlMcpServiceOptions {
-  reads: Pick<ControlReadService, "listAgents">;
+  reads: Pick<ControlReadService, "assertAgentVisible">;
   management: McpManagementService;
 }
 
@@ -17,10 +16,7 @@ export class ControlMcpService {
   constructor(private readonly options: ControlMcpServiceOptions) {}
 
   private async actor(session: ControlSessionRecord, agentKey: string): Promise<McpManagementActor> {
-    const normalized = requireNonEmptyString(agentKey, "Agent key is required.");
-    if (!(await this.options.reads.listAgents(session)).some((agent) => agent.agentKey === normalized)) {
-      throw new Error("Control target agent was not found or is not visible.");
-    }
+    const normalized = await this.options.reads.assertAgentVisible(session, agentKey);
     return {kind: "control", identityId: session.identityId, sessionId: session.id, agentKey: normalized};
   }
 

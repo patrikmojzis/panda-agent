@@ -1,4 +1,5 @@
 import type {PgQueryable} from "../../lib/postgres-query.js";
+import {requireNonEmptyString} from "../../lib/strings.js";
 import {buildAgentTableNames} from "../agents/postgres-shared.js";
 import {buildCredentialTableNames} from "../credentials/postgres-shared.js";
 import {normalizeMcpConfig} from "../mcp/config.js";
@@ -244,6 +245,35 @@ export class ControlReadService {
 
   constructor(options: {pool: PgQueryable}) {
     this.pool = options.pool;
+  }
+
+  /** Authorize an active agent without loading listing counts or MCP configuration. */
+  async assertAgentVisible(session: ControlSessionRecord, agentKey: string): Promise<string> {
+    const normalized = requireNonEmptyString(agentKey, "Agent key is required.");
+    const result = session.role === "admin"
+      ? await this.pool.query(`
+        SELECT agent.agent_key
+        FROM ${this.agents.agents} AS agent
+        WHERE agent.agent_key = $1 AND agent.status = 'active'
+        LIMIT 1
+      `, [normalized])
+      : await this.pool.query(`
+        SELECT agent.agent_key
+        FROM ${this.agents.agents} AS agent
+        INNER JOIN ${this.control.grants} AS grant_row
+          ON grant_row.agent_key = agent.agent_key
+         AND grant_row.identity_id = $1
+         AND grant_row.role = 'scoped'
+         AND grant_row.active = TRUE
+        INNER JOIN ${this.agents.agentPairings} AS pairing
+          ON pairing.agent_key = agent.agent_key AND pairing.identity_id = grant_row.identity_id
+        WHERE agent.agent_key = $2 AND agent.status = 'active'
+        LIMIT 1
+      `, [session.identityId, normalized]);
+    if (result.rows.length === 0) {
+      throw new Error("Control target agent was not found or is not visible.");
+    }
+    return normalized;
   }
 
   async listAgents(session: ControlSessionRecord): Promise<readonly ControlAgentSummary[]> {

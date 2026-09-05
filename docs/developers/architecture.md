@@ -203,6 +203,10 @@ Put here:
 - channels, deliveries, and queue semantics
 
 This layer owns names and concepts. It should not know how Telegram polls or how Anthropic formats a request.
+Single-agent Control authorization belongs to `ControlReadService.assertAgentVisible`
+in `src/domain/control/read-service.ts`. Operator and MCP services use that targeted
+visibility read; `listAgents` separately owns display counts and MCP enrichment.
+Keep active-agent, grant-role and pairing checks at the visibility seam.
 Postgres stores and schema helpers should type only the database seam they
 use: query-only code takes a structural queryable, transaction code adds
 `connect`/`release`, and LISTEN code adds `on`/`off`. Do not force tests to

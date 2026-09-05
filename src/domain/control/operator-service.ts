@@ -520,7 +520,7 @@ export interface ControlGlobalSearchResult {
 
 export interface ControlOperatorServiceOptions {
   pool: PgPoolLike;
-  reads: Pick<ControlReadService, "listAgents" | "listAuditEvents">;
+  reads: Pick<ControlReadService, "assertAgentVisible" | "listAgents" | "listAuditEvents">;
   a2aBindings: ControlA2ABindingStore;
   agents: AgentStore;
   liveVoice: ControlLiveVoiceCatalog;
@@ -1219,7 +1219,7 @@ function searchResultKindWeight(kind: ControlGlobalSearchResult["kind"]): number
 export class ControlOperatorService {
   private readonly pool: PgPoolLike;
   private readonly identityAccess: PostgresControlIdentityAccess;
-  private readonly reads: Pick<ControlReadService, "listAgents" | "listAuditEvents">;
+  private readonly reads: Pick<ControlReadService, "assertAgentVisible" | "listAgents" | "listAuditEvents">;
   private readonly a2aBindings: ControlA2ABindingStore;
   private readonly agents: AgentStore;
   private readonly liveVoice: ControlLiveVoiceCatalog;
@@ -1271,15 +1271,6 @@ export class ControlOperatorService {
     this.env = options.env ?? process.env;
   }
 
-  private async assertAgentVisible(session: ControlSessionRecord, agentKey: string): Promise<string> {
-    const normalized = requireNonEmptyString(agentKey, "Agent key is required.");
-    const visible = await this.reads.listAgents(session);
-    if (!visible.some((agent) => agent.agentKey === normalized)) {
-      throw new Error("Control target agent was not found or is not visible.");
-    }
-    return normalized;
-  }
-
   private assertAdmin(session: ControlSessionRecord): void {
     if (session.role !== "admin") {
       throw new Error("Control identity management requires admin access.");
@@ -1296,7 +1287,7 @@ export class ControlOperatorService {
   }
 
   private async assertSessionVisible(session: ControlSessionRecord, agentKey: string, sessionId: string): Promise<SessionRecord> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const target = await this.sessions.getSession(requireNonEmptyString(sessionId, "Session id is required."));
     if (target.agentKey !== normalizedAgentKey) {
       throw new Error("Control target session was not found or is not visible.");
@@ -1306,7 +1297,7 @@ export class ControlOperatorService {
 
   private async assertAnyVisibleSession(session: ControlSessionRecord, sessionId: string): Promise<SessionRecord> {
     const target = await this.sessions.getSession(requireNonEmptyString(sessionId, "Session id is required."));
-    await this.assertAgentVisible(session, target.agentKey);
+    await this.reads.assertAgentVisible(session, target.agentKey);
     return target;
   }
 
@@ -1382,7 +1373,7 @@ export class ControlOperatorService {
   private async getAgentConnectorAccount(session: ControlSessionRecord, agentKey: string, source: string, accountKey: string, input: {
     requireEnabled?: boolean;
   } = {}): Promise<{agentKey: string; account: ConnectorAccountRecord}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const normalizedAccountKey = requireNonEmptyString(accountKey, "Connector account key is required.");
     const account = await this.connectorAccounts.getAccountByKey(source, normalizedAccountKey);
     if (!account || account.ownerKind !== "agent" || account.ownerAgentKey !== normalizedAgentKey) {
@@ -1663,7 +1654,7 @@ export class ControlOperatorService {
   }
 
   async getAgent(session: ControlSessionRecord, agentKey: string): Promise<ControlAgentDetail> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const agent = (await this.reads.listAgents(session)).find((candidate) => candidate.agentKey === normalizedAgentKey);
     if (!agent) throw new Error("Control target agent was not found or is not visible.");
     const [agentRecord, connectorResult, pairingRows, skillRows, subagentRows, gatewaySources, wikiBinding] = await Promise.all([
@@ -1698,7 +1689,7 @@ export class ControlOperatorService {
     agentKey: string,
     input: {voice?: unknown},
   ): Promise<{agent: ControlAgentDetail; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     if (typeof input.voice !== "string") throw new Error("Live voice is required.");
     const voice = input.voice.trim().toLowerCase();
     if (!this.liveVoice.voices.includes(voice)) {
@@ -1820,7 +1811,7 @@ export class ControlOperatorService {
   }
 
   async listAgentPairings(session: ControlSessionRecord, agentKey: string, input: ControlAgentPairingTableInput = {}): Promise<ControlPaginatedResponse<ControlAgentPairingRow>> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const search = normalizeSearch(input.search);
     const pairings = await this.agents.listAgentPairings(normalizedAgentKey);
     const identities = await Promise.all(pairings.map((pairing) => this.identities.getIdentity(pairing.identityId).catch(() => null)));
@@ -1838,7 +1829,7 @@ export class ControlOperatorService {
   }
 
   async pairAgentIdentity(session: ControlSessionRecord, agentKey: string, input: {identityId?: unknown; identityHandle?: unknown}): Promise<{pairing: ControlAgentPairingRow; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     await this.agents.getAgent(normalizedAgentKey);
     const identity = await this.resolveIdentity({
       identityId: input.identityId,
@@ -1857,7 +1848,7 @@ export class ControlOperatorService {
   }
 
   async deleteAgentPairing(session: ControlSessionRecord, agentKey: string, identityIdInput: string): Promise<{deleted: boolean; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const identityId = requireNonEmptyString(identityIdInput, "Identity id is required.");
     const identity = await this.identities.getIdentity(identityId);
     const deleted = await this.agents.deletePairing(normalizedAgentKey, identity.id);
@@ -1873,7 +1864,7 @@ export class ControlOperatorService {
   }
 
   async listSessions(session: ControlSessionRecord, agentKey: string, input: ControlSessionTableInput = {}): Promise<ControlPaginatedResponse<ControlSessionRow>> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const search = normalizeSearch(input.search);
     const sessionRows = await this.sessions.listAgentSessions(normalizedAgentKey, {
       lifecycle: input.lifecycle ?? "active",
@@ -2071,7 +2062,7 @@ export class ControlOperatorService {
     alias?: unknown;
     displayName?: unknown;
   }): Promise<{session: ControlSessionRow; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const kind = controlCreateSessionKind(input.kind);
     const alias = typeof input.alias === "string" && input.alias.trim() ? normalizeSessionAlias(input.alias) : undefined;
     const displayName = typeof input.displayName === "string" ? trimToUndefined(input.displayName) : undefined;
@@ -2156,7 +2147,7 @@ export class ControlOperatorService {
   }
 
   async listCredentials(session: ControlSessionRecord, agentKey: string, input: ControlTableInput = {}): Promise<ControlPaginatedResponse<ControlCredentialRow>> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const rows = await this.pool.query(`
       SELECT agent_key, env_key, created_at, updated_at
       FROM ${this.credentialTables.credentials}
@@ -2180,7 +2171,7 @@ export class ControlOperatorService {
     envKey?: unknown;
     value?: unknown;
   }): Promise<{credential: ControlCredentialRow; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     if (!this.credentials) {
       throw new Error("CREDENTIALS_MASTER_KEY is required to write credentials.");
     }
@@ -2205,7 +2196,7 @@ export class ControlOperatorService {
   }
 
   async deleteCredential(session: ControlSessionRecord, agentKey: string, envKey: string): Promise<{deleted: boolean; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     if (!this.credentials) {
       throw new Error("CREDENTIALS_MASTER_KEY is required to delete credentials.");
     }
@@ -2221,7 +2212,7 @@ export class ControlOperatorService {
   }
 
   async listConnectors(session: ControlSessionRecord, agentKey: string, input: ControlConnectorTableInput = {}): Promise<ControlPaginatedResponse<ControlConnectorRow>> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const accounts = await this.connectorAccounts.listAccounts({ownerKind: "agent"});
     const rows = await Promise.all(accounts
       .filter((account) => account.ownerAgentKey === normalizedAgentKey)
@@ -2241,7 +2232,7 @@ export class ControlOperatorService {
     displayName?: unknown;
     botToken?: unknown;
   }): Promise<{connector: ControlConnectorRow; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const accountKey = requireNonEmptyString(input.accountKey, "Discord account key is required.");
     const connectorKey = requireNonEmptyString(input.connectorKey, "Discord connector key is required.");
     const botToken = typeof input.botToken === "string" && input.botToken.trim() ? input.botToken : undefined;
@@ -2287,7 +2278,7 @@ export class ControlOperatorService {
     smtpUsername?: unknown;
     smtpPassword?: unknown;
   }): Promise<{connector: ControlConnectorRow; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const accountKey = requireNonEmptyString(input.accountKey, "Email account key is required.");
     const existing = await existingEmailAccount(this.email, normalizedAgentKey, accountKey);
     const fromAddress = requireNonEmptyString(input.fromAddress, "From address is required.");
@@ -2385,7 +2376,7 @@ export class ControlOperatorService {
     botToken?: unknown;
     replace?: unknown;
   }): Promise<{connector: ControlConnectorRow; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     if (!this.telegramBotIdentityClient) {
       throw new Error("Telegram bot validation is not available in this Control runtime.");
     }
@@ -2429,7 +2420,7 @@ export class ControlOperatorService {
   }
 
   async getTelegramSetupStatus(session: ControlSessionRecord, agentKey: string, input: {accountKey?: unknown}, env: NodeJS.ProcessEnv = process.env): Promise<ControlTelegramSetupStatus> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const accountKey = requireNonEmptyString(input.accountKey, "Telegram account key is required.");
     const account = await this.connectorAccounts.getAccountByKey(CONTROL_TELEGRAM_SOURCE, accountKey);
     const visibleAccount = account?.ownerKind === "agent" && account.ownerAgentKey === normalizedAgentKey ? account : null;
@@ -2502,7 +2493,7 @@ export class ControlOperatorService {
     accountKey?: unknown;
     displayName?: unknown;
   }): Promise<{connector: ControlConnectorRow; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     if (!this.connectorCrypto || !this.whatsappAuth) {
       throw new Error("CREDENTIALS_MASTER_KEY is required to create WhatsApp accounts.");
     }
@@ -2537,7 +2528,7 @@ export class ControlOperatorService {
     agentKey: string,
     input: {accountKey?: unknown},
   ): Promise<ControlWhatsAppSetupStatus> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const accountKey = requireNonEmptyString(input.accountKey, "WhatsApp account key is required.");
     const found = await this.connectorAccounts.getAccountByKey(CONTROL_WHATSAPP_SOURCE, accountKey);
     const account = found?.ownerKind === "agent" && found.ownerAgentKey === normalizedAgentKey ? found : null;
@@ -2667,7 +2658,7 @@ export class ControlOperatorService {
   }
 
   async setConnectorEnabled(session: ControlSessionRecord, agentKey: string, source: string, accountKey: string, enabled: boolean): Promise<{connector: ControlConnectorRow; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const existing = await this.connectorAccounts.getAccountByKey(source, accountKey);
     if (!existing || existing.ownerKind !== "agent" || existing.ownerAgentKey !== normalizedAgentKey) {
       throw new Error("Control connector account was not found or is not visible.");
@@ -2701,7 +2692,7 @@ export class ControlOperatorService {
   }
 
   async listDiscordActorPairings(session: ControlSessionRecord, agentKey: string, input: ControlDiscordActorPairingTableInput = {}): Promise<ControlPaginatedResponse<ControlDiscordActorPairingRow>> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const accounts = (await this.connectorAccounts.listAccounts({source: "discord", ownerKind: "agent"}))
       .filter((account) => account.ownerAgentKey === normalizedAgentKey)
       .filter((account) => !input.accountKey || account.accountKey === input.accountKey);
@@ -2792,7 +2783,7 @@ export class ControlOperatorService {
   }
 
   async listChannelActorPairings(session: ControlSessionRecord, agentKey: string, input: ControlChannelActorPairingTableInput = {}): Promise<ControlPaginatedResponse<ControlChannelActorPairingRow>> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const source = input.source ? controlChannelActorPairingSource(input.source) : undefined;
     const connectorKey = typeof input.connectorKey === "string" ? trimToUndefined(input.connectorKey) : undefined;
     const [pairings, connectorAccounts] = await Promise.all([
@@ -2833,7 +2824,7 @@ export class ControlOperatorService {
     identityId?: unknown;
     identityHandle?: unknown;
   }): Promise<{pairing: ControlChannelActorPairingRow; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const source = controlChannelActorPairingSource(input.source);
     const connectorKey = controlChannelConnectorKey(source, input.connectorKey);
     if (source === "telegram" || source === CONTROL_WHATSAPP_SOURCE) {
@@ -2876,7 +2867,7 @@ export class ControlOperatorService {
   }
 
   async deleteChannelActorPairing(session: ControlSessionRecord, agentKey: string, sourceInput: string, connectorKeyInput: string, externalActorIdInput: string): Promise<{deleted: boolean; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const source = controlChannelActorPairingSource(sourceInput);
     const connectorKey = controlChannelConnectorKey(source, connectorKeyInput);
     const account = await this.connectorAccounts.getAccountByConnectorKey(source, connectorKey);
@@ -2902,7 +2893,7 @@ export class ControlOperatorService {
   }
 
   async listBindings(session: ControlSessionRecord, agentKey: string, input: ControlBindingTableInput = {}): Promise<ControlPaginatedResponse<ControlBindingRow>> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     if (input.sessionId) {
       await this.assertSessionVisible(session, normalizedAgentKey, input.sessionId);
     }
@@ -3054,7 +3045,7 @@ export class ControlOperatorService {
     sessionId?: unknown;
     displayName?: unknown;
   }): Promise<{binding: ControlBindingRow; previousSessionId?: string; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const sessionId = requireNonEmptyString(input.sessionId, "Binding session id is required.");
     const target = await this.assertSessionVisible(session, normalizedAgentKey, sessionId);
     const source = requireNonEmptyString(input.source, "Binding source is required.");
@@ -3097,7 +3088,7 @@ export class ControlOperatorService {
   }
 
   async deleteBinding(session: ControlSessionRecord, agentKey: string, source: string, connectorKey: string, externalConversationId: string): Promise<{deleted: boolean; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const account = await this.connectorAccounts.getAccountByConnectorKey(source, connectorKey);
     if (!account || account.ownerKind !== "agent" || account.ownerAgentKey !== normalizedAgentKey) {
       throw new Error("Control connector account was not found or is not visible.");
@@ -3116,7 +3107,7 @@ export class ControlOperatorService {
   }
 
   async listEmailRoutes(session: ControlSessionRecord, agentKey: string, input: ControlEmailRouteTableInput = {}): Promise<ControlPaginatedResponse<ControlEmailRouteRow>> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const routes = await this.email.listRoutes(normalizedAgentKey, input.accountKey);
     const search = normalizeSearch(input.search);
     const rows = await Promise.all(routes.map(async (route) => {
@@ -3132,7 +3123,7 @@ export class ControlOperatorService {
     mailbox?: unknown;
     sessionId?: unknown;
   }): Promise<{route: ControlEmailRouteRow; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const accountKey = requireNonEmptyString(input.accountKey, "Email route account key is required.");
     const existing = await existingEmailAccount(this.email, normalizedAgentKey, accountKey);
     if (!existing) throw new Error("Control email account was not found or is not visible.");
@@ -3161,7 +3152,7 @@ export class ControlOperatorService {
   }
 
   async deleteEmailRoute(session: ControlSessionRecord, agentKey: string, accountKey: string, mailbox?: string): Promise<{deleted: boolean; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const existing = await existingEmailAccount(this.email, normalizedAgentKey, accountKey);
     if (!existing) throw new Error("Control email account was not found or is not visible.");
     const normalizedMailbox = trimToUndefined(mailbox ?? "");
@@ -3182,7 +3173,7 @@ export class ControlOperatorService {
   }
 
   async listEmailRecipientAllowRules(session: ControlSessionRecord, agentKey: string, input: ControlEmailRecipientAllowRuleTableInput = {}): Promise<ControlPaginatedResponse<ControlEmailRecipientAllowRuleRow>> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const accounts = (await this.connectorAccounts.listAccounts({source: "email", ownerKind: "agent"}))
       .filter((account) => account.ownerAgentKey === normalizedAgentKey)
       .filter((account) => !input.accountKey || account.accountKey === input.accountKey);
@@ -3201,7 +3192,7 @@ export class ControlOperatorService {
     kind?: unknown;
     value?: unknown;
   }): Promise<{rule: ControlEmailRecipientAllowRuleRow; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const accountKey = requireNonEmptyString(input.accountKey, "Email allowlist account key is required.");
     const existing = await existingEmailAccount(this.email, normalizedAgentKey, accountKey);
     if (!existing) throw new Error("Control email account was not found or is not visible.");
@@ -3229,7 +3220,7 @@ export class ControlOperatorService {
   }
 
   async deleteEmailRecipientAllowRule(session: ControlSessionRecord, agentKey: string, ruleId: string): Promise<{deleted: boolean; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const normalizedRuleId = requireNonEmptyString(ruleId, "Email allowlist rule id is required.");
     const removed = await this.email.removeRecipientAllowRule({
       agentKey: normalizedAgentKey,
@@ -3249,7 +3240,7 @@ export class ControlOperatorService {
   }
 
   async listSkills(session: ControlSessionRecord, agentKey: string, input: ControlSkillTableInput = {}): Promise<ControlPaginatedResponse<ControlSkillRow>> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const search = normalizeSearch(input.search);
     const tag = input.tag ? normalizeAgentSkillTag(input.tag) : undefined;
     const rows = (await this.agents.listAgentSkills(normalizedAgentKey))
@@ -3262,7 +3253,7 @@ export class ControlOperatorService {
   }
 
   async getSkill(session: ControlSessionRecord, agentKey: string, skillKey: string): Promise<ControlSkillRow> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const skill = await this.agents.readAgentSkill(normalizedAgentKey, skillKey);
     if (!skill) throw new Error("Control skill was not found.");
     return publicSkill(skill, true);
@@ -3275,7 +3266,7 @@ export class ControlOperatorService {
     tags?: unknown;
     agentEditable?: unknown;
   }): Promise<{skill: ControlSkillRow; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const skillKey = requireNonEmptyString(input.skillKey, "Skill key is required.");
     const description = requireNonEmptyString(input.description, "Skill description is required.");
     const content = requireNonEmptyString(input.content, "Skill content is required.");
@@ -3296,7 +3287,7 @@ export class ControlOperatorService {
   }
 
   async deleteSkill(session: ControlSessionRecord, agentKey: string, skillKey: string): Promise<{deleted: boolean; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const deleted = await this.agents.deleteAgentSkill(normalizedAgentKey, skillKey);
     return {
       deleted,
@@ -3309,7 +3300,7 @@ export class ControlOperatorService {
   }
 
   async listSubagents(session: ControlSessionRecord, agentKey: string, input: ControlSubagentTableInput = {}): Promise<ControlPaginatedResponse<ControlSubagentRow>> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const search = normalizeSearch(input.search);
     const rows = (await this.subagents.listProfiles({agentKey: normalizedAgentKey, includeDisabled: true}))
       .map((profile) => publicSubagent(profile))
@@ -3323,7 +3314,7 @@ export class ControlOperatorService {
   }
 
   async getSubagent(session: ControlSessionRecord, agentKey: string, slug: string): Promise<ControlSubagentRow> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const profile = await this.subagents.getProfile({agentKey: normalizedAgentKey, slug, includeDisabled: true});
     if (!profile) throw new Error("Control subagent profile was not found.");
     return publicSubagent(profile, true);
@@ -3338,7 +3329,7 @@ export class ControlOperatorService {
     thinking?: unknown;
     enabled?: unknown;
   }): Promise<{subagent: ControlSubagentRow; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const slug = requireNonEmptyString(input.slug, "Subagent slug is required.");
     const description = requireNonEmptyString(input.description, "Subagent description is required.");
     const prompt = requireNonEmptyString(input.prompt, "Subagent prompt is required.");
@@ -3367,7 +3358,7 @@ export class ControlOperatorService {
   }
 
   async setSubagentEnabled(session: ControlSessionRecord, agentKey: string, slug: string, enabled: boolean): Promise<{subagent: ControlSubagentRow; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const profile = await this.subagents.setProfileEnabled({agentKey: normalizedAgentKey, slug, enabled});
     return {
       subagent: publicSubagent(profile, true),
@@ -3380,7 +3371,7 @@ export class ControlOperatorService {
   }
 
   async listGatewaySources(session: ControlSessionRecord, agentKey: string, input: ControlTableInput = {}): Promise<ControlPaginatedResponse<ControlGatewaySourceRow>> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const search = normalizeSearch(input.search);
     const rows = (await this.gateway.listSources()).filter((source) => source.agentKey === normalizedAgentKey).map(publicGatewaySource).filter((row) => includesSearch(row as unknown as Record<string, unknown>, search));
     return tableResponse(sortRows(rows as unknown as Record<string, unknown>[], input, "sourceId") as unknown as ControlGatewaySourceRow[], input);
@@ -3391,7 +3382,7 @@ export class ControlOperatorService {
     name?: unknown;
     sessionId?: unknown;
   }): Promise<{result: ControlGatewaySourceSecretResult; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const sessionId = typeof input.sessionId === "string" && input.sessionId.trim()
       ? (await this.assertSessionVisible(session, normalizedAgentKey, input.sessionId)).id
       : undefined;
@@ -3417,7 +3408,7 @@ export class ControlOperatorService {
   }
 
   async rotateGatewaySource(session: ControlSessionRecord, agentKey: string, sourceId: string): Promise<{result: ControlGatewaySourceSecretResult; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const current = await this.gateway.getSource(sourceId);
     if (current.agentKey !== normalizedAgentKey) throw new Error("Control gateway source was not found or is not visible.");
     const result = await this.gateway.rotateSourceSecret(sourceId);
@@ -3428,7 +3419,7 @@ export class ControlOperatorService {
   }
 
   async setGatewaySourceSuspended(session: ControlSessionRecord, agentKey: string, sourceId: string, suspended: boolean, reason?: string): Promise<{source: ControlGatewaySourceRow; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const current = await this.gateway.getSource(sourceId);
     if (current.agentKey !== normalizedAgentKey) throw new Error("Control gateway source was not found or is not visible.");
     const next = suspended ? await this.gateway.suspendSource(sourceId, reason ?? "control-ui") : (await this.gateway.resumeSource(sourceId)).source;
@@ -3439,7 +3430,7 @@ export class ControlOperatorService {
   }
 
   async listGatewayDevices(session: ControlSessionRecord, agentKey: string, sourceId: string, input: ControlGatewayDeviceTableInput = {}): Promise<ControlPaginatedResponse<ControlGatewayDeviceRow>> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const source = await this.gateway.getSource(sourceId);
     if (source.agentKey !== normalizedAgentKey) throw new Error("Control gateway source was not found or is not visible.");
     const search = normalizeSearch(input.search);
@@ -3466,7 +3457,7 @@ export class ControlOperatorService {
     label?: unknown;
     capabilities?: unknown;
   }): Promise<{device: ControlGatewayDeviceRow; token: string; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const source = await this.gateway.getSource(sourceId);
     if (source.agentKey !== normalizedAgentKey) throw new Error("Control gateway source was not found or is not visible.");
     const token = generateOpaqueToken(GATEWAY_DEVICE_TOKEN_PREFIX, GATEWAY_DEVICE_TOKEN_BYTES);
@@ -3492,7 +3483,7 @@ export class ControlOperatorService {
   }
 
   async setGatewayDeviceEnabled(session: ControlSessionRecord, agentKey: string, sourceId: string, deviceId: string, enabled: boolean): Promise<{device: ControlGatewayDeviceRow; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const source = await this.gateway.getSource(sourceId);
     if (source.agentKey !== normalizedAgentKey) throw new Error("Control gateway source was not found or is not visible.");
     const device = await this.gateway.setDeviceEnabled({sourceId, deviceId, enabled});
@@ -3503,7 +3494,7 @@ export class ControlOperatorService {
   }
 
   async getWikiBinding(session: ControlSessionRecord, agentKey: string): Promise<ControlWikiBindingRow | null> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const binding = await this.wikiBindings.store.getBinding(normalizedAgentKey);
     return binding ? publicWikiBinding(binding) : null;
   }
@@ -3513,7 +3504,7 @@ export class ControlOperatorService {
     namespacePath?: unknown;
     apiToken?: unknown;
   }): Promise<{binding: ControlWikiBindingRow; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     if (!this.wikiBindings.service) {
       throw new Error("CREDENTIALS_MASTER_KEY is required to write wiki bindings.");
     }
@@ -3546,7 +3537,7 @@ export class ControlOperatorService {
   }
 
   async clearWikiBinding(session: ControlSessionRecord, agentKey: string): Promise<{deleted: boolean; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const binding = await this.wikiBindings.store.getBinding(normalizedAgentKey);
     const deleted = await this.wikiBindings.store.deleteBinding(normalizedAgentKey);
     return {
@@ -3563,7 +3554,7 @@ export class ControlOperatorService {
   }
 
   async listGatewayEventTypes(session: ControlSessionRecord, agentKey: string, sourceId: string, input: ControlTableInput = {}): Promise<ControlPaginatedResponse<ControlGatewayEventTypeRow>> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const source = await this.gateway.getSource(sourceId);
     if (source.agentKey !== normalizedAgentKey) throw new Error("Control gateway source was not found or is not visible.");
     const search = normalizeSearch(input.search);
@@ -3578,7 +3569,7 @@ export class ControlOperatorService {
     delivery?: unknown;
     trusted?: unknown;
   }): Promise<{eventType: ControlGatewayEventTypeRow; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const source = await this.gateway.getSource(sourceId);
     if (source.agentKey !== normalizedAgentKey) throw new Error("Control gateway source was not found or is not visible.");
     const delivery = input.delivery === "wake" ? "wake" : "queue";
@@ -3605,7 +3596,7 @@ export class ControlOperatorService {
   }
 
   async deleteGatewayEventType(session: ControlSessionRecord, agentKey: string, sourceId: string, type: string): Promise<{deleted: boolean; audit: Record<string, unknown>}> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     const source = await this.gateway.getSource(sourceId);
     if (source.agentKey !== normalizedAgentKey) throw new Error("Control gateway source was not found or is not visible.");
     const normalizedType = normalizeGatewayEventType(type);
@@ -3617,7 +3608,7 @@ export class ControlOperatorService {
   }
 
   async listGatewayEvents(session: ControlSessionRecord, agentKey: string, input: ControlTableInput & {sourceId?: string; sessionId?: string} = {}): Promise<ControlPaginatedResponse<ControlGatewayEventRow>> {
-    const normalizedAgentKey = await this.assertAgentVisible(session, agentKey);
+    const normalizedAgentKey = await this.reads.assertAgentVisible(session, agentKey);
     if (input.sessionId) await this.assertSessionVisible(session, normalizedAgentKey, input.sessionId);
     const sources = (await this.gateway.listSources()).filter((source) => source.agentKey === normalizedAgentKey);
     const sourceIds = new Set(sources.filter((source) => !input.sessionId || source.sessionId === input.sessionId).map((source) => source.sourceId));
@@ -3630,7 +3621,7 @@ export class ControlOperatorService {
   }
 
   async listAuditEvents(session: ControlSessionRecord, input: ControlTableInput & {eventType?: string; agentKey?: string; targetSessionId?: string} = {}): Promise<ControlPaginatedResponse<ControlAuditEventSummary>> {
-    const agentKey = input.agentKey ? await this.assertAgentVisible(session, input.agentKey) : undefined;
+    const agentKey = input.agentKey ? await this.reads.assertAgentVisible(session, input.agentKey) : undefined;
     if (agentKey && input.targetSessionId) await this.assertSessionVisible(session, agentKey, input.targetSessionId);
     const search = normalizeSearch(input.search);
     const rows = (await this.reads.listAuditEvents(session, {limit: 100, eventType: input.eventType, agentKey, targetSessionId: input.targetSessionId}))

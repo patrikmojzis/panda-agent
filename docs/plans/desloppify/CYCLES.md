@@ -1469,3 +1469,46 @@ remains preserved. The inspect/review/commit loop remains active.
   cases); `src/app/runtime/subagent-session-service.ts` has unreachable no-operation replay
   branches after an operation guard (192 parity cases). Pool-observation sharing
   remains deferred because ownership is published at different times on failure.
+
+## Cycle 54 — Separate single-agent authorization from listing enrichment
+
+- Finding: 57 operator checks and MCP actor resolution called the full agent list
+  to test one key. That read joins session counts and parses MCP configuration
+  for every visible agent, coupling permission checks to unrelated configuration.
+- Change: `ControlReadService.assertAgentVisible` owns normalization, a targeted
+  active-agent query and the existing visibility error. Scoped access retains the
+  active scoped grant and same-identity pairing joins; authenticated admin access
+  retains its existing active-agent rule. Remove the private operator duplicate
+  and use the read-service operation directly at all 57 callers and in MCP.
+- Result: 17 additional production lines; cumulative reduction becomes 5,476,
+  including the 75 lines previously relocated into tests. This trade removes
+  unbounded listing/enrichment work from each single-agent authorization check.
+  Enriched `listAgents` SQL/DTOs remain byte-identical, including duplicate-grant
+  aggregate behavior. Bulk key-only callers remain separate pending work.
+- Unit evidence: all 97 Control HTTP tests pass in author and independent review.
+  Five new cases cover bounded reads, invalid input before queries, unrelated
+  malformed MCP configuration, denial before mutation/validation, and raw query
+  errors. Exact reconstruction preserves remaining method bodies and call order.
+- PostgreSQL evidence: six new `tests/live/control-agent-visibility.live.test.ts`
+  cases pass on real migrations. They cover both roles, inactive/missing agents,
+  cross-identity grants/pairings, duplicate grants, revocation, the scoped login
+  privilege ceiling, enrichment counts and actual MCP management reads. A direct
+  baseline/current comparison across 34 checks preserves normalized results and
+  errors while reducing returned rows from 168 to 12; each new check executes at
+  most one query returning at most one row. Enriched listings also compare equal.
+  Evidence: `.temp/desloppify-cycle54-visibility-live-results.json` and
+  `.temp/desloppify-cycle54-postgres-parity-output.log`.
+- State: independently reviewed and committed locally with this cycle. The
+  malformed unrelated MCP configuration no longer blocks an authorized target
+  operation; target visibility and mutation ordering remain unchanged. Typecheck,
+  import law and prompt/shim contracts pass. The isolated test cluster was stopped.
+  No schema, package export, production access, push or deployment change.
+- Combined gate: the first full run passed 3,203 tests and failed the unchanged
+  remote-job cancellation test at `tests/bash-remote-runner.test.ts:2486`.
+  The isolated case and all 80 tests in that file then passed. A single full-suite
+  rerun passes all 3,204 tests across 339 files with no failures or skips. The
+  cancellation endpoint has a bounded wait; the original report omits the actual
+  response, so the precise cause remains unproven. Preserve both reports:
+  `.temp/desloppify-cycles54-56-unit-results.json` and
+  `.temp/desloppify-cycles54-56-unit-rerun-results.json`. No cancellation code or
+  test was changed to obtain the passing result.
