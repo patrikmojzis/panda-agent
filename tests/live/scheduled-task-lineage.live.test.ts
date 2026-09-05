@@ -4,7 +4,7 @@ import {afterAll, beforeAll, describe, expect, it} from "vitest";
 
 import {createPandaSchemaMigrator} from "../../src/app/database/migration-catalog.js";
 import {PRE_LEDGER_BASELINE_MIGRATION} from "../../src/app/database/migrations/0001-pre-ledger-baseline.js";
-import {createPostgresPool} from "../../src/app/runtime/database.js";
+import {createPostgresPool} from "../../src/lib/postgres-database.js";
 import {recreateSmokeDatabase} from "../../src/app/smoke/database.js";
 import {PostgresAgentStore} from "../../src/domain/agents/postgres.js";
 import {PostgresIdentityStore} from "../../src/domain/identity/postgres.js";

@@ -20,7 +20,7 @@ import {isJsonValue} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 import {trimToNull, trimToUndefined} from "../../lib/strings.js";
 import type {ShellSession} from "../../integrations/shell/types.js";
-import {resolveDataDir} from "./data-dir.js";
+import {resolveDataDir} from "../../lib/data-dir.js";
 
 const DEFAULT_SHELL_ENVIRONMENT_ID = "default";
 const RUNNER_SHARED_WORKSPACE_ROOT = "/workspace/shared";

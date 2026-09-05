@@ -40,4 +40,4 @@ export {
   resolveMediaDir,
   resolveAgentDir,
   resolveAgentMediaDir,
-} from "./data-dir.js";
+} from "../../lib/data-dir.js";

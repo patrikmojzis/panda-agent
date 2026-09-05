@@ -45,7 +45,7 @@ import {
   readPositiveIntegerEnv,
   requireDatabaseUrl,
   resolveDatabaseUrl,
-} from "./database.js";
+} from "../../lib/postgres-database.js";
 import {bootstrapRuntime,} from "./runtime-bootstrap.js";
 import {buildBackgroundToolThreadInput} from "./background-tool-thread-input.js";
 import {

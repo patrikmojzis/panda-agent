@@ -1221,3 +1221,58 @@ That candidate is not implemented in this batch.
   rejection of present empty/non-string values and stored results remain.
   Typecheck, import law, shim generation and diff checks pass. No production
   access, push or deployment. Profile upserts are committed as `dd89f05a`.
+
+## Cycle 48 — Delete runtime database/path forwarding modules
+
+- Finding: `app/runtime/data-dir.ts` and `app/runtime/database.ts` only reexported
+  helpers already owned by `lib`. Neither file was a supported package entrypoint;
+  runtime package exports remain at its intentional `index.ts` boundary.
+- Change: delete both forwarding files and redirect 34 module specifiers across
+  33 caller files to their existing leaf owners. Correct the architecture document's
+  stale path-ownership statement. Keep import/export names, ordering and all caller
+  bodies unchanged.
+- Result: 18 fewer production lines; cumulative reduction 5,293, including the
+  75 lines previously relocated into tests. No new test scaffolding.
+- Evidence: exact whole-file reconstruction verifies only those module strings,
+  the two deletions and the one architecture token change. All 33 supported runtime
+  type/value exports retain their declaration origins; the 14 runtime values and
+  all ten old-facade values preserve identity. All 40 focused author tests and
+  24 independent database/path/package tests pass. An AST scan of 1,152 source,
+  test and script files found no remaining references to the deleted modules.
+  Local proof: `.temp/desloppify-cycle48-proof.mjs`.
+- Generated metadata: the prompt snapshot tracks four affected runtime source
+  files. Regenerate only their SHA/byte counts; line counts, prompt text, tool
+  catalog, toolsets and subagent groups are unchanged. The contract check passes.
+- State: independently reviewed and committed locally with this cycle. Pool
+  configuration, environment lookup, directory policy and initialization remain
+  in the same `lib` implementations. No public export expansion, production
+  access, push or deployment. Command validation is committed as `95d78159`.
+
+## Combined verification after cycles 46–48
+
+All 3,195 unit tests across 339 files pass without failures or skips:
+`.temp/desloppify-cycles46-48-unit-results.json`. The root TypeScript build,
+import law, prompt/shim contracts, all 19 compiled package imports and shared
+`Thread` identity pass. All 42 frozen file states still match, including the two
+deletions and regenerated snapshot metadata. Migration definitions are unchanged.
+
+The seven new profile-store tests also pass on the final import tree against
+a fresh isolated database: `.temp/desloppify-cycle48-profiles-live-results.json`.
+A separate fresh database passed the inspected deterministic runtime fixture:
+25 migrations, one owned completed run, two injected model responses, one tool
+call, four persisted messages, an applied input and idle state, with zero external
+requests. Evidence: `.temp/desloppify-cycle48-offline-smoke-output.log`. The cluster
+was stopped afterward. These checks do not exercise an external provider, Bash or
+real Chromium; the earlier external-model smoke rejection remains respected.
+
+These three cycles remove 111 production lines net, bringing the total to 5,293
+across 49 cleanup commits. Profile upserts are committed as `dd89f05a`; command
+validation as `95d78159`; facade removal and this record are committed with cycle
+48. Unrelated commits and untracked `output/` remain excluded and preserved.
+
+Further bounded recon found identical required/nullable ISO timestamp conversion
+pairs in three Control read services, with 31 callers. Reuse in the existing
+generic date module is a candidate for the next cycle. Preserve timestamp-string
+acceptance, null output, exact field errors and out-of-range `RangeError` behavior;
+the stricter Postgres timestamp decoder is not equivalent. This candidate remains
+unimplemented and needs caller-level service/HTTP verification.

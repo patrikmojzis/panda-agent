@@ -5,7 +5,7 @@ import path from "node:path";
 import {afterAll, afterEach, beforeAll, describe, expect, it, vi} from "vitest";
 
 import {PANDA_SCHEMA_MIGRATIONS} from "../../src/app/database/migration-catalog.js";
-import {createPostgresPool} from "../../src/app/runtime/database.js";
+import {createPostgresPool} from "../../src/lib/postgres-database.js";
 import {ExecutionEnvironmentLifecycleService} from "../../src/app/runtime/execution-environment-service.js";
 import {ExecutionEnvironmentResolver} from "../../src/app/runtime/execution-environment-resolver.js";
 import {SubagentPurgeService} from "../../src/app/runtime/subagent-purge-service.js";

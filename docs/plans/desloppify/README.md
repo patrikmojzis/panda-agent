@@ -13,28 +13,29 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–45; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–48; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,182 production lines**, including
+Together, these cleanup commits remove **5,293 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
-The latest three cycles remove 102 production lines: four stores share binary
-decoding, Wiki commands reuse locale normalization, and the TUI dispatches directly
-to its handlers through the existing host interface. SQL, validation/authority
-order and command behavior remain. Ten new TUI behavior cases passed on both the
-baseline and the simplified implementation.
+The latest three cycles remove 111 production lines: subagent profiles use one
+upsert query, four command modules reuse existing string validation, and runtime
+callers import database/path helpers directly from their `lib` owners. Public
+exports, validation/authority order and SQL behavior remain. Seven new PostgreSQL
+tests cover both profile scopes and the real partial indexes omitted by the
+existing in-memory fixture.
 
-The frozen combined tree passes **3,195 tests across 339 files**, root
-build/typecheck, import law, prompt/shim contracts, all 19 compiled package
-imports and a deterministic runtime smoke against disposable local Postgres with
-external networking disabled. All 25 migrations applied; one owned run completed
-with an applied input, persisted transcript and idle state. The test cluster was
-stopped afterward. Runtime verification uses injected model responses; browser
+The frozen combined tree passes **3,195 unit tests across 339 files** and **seven
+PostgreSQL tests**, root build/typecheck, import law, prompt/shim contracts, all
+19 compiled package imports and a deterministic runtime smoke against disposable
+local Postgres with external networking disabled. All 25 migrations applied; one
+owned run completed with an applied input, persisted transcript and idle state.
+The test cluster was stopped afterward. Runtime verification uses injected model responses; browser
 unit tests use fake Chromium. These checks do not exercise external providers,
-Bash or actual browser closure
-latency. Earlier verification records are historical and do not certify later
-edits. The inspect/review/commit loop remains active.
+Bash or actual browser closure latency. Earlier verification records are
+historical and do not certify later edits. The inspect/review/commit loop remains
+active.
 
 Concurrent credential-name, image-generation and background-job work belongs to
 separate tasks. Preserve those changes and untracked `output/`; they are excluded

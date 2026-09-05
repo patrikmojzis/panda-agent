@@ -51,8 +51,8 @@ import {DiscordVoiceControlRepo} from "../../integrations/channels/discord/voice
 import {WhatsAppCallControlRepo} from "../../integrations/channels/whatsapp/calls/postgres.js";
 import {LiveVoiceRepo} from "../../domain/live-voice/repo.js";
 import {createLiveVoiceRuntimeEventHandler} from "../../integrations/voice/request-handler.js";
-import {resolveAgentMediaDir, resolveDataDir} from "./data-dir.js";
-import {readPositiveIntegerEnv} from "./database.js";
+import {resolveAgentMediaDir, resolveDataDir} from "../../lib/data-dir.js";
+import {readPositiveIntegerEnv} from "../../lib/postgres-database.js";
 import {trimToNull} from "../../lib/strings.js";
 import {FileSystemCommandUploadStore} from "../../integrations/commands/file-uploads.js";
 import {resolveRuntimeRequestMediaReceiptOwners} from "./runtime-request-media.js";

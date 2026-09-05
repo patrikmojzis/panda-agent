@@ -3,7 +3,7 @@ import {createHash, randomUUID} from "node:crypto";
 import {afterAll, beforeAll, describe, expect, it} from "vitest";
 
 import {PANDA_SCHEMA_MIGRATIONS} from "../../src/app/database/migration-catalog.js";
-import {createPostgresPool} from "../../src/app/runtime/database.js";
+import {createPostgresPool} from "../../src/lib/postgres-database.js";
 import {recreateSmokeDatabase} from "../../src/app/smoke/database.js";
 import {PostgresAgentStore} from "../../src/domain/agents/postgres.js";
 import {PostgresSessionStore} from "../../src/domain/sessions/postgres.js";

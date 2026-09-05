@@ -1,7 +1,7 @@
 import {afterAll, beforeAll, describe, expect, it} from "vitest";
 
 import {PANDA_SCHEMA_MIGRATIONS} from "../../src/app/database/migration-catalog.js";
-import {createPostgresPool} from "../../src/app/runtime/database.js";
+import {createPostgresPool} from "../../src/lib/postgres-database.js";
 import {recreateSmokeDatabase} from "../../src/app/smoke/database.js";
 import {PostgresControlAuthService} from "../../src/domain/control/auth.js";
 import {PostgresIdentityStore} from "../../src/domain/identity/postgres.js";

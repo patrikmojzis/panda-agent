@@ -3,7 +3,7 @@ import path from "node:path";
 import {mkdtemp, mkdir, rm, writeFile} from "node:fs/promises";
 import {DatabaseSync} from "node:sqlite";
 
-import {resolveAgentDir} from "../../src/app/runtime/data-dir.js";
+import {resolveAgentDir} from "../../src/lib/data-dir.js";
 
 export interface AgentAppFixtureOptions {
   actions?: Record<string, unknown>;

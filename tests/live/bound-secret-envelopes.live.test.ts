@@ -3,7 +3,7 @@ import {createCipheriv, createHash, randomBytes, randomUUID} from "node:crypto";
 import {afterEach, beforeEach, describe, expect, it} from "vitest";
 
 import {PANDA_SCHEMA_MIGRATIONS} from "../../src/app/database/migration-catalog.js";
-import {createPostgresPool} from "../../src/app/runtime/database.js";
+import {createPostgresPool} from "../../src/lib/postgres-database.js";
 import {recreateSmokeDatabase} from "../../src/app/smoke/database.js";
 import {SecretCrypto, type SecretContext} from "../../src/domain/secrets/crypto.js";
 import {createPostgresMigrator} from "../../src/lib/postgres-migrations.js";

@@ -4,7 +4,7 @@ import {afterEach, describe, expect, it, vi} from "vitest";
 import {DataType, newDb} from "pg-mem";
 
 import {stringToUserMessage} from "../src/index.js";
-import {observePostgresPool} from "../src/app/runtime/database.js";
+import {observePostgresPool} from "../src/lib/postgres-database.js";
 import {PostgresThreadRuntimeStore} from "../src/domain/threads/runtime/index.js";
 import type {ThreadMessageRecord} from "../src/domain/threads/runtime/types.js";
 import {buildThreadRuntimeTableNames} from "../src/domain/threads/runtime/postgres-shared.js";

@@ -2,7 +2,7 @@ import {randomUUID} from "node:crypto";
 import {afterAll, beforeAll, describe, expect, it, vi} from "vitest";
 
 import {PANDA_SCHEMA_MIGRATIONS} from "../../src/app/database/migration-catalog.js";
-import {createPostgresPool} from "../../src/app/runtime/database.js";
+import {createPostgresPool} from "../../src/lib/postgres-database.js";
 import {recreateSmokeDatabase} from "../../src/app/smoke/database.js";
 import {PostgresChannelActionStore} from "../../src/domain/channels/actions/postgres.js";
 import {ChannelActionWorker} from "../../src/domain/channels/actions/worker.js";

@@ -368,7 +368,7 @@ Public surfaces are security-sensitive:
   services should only supply source, connector key, workers, and their
   health/error reaction.
 - Channel config modules own channel-specific env parsing and constants. Generic
-  runtime paths come from `app/runtime/data-dir.ts`, not channel-specific
+  runtime paths come from `lib/data-dir.ts`, not channel-specific
   pass-through aliases.
 
 Session-owned inbound work must target sessions, then resolve the current

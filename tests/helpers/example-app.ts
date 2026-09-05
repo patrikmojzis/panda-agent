@@ -3,7 +3,7 @@ import path from "node:path";
 import {cp, mkdir, mkdtemp, readFile, rm} from "node:fs/promises";
 import {DatabaseSync} from "node:sqlite";
 
-import {resolveAgentDir} from "../../src/app/runtime/data-dir.js";
+import {resolveAgentDir} from "../../src/lib/data-dir.js";
 
 export interface ExampleAppFixtureInput {
   agentKey?: string;

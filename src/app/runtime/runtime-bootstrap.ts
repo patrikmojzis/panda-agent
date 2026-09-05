@@ -65,7 +65,7 @@ import {
     observePostgresPool,
     readPositiveIntegerEnv,
     type PostgresPoolObserver,
-} from "./database.js";
+} from "../../lib/postgres-database.js";
 import {runCleanupSteps} from "../../lib/cleanup.js";
 import {trimToNull} from "../../lib/strings.js";
 import {createPandaSchemaVerifier} from "../../integrations/postgres/schema-version.js";

@@ -1,5 +1,5 @@
 import {quoteIdentifier} from "../../lib/postgres-relations.js";
-import {createPostgresPool} from "../runtime/database.js";
+import {createPostgresPool} from "../../lib/postgres-database.js";
 
 export interface SmokeDatabaseTarget {
   adminConnectionString: string;

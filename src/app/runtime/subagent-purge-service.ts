@@ -24,7 +24,7 @@ import {A2A_CONNECTOR_KEY, A2A_SOURCE} from "../../domain/a2a/constants.js";
 import {readOptionalJsonValue, type JsonValue} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
 import {requireTrimmedString, trimToUndefined, uniqueTrimmedStrings} from "../../lib/strings.js";
-import {resolveDataDir} from "./data-dir.js";
+import {resolveDataDir} from "../../lib/data-dir.js";
 import {
   stopExecutionEnvironment,
   type ExecutionEnvironmentStopStore,

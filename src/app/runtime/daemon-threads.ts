@@ -34,7 +34,7 @@ import {
 import type {ThreadRuntimeStore} from "../../domain/threads/runtime/store.js";
 import {isJsonObject, type JsonValue} from "../../lib/json.js";
 import {trimToUndefined} from "../../lib/strings.js";
-import {resolveAgentMediaDir} from "./data-dir.js";
+import {resolveAgentMediaDir} from "../../lib/data-dir.js";
 import {requireIdentityId} from "./daemon-shared.js";
 import {
   createDaemonSubagentSessionCreator,

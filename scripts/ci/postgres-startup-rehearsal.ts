@@ -7,7 +7,7 @@ import {CURRENT_READONLY_SESSION_VIEW_BASENAMES} from "../../src/integrations/po
 import {createPandaSchemaMigrator, PANDA_SCHEMA_MIGRATIONS} from "../../src/app/database/migration-catalog.js";
 import {runPandaDatabaseIntegrityChecks} from "../../src/app/database/integrity-catalog.js";
 import {recreateSmokeDatabase} from "../../src/app/smoke/database.js";
-import {createPostgresPool} from "../../src/app/runtime/database.js";
+import {createPostgresPool} from "../../src/lib/postgres-database.js";
 import {createPostgresMigrator} from "../../src/lib/postgres-migrations.js";
 import {
   createPostgresReadonlyQueryCommand,

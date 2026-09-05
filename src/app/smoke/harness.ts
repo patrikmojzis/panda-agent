@@ -23,7 +23,7 @@ import {readToolArtifact, type ToolArtifactDescriptor} from "../../kernel/agent/
 import {createRuntimeClient} from "../runtime/client.js";
 import {createDaemon} from "../runtime/daemon.js";
 import {DAEMON_STALE_AFTER_MS, DEFAULT_DAEMON_KEY} from "../runtime/daemon-shared.js";
-import {createPostgresPool} from "../runtime/database.js";
+import {createPostgresPool} from "../../lib/postgres-database.js";
 import {withPostgresPool} from "../../lib/postgres-database.js";
 import {DaemonStateRepo} from "../runtime/state/repo.js";
 import {createPandaSchemaMigrator} from "../database/migration-catalog.js";

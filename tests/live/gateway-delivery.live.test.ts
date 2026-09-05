@@ -5,7 +5,7 @@ import path from "node:path";
 import {afterAll, beforeAll, describe, expect, it, vi} from "vitest";
 
 import {createPandaSchemaMigrator} from "../../src/app/database/migration-catalog.js";
-import {createPostgresPool} from "../../src/app/runtime/database.js";
+import {createPostgresPool} from "../../src/lib/postgres-database.js";
 import {recreateSmokeDatabase} from "../../src/app/smoke/database.js";
 import {PostgresConnectorLeaseRepo} from "../../src/domain/connector-leases/repo.js";
 import {PostgresAgentStore} from "../../src/domain/agents/postgres.js";

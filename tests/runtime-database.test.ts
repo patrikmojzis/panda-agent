@@ -6,7 +6,7 @@ import {
   buildObservedPoolConfig,
   createPostgresPool,
   observePostgresPool,
-} from "../src/app/runtime/database.js";
+} from "../src/lib/postgres-database.js";
 
 interface FakeQueryResult {
   rows: Array<{ok: boolean}>;

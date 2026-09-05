@@ -3,7 +3,7 @@ import {writeFile} from "node:fs/promises";
 import path from "node:path";
 import {fileURLToPath} from "node:url";
 
-import {createPostgresPool} from "../../src/app/runtime/database.js";
+import {createPostgresPool} from "../../src/lib/postgres-database.js";
 import {readPandaSchemaObjectCatalog} from "../../src/app/database/schema-object-catalog.js";
 import {looksLikeDisposableDatabaseName, resolveSmokeDatabaseTarget} from "../../src/app/smoke/database.js";
 import {createPandaSchemaVerifier} from "../../src/integrations/postgres/schema-version.js";

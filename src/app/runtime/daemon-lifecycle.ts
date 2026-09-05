@@ -24,7 +24,7 @@ import {resolveOptionalCommandServerBinding} from "../../integrations/commands/c
 import {type CommandHttpServer, startCommandHttpServer} from "../../integrations/commands/http-server.js";
 import {runCleanupSteps} from "../../lib/cleanup.js";
 import type {PostgresListenSnapshot} from "../../lib/postgres-listen.js";
-import {readPositiveIntegerEnv} from "./database.js";
+import {readPositiveIntegerEnv} from "../../lib/postgres-database.js";
 import {DAEMON_HEARTBEAT_INTERVAL_MS, type DaemonServices} from "./daemon-shared.js";
 import {
   DEFAULT_RUNTIME_REQUEST_CONCURRENCY,
