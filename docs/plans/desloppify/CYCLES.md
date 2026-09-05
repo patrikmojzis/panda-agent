@@ -1328,3 +1328,51 @@ unimplemented and needs caller-level service/HTTP verification.
   combined tree passes all 3,195 unit tests, build, import law and prompt/shim
   contracts. Timestamp conversion is committed as `bc95aa1b`. No migration,
   production access, push or deployment.
+
+## Cycle 51 — Select one latest run per watch in PostgreSQL
+
+- Finding: a Control watch page fetched every historical run for its page IDs,
+  then kept only the first row per watch in JavaScript.
+- Change: use `DISTINCT ON (watch_id)` with the existing `watch_id ASC,
+  created_at DESC, id ASC` order. Build the result map directly from those rows.
+  Preserve page/session predicates, separate counts and all DTO conversion.
+- Result: four fewer production lines; cumulative reduction 5,335, including the
+  75 lines previously relocated into tests. Returned latest-run rows are bounded
+  by the number of watches on the page. This does not guarantee bounded database
+  scans or sorting work.
+- Evidence: literal whole-file reconstruction permits only the SELECT change and
+  removal of the first-row reducer. Eight focused watch HTTP tests and five
+  rendered-query comparisons pass. Independent review verified non-null keys,
+  deterministic ties, missing runs, scope and nullable run timestamps.
+- PostgreSQL coverage: `tests/live/control-work-reads.live.test.ts` adds four
+  tests using real migrations and scoped Control services. They cover the task
+  lifecycle cases from cycle 50, mixed schedule sorting, timestamp ties, watch
+  pagination/counts, no-run watches and private-session access. Fixtures retain
+  the actual claim, lineage, stable-input and foreign-key constraints.
+- Direct before/after comparison: the same migrated fixture returns 602 latest-run
+  query rows from baseline `bc95aa1b`, and two from this implementation, with
+  identical public results on both populated and no-run pages. Evidence:
+  `.temp/desloppify-cycle51-postgres-parity-output.log`. All four live tests pass:
+  `.temp/desloppify-cycles50-51-control-live-results.json`. The isolated local
+  PostgreSQL cluster was stopped afterward.
+- State: independently reviewed and committed locally with this cycle. Task
+  lifecycle reuse is committed as `21c54dc4`. No schema, migration, production
+  access, push or deployment change.
+
+## Combined verification after cycles 49–51
+
+All 3,195 unit tests across 339 files pass without failures or skips:
+`.temp/desloppify-cycles49-51-unit-results.json`. All four new PostgreSQL tests
+pass on the final source tree. Build/typecheck, import law, prompt/shim contracts,
+all 19 compiled package imports and shared `Thread` identity pass. Frozen source
+hashes still match independent review; the live fixture was reviewed again after
+correcting its initial setup to satisfy the existing lifecycle constraints.
+
+These three cycles remove 42 production lines net, bringing the total to 5,335
+across 52 cleanup commits. Counts exclude unrelated work, tests and documentation;
+75 source lines were previously relocated into tests. Timestamp conversion is
+committed as `bc95aa1b`, task lifecycle reuse as `21c54dc4`, and watch selection
+with this cycle. Earlier runtime smoke evidence remains historical; this batch
+validates the changed Control queries directly against PostgreSQL and makes no
+new external-provider or production-deployment claim. Untracked `output/` remains
+preserved. The inspect/review/commit loop remains active.

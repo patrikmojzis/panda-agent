@@ -380,7 +380,7 @@ export class ControlWatchesService {
         GROUP BY watch_id
       `, [normalizedSessionId, ...watchIds]);
       const latestRuns = await this.pool.query(`
-        SELECT
+        SELECT DISTINCT ON (watch_id)
           watch_id,
           id AS latest_run_id,
           status AS latest_run_status,
@@ -395,11 +395,7 @@ export class ControlWatchesService {
       `, [normalizedSessionId, ...watchIds]);
       const runCountByWatchId = new Map((runCounts.rows as WatchRow[]).map((row) => [requiredString(row.watch_id, "Watch run count watch id"), row.count]));
       const eventCountByWatchId = new Map((eventCounts.rows as WatchRow[]).map((row) => [requiredString(row.watch_id, "Watch event count watch id"), row.count]));
-      const latestByWatchId = new Map<string, WatchRow>();
-      for (const row of latestRuns.rows as WatchRow[]) {
-        const watchId = requiredString(row.watch_id, "Watch latest run watch id");
-        if (!latestByWatchId.has(watchId)) latestByWatchId.set(watchId, row);
-      }
+      const latestByWatchId = new Map((latestRuns.rows as WatchRow[]).map((row) => [requiredString(row.watch_id, "Watch latest run watch id"), row]));
       for (const row of rows) {
         const watchId = requiredString(row.id, "Watch id");
         row.recent_run_count = runCountByWatchId.get(watchId) ?? 0;
