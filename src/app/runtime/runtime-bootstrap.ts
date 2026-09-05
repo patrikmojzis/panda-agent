@@ -232,9 +232,11 @@ function createCloseRuntime(options: {
 
       try {
         readonlyPool = await readonlyPoolInitializing;
-        readonlyPoolObserver = options.readonlyPoolState.observer;
       } catch {
         // Ignore lazy readonly bootstrap failures during shutdown.
+      } finally {
+        readonlyPool ??= options.readonlyPoolState.pool;
+        readonlyPoolObserver = options.readonlyPoolState.observer;
       }
     };
 

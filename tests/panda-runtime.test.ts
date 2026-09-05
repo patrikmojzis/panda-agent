@@ -1,5 +1,6 @@
 import {afterEach, describe, expect, it, vi} from "vitest";
 import {createRuntime} from "../src/app/runtime/create-runtime.js";
+import {bootstrapRuntime} from "../src/app/runtime/runtime-bootstrap.js";
 import {createCommandCatalog, type CommandCatalogModule} from "../src/domain/commands/index.js";
 
 const runtimeMocks = vi.hoisted(() => {
@@ -11,6 +12,7 @@ const runtimeMocks = vi.hoisted(() => {
     query: ReturnType<typeof vi.fn>;
   }> = [];
   const poolOptions: unknown[] = [];
+  const configurePool = vi.fn<(pool: MockPool) => void>();
   const coordinatorOptions: unknown[] = [];
   const coordinatorStop = vi.fn(async () => {});
   const readonlyToolOptions: unknown[] = [];
@@ -33,11 +35,13 @@ const runtimeMocks = vi.hoisted(() => {
     constructor(options: unknown) {
       poolOptions.push(options);
       poolInstances.push(this);
+      configurePool(this);
     }
   }
 
   return {
     client,
+    configurePool,
     coordinatorOptions,
     coordinatorStop,
     MockPool,
@@ -178,6 +182,7 @@ describe("createRuntime", () => {
     runtimeMocks.coordinatorOptions.length = 0;
     runtimeMocks.coordinatorStop.mockReset();
     runtimeMocks.coordinatorStop.mockResolvedValue(undefined);
+    runtimeMocks.configurePool.mockReset();
     runtimeMocks.poolOptions.length = 0;
     runtimeMocks.poolInstances.length = 0;
     runtimeMocks.readonlyToolOptions.length = 0;
@@ -316,6 +321,50 @@ describe("createRuntime", () => {
     expect(runtimeMocks.poolInstances[1]?.end).toHaveBeenCalledTimes(1);
     expect(runtimeMocks.poolInstances[2]?.end).toHaveBeenCalledTimes(1);
     expect(runtimeMocks.poolInstances[3]?.end).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["observer", "ready log"])("closes a lazy pool when %s fails after bootstrap shutdown begins", async (failureStage) => {
+    const runtime = await bootstrapRuntime({
+      dbUrl: "postgres://panda:test@localhost:5432/panda",
+      readOnlyDbUrl: "postgres://readonly:test@localhost:5432/panda",
+      resolveDefinition: vi.fn(),
+    });
+    const failure = new Error(`readonly ${failureStage} failed`);
+    if (failureStage === "observer") {
+      runtimeMocks.configurePool.mockImplementation((pool) => {
+        pool.on.mockImplementationOnce(() => { throw failure; });
+      });
+    }
+    const originalWrite = process.stdout.write.bind(process.stdout);
+    const write = vi.spyOn(process.stdout, "write").mockImplementation((...args: Parameters<typeof process.stdout.write>) => {
+      if (failureStage === "ready log"
+        && String(args[0]).includes('"event":"postgres_pool_ready"')
+        && String(args[0]).includes('"applicationName":"panda/core-ro"')) {
+        throw failure;
+      }
+      return originalWrite(...args);
+    });
+    let closing: Promise<void> | undefined;
+    try {
+      const readonlyOptions = runtimeMocks.readonlyToolOptions.at(-1) as {getPool(): Promise<unknown>};
+      const initializing = readonlyOptions.getPool();
+      expect(runtimeMocks.poolInstances).toHaveLength(3);
+      closing = runtime.close();
+      await expect(initializing).rejects.toBe(failure);
+      await closing;
+
+      expect(runtimeMocks.poolInstances).toHaveLength(4);
+      expect(runtimeMocks.poolInstances.map((pool) => pool.end.mock.calls.length)).toEqual([1, 1, 1, 1]);
+      const readonlyPool = runtimeMocks.poolInstances[3]!;
+      expect(readonlyPool.off).toHaveBeenCalledTimes(failureStage === "observer" ? 0 : 1);
+      for (const pool of runtimeMocks.poolInstances.filter((pool) => pool !== readonlyPool || failureStage === "ready log")) {
+        expect(pool.off).toHaveBeenCalledTimes(1);
+        expect(pool.off.mock.invocationCallOrder[0]).toBeLessThan(pool.end.mock.invocationCallOrder[0]!);
+      }
+    } finally {
+      write.mockRestore();
+      await (closing ?? runtime.close());
+    }
   });
 
   it("splits core query, notification, and bounded trace-writer pools", async () => {

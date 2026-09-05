@@ -2018,3 +2018,59 @@ null for historical rows and are not a proven substitute for current parsing.
 There is no configured UI polling interval and no measured production latency
 claim. Keep that larger persistence change open until those contracts and
 isolated PostgreSQL measurements support it.
+
+## Cycle 65 — Retain ownership after lazy pool initialization rejects
+
+- Finding: shutdown captures a null readonly-pool handle and an in-flight
+  initialization promise. That promise can allocate the pool, then reject during
+  observation or ready logging. The old catch ignores the rejection without
+  refreshing owned handles, so cleanup closes only the three eager pools and
+  clears the state that still owns the readonly pool.
+- Change: recover the pool and observer from the existing owned state in the
+  initialization await's `finally` block. Preserve the caller's original
+  rejection, successful initialization, observer-stop-before-pool-end ordering,
+  other cleanup steps, lazy allocation, captured configuration and retry policy.
+  No factory, new abstraction or public contract is introduced.
+- Regression evidence: two tests call the actual `bootstrapRuntime` dependency,
+  start its captured readonly command pool acquisition and close bootstrap in the
+  same turn. Injected observer-registration and ready-log failures both reproduce
+  the old `[1, 1, 1, 0]` pool-end counts and pass with `[1, 1, 1, 1]` after the
+  repair. They verify exact error identity and stop-before-end for available
+  observers. The independent four-case source probe also checks failure before
+  shutdown and during shutdown. Permanent tests do not extract private functions.
+- Result: three production lines added and one removed, net **two added**.
+  Tests add 49 lines. Cumulative reduction becomes **5,729 production lines
+  across 66 cleanup commits**, including 75 lines moved into tests. The resource
+  ownership repair earns the small source increase.
+- Gates: both new regression tests fail before the fix, all 18 focused tests
+  pass afterward, and the final **3,255 unit tests across 341 files** pass without
+  failures or skips. Root build/typecheck, import law, prompt/shim contracts,
+  all 19 compiled package imports and shared `Thread` identity pass. Independent
+  review verifies the frozen source/test hashes and the exact narrow change.
+  Evidence: `.temp/desloppify-cycle65-before-results.json`,
+  `.temp/desloppify-cycle65-focused-results.json`,
+  `.temp/desloppify-cycle65-unit-results.json` and
+  `.temp/desloppify-cycle65-frozen.json`.
+- Smoke: the inspected offline common-runtime check applies all 25 migrations
+  to a fresh isolated PostgreSQL database, completes an owned run with applied
+  input, two injected model responses, one tool call and four messages, and
+  reaches idle with zero external requests. The cluster is stopped afterward.
+  This smoke deliberately avoids application bootstrap; the regression tests
+  above establish the shutdown fix. Evidence:
+  `.temp/desloppify-cycle65-offline-smoke-output.log`.
+- State: reviewed and committed locally with this cycle. Only the bootstrap
+  source-file bytes/lines/hash change in the generated prompt snapshot; model
+  text and tool contracts remain unchanged. No production access, push or
+  deployment. Cycle 64 is committed as `d16ff3d2`.
+
+### Remaining observer initialization ownership
+
+`observePostgresPool` installs a listener, method wrappers and a timer before
+its startup log. If that log throws before the function returns its stop handle,
+bootstrap can recover and close the pool but cannot stop an observer it never
+received. This is a separate initialization rollback gap, not fixed by recovering
+already-owned handles. Preserve normal logging/wrapper behavior and original
+failure identity when addressing it; do not hide it inside a broad pool factory.
+The actual public-observer probe reproduces the retained timer, listener and
+wrappers in `.temp/desloppify-observer-startup-rejection-before.json`; its own
+resources were cleaned in `finally`, and it made no database or network calls.

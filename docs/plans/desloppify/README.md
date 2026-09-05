@@ -13,9 +13,9 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–64; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–65; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,731 production lines**, including
+Together, these cleanup commits remove **5,729 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
@@ -49,7 +49,8 @@ Cycle 62 removes 122 more production lines: a duplicated private bootstrap
 contract, unused pool snapshot and HTML/path helpers, and a health-server
 forwarding file. Public package contracts remain unchanged. Path security tests
 now exercise the actual command-file resolver, including symlink containment and
-immutable file snapshots. Bootstrap JavaScript is identical to its baseline.
+immutable file snapshots. That cycle left bootstrap JavaScript identical to its
+baseline.
 
 Cycle 63 removes 39 unused lines from session-input delivery, Discord's obsolete
 dropping fallback and Gateway's duplicate delivery-policy helper. Their live
@@ -64,22 +65,27 @@ verify the projection, and 30 React render comparisons verify component parity
 with mocked boundaries. Control typecheck and production build pass. Backend
 history hydration remains a separate issue.
 
-The last complete backend suite at cycle 63 passed **3,253 tests across 341 files**,
-root build/typecheck, import law, all 19 compiled package
+Cycle 65 repairs shutdown losing a readonly pool when lazy initialization fails
+after allocation. Cleanup now recovers the owned pool and any returned observer
+after the initialization promise settles. It adds two production lines and two
+regression tests; the original initialization error and cleanup ordering remain
+intact. Observer setup failing before it returns a handle is a separate follow-up.
+
+The frozen tree passes **3,255 unit tests across 341 files**, root build/typecheck,
+import law, all 19 compiled package
 imports and shared `Thread` identity. The initial failure of an unchanged
 cancellation test and its passing isolated/file/full reruns are recorded under
 cycle 54; its precise cause remains unproven. Cycle 57 passed prompt/shim
 contracts, eleven real-PostgreSQL visibility tests and 102 baseline/current
 comparisons. Cycles 58–59 leave those queries and authority checks unchanged.
-The cycle 60 common-runtime smoke applied all 25 migrations to fresh local
+The cycle 65 common-runtime smoke applied all 25 migrations to fresh local
 PostgreSQL and completed an owned run with applied input, one tool call, four
 messages and idle state. It used injected model responses and blocked external
-requests. Focused public tests and earlier method parity cover the lifecycle
-changes; that smoke did not invoke those methods or the actor listings. The test cluster
-was stopped afterward. Cycles 62–63 also pass prompt/shim contracts; cycle 62
-changed only two source-file metadata records in the prompt snapshot, and cycle
-63 leaves that snapshot unchanged. Runtime-activity
-reads and broader pool observation ownership remain under investigation, with
+requests. The new bootstrap tests prove the shutdown repair; the smoke avoids
+application bootstrap and does not exercise that race or the actor listings.
+The test cluster was stopped afterward. Prompt/shim contracts pass; cycle 65
+changes only bootstrap file metadata in the prompt snapshot. Runtime-activity
+reads and observer setup rollback remain under investigation, with
 their constraints recorded in the cycle record. The inspect/review/commit loop
 remains active.
 
