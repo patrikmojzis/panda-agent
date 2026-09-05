@@ -868,13 +868,16 @@ export class PostgresEmailStore implements EmailStore {
 
     const insertedRow = result.rows[0];
     if (!insertedRow) {
-      const existing = await this.findMessageByMailboxUid(client, {
+      const existing = await this.findMessageByMailboxUidOrNull(client, {
         agentKey,
         accountKey,
         mailbox,
         uid,
         uidValidity,
       });
+      if (!existing) {
+        throw new Error("Email message insert was skipped but no existing message was found.");
+      }
       return {
         message: existing,
         inserted: false,
@@ -890,7 +893,7 @@ export class PostgresEmailStore implements EmailStore {
     };
   }
 
-  private async findMessageByMailboxUid(
+  private async findMessageByMailboxUidOrNull(
     queryable: PgQueryable,
     input: {
       agentKey: string;
@@ -898,40 +901,6 @@ export class PostgresEmailStore implements EmailStore {
       mailbox: string | null;
       uid: number | null;
       uidValidity: string | null;
-    },
-  ): Promise<EmailMessageRecord> {
-    const result = await queryable.query(`
-      SELECT *
-      FROM ${this.tables.emailMessages}
-      WHERE agent_key = $1
-        AND account_key = $2
-        AND mailbox = $3
-        AND uid_validity = $4
-        AND uid = $5
-      LIMIT 1
-    `, [
-      input.agentKey,
-      input.accountKey,
-      input.mailbox,
-      input.uidValidity,
-      input.uid,
-    ]);
-    const row = result.rows[0];
-    if (!row) {
-      throw new Error("Email message insert was skipped but no existing message was found.");
-    }
-
-    return parseMessageRow(row as Record<string, unknown>);
-  }
-
-  private async findMessageByMailboxUidOrNull(
-    queryable: PgQueryable,
-    input: {
-      agentKey: string;
-      accountKey: string;
-      mailbox: string;
-      uid: number;
-      uidValidity: string;
     },
   ): Promise<EmailMessageRecord | null> {
     const result = await queryable.query(`

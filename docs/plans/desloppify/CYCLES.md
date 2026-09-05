@@ -1016,3 +1016,21 @@ state. No browser cancellation implementation is included in this batch.
   Local proof: `.temp/desloppify-cycle40-string-parity.mjs`.
 - State: reviewed and committed locally with this cycle. Typecheck, import law,
   prompt/shim contracts and diff checks pass. No production access or deployment.
+
+## Cycle 41 — Use one mailbox/UID email lookup
+
+- Finding: two private mailbox/UID lookups repeated the same SQL, parameter order
+  and row parser; only their missing-row behavior differed.
+- Change: keep one nullable lookup and put the existing missing-row error at its
+  sole insert-conflict caller. Preserve nullable lookup inputs from that caller.
+- Result: 31 fewer production lines; cumulative reduction 5,042, including the
+  75 lines previously relocated into tests.
+- Evidence: 24 old/new public `recordMessage` cases match exact query/parameter,
+  result/error and transaction traces, including conflict-found/conflict-missing,
+  malformed rows and lookup failures. Root independently reconstructed the whole
+  file from only these changes, verified identical query/parameter statements and
+  passed all eight email Postgres/schema tests. Local proof:
+  `.temp/desloppify-cycle41-email-structural-proof.mjs`.
+- State: independently reviewed and committed locally with this cycle. No SQL,
+  schema, row mapping, commit/rollback or release behavior changes. Typecheck and
+  diff checks pass. No production access, migration, push or deployment.
