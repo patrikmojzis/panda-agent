@@ -1664,3 +1664,49 @@ these scopes, sorting ties, search/page totals, metadata redaction and failure
 handling. The supported `listIdentityBindings` identity-existence check stays.
 This is not yet a verified deletion opportunity. Runtime-activity pagination and
 pool observation ownership remain unresolved.
+
+## Cycle 58 — Reuse runtime text comparison and its filtered array
+
+- Finding: runtime activity text sorting passed collation settings to
+  `localeCompare` on every comparison, then copied an already-owned filtered
+  array before sorting it. Other Control tables use different comparison and
+  pagination rules, so a shared sorting abstraction would obscure policy.
+- Change: one module-local `Intl.Collator` retains the default locale, numeric
+  ordering and base sensitivity. Sort the fresh filtered array directly.
+  Equality, null/empty handling, numeric comparison, stable ties, search,
+  clamped pages, SQL, DTOs and the original summary input remain unchanged.
+- Result: one additional production line and 30 test lines; cumulative reduction
+  becomes 5,490 production lines across 59 cleanup commits, including the 75
+  lines previously relocated into tests. The change removes repeated collation
+  setup and one full filtered-array copy; it does not reduce database reads or
+  improve the default timestamp comparison.
+- Evidence: author and independent review pass all 104 Control HTTP tests.
+  Two new caller cases cover numeric text, case/accent ties, both null directions,
+  filtered page clamping and unchanged unfiltered summaries. Exact source
+  reconstruction permits only the constant, string comparison and array-copy
+  removal. Author public-method parity passes 490 result/error/SQL comparisons;
+  independent comparison covers 2,025 value pairs.
+- Root verification: 5,718 actual public-method comparisons across English,
+  Slovak and Turkish locales preserve complete results, queries, errors and
+  frozen input rows. The adapter is synthetic and opens no database or network
+  connection. Evidence: `.temp/desloppify-cycle58-runtime-parity-results.json`.
+  All 3,211 unit tests across 339 files pass without failures or skips:
+  `.temp/desloppify-cycle58-unit-results.json`. Build/typecheck, import law,
+  all 19 compiled package imports and shared `Thread` identity pass.
+- State: independently reviewed and committed locally with this cycle. No
+  schema, production access, push or deployment change. The earlier Control
+  PostgreSQL evidence remains scoped to cycle 57 (`31dd155d`); this cycle changes
+  only local sorting and leaves its queries and authorization unchanged.
+
+### Runtime read decisions
+
+Defer SQL pagination until its contract is explicit: summaries use the full
+unfiltered inventory, durations may be negative, high pages clamp, descending
+nulls come first, text sorts use natural ordering with stable ties, and unknown
+sort fields retain query order. Failure-category priority scans raw errors and
+can classify running rows; sanitized search still works when stored
+`error_summary` is null. A bare SQL limit or different collation would change
+the public result. Rewriting the duration summary into a manual accumulation
+loop adds four lines and more state; retain the existing expression. Redundant
+finite-duration checks at the already-normalized private boundary are a separate
+candidate under verification.

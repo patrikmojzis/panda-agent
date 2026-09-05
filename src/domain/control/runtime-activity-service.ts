@@ -10,6 +10,7 @@ import type {ControlSessionRecord} from "./types.js";
 
 const DEFAULT_RUN_LIMIT = 25;
 const MAX_RUN_LIMIT = 100;
+const RUN_TEXT_COLLATOR = new Intl.Collator(undefined, {numeric: true, sensitivity: "base"});
 
 const FAILURE_CATEGORY_TOKENS = [
   "provider_abort",
@@ -167,7 +168,7 @@ function compareRunValues(left: unknown, right: unknown): number {
   if (left === null || left === undefined || left === "") return 1;
   if (right === null || right === undefined || right === "") return -1;
   if (typeof left === "number" && typeof right === "number") return left - right;
-  return String(left).localeCompare(String(right), undefined, {numeric: true, sensitivity: "base"});
+  return RUN_TEXT_COLLATOR.compare(String(left), String(right));
 }
 
 function tableRuns(runs: readonly ControlRuntimeActivityRun[], input: ControlRuntimeActivityTableInput): {data: readonly ControlRuntimeActivityRun[]; meta: ControlRuntimeActivityTableMeta} {
@@ -180,7 +181,7 @@ function tableRuns(runs: readonly ControlRuntimeActivityRun[], input: ControlRun
   );
   const sortBy = input.sortBy ?? "startedAt";
   const direction = input.sortDirection === "asc" ? 1 : -1;
-  const sorted = [...filtered].sort((left, right) =>
+  const sorted = filtered.sort((left, right) =>
     compareRunValues(runValue(left, sortBy), runValue(right, sortBy)) * direction
   );
   const lastPage = Math.max(Math.ceil(sorted.length / perPage), 1);

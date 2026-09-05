@@ -4954,6 +4954,36 @@ describe("Control Runtime Activity HTTP", () => {
     ]) expect(text).not.toContain(sentinel);
   });
 
+  it.each(["asc", "desc"] as const)("keeps natural runtime text ordering, stable ties and nulls when sorting %s", async (sortDirection) => {
+    const harness = await createHarness();
+    await seedThreads(harness);
+    await harness.agents.ensurePairing("panda", "identity-patrik");
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role: "scoped", agentKey: "panda"});
+    const {session} = await harness.auth.loginWithToken(grant.loginToken);
+    await harness.pool.query(`
+      INSERT INTO "runtime"."runs" (id, thread_id, owner_source, owner_key, owner_holder_id, status, started_at, finished_at, error) VALUES
+        ('00000000-0000-0000-0000-000000000701', 'thread-panda', 'test', 'control', 'sorting', 'failed', '2040-01-05T00:00:00Z', '2040-01-05T00:00:01Z', 'Fáilure 2'),
+        ('00000000-0000-0000-0000-000000000702', 'thread-panda', 'test', 'control', 'sorting', 'failed', '2040-01-05T00:00:00Z', '2040-01-05T00:00:02Z', 'failure 02'),
+        ('00000000-0000-0000-0000-000000000703', 'thread-panda', 'test', 'control', 'sorting', 'failed', '2040-01-04T00:00:00Z', '2040-01-04T00:00:03Z', 'FAILURE 10'),
+        ('00000000-0000-0000-0000-000000000704', 'thread-panda', 'test', 'control', 'sorting', 'completed', '2040-01-03T00:00:00Z', '2040-01-03T00:00:04Z', NULL),
+        ('00000000-0000-0000-0000-000000000705', 'thread-panda', 'test', 'control', 'sorting', 'running', '2040-01-06T00:00:00Z', NULL, NULL)
+    `);
+    const result = await harness.controlRuntimeActivity.getRuntimeActivity(session, "panda", "session-panda", {sortBy: "errorSummary", sortDirection});
+    const expectedOrder = sortDirection === "asc" ? [701, 702, 703, 705, 704] : [705, 704, 703, 701, 702];
+    expect(result.data.map((run) => Number(run.id.slice(-3)))).toEqual(expectedOrder);
+    expect(result.data.map((run) => run.errorSummary)).toEqual(sortDirection === "asc"
+      ? ["Fáilure 2", "failure 02", "FAILURE 10", null, null]
+      : [null, null, "FAILURE 10", "Fáilure 2", "failure 02"]);
+    expect(result.summary).toMatchObject({total: 5, running: 1, completed: 1, failed: 3, averageDurationMs: 2500, latestRun: {id: "00000000-0000-0000-0000-000000000705"}});
+
+    const filtered = await harness.controlRuntimeActivity.getRuntimeActivity(session, "panda", "session-panda", {
+      sortBy: "errorSummary", sortDirection, search: " failure ", status: "failed", page: 99, perPage: 1,
+    });
+    expect(filtered.data.map((run) => Number(run.id.slice(-3)))).toEqual(sortDirection === "asc" ? [703] : [702]);
+    expect(filtered.meta).toEqual({current_page: 2, last_page: 2, total: 2, per_page: 1});
+    expect(filtered.summary).toEqual(result.summary);
+  });
+
   it("checks path-agent ownership, scoped agent visibility, and runtime activity limits", async () => {
     const harness = await createHarness();
     await seedThreads(harness);

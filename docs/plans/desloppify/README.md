@@ -13,33 +13,40 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–57; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–58; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,491 production lines**, including
+Together, these cleanup commits remove **5,490 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
 Control now separates single-agent authorization and bulk visible-key reads from
-agent-list enrichment. The latest cycle adds 23 production lines to remove
-unnecessary queries and MCP configuration parsing from seven key-only callers.
+agent-list enrichment. Cycle 57 added 23 production lines to remove unnecessary
+queries and MCP configuration parsing from seven key-only callers.
 Admin credentials use one query instead of three; overview uses four instead of
 five in the verification fixture. Enriched listings, access policy and admin-wide
 overview/credential scope remain unchanged. The preceding lifecycle changes
 simplify command-access refresh and durable subagent creation replay.
 
-The frozen tree passes **3,209 unit tests across 339 files**, root
-build/typecheck, import law, prompt/shim contracts, all 19 compiled package
+The latest cycle reuses runtime activity's text collator and sorts its already
+owned filtered array, adding one production line. Natural ordering, case/accent
+ties, nulls, filtering, page clamping and unfiltered summaries stay unchanged.
+Its 5,718 public-method comparisons pass across English, Slovak and Turkish
+locales; two new caller tests retain the sorting contract.
+
+The frozen tree passes **3,211 unit tests across 339 files**, root
+build/typecheck, import law, all 19 compiled package
 imports and shared `Thread` identity. The initial failure of an unchanged
 cancellation test and its passing isolated/file/full reruns are recorded under
-cycle 54; its precise cause remains unproven. Eleven real-PostgreSQL visibility
-tests and 102 baseline/current comparisons verify the current Control changes.
+cycle 54; its precise cause remains unproven. Cycle 57 passed prompt/shim
+contracts, eleven real-PostgreSQL visibility tests and 102 baseline/current
+comparisons. Cycle 58 leaves those queries and authority checks unchanged.
 The cycle 56 common-runtime smoke applied all 25 migrations to fresh local
 PostgreSQL and completed an owned run with applied input, one tool call, four
 messages and idle state. It used injected model responses and blocked external
 requests. Focused public tests and method parity cover the lifecycle changes;
 that smoke did not invoke those methods. The test cluster was stopped afterward.
 Actor-pairing fanout and runtime-activity reads remain under investigation, with
-their policy and pagination constraints recorded after cycle 57. The
+their policy and pagination constraints recorded in the cycle record. The
 inspect/review/commit loop remains active.
 
 Concurrent credential-name, image-generation and background-job work belongs to
