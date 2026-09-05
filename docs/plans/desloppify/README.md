@@ -9,13 +9,14 @@ authoritative; this folder records decisions and work in progress.
 - [Current pass: verified deletions and simpler implementation](./2026-09-05-simplification-pass.md)
 - [Active inspect, simplify, review and commit loop](./CYCLES.md)
 - [Browser cancellation and ownership repair](./2026-09-05-browser-cancellation.md)
+- [Runtime-history measurements and deferred SQL change](./2026-09-05-runtime-history-measurement.md)
 
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–73; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–74; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,945 production lines**, including
+Together, these cleanup commits remove **5,961 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
@@ -117,21 +118,30 @@ Cycle 73 batches three unused custom UI components from two files, removing
 bounded audit covers 98 custom UI files and preserves reusable library
 primitives; Control typecheck and production build pass.
 
-The frozen backend passes **3,295 unit tests across 341 files**, root build/typecheck,
+Cycle 74 removes a 16-line channel forwarding helper. Its two callers now use
+the existing session-input operation directly; remembered routes, option
+precedence, authority and reset behavior remain unchanged. Sixty-four focused
+tests and 72 baseline/current caller comparisons pass, with independent review.
+Read-only production measurements defer selective runtime-error loading: the
+largest session has 8,231 runs but only 48,099 raw error bytes. Full-history
+metadata processing remains open; no endpoint-latency claim is made.
+
+The combined current worktree passes **3,306 unit tests across 341 files**, root build/typecheck,
 import law, all 19 compiled package
 imports and shared `Thread` identity. The initial failure of an unchanged
 cancellation test and its passing isolated/file/full reruns are recorded under
 cycle 54; its precise cause remains unproven. Cycle 57 passed prompt/shim
 contracts, eleven real-PostgreSQL visibility tests and 102 baseline/current
 comparisons. Cycles 58–59 leave those queries and authority checks unchanged.
-The cycle 72 common-runtime smoke applied all 25 migrations to fresh local
+The cycle 74 common-runtime smoke applied all 25 migrations to fresh local
 PostgreSQL and completed an owned run with applied input, one tool call, four
 messages and idle state. It used injected model responses and blocked external
 requests. Focused bootstrap and observer tests prove the ownership repairs; the
 smoke avoids application bootstrap and does not exercise those failure paths or
 the actor listings. The test cluster was stopped afterward. Prompt/shim contracts
-pass; cycle 72 leaves the snapshot unchanged. All 981 compiled declarations
-remain unchanged. Runtime-activity history reads remain open, with their
+pass; cycle 72 leaves the snapshot unchanged. Cycle 74 changes only the deleted
+internal helper's declaration among 981 compiled declaration files; all 19
+supported entrypoints retain their exports. Runtime-activity history reads remain open, with their
 compatibility constraints recorded in the cycle record. Cleanup cannot bypass a
 hanging step or resume sibling operations skipped inside one failed step. The
 inspect/review/commit loop remains active.

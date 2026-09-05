@@ -2459,3 +2459,53 @@ Cycle 72 below implements that policy.
   Runtime-activity history hydration remains open; the next recon pass examines
   that larger boundary instead of assuming that a limited SQL page preserves
   the current summary, filtering and ordering contracts.
+
+## Cycle 74 — Remove a channel-input forwarding layer
+
+- Finding: `submitDurableRuntimeRequestInput` copies arguments, renames
+  `enqueueOptions` to `options` and delegates to `submitCurrentSessionInput`.
+  Its two callers can use that existing operation directly. The wrapper owns
+  no route, authority, persistence or reset policy.
+- Change: delete the forwarding declaration in
+  `src/integrations/channels/inbound-delivery.ts`; retarget remembered-channel
+  delivery and `src/integrations/channels/a2a/request-handler.ts`. Retain the
+  remembered-route helper and the domain coordinator/store unchanged. Omitted
+  options, supplied object identities, queue/wake defaults and route overrides
+  retain their behavior.
+- Evidence: exact reconstruction permits only the deletion and corresponding
+  import/call/property replacements. Seventy-two baseline/current exported
+  caller comparisons preserve route and identity handling, authority/drop/
+  duplicate ordering, input identity, reset routing and thrown errors. The
+  author passes 64 focused tests across four files; independent review passes
+  18 current-thread/A2A tests and verifies the same source hashes. All 19
+  package entrypoints and 1,021 resolved export symbols exclude the wrapper;
+  no dynamic or namespace consumer was found. Reports:
+  `.temp/desloppify-inbound-forwarder-tests.json` and
+  `.temp/desloppify-inbound-forwarder-parity.json`.
+- Gates: root build/typecheck, import law, prompt/shim contracts and all 19
+  compiled package imports pass, with shared `Thread` identity. Of 981 compiled
+  declaration files, only the deleted internal helper's declaration changes.
+  The prompt snapshot is unchanged. The combined frozen worktree passes 3,306
+  tests across 341 files, including the separately scoped following shim cases;
+  see `.temp/desloppify-cycle74-75-unit-results.json`. No persistent
+  implementation-shape test is added.
+- PostgreSQL: the offline common-runtime smoke applies all 25 migrations to a
+  fresh disposable database, completes an owned run with applied input, one
+  tool call and four messages, and reaches idle with zero external requests.
+  Injected model responses keep the smoke offline; the cluster is stopped
+  afterward. This smoke exercises the unchanged runtime persistence path;
+  focused caller tests cover the removed forwarding layer. Evidence:
+  `.temp/desloppify-cycle74-offline-smoke-output.log`.
+- Result: **16 fewer production lines**; no persistent test changes. Cumulative
+  reduction becomes **5,961 production lines across 75 cleanup commits**,
+  including 75 lines moved into tests.
+- Production recon: the independent
+  [runtime-history measurement](./2026-09-05-runtime-history-measurement.md)
+  records anonymous read-only evidence and defers selective raw-error loading.
+  The largest session has 8,231 runs but only 48,099 raw error bytes. Ranking
+  would retain full metadata processing and introduce compatibility policy;
+  no endpoint latency benefit is established. Full-history processing remains
+  open. No production writes, push or deployment occurred.
+- State: independently reviewed and committed locally with this cycle.
+  Cycle 73 is committed as `405d5bc8`. The command-shim consolidation is a
+  separately scoped following cycle.

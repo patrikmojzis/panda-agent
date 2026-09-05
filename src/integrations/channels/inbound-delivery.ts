@@ -6,22 +6,6 @@ import type {
 } from "../../domain/threads/runtime/coordinator.js";
 import type {ThreadEnqueueOptions, ThreadInputPayload} from "../../domain/threads/runtime/types.js";
 
-export async function submitDurableRuntimeRequestInput(input: {
-  coordinator: Pick<ThreadRuntimeCoordinator, "submitSessionInput">;
-  enqueueOptions?: ThreadEnqueueOptions;
-  mode?: ThreadWakeMode;
-  payload: ThreadInputPayload;
-  sessionId: string;
-}): Promise<SessionInputDeliveryResult> {
-  return submitCurrentSessionInput({
-    sessionId: input.sessionId,
-    coordinator: input.coordinator,
-    ...(input.mode === undefined ? {} : {mode: input.mode}),
-    ...(input.enqueueOptions === undefined ? {} : {options: input.enqueueOptions}),
-    payload: input.payload,
-  });
-}
-
 /**
  * Persists the route and input in one database statement. The run can never
  * observe the input without its outbound route, and replay cannot move routing
@@ -36,11 +20,11 @@ export async function submitRememberedChannelInput(input: {
   route: RememberedRoute;
   sessionId: string;
 }): Promise<SessionInputDeliveryResult> {
-  return submitDurableRuntimeRequestInput({
+  return submitCurrentSessionInput({
     sessionId: input.sessionId,
     coordinator: input.coordinator,
     ...(input.mode === undefined ? {} : {mode: input.mode}),
-    enqueueOptions: {
+    options: {
       ...input.enqueueOptions,
       rememberedRoute: {
         ...(input.identityId === undefined ? {} : {identityId: input.identityId}),
