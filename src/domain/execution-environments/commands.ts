@@ -4,6 +4,7 @@ import {access, stat} from "node:fs/promises";
 import type {JsonObject} from "../../lib/json.js";
 import {isJsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
+import {optionalNonEmptyString, requireNonEmptyString} from "../../lib/strings.js";
 import {commandScopeDenied} from "../commands/errors.js";
 import type {CommandDescriptor, CommandRequest, CommandSuccess, RegisteredCommand} from "../commands/types.js";
 import type {CommandFileResolver} from "../commands/files.js";
@@ -111,22 +112,6 @@ function compactObject<T extends Record<string, unknown>>(value: T): JsonObject 
   throw new Error("Environment command payload must be a JSON object.");
 }
 
-function readRequiredString(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${label} must not be empty.`);
-  }
-
-  return value.trim();
-}
-
-function readOptionalString(value: unknown, label: string): string | undefined {
-  if (value === undefined || value === null) {
-    return undefined;
-  }
-
-  return readRequiredString(value, label);
-}
-
 function readOptionalTtlHours(value: unknown): number | undefined {
   if (value === undefined || value === null) {
     return undefined;
@@ -187,8 +172,8 @@ function requireInputObject(input: unknown, label: string): Record<string, unkno
 
 function parseEnvironmentCreateInput(input: unknown): EnvironmentCreateCommandInput {
   const object = requireInputObject(input, ENVIRONMENT_CREATE_COMMAND_NAME);
-  const label = readOptionalString(object.label, "environment.create label");
-  const setupScript = readOptionalString(object.setupScript, "environment.create setupScript");
+  const label = optionalNonEmptyString(object.label, "environment.create label must not be empty.");
+  const setupScript = optionalNonEmptyString(object.setupScript, "environment.create setupScript must not be empty.");
   const ttlHours = readOptionalTtlHours(object.ttlHours);
 
   return {
@@ -210,7 +195,7 @@ function parseEnvironmentShowInput(input: unknown): EnvironmentShowCommandInput 
   const object = requireInputObject(input, ENVIRONMENT_SHOW_COMMAND_NAME);
 
   return {
-    environmentId: readRequiredString(object.environmentId, "environment.show environmentId"),
+    environmentId: requireNonEmptyString(object.environmentId, "environment.show environmentId must not be empty."),
   };
 }
 
@@ -218,7 +203,7 @@ function parseEnvironmentStopInput(input: unknown): EnvironmentStopCommandInput 
   const object = requireInputObject(input, ENVIRONMENT_STOP_COMMAND_NAME);
 
   return {
-    environmentId: readRequiredString(object.environmentId, "environment.stop environmentId"),
+    environmentId: requireNonEmptyString(object.environmentId, "environment.stop environmentId must not be empty."),
   };
 }
 
@@ -228,7 +213,7 @@ function parseEnvironmentLogsInput(input: unknown): EnvironmentLogsCommandInput 
   const tail = readOptionalLogTail(object.tail);
 
   return {
-    environmentId: readRequiredString(object.environmentId, "environment.logs environmentId"),
+    environmentId: requireNonEmptyString(object.environmentId, "environment.logs environmentId must not be empty."),
     ...(role ? {role} : {}),
     ...(tail === undefined ? {} : {tail}),
   };

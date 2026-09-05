@@ -763,3 +763,18 @@ No additional implementation is included in this batch.
   hash, byte count and line count; tool catalogs, toolsets and other records match.
 - State: reviewed and committed locally with this cycle. Auth decoding, generated
   prompt output, model-facing text and public contracts are unchanged.
+
+## Cycle 33 — Reuse credential and environment string parsing
+
+- Finding: credential and execution-environment commands repeated the required
+  and optional string validators already supplied by `lib/strings`.
+- Change: remove three private helpers and reuse the existing functions at all
+  seven call sites, passing each complete original error message.
+- Result: 22 fewer production lines; no new test scaffolding.
+- Evidence: all 43 environment/credential/CLI tests pass, with typecheck, import
+  law and prompt/shim checks. Independent review matched 39 value/error cases and
+  proved the remaining source unchanged after helper/import/call normalization.
+  Secret values remain raw: `env.set` validates the value before its key and
+  returns the original untrimmed string.
+- State: reviewed and committed locally with this cycle. Error precedence,
+  descriptors, authority checks, mutation order and credential contents are intact.

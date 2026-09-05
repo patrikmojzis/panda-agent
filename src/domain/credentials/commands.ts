@@ -1,6 +1,7 @@
 import type {JsonObject} from "../../lib/json.js";
 import {isJsonObject} from "../../lib/json.js";
 import {isRecord} from "../../lib/records.js";
+import {requireNonEmptyString} from "../../lib/strings.js";
 import {commandScopeDenied} from "../commands/errors.js";
 import type {CommandDescriptor, CommandRequest, CommandSuccess, RegisteredCommand} from "../commands/types.js";
 import type {CredentialService} from "./resolver.js";
@@ -26,14 +27,6 @@ const ENV_JSON_ARGUMENT = {
   valueType: "json" as const,
 };
 
-function readRequiredString(value: unknown, label: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${label} must not be empty.`);
-  }
-
-  return value.trim();
-}
-
 function parseSetEnvInput(input: unknown): {key: string; value: string} {
   if (!isRecord(input)) {
     throw new Error("env.set input must be a JSON object.");
@@ -45,7 +38,7 @@ function parseSetEnvInput(input: unknown): {key: string; value: string} {
   }
 
   return {
-    key: readRequiredString(input.key, "env.set key"),
+    key: requireNonEmptyString(input.key, "env.set key must not be empty."),
     value,
   };
 }
@@ -56,7 +49,7 @@ function parseClearEnvInput(input: unknown): {key: string} {
   }
 
   return {
-    key: readRequiredString(input.key, "env.clear key"),
+    key: requireNonEmptyString(input.key, "env.clear key must not be empty."),
   };
 }
 
