@@ -1,3 +1,4 @@
+import {nullableIsoTimestamp, requireIsoTimestamp} from "../../lib/dates.js";
 import type {PgQueryable} from "../../lib/postgres-query.js";
 import {requireNonEmptyString} from "../../lib/strings.js";
 import {buildWatchTableNames} from "../watches/postgres-shared.js";
@@ -85,17 +86,6 @@ export interface ControlWatchWriteResult {
 
 type WatchRow = Record<string, unknown>;
 type ControlWatchStore = Pick<WatchStore, "updateWatch" | "disableWatch">;
-
-function toIso(value: unknown, label: string): string {
-  const millis = value instanceof Date ? value.getTime() : typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
-  if (!Number.isFinite(millis)) throw new Error(`${label} must be a valid timestamp.`);
-  return new Date(millis).toISOString();
-}
-
-function optionalIso(value: unknown, label: string): string | null {
-  if (value === null || value === undefined) return null;
-  return toIso(value, label);
-}
 
 function requiredString(value: unknown, label: string): string {
   if (typeof value !== "string" || value.length === 0) throw new Error(`${label} is missing.`);
@@ -212,10 +202,10 @@ function latestRun(row: WatchRow): ControlWatchLatestRun | null {
   return {
     id: requiredString(row.latest_run_id, "Watch latest run id"),
     status: requiredString(row.latest_run_status, "Watch latest run status") as WatchRunStatus,
-    scheduledFor: toIso(row.latest_run_scheduled_for, "Watch latest run scheduled_for"),
-    startedAt: optionalIso(row.latest_run_started_at, "Watch latest run started_at"),
-    finishedAt: optionalIso(row.latest_run_finished_at, "Watch latest run finished_at"),
-    createdAt: toIso(row.latest_run_created_at, "Watch latest run created_at"),
+    scheduledFor: requireIsoTimestamp(row.latest_run_scheduled_for, "Watch latest run scheduled_for must be a valid timestamp."),
+    startedAt: nullableIsoTimestamp(row.latest_run_started_at, "Watch latest run started_at must be a valid timestamp."),
+    finishedAt: nullableIsoTimestamp(row.latest_run_finished_at, "Watch latest run finished_at must be a valid timestamp."),
+    createdAt: requireIsoTimestamp(row.latest_run_created_at, "Watch latest run created_at must be a valid timestamp."),
   };
 }
 
@@ -236,11 +226,11 @@ function publicWatch(row: WatchRow): ControlWatch {
     intervalMinutes: requiredNumber(row.interval_minutes, "Watch interval_minutes"),
     enabled: row.enabled === true,
     lifecycleStatus: lifecycleStatus(row),
-    nextPollAt: optionalIso(row.next_poll_at, "Watch next_poll_at"),
-    disabledAt: optionalIso(row.disabled_at, "Watch disabled_at"),
-    cooldownUntil: optionalIso(row.cooldown_until, "Watch cooldown_until"),
-    createdAt: toIso(row.created_at, "Watch created_at"),
-    updatedAt: toIso(row.updated_at, "Watch updated_at"),
+    nextPollAt: nullableIsoTimestamp(row.next_poll_at, "Watch next_poll_at must be a valid timestamp."),
+    disabledAt: nullableIsoTimestamp(row.disabled_at, "Watch disabled_at must be a valid timestamp."),
+    cooldownUntil: nullableIsoTimestamp(row.cooldown_until, "Watch cooldown_until must be a valid timestamp."),
+    createdAt: requireIsoTimestamp(row.created_at, "Watch created_at must be a valid timestamp."),
+    updatedAt: requireIsoTimestamp(row.updated_at, "Watch updated_at must be a valid timestamp."),
     recentRunCount: requiredNumber(row.recent_run_count ?? 0, "Watch recent run count"),
     eventCount: requiredNumber(row.event_count ?? 0, "Watch event count"),
     latestRun: latestRun(row),
@@ -257,11 +247,11 @@ function publicWatchRecord(record: WatchRecord): ControlWatch {
     intervalMinutes: record.intervalMinutes,
     enabled: record.enabled,
     lifecycleStatus: record.disabledAt || !record.enabled ? "disabled" : record.claimedAt ? "running" : record.cooldownUntil ? "cooldown" : "enabled",
-    nextPollAt: optionalIso(record.nextPollAt, "Watch nextPollAt"),
-    disabledAt: optionalIso(record.disabledAt, "Watch disabledAt"),
-    cooldownUntil: optionalIso(record.cooldownUntil, "Watch cooldownUntil"),
-    createdAt: toIso(record.createdAt, "Watch createdAt"),
-    updatedAt: toIso(record.updatedAt, "Watch updatedAt"),
+    nextPollAt: nullableIsoTimestamp(record.nextPollAt, "Watch nextPollAt must be a valid timestamp."),
+    disabledAt: nullableIsoTimestamp(record.disabledAt, "Watch disabledAt must be a valid timestamp."),
+    cooldownUntil: nullableIsoTimestamp(record.cooldownUntil, "Watch cooldownUntil must be a valid timestamp."),
+    createdAt: requireIsoTimestamp(record.createdAt, "Watch createdAt must be a valid timestamp."),
+    updatedAt: requireIsoTimestamp(record.updatedAt, "Watch updatedAt must be a valid timestamp."),
     recentRunCount: 0,
     eventCount: 0,
     latestRun: null,

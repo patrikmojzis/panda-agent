@@ -1276,3 +1276,29 @@ generic date module is a candidate for the next cycle. Preserve timestamp-string
 acceptance, null output, exact field errors and out-of-range `RangeError` behavior;
 the stricter Postgres timestamp decoder is not equivalent. This candidate remains
 unimplemented and needs caller-level service/HTTP verification.
+
+## Cycle 49 — Share Control timestamp conversion
+
+- Finding: scheduled-task, watch and runtime-activity services duplicated the same
+  required/nullable ISO timestamp conversion at 31 call sites.
+- Change: use two documented generic helpers in the existing `lib/dates.ts`, with
+  each caller supplying its complete original error. Date objects, millisecond
+  numbers and date strings remain supported; nullish optional values remain null.
+- Result: 17 fewer production lines; cumulative reduction 5,310, including the
+  75 lines previously relocated into tests. No persistent test scaffolding added.
+- Evidence: all 97 focused Control HTTP/time/package tests pass in author and
+  independent review. Whole-file reconstruction preserves all caller declarations
+  and existing date helpers. 1,860 helper comparisons, 138 public runtime-activity
+  comparisons and 272 public task/watch update comparisons preserve outputs,
+  SQL/parameters, authority/validation order and errors, including the existing
+  finite-out-of-range `RangeError`. Local proof:
+  `.temp/desloppify-cycle49-runtime-parity.mjs`.
+- Documentation audit: correct the obsolete database compatibility-facade sentence
+  in the architecture overview and mark the initial simplification pass committed
+  as `ca5a689d`. A bounded audit found no unresolved accepted implementation step
+  in the sampled legacy-runner, model-boundary, session/reset, claim and receipt
+  paths. Explicit compatibility/schema/MCP-affinity dispositions remain in place;
+  this audit does not claim that all possible cleanup is complete.
+- State: independently reviewed and committed locally with this cycle. Typecheck,
+  import law, prompt contracts and diff checks pass. No SQL, schema, public package
+  export, production access, push or deployment change.

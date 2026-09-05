@@ -1,5 +1,6 @@
 import {createHash} from "node:crypto";
 
+import {nullableIsoTimestamp, requireIsoTimestamp} from "../../lib/dates.js";
 import type {PgQueryable} from "../../lib/postgres-query.js";
 import {requireNonEmptyString} from "../../lib/strings.js";
 import {buildScheduledTaskTableNames} from "../scheduling/tasks/postgres-shared.js";
@@ -94,17 +95,6 @@ type TaskRow = Record<string, unknown>;
 type RunRow = Record<string, unknown>;
 type ControlScheduledTaskStore = Pick<ScheduledTaskStore, "createTask" | "updateTask" | "cancelTask">;
 
-function toIso(value: unknown, label: string): string {
-  const millis = value instanceof Date ? value.getTime() : typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
-  if (!Number.isFinite(millis)) throw new Error(`${label} must be a valid timestamp.`);
-  return new Date(millis).toISOString();
-}
-
-function optionalIso(value: unknown, label: string): string | null {
-  if (value === null || value === undefined) return null;
-  return toIso(value, label);
-}
-
 function requiredString(value: unknown, label: string): string {
   if (typeof value !== "string" || value.length === 0) throw new Error(`${label} is missing.`);
   return value;
@@ -126,7 +116,7 @@ function lifecycleStatus(row: TaskRow): ControlScheduledTaskLifecycleStatus {
 function publicSchedule(row: TaskRow): ScheduledTaskSchedule {
   const kind = requiredString(row.schedule_kind, "Schedule kind");
   if (kind === "once") {
-    return {kind, runAt: toIso(row.run_at, "Scheduled task run_at")};
+    return {kind, runAt: requireIsoTimestamp(row.run_at, "Scheduled task run_at must be a valid timestamp.")};
   }
   if (kind === "recurring") {
     return {
@@ -223,9 +213,9 @@ function publicRun(row: RunRow): ControlScheduledTaskRun {
   return {
     id: requiredString(row.id, "Scheduled task run id"),
     status: requiredString(row.status, "Scheduled task run status") as ScheduledTaskRunStatus,
-    scheduledFor: toIso(row.scheduled_for, "Scheduled task run scheduled_for"),
-    startedAt: optionalIso(row.started_at, "Scheduled task run started_at"),
-    finishedAt: optionalIso(row.finished_at, "Scheduled task run finished_at"),
+    scheduledFor: requireIsoTimestamp(row.scheduled_for, "Scheduled task run scheduled_for must be a valid timestamp."),
+    startedAt: nullableIsoTimestamp(row.started_at, "Scheduled task run started_at must be a valid timestamp."),
+    finishedAt: nullableIsoTimestamp(row.finished_at, "Scheduled task run finished_at must be a valid timestamp."),
     ...(optionalString(row.resolved_thread_id) ? {resolvedThreadId: optionalString(row.resolved_thread_id)} : {}),
     ...(optionalString(row.thread_input_id) ? {threadInputId: optionalString(row.thread_input_id)} : {}),
     ...(optionalString(row.thread_run_id) ? {threadRunId: optionalString(row.thread_run_id)} : {}),
@@ -239,11 +229,11 @@ function publicTask(row: TaskRow, runs: readonly ControlScheduledTaskRun[]): Con
     schedule: publicSchedule(row),
     enabled: row.enabled === true,
     lifecycleStatus: lifecycleStatus(row),
-    nextFireAt: optionalIso(row.next_fire_at, "Scheduled task next_fire_at"),
-    completedAt: optionalIso(row.completed_at, "Scheduled task completed_at"),
-    cancelledAt: optionalIso(row.cancelled_at, "Scheduled task cancelled_at"),
-    createdAt: toIso(row.created_at, "Scheduled task created_at"),
-    updatedAt: toIso(row.updated_at, "Scheduled task updated_at"),
+    nextFireAt: nullableIsoTimestamp(row.next_fire_at, "Scheduled task next_fire_at must be a valid timestamp."),
+    completedAt: nullableIsoTimestamp(row.completed_at, "Scheduled task completed_at must be a valid timestamp."),
+    cancelledAt: nullableIsoTimestamp(row.cancelled_at, "Scheduled task cancelled_at must be a valid timestamp."),
+    createdAt: requireIsoTimestamp(row.created_at, "Scheduled task created_at must be a valid timestamp."),
+    updatedAt: requireIsoTimestamp(row.updated_at, "Scheduled task updated_at must be a valid timestamp."),
     recentRuns: runs,
   };
 }
@@ -262,11 +252,11 @@ function publicTaskRecord(record: ScheduledTaskRecord, runs: readonly ControlSch
     schedule: record.schedule,
     enabled: record.enabled,
     lifecycleStatus: lifecycleStatusFromRecord(record),
-    nextFireAt: optionalIso(record.nextFireAt, "Scheduled task nextFireAt"),
-    completedAt: optionalIso(record.completedAt, "Scheduled task completedAt"),
-    cancelledAt: optionalIso(record.cancelledAt, "Scheduled task cancelledAt"),
-    createdAt: toIso(record.createdAt, "Scheduled task createdAt"),
-    updatedAt: toIso(record.updatedAt, "Scheduled task updatedAt"),
+    nextFireAt: nullableIsoTimestamp(record.nextFireAt, "Scheduled task nextFireAt must be a valid timestamp."),
+    completedAt: nullableIsoTimestamp(record.completedAt, "Scheduled task completedAt must be a valid timestamp."),
+    cancelledAt: nullableIsoTimestamp(record.cancelledAt, "Scheduled task cancelledAt must be a valid timestamp."),
+    createdAt: requireIsoTimestamp(record.createdAt, "Scheduled task createdAt must be a valid timestamp."),
+    updatedAt: requireIsoTimestamp(record.updatedAt, "Scheduled task updatedAt must be a valid timestamp."),
     recentRuns: runs,
   };
 }

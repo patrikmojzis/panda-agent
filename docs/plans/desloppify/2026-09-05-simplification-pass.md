@@ -1,7 +1,7 @@
 # Desloppify: implementation simplification
 
 - **Date:** 5 September 2026
-- **Status:** implemented and verified locally; not committed or deployed
+- **Status:** committed as `ca5a689d`; historical implementation record
 - **Base:** committed `2a483743` plus the existing uncommitted D01–D14 work
 - **Scope:** the current codebase; focus on obsolete internals, unnecessary
   indirection and repeated implementation knowledge

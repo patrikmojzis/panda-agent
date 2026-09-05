@@ -1,3 +1,4 @@
+import {nullableIsoTimestamp, requireIsoTimestamp} from "../../lib/dates.js";
 import type {PgQueryable} from "../../lib/postgres-query.js";
 import {requireNonEmptyString} from "../../lib/strings.js";
 import {buildSessionTableNames} from "../sessions/postgres-shared.js";
@@ -83,17 +84,6 @@ function pageInput(input: ControlRuntimeActivityTableInput): {page: number; perP
   return {page, perPage: Math.min(MAX_RUN_LIMIT, perPage)};
 }
 
-function toIso(value: unknown, label: string): string {
-  const millis = value instanceof Date ? value.getTime() : typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
-  if (!Number.isFinite(millis)) throw new Error(`${label} must be a valid timestamp.`);
-  return new Date(millis).toISOString();
-}
-
-function optionalIso(value: unknown, label: string): string | null {
-  if (value === null || value === undefined) return null;
-  return toIso(value, label);
-}
-
 function requiredString(value: unknown, label: string): string {
   if (typeof value !== "string" || value.length === 0) throw new Error(`${label} is missing.`);
   return value;
@@ -108,8 +98,8 @@ function failureCategory(error: unknown): ControlRuntimeFailureCategory | null {
 }
 
 function publicRun(row: RunRow): ControlRuntimeActivityRun {
-  const startedAt = toIso(row.started_at, "Runtime run started_at");
-  const finishedAt = optionalIso(row.finished_at, "Runtime run finished_at");
+  const startedAt = requireIsoTimestamp(row.started_at, "Runtime run started_at must be a valid timestamp.");
+  const finishedAt = nullableIsoTimestamp(row.finished_at, "Runtime run finished_at must be a valid timestamp.");
   const durationMs = finishedAt ? new Date(finishedAt).getTime() - new Date(startedAt).getTime() : null;
   const status = requiredString(row.status, "Runtime run status") as ThreadRunStatus;
   return {
@@ -118,7 +108,7 @@ function publicRun(row: RunRow): ControlRuntimeActivityRun {
     startedAt,
     finishedAt,
     durationMs: durationMs !== null && Number.isFinite(durationMs) ? durationMs : null,
-    abortRequestedAt: optionalIso(row.abort_requested_at, "Runtime run abort_requested_at"),
+    abortRequestedAt: nullableIsoTimestamp(row.abort_requested_at, "Runtime run abort_requested_at must be a valid timestamp."),
     failureCategory: failureCategory(row.error),
     errorSummary: status === "failed" ? summarizeRuntimeError(row.error) : null,
   };

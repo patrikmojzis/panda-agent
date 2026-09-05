@@ -8,6 +8,19 @@ export function toDateOrNull(value: number | undefined): Date | null {
   return value === undefined ? null : new Date(value);
 }
 
+/** Converts a Date, timestamp number or date string to ISO with caller-owned validation errors. */
+export function requireIsoTimestamp(value: unknown, errorMessage: string): string {
+  const millis = value instanceof Date ? value.getTime() : typeof value === "number" ? value : typeof value === "string" ? Date.parse(value) : NaN;
+  if (!Number.isFinite(millis)) throw new Error(errorMessage);
+  return new Date(millis).toISOString();
+}
+
+/** Converts a present timestamp to ISO and preserves nullish input as null. */
+export function nullableIsoTimestamp(value: unknown, errorMessage: string): string | null {
+  if (value === null || value === undefined) return null;
+  return requireIsoTimestamp(value, errorMessage);
+}
+
 export interface LocalDateTimeInfo extends JsonObject {
   isoTimestamp: string;
   formattedDateTime: string;

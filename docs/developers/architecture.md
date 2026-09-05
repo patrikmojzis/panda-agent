@@ -58,7 +58,7 @@ Do not hide core logic here. `app` should wire parts together, not become the pr
 For Panda runtime assembly, keep the public facade thin:
 
 - `create-runtime.ts` is the public entry
-- `database.ts` re-exports generic DB URL/pool helpers for compatibility; new callers use `src/lib/postgres-database.ts`
+- Runtime callers use the generic DB URL/pool helpers in `src/lib/postgres-database.ts` directly.
   Postgres pool observation depends on `ObservablePostgresPool`: stats,
   `connect`, `query`, and error listeners. Do not make observer tests fake a
   full `pg.Pool`.
