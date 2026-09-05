@@ -578,51 +578,6 @@ export class SubagentSessionService {
     },
     activeParentSessionId?: string,
   ): Promise<{session: SessionRecord; thread: ThreadRecord; createdNew: boolean}> {
-    const readReplay = async (): Promise<{session: SessionRecord; thread: ThreadRecord; createdNew: false} | null> => {
-      let existingSession: SessionRecord;
-      try {
-        existingSession = await this.sessions.getSession(session.id);
-      } catch (error) {
-        if (error instanceof Error && error.message === `Unknown session ${session.id}`) {
-          return null;
-        }
-        if (operation) {
-          throw new RetryableRuntimeRequestError(
-            `Subagent creation operation ${operation.operationId} could not read its session.`,
-            {cause: error},
-          );
-        }
-        throw error;
-      }
-      if (
-        existingSession.agentKey !== session.agentKey
-        || existingSession.kind !== "subagent"
-        || (!operation && existingSession.currentThreadId !== thread.id)
-        || (!operation && existingSession.createdByIdentityId !== session.createdByIdentityId)
-        || !isDeepStrictEqual(existingSession.metadata, session.metadata)
-      ) {
-        throw new Error(`Subagent session ${session.id} already exists with different creation parameters.`);
-      }
-      let existingThread;
-      try {
-        existingThread = await this.threads.getThread(thread.id);
-      } catch (error) {
-        if (operation) {
-          throw new RetryableRuntimeRequestError(
-            `Subagent creation operation ${operation.operationId} could not read its thread.`,
-            {cause: error},
-          );
-        }
-        throw error;
-      }
-      if (existingThread.sessionId !== session.id) {
-        throw new Error(`Subagent thread ${thread.id} belongs to another session.`);
-      }
-      // Creation replay is validation, not a configuration mutation. A later
-      // update_thread request owns the mutable runtime configuration.
-      return {session: existingSession, thread: existingThread, createdNew: false};
-    };
-
     try {
       const created = await this.sessionLifecycle.create({
         session, thread, runtimeConfig, operation, activeParentSessionId,
@@ -630,25 +585,49 @@ export class SubagentSessionService {
       return {...created, createdNew: true};
     } catch (error) {
       if (!operation) throw error;
-      const racedReplay = await readReplay();
-      if (racedReplay) {
-        if (operation) {
-          await this.sessions.recordSessionCreationOperation({
-            ...operation,
-            agentKey: racedReplay.session.agentKey,
-            sessionId: racedReplay.session.id,
-            threadId: racedReplay.thread.id,
-          });
+      let existingSession: SessionRecord;
+      try {
+        existingSession = await this.sessions.getSession(session.id);
+      } catch (readError) {
+        if (readError instanceof Error && readError.message === `Unknown session ${session.id}`) {
+          throw new RetryableRuntimeRequestError(
+            `Subagent creation operation ${operation.operationId} did not reach a durable receipt.`,
+            {cause: error},
+          );
         }
-        return racedReplay;
-      }
-      if (operation) {
         throw new RetryableRuntimeRequestError(
-          `Subagent creation operation ${operation.operationId} did not reach a durable receipt.`,
-          {cause: error},
+          `Subagent creation operation ${operation.operationId} could not read its session.`,
+          {cause: readError},
         );
       }
-      throw error;
+      if (
+        existingSession.agentKey !== session.agentKey
+        || existingSession.kind !== "subagent"
+        || !isDeepStrictEqual(existingSession.metadata, session.metadata)
+      ) {
+        throw new Error(`Subagent session ${session.id} already exists with different creation parameters.`);
+      }
+      let existingThread;
+      try {
+        existingThread = await this.threads.getThread(thread.id);
+      } catch (readError) {
+        throw new RetryableRuntimeRequestError(
+          `Subagent creation operation ${operation.operationId} could not read its thread.`,
+          {cause: readError},
+        );
+      }
+      if (existingThread.sessionId !== session.id) {
+        throw new Error(`Subagent thread ${thread.id} belongs to another session.`);
+      }
+      // Creation replay is validation, not a configuration mutation. A later
+      // update_thread request owns the mutable runtime configuration.
+      await this.sessions.recordSessionCreationOperation({
+        ...operation,
+        agentKey: existingSession.agentKey,
+        sessionId: existingSession.id,
+        threadId: existingThread.id,
+      });
+      return {session: existingSession, thread: existingThread, createdNew: false};
     }
   }
 

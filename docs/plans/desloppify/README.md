@@ -13,29 +13,31 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–53; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–56; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,493 production lines**, including
+Together, these cleanup commits remove **5,514 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
-The latest two cycles remove 158 production lines: transcript projection stores
-a suffix boundary and checkpoint instead of materializing protected indexes,
-and the unused HTML-only web reader is deleted. Current web command/watch
-extraction and HTTP safety remain unchanged. Five public projection tests and
-158,514 old/new comparisons cover protection floors, checkpoints, rule order,
-object identity and unchanged input records.
+The latest three cycles separate single-agent Control authorization from full
+agent-list enrichment and simplify command-access refresh and durable subagent
+creation replay. Together they remove 21 production lines net. Targeted access
+checks preserve active-agent, role, grant and pairing policy while avoiding
+unrelated MCP configuration reads. Enriched listings remain unchanged.
 
-The frozen combined tree passes **3,199 unit tests across 339 files**, root
+The frozen combined tree passes **3,204 unit tests across 339 files** on rerun, root
 build/typecheck, import law, prompt/shim contracts, all 19 compiled package
-imports and shared `Thread` identity. A projection-enabled runtime smoke applies
-all 25 migrations to fresh local PostgreSQL and completes an owned run with an
-applied input, one tool call, four messages and idle state. It uses injected model
-responses and blocks external requests. The test cluster was stopped afterward.
-Earlier subsystem-specific PostgreSQL tests remain recorded with their cycles.
-The next priority is removing agent-list enrichment from Control authorization;
-the scoped findings are recorded after cycle 53. The inspect/review/commit loop
-remains active.
+imports and shared `Thread` identity. The initial failure of an unchanged
+cancellation test and its passing isolated/file/full reruns are recorded under
+cycle 54; its precise cause remains unproven. Six real-PostgreSQL visibility tests
+and 34 baseline/current comparisons also pass. A common-runtime smoke applies all
+25 migrations to fresh local PostgreSQL and completes an owned run with applied
+input, one tool call, four messages and idle state. It uses injected model
+responses and blocks external requests. Focused public tests and method parity
+cover the two lifecycle changes; the smoke does not invoke those methods. The
+test cluster was stopped afterward. The next priority is a visible-agent-key read
+for remaining key-only Control consumers, followed by actor-pairing fanout.
+The inspect/review/commit loop remains active.
 
 Concurrent credential-name, image-generation and background-job work belongs to
 separate tasks. Preserve those changes and untracked `output/`; they are excluded

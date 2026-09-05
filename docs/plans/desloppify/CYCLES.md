@@ -1535,3 +1535,68 @@ remains preserved. The inspect/review/commit loop remains active.
   import law and prompt/shim contracts. The earlier cancellation failure and its
   limits remain recorded under cycle 54. Cycle 54 is committed as `2aaa7744`.
   No schema, production access, push or deployment change.
+
+## Cycle 56 — Inline guarded subagent creation replay
+
+- Finding: `createSessionAndThread` in
+  `src/app/runtime/subagent-session-service.ts` defined an async replay closure
+  before creation, although its only caller was guarded by a durable operation.
+  The closure retained unreachable no-operation checks and a nullable result.
+- Change: validate replay directly after the failed-create operation guard.
+  Keep atomic creation first, the existing session/thread checks and receipt
+  recording after successful validation. An exact unknown-session read retains
+  the original create error as its retryable cause; other read failures retain
+  their own causes. Receipt-write failures remain unwrapped. Replay still does
+  not mutate runtime configuration.
+- Result: 21 fewer production lines; cumulative reduction becomes 5,514,
+  including the 75 lines previously relocated into tests. No persistent test
+  edits or transcript/schema changes.
+- Evidence: 192 actual old/new method cases and all 37 focused public tests pass.
+  Independent review passes 768 comparisons and the same 37 tests, covering
+  success, operation absence, replay validation, receipt writes, ordered calls,
+  object identity and Error/string/null/record failures. Source outside the method
+  remains byte-identical. Evidence: `.temp/desloppify-cycle56-parity.mjs` and
+  `.temp/desloppify-cycle56-frozen.json`.
+- State: independently reviewed and committed locally with this cycle. Build,
+  typecheck, import law and prompt/shim contracts pass. Command-access cleanup
+  is committed as `7323be65`. No production access, push or deployment.
+
+## Combined verification after cycles 54–56
+
+The full rerun passes all 3,204 unit tests across 339 files with no failures or
+skips. The initial unchanged cancellation-test failure, passing isolated/file
+checks and unresolved cause are recorded under cycle 54; both full-suite reports
+are retained. Build/typecheck, import law, prompt/shim contracts, all 19 compiled
+package imports and shared `Thread` identity pass. Frozen source/test hashes
+match independent review.
+
+Six real-PostgreSQL Control visibility tests and 34 baseline/current comparisons
+verify role/grant/pairing policy, one-target query bounds and unchanged enriched
+listings. The offline runtime smoke applies all 25 migrations to a fresh isolated
+database and completes an owned run with two injected model responses, one tool
+call, four persisted messages, applied input and idle state. External requests
+are blocked and none were attempted. Evidence:
+`.temp/desloppify-cycle56-offline-smoke-output.log`. This smoke covers shared
+runtime persistence and completion; it does not call either changed lifecycle
+method in cycles 55–56. Their focused public tests and actual-method comparisons
+provide that coverage. The isolated cluster was stopped afterward.
+
+These cycles remove 21 production lines net, bringing the total to 5,514 across
+57 cleanup commits. The targeted visibility seam adds 17 lines to remove
+unnecessary listing/enrichment work; the two lifecycle simplifications remove
+38. Counts exclude unrelated work, tests, docs and configuration; 75 production
+lines were previously relocated into tests. Untracked `output/` remains preserved.
+
+### Next recon findings
+
+- Add a narrow visible-agent-key read for the seven key-only calls in Control
+  overview, audit, credential, identity, A2A-binding and work-failure reads.
+  Keep database ordering, unique scoped keys despite duplicate grants, current
+  pairing policy and admin-wide overview/credential scope. Admin credential
+  listing needs no visibility query. Preserve the enriched agent list and the
+  bounded single-target assertion; avoid a generic SQL builder or cache.
+- Actor-pairing listings repeat identity reads. Discord includes identities on
+  owned connector accounts even without a current agent pairing; Telegram and
+  WhatsApp require that pairing. Preserve these distinct scopes and error/order
+  behavior when replacing the fanout. Runtime-activity pagination and pool
+  observation ownership remain pending as described after cycle 53.
