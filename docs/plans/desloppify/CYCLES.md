@@ -2229,3 +2229,36 @@ Extend runtime assembly's ownership boundary to cover this supported command
 phase, preserving synchronous command registration order, the lazy definition
 callback and the existing successful runtime surface. Do not wrap or suppress
 the command factory error. This remains pending work, separate from cycle 68.
+
+## Cycle 69 — Delete the unused confirmation switch
+
+- Finding: `ConfirmSwitch` in
+  `apps/control-ui/src/features/control/confirm-actions.tsx` has no caller.
+  The module's only consumer is
+  `apps/control-ui/src/features/control/session/briefing-panel.tsx`, which
+  imports `ConfirmButton` by name. No namespace import, dynamic lookup, module
+  discovery or supported package export exposes the unused component. Control
+  UI is a private application; it is absent from the 19 package entrypoints.
+- Change: delete `ConfirmSwitch` and its exclusive `Switch` import. Keep
+  `ConfirmButton` and `isPromise` byte-for-byte unchanged, preserving their
+  synchronous/asynchronous confirmation and retry behavior. Keep the shared
+  `apps/control-ui/src/components/ui/switch.tsx`, which remains used by
+  `apps/control-ui/src/components/common/form/fields/switch-field.tsx`.
+- Verification: exact whole-file reconstruction permits only the two deletions.
+  A scan of 1,304 tracked source files verifies the remaining consumer and
+  absence of component references or UI module discovery. The primitive,
+  briefing caller and package files match the baseline. Independent review
+  confirms the frozen hash and reruns the bounded proof. Evidence:
+  `.temp/desloppify-cycle69-proof.mjs` and
+  `.temp/desloppify-cycle69-proof-output.log`.
+- Gates: Control app/node typechecks, TypeScript/Vite production build and scoped
+  diff check pass. No persistent absence-only test is added. The preceding
+  backend gate remains 3,267 passing tests across 341 files; this cycle changes
+  no backend source, schema, API response, generated contract or test file.
+- Result: **83 fewer production lines**, with zero added. Cumulative reduction
+  becomes **5,840 production lines across 70 cleanup commits**, including 75
+  lines moved into tests.
+- State: independently reviewed and committed locally with this cycle. No
+  production access, push or deployment. Cycle 68 is committed as `eef33f2a`.
+  Runtime-activity history reads and custom subagent-command registration
+  ownership remain open as recorded above.

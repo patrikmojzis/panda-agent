@@ -13,9 +13,9 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–68; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–69; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
-Together, these cleanup commits remove **5,757 production lines**, including
+Together, these cleanup commits remove **5,840 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
 documentation and configuration.
 
@@ -87,6 +87,11 @@ initialization. Six logging-failure cases and one secondary cleanup-failure case
 fail before the repair and pass afterward. Healthy initialization, lazy readonly
 configuration, cleanup order and original errors remain intact. This adds 11
 production lines and 50 test lines; no public contract or schema changes.
+
+Cycle 69 deletes the unused `ConfirmSwitch` component and its exclusive import,
+removing 83 UI lines. The live confirmation button, its promise handling, the
+briefing caller and the shared switch primitive remain byte-for-byte unchanged.
+Caller/export checks, Control typecheck and production build pass.
 
 The frozen backend passes **3,267 unit tests across 341 files**, root build/typecheck,
 import law, all 19 compiled package

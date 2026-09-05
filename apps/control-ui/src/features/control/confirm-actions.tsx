@@ -13,7 +13,6 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Spinner } from "@/components/ui/spinner"
-import { Switch } from "@/components/ui/switch"
 
 export function ConfirmButton({
   title,
@@ -98,88 +97,6 @@ export function ConfirmButton({
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
-  )
-}
-
-export function ConfirmSwitch({
-  checked,
-  disabled,
-  label,
-  title,
-  description,
-  confirmLabel,
-  onConfirm,
-}: {
-  checked: boolean
-  disabled?: boolean
-  label: string
-  title: (nextChecked: boolean) => string
-  description: (nextChecked: boolean) => string
-  confirmLabel: (nextChecked: boolean) => string
-  onConfirm: (nextChecked: boolean) => void | Promise<unknown>
-}) {
-  const [nextChecked, setNextChecked] = React.useState<boolean | null>(null)
-  const [isConfirming, setIsConfirming] = React.useState(false)
-  const isOpen = nextChecked !== null
-  const nextValue = nextChecked ?? checked
-
-  async function handleConfirm(event: React.MouseEvent) {
-    if (nextChecked === null) return
-    const result = onConfirm(nextChecked)
-    if (!isPromise(result)) {
-      setNextChecked(null)
-      return
-    }
-
-    event.preventDefault()
-    setIsConfirming(true)
-    try {
-      await result
-      setNextChecked(null)
-    } catch {
-      // Mutation hooks own user-facing error toasts. Keep dialog open for retry.
-    } finally {
-      setIsConfirming(false)
-    }
-  }
-
-  return (
-    <>
-      <Switch
-        checked={checked}
-        disabled={disabled}
-        aria-label={label}
-        onCheckedChange={(value) => setNextChecked(value)}
-      />
-      <AlertDialog
-        open={isOpen}
-        onOpenChange={(open) => {
-          if (!open && !isConfirming) setNextChecked(null)
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>{title(nextValue)}</AlertDialogTitle>
-            <AlertDialogDescription>
-              {description(nextValue)}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={isConfirming}>
-              Cancel
-            </AlertDialogCancel>
-            <AlertDialogAction
-              disabled={isConfirming}
-              variant={nextValue ? "default" : "destructive"}
-              onClick={handleConfirm}
-            >
-              {isConfirming ? <Spinner className="size-3.5" /> : null}
-              {confirmLabel(nextValue)}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </>
   )
 }
 
