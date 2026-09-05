@@ -1,11 +1,7 @@
 import type {IncomingMessage, ServerResponse} from "node:http";
 
 import type {AgentAppAuthService} from "../../domain/apps/auth.js";
-import type {
-  AgentAppActionResult,
-  AgentAppDefinition,
-  AgentAppViewResult,
-} from "../../domain/apps/types.js";
+import type {AgentAppDefinition} from "../../domain/apps/types.js";
 import type {IdentityStore} from "../../domain/identity/store.js";
 import type {ThreadRuntimeCoordinator} from "../../domain/threads/runtime/coordinator.js";
 import {writeJsonResponse} from "../../lib/http.js";
@@ -32,33 +28,7 @@ import type {
   AgentAppMainSessionStore,
   AgentAppSessionContextStore,
 } from "./http-runtime.js";
-
-interface AgentAppHttpApiService {
-  getApp(agentKey: string, appSlug: string): Promise<AgentAppDefinition>;
-  executeView(
-    agentKey: string,
-    appSlug: string,
-    viewName: string,
-    options: {
-      identityId?: string;
-      offset?: number;
-      pageSize?: number;
-      params?: Record<string, unknown>;
-      sessionId?: string;
-    },
-  ): Promise<AgentAppViewResult>;
-  executeAction(
-    agentKey: string,
-    appSlug: string,
-    actionName: string,
-    options: {
-      identityId?: string;
-      input?: Record<string, unknown>;
-      sessionId?: string;
-      wake?: ((message: string) => Promise<void>) | undefined;
-    },
-  ): Promise<AgentAppActionResult>;
-}
+import type {AgentAppHttpService} from "./http-server.js";
 
 function isAgentAppApiPath(parts: readonly string[]): boolean {
   return parts[0] === "api" && parts[1] === "apps" && parts.length >= 5;
@@ -111,7 +81,7 @@ export async function maybeWriteAgentAppApiResponse(input: {
   request: IncomingMessage;
   requestUrl: URL;
   response: ServerResponse;
-  service: AgentAppHttpApiService;
+  service: AgentAppHttpService;
   sessionStore?: AgentAppSessionContextStore;
 }): Promise<boolean> {
   if (!isAgentAppApiPath(input.parts)) {

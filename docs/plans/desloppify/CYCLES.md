@@ -660,3 +660,16 @@ needs caller-level validation checks, exact error labels and preservation of
 cron's explicit null-to-clear behavior. No such change is included here.
 Other inspected scheduling limit/claim/renewal paths, channel/provider helpers
 and supported runtime context exports retain meaningful policy or public callers.
+
+## Cycle 28 — Use one app HTTP service contract
+
+- Finding: the API adapter duplicated the server's service interface exactly,
+  although its sole runtime caller already passed that server contract.
+- Change: replace the private duplicate with a type-only import of the existing
+  `AgentAppHttpService`; remove unused result-type imports.
+- Result: 30 fewer production lines; no test scaffolding added.
+- Evidence: all 16 app-server/runtime tests pass, plus typecheck and import law.
+  Root independently compared every interface member and emitted JavaScript:
+  both are identical. The new type reference is erased, adding no runtime cycle.
+- State: reviewed and committed locally with this cycle. Public types, HTTP
+  behavior, authentication, input admission and app SQL isolation are unchanged.
