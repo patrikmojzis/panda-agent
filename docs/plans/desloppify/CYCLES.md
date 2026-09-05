@@ -346,6 +346,23 @@ input/error differences; this pass did not justify a generic replacement.
 - State: reviewed and committed locally with this cycle; not pushed or deployed.
   No provider request or production action was performed by the focused tests.
 
+## Cycle 15 — Delete unused Panda tool helpers
+
+- Finding: two tool-scope readers, their interfaces/input helpers, an explicit-text
+  payload builder and an error wrapper had no live callers. None was exposed by
+  the supported root, Panda or SDK package entrypoints; only one test exercised
+  the obsolete scope readers.
+- Change: delete those internals and their obsolete test. Correct the architecture
+  paragraph that still directed callers to the removed scope readers.
+- Result: 100 fewer production lines and 28 fewer test lines.
+- Evidence: all 21 tool JSON, thinking, image-command and package/root export tests
+  pass. Root independently confirmed zero remaining source/test/example/script
+  references and byte-identical bodies for all three live helpers: JSON validation,
+  JSON payload construction and background-result serialization. Typecheck and
+  import law pass. The combined full-suite evidence is recorded below.
+- State: reviewed and committed locally with this cycle; not pushed or deployed.
+  No image-generation behavior or supported public export changed.
+
 ## Combined verification after cycles 1–5
 
 The final combined source passed the TypeScript build, all three package-export

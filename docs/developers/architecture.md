@@ -174,9 +174,10 @@ with per-identity store calls.
 Agent prompt and skill tools should depend on their own prompt/skill store
 slices, not the full agent store. Model-facing tools should not inherit pairing,
 bootstrap, or listing powers they do not use.
-Model-facing tools should read runtime session scope through
-`src/panda/tools/shared.ts`. Do not import path-resolution helpers just to read
-`agentKey`, `sessionId`, or current input ids.
+Keep runtime session scope separate from path mapping. Do not import
+path-resolution helpers just to read `agentKey`, `sessionId`, or current input ids.
+`src/panda/tools/shared.ts` owns JSON tool payload construction and background
+result serialization; keep its validation at that boundary.
 Watch tools should depend on local create/update and disable store slices.
 The model-facing create/update/disable tools should not force tests or callers
 to fake the full watch runner/store surface, and those slices should not become
