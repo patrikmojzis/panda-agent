@@ -13,7 +13,7 @@ authoritative; this folder records decisions and work in progress.
 ## Current state
 
 The initial architecture and simplification passes are committed as `ca5a689d`.
-The continuing cleanup loop has completed cycles 1–60; their decisions, scoped
+The continuing cleanup loop has completed cycles 1–61; their decisions, scoped
 commits, behavior changes and verification evidence are in the cycle record.
 Together, these cleanup commits remove **5,446 production lines**, including
 75 lines relocated into tests. Counts exclude unrelated commits, tests,
@@ -38,9 +38,14 @@ identity and connector scopes. Discord's identity reads fall from `1 + 2N` to
 three; Telegram/WhatsApp falls from `3P` to two. This adds 45 production lines to
 remove fanout. Whole batch failures return sanitized HTTP 500 responses; malformed
 individual groups keep their existing omit/strict policies. Eight PostgreSQL
-caller cases verify the actual SQL and fixed query count.
+caller cases verify the actual SQL and fixed query count. Cycle 61 reuses that
+reader for identity-directory counts with zero net production lines. Its fixture
+reduces admin reads from 17 to seven and scoped reads from 15 to seven while
+preserving original rows, visibility and pairing counts. All 12 PostgreSQL cases
+and 50 baseline/current comparisons pass. Identity-page batch failures return
+sanitized 500; global search preserves its existing best-effort category policy.
 
-The frozen tree passes **3,247 unit tests across 341 files**, root
+The frozen tree passes **3,254 unit tests across 341 files**, root
 build/typecheck, import law, all 19 compiled package
 imports and shared `Thread` identity. The initial failure of an unchanged
 cancellation test and its passing isolated/file/full reruns are recorded under
@@ -52,9 +57,8 @@ PostgreSQL and completed an owned run with applied input, one tool call, four
 messages and idle state. It used injected model responses and blocked external
 requests. Focused public tests and earlier method parity cover the lifecycle
 changes; that smoke did not invoke those methods or the actor listings. The test cluster
-was stopped afterward. Identity-directory binding counts, runtime-activity reads
-and pool observation ownership remain under investigation, with their constraints
-recorded in the cycle record. The inspect/review/commit loop remains active.
+was stopped afterward. Runtime-activity reads and pool observation ownership
+remain under investigation, with their constraints recorded in the cycle record. The inspect/review/commit loop remains active.
 
 Concurrent credential-name, image-generation and background-job work belongs to
 separate tasks. Preserve those changes and untracked `output/`; they are excluded

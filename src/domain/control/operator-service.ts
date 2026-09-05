@@ -1724,12 +1724,12 @@ export class ControlOperatorService {
     for (const pairing of pairings.flat()) {
       agentPairingCounts.set(pairing.identityId, (agentPairingCounts.get(pairing.identityId) ?? 0) + 1);
     }
-    const actorBindingCounts = new Map<string, number>();
-    await Promise.all(identities.map(async (identity) => {
-      if (visibleIdentityIds && !visibleIdentityIds.has(identity.id)) return;
-      const bindings = await this.identities.listIdentityBindings(identity.id).catch(() => [] as readonly IdentityBindingRecord[]);
-      actorBindingCounts.set(identity.id, bindings.length);
-    }));
+    const bindingGroups = await readIdentityBindingGroups(
+      this.pool,
+      identities.filter((identity) => !visibleIdentityIds || visibleIdentityIds.has(identity.id)).map((identity) => identity.id),
+      {invalidGroup: "omit"},
+    );
+    const actorBindingCounts = new Map(bindingGroups.map(({identity, bindings}) => [identity.id, bindings.length]));
 
     const status = typeof input.status === "string" ? trimToUndefined(input.status) : undefined;
     const rows = identities

@@ -1453,6 +1453,127 @@ describe("Control operator HTTP", () => {
     await expect(harness.agents.listAgentPairings("panda")).resolves.toEqual([]);
   });
 
+  it.each([2, 12])("batches binding counts for %i visible identities without reading hidden bindings", async (count) => {
+    const harness = await createHarness();
+    const visibleIds = ["identity-patrik"];
+    for (let index = 1; index < count; index++) {
+      const id = `identity-count-${index}`;
+      await harness.identities.createIdentity({id, handle: `count-${index}`, displayName: `Count ${index}`});
+      visibleIds.push(id);
+    }
+    for (const id of visibleIds) {
+      await harness.agents.ensurePairing("panda", id);
+      for (const source of ["telegram", "discord", "whatsapp"]) {
+        await harness.identities.ensureIdentityBinding({identityId: id, source, connectorKey: "unowned", externalActorId: id});
+      }
+    }
+    await harness.identities.createIdentity({id: "identity-hidden", handle: "hidden", displayName: "Hidden"});
+    await harness.agents.ensurePairing("luna", "identity-hidden");
+    await harness.agents.ensurePairing("luna", "identity-patrik");
+    await harness.identities.ensureIdentityBinding({identityId: "identity-hidden", source: "telegram", connectorKey: "hidden", externalActorId: "hidden"});
+    const grant = await harness.auth.createGrant({identityId: "identity-patrik", role: "scoped", agentKey: "panda"});
+    const base = await startHarnessServer(harness);
+    const response = await fetch(`${base}/api/control/login`, {method: "POST", body: JSON.stringify({token: grant.loginToken})});
+    expect(response.status).toBe(200);
+    const query = vi.spyOn(harness.pool, "query");
+    try {
+      const listed = await fetch(`${base}/api/control/identities?per_page=100`, {headers: {cookie: cookieHeader(response)}});
+      expect(listed.status).toBe(200);
+      const body = await listed.json();
+      expect(body.meta.total).toBe(count);
+      expect(body.data.map((row: {id: string}) => row.id).sort()).toEqual([...visibleIds].sort());
+      expect(body.data.every((row: {agentPairingCount: number; actorBindingCount: number}) => row.agentPairingCount === 1 && row.actorBindingCount === 3)).toBe(true);
+      const batchReads = query.mock.calls.filter(([sql]) => /FROM "runtime"\."(?:identities|identity_bindings)" WHERE (?:id|identity_id) IN \(/.test(sql));
+      expect(batchReads).toHaveLength(2);
+      expect(batchReads.map(([, params]) => [...params as readonly string[]].sort())).toEqual([[...visibleIds].sort(), [...visibleIds].sort()]);
+    } finally {
+      query.mockRestore();
+    }
+  });
+
+  it("keeps inventory rows and zero counts for missing or malformed groups while filtering and paging", async () => {
+    const harness = await createHarness();
+    for (const handle of ["alpha", "broken", "deleted", "gone"]) {
+      await harness.identities.createIdentity({id: `identity-${handle}`, handle, displayName: `Count ${handle}`});
+      await harness.identities.ensureIdentityBinding({identityId: `identity-${handle}`, source: "discord", connectorKey: "unowned", externalActorId: handle});
+    }
+    const broken = await harness.identities.ensureIdentityBinding({identityId: "identity-broken", source: "telegram", connectorKey: "unrelated", externalActorId: "broken"});
+    await harness.pool.query(`UPDATE "runtime"."identity_bindings" SET connector_key = ' ' WHERE id = $1`, [broken.id]);
+    await harness.pool.query(`UPDATE "runtime"."identities" SET status = 'deleted' WHERE id = 'identity-deleted'`);
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+    const headers = {cookie: auth.cookies};
+    const originalQuery = harness.pool.query.bind(harness.pool);
+    const query = vi.spyOn(harness.pool, "query").mockImplementation(async (sql: string, params?: readonly unknown[]) => {
+      const result = await originalQuery(sql, params);
+      if (sql.includes('FROM "runtime"."identities" WHERE id IN (')) {
+        return {...result, rows: result.rows.filter((row) => row.id !== "identity-gone").map((row) => row.id === "identity-alpha" ? {...row, display_name: "Changed after inventory"} : row)};
+      }
+      return result;
+    });
+    try {
+      const listed = await fetch(`${base}/api/control/identities?search=Count&sort_by=handle`, {headers});
+      expect(listed.status).toBe(200);
+      await expect(listed.json()).resolves.toMatchObject({data: [
+        {id: "identity-alpha", displayName: "Count alpha", actorBindingCount: 1},
+        {id: "identity-broken", actorBindingCount: 0},
+        {id: "identity-deleted", status: "deleted", actorBindingCount: 1},
+        {id: "identity-gone", actorBindingCount: 0},
+      ], meta: {total: 4}});
+      const page = await fetch(`${base}/api/control/identities?search=Count&status=active&sort_by=handle&sort_direction=desc&per_page=2&page=2`, {headers});
+      await expect(page.json()).resolves.toMatchObject({data: [{id: "identity-alpha", actorBindingCount: 1}], meta: {total: 3, current_page: 2, last_page: 2, per_page: 2}});
+      const beyond = await fetch(`${base}/api/control/identities?status=deleted&per_page=1&page=2`, {headers});
+      await expect(beyond.json()).resolves.toMatchObject({data: [], meta: {total: 1, current_page: 2, last_page: 1}});
+    } finally {
+      query.mockRestore();
+    }
+  });
+
+  it.each([
+    {resource: "identities", table: "identities"},
+    {resource: "identities", table: "identity_bindings"},
+    {resource: "search?search=panda", table: "identities"},
+    {resource: "search?search=panda", table: "identity_bindings"},
+  ])("contains bulk $table failure through $resource", async ({resource, table}) => {
+    const harness = await createHarness();
+    await harness.identities.createIdentity({id: "identity-panda-reader", handle: "panda-reader", displayName: "Panda Reader"});
+    const base = await startHarnessServer(harness);
+    const auth = await login(base, harness);
+    const headers = {cookie: auth.cookies};
+    const url = `${base}/api/control/${resource}`;
+    const before = await fetch(url, {headers});
+    expect(before.status).toBe(200);
+    const initial = await before.json();
+    if (resource.startsWith("search")) expect(initial.data).toEqual(expect.arrayContaining([expect.objectContaining({kind: "identity"}), expect.objectContaining({kind: "agent"})]));
+    const originalQuery = harness.pool.query.bind(harness.pool);
+    let failedReads = 0;
+    const query = vi.spyOn(harness.pool, "query").mockImplementation(async (sql: string, params?: readonly unknown[]) => {
+      if (sql.includes(`FROM "runtime"."${table}"`) && /WHERE (?:id|identity_id) IN \(/.test(sql)) {
+        failedReads++;
+        throw new Error("IDENTITY_COUNT_SECRET_SENTINEL");
+      }
+      return originalQuery(sql, params);
+    });
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const failed = await fetch(url, {headers});
+      const body = await failed.json();
+      if (resource === "identities") {
+        expect(failed.status).toBe(500);
+        expect(body).toEqual({error: "internal_error"});
+      } else {
+        expect(failed.status).toBe(200);
+        expect(body.data).toEqual(initial.data.filter((row: {kind: string}) => row.kind !== "identity"));
+        expect(body.data).toContainEqual(expect.objectContaining({kind: "agent"}));
+      }
+      expect(failedReads).toBe(1);
+      expect(JSON.stringify([body, log.mock.calls])).not.toContain("IDENTITY_COUNT_SECRET_SENTINEL");
+    } finally {
+      query.mockRestore();
+      log.mockRestore();
+    }
+  });
+
   it("manages identities through the top-level Control route", async () => {
     const harness = await createHarness();
     const base = await startHarnessServer(harness);

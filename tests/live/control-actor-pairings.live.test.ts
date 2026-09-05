@@ -26,8 +26,12 @@ describe("Control actor pairing lists with PostgreSQL", () => {
   let operator: ControlOperatorService;
   let admin: ControlSessionRecord;
   let scoped: ControlSessionRecord;
-  const queries: string[] = [];
+  const queries: {sql: string; values: readonly unknown[] | undefined}[] = [];
   let afterQuery: ((sql: string) => Promise<void>) | undefined;
+
+  function bindingGroupQueries() {
+    return queries.filter(({sql}) => /FROM "runtime"\."(?:identities|identity_bindings)"/.test(sql) && sql.includes("= ANY($1::text[])"));
+  }
 
   async function binding(identityId: string, source: string, connectorKey: string, actor: string, order = 1): Promise<void> {
     await pool.query(`INSERT INTO runtime.identity_bindings
@@ -43,7 +47,7 @@ describe("Control actor pairing lists with PostgreSQL", () => {
     await createPandaSchemaMigrator({pool, readonlyRole: null}).migrate();
     const measured: PgPoolLike = {
       async query(sql, values) {
-        queries.push(sql);
+        queries.push({sql, values});
         const result = await pool.query(sql, values);
         await afterQuery?.(sql);
         return result;
@@ -136,6 +140,16 @@ describe("Control actor pairing lists with PostgreSQL", () => {
       queries.length = 0;
       expect((await operator.listChannelActorPairings(scoped, "panda", {source: "telegram"})).meta.total).toBe(16);
       expect(queries).toHaveLength(5);
+      for (const session of [admin, scoped]) {
+        queries.length = 0;
+        const result = await operator.listIdentities(session);
+        expect(result.meta.total).toBe(session.role === "admin" ? 18 : 17);
+        expect(result.data.filter((row) => extraIds.includes(row.id)).map((row) => row.actorBindingCount)).toEqual(extraIds.map(() => 2));
+        expect(bindingGroupQueries()).toHaveLength(2);
+        const requested = bindingGroupQueries()[0]!.values![0] as readonly string[];
+        expect(extraIds.every((id) => requested.includes(id))).toBe(true);
+        expect(requested.includes("unpaired")).toBe(session.role === "admin");
+      }
     } finally {
       await pool.query("DELETE FROM runtime.identities WHERE id = ANY($1::text[])", [extraIds]);
     }
@@ -186,5 +200,58 @@ describe("Control actor pairing lists with PostgreSQL", () => {
     queries.length = 0;
     await expect(operator.listChannelActorPairings(admin, "empty")).resolves.toMatchObject({data: [], meta: {total: 0}});
     expect(queries).toHaveLength(3);
+  });
+
+  liveIt.each(["admin", "scoped"] as const)("preserves %s identity scope, all-source counts and table filters", async (role) => {
+    const session = role === "admin" ? admin : scoped;
+    const result = await operator.listIdentities(session);
+    const expected = [
+      ["a-second", 3, 1], ["bad-group", 0, 1], ["reader", 0, 1], ["soft-deleted", 3, 1],
+      ...(role === "admin" ? [["unpaired", 3, 0]] : []), ["z-first", 7, 1],
+    ];
+    expect(result.data.map((row) => [row.id, row.actorBindingCount, row.agentPairingCount])).toEqual(expected);
+    expect(result.data.find((row) => row.id === "soft-deleted")!.status).toBe("deleted");
+    expect(JSON.stringify(result)).not.toMatch(/ACTOR_METADATA_SENTINEL|FOREIGN_DISCORD|FOREIGN_TELEGRAM/);
+    const requested = identityIds.filter((id) => role === "admin" || id !== "unpaired");
+    expect(bindingGroupQueries().map(({values}) => values)).toEqual([[requested], [requested]]);
+
+    const deleted = await operator.listIdentities(session, {status: " deleted ", search: " SOFT-DELETED "});
+    expect(deleted.data.map((row) => [row.id, row.actorBindingCount])).toEqual([["soft-deleted", 3]]);
+    const page = await operator.listIdentities(session, {sortBy: "handle", sortDirection: "desc", page: 2, perPage: 2});
+    expect(page.data.map((row) => row.id)).toEqual(role === "admin" ? ["soft-deleted", "reader"] : ["reader", "bad-group"]);
+    expect(page.meta).toEqual({current_page: 2, last_page: 3, total: expected.length, per_page: 2});
+    await expect(operator.listIdentities(session, {page: 99})).resolves.toMatchObject({data: [], meta: {current_page: 99, total: expected.length}});
+  });
+
+  liveIt("retains the initial identity row with a zero count when its reread becomes malformed", async () => {
+    let changed = false;
+    afterQuery = async (sql) => {
+      if (!changed && sql.includes('FROM "runtime"."identities" ORDER BY created_at ASC')) {
+        changed = true;
+        await pool.query("UPDATE runtime.identities SET display_name = 'CHANGED_IDENTITY_SENTINEL', status = 'invalid' WHERE id = 'z-first'");
+      }
+    };
+    try {
+      const result = await operator.listIdentities(scoped);
+      expect(changed).toBe(true);
+      expect(result.data.find((row) => row.id === "z-first")).toMatchObject({displayName: "z-first", status: "active", actorBindingCount: 0, agentPairingCount: 1});
+      expect(result.data.find((row) => row.id === "a-second")!.actorBindingCount).toBe(3);
+      expect(JSON.stringify(result)).not.toContain("CHANGED_IDENTITY_SENTINEL");
+      expect(bindingGroupQueries()).toHaveLength(2);
+    } finally {
+      afterQuery = undefined;
+      await pool.query("UPDATE runtime.identities SET display_name = 'z-first', status = 'active' WHERE id = 'z-first'");
+    }
+  });
+
+  liveIt("does not request binding groups when the scoped identity has no visible agents", async () => {
+    try {
+      await agents.deletePairing("panda", "reader");
+      queries.length = 0;
+      await expect(operator.listIdentities(scoped)).resolves.toMatchObject({data: [], meta: {total: 0}});
+      expect(bindingGroupQueries()).toEqual([]);
+    } finally {
+      await agents.ensurePairing("panda", "reader");
+    }
   });
 });

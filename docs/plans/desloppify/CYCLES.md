@@ -1812,3 +1812,60 @@ valid pairings when unrelated bindings are malformed. The paired-identity
 session directory already uses three bounded reads with different scope and
 windowing; leave it alone. Runtime-activity pagination and pool observation
 ownership remain unresolved.
+
+
+## Cycle 61 — Reuse batch reads for identity-directory counts
+
+- Finding: `listIdentities` still performed an identity existence read and a
+  binding read for each visible identity merely to count actor bindings. The
+  preceding cycle's complete-group reader already owns the required parsing.
+- Change: send only visible identity IDs to that reader and derive counts from
+  valid groups. Preserve the original inventory rows, visibility queries,
+  agent-pairing counts, all-source/all-connector counting, status/search filters,
+  sorting and pagination. Missing or malformed groups retain their identity row
+  with count zero. Empty visibility makes no batch query. No new helper, schema,
+  interface or HTTP branch is required; only the six-line count block changes.
+- Failure policy: `/identities` now returns the existing sanitized HTTP 500 when
+  either batch query fails, rather than inventing zero counts. Global search
+  retains its existing best-effort category policy: HTTP 200 with identity hits
+  omitted and other categories available. Previously a binding-query failure
+  could leave identity hits visible with zero counts. Recon initially overlooked
+  the `searchTableRows` catch; direct caller inspection corrected that assumption
+  before implementation. No broader search-error rewrite was made.
+- Result: six production lines added and six removed; cumulative reduction stays
+  **5,446 production lines across 62 cleanup commits**, including 75 lines moved
+  into tests. Tests add 188 net lines, with seven new HTTP/service cases and four
+  new PostgreSQL cases plus expanded growth coverage.
+- Evidence: independent source reconstruction permits only the count-block
+  replacement. Author and independent review pass all 125 Control HTTP tests.
+  The expanded PostgreSQL suite passes all 12 cases after 25 migrations on a
+  fresh disposable database. It covers scoped IDs, all-source/unowned binding
+  counts, original rows after an invalid reread, malformed/deleted identities,
+  empty visibility, ordering, filters, paging and fixed query count as IDs grow.
+  Evidence: `.temp/desloppify-cycle61-actors-live-results.json`.
+- Parity: 50 actual baseline/current public-method comparisons match complete
+  results, filtering and pagination in one PostgreSQL readonly snapshot. Two
+  additional checks establish the deliberate binding-outage policy change.
+  In this fixture, admin reads fall from 17 to seven for six identities; scoped
+  reads fall from 15 to seven for five visible identities. The binding portion
+  is two queries instead of `2M`, or zero for no visible identities. These are
+  query counts, not production latency measurements. Evidence:
+  `.temp/desloppify-cycle61-directory-parity-output.log`.
+- Gates: all 3,254 unit tests across 341 files pass without failures or skips;
+  root build/typecheck, import law, all 19 compiled package imports and shared
+  `Thread` identity pass. Evidence: `.temp/desloppify-cycle61-unit-results.json`.
+  Actor reader, HTTP handlers, CLI, prompt/shim surfaces and runtime lifecycle
+  remain unchanged from cycle 60; its offline smoke is earlier evidence, not a
+  new smoke run for this cycle. The isolated PostgreSQL cluster was stopped.
+- State: reviewed and committed locally with this cycle. No production access,
+  push or deployment. Cycle 60 is committed as `0304a002`.
+
+### Pool ownership recon
+
+The observer's optional `getSnapshot` method has no current consumer and is a
+separate deletion candidate; verify intentional exports before removal. Defer a
+broader observed-pool factory: the readonly pool is created lazily from eagerly
+captured settings and is stored for cleanup before observer/log creation.
+Combining those paths carelessly changes environment-read timing and loses
+ownership if observation setup throws. Existing observer-stop-before-pool-end
+ordering remains necessary. Runtime-activity pagination also remains open.
