@@ -189,71 +189,54 @@ export class BackgroundToolJobService {
     this.startingJobs.set(jobId, starting);
 
     let record: ThreadToolJobRecord;
-    try {
-      record = await reservation;
-    } catch (error) {
-      this.startingJobs.delete(jobId);
-      starting.resolveStartupSettled();
-      throw error;
-    }
-    if (this.closed || controller.signal.aborted) {
-      try {
-        return await this.cancelStartingJobRecord(jobId, starting);
-      } finally {
-        this.startingJobs.delete(jobId);
-        starting.resolveStartupSettled();
-      }
-    }
-
     let handle: BackgroundToolJobHandle;
     try {
-      handle = await options.start({
-        jobId,
-        signal: controller.signal,
-        emitProgress,
-      });
-    } catch (error) {
-      try {
-        await this.store.updateToolJob(jobId, {
-          status: controller.signal.aborted ? "cancelled" : "failed",
-          finishedAt: Date.now(),
-          error: controller.signal.aborted ? null : errorMessage(error),
-          statusReason: controller.signal.aborted
-            ? abortReason(controller.signal)
-            : "Background tool job failed to start.",
-        });
-      } catch (persistError) {
-        throw new AggregateError(
-          [error, persistError],
-          "Background tool job failed to start and its durable record could not be settled.",
-        );
-      } finally {
-        this.startingJobs.delete(jobId);
-        starting.resolveStartupSettled();
+      record = await reservation;
+      if (this.closed || controller.signal.aborted) {
+        return await this.cancelStartingJobRecord(jobId, starting);
       }
-      throw error;
-    }
 
-    // A job can reject while startup awaits persistence or cancellation. Observe
-    // it immediately; watchJob still consumes the original rejection and records failure.
-    void handle.done.catch(() => undefined);
-
-    if (this.closed || controller.signal.aborted) {
       try {
+        handle = await options.start({
+          jobId,
+          signal: controller.signal,
+          emitProgress,
+        });
+      } catch (error) {
+        try {
+          await this.store.updateToolJob(jobId, {
+            status: controller.signal.aborted ? "cancelled" : "failed",
+            finishedAt: Date.now(),
+            error: controller.signal.aborted ? null : errorMessage(error),
+            statusReason: controller.signal.aborted
+              ? abortReason(controller.signal)
+              : "Background tool job failed to start.",
+          });
+        } catch (persistError) {
+          throw new AggregateError(
+            [error, persistError],
+            "Background tool job failed to start and its durable record could not be settled.",
+          );
+        }
+        throw error;
+      }
+
+      // A job can reject while startup awaits persistence or cancellation. Observe
+      // it immediately; watchJob still consumes the original rejection and records failure.
+      void handle.done.catch(() => undefined);
+
+      if (this.closed || controller.signal.aborted) {
         // Some adapters cannot interrupt handle acquisition. Once they do
         // return, shutdown still owns that handle and must cancel it before
         // the daemon lease can be released.
         controller.abort(new Error("Runtime shutdown."));
         await handle.cancel?.("Runtime shutdown.");
         return await this.cancelStartingJobRecord(jobId, starting);
-      } finally {
-        this.startingJobs.delete(jobId);
-        starting.resolveStartupSettled();
       }
+    } finally {
+      this.startingJobs.delete(jobId);
+      starting.resolveStartupSettled();
     }
-
-    this.startingJobs.delete(jobId);
-    starting.resolveStartupSettled();
     this.liveJobs.set(jobId, {controller, handle});
 
     try {

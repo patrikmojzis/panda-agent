@@ -1065,6 +1065,61 @@ describe("ThreadRuntimeCoordinator", () => {
     expect(startExternalWork).not.toHaveBeenCalled();
   });
 
+  it("preserves reservation rejection without starting external work or leaving a job to settle", async () => {
+    const store = new TestThreadRuntimeStore();
+    await createRuntimeThread(store, {id: "thread-background-reservation-failure", agentKey: "panda"});
+    const failure = new Error("Reservation unavailable.");
+    vi.spyOn(store, "createToolJob").mockRejectedValueOnce(failure);
+    const startExternalWork = vi.fn(() => ({done: Promise.resolve()}));
+    const service = new BackgroundToolJobService({store, owner: TEST_RUN_OWNER});
+    try {
+      await expect(service.start({
+        threadId: "thread-background-reservation-failure", kind: "web_research", summary: "reservation failure",
+        start: startExternalWork,
+      })).rejects.toBe(failure);
+      expect(startExternalWork).not.toHaveBeenCalled();
+      await service.close();
+      await expect(store.listToolJobs("thread-background-reservation-failure")).resolves.toEqual([]);
+    } finally {
+      await service.close();
+    }
+  });
+
+  it.each([false, true])("preserves startup failure when durable settlement also fails: %s", async (settlementFails) => {
+    const store = new TestThreadRuntimeStore();
+    await createRuntimeThread(store, {id: "thread-background-startup-failure", agentKey: "panda"});
+    const startupFailure = new Error("External job could not start.");
+    const persistenceFailure = new Error("Settlement unavailable.");
+    if (settlementFails) vi.spyOn(store, "updateToolJob").mockRejectedValueOnce(persistenceFailure);
+    const service = new BackgroundToolJobService({store, owner: TEST_RUN_OWNER});
+    try {
+      const starting = service.start({
+        threadId: "thread-background-startup-failure", kind: "web_research", summary: "startup failure",
+        start: () => { throw startupFailure; },
+      });
+      if (settlementFails) {
+        const failure = await starting.catch((error: unknown) => error);
+        expect(failure).toBeInstanceOf(AggregateError);
+        expect((failure as AggregateError).message).toBe(
+          "Background tool job failed to start and its durable record could not be settled.",
+        );
+        expect((failure as AggregateError).errors[0]).toBe(startupFailure);
+        expect((failure as AggregateError).errors[1]).toBe(persistenceFailure);
+        expect((failure as AggregateError).errors).toHaveLength(2);
+      } else {
+        await expect(starting).rejects.toBe(startupFailure);
+      }
+      await service.close();
+      await expect(store.listToolJobs("thread-background-startup-failure")).resolves.toEqual([
+        expect.objectContaining(settlementFails
+          ? {status: "running"}
+          : {status: "failed", error: startupFailure.message, statusReason: "Background tool job failed to start."}),
+      ]);
+    } finally {
+      await service.close();
+    }
+  });
+
   it("surfaces background wake inputs before the next model turn when watcher-owned background jobs finish during an active run", async () => {
     const workspace = await mkdtemp(path.join(tmpdir(), "panda-thread-runtime-autowake-"));
     try {

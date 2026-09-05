@@ -572,3 +572,19 @@ callers; no further deletion was justified there.
   Typecheck, import law and diff checks pass.
 - State: reviewed and committed locally with this cycle. No command execution,
   audit persistence or public package contract changed.
+
+## Cycle 24 — Give background startup one cleanup exit
+
+- Finding: five paths repeated removal from the starting-job map and resolution
+  of the startup-settled promise.
+- Change: one outer `finally` owns that bookkeeping, ending before promotion to
+  the live-job map. Reservation registration still precedes the first await;
+  handle rejection is observed immediately, and late cancellation is awaited.
+- Result: 17 fewer production lines; 55 test lines added for three failure cases.
+- Evidence: 100 focused runtime/background/image/web/daemon tests pass, plus
+  typecheck and import law. Root independently ran all 68 runtime/background
+  tests, reviewed return/throw/await order and confirmed all source outside
+  `start()` is unchanged. Reservation and startup errors retain identity;
+  combined startup/persistence errors retain their message and member order.
+- State: reviewed and committed locally with this cycle. Durable ownership,
+  reset and shutdown behavior are preserved; no claim or persistence SQL changed.
